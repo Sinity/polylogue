@@ -1,0 +1,16 @@
+language: en-US
+reviews:
+  profile: assertive
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!**/*.lock"
+    - "!**/*.json.gz"
+    - "!.claude/data/**"
+    - "!.claude/script/logs/**"
+  tools:
+    ruff:
+      enabled: true
+chat:
+  auto_reply: true

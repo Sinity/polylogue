@@ -1,0 +1,34 @@
+# Binary files
+*.sqlite binary
+*.db binary
+*.gz binary
+polylogue/schemas/providers/*.schema.json.gz binary linguist-generated
+
+# Generated / non-code (GitHub language stats)
+flake.lock linguist-generated -diff
+*.lock linguist-generated
+
+# Better diffs
+*.json diff=json
+*.toml diff=toml
+*.yml diff=yaml
+*.yaml diff=yaml
+
+# Line endings
+* text=auto
+*.py text eol=lf
+*.nix text eol=lf
+*.sh text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+
+# Export control (git archive)
+.github/ export-ignore
+.claude/ export-ignore
+tests/ export-ignore
+
+# Merge strategies
+flake.lock merge=ours

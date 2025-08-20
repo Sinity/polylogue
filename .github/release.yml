@@ -1,0 +1,20 @@
+changelog:
+  categories:
+    - title: Features
+      labels:
+        - type:feat
+    - title: Bug Fixes
+      labels:
+        - type:fix
+    - title: Performance
+      labels:
+        - type:perf
+    - title: Architecture
+      labels:
+        - type:refactor
+    - title: Testing
+      labels:
+        - type:test
+    - title: Other
+      labels:
+        - "*"
