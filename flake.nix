@@ -1,5 +1,5 @@
 {
-  description = "Python dev shell with Google API + tools (single source of truth)";
+  description = "Python dev shell with Google API + fixed re2";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
@@ -25,7 +25,19 @@
           ];
         };
       in {
-        devShells.default = import ./nix/devshell.nix { inherit pkgs; };
+        devShells.default = pkgs.mkShell {
+          buildInputs = [
+            pkgs.python3
+            pkgs.python3Packages.google-api-python-client
+            pkgs.python3Packages.google-auth-oauthlib
+            pkgs.python3Packages.google-auth-httplib2
+            pkgs.python3Packages.aiohttp
+            pkgs.python3Packages.tqdm
+            pkgs.python3Packages.pathvalidate
+            pkgs.python3Packages.aiofiles
+          ];
+        };
       }
     );
 }
+
