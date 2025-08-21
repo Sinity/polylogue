@@ -4,7 +4,9 @@ import argparse
 from pathlib import Path
 import sys
 
-import sync_ai_studio as syncmod
+from geminimd.util import colorize, parse_input_time_to_epoch, parse_rfc3339_to_epoch, sanitize_filename
+from geminimd.drive import get_drive_service, find_folder_id, list_children, get_file_meta, download_file, download_to_path
+from geminimd.render import build_markdown_from_chunks, per_chunk_remote_links, extract_drive_ids
 
 
 def main():
@@ -36,40 +38,152 @@ def main():
     args = parser.parse_args()
 
     if args.cmd == "render":
-        syncmod.process_local_directory(args.input_dir, args.out_dir, verbose=args.verbose)
+        out_dir = args.out_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for p in sorted(args.input_dir.iterdir()):
+            if not p.is_file():
+                continue
+            name = p.name
+            if "." in name and p.suffix.lower() != ".json":
+                continue
+            try:
+                obj = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            chunks = obj.get("chunkedPrompt", {}).get("chunks") if isinstance(obj, dict) else None
+            if not isinstance(chunks, list):
+                continue
+            links = per_chunk_remote_links(chunks)
+            md = build_markdown_from_chunks(
+                chunks,
+                links,
+                title=p.stem,
+                source_file_id=None,
+                modified_time=None,
+                created_time=None,
+                run_settings=obj.get("runSettings") if isinstance(obj, dict) else None,
+                citations=obj.get("citations") if isinstance(obj, dict) else None,
+            )
+            md_path = out_dir / f"{sanitize_filename(p.stem)}.md"
+            md_path.write_text(md, encoding="utf-8")
         return
 
     if args.cmd == "sync":
+        svc = get_drive_service(args.credentials, verbose=args.verbose)
+        if not svc:
+            print(colorize("Drive auth failed", "red"), file=sys.stderr)
+            sys.exit(2)
+        fid = args.folder_id or find_folder_id(svc, args.folder_name)
+        if not fid:
+            print(colorize(f"Folder not found: {args.folder_name}", "red"), file=sys.stderr)
+            sys.exit(1)
+        children = list_children(svc, fid)
+        # Chats = files without extension and not Google Docs types
+        chats = [c for c in children if ("." not in (c.get("name") or "")) and not (c.get("mimeType", "").startswith("application/vnd.google-apps."))]
+        # Filters
+        import re as _re
+        if args.name_filter:
+            try:
+                rx = _re.compile(args.name_filter)
+                chats = [c for c in chats if rx.search(c.get("name", "") or "")]
+            except _re.error:
+                print(colorize("Invalid --name-filter regex; ignoring.", "yellow"), file=sys.stderr)
+        s_epoch = parse_input_time_to_epoch(args.since)
+        u_epoch = parse_input_time_to_epoch(args.until)
+        if s_epoch or u_epoch:
+            _tmp = []
+            for c in chats:
+                mt = parse_rfc3339_to_epoch(c.get("modifiedTime"))
+                if mt is None:
+                    continue
+                if s_epoch and mt < s_epoch:
+                    continue
+                if u_epoch and mt > u_epoch:
+                    continue
+                _tmp.append(c)
+            chats = _tmp
         if args.dry_run:
-            # Call sync_ai_studio main dry-run discovery path
-            # Minimal duplication: reuse module utilities
-            svc = syncmod.get_drive_service(args.credentials, verbose=args.verbose)
-            if not svc:
-                print("Drive auth failed", file=sys.stderr)
-                sys.exit(2)
-            folder_id = args.folder_id or syncmod.find_folder_id(svc, args.folder_name)
-            children = syncmod.list_children(svc, folder_id)
-            chats = [c for c in children if syncmod.is_chat_candidate(c)]
             print(f"Found {len(chats)} chat candidate(s). Output dir would be: {args.out_dir}")
             for c in chats[:20]:
                 print(f"- {c['name']} ({c['id']})")
             return
-        syncmod.sync_folder(
-            service=syncmod.get_drive_service(args.credentials, verbose=args.verbose),
-            folder_id=args.folder_id or syncmod.find_folder_id(syncmod.get_drive_service(args.credentials), args.folder_name),
-            out_dir=args.out_dir,
-            credentials_path=args.credentials,
-            force=args.force,
-            prune=args.prune,
-            verbose=args.verbose,
-            remote_links=args.remote_links,
-            since=args.since,
-            until=args.until,
-            name_filter=args.name_filter,
-            collapse_threshold=args.collapse_threshold,
-        )
+        out_dir = args.out_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for meta in chats:
+            file_id = meta["id"]
+            name_safe = sanitize_filename(meta.get("name") or file_id[:8])
+            md_path = out_dir / f"{name_safe}.md"
+            attachments_dir = out_dir / f"{name_safe}_attachments"
+            # Download chat JSON
+            data_bytes = download_file(svc, file_id)
+            if data_bytes is None:
+                print(colorize(f"Failed to download chat: {meta.get('name')}", "red"), file=sys.stderr)
+                continue
+            try:
+                obj = json.loads(data_bytes.decode("utf-8", errors="replace"))
+            except Exception:
+                print(colorize(f"Invalid JSON: {meta.get('name')}", "red"), file=sys.stderr)
+                continue
+            chunks = obj.get("chunkedPrompt", {}).get("chunks") if isinstance(obj, dict) else None
+            if not isinstance(chunks, list):
+                print(colorize(f"No chunks: {meta.get('name')}", "yellow"), file=sys.stderr)
+                continue
+            # Attachments
+            per_index_links = {}
+            if args.remote_links:
+                per_index_links = per_chunk_remote_links(chunks)
+            else:
+                per_index_links = {}
+                for idx, ch in enumerate(chunks):
+                    ids = extract_drive_ids(ch)
+                    if not ids:
+                        continue
+                    per_index_links[idx] = []
+                    for att_id in ids:
+                        att_meta = get_file_meta(svc, att_id)
+                        if not att_meta:
+                            continue
+                        fname = sanitize_filename(att_meta.get("name", att_id))
+                        local_path = attachments_dir / fname
+                        ok = True
+                        if not local_path.exists() or args.force:
+                            ok = download_to_path(svc, att_id, local_path)
+                        if ok:
+                            try:
+                                mtime = parse_rfc3339_to_epoch(att_meta.get("modifiedTime"))
+                                if mtime:
+                                    os.utime(local_path, (mtime, mtime))
+                            except Exception:
+                                pass
+                            try:
+                                rel = local_path.relative_to(out_dir)
+                            except Exception:
+                                rel = local_path
+                            per_index_links[idx].append((fname, rel))
+            # Render
+            md = build_markdown_from_chunks(
+                chunks,
+                per_index_links,
+                meta.get("name", name_safe),
+                meta.get("id"),
+                meta.get("modifiedTime"),
+                meta.get("createdTime"),
+                run_settings=obj.get("runSettings") if isinstance(obj, dict) else None,
+                citations=obj.get("citations") if isinstance(obj, dict) else None,
+                source_mime=meta.get("mimeType"),
+                source_size=int(meta.get("size", 0)) if meta.get("size") is not None else None,
+                collapse_threshold=args.collapse_threshold,
+            )
+            md_path.write_text(md, encoding="utf-8")
+            # Set MD mtime to Drive modifiedTime
+            try:
+                mtime = parse_rfc3339_to_epoch(meta.get("modifiedTime"))
+                if mtime:
+                    os.utime(md_path, (mtime, mtime))
+            except Exception:
+                pass
+        return
 
 
 if __name__ == "__main__":
     main()
-
