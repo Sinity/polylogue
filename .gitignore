@@ -1,0 +1,12 @@
+# Local OAuth tokens and credentials
+token.json
+credentials.json
+
+# Synced attachment folders
+*_attachments/
+*_attachment/
+
+# Common OS cruft
+.DS_Store
+Thumbs.db
+
