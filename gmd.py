@@ -89,7 +89,7 @@ def main():
                 return
         # Process
         rendered = 0
-        for p in targets:
+        for p in tqdm(targets, total=len(targets), desc=colorize("Rendering", "cyan"), unit="file"):
             try:
                 obj = json.loads(p.read_text(encoding="utf-8"))
             except Exception as e:
@@ -212,7 +212,7 @@ def main():
             return
         out_dir.mkdir(parents=True, exist_ok=True)
         synced = 0
-        for meta in chats:
+        for meta in tqdm(chats, total=len(chats), desc=colorize("Syncing", "cyan"), unit="chat"):
             file_id = meta["id"]
             name_safe = sanitize_filename(meta.get("name") or file_id[:8])
             md_path = out_dir / f"{name_safe}.md"
@@ -329,24 +329,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    if args.cmd == "help":
-        parser.print_help()
-        return
-
-    if args.cmd == "init":
-        conf = find_conf_path()
-        if conf.exists():
-            print(colorize(f".gmdrc already exists at {conf}", "yellow"))
-        else:
-            conf.write_text(default_conf_text(), encoding="utf-8")
-            print(colorize(f"Created {conf}", "green"))
-        return
-
-    if args.cmd == "auth":
-        credentials = args.credentials or Path(cfg["credentials"]) 
-        svc = get_drive_service(credentials, verbose=True)
-        if svc:
-            print(colorize("Authentication successful; token saved (long-term).", "green"))
-        else:
-            print(colorize("Authentication failed.", "red"))
-        return
