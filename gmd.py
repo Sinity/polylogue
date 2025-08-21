@@ -8,9 +8,10 @@ import os
 import shutil
 import subprocess
 
-from geminimd.util import colorize, parse_input_time_to_epoch, parse_rfc3339_to_epoch, sanitize_filename
+from geminimd.util import colorize, parse_input_time_to_epoch, parse_rfc3339_to_epoch, sanitize_filename, add_run, STATE_PATH, RUNS_PATH
 from geminimd.drive import get_drive_service, find_folder_id, list_children, get_file_meta, download_file, download_to_path
 from geminimd.render import build_markdown_from_chunks, per_chunk_remote_links, extract_drive_ids
+from geminimd.config import load_config
 
 
 def main():
@@ -20,36 +21,40 @@ def main():
     # render local (files or directory)
     p_render = sub.add_parser("render", help="Render local Gemini JSON(s) to Markdown")
     p_render.add_argument("input", type=Path, help="Input file or directory containing Gemini JSON chats")
-    p_render.add_argument("--out-dir", type=Path, default=Path("gmd_out"), help="Output directory for Markdown")
-    p_render.add_argument("--credentials", type=Path, default=Path("credentials.json"), help="Path to Google OAuth credentials.json")
+    p_render.add_argument("--out-dir", type=Path, default=None, help="Output directory for Markdown (default from config)")
+    p_render.add_argument("--credentials", type=Path, default=None, help="Path to Google OAuth credentials.json (default from config)")
     p_render.add_argument("--remote-links", action="store_true", help="Do not download attachments; link Drive URLs instead")
     p_render.add_argument("--download-dir", type=Path, default=None, help="Base folder for downloaded attachments (default: per-file _attachments next to MD)")
     p_render.add_argument("--force", action="store_true", help="Force re-download attachments if present")
-    p_render.add_argument("--collapse-threshold", type=int, default=10, help="Lines after which model responses fold (0 disables)")
+    p_render.add_argument("--collapse-threshold", type=int, default=None, help="Lines after which model responses fold (0 disables; default from config)")
     p_render.add_argument("--interactive", action="store_true", help="Use fzf to select files from directory input")
     p_render.add_argument("-v", "--verbose", action="store_true")
 
     # sync drive
     p_sync = sub.add_parser("sync", help="Sync Drive folder to local Markdown + attachments")
     p_sync.add_argument("--folder-id", type=str, default=None)
-    p_sync.add_argument("--folder-name", type=str, default="AI Studio")
-    p_sync.add_argument("--out-dir", type=Path, default=Path("gemini_synced"))
-    p_sync.add_argument("--credentials", type=Path, default=Path("credentials.json"))
+    p_sync.add_argument("--folder-name", type=str, default=None, help="Default from config")
+    p_sync.add_argument("--out-dir", type=Path, default=None, help="Default from config")
+    p_sync.add_argument("--credentials", type=Path, default=None, help="Default from config")
     p_sync.add_argument("--remote-links", action="store_true")
     p_sync.add_argument("--since", type=str, default=None)
     p_sync.add_argument("--until", type=str, default=None)
     p_sync.add_argument("--name-filter", type=str, default=None)
-    p_sync.add_argument("--collapse-threshold", type=int, default=10)
+    p_sync.add_argument("--collapse-threshold", type=int, default=None, help="Default from config")
     p_sync.add_argument("--interactive", action="store_true", help="Use fzf to pick chats interactively")
     p_sync.add_argument("--force", action="store_true")
     p_sync.add_argument("--prune", action="store_true")
     p_sync.add_argument("--dry-run", action="store_true")
     p_sync.add_argument("-v", "--verbose", action="store_true")
 
+    # status
+    p_status = sub.add_parser("status", help="Show cached folder IDs and recent runs")
+
     args = parser.parse_args()
+    cfg = load_config()
 
     if args.cmd == "render":
-        out_dir = args.out_dir
+        out_dir = args.out_dir or Path(cfg["out_dir_render"]) 
         out_dir.mkdir(parents=True, exist_ok=True)
         targets = []
         if args.input.is_dir():
@@ -67,12 +72,16 @@ def main():
             targets = [args.input]
 
         svc = None
-        if not args.remote_links:
-            svc = get_drive_service(args.credentials, verbose=args.verbose)
+        credentials = args.credentials or Path(cfg["credentials"]) 
+        collapse_threshold = args.collapse_threshold if args.collapse_threshold is not None else int(cfg["collapse_threshold"]) 
+        remote_links = args.remote_links or bool(cfg.get("remote_links"))
+        if not remote_links:
+            svc = get_drive_service(credentials, verbose=args.verbose)
             if not svc:
                 print(colorize("Drive auth failed; use --remote-links to skip downloads.", "red"), file=sys.stderr)
                 return
         # Process
+        rendered = 0
         for p in targets:
             try:
                 obj = json.loads(p.read_text(encoding="utf-8"))
@@ -85,7 +94,7 @@ def main():
                 continue
             # Build links
             per_index_links = {}
-            if args.remote_links:
+            if remote_links:
                 per_index_links = per_chunk_remote_links(chunks)
             else:
                 per_index_links = {}
@@ -130,21 +139,30 @@ def main():
                 created_time=None,
                 run_settings=obj.get("runSettings") if isinstance(obj, dict) else None,
                 citations=obj.get("citations") if isinstance(obj, dict) else None,
-                collapse_threshold=args.collapse_threshold,
+                collapse_threshold=collapse_threshold,
             )
             md_path = out_dir / f"{sanitize_filename(p.stem)}.md"
             md_path.write_text(md, encoding="utf-8")
             print(colorize(f"Rendered {p.name} → {md_path}", "green"))
+            rendered += 1
+        add_run({"cmd": "render", "count": rendered, "out": str(out_dir)})
         return
 
     if args.cmd == "sync":
-        svc = get_drive_service(args.credentials, verbose=args.verbose)
+        folder_name = args.folder_name or cfg["folder_name"]
+        out_dir = args.out_dir or Path(cfg["out_dir_sync"]) 
+        out_dir = Path(out_dir)
+        credentials = args.credentials or Path(cfg["credentials"]) 
+        collapse_threshold = args.collapse_threshold if args.collapse_threshold is not None else int(cfg["collapse_threshold"]) 
+        remote_links = args.remote_links or bool(cfg.get("remote_links"))
+
+        svc = get_drive_service(credentials, verbose=args.verbose)
         if not svc:
             print(colorize("Drive auth failed", "red"), file=sys.stderr)
             sys.exit(2)
-        fid = args.folder_id or find_folder_id(svc, args.folder_name)
+        fid = args.folder_id or find_folder_id(svc, folder_name)
         if not fid:
-            print(colorize(f"Folder not found: {args.folder_name}", "red"), file=sys.stderr)
+            print(colorize(f"Folder not found: {folder_name}", "red"), file=sys.stderr)
             sys.exit(1)
         children = list_children(svc, fid)
         # Chats = files without extension and not Google Docs types
@@ -185,8 +203,8 @@ def main():
             for c in chats[:20]:
                 print(f"- {c['name']} ({c['id']})")
             return
-        out_dir = args.out_dir
         out_dir.mkdir(parents=True, exist_ok=True)
+        synced = 0
         for meta in chats:
             file_id = meta["id"]
             name_safe = sanitize_filename(meta.get("name") or file_id[:8])
@@ -208,7 +226,7 @@ def main():
                 continue
             # Attachments
             per_index_links = {}
-            if args.remote_links:
+            if remote_links:
                 per_index_links = per_chunk_remote_links(chunks)
             else:
                 per_index_links = {}
@@ -250,7 +268,7 @@ def main():
                 citations=obj.get("citations") if isinstance(obj, dict) else None,
                 source_mime=meta.get("mimeType"),
                 source_size=int(meta.get("size", 0)) if meta.get("size") is not None else None,
-                collapse_threshold=args.collapse_threshold,
+                collapse_threshold=collapse_threshold,
             )
             md_path.write_text(md, encoding="utf-8")
             # Set MD mtime to Drive modifiedTime
@@ -260,6 +278,45 @@ def main():
                     os.utime(md_path, (mtime, mtime))
             except Exception:
                 pass
+            synced += 1
+        add_run({"cmd": "sync", "count": synced, "out": str(out_dir), "folder_id": fid, "folder_name": folder_name, "remote_links": remote_links})
+        return
+
+    if args.cmd == "status":
+        print("Config:")
+        from geminimd.config import CONF_PATH
+        print(f"  file: {CONF_PATH}")
+        print(f"  folder_name: {cfg['folder_name']}")
+        print(f"  credentials: {cfg['credentials']}")
+        print(f"  collapse_threshold: {cfg['collapse_threshold']}")
+        print(f"  out_dir_render: {cfg['out_dir_render']}")
+        print(f"  out_dir_sync: {cfg['out_dir_sync']}")
+        print(f"  remote_links: {cfg['remote_links']}")
+        print("")
+        print(f"Folder cache: {STATE_PATH}")
+        if STATE_PATH.exists():
+            try:
+                st = json.loads(STATE_PATH.read_text(encoding='utf-8'))
+                print(json.dumps(st, indent=2))
+            except Exception:
+                print("  (unreadable)")
+        else:
+            print("  (none)")
+        print("")
+        print(f"Recent runs: {RUNS_PATH}")
+        if RUNS_PATH.exists():
+            try:
+                runs = json.loads(RUNS_PATH.read_text(encoding='utf-8'))
+                print("  cmd   count   details")
+                for r in runs[-10:]:
+                    if r.get('cmd') == 'sync':
+                        print(f"  sync  {r.get('count'):>5}   {r.get('folder_name')} → {r.get('out')}")
+                    else:
+                        print(f"  rend  {r.get('count'):>5}   {r.get('out')}")
+            except Exception:
+                print("  (unreadable)")
+        else:
+            print("  (none)")
         return
 
 

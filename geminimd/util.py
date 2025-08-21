@@ -4,7 +4,7 @@ import re
 import sys
 import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any, Dict
 
 
 def colorize(text: str, color: str) -> str:
@@ -61,6 +61,7 @@ def parse_input_time_to_epoch(s: Optional[str]) -> Optional[float]:
 
 # Simple cache for discovered Drive IDs
 STATE_PATH = Path.home() / ".gmd_state.json"
+RUNS_PATH = Path.home() / ".gmd_runs.json"
 
 
 def _load_state() -> dict:
@@ -88,4 +89,20 @@ def set_cached_folder_id(name: str, folder_id: str) -> None:
     st = _load_state()
     st.setdefault("folders", {})[name] = folder_id
     _save_state(st)
+
+
+def add_run(record: Dict[str, Any]) -> None:
+    try:
+        if RUNS_PATH.exists():
+            runs = json.loads(RUNS_PATH.read_text(encoding="utf-8"))
+            if not isinstance(runs, list):
+                runs = []
+        else:
+            runs = []
+        runs.append(record)
+        # Keep last 200
+        runs = runs[-200:]
+        RUNS_PATH.write_text(json.dumps(runs, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
