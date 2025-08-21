@@ -10,3 +10,8 @@ credentials.json
 .DS_Store
 Thumbs.db
 
+# Python
+__pycache__
+
+# not project code
+data
