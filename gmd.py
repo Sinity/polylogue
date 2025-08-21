@@ -11,7 +11,7 @@ import subprocess
 from geminimd.util import colorize, parse_input_time_to_epoch, parse_rfc3339_to_epoch, sanitize_filename, add_run, STATE_PATH, RUNS_PATH
 from geminimd.drive import get_drive_service, find_folder_id, list_children, get_file_meta, download_file, download_to_path
 from geminimd.render import build_markdown_from_chunks, per_chunk_remote_links, extract_drive_ids
-from geminimd.config import load_config
+from geminimd.config import load_config, find_conf_path, default_conf_text
 
 
 def main():
@@ -49,6 +49,13 @@ def main():
 
     # status
     p_status = sub.add_parser("status", help="Show cached folder IDs and recent runs")
+
+    # init config
+    p_init = sub.add_parser("init", help="Create a project-local .gmdrc with documented defaults")
+
+    # auth check
+    p_auth = sub.add_parser("auth", help="Authenticate with Google Drive and cache token")
+    p_auth.add_argument("--credentials", type=Path, default=None, help="Path to Google OAuth credentials.json (default from config)")
 
     args = parser.parse_args()
     cfg = load_config()
@@ -322,3 +329,24 @@ def main():
 
 if __name__ == "__main__":
     main()
+    if args.cmd == "help":
+        parser.print_help()
+        return
+
+    if args.cmd == "init":
+        conf = find_conf_path()
+        if conf.exists():
+            print(colorize(f".gmdrc already exists at {conf}", "yellow"))
+        else:
+            conf.write_text(default_conf_text(), encoding="utf-8")
+            print(colorize(f"Created {conf}", "green"))
+        return
+
+    if args.cmd == "auth":
+        credentials = args.credentials or Path(cfg["credentials"]) 
+        svc = get_drive_service(credentials, verbose=True)
+        if svc:
+            print(colorize("Authentication successful; token saved (long-term).", "green"))
+        else:
+            print(colorize("Authentication failed.", "red"))
+        return
