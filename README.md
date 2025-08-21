@@ -13,17 +13,18 @@ Opinionated tools to render Gemini chat JSON to Markdown and to sync a Google Dr
   - `python3 gmd.py sync --folder-name "AI Studio" --out-dir gemini_synced --credentials credentials.json`
   - Skip downloads: add `--remote-links`
 
-## Config (~/.gmdrc)
-JSON file with sane defaults; environment variables override.
+## Config (.gmdrc — TOML)
+Project-local file at the repo root. Create with `gmd init`.
+Supports comments and sane defaults; environment variables override.
+Example:
 ```
-{
-  "folder_name": "AI Studio",
-  "credentials": "/abs/path/credentials.json",
-  "collapse_threshold": 10,
-  "out_dir_render": "/abs/path/gmd_out",
-  "out_dir_sync": "/abs/path/gemini_synced",
-  "remote_links": false
-}
+# gmd configuration (TOML). Project-local.
+folder_name = "AI Studio"             # Drive folder to sync
+credentials = "/abs/path/credentials.json"  # OAuth client
+collapse_threshold = 25               # Fold responses longer than this many lines
+out_dir_render = "/abs/path/gmd_out"
+out_dir_sync   = "/abs/path/gemini_synced"
+remote_links   = false                # If true, never download attachments
 ```
 Env overrides: `GMD_FOLDER_NAME`, `GMD_CREDENTIALS`, `GMD_COLLAPSE_THRESHOLD`, `GMD_OUT_DIR_RENDER`, `GMD_OUT_DIR_SYNC`, `GMD_REMOTE_LINKS`.
 
@@ -33,6 +34,8 @@ Env overrides: `GMD_FOLDER_NAME`, `GMD_CREDENTIALS`, `GMD_COLLAPSE_THRESHOLD`, `
 - `gmd sync`: One-way Drive→local sync to Markdown.
   - Flags: `--folder-name`, `--out-dir`, `--credentials`, `--remote-links`, `--since`, `--until`, `--name-filter`, `--collapse-threshold`, `--interactive`, `--force`, `--prune`, `--dry-run`, `-v`.
 - `gmd status`: Show current config, cached folder IDs, recent runs.
+- `gmd init`: Create a documented project-local `.gmdrc` with defaults.
+- `gmd auth`: Trigger Drive auth now and cache a long-term token.
 
 ## Formatting
 - Callouts with grouped model thought+response; long responses folded (configurable).
@@ -41,4 +44,3 @@ Env overrides: `GMD_FOLDER_NAME`, `GMD_CREDENTIALS`, `GMD_COLLAPSE_THRESHOLD`, `
 
 ## Interactive (TUI-ish)
 - Add `--interactive` to select local files (render) or remote chats (sync) via `fzf` if installed. Previews show basic metadata.
-
