@@ -16,10 +16,18 @@ from geminimd.commands import (
     status_command,
     sync_command,
 )
-from geminimd.drive_client import DEFAULT_FOLDER_NAME, DriveClient
-from geminimd.options import ListOptions, RenderOptions, SyncOptions
+from geminimd.drive_client import (
+    DEFAULT_CREDENTIALS,
+    DEFAULT_FOLDER_NAME,
+    DEFAULT_TOKEN,
+    DriveClient,
+)
+from geminimd.options import (
+    ListOptions,
+    RenderOptions,
+    SyncOptions,
+)
 from geminimd.ui import create_ui
-from gmd_settings import SETTINGS, reset_settings
 
 DEFAULT_RENDER_OUT = Path("gmd_out")
 DEFAULT_SYNC_OUT = Path("gemini_synced")
@@ -39,8 +47,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--force", action="store_true")
     p_render.add_argument("--collapse-threshold", type=int, default=None)
     p_render.add_argument("--json", action="store_true")
-    p_render.add_argument("--html", action="store_true", help="Also write HTML previews")
-    p_render.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
 
     p_sync = sub.add_parser("sync")
     p_sync.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
@@ -55,8 +61,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--prune", action="store_true")
     p_sync.add_argument("--collapse-threshold", type=int, default=None)
     p_sync.add_argument("--json", action="store_true")
-    p_sync.add_argument("--html", action="store_true", help="Also write HTML previews")
-    p_sync.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
 
     p_list = sub.add_parser("list")
     p_list.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
@@ -104,8 +108,6 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
     download_attachments = not args.links_only
     if not ui.plain and not args.links_only:
         download_attachments = ui.confirm("Download attachments to local folders?", default=True)
-    html_enabled = args.html or SETTINGS.html_previews
-    html_theme = args.html_theme or SETTINGS.html_theme
     options = RenderOptions(
         inputs=inputs,
         output_dir=output,
@@ -113,42 +115,26 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         download_attachments=download_attachments,
         dry_run=args.dry_run,
         force=args.force,
-        html=html_enabled,
-        html_theme=html_theme,
     )
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
     result = render_command(options, env)
     if json_output:
-        payload = {
-            "cmd": "render",
-            "count": result.count,
-            "out": str(result.output_dir),
-            "files": [
+        print(
+            json.dumps(
                 {
-                    "output": str(f.output),
-                    "attachments": f.attachments,
-                    "stats": f.stats,
-                    "html": str(f.html) if f.html else None,
-                }
-                for f in result.files
-            ],
-            "total_stats": result.total_stats,
-        }
-        print(json.dumps(payload, indent=2))
+                    "cmd": "render",
+                    "count": result.count,
+                    "out": str(result.output_dir),
+                    "files": result.files,
+                },
+                indent=2,
+            )
+        )
         return
     lines = [f"Rendered {result.count} file(s) → {result.output_dir}"]
-    attachments_total = result.total_stats.get("attachments", 0)
-    if attachments_total:
-        lines.append(f"Attachments: {attachments_total}")
-    if "totalTokensApprox" in result.total_stats:
-        total_tokens = int(result.total_stats["totalTokensApprox"])
-        lines.append(f"Approx tokens: {total_tokens}")
-    for file in result.files:
-        info = f"- {file.output.name} (attachments: {file.attachments})"
-        if file.html:
-            info += " [+html]"
-        lines.append(info)
+    for name in result.files:
+        lines.append(f"- {name}")
     ui.summary("Render", lines)
 
 
@@ -207,8 +193,6 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
             return
         selected_ids = [ln.split("\t")[-1] for ln in selection]
 
-    html_enabled = args.html or SETTINGS.html_previews
-    html_theme = args.html_theme or SETTINGS.html_theme
     options = SyncOptions(
         folder_name=args.folder_name,
         folder_id=args.folder_id,
@@ -222,47 +206,34 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
         until=args.until,
         name_filter=args.name_filter,
         selected_ids=selected_ids,
-        html=html_enabled,
-        html_theme=html_theme,
     )
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
     result = sync_command(options, env)
     if json_output:
-        payload = {
-            "cmd": "sync",
-            "count": result.count,
-            "out": str(result.output_dir),
-            "folder_name": result.folder_name,
-            "folder_id": result.folder_id,
-            "files": [
+        print(
+            json.dumps(
                 {
-                    "id": item.id,
-                    "name": item.name,
-                    "output": str(item.output),
-                    "attachments": item.attachments,
-                    "stats": item.stats,
-                    "html": str(item.html) if item.html else None,
-                }
-                for item in result.items
-            ],
-            "total_stats": result.total_stats,
-        }
-        print(json.dumps(payload, indent=2))
+                    "cmd": "sync",
+                    "count": result.count,
+                    "out": str(result.output_dir),
+                    "folder_name": result.folder_name,
+                    "folder_id": result.folder_id,
+                    "files": [
+                        {
+                            "id": item.id,
+                            "name": item.name,
+                            "output": str(item.output),
+                            "attachments": item.attachments,
+                        }
+                        for item in result.items
+                    ],
+                },
+                indent=2,
+            )
+        )
         return
-    lines = [f"Synced {result.count} chat(s) → {result.output_dir}"]
-    attachments_total = result.total_stats.get("attachments", 0)
-    if attachments_total:
-        lines.append(f"Attachments: {attachments_total}")
-    if "totalTokensApprox" in result.total_stats:
-        total_tokens = int(result.total_stats["totalTokensApprox"])
-        lines.append(f"Approx tokens: {total_tokens}")
-    for item in result.items:
-        info = f"- {Path(item.output).name} (attachments: {item.attachments})"
-        if item.html:
-            info += " [+html]"
-        lines.append(info)
-    ui.summary("Sync", lines)
+    ui.summary("Sync", [f"Synced {result.count} chat(s) → {result.output_dir}"])
 
 
 def run_status_cli(env: CommandEnv) -> None:
@@ -300,7 +271,6 @@ def interactive_menu(env: CommandEnv) -> None:
         "Sync Drive Folder",
         "List Drive Chats",
         "View Recent Runs",
-        "Settings",
         "Help",
         "Quit",
     ]
@@ -314,8 +284,6 @@ def interactive_menu(env: CommandEnv) -> None:
             prompt_list(env)
         elif choice == "View Recent Runs":
             run_status_cli(env)
-        elif choice == "Settings":
-            settings_menu(env)
         elif choice == "Help":
             show_help(env)
         elif choice == "Quit" or choice is None:
@@ -342,10 +310,6 @@ def prompt_render(env: CommandEnv) -> None:
     args.force = False
     args.collapse_threshold = None
     args.json = False
-    args.html = SETTINGS.html_previews
-    args.html_theme = SETTINGS.html_theme
-    args.html = False
-    args.html_theme = "light"
     run_render_cli(args, env, json_output=False)
 
 
@@ -366,10 +330,6 @@ def prompt_sync(env: CommandEnv) -> None:
     args.prune = False
     args.collapse_threshold = None
     args.json = False
-    args.html = SETTINGS.html_previews
-    args.html_theme = SETTINGS.html_theme
-    args.html = False
-    args.html_theme = "light"
     run_sync_cli(args, env, json_output=False)
 
 
@@ -383,8 +343,6 @@ def prompt_list(env: CommandEnv) -> None:
     args.until = None
     args.name_filter = None
     args.json = False
-    args.html = False
-    args.html_theme = "light"
     run_list_cli(args, env, json_output=False)
 
 
@@ -397,32 +355,6 @@ def show_help(env: CommandEnv) -> None:
     ui.console.print("  status  Show cached Drive info and recent runs")
     ui.console.print("  --plain Disable interactive UI for automation")
     ui.console.print("  --json  Emit machine-readable summaries when supported")
-
-
-def settings_menu(env: CommandEnv) -> None:
-    ui = env.ui
-    while True:
-        toggle_label = f"Toggle HTML previews ({'on' if SETTINGS.html_previews else 'off'})"
-        theme_label = f"HTML theme ({SETTINGS.html_theme})"
-        choices = [toggle_label, theme_label, "Reset defaults", "Back"]
-        choice = ui.choose("Settings", choices)
-        if choice is None or choice == "Back":
-            return
-        if choice == toggle_label:
-            SETTINGS.html_previews = not SETTINGS.html_previews
-            state = "enabled" if SETTINGS.html_previews else "disabled"
-            ui.console.print(f"HTML previews {state}.")
-        elif choice == theme_label:
-            if ui.plain:
-                ui.console.print("Set --html-theme when running in plain mode.")
-                continue
-            selection = ui.choose("Select HTML theme", ["light", "dark"])
-            if selection:
-                SETTINGS.html_theme = selection
-                ui.console.print(f"HTML theme set to {selection}.")
-        elif choice == "Reset defaults":
-            reset_settings()
-            ui.console.print("Settings reset to defaults.")
 
 
 def main() -> None:
