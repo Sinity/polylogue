@@ -38,7 +38,6 @@ class ListOptions:
     since: Optional[str]
     until: Optional[str]
     name_filter: Optional[str]
-    selected_ids: Optional[List[str]] = None
 
 
 @dataclass
