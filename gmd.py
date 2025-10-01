@@ -17,12 +17,9 @@ from geminimd.commands import (
     sync_command,
 )
 from geminimd.drive_client import DEFAULT_FOLDER_NAME, DriveClient
-from geminimd.options import (
-    ListOptions,
-    RenderOptions,
-    SyncOptions,
-)
+from geminimd.options import ListOptions, RenderOptions, SyncOptions
 from geminimd.ui import create_ui
+from gmd_settings import SETTINGS, reset_settings
 
 DEFAULT_RENDER_OUT = Path("gmd_out")
 DEFAULT_SYNC_OUT = Path("gemini_synced")
@@ -43,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--collapse-threshold", type=int, default=None)
     p_render.add_argument("--json", action="store_true")
     p_render.add_argument("--html", action="store_true", help="Also write HTML previews")
-    p_render.add_argument("--html-theme", type=str, default="light", choices=["light", "dark"], help="Theme for HTML previews")
+    p_render.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
 
     p_sync = sub.add_parser("sync")
     p_sync.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
@@ -59,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--collapse-threshold", type=int, default=None)
     p_sync.add_argument("--json", action="store_true")
     p_sync.add_argument("--html", action="store_true", help="Also write HTML previews")
-    p_sync.add_argument("--html-theme", type=str, default="light", choices=["light", "dark"], help="Theme for HTML previews")
+    p_sync.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
 
     p_list = sub.add_parser("list")
     p_list.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
@@ -107,6 +104,8 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
     download_attachments = not args.links_only
     if not ui.plain and not args.links_only:
         download_attachments = ui.confirm("Download attachments to local folders?", default=True)
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
     options = RenderOptions(
         inputs=inputs,
         output_dir=output,
@@ -114,8 +113,8 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         download_attachments=download_attachments,
         dry_run=args.dry_run,
         force=args.force,
-        html=args.html,
-        html_theme=args.html_theme,
+        html=html_enabled,
+        html_theme=html_theme,
     )
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
@@ -208,6 +207,8 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
             return
         selected_ids = [ln.split("\t")[-1] for ln in selection]
 
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
     options = SyncOptions(
         folder_name=args.folder_name,
         folder_id=args.folder_id,
@@ -221,8 +222,8 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
         until=args.until,
         name_filter=args.name_filter,
         selected_ids=selected_ids,
-        html=args.html,
-        html_theme=args.html_theme,
+        html=html_enabled,
+        html_theme=html_theme,
     )
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
@@ -299,6 +300,7 @@ def interactive_menu(env: CommandEnv) -> None:
         "Sync Drive Folder",
         "List Drive Chats",
         "View Recent Runs",
+        "Settings",
         "Help",
         "Quit",
     ]
@@ -312,6 +314,8 @@ def interactive_menu(env: CommandEnv) -> None:
             prompt_list(env)
         elif choice == "View Recent Runs":
             run_status_cli(env)
+        elif choice == "Settings":
+            settings_menu(env)
         elif choice == "Help":
             show_help(env)
         elif choice == "Quit" or choice is None:
@@ -338,6 +342,8 @@ def prompt_render(env: CommandEnv) -> None:
     args.force = False
     args.collapse_threshold = None
     args.json = False
+    args.html = SETTINGS.html_previews
+    args.html_theme = SETTINGS.html_theme
     args.html = False
     args.html_theme = "light"
     run_render_cli(args, env, json_output=False)
@@ -360,6 +366,8 @@ def prompt_sync(env: CommandEnv) -> None:
     args.prune = False
     args.collapse_threshold = None
     args.json = False
+    args.html = SETTINGS.html_previews
+    args.html_theme = SETTINGS.html_theme
     args.html = False
     args.html_theme = "light"
     run_sync_cli(args, env, json_output=False)
@@ -389,6 +397,32 @@ def show_help(env: CommandEnv) -> None:
     ui.console.print("  status  Show cached Drive info and recent runs")
     ui.console.print("  --plain Disable interactive UI for automation")
     ui.console.print("  --json  Emit machine-readable summaries when supported")
+
+
+def settings_menu(env: CommandEnv) -> None:
+    ui = env.ui
+    while True:
+        toggle_label = f"Toggle HTML previews ({'on' if SETTINGS.html_previews else 'off'})"
+        theme_label = f"HTML theme ({SETTINGS.html_theme})"
+        choices = [toggle_label, theme_label, "Reset defaults", "Back"]
+        choice = ui.choose("Settings", choices)
+        if choice is None or choice == "Back":
+            return
+        if choice == toggle_label:
+            SETTINGS.html_previews = not SETTINGS.html_previews
+            state = "enabled" if SETTINGS.html_previews else "disabled"
+            ui.console.print(f"HTML previews {state}.")
+        elif choice == theme_label:
+            if ui.plain:
+                ui.console.print("Set --html-theme when running in plain mode.")
+                continue
+            selection = ui.choose("Select HTML theme", ["light", "dark"])
+            if selection:
+                SETTINGS.html_theme = selection
+                ui.console.print(f"HTML theme set to {selection}.")
+        elif choice == "Reset defaults":
+            reset_settings()
+            ui.console.print("Settings reset to defaults.")
 
 
 def main() -> None:
