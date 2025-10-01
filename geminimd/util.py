@@ -18,6 +18,8 @@ def colorize(text: str, color: str) -> str:
         "cyan": "\033[96m",
         "grey": "\033[90m",
     }
+    if os.environ.get("NO_COLOR") or os.environ.get("GMD_NO_COLOR"):
+        return text
     return f"{colors.get(color, '')}{text}{colors['reset']}" if sys.stderr.isatty() else text
 
 
@@ -105,4 +107,3 @@ def add_run(record: Dict[str, Any]) -> None:
         RUNS_PATH.write_text(json.dumps(runs, indent=2), encoding="utf-8")
     except Exception:
         pass
-
