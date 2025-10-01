@@ -24,11 +24,15 @@
   - Keep importer architecture modular so additional sources (perplexity, notebooks) can plug in via a common chunk schema.
 
 - **OpenAI Codex CLI Logs (`~/.codex`)**
-  - Global state: `config.toml` (model, trust levels), `auth.json` (OAuth tokens), `history.jsonl` (80 MB+ index of all sessions), and `log/codex-tui.log` (CLI telemetry).
+  - Global state: `config.toml` (model, trust levels), `auth.json` (OAuth tokens), `history.jsonl` (80 MB+ index of all sessions), and `log/codex-tui.log` (CLI telemetry — client-side `FunctionCall`, errors, etc.).
   - Session transcripts live under `sessions/` in two formats:
     - Legacy `rollout-*.jsonl` files at the top level (single metadata line).
-    - Date-partitioned subdirectories (`sessions/YYYY/MM/DD/...jsonl`) with full JSONL traces: `session_meta`, environment context, user messages, tool calls, assistant replies. Each `session_id` in `history.jsonl` points to the matching file.
-  - Import plan: read the JSONL stream, extract `response_item` entries of type `message`, map the `role` (`user`/`assistant`) and `content[].text` fields into canonical chunks, and feed them to our Markdown builder. Attachments are rare; tool outputs appear as separate message types.
+    - Date-partitioned subdirectories (`sessions/YYYY/MM/DD/...jsonl`) with full JSONL traces: `session_meta`, environment context, `response_item` records (`message`, `function_call`, `function_call_output`, `reasoning`), plus auxiliary `event_msg`/`turn_context` lines. Every `session_id` in `history.jsonl` points to one of these files.
+  - Import guidelines:
+    - Parse the JSONL stream and normalise `response_item:type == "message"` payloads into user/assistant chunks (skip `<user_instructions>`/`<environment_context>` entries so we don’t duplicate boilerplate).
+    - `response_item:type == "function_call"`/`"function_call_output"` describe tool invocations and their stdout/stderr. Large argument/result blobs can be written to `_attachments` files and referenced in the Markdown body to keep the conversation readable.
+    - `response_item:type == "reasoning"` currently carries encrypted content, so omit them until OpenAI surfaces plaintext traces.
+    - The helper script used during analysis writes `/tmp/codex-session.md` and a companion `_attachments/` folder, demonstrating how to wire Codex logs into our existing Markdown pipeline without touching Gemini behaviour.
 
 - **Claude Code (`~/.config/claude`)**
   - Directory structure captures IDE/workflow state: `projects/` holds per-project JSONL transcripts grouped by workspace name (e.g., `-home-sinity/...jsonl`). Each file is a chronological log with `summary` entries, user prompts, tool runs, and assistant responses.
