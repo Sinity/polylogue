@@ -1,6 +1,8 @@
 import io
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+import os
+import time
 
 from .util import colorize, get_cached_folder_id, set_cached_folder_id
 
@@ -19,13 +21,35 @@ except Exception:
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 TOKEN_FILE = "token.json"
 
+def _retry(fn, *, retries: int = 3, base_delay: float = 0.5):
+    # Allow env overrides for tuning
+    try:
+        retries = int(os.environ.get("GMD_RETRIES", retries))
+    except Exception:
+        pass
+    try:
+        base_delay = float(os.environ.get("GMD_RETRY_BASE", base_delay))
+    except Exception:
+        pass
+    last_err = None
+    for i in range(retries):
+        try:
+            return fn()
+        except Exception as e:  # HttpError or transport errors
+            last_err = e
+            time.sleep(base_delay * (2 ** i))
+    if last_err:
+        raise last_err
+    return None
+
 
 def get_drive_service(credentials_path: Path, verbose: bool = False):
     if not HAS_GOOGLE:
         print(colorize("Google API libraries not available.", "red"))
         return None
     creds = None
-    token_path = credentials_path.parent / TOKEN_FILE
+    token_env = os.environ.get("GMD_TOKEN_PATH")
+    token_path = Path(token_env) if token_env else (credentials_path.parent / TOKEN_FILE)
     if token_path.exists():
         try:
             creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
@@ -44,7 +68,15 @@ def get_drive_service(credentials_path: Path, verbose: bool = False):
                 print(colorize(f"Missing credentials at {credentials_path}", "red"))
                 return None
             flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
-            creds = flow.run_console()
+            mode = os.environ.get("GMD_AUTH_MODE", "console").lower()
+            try:
+                if mode == "local":
+                    creds = flow.run_local_server(port=0)
+                else:
+                    creds = flow.run_console()
+            except Exception:
+                # fallback to console
+                creds = flow.run_console()
             try:
                 with open(token_path, "w") as f:
                     f.write(creds.to_json())
@@ -60,12 +92,12 @@ def list_children(service, folder_id: str) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     page_token = None
     while True:
-        resp = service.files().list(
+        resp = _retry(lambda: service.files().list(
             q=f"'{folder_id}' in parents and trashed=false",
             fields="nextPageToken, files(id, name, mimeType, modifiedTime, createdTime, size)",
             pageSize=1000,
             pageToken=page_token,
-        ).execute()
+        ).execute())
         items.extend(resp.get("files", []))
         page_token = resp.get("nextPageToken")
         if not page_token:
@@ -78,18 +110,18 @@ def find_folder_id(service, folder_name: str) -> Optional[str]:
     if cached:
         try:
             # Validate cached id exists
-            meta = service.files().get(fileId=cached, fields="id").execute()
+            meta = _retry(lambda: service.files().get(fileId=cached, fields="id").execute())
             if meta and meta.get("id"):
                 return cached
         except Exception:
             pass
     # Exact name search, pick most recently modified
     try:
-        resp = service.files().list(
+        resp = _retry(lambda: service.files().list(
             q=f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false",
             fields="files(id, name, modifiedTime)",
             pageSize=50,
-        ).execute()
+        ).execute())
         files = resp.get("files", [])
         if not files:
             return None
@@ -103,7 +135,7 @@ def find_folder_id(service, folder_name: str) -> Optional[str]:
 
 def get_file_meta(service, file_id: str, fields: str = "id, name, mimeType, modifiedTime, createdTime, size") -> Optional[Dict[str, Any]]:
     try:
-        return service.files().get(fileId=file_id, fields=fields).execute()
+        return _retry(lambda: service.files().get(fileId=file_id, fields=fields).execute())
     except HttpError:
         return None
 
@@ -115,7 +147,9 @@ def download_file(service, file_id: str) -> Optional[bytes]:
         downloader = MediaIoBaseDownload(buf, req)
         done = False
         while not done:
-            _, done = downloader.next_chunk()
+            def _next():
+                return downloader.next_chunk()
+            _, done = _retry(_next)
         return buf.getvalue()
     except HttpError:
         return None
@@ -128,4 +162,3 @@ def download_to_path(service, file_id: str, target_path: Path) -> bool:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_bytes(data)
     return True
-
