@@ -1,330 +1,386 @@
 #!/usr/bin/env python3
+"""Gemini Markdown (gmd): interactive-first CLI for Gemini logs."""
+
+from __future__ import annotations
 
 import argparse
-from pathlib import Path
-import sys
 import json
-import os
-import shutil
-import subprocess
+from pathlib import Path
+from typing import List, Optional
 
-from geminimd.util import colorize, parse_input_time_to_epoch, parse_rfc3339_to_epoch, sanitize_filename, add_run, STATE_PATH, RUNS_PATH
-from geminimd.drive import get_drive_service, find_folder_id, list_children, get_file_meta, download_file, download_to_path
-from geminimd.render import build_markdown_from_chunks, per_chunk_remote_links, extract_drive_ids
-from geminimd.config import load_config, find_conf_path, default_conf_text
+from geminimd.cli_common import filter_chats, sk_select
+from geminimd.commands import (
+    CommandEnv,
+    list_command,
+    render_command,
+    status_command,
+    sync_command,
+)
+from geminimd.drive_client import (
+    DEFAULT_CREDENTIALS,
+    DEFAULT_FOLDER_NAME,
+    DEFAULT_TOKEN,
+    DriveClient,
+)
+from geminimd.options import (
+    ListOptions,
+    RenderOptions,
+    SyncOptions,
+)
+from geminimd.ui import create_ui
+
+DEFAULT_RENDER_OUT = Path("gmd_out")
+DEFAULT_SYNC_OUT = Path("gemini_synced")
+DEFAULT_COLLAPSE = 25
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Gemini Markdown (gmd): opinionated JSON→Markdown and Drive sync")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Gemini Markdown (gmd)")
+    parser.add_argument("--plain", action="store_true", help="Disable interactive UI")
+    sub = parser.add_subparsers(dest="cmd")
 
-    # render local (files or directory)
-    p_render = sub.add_parser("render", help="Render local Gemini JSON(s) to Markdown")
-    p_render.add_argument("input", type=Path, help="Input file or directory containing Gemini JSON chats")
-    p_render.add_argument("--out-dir", type=Path, default=None, help="Output directory for Markdown (default from config)")
-    p_render.add_argument("--credentials", type=Path, default=None, help="Path to Google OAuth credentials.json (default from config)")
-    p_render.add_argument("--remote-links", action="store_true", help="Do not download attachments; link Drive URLs instead")
-    p_render.add_argument("--download-dir", type=Path, default=None, help="Base folder for downloaded attachments (default: per-file _attachments next to MD)")
-    p_render.add_argument("--force", action="store_true", help="Force re-download attachments if present")
-    p_render.add_argument("--collapse-threshold", type=int, default=None, help="Lines after which model responses fold (0 disables; default from config)")
-    p_render.add_argument("--interactive", action="store_true", help="Use fzf to select files from directory input")
-    p_render.add_argument("-v", "--verbose", action="store_true")
+    p_render = sub.add_parser("render")
+    p_render.add_argument("input", type=Path, help="File or directory with Gemini JSON logs")
+    p_render.add_argument("--out", type=Path, default=None, help="Output directory (default gmd_out)")
+    p_render.add_argument("--links-only", action="store_true", help="Link attachments instead of downloading")
+    p_render.add_argument("--dry-run", action="store_true")
+    p_render.add_argument("--force", action="store_true")
+    p_render.add_argument("--collapse-threshold", type=int, default=None)
+    p_render.add_argument("--json", action="store_true")
 
-    # sync drive
-    p_sync = sub.add_parser("sync", help="Sync Drive folder to local Markdown + attachments")
+    p_sync = sub.add_parser("sync")
+    p_sync.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
     p_sync.add_argument("--folder-id", type=str, default=None)
-    p_sync.add_argument("--folder-name", type=str, default=None, help="Default from config")
-    p_sync.add_argument("--out-dir", type=Path, default=None, help="Default from config")
-    p_sync.add_argument("--credentials", type=Path, default=None, help="Default from config")
-    p_sync.add_argument("--remote-links", action="store_true")
+    p_sync.add_argument("--out", type=Path, default=None, help="Output directory (default gemini_synced)")
+    p_sync.add_argument("--links-only", action="store_true")
     p_sync.add_argument("--since", type=str, default=None)
     p_sync.add_argument("--until", type=str, default=None)
     p_sync.add_argument("--name-filter", type=str, default=None)
-    p_sync.add_argument("--collapse-threshold", type=int, default=None, help="Default from config")
-    p_sync.add_argument("--interactive", action="store_true", help="Use fzf to pick chats interactively")
+    p_sync.add_argument("--dry-run", action="store_true")
     p_sync.add_argument("--force", action="store_true")
     p_sync.add_argument("--prune", action="store_true")
-    p_sync.add_argument("--dry-run", action="store_true")
-    p_sync.add_argument("-v", "--verbose", action="store_true")
+    p_sync.add_argument("--collapse-threshold", type=int, default=None)
+    p_sync.add_argument("--json", action="store_true")
 
-    # status
-    p_status = sub.add_parser("status", help="Show cached folder IDs and recent runs")
+    p_list = sub.add_parser("list")
+    p_list.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
+    p_list.add_argument("--folder-id", type=str, default=None)
+    p_list.add_argument("--since", type=str, default=None)
+    p_list.add_argument("--until", type=str, default=None)
+    p_list.add_argument("--name-filter", type=str, default=None)
+    p_list.add_argument("--json", action="store_true")
 
-    # init config
-    p_init = sub.add_parser("init", help="Create a project-local .gmdrc with documented defaults")
+    sub.add_parser("status")
 
-    # auth check
-    p_auth = sub.add_parser("auth", help="Authenticate with Google Drive and cache token")
-    p_auth.add_argument("--credentials", type=Path, default=None, help="Path to Google OAuth credentials.json (default from config)")
+    return parser
 
+
+def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
+    if path.is_file():
+        return [path]
+    if not path.is_dir():
+        raise SystemExit(f"Input path not found: {path}")
+    candidates = [
+        p for p in sorted(path.iterdir()) if p.is_file() and p.suffix.lower() == ".json"
+    ]
+    if len(candidates) <= 1 or plain:
+        return candidates
+    lines = [str(p) for p in candidates]
+    selection = sk_select(lines, preview="bat --style=plain {}")
+    if selection is None:
+        return None
+    if not selection:
+        return []
+    return [Path(s) for s in selection]
+
+
+def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -> None:
+    ui = env.ui
+    inputs = resolve_inputs(args.input, ui.plain)
+    if inputs is None:
+        ui.console.print("[yellow]Render cancelled.")
+        return
+    if not inputs:
+        ui.console.print("No JSON files to render")
+        return
+    output = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    download_attachments = not args.links_only
+    if not ui.plain and not args.links_only:
+        download_attachments = ui.confirm("Download attachments to local folders?", default=True)
+    options = RenderOptions(
+        inputs=inputs,
+        output_dir=output,
+        collapse_threshold=collapse,
+        download_attachments=download_attachments,
+        dry_run=args.dry_run,
+        force=args.force,
+    )
+    if download_attachments and env.drive is None:
+        env.drive = DriveClient(ui)
+    result = render_command(options, env)
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "cmd": "render",
+                    "count": result.count,
+                    "out": str(result.output_dir),
+                    "files": result.files,
+                },
+                indent=2,
+            )
+        )
+        return
+    lines = [f"Rendered {result.count} file(s) → {result.output_dir}"]
+    for name in result.files:
+        lines.append(f"- {name}")
+    ui.summary("Render", lines)
+
+
+def run_list_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -> None:
+    options = ListOptions(
+        folder_name=args.folder_name,
+        folder_id=args.folder_id,
+        since=args.since,
+        until=args.until,
+        name_filter=args.name_filter,
+    )
+    result = list_command(options, env)
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "cmd": "list",
+                    "folder_name": result.folder_name,
+                    "folder_id": result.folder_id,
+                    "count": len(result.files),
+                    "files": result.files,
+                },
+                indent=2,
+            )
+        )
+        return
+    ui = env.ui
+    ui.console.print(f"{len(result.files)} chat(s) in {result.folder_name}:")
+    for c in result.files:
+        ui.console.print(
+            f"- {c.get('name')}  {c.get('modifiedTime', '')}  {c.get('id', '')}"
+        )
+
+
+def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -> None:
+    ui = env.ui
+    download_attachments = not args.links_only
+    if not ui.plain and not args.links_only:
+        download_attachments = ui.confirm("Download attachments for synced chats?", default=True)
+    selected_ids: Optional[List[str]] = None
+    if not ui.plain and not json_output:
+        drive = env.drive or DriveClient(ui)
+        env.drive = drive
+        raw_chats = drive.list_chats(args.folder_name, args.folder_id)
+        filtered = filter_chats(raw_chats, args.name_filter, args.since, args.until)
+        if not filtered:
+            ui.console.print("No chats to sync")
+            return
+        lines = [f"{c.get('name')}\t{c.get('modifiedTime')}\t{c.get('id')}" for c in filtered]
+        selection = sk_select(lines, preview="printf '%s' {+}")
+        if selection is None:
+            ui.console.print("[yellow]Sync cancelled; no chats selected.")
+            return
+        if not selection:
+            ui.console.print("[yellow]No chats selected; nothing to sync.")
+            return
+        selected_ids = [ln.split("\t")[-1] for ln in selection]
+
+    options = SyncOptions(
+        folder_name=args.folder_name,
+        folder_id=args.folder_id,
+        output_dir=Path(args.out) if args.out else DEFAULT_SYNC_OUT,
+        collapse_threshold=args.collapse_threshold or DEFAULT_COLLAPSE,
+        download_attachments=download_attachments,
+        dry_run=args.dry_run,
+        force=args.force,
+        prune=args.prune,
+        since=args.since,
+        until=args.until,
+        name_filter=args.name_filter,
+        selected_ids=selected_ids,
+    )
+    if download_attachments and env.drive is None:
+        env.drive = DriveClient(ui)
+    result = sync_command(options, env)
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "cmd": "sync",
+                    "count": result.count,
+                    "out": str(result.output_dir),
+                    "folder_name": result.folder_name,
+                    "folder_id": result.folder_id,
+                    "files": [
+                        {
+                            "id": item.id,
+                            "name": item.name,
+                            "output": str(item.output),
+                            "attachments": item.attachments,
+                        }
+                        for item in result.items
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return
+    ui.summary("Sync", [f"Synced {result.count} chat(s) → {result.output_dir}"])
+
+
+def run_status_cli(env: CommandEnv) -> None:
+    result = status_command(env)
+    ui = env.ui
+    if ui.plain:
+        ui.console.print("Environment:")
+        ui.console.print(f"  credentials.json: {'present' if result.credentials_present else 'missing'}")
+        ui.console.print(f"  token.json: {'present' if result.token_present else 'missing'}")
+        ui.console.print(f"  state cache: {result.state_path}")
+        ui.console.print(f"  runs log: {result.runs_path}")
+    else:
+        from rich.table import Table
+
+        table = Table(title="Environment", show_lines=False)
+        table.add_column("Item")
+        table.add_column("Value")
+        table.add_row("credentials.json", "present" if result.credentials_present else "missing")
+        table.add_row("token.json", "present" if result.token_present else "missing")
+        table.add_row("state cache", str(result.state_path))
+        table.add_row("runs log", str(result.runs_path))
+        ui.console.print(table)
+    if not result.recent_runs:
+        ui.console.print("Recent runs: (none)")
+    else:
+        ui.console.print("Recent runs (last 10):")
+        for entry in result.recent_runs:
+            ui.console.print(f"- {entry.get('cmd')} → {entry.get('out')}")
+
+
+def interactive_menu(env: CommandEnv) -> None:
+    ui = env.ui
+    options = [
+        "Render Local Logs",
+        "Sync Drive Folder",
+        "List Drive Chats",
+        "View Recent Runs",
+        "Help",
+        "Quit",
+    ]
+    while True:
+        choice = ui.choose("Select an action", options)
+        if choice == "Render Local Logs":
+            prompt_render(env)
+        elif choice == "Sync Drive Folder":
+            prompt_sync(env)
+        elif choice == "List Drive Chats":
+            prompt_list(env)
+        elif choice == "View Recent Runs":
+            run_status_cli(env)
+        elif choice == "Help":
+            show_help(env)
+        elif choice == "Quit" or choice is None:
+            return
+
+
+def prompt_render(env: CommandEnv) -> None:
+    ui = env.ui
+    default_input = str(Path.cwd())
+    user_input = ui.input("Directory or file to render", default=default_input)
+    if not user_input:
+        return
+    path = Path(user_input).expanduser()
+    if not path.exists():
+        ui.console.print(f"[red]Path not found: {path}")
+        return
+    class Args:
+        pass
+    args = Args()
+    args.input = path
+    args.out = None
+    args.links_only = False
+    args.dry_run = False
+    args.force = False
+    args.collapse_threshold = None
+    args.json = False
+    run_render_cli(args, env, json_output=False)
+
+
+def prompt_sync(env: CommandEnv) -> None:
+    ui = env.ui
+    class Args:
+        pass
+    args = Args()
+    args.folder_name = DEFAULT_FOLDER_NAME
+    args.folder_id = None
+    args.out = None
+    args.links_only = False
+    args.since = None
+    args.until = None
+    args.name_filter = None
+    args.dry_run = False
+    args.force = False
+    args.prune = False
+    args.collapse_threshold = None
+    args.json = False
+    run_sync_cli(args, env, json_output=False)
+
+
+def prompt_list(env: CommandEnv) -> None:
+    class Args:
+        pass
+    args = Args()
+    args.folder_name = DEFAULT_FOLDER_NAME
+    args.folder_id = None
+    args.since = None
+    args.until = None
+    args.name_filter = None
+    args.json = False
+    run_list_cli(args, env, json_output=False)
+
+
+def show_help(env: CommandEnv) -> None:
+    ui = env.ui
+    ui.console.print("Gemini Markdown CLI commands:")
+    ui.console.print("  render  Render local Gemini JSON files to Markdown")
+    ui.console.print("  sync    Sync Google Drive chats to local Markdown")
+    ui.console.print("  list    List chats available in the configured Drive folder")
+    ui.console.print("  status  Show cached Drive info and recent runs")
+    ui.console.print("  --plain Disable interactive UI for automation")
+    ui.console.print("  --json  Emit machine-readable summaries when supported")
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
-    cfg = load_config()
+    ui = create_ui(args.plain)
+    env = CommandEnv(ui=ui)
+
+    if args.cmd is None:
+        if ui.plain:
+            parser.print_help()
+            return
+        ui.banner("Gemini Markdown", "Render local logs or sync Google Drive chats")
+        interactive_menu(env)
+        return
 
     if args.cmd == "render":
-        out_dir = args.out_dir or Path(cfg["out_dir_render"]) 
-        out_dir.mkdir(parents=True, exist_ok=True)
-        targets = []
-        if args.input.is_dir():
-            cand = [p for p in sorted(args.input.iterdir()) if p.is_file() and (p.suffix.lower() == ".json" or "." not in p.name)]
-            if args.interactive and shutil.which("fzf"):
-                try:
-                    proc = subprocess.run(["fzf", "--multi"], input="\n".join(str(p) for p in cand).encode("utf-8"), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-                    sel = [Path(line) for line in proc.stdout.decode("utf-8").splitlines() if line.strip()]
-                    targets = sel or cand
-                except subprocess.CalledProcessError:
-                    targets = cand
-            else:
-                targets = cand
-        else:
-            targets = [args.input]
-
-        svc = None
-        credentials = args.credentials or Path(cfg["credentials"]) 
-        collapse_threshold = args.collapse_threshold if args.collapse_threshold is not None else int(cfg["collapse_threshold"]) 
-        remote_links = args.remote_links or bool(cfg.get("remote_links"))
-        if not remote_links:
-            svc = get_drive_service(credentials, verbose=args.verbose)
-            if not svc:
-                print(colorize("Drive auth failed; use --remote-links to skip downloads.", "red"), file=sys.stderr)
-                return
-        # Process
-        rendered = 0
-        for p in tqdm(targets, total=len(targets), desc=colorize("Rendering", "cyan"), unit="file"):
-            try:
-                obj = json.loads(p.read_text(encoding="utf-8"))
-            except Exception as e:
-                print(colorize(f"Skip invalid JSON: {p.name} ({e})", "yellow"), file=sys.stderr)
-                continue
-            chunks = obj.get("chunkedPrompt", {}).get("chunks") if isinstance(obj, dict) else None
-            if not isinstance(chunks, list):
-                print(colorize(f"No chunks in {p.name}", "yellow"), file=sys.stderr)
-                continue
-            # Build links
-            per_index_links = {}
-            if remote_links:
-                per_index_links = per_chunk_remote_links(chunks)
-            else:
-                per_index_links = {}
-                # download attachments
-                for idx, ch in enumerate(chunks):
-                    ids = extract_drive_ids(ch)
-                    if not ids:
-                        continue
-                    per_index_links[idx] = []
-                    for att_id in ids:
-                        meta_att = get_file_meta(svc, att_id)
-                        if not meta_att:
-                            continue
-                        fname = sanitize_filename(meta_att.get("name", att_id))
-                        attach_dir = args.download_dir or (out_dir / f"{sanitize_filename(p.stem)}_attachments")
-                        attach_dir = Path(attach_dir)
-                        attach_dir.mkdir(parents=True, exist_ok=True)
-                        local_path = attach_dir / fname
-                        need = not local_path.exists() or args.force
-                        if need:
-                            ok = download_to_path(svc, att_id, local_path)
-                            if not ok:
-                                continue
-                        try:
-                            mtime = parse_rfc3339_to_epoch(meta_att.get("modifiedTime"))
-                            if mtime:
-                                os.utime(local_path, (mtime, mtime))
-                        except Exception:
-                            pass
-                        try:
-                            rel = local_path.relative_to(out_dir)
-                        except Exception:
-                            rel = local_path
-                        per_index_links[idx].append((fname, rel))
-
-            md = build_markdown_from_chunks(
-                chunks,
-                per_index_links,
-                title=p.stem,
-                source_file_id=None,
-                modified_time=None,
-                created_time=None,
-                run_settings=obj.get("runSettings") if isinstance(obj, dict) else None,
-                citations=obj.get("citations") if isinstance(obj, dict) else None,
-                collapse_threshold=collapse_threshold,
-            )
-            md_path = out_dir / f"{sanitize_filename(p.stem)}.md"
-            md_path.write_text(md, encoding="utf-8")
-            print(colorize(f"Rendered {p.name} → {md_path}", "green"))
-            rendered += 1
-        add_run({"cmd": "render", "count": rendered, "out": str(out_dir)})
-        return
-
-    if args.cmd == "sync":
-        folder_name = args.folder_name or cfg["folder_name"]
-        out_dir = args.out_dir or Path(cfg["out_dir_sync"]) 
-        out_dir = Path(out_dir)
-        credentials = args.credentials or Path(cfg["credentials"]) 
-        collapse_threshold = args.collapse_threshold if args.collapse_threshold is not None else int(cfg["collapse_threshold"]) 
-        remote_links = args.remote_links or bool(cfg.get("remote_links"))
-
-        svc = get_drive_service(credentials, verbose=args.verbose)
-        if not svc:
-            print(colorize("Drive auth failed", "red"), file=sys.stderr)
-            sys.exit(2)
-        fid = args.folder_id or find_folder_id(svc, folder_name)
-        if not fid:
-            print(colorize(f"Folder not found: {folder_name}", "red"), file=sys.stderr)
-            sys.exit(1)
-        children = list_children(svc, fid)
-        # Chats = files without extension and not Google Docs types
-        chats = [c for c in children if ("." not in (c.get("name") or "")) and not (c.get("mimeType", "").startswith("application/vnd.google-apps."))]
-        # Filters
-        import re as _re
-        if args.name_filter:
-            try:
-                rx = _re.compile(args.name_filter)
-                chats = [c for c in chats if rx.search(c.get("name", "") or "")]
-            except _re.error:
-                print(colorize("Invalid --name-filter regex; ignoring.", "yellow"), file=sys.stderr)
-        s_epoch = parse_input_time_to_epoch(args.since)
-        u_epoch = parse_input_time_to_epoch(args.until)
-        if s_epoch or u_epoch:
-            _tmp = []
-            for c in chats:
-                mt = parse_rfc3339_to_epoch(c.get("modifiedTime"))
-                if mt is None:
-                    continue
-                if s_epoch and mt < s_epoch:
-                    continue
-                if u_epoch and mt > u_epoch:
-                    continue
-                _tmp.append(c)
-            chats = _tmp
-        if args.interactive and shutil.which("fzf"):
-            # Present: name \t modifiedTime \t id
-            lines = [f"{c.get('name')}\t{c.get('modifiedTime')}\t{c.get('id')}" for c in chats]
-            try:
-                proc = subprocess.run(["fzf", "--multi"], input="\n".join(lines).encode("utf-8"), stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
-                selected_ids = set([ln.split("\t")[-1] for ln in proc.stdout.decode("utf-8").splitlines() if ln.strip()])
-                chats = [c for c in chats if c.get("id") in selected_ids] or chats
-            except subprocess.CalledProcessError:
-                pass
-        if args.dry_run:
-            print(f"Found {len(chats)} chat candidate(s). Output dir would be: {args.out_dir}")
-            for c in chats[:20]:
-                print(f"- {c['name']} ({c['id']})")
-            return
-        out_dir.mkdir(parents=True, exist_ok=True)
-        synced = 0
-        for meta in tqdm(chats, total=len(chats), desc=colorize("Syncing", "cyan"), unit="chat"):
-            file_id = meta["id"]
-            name_safe = sanitize_filename(meta.get("name") or file_id[:8])
-            md_path = out_dir / f"{name_safe}.md"
-            attachments_dir = out_dir / f"{name_safe}_attachments"
-            # Download chat JSON
-            data_bytes = download_file(svc, file_id)
-            if data_bytes is None:
-                print(colorize(f"Failed to download chat: {meta.get('name')}", "red"), file=sys.stderr)
-                continue
-            try:
-                obj = json.loads(data_bytes.decode("utf-8", errors="replace"))
-            except Exception:
-                print(colorize(f"Invalid JSON: {meta.get('name')}", "red"), file=sys.stderr)
-                continue
-            chunks = obj.get("chunkedPrompt", {}).get("chunks") if isinstance(obj, dict) else None
-            if not isinstance(chunks, list):
-                print(colorize(f"No chunks: {meta.get('name')}", "yellow"), file=sys.stderr)
-                continue
-            # Attachments
-            per_index_links = {}
-            if remote_links:
-                per_index_links = per_chunk_remote_links(chunks)
-            else:
-                per_index_links = {}
-                for idx, ch in enumerate(chunks):
-                    ids = extract_drive_ids(ch)
-                    if not ids:
-                        continue
-                    per_index_links[idx] = []
-                    for att_id in ids:
-                        att_meta = get_file_meta(svc, att_id)
-                        if not att_meta:
-                            continue
-                        fname = sanitize_filename(att_meta.get("name", att_id))
-                        local_path = attachments_dir / fname
-                        ok = True
-                        if not local_path.exists() or args.force:
-                            ok = download_to_path(svc, att_id, local_path)
-                        if ok:
-                            try:
-                                mtime = parse_rfc3339_to_epoch(att_meta.get("modifiedTime"))
-                                if mtime:
-                                    os.utime(local_path, (mtime, mtime))
-                            except Exception:
-                                pass
-                            try:
-                                rel = local_path.relative_to(out_dir)
-                            except Exception:
-                                rel = local_path
-                            per_index_links[idx].append((fname, rel))
-            # Render
-            md = build_markdown_from_chunks(
-                chunks,
-                per_index_links,
-                meta.get("name", name_safe),
-                meta.get("id"),
-                meta.get("modifiedTime"),
-                meta.get("createdTime"),
-                run_settings=obj.get("runSettings") if isinstance(obj, dict) else None,
-                citations=obj.get("citations") if isinstance(obj, dict) else None,
-                source_mime=meta.get("mimeType"),
-                source_size=int(meta.get("size", 0)) if meta.get("size") is not None else None,
-                collapse_threshold=collapse_threshold,
-            )
-            md_path.write_text(md, encoding="utf-8")
-            # Set MD mtime to Drive modifiedTime
-            try:
-                mtime = parse_rfc3339_to_epoch(meta.get("modifiedTime"))
-                if mtime:
-                    os.utime(md_path, (mtime, mtime))
-            except Exception:
-                pass
-            synced += 1
-        add_run({"cmd": "sync", "count": synced, "out": str(out_dir), "folder_id": fid, "folder_name": folder_name, "remote_links": remote_links})
-        return
-
-    if args.cmd == "status":
-        print("Config:")
-        from geminimd.config import CONF_PATH
-        print(f"  file: {CONF_PATH}")
-        print(f"  folder_name: {cfg['folder_name']}")
-        print(f"  credentials: {cfg['credentials']}")
-        print(f"  collapse_threshold: {cfg['collapse_threshold']}")
-        print(f"  out_dir_render: {cfg['out_dir_render']}")
-        print(f"  out_dir_sync: {cfg['out_dir_sync']}")
-        print(f"  remote_links: {cfg['remote_links']}")
-        print("")
-        print(f"Folder cache: {STATE_PATH}")
-        if STATE_PATH.exists():
-            try:
-                st = json.loads(STATE_PATH.read_text(encoding='utf-8'))
-                print(json.dumps(st, indent=2))
-            except Exception:
-                print("  (unreadable)")
-        else:
-            print("  (none)")
-        print("")
-        print(f"Recent runs: {RUNS_PATH}")
-        if RUNS_PATH.exists():
-            try:
-                runs = json.loads(RUNS_PATH.read_text(encoding='utf-8'))
-                print("  cmd   count   details")
-                for r in runs[-10:]:
-                    if r.get('cmd') == 'sync':
-                        print(f"  sync  {r.get('count'):>5}   {r.get('folder_name')} → {r.get('out')}")
-                    else:
-                        print(f"  rend  {r.get('count'):>5}   {r.get('out')}")
-            except Exception:
-                print("  (unreadable)")
-        else:
-            print("  (none)")
-        return
+        run_render_cli(args, env, json_output=getattr(args, "json", False))
+    elif args.cmd == "sync":
+        run_sync_cli(args, env, json_output=getattr(args, "json", False))
+    elif args.cmd == "list":
+        run_list_cli(args, env, json_output=getattr(args, "json", False))
+    elif args.cmd == "status":
+        run_status_cli(env)
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":
