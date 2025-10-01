@@ -16,12 +16,7 @@ from geminimd.commands import (
     status_command,
     sync_command,
 )
-from geminimd.drive_client import (
-    DEFAULT_CREDENTIALS,
-    DEFAULT_FOLDER_NAME,
-    DEFAULT_TOKEN,
-    DriveClient,
-)
+from geminimd.drive_client import DEFAULT_FOLDER_NAME, DriveClient
 from geminimd.options import (
     ListOptions,
     RenderOptions,
