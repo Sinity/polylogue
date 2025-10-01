@@ -8,7 +8,7 @@ Interactive-first tools to render Gemini chat JSON to Markdown and mirror a Goog
 - The first Drive action guides you through supplying a Google OAuth client JSON and runs auth automatically. Tokens are cached next to `gmd.py`.
 
 ## What You Can Do
-- **Render local logs:** Choose a file or directory; skim previews JSON candidates, rich shows progress, and outputs land in `./gmd_out` by default.
+- **Render local logs:** Choose a file or directory; skim previews JSON candidates, rich shows progress, and outputs land in `./gmd_out` by default. Add `--html` to emit a themed HTML preview alongside the Markdown file.
 - **Sync Drive folder:** Connect to the default Drive folder (`AI Studio`) and pull chats to `./gemini_synced`, downloading attachments unless you opt to link only.
 - **List Drive chats:** Browse remote chats with skim (fuzzy search + previews) or emit JSON for automation.
 - **View recent runs:** Inspect the last few renders/syncs recorded in the runtime log.

@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from .cli_common import compute_prune_paths, filter_chats
 from .drive_client import (
@@ -13,9 +13,12 @@ from .drive_client import (
     DEFAULT_TOKEN,
     DriveClient,
 )
+from .html import write_html
+from .models import validate_chunks
 from .options import (
     ListOptions,
     ListResult,
+    RenderFile,
     RenderOptions,
     RenderResult,
     StatusResult,
@@ -23,7 +26,14 @@ from .options import (
     SyncOptions,
     SyncResult,
 )
-from .render import build_markdown_from_chunks, extract_drive_ids, per_chunk_remote_links
+from .render import (
+    AttachmentInfo,
+    MarkdownDocument,
+    build_markdown_from_chunks,
+    extract_drive_ids,
+    per_chunk_remote_links,
+    remote_attachment_info,
+)
 from .ui import UI
 from .util import RUNS_PATH, STATE_PATH, add_run, parse_rfc3339_to_epoch, sanitize_filename
 
@@ -57,19 +67,24 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
         drive = DriveClient(ui)
         env.drive = drive
 
+    from collections import defaultdict
+
+    render_files: List[RenderFile] = []
+    totals = defaultdict(int)
     for src in options.inputs:
         try:
             obj = json.loads(src.read_text(encoding="utf-8"))
         except Exception as exc:
             ui.console.print(f"[yellow]Skipping {src.name}: {exc}")
             continue
-        chunks = obj.get("chunkedPrompt", {}).get("chunks") if isinstance(obj, dict) else None
-        if not isinstance(chunks, list):
+        chunks_raw = obj.get("chunkedPrompt", {}).get("chunks") if isinstance(obj, dict) else None
+        if not isinstance(chunks_raw, list):
             ui.console.print(f"[yellow]No chunks in {src.name}")
             continue
+        chunks = validate_chunks(chunks_raw)
         md_path = output_dir / f"{sanitize_filename(src.stem)}.md"
         context = _context_from_local(obj, src.stem)
-        _build_markdown_output(
+        doc = _build_markdown_output(
             chunks,
             context,
             md_path,
@@ -80,10 +95,32 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
             force=options.force,
             dry_run=options.dry_run,
         )
-        files_written.append(md_path.name)
+        html_path: Optional[Path] = None
+        if options.html and not options.dry_run:
+            html_path = md_path.with_suffix(".html")
+            write_html(doc, html_path, options.html_theme)
 
-    add_run({"cmd": "render", "count": len(files_written), "out": str(output_dir)})
-    return RenderResult(count=len(files_written), output_dir=output_dir, files=files_written)
+        render_files.append(
+            RenderFile(
+                output=md_path,
+                attachments=len(doc.attachments),
+                stats=doc.stats,
+                html=html_path,
+            )
+        )
+        totals["attachments"] += len(doc.attachments)
+        for key, value in doc.stats.items():
+            if isinstance(value, (int, float)):
+                totals[key] += value
+
+    add_run({"cmd": "render", "count": len(render_files), "out": str(output_dir)})
+    totals.setdefault("attachments", 0)
+    return RenderResult(
+        count=len(render_files),
+        output_dir=output_dir,
+        files=render_files,
+        total_stats=dict(totals),
+    )
 
 
 def _context_from_local(obj: Dict, fallback: str) -> ChatContext:
@@ -123,9 +160,9 @@ def _build_markdown_output(
     drive: Optional[DriveClient],
     force: bool,
     dry_run: bool,
-) -> int:
+) -> MarkdownDocument:
     if download_attachments and drive is not None:
-        per_index_links = _collect_attachments(
+        per_index_links, attachments = _collect_attachments(
             drive,
             chunks,
             md_path,
@@ -135,8 +172,9 @@ def _build_markdown_output(
         )
     else:
         per_index_links = per_chunk_remote_links(chunks)
+        attachments = remote_attachment_info(per_index_links)
 
-    markdown = build_markdown_from_chunks(
+    doc = build_markdown_from_chunks(
         chunks,
         per_index_links,
         context.title,
@@ -147,13 +185,11 @@ def _build_markdown_output(
         citations=context.citations,
         source_mime=context.source_mime,
         collapse_threshold=collapse_threshold,
+        attachments=attachments,
     )
     if not dry_run:
-        md_path.write_text(markdown, encoding="utf-8")
-
-    if isinstance(per_index_links, dict):
-        return sum(len(v) for v in per_index_links.values())
-    return 0
+        md_path.write_text(doc.to_markdown(), encoding="utf-8")
+    return doc
 
 
 def _collect_attachments(
@@ -164,8 +200,10 @@ def _collect_attachments(
     *,
     force: bool,
     dry_run: bool,
-) -> Dict[int, List]:
+) -> Tuple[Dict[int, List], List[AttachmentInfo]]:
     per_index_links: Dict[int, List] = {}
+    attachments: List[AttachmentInfo] = []
+    seen: set[Tuple[str, str]] = set()
     attachments_dir = out_dir / f"{md_path.stem}_attachments"
     if not dry_run:
         attachments_dir.mkdir(parents=True, exist_ok=True)
@@ -191,7 +229,25 @@ def _collect_attachments(
             except Exception:
                 rel = local_path
             per_index_links[idx].append((fname, rel))
-    return per_index_links
+            size = None
+            if not dry_run and local_path.exists():
+                try:
+                    size = local_path.stat().st_size
+                except OSError:
+                    size = None
+            key = (fname, att_id)
+            if key not in seen:
+                seen.add(key)
+                attachments.append(
+                    AttachmentInfo(
+                        name=fname,
+                        link=f"attachment://{att_id}",
+                        local_path=None if dry_run else rel,
+                        size_bytes=size,
+                        remote=False,
+                    )
+                )
+    return per_index_links, attachments
 
 
 def list_command(options: ListOptions, env: CommandEnv) -> ListResult:
@@ -220,7 +276,10 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     if not options.dry_run:
         options.output_dir.mkdir(parents=True, exist_ok=True)
 
+    from collections import defaultdict
+
     items: List[SyncItem] = []
+    totals = defaultdict(int)
     for meta in chats:
         file_id = meta.get("id")
         name_safe = sanitize_filename(meta.get("name") or file_id or "chat")
@@ -234,12 +293,13 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         except Exception:
             env.ui.console.print(f"[yellow]Invalid JSON: {meta.get('name')}")
             continue
-        chunks = obj.get("chunkedPrompt", {}).get("chunks") if isinstance(obj, dict) else None
-        if not isinstance(chunks, list):
+        chunks_raw = obj.get("chunkedPrompt", {}).get("chunks") if isinstance(obj, dict) else None
+        if not isinstance(chunks_raw, list):
             env.ui.console.print(f"[yellow]No chunks: {meta.get('name')}")
             continue
+        chunks = validate_chunks(chunks_raw)
         context = _context_from_drive(meta, obj, name_safe)
-        attachments_count = _build_markdown_output(
+        doc = _build_markdown_output(
             chunks,
             context,
             md_path,
@@ -257,14 +317,25 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
                     os.utime(md_path, (mtime, mtime))
                 except Exception:
                     pass
+        html_path: Optional[Path] = None
+        if options.html and not options.dry_run:
+            html_path = md_path.with_suffix(".html")
+            write_html(doc, html_path, options.html_theme)
+
         items.append(
             SyncItem(
                 id=file_id,
                 name=meta.get("name"),
                 output=md_path,
-                attachments=attachments_count,
+                attachments=len(doc.attachments),
+                stats=doc.stats,
+                html=html_path,
             )
         )
+        totals["attachments"] += len(doc.attachments)
+        for key, value in doc.stats.items():
+            if isinstance(value, (int, float)):
+                totals[key] += value
 
     if options.prune:
         wanted = {sanitize_filename(item.name or item.id or "") for item in items}
@@ -299,12 +370,14 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         }
     )
 
+    totals.setdefault("attachments", 0)
     return SyncResult(
         count=len(items),
         output_dir=options.output_dir,
         folder_name=options.folder_name,
         folder_id=folder_id,
         items=items,
+        total_stats=dict(totals),
     )
 
 

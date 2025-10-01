@@ -42,6 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--force", action="store_true")
     p_render.add_argument("--collapse-threshold", type=int, default=None)
     p_render.add_argument("--json", action="store_true")
+    p_render.add_argument("--html", action="store_true", help="Also write HTML previews")
+    p_render.add_argument("--html-theme", type=str, default="light", choices=["light", "dark"], help="Theme for HTML previews")
 
     p_sync = sub.add_parser("sync")
     p_sync.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
@@ -56,6 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--prune", action="store_true")
     p_sync.add_argument("--collapse-threshold", type=int, default=None)
     p_sync.add_argument("--json", action="store_true")
+    p_sync.add_argument("--html", action="store_true", help="Also write HTML previews")
+    p_sync.add_argument("--html-theme", type=str, default="light", choices=["light", "dark"], help="Theme for HTML previews")
 
     p_list = sub.add_parser("list")
     p_list.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
@@ -110,26 +114,42 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         download_attachments=download_attachments,
         dry_run=args.dry_run,
         force=args.force,
+        html=args.html,
+        html_theme=args.html_theme,
     )
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
     result = render_command(options, env)
     if json_output:
-        print(
-            json.dumps(
+        payload = {
+            "cmd": "render",
+            "count": result.count,
+            "out": str(result.output_dir),
+            "files": [
                 {
-                    "cmd": "render",
-                    "count": result.count,
-                    "out": str(result.output_dir),
-                    "files": result.files,
-                },
-                indent=2,
-            )
-        )
+                    "output": str(f.output),
+                    "attachments": f.attachments,
+                    "stats": f.stats,
+                    "html": str(f.html) if f.html else None,
+                }
+                for f in result.files
+            ],
+            "total_stats": result.total_stats,
+        }
+        print(json.dumps(payload, indent=2))
         return
     lines = [f"Rendered {result.count} file(s) → {result.output_dir}"]
-    for name in result.files:
-        lines.append(f"- {name}")
+    attachments_total = result.total_stats.get("attachments", 0)
+    if attachments_total:
+        lines.append(f"Attachments: {attachments_total}")
+    if "totalTokensApprox" in result.total_stats:
+        total_tokens = int(result.total_stats["totalTokensApprox"])
+        lines.append(f"Approx tokens: {total_tokens}")
+    for file in result.files:
+        info = f"- {file.output.name} (attachments: {file.attachments})"
+        if file.html:
+            info += " [+html]"
+        lines.append(info)
     ui.summary("Render", lines)
 
 
@@ -201,34 +221,47 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
         until=args.until,
         name_filter=args.name_filter,
         selected_ids=selected_ids,
+        html=args.html,
+        html_theme=args.html_theme,
     )
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
     result = sync_command(options, env)
     if json_output:
-        print(
-            json.dumps(
+        payload = {
+            "cmd": "sync",
+            "count": result.count,
+            "out": str(result.output_dir),
+            "folder_name": result.folder_name,
+            "folder_id": result.folder_id,
+            "files": [
                 {
-                    "cmd": "sync",
-                    "count": result.count,
-                    "out": str(result.output_dir),
-                    "folder_name": result.folder_name,
-                    "folder_id": result.folder_id,
-                    "files": [
-                        {
-                            "id": item.id,
-                            "name": item.name,
-                            "output": str(item.output),
-                            "attachments": item.attachments,
-                        }
-                        for item in result.items
-                    ],
-                },
-                indent=2,
-            )
-        )
+                    "id": item.id,
+                    "name": item.name,
+                    "output": str(item.output),
+                    "attachments": item.attachments,
+                    "stats": item.stats,
+                    "html": str(item.html) if item.html else None,
+                }
+                for item in result.items
+            ],
+            "total_stats": result.total_stats,
+        }
+        print(json.dumps(payload, indent=2))
         return
-    ui.summary("Sync", [f"Synced {result.count} chat(s) → {result.output_dir}"])
+    lines = [f"Synced {result.count} chat(s) → {result.output_dir}"]
+    attachments_total = result.total_stats.get("attachments", 0)
+    if attachments_total:
+        lines.append(f"Attachments: {attachments_total}")
+    if "totalTokensApprox" in result.total_stats:
+        total_tokens = int(result.total_stats["totalTokensApprox"])
+        lines.append(f"Approx tokens: {total_tokens}")
+    for item in result.items:
+        info = f"- {Path(item.output).name} (attachments: {item.attachments})"
+        if item.html:
+            info += " [+html]"
+        lines.append(info)
+    ui.summary("Sync", lines)
 
 
 def run_status_cli(env: CommandEnv) -> None:
@@ -305,6 +338,8 @@ def prompt_render(env: CommandEnv) -> None:
     args.force = False
     args.collapse_threshold = None
     args.json = False
+    args.html = False
+    args.html_theme = "light"
     run_render_cli(args, env, json_output=False)
 
 
@@ -325,6 +360,8 @@ def prompt_sync(env: CommandEnv) -> None:
     args.prune = False
     args.collapse_threshold = None
     args.json = False
+    args.html = False
+    args.html_theme = "light"
     run_sync_cli(args, env, json_output=False)
 
 
@@ -338,6 +375,8 @@ def prompt_list(env: CommandEnv) -> None:
     args.until = None
     args.name_filter = None
     args.json = False
+    args.html = False
+    args.html_theme = "light"
     run_list_cli(args, env, json_output=False)
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -13,6 +13,8 @@ class RenderOptions:
     download_attachments: bool
     dry_run: bool
     force: bool
+    html: bool = False
+    html_theme: str = "light"
 
 
 @dataclass
@@ -29,6 +31,8 @@ class SyncOptions:
     until: Optional[str]
     name_filter: Optional[str]
     selected_ids: Optional[List[str]] = None
+    html: bool = False
+    html_theme: str = "light"
 
 
 @dataclass
@@ -46,10 +50,19 @@ class StatusOptions:
 
 
 @dataclass
+class RenderFile:
+    output: Path
+    attachments: int
+    stats: Dict[str, Any]
+    html: Optional[Path] = None
+
+
+@dataclass
 class RenderResult:
     count: int
     output_dir: Path
-    files: List[str]
+    files: List[RenderFile]
+    total_stats: Dict[str, Any]
 
 
 @dataclass
@@ -58,6 +71,8 @@ class SyncItem:
     name: Optional[str]
     output: Path
     attachments: int
+    stats: Dict[str, Any]
+    html: Optional[Path] = None
 
 
 @dataclass
@@ -67,6 +82,7 @@ class SyncResult:
     folder_name: str
     folder_id: Optional[str]
     items: List[SyncItem]
+    total_stats: Dict[str, Any]
 
 
 @dataclass
