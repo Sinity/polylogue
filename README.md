@@ -1,46 +1,47 @@
 # Gemini Markdown (gmd)
 
-Opinionated tools to render Gemini chat JSON to Markdown and to sync a Google Drive folder ("AI Studio") to an annotated Markdown mirror with linked attachments.
-
-## Install & Auth
-- Requires Python 3.9+ and Google API libs (see `flake.nix` or install via pip).
-- First Drive use opens a console auth; token saved as `token.json`.
+Interactive-first tools to render Gemini chat JSON to Markdown and mirror a Google Drive folder into local, annotated Markdown with linked attachments.
 
 ## Quick Start
-- Render local JSONs (links only):
-  - `python3 gmd.py render sinex --out-dir sinex_md`
-- Sync Drive folder by name (no ID needed):
-  - `python3 gmd.py sync --folder-name "AI Studio" --out-dir gemini_synced --credentials credentials.json`
-  - Skip downloads: add `--remote-links`
+- Enter the dev shell: `nix develop` (installs Python, gum, skim, rich, bat, glow, etc.).
+- Run `python3 gmd.py` and pick an action from the gum menu (Render, Sync, List, Recent Runs, Help).
+- The first Drive action guides you through supplying a Google OAuth client JSON and runs auth automatically. Tokens are cached next to `gmd.py`.
 
-## Config (.gmdrc — TOML)
-Project-local file at the repo root. Create with `gmd init`.
-Supports comments and sane defaults; environment variables override.
-Example:
-```
-# gmd configuration (TOML). Project-local.
-folder_name = "AI Studio"             # Drive folder to sync
-credentials = "/abs/path/credentials.json"  # OAuth client
-collapse_threshold = 25               # Fold responses longer than this many lines
-out_dir_render = "/abs/path/gmd_out"
-out_dir_sync   = "/abs/path/gemini_synced"
-remote_links   = false                # If true, never download attachments
-```
-Env overrides: `GMD_FOLDER_NAME`, `GMD_CREDENTIALS`, `GMD_COLLAPSE_THRESHOLD`, `GMD_OUT_DIR_RENDER`, `GMD_OUT_DIR_SYNC`, `GMD_REMOTE_LINKS`.
+## What You Can Do
+- **Render local logs:** Choose a file or directory; skim previews JSON candidates, rich shows progress, and outputs land in `./gmd_out` by default.
+- **Sync Drive folder:** Connect to the default Drive folder (`AI Studio`) and pull chats to `./gemini_synced`, downloading attachments unless you opt to link only.
+- **List Drive chats:** Browse remote chats with skim (fuzzy search + previews) or emit JSON for automation.
+- **View recent runs:** Inspect the last few renders/syncs recorded in the runtime log.
 
-## Commands
-- `gmd render <file|dir>`: Render local JSON(s) to Markdown.
-  - Flags: `--out-dir`, `--credentials`, `--remote-links`, `--download-dir`, `--force`, `--collapse-threshold`, `--interactive`, `-v`.
-- `gmd sync`: One-way Drive→local sync to Markdown.
-  - Flags: `--folder-name`, `--out-dir`, `--credentials`, `--remote-links`, `--since`, `--until`, `--name-filter`, `--collapse-threshold`, `--interactive`, `--force`, `--prune`, `--dry-run`, `-v`.
-- `gmd status`: Show current config, cached folder IDs, recent runs.
-- `gmd init`: Create a documented project-local `.gmdrc` with defaults.
-- `gmd auth`: Trigger Drive auth now and cache a long-term token.
+## Automation & Flags
+Although the CLI is interactive by default, the same functionality is available non-interactively:
+- `python3 gmd.py render PATH [--out DIR] [--links-only] [--dry-run] [--force] [--collapse-threshold N] [--json] [--plain]`
+- `python3 gmd.py sync [--folder-name NAME] [--folder-id ID] [--out DIR] [--links-only] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--dry-run] [--force] [--prune] [--json] [--plain]`
+- `python3 gmd.py list [--folder-name NAME] [--folder-id ID] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--json] [--plain]`
+- `python3 gmd.py status`
+
+`--plain` disables gum/skim/Rich styling for CI or scripts; `--json` prints machine-readable summaries.
+
+## Tooling & UX Stack
+The dev shell equips gmd with:
+- `gum` for confirmations, menus, and formatted summaries.
+- `skim (sk)` for fuzzy selection with previews (`bat` and `glow`).
+- `rich` for progress bars, tables, and styled output.
+- `bat`, `delta`, `fd`, `ripgrep`, `glow` as supporting CLIs.
+
+Everything falls back gracefully when `--plain` is specified or stdout isn’t a TTY.
+
+## Credentials & Tokens
+1. Create an OAuth client for a “Desktop app” in the Google Cloud Console (we link you directly from the prompt).
+2. Drop the downloaded JSON into the project root when prompted; gmd copies it to `credentials.json` and launches the OAuth flow.
+3. `token.json` is generated automatically and refreshed as needed. No manual edits required.
 
 ## Formatting
-- Callouts with grouped model thought+response; long responses folded (configurable).
-- YAML includes model params, token/turn stats, attachment counts, context flags, and Drive metadata in sync mode.
-- Attachments are always linked (never embedded). Per‑chat `_attachments` folders on sync.
+- Markdown keeps attachments in per-chat `_attachments` folders when downloads are enabled.
+- Responses are folded at 25 lines by default (configurable via flag or interactive setting per run).
+- Summaries are shown both as rich panels and gum-formatted Markdown for easy copy/paste.
 
-## Interactive (TUI-ish)
-- Add `--interactive` to select local files (render) or remote chats (sync) via `fzf` if installed. Previews show basic metadata.
+## Development Notes
+- Code follows PEP 8 with type hints where practical.
+- No test suite yet; validate with `python3 gmd.py render PATH --plain --dry-run` and `python3 gmd.py sync --plain --dry-run` against sample inputs.
+- Credentials (`credentials.json`, `token.json`) stay out of version control.
