@@ -24,20 +24,23 @@
   - Keep importer architecture modular so additional sources (perplexity, notebooks) can plug in via a common chunk schema.
 
 - **OpenAI Codex CLI Logs (`~/.codex`)**
-  - Global state: `config.toml` (model, trust levels), `auth.json` (OAuth tokens), `history.jsonl` (80 MB+ index of all sessions), and `log/codex-tui.log` (CLI telemetry — client-side `FunctionCall`, errors, etc.).
+  - Global state: `config.toml` (model, trust levels), `auth.json` (OAuth tokens), `history.jsonl` (~6–7 MB index of all sessions), and `log/codex-tui.log` (~80 MB runtime telemetry with `FunctionCall` traces, errors, etc.).
   - Session transcripts live under `sessions/` in two formats:
     - Legacy `rollout-*.jsonl` files at the top level (single metadata line).
     - Date-partitioned subdirectories (`sessions/YYYY/MM/DD/...jsonl`) with full JSONL traces: `session_meta`, environment context, `response_item` records (`message`, `function_call`, `function_call_output`, `reasoning`), plus auxiliary `event_msg`/`turn_context` lines. Every `session_id` in `history.jsonl` points to one of these files.
   - Import guidelines:
     - Parse the JSONL stream and normalise `response_item:type == "message"` payloads into user/assistant chunks (skip `<user_instructions>`/`<environment_context>` entries so we don’t duplicate boilerplate).
-    - `response_item:type == "function_call"`/`"function_call_output"` describe tool invocations and their stdout/stderr. Large argument/result blobs can be written to `_attachments` files and referenced in the Markdown body to keep the conversation readable.
+    - `response_item:type == "function_call"`/`"function_call_output"` describe tool invocations and their stdout/stderr. These often contain multi-megabyte JSON blobs; extract anything beyond configurable thresholds into `_attachments` while keeping links in the Markdown body. Consider inlining the first/last N lines for quick context.
     - `response_item:type == "reasoning"` currently carries encrypted content, so omit them until OpenAI surfaces plaintext traces.
-    - The helper script used during analysis writes `/tmp/codex-session.md` and a companion `_attachments/` folder, demonstrating how to wire Codex logs into our existing Markdown pipeline without touching Gemini behaviour.
+    - A helper script (see `/tmp/codex-session.md` during analysis) already demonstrates this flow: it harvests messages, extracts oversized payloads, and feeds the result into the shared Markdown pipeline.
 
 - **Claude Code (`~/.config/claude`)**
-  - Directory structure captures IDE/workflow state: `projects/` holds per-project JSONL transcripts grouped by workspace name (e.g., `-home-sinity/...jsonl`). Each file is a chronological log with `summary` entries, user prompts, tool runs, and assistant responses.
-  - Additional folders (`extras/`, `commands/`, `ide/`, `shell-snapshots/`) store command history, settings, and tool metadata that can enrich imports (e.g., executed shell commands or file snapshots).
-  - Import strategy mirrors Codex: parse the JSONL files, normalise message events into chunks, and pull out attachments or summaries when present.
+  - Directory structure captures IDE/workflow state: `projects/<workspace>/*.jsonl` contains session logs with `summary` nodes (context/compaction checkpoints), `user` prompts, `assistant` replies, and tool interactions. Each record includes `parentUuid`, `cwd`, and `sessionId`, so conversations can branch; “compacted” summaries signal that earlier nodes were rolled up.
+  - Supplemental folders—`commands/`, `extras/`, `ide/`, `shell-snapshots/`, `todos/`, `tools/`—hold shell transcripts, file snapshots, and configuration that may need separate parsing or attachment treatment.
+  - Import approach:
+    - Traverse the JSONL entries in order, reconstruct parent/child relationships when necessary, and normalise `user` / `assistant` messages into chunks (extracting embedded code diffs or logs when large).
+    - Treat summaries as front-matter notes or inline callouts; attach file snapshots when present.
+    - Apply the same attachment heuristics as Codex so mega-byte diffs/tool outputs are captured without overwhelming the Markdown body.
 
 ## Live Capture Considerations
 
@@ -55,3 +58,23 @@
 - CLI command `gmd import <path>` detects provider type (zip/json) and delegates to the right importer.
 - Optional workflows to push rendered Markdown into knowledge bases (Obsidian vaults, Git repos) or build searchable indices.
 - Document recommended export schedules for both services so users can automate regular backups feeding into `gmd`.
+
+## Requirements & UX Considerations
+
+- **Provider parity**: Normalise ChatGPT, Claude, Codex, Claude Code, etc. into a shared chunk schema, but preserve provider-specific nuances (tool metadata, attachments, reasoning traces) so output can be compared side-by-side.
+- **Attachment extraction**:
+  - Provide sensible defaults for splitting large inputs/outputs (e.g., extract anything beyond N lines/bytes, keep first/last K lines inline).
+  - Allow provider/tool-specific overrides without overwhelming the user—surface high-level toggles (extract tool outputs, keep inline) rather than exposing every knob.
+- **Interactive tuning**:
+  - After parsing, offer an interactive review (sorted by size, type) so outliers can be inlined, elided, or moved to attachments before writing Markdown.
+  - Persist aggregated stats (total size, attachment counts, tokens) and show them dynamically while the user tweaks thresholds.
+- **Formatting fidelity**:
+  - Render nested JSON/JSONL as fenced code blocks with language hints; keep tables, lists, and code fragments intact.
+  - Include provider badges or metadata tags in both Markdown and HTML previews to indicate provenance.
+- **Validation & safety**:
+  - Validate each provider’s JSON payloads via Pydantic/jsonschema (with a bypass flag if files drift from spec).
+  - Plan for optional PII/“sensitive content” detection that redacts or moves such material to attachments.
+- **Automation targets**:
+  - Support a “sync” mode for local stores (`~/.codex`, `~/.config/claude/projects/`) akin to the Drive sync—watch directories, ingest new sessions automatically, and write Markdown incrementally.
+  - Keep automation friendly to systemd timers/services: non-interactive defaults should honour the same extraction rules as the interactive flow.
+- **Future GUI**: The interactive workflow may benefit from a richer UI (TUI/HTML) to visualise chunk sizes, attachments, and preview Markdown/HTML side by side.
