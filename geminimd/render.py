@@ -373,20 +373,13 @@ def build_markdown_from_chunks(
             if not user_text and isinstance(c.get("content"), list):
                 user_text = _render_content_parts(c.get("content"))
             if user_text:
-                fold_state = "+"
-                if collapse_threshold > 0 and len(user_text.splitlines()) > collapse_threshold:
-                    fold_state = "-"
-                parts.append(fmt_text_block("User", user_text, fold_state))
+                parts.append(fmt_text_block("User", user_text, "+"))
             elif "driveDocument" in c:
                 parts.append("> [!QUOTE]+ User (attachment)\n")
             elif "driveImage" in c:
                 parts.append("> [!TIP]+ User (image)\n")
             else:
-                dump = json.dumps(c)
-                fold_state = "+"
-                if collapse_threshold > 0 and len(dump.splitlines()) > collapse_threshold:
-                    fold_state = "-"
-                parts.append(fmt_text_block("User", dump, fold_state))
+                parts.append(fmt_text_block("User", json.dumps(c), "+"))
             links = per_chunk_links.get(i, [])
             for name, relpath in links:
                 if hasattr(relpath, "as_posix"):
