@@ -13,6 +13,7 @@ Interactive-first tools to render Gemini chat JSON to Markdown and mirror a Goog
 - **Render local logs:** Choose a file or directory; skim previews JSON candidates, rich shows progress, and outputs land in `./gmd_out` by default. Add `--html` to emit a themed HTML preview alongside the Markdown file.
 - **Sync Drive folder:** Connect to the default Drive folder (`AI Studio`) and pull chats to `./gemini_synced`, downloading attachments unless you opt to link only.
 - **List Drive chats:** Browse remote chats with skim (fuzzy search + previews) or emit JSON for automation.
+- **Import other providers:** Convert ChatGPT exports, Claude.zip bundles, Claude Code sessions, or Codex CLI logs into Markdown via `gmd import …` subcommands. Interactively pick conversations with skim or pass `--all`/`--conversation-id` for batch mode.
 - **View recent runs:** Inspect the last few renders/syncs recorded in the runtime log.
 
 ## Automation & Flags
@@ -21,7 +22,10 @@ Although the CLI is interactive by default, the same functionality is available 
 - `python3 gmd.py sync [--folder-name NAME] [--folder-id ID] [--out DIR] [--links-only] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--dry-run] [--force] [--prune] [--json] [--plain]`
 - `python3 gmd.py list [--folder-name NAME] [--folder-id ID] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--json] [--plain]`
 - `python3 gmd.py status`
-- `python3 gmd.py import codex SESSION_ID [--out DIR] [--base-dir DIR] [--html] [--plain]`
+- `python3 gmd.py import chatgpt EXPORT_PATH [--conversation-id ID ...] [--all] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
+- `python3 gmd.py import claude EXPORT_PATH [--conversation-id ID ...] [--all] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
+- `python3 gmd.py import claude-code SESSION_ID [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
+- `python3 gmd.py import codex SESSION_ID [--out DIR] [--base-dir DIR] [--collapse-threshold N] [--html] [--plain]`
 
 `--plain` disables gum/skim/Rich styling for CI or scripts; `--json` prints machine-readable summaries.
 
@@ -44,6 +48,7 @@ Everything falls back gracefully when `--plain` is specified or stdout isn’t a
 - Responses are folded at 25 lines by default (configurable via flag or interactive setting per run).
 - Summaries are shown both as rich panels and gum-formatted Markdown for easy copy/paste.
 - Collapsible callouts stay as Markdown blockquotes; open the generated `.html` preview for interactive folding when terminal renderers (e.g., `glow`) don’t support it.
+- Imported providers share the same Markdown pipeline, so chunk counts, token approximations, and attachment sniffing behave consistently across Gemini, ChatGPT, Claude, Claude Code, and Codex sources.
 
 ## Development Notes
 - Code follows PEP 8 with type hints where practical.

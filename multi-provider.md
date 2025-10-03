@@ -59,6 +59,7 @@
 ## Future Enhancements
 
 - CLI command `gmd import <path>` detects provider type (zip/json) and delegates to the right importer.
+  - Implemented: `gmd import chatgpt`, `gmd import claude`, `gmd import claude-code`, and `gmd import codex` share a common Markdown pipeline with interactive skim pickers and consistent attachment policies.
 - Optional workflows to push rendered Markdown into knowledge bases (Obsidian vaults, Git repos) or build searchable indices.
 - Document recommended export schedules for both services so users can automate regular backups feeding into `gmd`.
 - Explore optional “import assistant” prompts: use an LLM to propose extraction thresholds/tool policies based on a sample session, while still letting the user review diffs before writing files.
