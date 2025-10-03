@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
 from ..util import sanitize_filename
@@ -13,6 +15,23 @@ _DEFAULT_BASE = Path.home() / ".codex" / "sessions"
 _PREVIEW_LINES = 5
 _LINE_THRESHOLD = 40
 _CHAR_THRESHOLD = 4000
+
+
+class _Payload(BaseModel):
+    type: str
+    role: Optional[str] = None
+    content: Optional[List[Dict[str, Any]]] = None
+    name: Optional[str] = None
+    arguments: Optional[Any] = None
+    call_id: Optional[str] = None
+    output: Optional[str] = None
+    model_config = ConfigDict(extra="allow")
+
+
+class _ResponseItem(BaseModel):
+    type: str
+    payload: _Payload
+    model_config = ConfigDict(extra="allow")
 
 
 @dataclass
@@ -42,7 +61,7 @@ def import_codex_session(
     html: bool = False,
     html_theme: str = "light",
 ) -> CodexImportResult:
-    session_glob = list(base_dir.rglob(f"*{session_id}.jsonl"))
+    session_glob = sorted(base_dir.rglob(f"*{session_id}.jsonl"))
     if not session_glob:
         raise FileNotFoundError(f"Could not locate session {session_id} under {base_dir}")
     session_path = session_glob[0]
@@ -61,15 +80,19 @@ def import_codex_session(
     with session_path.open(encoding="utf-8") as handle:
         for raw in handle:
             entry = json.loads(raw)
-            if entry.get("type") != "response_item":
+            try:
+                model = _ResponseItem.model_validate(entry)
+            except ValidationError:
                 continue
-            payload = entry.get("payload", {})
-            ptype = payload.get("type")
+            if model.type != "response_item":
+                continue
+            payload = model.payload
+            ptype = payload.type
 
             if ptype == "message":
-                role = payload.get("role", "assistant")
+                role = payload.role or "assistant"
                 parts: List[str] = []
-                for seg in payload.get("content", []):
+                for seg in payload.content or []:
                     if not isinstance(seg, dict):
                         continue
                     text = seg.get("text") or ""
@@ -82,15 +105,17 @@ def import_codex_session(
                 chunks.append({"role": role, "text": "\n".join(parts)})
 
             elif ptype == "function_call":
-                name = payload.get("name", "tool")
-                args = payload.get("arguments") or "{}"
+                name = payload.name or "tool"
+                args = payload.arguments or "{}"
+                if not isinstance(args, str):
+                    args = json.dumps(args, indent=2, ensure_ascii=False)
                 chunk_text = f"Tool call `{name}`\n```json\n{args}\n```"
                 chunks.append({"role": "assistant", "text": chunk_text})
-                call_index[payload.get("call_id", "")] = len(chunks) - 1
+                call_index[payload.call_id or ""] = len(chunks) - 1
 
             elif ptype == "function_call_output":
-                output_text = payload.get("output", "")
-                call_id = payload.get("call_id", "")
+                output_text = payload.output or ""
+                call_id = payload.call_id or ""
                 idx = call_index.get(call_id)
                 if idx is not None:
                     chunks[idx]["text"] += f"\n\nOutput:\n{output_text}"
