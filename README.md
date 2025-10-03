@@ -6,6 +6,7 @@ Interactive-first tools to render Gemini chat JSON to Markdown and mirror a Goog
 - Enable the direnv-managed dev shell: `direnv allow` (uses `.envrc` to call `nix develop`).
 - If you prefer to launch manually: `nix develop` (installs Python, gum, skim, rich, bat, glow, etc.).
 - Run `python3 gmd.py` and pick an action from the gum menu (Render, Sync, List, Recent Runs, Help).
+- When a directory has multiple JSON logs, the skim picker previews files with `bat`; press `Ctrl+G` for a live `glow` render before confirming.
 - The first Drive action guides you through supplying a Google OAuth client JSON and runs auth automatically. Tokens are cached next to `gmd.py`.
 
 ## What You Can Do
@@ -42,6 +43,7 @@ Everything falls back gracefully when `--plain` is specified or stdout isn’t a
 - Markdown keeps attachments in per-chat `_attachments` folders when downloads are enabled.
 - Responses are folded at 25 lines by default (configurable via flag or interactive setting per run).
 - Summaries are shown both as rich panels and gum-formatted Markdown for easy copy/paste.
+- Collapsible callouts stay as Markdown blockquotes; open the generated `.html` preview for interactive folding when terminal renderers (e.g., `glow`) don’t support it.
 
 ## Development Notes
 - Code follows PEP 8 with type hints where practical.
