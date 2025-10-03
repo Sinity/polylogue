@@ -27,6 +27,7 @@ from chatmd.importers import (
 from chatmd.importers.chatgpt import list_chatgpt_conversations
 from chatmd.importers.claude_ai import list_claude_conversations
 from chatmd.importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
+from chatmd.local_sync import LocalSyncResult, sync_claude_code_sessions, sync_codex_sessions
 from chatmd.options import ListOptions, RenderOptions, SyncOptions
 from chatmd.ui import create_ui
 from gmd_settings import SETTINGS, reset_settings
@@ -34,6 +35,8 @@ from gmd_settings import SETTINGS, reset_settings
 DEFAULT_RENDER_OUT = Path("gmd_out")
 DEFAULT_SYNC_OUT = Path("gemini_synced")
 DEFAULT_COLLAPSE = 25
+DEFAULT_CODEX_SYNC_OUT = Path("codex_synced")
+DEFAULT_CLAUDE_CODE_SYNC_OUT = Path("claude_code_synced")
 
 
 def summarize_import(ui, title: str, results: List[ImportResult]) -> None:
@@ -98,6 +101,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--json", action="store_true")
     p_sync.add_argument("--html", action="store_true", help="Also write HTML previews")
     p_sync.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
+
+    p_sync_codex = sub.add_parser("sync-codex")
+    p_sync_codex.add_argument("--base-dir", type=Path, default=None)
+    p_sync_codex.add_argument("--out", type=Path, default=None)
+    p_sync_codex.add_argument("--collapse-threshold", type=int, default=None)
+    p_sync_codex.add_argument("--html", action="store_true")
+    p_sync_codex.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"])
+    p_sync_codex.add_argument("--force", action="store_true", help="Re-render even if up-to-date")
+    p_sync_codex.add_argument("--prune", action="store_true", help="Remove outputs for missing sessions")
+    p_sync_codex.add_argument("--all", action="store_true", help="Process all sessions without prompting")
+
+    p_sync_claude_code = sub.add_parser("sync-claude-code")
+    p_sync_claude_code.add_argument("--base-dir", type=Path, default=None)
+    p_sync_claude_code.add_argument("--out", type=Path, default=None)
+    p_sync_claude_code.add_argument("--collapse-threshold", type=int, default=None)
+    p_sync_claude_code.add_argument("--html", action="store_true")
+    p_sync_claude_code.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"])
+    p_sync_claude_code.add_argument("--force", action="store_true")
+    p_sync_claude_code.add_argument("--prune", action="store_true")
+    p_sync_claude_code.add_argument("--all", action="store_true")
 
     p_list = sub.add_parser("list")
     p_list.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
@@ -396,6 +419,8 @@ def interactive_menu(env: CommandEnv) -> None:
     options = [
         "Render Local Logs",
         "Sync Drive Folder",
+        "Sync Codex Sessions",
+        "Sync Claude Code Sessions",
         "List Drive Chats",
         "View Recent Runs",
         "Settings",
@@ -408,6 +433,10 @@ def interactive_menu(env: CommandEnv) -> None:
             prompt_render(env)
         elif choice == "Sync Drive Folder":
             prompt_sync(env)
+        elif choice == "Sync Codex Sessions":
+            prompt_sync_codex(env)
+        elif choice == "Sync Claude Code Sessions":
+            prompt_sync_claude_code(env)
         elif choice == "List Drive Chats":
             prompt_list(env)
         elif choice == "View Recent Runs":
@@ -621,6 +650,100 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
         return
 
     summarize_import(ui, "Claude Code Import", [result])
+
+
+def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optional[List[Path]]:
+    if not sessions:
+        ui.console.print("No sessions found.")
+        return None
+    lines = [f"{path.stem}\t{path.parent.name}\t{path}" for path in sessions]
+    selection = sk_select(lines, header=header)
+    if selection is None:
+        ui.console.print("[yellow]Sync cancelled; no sessions selected.")
+        return None
+    if not selection:
+        ui.console.print("[yellow]No sessions selected; nothing to do.")
+        return []
+    return [Path(line.split("\t")[-1]) for line in selection]
+
+
+def run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
+    out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+    force = args.force
+    prune = args.prune
+
+    selected_paths: Optional[List[Path]] = None
+    if not args.all and not ui.plain:
+        sessions = sorted(base_dir.rglob("*.jsonl"))
+        selection = _collect_session_selection(ui, sessions, "Select Codex sessions")
+        if selection is None:
+            return
+        if not selection:
+            return
+        selected_paths = selection
+
+    result = sync_codex_sessions(
+        base_dir=base_dir,
+        output_dir=out_dir,
+        collapse_threshold=collapse,
+        html=html_enabled,
+        html_theme=html_theme,
+        force=force,
+        prune=prune,
+        sessions=selected_paths,
+    )
+
+    summarize_import(ui, "Codex Sync", result.written)
+    if result.skipped:
+        ui.console.print(f"Skipped {result.skipped} up-to-date session(s).")
+    if result.pruned:
+        ui.console.print(f"Pruned {result.pruned} stale path(s).")
+    add_run({"cmd": "sync-codex", "count": len(result.written), "out": str(result.output_dir)})
+
+
+def run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_PROJECT_ROOT
+    out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+    force = args.force
+    prune = args.prune
+
+    selected_paths: Optional[List[Path]] = None
+    if not args.all and not ui.plain:
+        session_entries = list_claude_code_sessions(base_dir)
+        sessions = [Path(entry["path"]) for entry in session_entries]
+        selection = _collect_session_selection(ui, sessions, "Select Claude Code sessions")
+        if selection is None:
+            return
+        if not selection:
+            return
+        selected_paths = selection
+
+    result = sync_claude_code_sessions(
+        base_dir=base_dir,
+        output_dir=out_dir,
+        collapse_threshold=collapse,
+        html=html_enabled,
+        html_theme=html_theme,
+        force=force,
+        prune=prune,
+        sessions=selected_paths,
+    )
+
+    summarize_import(ui, "Claude Code Sync", result.written)
+    if result.skipped:
+        ui.console.print(f"Skipped {result.skipped} up-to-date session(s).")
+    if result.pruned:
+        ui.console.print(f"Pruned {result.pruned} stale path(s).")
+    add_run({"cmd": "sync-claude-code", "count": len(result.written), "out": str(result.output_dir)})
 def prompt_render(env: CommandEnv) -> None:
     ui = env.ui
     default_input = str(Path.cwd())
@@ -666,6 +789,37 @@ def prompt_sync(env: CommandEnv) -> None:
     args.html = SETTINGS.html_previews
     args.html_theme = SETTINGS.html_theme
     run_sync_cli(args, env, json_output=False)
+
+
+def prompt_sync_codex(env: CommandEnv) -> None:
+    ui = env.ui
+    class Args:
+        pass
+    args = Args()
+    args.base_dir = None
+    args.out = None
+    args.collapse_threshold = None
+    args.html = SETTINGS.html_previews
+    args.html_theme = SETTINGS.html_theme
+    args.force = False
+    args.prune = False
+    args.all = False
+    run_sync_codex(args, env)
+
+
+def prompt_sync_claude_code(env: CommandEnv) -> None:
+    class Args:
+        pass
+    args = Args()
+    args.base_dir = None
+    args.out = None
+    args.collapse_threshold = None
+    args.html = SETTINGS.html_previews
+    args.html_theme = SETTINGS.html_theme
+    args.force = False
+    args.prune = False
+    args.all = False
+    run_sync_claude_code(args, env)
 
 
 def prompt_list(env: CommandEnv) -> None:
@@ -738,6 +892,10 @@ def main() -> None:
         run_render_cli(args, env, json_output=getattr(args, "json", False))
     elif args.cmd == "sync":
         run_sync_cli(args, env, json_output=getattr(args, "json", False))
+    elif args.cmd == "sync-codex":
+        run_sync_codex(args, env)
+    elif args.cmd == "sync-claude-code":
+        run_sync_claude_code(args, env)
     elif args.cmd == "list":
         run_list_cli(args, env, json_output=getattr(args, "json", False))
     elif args.cmd == "status":
