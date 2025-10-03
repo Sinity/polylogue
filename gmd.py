@@ -94,7 +94,11 @@ def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
     if len(candidates) <= 1 or plain:
         return candidates
     lines = [str(p) for p in candidates]
-    selection = sk_select(lines, preview="bat --style=plain {}")
+    selection = sk_select(
+        lines,
+        preview="bat --style=plain {}",
+        bindings=["ctrl-g:execute(glow --style=dark {+})"],
+    )
     if selection is None:
         return None
     if not selection:
@@ -156,6 +160,14 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
     if "totalTokensApprox" in result.total_stats:
         total_tokens = int(result.total_stats["totalTokensApprox"])
         lines.append(f"Approx tokens: {total_tokens}")
+    for key, label in (
+        ("chunkCount", "Total chunks"),
+        ("userTurns", "User turns"),
+        ("modelTurns", "Model turns"),
+    ):
+        value = result.total_stats.get(key)
+        if value:
+            lines.append(f"{label}: {int(value)}")
     for file in result.files:
         info = f"- {file.output.name} (attachments: {file.attachments})"
         if file.html:
@@ -269,6 +281,14 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
     if "totalTokensApprox" in result.total_stats:
         total_tokens = int(result.total_stats["totalTokensApprox"])
         lines.append(f"Approx tokens: {total_tokens}")
+    for key, label in (
+        ("chunkCount", "Total chunks"),
+        ("userTurns", "User turns"),
+        ("modelTurns", "Model turns"),
+    ):
+        value = result.total_stats.get(key)
+        if value:
+            lines.append(f"{label}: {int(value)}")
     for item in result.items:
         info = f"- {Path(item.output).name} (attachments: {item.attachments})"
         if item.html:
@@ -371,6 +391,14 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     tokens = stats.get("totalTokensApprox")
     if tokens is not None:
         lines.append(f"Approx tokens: {int(tokens)}")
+    for key, label in (
+        ("chunkCount", "Chunks"),
+        ("userTurns", "User turns"),
+        ("modelTurns", "Model turns"),
+    ):
+        value = stats.get(key)
+        if value:
+            lines.append(f"{label}: {int(value)}")
     ui.summary("Codex Import", lines)
 
 
@@ -418,8 +446,6 @@ def prompt_sync(env: CommandEnv) -> None:
     args.json = False
     args.html = SETTINGS.html_previews
     args.html_theme = SETTINGS.html_theme
-    args.html = False
-    args.html_theme = "light"
     run_sync_cli(args, env, json_output=False)
 
 
