@@ -17,6 +17,7 @@ from geminimd.commands import (
     sync_command,
 )
 from geminimd.drive_client import DEFAULT_FOLDER_NAME, DriveClient
+from geminimd.importers import import_codex_session
 from geminimd.options import ListOptions, RenderOptions, SyncOptions
 from geminimd.ui import create_ui
 from gmd_settings import SETTINGS, reset_settings
@@ -67,6 +68,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--json", action="store_true")
 
     sub.add_parser("status")
+
+    p_import = sub.add_parser("import")
+    import_sub = p_import.add_subparsers(dest="import_target", required=True)
+
+    p_import_codex = import_sub.add_parser("codex", help="Convert a Codex CLI session to Markdown")
+    p_import_codex.add_argument("session_id", type=str, help="Codex session UUID (or suffix)")
+    p_import_codex.add_argument("--base-dir", type=Path, default=None, help="Override Codex sessions directory")
+    p_import_codex.add_argument("--out", type=Path, default=None, help="Output directory for Markdown")
+    p_import_codex.add_argument("--collapse-threshold", type=int, default=None, help="Fold responses longer than this many lines")
+    p_import_codex.add_argument("--html", action="store_true", help="Also write HTML preview")
+    p_import_codex.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML preview")
 
     return parser
 
@@ -322,6 +334,46 @@ def interactive_menu(env: CommandEnv) -> None:
             return
 
 
+def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+    if args.import_target == "codex":
+        run_import_codex(args, env)
+    else:
+        raise SystemExit(f"Unknown import target: {args.import_target}")
+
+
+def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
+    out_dir = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    out_dir.mkdir(parents=True, exist_ok=True)
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+
+    result = import_codex_session(
+        args.session_id,
+        base_dir=base_dir,
+        output_dir=out_dir,
+        collapse_threshold=collapse,
+        html=html_enabled,
+        html_theme=html_theme,
+    )
+
+    lines = [f"Markdown: {result.markdown_path}"]
+    if result.html_path:
+        lines.append(f"HTML preview: {result.html_path}")
+    if result.attachments_dir:
+        lines.append(f"Attachments directory: {result.attachments_dir}")
+    stats = result.document.stats
+    attachments_total = stats.get("attachments", 0)
+    if attachments_total:
+        lines.append(f"Attachment count: {attachments_total}")
+    tokens = stats.get("totalTokensApprox")
+    if tokens is not None:
+        lines.append(f"Approx tokens: {int(tokens)}")
+    ui.summary("Codex Import", lines)
+
+
 def prompt_render(env: CommandEnv) -> None:
     ui = env.ui
     default_input = str(Path.cwd())
@@ -344,8 +396,6 @@ def prompt_render(env: CommandEnv) -> None:
     args.json = False
     args.html = SETTINGS.html_previews
     args.html_theme = SETTINGS.html_theme
-    args.html = False
-    args.html_theme = "light"
     run_render_cli(args, env, json_output=False)
 
 
@@ -447,6 +497,8 @@ def main() -> None:
         run_list_cli(args, env, json_output=getattr(args, "json", False))
     elif args.cmd == "status":
         run_status_cli(env)
+    elif args.cmd == "import":
+        run_import_cli(args, env)
     else:
         parser.print_help()
 
