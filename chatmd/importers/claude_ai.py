@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Tuple
 from ..render import AttachmentInfo, build_markdown_from_chunks
 from ..util import sanitize_filename
 from .base import ImportResult
-from .utils import store_large_text
+from .utils import estimate_token_count, store_large_text
 
 
 def _load_bundle(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
@@ -124,7 +124,11 @@ def _render_claude_conversation(
             markdown_path.parent,
             file_index,
         )
-        chunk = {"role": role, "text": text}
+        chunk = {
+            "role": role,
+            "text": text,
+            "tokenCount": estimate_token_count(text),
+        }
         if message.get("created_at"):
             chunk["timestamp"] = message["created_at"]
         chunks.append(chunk)
@@ -153,6 +157,11 @@ def _render_claude_conversation(
         "sourcePlatform": "claude.ai",
         "conversationId": conv_id,
     }
+
+    model_id = conv.get("model") or conv.get("model_id")
+    if model_id:
+        frontmatter["sourceModel"] = model_id
+        metadata["model"] = model_id
 
     document = build_markdown_from_chunks(
         chunks,
@@ -281,10 +290,12 @@ def _index_files(export_root: Path) -> Dict[str, Path]:
 
 def _normalise_sender(sender: Optional[str]) -> str:
     if not sender:
-        return "assistant"
+        return "model"
     sender = sender.lower()
     if sender in {"user", "assistant", "system"}:
+        if sender == "assistant":
+            return "model"
         return sender
     if sender in {"tool", "function"}:
         return "tool"
-    return "assistant"
+    return "model"
