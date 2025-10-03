@@ -3,7 +3,8 @@
 Interactive-first tools to render Gemini chat JSON to Markdown and mirror a Google Drive folder into local, annotated Markdown with linked attachments.
 
 ## Quick Start
-- Enter the dev shell: `nix develop` (installs Python, gum, skim, rich, bat, glow, etc.).
+- Enable the direnv-managed dev shell: `direnv allow` (uses `.envrc` to call `nix develop`).
+- If you prefer to launch manually: `nix develop` (installs Python, gum, skim, rich, bat, glow, etc.).
 - Run `python3 gmd.py` and pick an action from the gum menu (Render, Sync, List, Recent Runs, Help).
 - The first Drive action guides you through supplying a Google OAuth client JSON and runs auth automatically. Tokens are cached next to `gmd.py`.
 
