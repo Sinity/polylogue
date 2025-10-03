@@ -2,7 +2,7 @@
 
 ## Project Structure & Modules
 - `gmd.py`: interactive CLI entrypoint for rendering local Gemini JSON and syncing Drive chats.
-- `geminimd/`: implementation modules (commands, Drive helpers, rendering, UI utilities).
+- `chatmd/`: implementation modules (commands, importers, rendering, UI utilities).
 - `nix/devshell.nix`: dev shell defining Python deps plus gum, skim, rich, bat, glow, etc.
 - `gemini/`, `sinex_md/`: sample inputs and generated Markdown artifacts.
 

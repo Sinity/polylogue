@@ -8,18 +8,18 @@ import json
 from pathlib import Path
 from typing import List, Optional
 
-from geminimd.cli_common import filter_chats, sk_select
-from geminimd.commands import (
+from chatmd.cli_common import filter_chats, sk_select
+from chatmd.commands import (
     CommandEnv,
     list_command,
     render_command,
     status_command,
     sync_command,
 )
-from geminimd.drive_client import DEFAULT_FOLDER_NAME, DriveClient
-from geminimd.importers import import_codex_session
-from geminimd.options import ListOptions, RenderOptions, SyncOptions
-from geminimd.ui import create_ui
+from chatmd.drive_client import DEFAULT_FOLDER_NAME, DriveClient
+from chatmd.importers import import_codex_session
+from chatmd.options import ListOptions, RenderOptions, SyncOptions
+from chatmd.ui import create_ui
 from gmd_settings import SETTINGS, reset_settings
 
 DEFAULT_RENDER_OUT = Path("gmd_out")
