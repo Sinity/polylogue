@@ -10,7 +10,7 @@ from typing import Dict, Iterable, List, Optional, Tuple
 from ..render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
 from ..util import sanitize_filename
 from .base import ImportResult
-from .utils import store_large_text
+from .utils import estimate_token_count, store_large_text
 
 
 @dataclass
@@ -203,7 +203,12 @@ def _render_chatgpt_conversation(
         content = msg.get("content") or {}
         text = _extract_text(role, content)
         metadata = msg.get("metadata") or {}
-        chunk = {"role": _normalise_role(role), "text": text}
+        canonical_role = _normalise_role(role)
+        chunk = {
+            "role": canonical_role,
+            "text": text,
+            "tokenCount": estimate_token_count(text),
+        }
         if msg.get("create_time"):
             chunk["timestamp"] = msg["create_time"]
         chunks.append(chunk)
@@ -228,6 +233,14 @@ def _render_chatgpt_conversation(
         "sourcePlatform": "chatgpt",
         "conversationId": conv.get("id") or conv.get("conversation_id"),
     }
+    model_slug = (
+        conv.get("model_slug")
+        or conv.get("model")
+        or conv.get("default_model_slug")
+        or conv.get("current_model")
+    )
+    if model_slug:
+        metadata["model"] = model_slug
 
     document = build_markdown_from_chunks(
         chunks,
@@ -241,7 +254,11 @@ def _render_chatgpt_conversation(
         source_mime="application/json",
         source_size=None,
         collapse_threshold=collapse_threshold,
-        extra_yaml={"sourcePlatform": "chatgpt"},
+        extra_yaml={
+            "sourcePlatform": "chatgpt",
+            "conversationId": metadata.get("conversationId"),
+            "sourceModel": model_slug,
+        },
         attachments=attachments,
     )
     markdown_path.write_text(document.to_markdown(), encoding="utf-8")
@@ -271,6 +288,8 @@ def _normalise_role(role: Optional[str]) -> str:
     if not role:
         return "assistant"
     if role in {"user", "assistant", "tool", "system"}:
+        if role == "assistant":
+            return "model"
         return role
     if role == "function":
         return "tool"

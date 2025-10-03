@@ -10,6 +10,14 @@ LINE_THRESHOLD = 40
 CHAR_THRESHOLD = 4000
 
 
+def estimate_token_count(text: str) -> int:
+    """Rough token estimate used for stats when providers omit counts."""
+
+    if not text:
+        return 0
+    return max(1, len(text.split()))
+
+
 def store_large_text(
     text: str,
     *,

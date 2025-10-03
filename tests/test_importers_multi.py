@@ -1,4 +1,5 @@
 import json
+import zipfile
 from pathlib import Path
 
 from chatmd.importers.chatgpt import import_chatgpt_export
@@ -129,3 +130,115 @@ def test_import_claude_code_session_basic(tmp_path):
     assert "Run command" in text
     assert "Command output" in text
     assert "Initial summary" in text
+
+
+def test_import_chatgpt_export_zip_with_attachment(tmp_path):
+    export_dir = tmp_path / "chatgpt_zip"
+    files_dir = export_dir / "files"
+    files_dir.mkdir(parents=True, exist_ok=True)
+    (files_dir / "log.txt").write_text("attachment payload", encoding="utf-8")
+    conversations = [
+        {
+            "id": "conv-zip",
+            "title": "Zip Chat",
+            "mapping": {
+                "node-user": {
+                    "id": "node-user",
+                    "message": {
+                        "id": "msg-user",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["User line"]},
+                    },
+                },
+                "node-assistant": {
+                    "id": "node-assistant",
+                    "message": {
+                        "id": "msg-assistant",
+                        "author": {"role": "assistant"},
+                        "content": {"content_type": "text", "parts": ["Assistant line"]},
+                        "metadata": {
+                            "attachments": [
+                                {
+                                    "id": "log.txt",
+                                    "name": "log.txt",
+                                }
+                            ]
+                        },
+                    },
+                },
+            },
+        }
+    ]
+    (export_dir / "conversations.json").write_text(json.dumps(conversations), encoding="utf-8")
+
+    zip_path = tmp_path / "chatgpt_export.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for file in export_dir.rglob("*"):
+            arcname = file.relative_to(export_dir)
+            if file.is_dir():
+                continue
+            zf.write(file, arcname.as_posix())
+
+    out_dir = tmp_path / "out_zip"
+    results = import_chatgpt_export(
+        zip_path,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+
+    assert results and results[0].attachments_dir is not None
+    attachments = list(results[0].attachments_dir.iterdir())
+    assert attachments and attachments[0].name.startswith("log")
+    assert attachments[0].read_text(encoding="utf-8") == "attachment payload"
+
+
+def test_import_claude_export_zip_with_attachment(tmp_path):
+    export_dir = tmp_path / "claude_zip"
+    attachments_dir = export_dir / "attachments"
+    attachments_dir.mkdir(parents=True, exist_ok=True)
+    (attachments_dir / "result.txt").write_text("claude attachment", encoding="utf-8")
+    conversations = {
+        "conversations": [
+            {
+                "uuid": "claude-zip",
+                "name": "Zip Claude",
+                "chat_messages": [
+                    {"sender": "user", "content": [{"type": "text", "text": "Hi"}]},
+                    {
+                        "sender": "assistant",
+                        "content": [
+                            {
+                                "type": "file",
+                                "file_id": "result.txt",
+                                "file_name": "result.txt",
+                            }
+                        ],
+                    },
+                ],
+            }
+        ]
+    }
+    (export_dir / "conversations.json").write_text(json.dumps(conversations), encoding="utf-8")
+
+    zip_path = tmp_path / "claude_export.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for file in export_dir.rglob("*"):
+            if file.is_dir():
+                continue
+            zf.write(file, file.relative_to(export_dir).as_posix())
+
+    out_dir = tmp_path / "out_claude_zip"
+    results = import_claude_export(
+        zip_path,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+
+    assert results and results[0].attachments_dir is not None
+    attachments = list(results[0].attachments_dir.iterdir())
+    assert attachments and attachments[0].name.startswith("result")
+    assert attachments[0].read_text(encoding="utf-8") == "claude attachment"
