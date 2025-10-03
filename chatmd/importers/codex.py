@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -9,12 +8,10 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from ..render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
 from ..util import sanitize_filename
+from .base import ImportResult
+from .utils import CHAR_THRESHOLD, LINE_THRESHOLD, PREVIEW_LINES
 
 _DEFAULT_BASE = Path.home() / ".codex" / "sessions"
-
-_PREVIEW_LINES = 5
-_LINE_THRESHOLD = 40
-_CHAR_THRESHOLD = 4000
 
 
 class _Payload(BaseModel):
@@ -33,21 +30,12 @@ class _ResponseItem(BaseModel):
     payload: _Payload
     model_config = ConfigDict(extra="allow")
 
-
-@dataclass
-class CodexImportResult:
-    markdown_path: Path
-    html_path: Optional[Path]
-    attachments_dir: Optional[Path]
-    document: MarkdownDocument
-
-
 def _truncate_with_preview(text: str, attachment_name: str) -> str:
     lines = text.splitlines()
-    if len(lines) <= _PREVIEW_LINES * 2 + 1:
+    if len(lines) <= PREVIEW_LINES * 2 + 1:
         return text
-    head = lines[:_PREVIEW_LINES]
-    tail = lines[-_PREVIEW_LINES:]
+    head = lines[:PREVIEW_LINES]
+    tail = lines[-PREVIEW_LINES:]
     preview = "\n".join(head + ["…", "", f"(Full content saved to {attachment_name})", ""] + tail)
     return preview
 
@@ -60,7 +48,7 @@ def import_codex_session(
     collapse_threshold: int = 24,
     html: bool = False,
     html_theme: str = "light",
-) -> CodexImportResult:
+) -> ImportResult:
     session_glob = sorted(base_dir.rglob(f"*{session_id}.jsonl"))
     if not session_glob:
         raise FileNotFoundError(f"Could not locate session {session_id} under {base_dir}")
@@ -126,7 +114,7 @@ def import_codex_session(
     for idx, chunk in enumerate(chunks):
         text = chunk.get("text", "")
         lines = text.count("\n") + 1
-        if lines <= _LINE_THRESHOLD and len(text) <= _CHAR_THRESHOLD:
+        if lines <= LINE_THRESHOLD and len(text) <= CHAR_THRESHOLD:
             continue
         attachment_name = f"chunk{idx:03d}.txt"
         attachment_path = attachments_dir / attachment_name
@@ -169,7 +157,7 @@ def import_codex_session(
         except OSError:
             pass
 
-    return CodexImportResult(
+    return ImportResult(
         markdown_path=markdown_path,
         html_path=html_path,
         attachments_dir=attachments_dir,

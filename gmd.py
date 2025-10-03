@@ -17,7 +17,16 @@ from chatmd.commands import (
     sync_command,
 )
 from chatmd.drive_client import DEFAULT_FOLDER_NAME, DriveClient
-from chatmd.importers import import_codex_session
+from chatmd.importers import (
+    ImportResult,
+    import_chatgpt_export,
+    import_claude_code_session,
+    import_claude_export,
+    import_codex_session,
+)
+from chatmd.importers.chatgpt import list_chatgpt_conversations
+from chatmd.importers.claude_ai import list_claude_conversations
+from chatmd.importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
 from chatmd.options import ListOptions, RenderOptions, SyncOptions
 from chatmd.ui import create_ui
 from gmd_settings import SETTINGS, reset_settings
@@ -25,6 +34,37 @@ from gmd_settings import SETTINGS, reset_settings
 DEFAULT_RENDER_OUT = Path("gmd_out")
 DEFAULT_SYNC_OUT = Path("gemini_synced")
 DEFAULT_COLLAPSE = 25
+
+
+def summarize_import(ui, title: str, results: List[ImportResult]) -> None:
+    if not results:
+        ui.summary(title, ["No files written."])
+        return
+    output_dir = results[0].markdown_path.parent
+    lines = [f"{len(results)} file(s) → {output_dir}"]
+    attachments_total = sum(len(res.document.attachments) for res in results)
+    if attachments_total:
+        lines.append(f"Attachments: {attachments_total}")
+    stats_to_sum = [
+        ("totalTokensApprox", "Approx tokens"),
+        ("chunkCount", "Total chunks"),
+        ("userTurns", "User turns"),
+        ("modelTurns", "Model turns"),
+    ]
+    for key, label in stats_to_sum:
+        total = 0
+        for res in results:
+            value = res.document.stats.get(key)
+            if isinstance(value, (int, float)):
+                total += int(value)
+        if total:
+            lines.append(f"{label}: {total}")
+    for res in results:
+        info = f"- {res.markdown_path.name} (attachments: {len(res.document.attachments)})"
+        if res.html_path:
+            info += " [+html]"
+        lines.append(info)
+    ui.summary(title, lines)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -71,6 +111,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_import = sub.add_parser("import")
     import_sub = p_import.add_subparsers(dest="import_target", required=True)
+
+    p_import_chatgpt = import_sub.add_parser("chatgpt", help="Convert a ChatGPT export to Markdown")
+    p_import_chatgpt.add_argument("export_path", type=Path, help="Path to ChatGPT export .zip or directory")
+    p_import_chatgpt.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Restrict to specific conversation id (repeatable)")
+    p_import_chatgpt.add_argument("--all", action="store_true", help="Import all conversations without prompting")
+    p_import_chatgpt.add_argument("--out", type=Path, default=None, help="Output directory for Markdown files")
+    p_import_chatgpt.add_argument("--collapse-threshold", type=int, default=None)
+    p_import_chatgpt.add_argument("--html", action="store_true", help="Also write HTML previews")
+    p_import_chatgpt.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
+
+    p_import_claude = import_sub.add_parser("claude", help="Convert an Anthropic Claude export to Markdown")
+    p_import_claude.add_argument("export_path", type=Path, help="Path to Claude export .zip or directory")
+    p_import_claude.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Restrict to specific conversation id (repeatable)")
+    p_import_claude.add_argument("--all", action="store_true", help="Import all conversations without prompting")
+    p_import_claude.add_argument("--out", type=Path, default=None, help="Output directory for Markdown files")
+    p_import_claude.add_argument("--collapse-threshold", type=int, default=None)
+    p_import_claude.add_argument("--html", action="store_true", help="Also write HTML previews")
+    p_import_claude.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
+
+    p_import_claude_code = import_sub.add_parser("claude-code", help="Convert a Claude Code session to Markdown")
+    p_import_claude_code.add_argument("session_id", type=str, help="Session UUID or suffix")
+    p_import_claude_code.add_argument("--base-dir", type=Path, default=None, help="Override Claude Code projects directory")
+    p_import_claude_code.add_argument("--out", type=Path, default=None, help="Output directory for Markdown")
+    p_import_claude_code.add_argument("--collapse-threshold", type=int, default=None)
+    p_import_claude_code.add_argument("--html", action="store_true", help="Also write HTML preview")
+    p_import_claude_code.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML preview")
 
     p_import_codex = import_sub.add_parser("codex", help="Convert a Codex CLI session to Markdown")
     p_import_codex.add_argument("session_id", type=str, help="Codex session UUID (or suffix)")
@@ -355,10 +421,17 @@ def interactive_menu(env: CommandEnv) -> None:
 
 
 def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
-    if args.import_target == "codex":
+    target = args.import_target
+    if target == "codex":
         run_import_codex(args, env)
+    elif target == "chatgpt":
+        run_import_chatgpt(args, env)
+    elif target == "claude":
+        run_import_claude(args, env)
+    elif target == "claude-code":
+        run_import_claude_code(args, env)
     else:
-        raise SystemExit(f"Unknown import target: {args.import_target}")
+        raise SystemExit(f"Unknown import target: {target}")
 
 
 def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -402,6 +475,152 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     ui.summary("Codex Import", lines)
 
 
+def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    export_path = Path(args.export_path)
+    out_dir = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+    selected_ids = args.conversation_ids[:] if args.conversation_ids else None
+
+    if not args.all and not selected_ids and not ui.plain:
+        try:
+            entries = list_chatgpt_conversations(export_path)
+        except Exception as exc:
+            ui.console.print(f"[red]Failed to scan export: {exc}")
+            return
+        if not entries:
+            ui.console.print("No conversations found in export.")
+            return
+        lines = [
+            f"{entry.get('title') or '(untitled)'}\t{entry.get('update_time') or entry.get('create_time') or ''}\t{entry.get('id')}"
+            for entry in entries
+        ]
+        selection = sk_select(
+            lines,
+            preview=None,
+            header="Select conversations to import",
+        )
+        if selection is None:
+            ui.console.print("[yellow]Import cancelled; no conversations selected.")
+            return
+        if not selection:
+            ui.console.print("[yellow]No conversations selected; nothing to import.")
+            return
+        selected_ids = [line.split("\t")[-1] for line in selection]
+    elif args.all:
+        selected_ids = None
+
+    try:
+        results = import_chatgpt_export(
+            export_path,
+            output_dir=out_dir,
+            collapse_threshold=collapse,
+            html=html_enabled,
+            html_theme=html_theme,
+            selected_ids=selected_ids,
+        )
+    except Exception as exc:
+        ui.console.print(f"[red]Import failed: {exc}")
+        return
+
+    summarize_import(ui, "ChatGPT Import", results)
+
+
+def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    export_path = Path(args.export_path)
+    out_dir = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+    selected_ids = args.conversation_ids[:] if args.conversation_ids else None
+
+    if not args.all and not selected_ids and not ui.plain:
+        try:
+            entries = list_claude_conversations(export_path)
+        except Exception as exc:
+            ui.console.print(f"[red]Failed to scan export: {exc}")
+            return
+        if not entries:
+            ui.console.print("No conversations found in export.")
+            return
+        lines = [
+            f"{entry.get('title') or '(untitled)'}\t{entry.get('updated_at') or entry.get('created_at') or ''}\t{entry.get('id')}"
+            for entry in entries
+        ]
+        selection = sk_select(
+            lines,
+            preview=None,
+            header="Select conversations to import",
+        )
+        if selection is None:
+            ui.console.print("[yellow]Import cancelled; no conversations selected.")
+            return
+        if not selection:
+            ui.console.print("[yellow]No conversations selected; nothing to import.")
+            return
+        selected_ids = [line.split("\t")[-1] for line in selection]
+    elif args.all:
+        selected_ids = None
+
+    try:
+        results = import_claude_export(
+            export_path,
+            output_dir=out_dir,
+            collapse_threshold=collapse,
+            html=html_enabled,
+            html_theme=html_theme,
+            selected_ids=selected_ids,
+        )
+    except Exception as exc:
+        ui.console.print(f"[red]Import failed: {exc}")
+        return
+
+    summarize_import(ui, "Claude Import", results)
+
+
+def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_PROJECT_ROOT
+    session_id = args.session_id
+
+    if session_id in {"pick", "?"} or (session_id == "-" and not ui.plain):
+        entries = list_claude_code_sessions(base_dir)
+        if not entries:
+            ui.console.print("No Claude Code sessions found.")
+            return
+        lines = [f"{entry['name']}\t{entry['workspace']}\t{entry['path']}" for entry in entries]
+        selection = sk_select(lines, multi=False, header="Select Claude Code session")
+        if not selection:
+            ui.console.print("[yellow]Import cancelled; no session selected.")
+            return
+        session_id = selection[0].split("\t")[-1]
+
+    out_dir = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+
+    kwargs = {}
+    if args.base_dir:
+        kwargs["base_dir"] = base_dir
+
+    try:
+        result = import_claude_code_session(
+            session_id,
+            output_dir=out_dir,
+            collapse_threshold=collapse,
+            html=html_enabled,
+            html_theme=html_theme,
+            **kwargs,
+        )
+    except Exception as exc:
+        ui.console.print(f"[red]Import failed: {exc}")
+        return
+
+    summarize_import(ui, "Claude Code Import", [result])
 def prompt_render(env: CommandEnv) -> None:
     ui = env.ui
     default_input = str(Path.cwd())
