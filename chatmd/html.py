@@ -183,24 +183,25 @@ def write_html(document: MarkdownDocument, path: Path, theme: str) -> None:
 def _transform_callouts(html: str) -> str:
     import re
 
-    lines = html.splitlines()
-    result: list[str] = []
-    callout_re = re.compile(r"^<blockquote><p>\[!([A-Z]+)\]([+-])\s+(.*)</p>$")
-    i = 0
-    while i < len(lines):
-        match = callout_re.match(lines[i])
-        if not match:
-            result.append(lines[i])
-            i += 1
-            continue
-        kind, fold, header = match.groups()
+    pattern = re.compile(
+        r"<blockquote>\s*<p>\[!([A-Z]+)\]([+-])\s+(.*?)</p>(.*?)</blockquote>",
+        flags=re.DOTALL,
+    )
+
+    def repl(match: re.Match[str]) -> str:
+        kind, fold, header, body = match.groups()
         open_attr = " open" if fold == "+" else ""
-        result.append(f"<details class=\"callout\"{open_attr}><summary>{header}</summary>")
-        i += 1
-        while i < len(lines) and not lines[i].startswith("</blockquote>"):
-            result.append(lines[i])
-            i += 1
-        if i < len(lines):
-            result.append("</details>")
-            i += 1
-    return "\n".join(result)
+        summary = header.strip()
+        body_html = body.strip()
+        if body_html and not body_html.startswith("<"):
+            body_html = f"<p>{body_html}</p>"
+        parts = [
+            f"<details class=\"callout\" data-kind=\"{kind.lower()}\"{open_attr}>",
+            f"<summary>{summary}</summary>",
+        ]
+        if body_html:
+            parts.append(body_html)
+        parts.append("</details>")
+        return "\n".join(parts)
+
+    return pattern.sub(repl, html)
