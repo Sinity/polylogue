@@ -10,6 +10,9 @@ credentials.json
 .DS_Store
 Thumbs.db
 
+# Local dev environment
+.direnv/
+
 # Python
 __pycache__
 
