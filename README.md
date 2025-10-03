@@ -19,6 +19,7 @@ Although the CLI is interactive by default, the same functionality is available 
 - `python3 gmd.py sync [--folder-name NAME] [--folder-id ID] [--out DIR] [--links-only] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--dry-run] [--force] [--prune] [--json] [--plain]`
 - `python3 gmd.py list [--folder-name NAME] [--folder-id ID] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--json] [--plain]`
 - `python3 gmd.py status`
+- `python3 gmd.py import codex SESSION_ID [--out DIR] [--base-dir DIR] [--html] [--plain]`
 
 `--plain` disables gum/skim/Rich styling for CI or scripts; `--json` prints machine-readable summaries.
 
