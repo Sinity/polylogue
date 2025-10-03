@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from ..render import AttachmentInfo, build_markdown_from_chunks
 from ..util import sanitize_filename
 from .base import ImportResult
-from .utils import store_large_text
+from .utils import estimate_token_count, store_large_text
 
 
 DEFAULT_PROJECT_ROOT = Path.home() / ".config" / "claude" / "projects"
@@ -50,15 +50,33 @@ def import_claude_code_session(
                 continue
             if etype == "user":
                 text = _extract_text(entry)
-                chunks.append({"role": "user", "text": text or ""})
+                chunks.append(
+                    {
+                        "role": "user",
+                        "text": text or "",
+                        "tokenCount": estimate_token_count(text or ""),
+                    }
+                )
             elif etype == "assistant":
                 text = _extract_text(entry)
-                chunks.append({"role": "assistant", "text": text or ""})
+                chunks.append(
+                    {
+                        "role": "model",
+                        "text": text or "",
+                        "tokenCount": estimate_token_count(text or ""),
+                    }
+                )
             elif etype == "tool_use":
                 name = entry.get("name") or entry.get("toolName") or "tool"
                 input_payload = entry.get("input") or entry.get("args") or {}
                 text = f"Tool call `{name}`\n```json\n{json.dumps(input_payload, indent=2, ensure_ascii=False)}\n```"
-                chunks.append({"role": "assistant", "text": text})
+                chunks.append(
+                    {
+                        "role": "model",
+                        "text": text,
+                        "tokenCount": estimate_token_count(text),
+                    }
+                )
                 tool_results[entry.get("id") or entry.get("toolUseId") or ""] = len(chunks) - 1
             elif etype == "tool_result":
                 result_text = _extract_tool_result(entry)
@@ -68,8 +86,15 @@ def import_claude_code_session(
                     original = chunks[idx]["text"]
                     combined = f"{original}\n\nResult:\n{result_text}"
                     chunks[idx]["text"] = combined
+                    chunks[idx]["tokenCount"] = estimate_token_count(combined)
                 else:
-                    chunks.append({"role": "tool", "text": result_text})
+                    chunks.append(
+                        {
+                            "role": "tool",
+                            "text": result_text,
+                            "tokenCount": estimate_token_count(result_text),
+                        }
+                    )
 
     for idx, chunk in enumerate(chunks):
         text = chunk.get("text") or ""

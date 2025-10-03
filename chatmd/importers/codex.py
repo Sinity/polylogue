@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 from ..render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
 from ..util import sanitize_filename
 from .base import ImportResult
-from .utils import CHAR_THRESHOLD, LINE_THRESHOLD, PREVIEW_LINES
+from .utils import CHAR_THRESHOLD, LINE_THRESHOLD, PREVIEW_LINES, estimate_token_count
 
 _DEFAULT_BASE = Path.home() / ".codex" / "sessions"
 
@@ -49,10 +49,14 @@ def import_codex_session(
     html: bool = False,
     html_theme: str = "light",
 ) -> ImportResult:
-    session_glob = sorted(base_dir.rglob(f"*{session_id}.jsonl"))
-    if not session_glob:
-        raise FileNotFoundError(f"Could not locate session {session_id} under {base_dir}")
-    session_path = session_glob[0]
+    candidate = Path(session_id)
+    if candidate.exists() and candidate.is_file():
+        session_path = candidate
+    else:
+        session_glob = sorted(base_dir.rglob(f"*{session_id}.jsonl"))
+        if not session_glob:
+            raise FileNotFoundError(f"Could not locate session {session_id} under {base_dir}")
+        session_path = session_glob[0]
 
     attachments: List[AttachmentInfo] = []
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
@@ -79,6 +83,7 @@ def import_codex_session(
 
             if ptype == "message":
                 role = payload.role or "assistant"
+                canonical_role = "model" if role in {"assistant", "model"} else "user"
                 parts: List[str] = []
                 for seg in payload.content or []:
                     if not isinstance(seg, dict):
@@ -90,7 +95,14 @@ def import_codex_session(
                     parts.append(text)
                 if not parts:
                     continue
-                chunks.append({"role": role, "text": "\n".join(parts)})
+                text = "\n".join(parts)
+                chunks.append(
+                    {
+                        "role": canonical_role,
+                        "text": text,
+                        "tokenCount": estimate_token_count(text),
+                    }
+                )
 
             elif ptype == "function_call":
                 name = payload.name or "tool"
@@ -98,7 +110,13 @@ def import_codex_session(
                 if not isinstance(args, str):
                     args = json.dumps(args, indent=2, ensure_ascii=False)
                 chunk_text = f"Tool call `{name}`\n```json\n{args}\n```"
-                chunks.append({"role": "assistant", "text": chunk_text})
+                chunks.append(
+                    {
+                        "role": "model",
+                        "text": chunk_text,
+                        "tokenCount": estimate_token_count(chunk_text),
+                    }
+                )
                 call_index[payload.call_id or ""] = len(chunks) - 1
 
             elif ptype == "function_call_output":
@@ -107,8 +125,15 @@ def import_codex_session(
                 idx = call_index.get(call_id)
                 if idx is not None:
                     chunks[idx]["text"] += f"\n\nOutput:\n{output_text}"
+                    chunks[idx]["tokenCount"] = estimate_token_count(chunks[idx]["text"])
                 else:
-                    chunks.append({"role": "tool", "text": output_text})
+                    chunks.append(
+                        {
+                            "role": "tool",
+                            "text": output_text,
+                            "tokenCount": estimate_token_count(output_text),
+                        }
+                    )
 
     # attachment extraction pass
     for idx, chunk in enumerate(chunks):

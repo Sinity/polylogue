@@ -5,7 +5,7 @@ Interactive-first tools to render Gemini chat JSON to Markdown and mirror a Goog
 ## Quick Start
 - Enable the direnv-managed dev shell: `direnv allow` (uses `.envrc` to call `nix develop`).
 - If you prefer to launch manually: `nix develop` (installs Python, gum, skim, rich, bat, glow, etc.).
-- Run `python3 gmd.py` and pick an action from the gum menu (Render, Sync, List, Recent Runs, Help).
+- Run `python3 gmd.py` and pick an action from the gum menu (Render, Sync, Local Syncs, List, Recent Runs, Help).
 - When a directory has multiple JSON logs, the skim picker previews files with `bat`; press `Ctrl+G` for a live `glow` render before confirming.
 - The first Drive action guides you through supplying a Google OAuth client JSON and runs auth automatically. Tokens are cached next to `gmd.py`.
 
@@ -13,6 +13,7 @@ Interactive-first tools to render Gemini chat JSON to Markdown and mirror a Goog
 - **Render local logs:** Choose a file or directory; skim previews JSON candidates, rich shows progress, and outputs land in `./gmd_out` by default. Add `--html` to emit a themed HTML preview alongside the Markdown file.
 - **Sync Drive folder:** Connect to the default Drive folder (`AI Studio`) and pull chats to `./gemini_synced`, downloading attachments unless you opt to link only.
 - **List Drive chats:** Browse remote chats with skim (fuzzy search + previews) or emit JSON for automation.
+- **Sync Codex / Claude Code sessions:** Mirror local CLI transcripts from `~/.codex/sessions/` and `~/.config/claude/projects/` into Markdown with `gmd sync-codex` and `gmd sync-claude-code`, including optional HTML previews, pruning, and skim-powered selection.
 - **Import other providers:** Convert ChatGPT exports, Claude.zip bundles, Claude Code sessions, or Codex CLI logs into Markdown via `gmd import …` subcommands. Interactively pick conversations with skim or pass `--all`/`--conversation-id` for batch mode.
 - **View recent runs:** Inspect the last few renders/syncs recorded in the runtime log.
 
@@ -20,6 +21,8 @@ Interactive-first tools to render Gemini chat JSON to Markdown and mirror a Goog
 Although the CLI is interactive by default, the same functionality is available non-interactively:
 - `python3 gmd.py render PATH [--out DIR] [--links-only] [--dry-run] [--force] [--collapse-threshold N] [--json] [--plain]`
 - `python3 gmd.py sync [--folder-name NAME] [--folder-id ID] [--out DIR] [--links-only] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--dry-run] [--force] [--prune] [--json] [--plain]`
+- `python3 gmd.py sync-codex [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--force] [--prune] [--all]`
+- `python3 gmd.py sync-claude-code [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--force] [--prune] [--all]`
 - `python3 gmd.py list [--folder-name NAME] [--folder-id ID] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--json] [--plain]`
 - `python3 gmd.py status`
 - `python3 gmd.py import chatgpt EXPORT_PATH [--conversation-id ID ...] [--all] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
