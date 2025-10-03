@@ -64,6 +64,30 @@ HTML_TEMPLATE = """
         margin-left: 0;
         background: {{ theme.callout_border }}11;
       }
+      details.callout {
+        margin: 1rem 0;
+        border-left: 4px solid {{ theme.callout_border }};
+        padding-left: 1rem;
+        background: {{ theme.callout_border }}11;
+      }
+      details.callout summary {
+        cursor: pointer;
+        font-weight: 600;
+        list-style: none;
+      }
+      details.callout summary::-webkit-details-marker {
+        display: none;
+      }
+      details.callout summary::before {
+        content: '▶';
+        display: inline-block;
+        margin-right: 0.5rem;
+        transform: rotate(0deg);
+        transition: transform 0.2s ease;
+      }
+      details.callout[open] summary::before {
+        transform: rotate(90deg);
+      }
       pre {
         background: {{ theme.foreground }}11;
         padding: 0.75rem;
@@ -106,6 +130,7 @@ def render_html(document: MarkdownDocument, options: HtmlRenderOptions) -> str:
     theme = THEMES.get(options.theme, THEMES["light"])
     md = MarkdownIt("commonmark", {"html": True}).enable("table").enable("strikethrough")
     body_html = md.render(document.body)
+    body_html = _transform_callouts(body_html)
     metadata_rows = {k: v for k, v in document.metadata.items() if k != "attachments"}
     metadata_rows["attachments"] = len(document.attachments)
 
@@ -153,3 +178,29 @@ def write_html(document: MarkdownDocument, path: Path, theme: str) -> None:
     options = HtmlRenderOptions(theme=theme)
     html_text = render_html(document, options)
     path.write_text(html_text, encoding="utf-8")
+
+
+def _transform_callouts(html: str) -> str:
+    import re
+
+    lines = html.splitlines()
+    result: list[str] = []
+    callout_re = re.compile(r"^<blockquote><p>\[!([A-Z]+)\]([+-])\s+(.*)</p>$")
+    i = 0
+    while i < len(lines):
+        match = callout_re.match(lines[i])
+        if not match:
+            result.append(lines[i])
+            i += 1
+            continue
+        kind, fold, header = match.groups()
+        open_attr = " open" if fold == "+" else ""
+        result.append(f"<details class=\"callout\"{open_attr}><summary>{header}</summary>")
+        i += 1
+        while i < len(lines) and not lines[i].startswith("</blockquote>"):
+            result.append(lines[i])
+            i += 1
+        if i < len(lines):
+            result.append("</details>")
+            i += 1
+    return "\n".join(result)
