@@ -43,8 +43,8 @@ Interactive-first tools to render Gemini chat JSON to Markdown and mirror a Goog
 Although the CLI is interactive by default, the same functionality is available non-interactively:
 - `python3 gmd.py render PATH [--out DIR] [--links-only] [--dry-run] [--force] [--collapse-threshold N] [--json] [--plain]`
 - `python3 gmd.py sync [--folder-name NAME] [--folder-id ID] [--out DIR] [--links-only] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--dry-run] [--force] [--prune] [--json] [--plain]`
-- `python3 gmd.py sync-codex [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--force] [--prune] [--all]`
-- `python3 gmd.py sync-claude-code [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--force] [--prune] [--all]`
+- `python3 gmd.py sync-codex [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--force] [--prune] [--all] [--json] [--diff]`
+- `python3 gmd.py sync-claude-code [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--force] [--prune] [--all] [--json] [--diff]`
 - `python3 gmd.py list [--folder-name NAME] [--folder-id ID] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--json] [--plain]`
 - `python3 gmd.py status`
 - `python3 gmd.py import chatgpt EXPORT_PATH [--conversation-id ID ...] [--all] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
@@ -52,7 +52,7 @@ Although the CLI is interactive by default, the same functionality is available 
 - `python3 gmd.py import claude-code SESSION_ID [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
 - `python3 gmd.py import codex SESSION_ID [--out DIR] [--base-dir DIR] [--collapse-threshold N] [--html] [--plain]`
 - `python3 gmd.py doctor [--codex-dir DIR] [--claude-code-dir DIR] [--limit N] [--json]`
-- `python3 gmd.py stats [--dir DIR] [--json]`
+- `python3 gmd.py stats [--dir DIR] [--since DATE] [--until DATE] [--json]`
 
 `--plain` disables gum/skim/Rich styling for CI or scripts; `--json` prints machine-readable summaries.
 
@@ -64,6 +64,11 @@ The dev shell equips gmd with:
 - `bat`, `delta`, `fd`, `ripgrep`, `glow` as supporting CLIs.
 
 Everything falls back gracefully when `--plain` is specified or stdout isn’t a TTY.
+
+## Configuration
+- `gmd` looks for a config at `~/.gmdconfig` or `$XDG_CONFIG_HOME/gmd/config.json` (override via `$GMD_CONFIG`).
+- Copy `docs/config.sample.jsonc` as a starting point to set default collapse thresholds, HTML preferences, and output directories once.
+- `gmd doctor` reports the expected locations when no config is detected.
 
 ## Credentials & Tokens
 1. Create an OAuth client for a “Desktop app” in the Google Cloud Console (we link you directly from the prompt).
