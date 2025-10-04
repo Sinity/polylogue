@@ -1,0 +1,14 @@
+{
+  // Copy this file to ~/.gmdconfig or $XDG_CONFIG_HOME/gmd/config.json and adjust as needed.
+  "defaults": {
+    "collapse_threshold": 30,
+    "html_previews": true,
+    "html_theme": "dark",
+    "output_dirs": {
+      "render": "~/workspace/gmd_out",
+      "sync_drive": "~/workspace/gemini_synced",
+      "sync_codex": "~/workspace/codex_synced",
+      "sync_claude_code": "~/workspace/claude_code_synced"
+    }
+  }
+}
