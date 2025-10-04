@@ -54,7 +54,7 @@ def import_claude_code_session(
                     {
                         "role": "user",
                         "text": text or "",
-                        "tokenCount": estimate_token_count(text or ""),
+                        "tokenCount": estimate_token_count(text or "", model="claude-code"),
                     }
                 )
             elif etype == "assistant":
@@ -63,7 +63,7 @@ def import_claude_code_session(
                     {
                         "role": "model",
                         "text": text or "",
-                        "tokenCount": estimate_token_count(text or ""),
+                        "tokenCount": estimate_token_count(text or "", model="claude-code"),
                     }
                 )
             elif etype == "tool_use":
@@ -74,7 +74,7 @@ def import_claude_code_session(
                     {
                         "role": "model",
                         "text": text,
-                        "tokenCount": estimate_token_count(text),
+                        "tokenCount": estimate_token_count(text, model="claude-code"),
                     }
                 )
                 tool_results[entry.get("id") or entry.get("toolUseId") or ""] = len(chunks) - 1
@@ -86,13 +86,13 @@ def import_claude_code_session(
                     original = chunks[idx]["text"]
                     combined = f"{original}\n\nResult:\n{result_text}"
                     chunks[idx]["text"] = combined
-                    chunks[idx]["tokenCount"] = estimate_token_count(combined)
+                    chunks[idx]["tokenCount"] = estimate_token_count(combined, model="claude-code")
                 else:
                     chunks.append(
                         {
                             "role": "tool",
                             "text": result_text,
-                            "tokenCount": estimate_token_count(result_text),
+                            "tokenCount": estimate_token_count(result_text, model="claude-code"),
                         }
                     )
 
@@ -129,6 +129,8 @@ def import_claude_code_session(
         extra_yaml=extra_yaml,
         attachments=attachments,
     )
+    document.metadata["sourceSessionPath"] = str(session_path)
+    document.metadata["sourceWorkspace"] = session_path.parent.name
     markdown_path.write_text(document.to_markdown(), encoding="utf-8")
 
     html_path: Optional[Path] = None

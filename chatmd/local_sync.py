@@ -11,7 +11,7 @@ from .importers.base import ImportResult
 from .importers.claude_code import DEFAULT_PROJECT_ROOT as CLAUDE_CODE_DEFAULT
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
 from .render import MarkdownDocument
-from .util import sanitize_filename
+from .util import sanitize_filename, snapshot_for_diff, write_delta_diff
 
 
 @dataclass
@@ -20,6 +20,10 @@ class LocalSyncResult:
     skipped: int
     pruned: int
     output_dir: Path
+    attachments: int = 0
+    attachment_bytes: int = 0
+    tokens: int = 0
+    diffs: int = 0
 
 
 def _is_up_to_date(source: Path, target: Path) -> bool:
@@ -40,6 +44,7 @@ def _sync_sessions(
     html_theme: str,
     force: bool,
     prune: bool,
+    diff: bool = False,
     import_fn,
     importer_kwargs: Optional[dict] = None,
 ) -> LocalSyncResult:
@@ -48,7 +53,11 @@ def _sync_sessions(
     skipped = 0
     wanted: List[str] = []
     importer_kwargs = importer_kwargs or {}
+    attachments_total = 0
+    attachment_bytes_total = 0
+    tokens_total = 0
 
+    diff_total = 0
     for session_path in sorted(sessions):
         if not session_path.is_file():
             continue
@@ -58,6 +67,9 @@ def _sync_sessions(
         if not force and _is_up_to_date(session_path, md_path):
             skipped += 1
             continue
+        snapshot = None
+        if diff:
+            snapshot = snapshot_for_diff(md_path)
         result = import_fn(
             str(session_path),
             output_dir=output_dir,
@@ -66,6 +78,19 @@ def _sync_sessions(
             html_theme=html_theme,
             **importer_kwargs,
         )
+        if diff and snapshot is not None:
+            result.diff_path = write_delta_diff(snapshot, result.markdown_path)
+            try:
+                snapshot.unlink()
+            except Exception:
+                pass
+        elif snapshot is not None:
+            try:
+                snapshot.unlink()
+            except Exception:
+                pass
+        if result.diff_path:
+            diff_total += 1
         session_mtime = int(session_path.stat().st_mtime)
         try:
             os.utime(result.markdown_path, (session_mtime, session_mtime))
@@ -76,6 +101,9 @@ def _sync_sessions(
                 os.utime(result.html_path, (session_mtime, session_mtime))
             except OSError:
                 pass
+        attachments_total += len(result.document.attachments)
+        attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
+        tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
         written.append(result)
 
     pruned = 0
@@ -93,7 +121,16 @@ def _sync_sessions(
             except OSError:
                 continue
 
-    return LocalSyncResult(written=written, skipped=skipped, pruned=pruned, output_dir=output_dir)
+    return LocalSyncResult(
+        written=written,
+        skipped=skipped,
+        pruned=pruned,
+        output_dir=output_dir,
+        attachments=attachments_total,
+        attachment_bytes=attachment_bytes_total,
+        tokens=tokens_total,
+        diffs=diff_total,
+    )
 
 
 def sync_codex_sessions(
@@ -105,6 +142,7 @@ def sync_codex_sessions(
     html_theme: str,
     force: bool,
     prune: bool,
+    diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
@@ -118,6 +156,7 @@ def sync_codex_sessions(
         html_theme=html_theme,
         force=force,
         prune=prune,
+        diff=diff,
         import_fn=lambda session_id, **kwargs: import_codex_session(
             session_id,
             base_dir=base_dir,
@@ -135,6 +174,7 @@ def sync_claude_code_sessions(
     html_theme: str,
     force: bool,
     prune: bool,
+    diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
@@ -148,10 +188,10 @@ def sync_claude_code_sessions(
         html_theme=html_theme,
         force=force,
         prune=prune,
+        diff=diff,
         import_fn=lambda session_id, **kwargs: import_claude_code_session(
             session_id,
             base_dir=base_dir,
             **kwargs,
         ),
     )
-

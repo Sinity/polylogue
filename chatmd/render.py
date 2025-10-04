@@ -471,6 +471,10 @@ def build_markdown_from_chunks(
         parts.append("\n")
 
     body = "".join(parts)
+    attachment_count = len(attachments_list)
+    attachment_bytes = sum(info.size_bytes or 0 for info in attachments_list)
+    stats["attachments"] = attachment_count
+    stats["attachmentBytes"] = attachment_bytes
     metadata["attachments"] = [
         {
             "name": info.name,
@@ -481,4 +485,6 @@ def build_markdown_from_chunks(
         }
         for info in attachments_list
     ]
+    metadata["attachmentCount"] = attachment_count
+    metadata["attachmentBytes"] = attachment_bytes
     return MarkdownDocument(body=body, metadata=metadata, attachments=attachments_list, stats=stats)
