@@ -22,7 +22,7 @@ def test_run_stats_json(tmp_path, capsys):
         encoding="utf-8",
     )
 
-    args = type("Args", (), {"dir": md_dir, "json": True})()
+    args = type("Args", (), {"dir": md_dir, "json": True, "since": None, "until": None})()
 
     env = CommandEnv(ui=UI(plain=True))
     run_stats_cli(args, env)
@@ -33,3 +33,26 @@ def test_run_stats_json(tmp_path, capsys):
     assert payload["totals"]["attachmentBytes"] == 2048
     assert payload["totals"]["tokens"] == 128
     assert payload["providers"]["chatgpt"]["files"] == 1
+
+    old = md_dir / "old.md"
+    old.write_text(
+        "---\n"
+        "title: Old\n"
+        "attachmentCount: 5\n"
+        "attachmentBytes: 1024\n"
+        "totalTokensApprox: 64\n"
+        "sourcePlatform: chatgpt\n"
+        "sourceModifiedTime: 2020-01-01T00:00:00Z\n"
+        "---\n",
+        encoding="utf-8",
+    )
+
+    filtered_args = type(
+        "Args",
+        (),
+        {"dir": md_dir, "json": True, "since": "2024-01-01", "until": None},
+    )()
+    run_stats_cli(filtered_args, env)
+    filtered_payload = json.loads(capsys.readouterr().out)
+    assert filtered_payload["totals"]["files"] == 1
+    assert filtered_payload["filteredOut"] == 1

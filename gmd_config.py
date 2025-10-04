@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 CONFIG_ENV = "GMD_CONFIG"
 DEFAULT_PATHS = [
@@ -34,7 +34,7 @@ class Config:
     defaults: Defaults = field(default_factory=Defaults)
 
 
-def _load_config_dict() -> Dict[str, Any]:
+def _load_config_dict() -> Tuple[Dict[str, Any], Optional[Path]]:
     candidates: list[Path] = []
     env_path = os.environ.get(CONFIG_ENV)
     if env_path:
@@ -43,10 +43,10 @@ def _load_config_dict() -> Dict[str, Any]:
     for path in candidates:
         try:
             if path.exists():
-                return json.loads(path.read_text(encoding="utf-8"))
+                return json.loads(path.read_text(encoding="utf-8")), path
         except Exception:
             continue
-    return {}
+    return {}, None
 
 
 def _load_defaults(data: Dict[str, Any]) -> Defaults:
@@ -75,8 +75,13 @@ def _load_defaults(data: Dict[str, Any]) -> Defaults:
     )
 
 
+CONFIG_PATH: Optional[Path]
+
+
 def load_config() -> Config:
-    data = _load_config_dict()
+    global CONFIG_PATH
+    data, path = _load_config_dict()
+    CONFIG_PATH = path
     return Config(defaults=_load_defaults(data))
 
 

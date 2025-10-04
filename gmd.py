@@ -31,8 +31,9 @@ from chatmd.local_sync import LocalSyncResult, sync_claude_code_sessions, sync_c
 from chatmd.options import ListOptions, RenderOptions, SyncOptions
 from chatmd.ui import create_ui
 from gmd_settings import SETTINGS, reset_settings
-from gmd_config import CONFIG
+from gmd_config import CONFIG, CONFIG_PATH, DEFAULT_PATHS, CONFIG_ENV
 from chatmd.doctor import run_doctor as doctor_run
+from chatmd.util import add_run, parse_input_time_to_epoch
 
 DEFAULT_COLLAPSE = CONFIG.defaults.collapse_threshold
 DEFAULT_RENDER_OUT = CONFIG.defaults.output_dirs.render
@@ -173,6 +174,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_stats = sub.add_parser("stats", help="Summarize Markdown output directories")
     p_stats.add_argument("--dir", type=Path, default=None, help="Directory containing Markdown exports")
     p_stats.add_argument("--json", action="store_true", help="Emit machine-readable stats")
+    p_stats.add_argument("--since", type=str, default=None, help="Only include files modified on/after this date (YYYY-MM-DD or ISO)")
+    p_stats.add_argument("--until", type=str, default=None, help="Only include files modified on/before this date")
 
     p_list = sub.add_parser("list")
     p_list.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
@@ -752,27 +755,38 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         limit=args.limit,
     )
 
+    sample_config = Path(__file__).resolve().parent / "docs" / "config.sample.jsonc"
+    config_hint = {
+        "cmd": "doctor",
+        "checked": {k: int(v) for k, v in report.checked.items()},
+        "issues": [
+            {
+                "provider": issue.provider,
+                "path": str(issue.path),
+                "message": issue.message,
+                "severity": issue.severity,
+            }
+            for issue in report.issues
+        ],
+        "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
+        "configEnv": CONFIG_ENV,
+        "configCandidates": [str(p) for p in DEFAULT_PATHS],
+        "configSample": str(sample_config),
+    }
+
     if getattr(args, "json", False):
-        payload = {
-            "cmd": "doctor",
-            "checked": {k: int(v) for k, v in report.checked.items()},
-            "issues": [
-                {
-                    "provider": issue.provider,
-                    "path": str(issue.path),
-                    "message": issue.message,
-                    "severity": issue.severity,
-                }
-                for issue in report.issues
-            ],
-        }
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(config_hint, indent=2))
         return
 
     lines = [
         f"Codex sessions checked: {report.checked.get('codex', 0)}",
         f"Claude Code sessions checked: {report.checked.get('claude-code', 0)}",
     ]
+    if CONFIG_PATH is None:
+        candidates = ", ".join(str(p) for p in DEFAULT_PATHS)
+        lines.append(
+            f"No gmd config detected. Copy {sample_config} to one of [{candidates}] or set ${CONFIG_ENV}."
+        )
     if not report.issues:
         lines.append("No issues detected.")
         ui.summary("Doctor", lines)
@@ -815,6 +829,9 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     except Exception:  # pragma: no cover
         frontmatter = None  # type: ignore
 
+    since_epoch = parse_input_time_to_epoch(getattr(args, "since", None))
+    until_epoch = parse_input_time_to_epoch(getattr(args, "until", None))
+
     def _load_metadata(path: Path) -> Dict[str, Any]:
         if frontmatter is not None:
             try:
@@ -848,6 +865,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     }
     per_provider: Dict[str, Dict[str, Any]] = {}
     rows: List[Dict[str, Any]] = []
+    filtered_out = 0
 
     for path in md_files:
         meta = _load_metadata(path)
@@ -859,6 +877,31 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         attachment_bytes = meta.get("attachmentBytes") or 0
         tokens = meta.get("totalTokensApprox") or meta.get("tokensApprox") or 0
         provider = meta.get("sourcePlatform") or "unknown"
+
+        timestamp = None
+        for key in (
+            "sourceModifiedTime",
+            "sourceCreatedTime",
+            "sourceModified",
+            "sourceCreated",
+        ):
+            value = meta.get(key)
+            epoch = parse_input_time_to_epoch(value) if value else None
+            if epoch:
+                timestamp = epoch
+                break
+        if timestamp is None:
+            try:
+                timestamp = path.stat().st_mtime
+            except OSError:
+                timestamp = None
+
+        if since_epoch and (timestamp is None or timestamp < since_epoch):
+            filtered_out += 1
+            continue
+        if until_epoch and (timestamp is None or timestamp > until_epoch):
+            filtered_out += 1
+            continue
 
         totals["files"] += 1
         totals["attachments"] += int(attachment_count)
@@ -891,6 +934,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             "totals": totals,
             "providers": per_provider,
             "files": rows,
+            "filteredOut": filtered_out,
         }
         print(json.dumps(payload, indent=2))
         return
@@ -899,6 +943,8 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         f"Directory: {directory}",
         f"Files: {totals['files']} Attachments: {totals['attachments']} (~{totals['attachmentBytes'] / (1024 * 1024):.2f} MiB) Tokens≈ {totals['tokens']}",
     ]
+    if filtered_out:
+        lines.append(f"Filtered out {filtered_out} file(s) outside date range.")
     if not ui.plain:
         try:
             from rich.table import Table
