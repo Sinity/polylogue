@@ -10,8 +10,12 @@ credentials.json
 .DS_Store
 Thumbs.db
 
+# Local dev environment
+.direnv/
+
 # Python
 __pycache__
 
 # not project code
 data
+sinex_md/
