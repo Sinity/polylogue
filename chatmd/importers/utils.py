@@ -9,13 +9,43 @@ PREVIEW_LINES = 5
 LINE_THRESHOLD = 40
 CHAR_THRESHOLD = 4000
 
+try:  # optional dependency for accurate counts
+    import tiktoken  # type: ignore
+except Exception:  # pragma: no cover
+    tiktoken = None  # type: ignore
 
-def estimate_token_count(text: str) -> int:
-    """Rough token estimate used for stats when providers omit counts."""
+_TOKENIZER_CACHE: Dict[str, object] = {}
+
+
+def _get_tokenizer(model: Optional[str]) -> Optional[object]:
+    if tiktoken is None:
+        return None
+    key = model or "cl100k_base"
+    if key in _TOKENIZER_CACHE:
+        return _TOKENIZER_CACHE[key]
+    try:
+        if model:
+            enc = tiktoken.encoding_for_model(model)
+        else:
+            enc = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        enc = tiktoken.get_encoding("cl100k_base")
+    _TOKENIZER_CACHE[key] = enc
+    return enc
+
+
+def estimate_token_count(text: str, *, model: Optional[str] = None) -> int:
+    """Estimate token usage, preferring tiktoken when available."""
 
     if not text:
         return 0
-    return max(1, len(text.split()))
+    enc = _get_tokenizer(model)
+    if enc is None:
+        return max(1, len(text.split()))
+    try:
+        return len(enc.encode(text))  # type: ignore[attr-defined]
+    except Exception:
+        return max(1, len(text.split()))
 
 
 def store_large_text(
@@ -28,7 +58,7 @@ def store_large_text(
     per_chunk_links: Dict[int, List[Tuple[str, Path]]],
     prefix: str = "chunk",
 ) -> str:
-    """Persist oversized text to an attachment and return a preview with pointer."""
+    """Persist oversized text to an attachment and return a preview."""
 
     lines = text.splitlines()
     if len(lines) <= LINE_THRESHOLD and len(text) <= CHAR_THRESHOLD:

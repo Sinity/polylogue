@@ -13,4 +13,4 @@ class ImportResult:
     html_path: Optional[Path]
     attachments_dir: Optional[Path]
     document: MarkdownDocument
-
+    diff_path: Optional[Path] = None

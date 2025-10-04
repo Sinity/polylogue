@@ -61,6 +61,17 @@ def _render_parts(parts: Iterable) -> str:
             text = part.get("text") or url
             if url and text:
                 fragments.append(f"[{text}]({url})")
+        elif content_type in {"tool_calls", "tool_call"}:
+            name = part.get("name") or part.get("id") or "tool"
+            payload = part.get("input") or part.get("arguments") or {}
+            if isinstance(payload, str):
+                payload_text = payload
+            else:
+                payload_text = json.dumps(payload, indent=2, ensure_ascii=False)
+            fragments.append(f"Tool call `{name}`\n```json\n{payload_text}\n```")
+        elif content_type in {"tool_result", "tool_results"}:
+            output_text = part.get("text") or part.get("output") or ""
+            fragments.append(f"Tool result\n````\n{output_text}\n````")
         elif content_type in {"system_message", "observation"}:
             text = part.get("text")
             if text:
@@ -197,6 +208,13 @@ def _render_chatgpt_conversation(
     files_dir = export_root / "files"
     file_index = _build_file_index(files_dir)
 
+    model_slug = (
+        conv.get("model_slug")
+        or conv.get("model")
+        or conv.get("default_model_slug")
+        or conv.get("current_model")
+    )
+
     messages = _gather_messages(conv)
     for idx, msg in enumerate(messages):
         role = msg.get("author") or "assistant"
@@ -207,7 +225,7 @@ def _render_chatgpt_conversation(
         chunk = {
             "role": canonical_role,
             "text": text,
-            "tokenCount": estimate_token_count(text),
+            "tokenCount": estimate_token_count(text, model=model_slug),
         }
         if msg.get("create_time"):
             chunk["timestamp"] = msg["create_time"]
@@ -233,12 +251,6 @@ def _render_chatgpt_conversation(
         "sourcePlatform": "chatgpt",
         "conversationId": conv.get("id") or conv.get("conversation_id"),
     }
-    model_slug = (
-        conv.get("model_slug")
-        or conv.get("model")
-        or conv.get("default_model_slug")
-        or conv.get("current_model")
-    )
     if model_slug:
         metadata["model"] = model_slug
 
@@ -258,6 +270,7 @@ def _render_chatgpt_conversation(
             "sourcePlatform": "chatgpt",
             "conversationId": metadata.get("conversationId"),
             "sourceModel": model_slug,
+            "sourceExportPath": str(export_root),
         },
         attachments=attachments,
     )

@@ -16,6 +16,28 @@ Interactive-first tools to render Gemini chat JSON to Markdown and mirror a Goog
 - **Sync Codex / Claude Code sessions:** Mirror local CLI transcripts from `~/.codex/sessions/` and `~/.config/claude/projects/` into Markdown with `gmd sync-codex` and `gmd sync-claude-code`, including optional HTML previews, pruning, and skim-powered selection.
 - **Import other providers:** Convert ChatGPT exports, Claude.zip bundles, Claude Code sessions, or Codex CLI logs into Markdown via `gmd import …` subcommands. Interactively pick conversations with skim or pass `--all`/`--conversation-id` for batch mode.
 - **View recent runs:** Inspect the last few renders/syncs recorded in the runtime log.
+- **Doctor & Stats:** Run `gmd doctor` to sanity-check local exports and `gmd stats` for attachment/token dashboards across an output directory.
+
+## Provider Cheat Sheet
+
+### ChatGPT Exports
+- Export a ZIP from chat.openai.com → Settings → Data Controls → Export.
+- Render with `gmd import chatgpt EXPORT.zip --all --out chatgpt_out --html`.
+- Metadata includes `sourcePlatform: chatgpt`, `conversationId`, `sourceExportPath`, and detected `sourceModel`.
+- Attachments inside the export land in `<chat>_attachments/`; large tool outputs are truncated inline with the full text saved alongside the Markdown.
+
+### Claude.ai Bundles
+- Export a bundle from claude.ai settings, then run `gmd import claude EXPORT.zip --out claude_out --html`.
+- Tool uses/results are rendered as paired call/result blocks; attachments copy from the bundle’s `attachments/` directory.
+- Front matter records `sourcePlatform: claude.ai`, `conversationId`, `sourceModel`, and `sourceExportPath`.
+
+### Claude Code Sessions
+- Local IDE logs live under `~/.config/claude/projects/`. Use `gmd sync-claude-code --out claude_code_synced --html --diff` for continuous mirroring or `gmd import claude-code SESSION_ID` for one-offs.
+- Each Markdown file captures summaries, tool invocations, shell transcripts, and provenance fields (`sourceSessionPath`, `sourceWorkspace`).
+
+### OpenAI Codex CLI
+- Session JSONL files live under `~/.codex/sessions/`. `gmd sync-codex --out codex_synced --html --diff` keeps them current.
+- Tool call/output pairs are combined, oversized logs spill into `_attachments/`, and metadata records the absolute source path.
 
 ## Automation & Flags
 Although the CLI is interactive by default, the same functionality is available non-interactively:
@@ -29,6 +51,8 @@ Although the CLI is interactive by default, the same functionality is available 
 - `python3 gmd.py import claude EXPORT_PATH [--conversation-id ID ...] [--all] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
 - `python3 gmd.py import claude-code SESSION_ID [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
 - `python3 gmd.py import codex SESSION_ID [--out DIR] [--base-dir DIR] [--collapse-threshold N] [--html] [--plain]`
+- `python3 gmd.py doctor [--codex-dir DIR] [--claude-code-dir DIR] [--limit N] [--json]`
+- `python3 gmd.py stats [--dir DIR] [--json]`
 
 `--plain` disables gum/skim/Rich styling for CI or scripts; `--json` prints machine-readable summaries.
 

@@ -26,6 +26,30 @@
         };
       in {
         devShells.default = import ./nix/devshell.nix { inherit pkgs; };
+
+        checks.default = pkgs.runCommand "aichat-to-md-pytest" {
+          buildInputs = [
+            (pkgs.python3.withPackages (ps: with ps; [
+              google-api-python-client
+              google-auth-oauthlib
+              google-auth-httplib2
+              pathvalidate
+              aiohttp
+              aiofiles
+              google-generativeai
+              rich
+              pydantic
+              python-frontmatter
+              jinja2
+              markdown-it-py
+              pytest
+            ]))
+          ];
+        } ''
+          export PYTHONPATH=$PWD
+          python -m pytest
+          mkdir -p $out
+        '';
       }
     );
 }

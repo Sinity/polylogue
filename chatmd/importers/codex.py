@@ -100,7 +100,7 @@ def import_codex_session(
                     {
                         "role": canonical_role,
                         "text": text,
-                        "tokenCount": estimate_token_count(text),
+                        "tokenCount": estimate_token_count(text, model="gpt-5-codex"),
                     }
                 )
 
@@ -114,7 +114,7 @@ def import_codex_session(
                     {
                         "role": "model",
                         "text": chunk_text,
-                        "tokenCount": estimate_token_count(chunk_text),
+                        "tokenCount": estimate_token_count(chunk_text, model="gpt-5-codex"),
                     }
                 )
                 call_index[payload.call_id or ""] = len(chunks) - 1
@@ -125,13 +125,13 @@ def import_codex_session(
                 idx = call_index.get(call_id)
                 if idx is not None:
                     chunks[idx]["text"] += f"\n\nOutput:\n{output_text}"
-                    chunks[idx]["tokenCount"] = estimate_token_count(chunks[idx]["text"])
+                    chunks[idx]["tokenCount"] = estimate_token_count(chunks[idx]["text"], model="gpt-5-codex")
                 else:
                     chunks.append(
                         {
                             "role": "tool",
                             "text": output_text,
-                            "tokenCount": estimate_token_count(output_text),
+                            "tokenCount": estimate_token_count(output_text, model="gpt-5-codex"),
                         }
                     )
 
