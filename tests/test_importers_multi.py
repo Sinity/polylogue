@@ -132,6 +132,67 @@ def test_import_claude_code_session_basic(tmp_path):
     assert "Initial summary" in text
 
 
+def test_import_chatgpt_tool_call_pairing(tmp_path):
+    export_dir = tmp_path / "chatgpt_tools"
+    export_dir.mkdir()
+    conversations = [
+        {
+            "id": "conv-tool",
+            "title": "Tool Chat",
+            "mapping": {
+                "node-user": {
+                    "id": "node-user",
+                    "message": {
+                        "id": "msg-user",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["run tool"]},
+                    },
+                },
+                "node-tool": {
+                    "id": "node-tool",
+                    "message": {
+                        "id": "msg-tool",
+                        "author": {"role": "assistant"},
+                        "content": {"content_type": "tool", "parts": []},
+                        "metadata": {},
+                    },
+                },
+            },
+        }
+    ]
+    conversations[0]["mapping"]["node-tool"]["message"]["content"] = {
+        "content_type": "text",
+        "parts": [
+            {
+                "type": "tool_calls",
+                "id": "tool-1",
+                "name": "bash",
+                "input": "{\"cmd\": \"echo hi\"}"
+            }
+        ],
+    }
+    conversations[0]["mapping"]["node-toolout"] = {
+        "id": "node-toolout",
+        "message": {
+            "id": "msg-toolout",
+            "author": {"role": "assistant"},
+            "content": {"content_type": "text", "parts": ["Tool result output"]},
+        },
+    }
+    (export_dir / "conversations.json").write_text(json.dumps(conversations), encoding="utf-8")
+    out_dir = tmp_path / "tool_out"
+    results = import_chatgpt_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    body = results[0].markdown_path.read_text(encoding="utf-8")
+    assert "Tool call" in body
+    assert "Tool result" in body
+
+
 def test_import_chatgpt_export_zip_with_attachment(tmp_path):
     export_dir = tmp_path / "chatgpt_zip"
     files_dir = export_dir / "files"

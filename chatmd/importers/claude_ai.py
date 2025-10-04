@@ -105,6 +105,8 @@ def _render_claude_conversation(
     markdown_path = output_dir / f"{safe_name}.md"
     attachments_dir = markdown_path.parent / f"{markdown_path.stem}_attachments"
 
+    model_id = conv.get("model") or conv.get("model_id")
+
     messages = conv.get("chat_messages") or conv.get("messages") or []
     attachments: List[AttachmentInfo] = []
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
@@ -127,7 +129,7 @@ def _render_claude_conversation(
         chunk = {
             "role": role,
             "text": text,
-            "tokenCount": estimate_token_count(text),
+            "tokenCount": estimate_token_count(text, model=model_id),
         }
         if message.get("created_at"):
             chunk["timestamp"] = message["created_at"]
@@ -151,14 +153,15 @@ def _render_claude_conversation(
         "title": title,
         "sourcePlatform": "claude.ai",
         "conversationId": conv_id,
+        "sourceExportPath": str(export_root),
     }
 
     frontmatter = {
         "sourcePlatform": "claude.ai",
         "conversationId": conv_id,
+        "sourceExportPath": str(export_root),
     }
 
-    model_id = conv.get("model") or conv.get("model_id")
     if model_id:
         frontmatter["sourceModel"] = model_id
         metadata["model"] = model_id
