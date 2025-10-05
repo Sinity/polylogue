@@ -36,14 +36,16 @@
     - `response_item:type == "reasoning"` currently carries encrypted content, so omit them until OpenAI surfaces plaintext traces.
     - A helper script (see `/tmp/codex-session.md` during analysis) already demonstrates this flow: it harvests messages, extracts oversized payloads, and feeds the result into the shared Markdown pipeline.
 
-- **Claude Code (`~/.config/claude`)**
+- **Claude Code (`~/.claude`)**
   - Directory structure captures IDE/workflow state: `projects/<workspace>/*.jsonl` contains session logs with `summary` nodes (context/compaction checkpoints), `user` prompts, `assistant` replies, and tool interactions. Each record includes `parentUuid`, `cwd`, and `sessionId`, so conversations can branch; “compacted” summaries signal that earlier nodes were rolled up.
-  - Workspace folders mirror absolute paths with `/` replaced by `-` (e.g., `/realm/project/sinnix` → `-realm-project-sinnix`). Rows mix `summary`, `user`, `assistant`, `tool_use`, and `tool_result` payloads; use `parentUuid`/`leafUuid` to stitch branches and pair tool calls with their results.
+- Workspace folders mirror absolute paths with `/` replaced by `-` (e.g., `/realm/project/sinnix` → `-realm-project-sinnix`). Rows mix `summary`, `user`, `assistant`, `tool_use`, and `tool_result` payloads; use `parentUuid`/`leafUuid` to stitch branches and pair tool calls with their results.
   - Supplemental folders—`commands/` (prompt macros), `extras/` (binary assets), `ide/` (editor state), `shell-snapshots/` (timestamped shell transcripts and `.lock` sentinels), `todos/`, and `tools/` (Python helpers)—hold artefacts that may need attachment or metadata treatment during import.
   - Import approach:
     - Traverse the JSONL entries in order, reconstruct parent/child relationships when necessary (sidechains, branching uuids), and normalise `user` / `assistant` messages into chunks (extracting embedded code diffs or logs when large). Treat `summary` entries as front-matter notes describing the compaction intervals.
     - Treat summaries as front-matter notes or inline callouts; attach file snapshots when present.
     - Apply the same attachment heuristics as Codex so mega-byte diffs/tool outputs are captured without overwhelming the Markdown body.
+- Additional indexes: `history.json` tracks recent sessions per workspace, `activeProject.json` points to the open workspace, and `recentCommands.json` enumerates macro usage. These can seed sync dashboards without reparsing every JSONL.
+  - The IDE also keeps `shell-snapshots/<session>/<timestamp>.jsonl` deltas that mirror `tool_result` payloads; when present, link them as attachments so command histories remain accessible even after compaction.
 
 ## Live Capture Considerations
 
@@ -52,18 +54,16 @@
 
 ## Import Adapter Architecture
 
-- Introduce `chatmd/importers/` with provider-specific modules exposing a common interface (e.g., `Iterable[Chunk]`). Each adapter normalises exports into the internal chunk schema before handing off to the Markdown pipeline.
+- Introduce `polylogue/importers/` with provider-specific modules exposing a common interface (e.g., `Iterable[Chunk]`). Each adapter normalises exports into the internal chunk schema before handing off to the Markdown pipeline.
 - Validate export payloads via Pydantic/jsonschema to catch format drift per provider.
 - Reuse the new MarkdownDocument pipeline for formatting; attachments, stats, and HTML previews become provider-agnostic.
 
 ## Future Enhancements
 
-- CLI command `gmd import <path>` detects provider type (zip/json) and delegates to the right importer.
-  - Implemented: `gmd import chatgpt`, `gmd import claude`, `gmd import claude-code`, and `gmd import codex` share a common Markdown pipeline with interactive skim pickers and consistent attachment policies.
-- Local sync parity: `gmd sync-codex` and `gmd sync-claude-code` mirror local session stores with the same folding/attachment rules as cloud sync, including skip/prune logic and optional HTML previews.
-- Optional workflows to push rendered Markdown into knowledge bases (Obsidian vaults, Git repos) or build searchable indices.
-- Document recommended export schedules for both services so users can automate regular backups feeding into `gmd`.
-- Explore optional “import assistant” prompts: use an LLM to propose extraction thresholds/tool policies based on a sample session, while still letting the user review diffs before writing files.
+- CLI command `polylogue import <path>` detects provider type (zip/json) and delegates to the right importer.
+  - Implemented: `polylogue import chatgpt`, `polylogue import claude`, `polylogue import claude-code`, and `polylogue import codex` share a common Markdown pipeline with interactive skim pickers and consistent attachment policies.
+- Local sync parity: `polylogue sync-codex` and `polylogue sync-claude-code` mirror local session stores with the same folding/attachment rules as cloud sync, including skip/prune logic and optional HTML previews.
+- Confirm which providers expose automated export hooks (e.g., ChatGPT email links, Claude downloads) and expose scripts/env vars so users can schedule imports at their preferred cadence.
 
 ## Requirements & UX Considerations
 
@@ -83,9 +83,30 @@
   - Include provider badges or metadata tags in both Markdown and HTML previews to indicate provenance.
 - **Validation & safety**:
   - Validate each provider’s JSON payloads via Pydantic/jsonschema (with a bypass flag if files drift from spec).
-  - Plan for optional PII/“sensitive content” detection that redacts or moves such material to attachments.
 - **Automation targets**:
-  - Support a “sync” mode for local stores (`~/.codex`, `~/.config/claude/projects/`) akin to the Drive sync—watch directories, ingest new sessions automatically, and write Markdown incrementally.
-  - Keep automation friendly to systemd timers/services: non-interactive defaults should honour the same extraction rules as the interactive flow.
-  - When dealing with repeated exports (e.g., recurring ChatGPT take-outs), track per-conversation state so prior formatting decisions persist; if state tracking is unavailable initially, document the wipe-and-rebuild behaviour clearly.
+  - Build an optional watcher-driven mode for local stores (`~/.codex`, `~/.claude/projects/`) that tails appended JSONL files and updates the corresponding Markdown in real time without ever deleting prior renders.
+  - Provide ready-to-use systemd/cron snippets so unattended runs inherit the same defaults as the interactive flow and expose clear logs if nothing new is synced.
+  - For recurring full exports (e.g., ChatGPT take-outs), persist decisions per conversation so a subsequent run merges or replaces output deterministically rather than forcing manual cleanup.
 - **Future GUI**: The interactive workflow may benefit from a richer UI (TUI/HTML) to visualise chunk sizes, attachments, and preview Markdown/HTML side by side.
+
+## Data Directory Map
+
+| Provider / Action | Source of Truth | Default Markdown Output |
+| --- | --- | --- |
+| Gemini render | Local JSON exports / Drive API | `/realm/data/chatlog/markdown/gemini-render` |
+| Gemini sync (Drive) | Google Drive “AI Studio” folder | `/realm/data/chatlog/markdown/gemini-sync` |
+| ChatGPT import | chat.openai.com export ZIP | `/realm/data/chatlog/markdown/chatgpt` |
+| Claude.ai import | claude.ai export bundle | `/realm/data/chatlog/markdown/claude` |
+| Codex sync/import | `~/.codex/sessions/*.jsonl` | `/realm/data/chatlog/markdown/codex` |
+| Claude Code sync/import | `~/.claude/projects/**` | `/realm/data/chatlog/markdown/claude-code` |
+
+Run caches (`state.json`, `runs.json`) stay under `$XDG_STATE_HOME/polylogue/`, while credentials and tokens live in `$XDG_CONFIG_HOME/polylogue/`.
+
+## Supporting Libraries & Integrations
+
+- **Markdown & HTML**: `markdown-it-py` powers Markdown → HTML previews; `python-frontmatter` keeps YAML headers round-trippable. Consider `mdformat` or `markdown-it-attrs` for future formatting controls.
+- **Templating**: `jinja2` renders the HTML shell today; it can also drive provider-specific report templates or homepage dashboards. If richer components are needed, evaluate `jinja_partials` or `mako`.
+- **Validation**: `pydantic` models keep importer payloads honest; schema drift detectors (e.g., `jsonschema`) can guard against provider changes.
+- **Terminal UX**: `rich`, `gum`, `skim`, `bat`, `glow`, and `delta` cover current needs. For more advanced TUIs, `textual` or `prompt_toolkit` could stage a live preview/tuning panel.
+- **Automation**: Use `systemd` timers or `cron` to trigger `polylogue sync-*` commands; browser automation (Playwright/Selenium) can schedule ChatGPT / Claude exports when APIs are absent.
+- **Data post-processing**: Tools like `ripgrep`, `jq`, or `sqlite-utils` can index the rendered Markdown/HTML; consider wiring an optional SQLite catalogue for cross-provider search.
