@@ -7,12 +7,12 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 - Prefer manual entry? `nix develop` installs Python plus gum, skim, rich, bat, glow, etc.
 - Run `python3 polylogue.py` and pick an action from the gum menu (Render, Sync, Local Syncs, Doctor, Stats, etc.).
 - When a directory has multiple JSON logs, the skim picker previews files with `bat`; press `Ctrl+G` for a live `glow` render before confirming.
-- The first Drive action walks you through supplying a Google OAuth client JSON; tokens are cached next to `polylogue.py`.
+- The first Drive action walks you through supplying a Google OAuth client JSON; credentials and tokens are stored under `$XDG_CONFIG_HOME/polylogue/` (defaults to `~/.config/polylogue/`).
 
 ## What You Can Do
 - **Render local logs:** Choose a file or directory; skim previews candidates, rich shows progress, and outputs land in the configured render directory (default `/realm/data/chatlog/markdown/gemini-render`). Add `--html` for themed previews or `--diff` to see deltas when re-rendering.
-- **Sync Drive folders:** Connect to the default Drive folder (`AI Studio`) and pull chats to Markdown, downloading attachments unless you opt to link only.
-- **Sync Codex / Claude Code sessions:** Mirror local CLI transcripts from `~/.codex/sessions/` and `~/.config/claude/projects/` via `polylogue sync-codex` / `polylogue sync-claude-code`, with optional JSON summaries, pruning, diffs, and HTML previews.
+- **Sync Drive folders:** Connect to the default Drive folder (`AI Studio`) and pull chats to Markdown in `/realm/data/chatlog/markdown/gemini-sync`, downloading attachments unless you opt to link only.
+- **Sync Codex / Claude Code sessions:** Mirror local CLI transcripts from `~/.codex/sessions/` and `~/.config/claude/projects/` via `polylogue sync-codex` / `polylogue sync-claude-code`, with optional JSON summaries, pruning, diffs, and HTML previews. Outputs land in `/realm/data/chatlog/markdown/codex` and `/realm/data/chatlog/markdown/claude-code` by default.
 - **Import exported providers:** Convert ChatGPT zips, Claude exports, Claude Code sessions, or Codex JSONLs via `polylogue import …` subcommands. Skim lets you cherry-pick conversations; `--all` batches them.
 - **Doctor & Stats:** `polylogue doctor` sanity-checks source directories; `polylogue stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters).
 - **View recent runs:** The status dashboard shows the last operations, including attachment MiB and diff counts per command.
@@ -65,14 +65,16 @@ The dev shell equips Polylogue with:
 Everything falls back gracefully when `--plain` is specified or stdout isn’t a TTY.
 
 ## Configuration
-- Polylogue looks for a config at `~/.polylogueconfig` or `$XDG_CONFIG_HOME/polylogue/config.json` (override via `$POLYLOGUE_CONFIG`).
-- Copy `docs/polylogue.config.sample.jsonc` as a starting point to set default collapse thresholds, HTML preferences, and output directories once.
-- `polylogue doctor` reports the expected locations when no config is detected.
+- Polylogue reads configuration from `$POLYLOGUE_CONFIG`, `$XDG_CONFIG_HOME/polylogue/config.json`, or (legacy) `~/.polylogueconfig`.
+- Copy `docs/polylogue.config.sample.jsonc` to `$XDG_CONFIG_HOME/polylogue/config.json` to customise collapse thresholds, HTML defaults, and per-provider output directories.
+- Run state (`state.json`, `runs.json`) lives under `$XDG_STATE_HOME/polylogue/` so automation can tail recent activity.
+- `polylogue doctor` reports the discovered paths when no config is detected.
+- Drive behaviour can be tuned with environment variables such as `$POLYLOGUE_RETRIES`, `$POLYLOGUE_RETRY_BASE`, `$POLYLOGUE_AUTH_MODE`, and `$POLYLOGUE_TOKEN_PATH`.
 
 ## Credentials & Tokens
 1. Create an OAuth client for a “Desktop app” in the Google Cloud Console (we link you directly from the prompt).
-2. Drop the downloaded JSON into the project root when prompted; Polylogue copies it to `credentials.json` and launches the OAuth flow.
-3. `token.json` is generated automatically and refreshed as needed. No manual edits required.
+2. When prompted, point Polylogue at the downloaded JSON; it copies the file to `$XDG_CONFIG_HOME/polylogue/credentials.json` (created on demand) before launching the OAuth flow.
+3. Tokens are written to `$XDG_CONFIG_HOME/polylogue/token.json` and refreshed automatically. Override locations with `$POLYLOGUE_TOKEN_PATH` if necessary.
 
 ## Formatting
 - Markdown keeps attachments in per-chat `_attachments` folders when downloads are enabled.
@@ -83,5 +85,5 @@ Everything falls back gracefully when `--plain` is specified or stdout isn’t a
 
 ## Development Notes
 - Code follows PEP 8 with type hints where practical.
-- No test suite yet; validate with `python3 polylogue.py render PATH --plain --dry-run` and `python3 polylogue.py sync --plain --dry-run` against sample inputs.
+- Run `pytest` for the automated test suite covering importers, sync flows, and HTML transforms.
 - Credentials (`credentials.json`, `token.json`) stay out of version control.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import webbrowser
 from pathlib import Path
@@ -17,8 +18,9 @@ from .util import parse_rfc3339_to_epoch
 from .ui import UI
 
 GDRIVE_INSTRUCTIONS = "https://developers.google.com/drive/api/quickstart/python"
-DEFAULT_CREDENTIALS = Path("credentials.json")
-DEFAULT_TOKEN = Path("token.json")
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "polylogue"
+DEFAULT_CREDENTIALS = CONFIG_DIR / "credentials.json"
+DEFAULT_TOKEN = CONFIG_DIR / "token.json"
 DEFAULT_FOLDER_NAME = "AI Studio"
 
 
@@ -65,6 +67,7 @@ class DriveClient:
                 self.ui.banner("File not found", str(src))
                 continue
             try:
+                cred_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(src, cred_path)
                 self.ui.banner("Saved credentials", f"Copied to {cred_path}")
             except shutil.SameFileError:
