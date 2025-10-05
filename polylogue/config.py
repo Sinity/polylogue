@@ -6,19 +6,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-CONFIG_ENV = "GMD_CONFIG"
+CONFIG_ENV = "POLYLOGUE_CONFIG"
 DEFAULT_PATHS = [
-    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "gmd" / "config.json",
-    Path.home() / ".gmdconfig",
+    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "polylogue" / "config.json",
+    Path.home() / ".polylogueconfig",
 ]
 
 
 @dataclass
 class OutputDirs:
-    render: Path = Path("gmd_out")
-    sync_drive: Path = Path("gemini_synced")
-    sync_codex: Path = Path("codex_synced")
-    sync_claude_code: Path = Path("claude_code_synced")
+    render: Path = Path("polylogue_render")
+    sync_drive: Path = Path("polylogue_gemini_sync")
+    sync_codex: Path = Path("polylogue_codex_sync")
+    sync_claude_code: Path = Path("polylogue_claude_code_sync")
 
 
 @dataclass

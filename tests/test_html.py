@@ -1,4 +1,4 @@
-from chatmd.html import _transform_callouts
+from polylogue.html import _transform_callouts
 
 
 def test_transform_callouts_wraps_details():
