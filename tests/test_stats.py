@@ -1,9 +1,9 @@
 from pathlib import Path
 import json
 
-from chatmd.commands import CommandEnv
-from chatmd.ui import UI
-from gmd import run_stats_cli
+from polylogue.commands import CommandEnv
+from polylogue.ui import UI
+from polylogue.cli import run_stats_cli
 
 
 def test_run_stats_json(tmp_path, capsys):
