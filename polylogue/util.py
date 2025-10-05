@@ -21,7 +21,7 @@ def colorize(text: str, color: str) -> str:
         "cyan": "\033[96m",
         "grey": "\033[90m",
     }
-    if os.environ.get("NO_COLOR") or os.environ.get("GMD_NO_COLOR"):
+    if os.environ.get("NO_COLOR") or os.environ.get("POLYLOGUE_NO_COLOR") or os.environ.get("GMD_NO_COLOR"):
         return text
     return f"{colors.get(color, '')}{text}{colors['reset']}" if sys.stderr.isatty() else text
 
@@ -65,8 +65,8 @@ def parse_input_time_to_epoch(s: Optional[str]) -> Optional[float]:
 
 
 # Simple cache for discovered Drive IDs
-STATE_PATH = Path.home() / ".gmd_state.json"
-RUNS_PATH = Path.home() / ".gmd_runs.json"
+STATE_PATH = Path.home() / ".polylogue_state.json"
+RUNS_PATH = Path.home() / ".polylogue_runs.json"
 
 
 def _load_state() -> dict:

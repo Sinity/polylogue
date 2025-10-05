@@ -52,17 +52,17 @@
 
 ## Import Adapter Architecture
 
-- Introduce `chatmd/importers/` with provider-specific modules exposing a common interface (e.g., `Iterable[Chunk]`). Each adapter normalises exports into the internal chunk schema before handing off to the Markdown pipeline.
+- Introduce `polylogue/importers/` with provider-specific modules exposing a common interface (e.g., `Iterable[Chunk]`). Each adapter normalises exports into the internal chunk schema before handing off to the Markdown pipeline.
 - Validate export payloads via Pydantic/jsonschema to catch format drift per provider.
 - Reuse the new MarkdownDocument pipeline for formatting; attachments, stats, and HTML previews become provider-agnostic.
 
 ## Future Enhancements
 
-- CLI command `gmd import <path>` detects provider type (zip/json) and delegates to the right importer.
-  - Implemented: `gmd import chatgpt`, `gmd import claude`, `gmd import claude-code`, and `gmd import codex` share a common Markdown pipeline with interactive skim pickers and consistent attachment policies.
-- Local sync parity: `gmd sync-codex` and `gmd sync-claude-code` mirror local session stores with the same folding/attachment rules as cloud sync, including skip/prune logic and optional HTML previews.
+- CLI command `polylogue import <path>` detects provider type (zip/json) and delegates to the right importer.
+  - Implemented: `polylogue import chatgpt`, `polylogue import claude`, `polylogue import claude-code`, and `polylogue import codex` share a common Markdown pipeline with interactive skim pickers and consistent attachment policies.
+- Local sync parity: `polylogue sync-codex` and `polylogue sync-claude-code` mirror local session stores with the same folding/attachment rules as cloud sync, including skip/prune logic and optional HTML previews.
 - Optional workflows to push rendered Markdown into knowledge bases (Obsidian vaults, Git repos) or build searchable indices.
-- Document recommended export schedules for both services so users can automate regular backups feeding into `gmd`.
+- Document recommended export schedules for both services so users can automate regular backups feeding into Polylogue.
 - Explore optional “import assistant” prompts: use an LLM to propose extraction thresholds/tool policies based on a sample session, while still letting the user review diffs before writing files.
 
 ## Requirements & UX Considerations

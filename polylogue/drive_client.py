@@ -40,7 +40,7 @@ class DriveClient:
             return cred_path
         if self.ui.plain:
             raise SystemExit(
-                "Missing credentials.json. Download a Google OAuth client secret and place it next to gmd.py."
+                "Missing credentials.json. Download a Google OAuth client secret and place it next to polylogue.py."
             )
         self.ui.banner("Google Drive access needs credentials", "Download OAuth client for Desktop app")
         while True:

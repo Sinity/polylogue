@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gemini Markdown (gmd): interactive-first CLI for Gemini logs."""
+"""Polylogue: interactive-first CLI for AI chat log archives."""
 
 from __future__ import annotations
 
@@ -8,32 +8,32 @@ import json
 from pathlib import Path
 from typing import List, Optional
 
-from chatmd.cli_common import filter_chats, sk_select
-from chatmd.commands import (
+from .cli_common import filter_chats, sk_select
+from .commands import (
     CommandEnv,
     list_command,
     render_command,
     status_command,
     sync_command,
 )
-from chatmd.drive_client import DEFAULT_FOLDER_NAME, DriveClient
-from chatmd.importers import (
+from .drive_client import DEFAULT_FOLDER_NAME, DriveClient
+from .importers import (
     ImportResult,
     import_chatgpt_export,
     import_claude_code_session,
     import_claude_export,
     import_codex_session,
 )
-from chatmd.importers.chatgpt import list_chatgpt_conversations
-from chatmd.importers.claude_ai import list_claude_conversations
-from chatmd.importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
-from chatmd.local_sync import LocalSyncResult, sync_claude_code_sessions, sync_codex_sessions
-from chatmd.options import ListOptions, RenderOptions, SyncOptions
-from chatmd.ui import create_ui
-from gmd_settings import SETTINGS, reset_settings
-from gmd_config import CONFIG, CONFIG_PATH, DEFAULT_PATHS, CONFIG_ENV
-from chatmd.doctor import run_doctor as doctor_run
-from chatmd.util import add_run, parse_input_time_to_epoch
+from .importers.chatgpt import list_chatgpt_conversations
+from .importers.claude_ai import list_claude_conversations
+from .importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
+from .local_sync import LocalSyncResult, sync_claude_code_sessions, sync_codex_sessions
+from .options import ListOptions, RenderOptions, SyncOptions
+from .ui import create_ui
+from .settings import SETTINGS, reset_settings
+from .config import CONFIG, CONFIG_PATH, DEFAULT_PATHS, CONFIG_ENV
+from .doctor import run_doctor as doctor_run
+from .util import add_run, parse_input_time_to_epoch
 
 DEFAULT_COLLAPSE = CONFIG.defaults.collapse_threshold
 DEFAULT_RENDER_OUT = CONFIG.defaults.output_dirs.render
@@ -108,13 +108,13 @@ def summarize_import(ui, title: str, results: List[ImportResult]) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Gemini Markdown (gmd)")
+    parser = argparse.ArgumentParser(description="Polylogue CLI")
     parser.add_argument("--plain", action="store_true", help="Disable interactive UI")
     sub = parser.add_subparsers(dest="cmd")
 
     p_render = sub.add_parser("render")
-    p_render.add_argument("input", type=Path, help="File or directory with Gemini JSON logs")
-    p_render.add_argument("--out", type=Path, default=None, help="Output directory (default gmd_out)")
+    p_render.add_argument("input", type=Path, help="File or directory with provider JSON logs (e.g., Gemini)")
+    p_render.add_argument("--out", type=Path, default=None, help="Output directory (default polylogue_render)")
     p_render.add_argument("--links-only", action="store_true", help="Link attachments instead of downloading")
     p_render.add_argument("--dry-run", action="store_true")
     p_render.add_argument("--force", action="store_true")
@@ -755,7 +755,7 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         limit=args.limit,
     )
 
-    sample_config = Path(__file__).resolve().parent / "docs" / "config.sample.jsonc"
+    sample_config = Path(__file__).resolve().parent / "docs" / "polylogue.config.sample.jsonc"
     config_hint = {
         "cmd": "doctor",
         "checked": {k: int(v) for k, v in report.checked.items()},
@@ -785,7 +785,7 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     if CONFIG_PATH is None:
         candidates = ", ".join(str(p) for p in DEFAULT_PATHS)
         lines.append(
-            f"No gmd config detected. Copy {sample_config} to one of [{candidates}] or set ${CONFIG_ENV}."
+            f"No Polylogue config detected. Copy {sample_config} to one of [{candidates}] or set ${CONFIG_ENV}."
         )
     if not report.issues:
         lines.append("No issues detected.")
@@ -1258,8 +1258,8 @@ def prompt_list(env: CommandEnv) -> None:
 
 def show_help(env: CommandEnv) -> None:
     ui = env.ui
-    ui.console.print("Gemini Markdown CLI commands:")
-    ui.console.print("  render  Render local Gemini JSON files to Markdown")
+    ui.console.print("Polylogue commands:")
+    ui.console.print("  render  Render local provider JSON files to Markdown")
     ui.console.print("  sync    Sync Google Drive chats to local Markdown")
     ui.console.print("  list    List chats available in the configured Drive folder")
     ui.console.print("  status  Show cached Drive info and recent runs")
@@ -1303,7 +1303,7 @@ def main() -> None:
         if ui.plain:
             parser.print_help()
             return
-        ui.banner("Gemini Markdown", "Render local logs or sync Google Drive chats")
+        ui.banner("Polylogue", "Render AI chat logs or sync providers")
         interactive_menu(env)
         return
 

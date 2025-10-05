@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from chatmd.doctor import run_doctor
+from polylogue.doctor import run_doctor
 
 
 def test_doctor_detects_invalid_codex(tmp_path):

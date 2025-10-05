@@ -2,9 +2,9 @@ import json
 import zipfile
 from pathlib import Path
 
-from chatmd.importers.chatgpt import import_chatgpt_export
-from chatmd.importers.claude_ai import import_claude_export
-from chatmd.importers.claude_code import import_claude_code_session
+from polylogue.importers.chatgpt import import_chatgpt_export
+from polylogue.importers.claude_ai import import_claude_export
+from polylogue.importers.claude_code import import_claude_code_session
 
 
 def _write(path: Path, data) -> Path:

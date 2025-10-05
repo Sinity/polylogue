@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from chatmd.local_sync import sync_claude_code_sessions, sync_codex_sessions
+from polylogue.local_sync import sync_claude_code_sessions, sync_codex_sessions
 
 
 def _write_codex_session(root: Path, name: str, lines: list[dict]) -> Path:

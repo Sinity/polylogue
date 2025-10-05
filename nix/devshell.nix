@@ -17,7 +17,7 @@ pkgs.mkShell {
     pkgs.python3Packages.jinja2
     pkgs.python3Packages.markdown-it-py
 
-    # CLI helpers used by gmd
+    # CLI helpers used by Polylogue
     pkgs.skim
     pkgs.gum
     pkgs.bat
