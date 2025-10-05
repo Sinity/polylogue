@@ -44,6 +44,8 @@
     - Traverse the JSONL entries in order, reconstruct parent/child relationships when necessary (sidechains, branching uuids), and normalise `user` / `assistant` messages into chunks (extracting embedded code diffs or logs when large). Treat `summary` entries as front-matter notes describing the compaction intervals.
     - Treat summaries as front-matter notes or inline callouts; attach file snapshots when present.
     - Apply the same attachment heuristics as Codex so mega-byte diffs/tool outputs are captured without overwhelming the Markdown body.
+  - Additional indexes: `history.json` tracks recent sessions per workspace, `activeProject.json` points to the open workspace, and `recentCommands.json` enumerates macro usage. These can seed sync dashboards without reparsing every JSONL.
+  - The IDE also keeps `shell-snapshots/<session>/<timestamp>.jsonl` deltas that mirror `tool_result` payloads; when present, link them as attachments so command histories remain accessible even after compaction.
 
 ## Live Capture Considerations
 
@@ -89,3 +91,25 @@
   - Keep automation friendly to systemd timers/services: non-interactive defaults should honour the same extraction rules as the interactive flow.
   - When dealing with repeated exports (e.g., recurring ChatGPT take-outs), track per-conversation state so prior formatting decisions persist; if state tracking is unavailable initially, document the wipe-and-rebuild behaviour clearly.
 - **Future GUI**: The interactive workflow may benefit from a richer UI (TUI/HTML) to visualise chunk sizes, attachments, and preview Markdown/HTML side by side.
+
+## Data Directory Map
+
+| Provider / Action | Source of Truth | Default Markdown Output |
+| --- | --- | --- |
+| Gemini render | Local JSON exports / Drive API | `/realm/data/chatlog/markdown/gemini-render` |
+| Gemini sync (Drive) | Google Drive “AI Studio” folder | `/realm/data/chatlog/markdown/gemini-sync` |
+| ChatGPT import | chat.openai.com export ZIP | `/realm/data/chatlog/markdown/chatgpt` |
+| Claude.ai import | claude.ai export bundle | `/realm/data/chatlog/markdown/claude` |
+| Codex sync/import | `~/.codex/sessions/*.jsonl` | `/realm/data/chatlog/markdown/codex` |
+| Claude Code sync/import | `~/.config/claude/projects/**` | `/realm/data/chatlog/markdown/claude-code` |
+
+Run caches (`state.json`, `runs.json`) stay under `$XDG_STATE_HOME/polylogue/`, while credentials and tokens live in `$XDG_CONFIG_HOME/polylogue/`.
+
+## Supporting Libraries & Integrations
+
+- **Markdown & HTML**: `markdown-it-py` powers Markdown → HTML previews; `python-frontmatter` keeps YAML headers round-trippable. Consider `mdformat` or `markdown-it-attrs` for future formatting controls.
+- **Templating**: `jinja2` renders the HTML shell today; it can also drive provider-specific report templates or homepage dashboards. If richer components are needed, evaluate `jinja_partials` or `mako`.
+- **Validation**: `pydantic` models keep importer payloads honest; schema drift detectors (e.g., `jsonschema`) can guard against provider changes.
+- **Terminal UX**: `rich`, `gum`, `skim`, `bat`, `glow`, and `delta` cover current needs. For more advanced TUIs, `textual` or `prompt_toolkit` could stage a live preview/tuning panel.
+- **Automation**: Use `systemd` timers or `cron` to trigger `polylogue sync-*` commands; browser automation (Playwright/Selenium) can schedule ChatGPT / Claude exports when APIs are absent.
+- **Data post-processing**: Tools like `ripgrep`, `jq`, or `sqlite-utils` can index the rendered Markdown/HTML; consider wiring an optional SQLite catalogue for cross-provider search.
