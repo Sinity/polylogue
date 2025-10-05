@@ -40,6 +40,8 @@ DEFAULT_RENDER_OUT = CONFIG.defaults.output_dirs.render
 DEFAULT_SYNC_OUT = CONFIG.defaults.output_dirs.sync_drive
 DEFAULT_CODEX_SYNC_OUT = CONFIG.defaults.output_dirs.sync_codex
 DEFAULT_CLAUDE_CODE_SYNC_OUT = CONFIG.defaults.output_dirs.sync_claude_code
+DEFAULT_CHATGPT_OUT = CONFIG.defaults.output_dirs.import_chatgpt
+DEFAULT_CLAUDE_OUT = CONFIG.defaults.output_dirs.import_claude
 
 SETTINGS.html_previews = CONFIG.defaults.html_previews
 SETTINGS.html_theme = CONFIG.defaults.html_theme
@@ -114,7 +116,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_render = sub.add_parser("render")
     p_render.add_argument("input", type=Path, help="File or directory with provider JSON logs (e.g., Gemini)")
-    p_render.add_argument("--out", type=Path, default=None, help="Output directory (default polylogue_render)")
+    p_render.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"Output directory (default {DEFAULT_RENDER_OUT})",
+    )
     p_render.add_argument("--links-only", action="store_true", help="Link attachments instead of downloading")
     p_render.add_argument("--dry-run", action="store_true")
     p_render.add_argument("--force", action="store_true")
@@ -127,7 +134,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync = sub.add_parser("sync")
     p_sync.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
     p_sync.add_argument("--folder-id", type=str, default=None)
-    p_sync.add_argument("--out", type=Path, default=None, help="Output directory (default gemini_synced)")
+    p_sync.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"Output directory (default {DEFAULT_SYNC_OUT})",
+    )
     p_sync.add_argument("--links-only", action="store_true")
     p_sync.add_argument("--since", type=str, default=None)
     p_sync.add_argument("--until", type=str, default=None)
@@ -143,7 +155,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_sync_codex = sub.add_parser("sync-codex")
     p_sync_codex.add_argument("--base-dir", type=Path, default=None)
-    p_sync_codex.add_argument("--out", type=Path, default=None)
+    p_sync_codex.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"Output directory (default {DEFAULT_CODEX_SYNC_OUT})",
+    )
     p_sync_codex.add_argument("--collapse-threshold", type=int, default=None)
     p_sync_codex.add_argument("--html", action="store_true")
     p_sync_codex.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"])
@@ -155,7 +172,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_sync_claude_code = sub.add_parser("sync-claude-code")
     p_sync_claude_code.add_argument("--base-dir", type=Path, default=None)
-    p_sync_claude_code.add_argument("--out", type=Path, default=None)
+    p_sync_claude_code.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"Output directory (default {DEFAULT_CLAUDE_CODE_SYNC_OUT})",
+    )
     p_sync_claude_code.add_argument("--collapse-threshold", type=int, default=None)
     p_sync_claude_code.add_argument("--html", action="store_true")
     p_sync_claude_code.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"])
@@ -194,7 +216,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_chatgpt.add_argument("export_path", type=Path, help="Path to ChatGPT export .zip or directory")
     p_import_chatgpt.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Restrict to specific conversation id (repeatable)")
     p_import_chatgpt.add_argument("--all", action="store_true", help="Import all conversations without prompting")
-    p_import_chatgpt.add_argument("--out", type=Path, default=None, help="Output directory for Markdown files")
+    p_import_chatgpt.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"Output directory for Markdown files (default {DEFAULT_CHATGPT_OUT})",
+    )
     p_import_chatgpt.add_argument("--collapse-threshold", type=int, default=None)
     p_import_chatgpt.add_argument("--html", action="store_true", help="Also write HTML previews")
     p_import_chatgpt.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
@@ -203,7 +230,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_claude.add_argument("export_path", type=Path, help="Path to Claude export .zip or directory")
     p_import_claude.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Restrict to specific conversation id (repeatable)")
     p_import_claude.add_argument("--all", action="store_true", help="Import all conversations without prompting")
-    p_import_claude.add_argument("--out", type=Path, default=None, help="Output directory for Markdown files")
+    p_import_claude.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"Output directory for Markdown files (default {DEFAULT_CLAUDE_OUT})",
+    )
     p_import_claude.add_argument("--collapse-threshold", type=int, default=None)
     p_import_claude.add_argument("--html", action="store_true", help="Also write HTML previews")
     p_import_claude.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
@@ -211,7 +243,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_claude_code = import_sub.add_parser("claude-code", help="Convert a Claude Code session to Markdown")
     p_import_claude_code.add_argument("session_id", type=str, help="Session UUID or suffix")
     p_import_claude_code.add_argument("--base-dir", type=Path, default=None, help="Override Claude Code projects directory")
-    p_import_claude_code.add_argument("--out", type=Path, default=None, help="Output directory for Markdown")
+    p_import_claude_code.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"Output directory for Markdown (default {DEFAULT_CLAUDE_CODE_SYNC_OUT})",
+    )
     p_import_claude_code.add_argument("--collapse-threshold", type=int, default=None)
     p_import_claude_code.add_argument("--html", action="store_true", help="Also write HTML preview")
     p_import_claude_code.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML preview")
@@ -219,7 +256,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_codex = import_sub.add_parser("codex", help="Convert a Codex CLI session to Markdown")
     p_import_codex.add_argument("session_id", type=str, help="Codex session UUID (or suffix)")
     p_import_codex.add_argument("--base-dir", type=Path, default=None, help="Override Codex sessions directory")
-    p_import_codex.add_argument("--out", type=Path, default=None, help="Output directory for Markdown")
+    p_import_codex.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help=f"Output directory for Markdown (default {DEFAULT_CODEX_SYNC_OUT})",
+    )
     p_import_codex.add_argument("--collapse-threshold", type=int, default=None, help="Fold responses longer than this many lines")
     p_import_codex.add_argument("--html", action="store_true", help="Also write HTML preview")
     p_import_codex.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML preview")
@@ -559,7 +601,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
-    out_dir = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     html_enabled = args.html or SETTINGS.html_previews
@@ -600,7 +642,7 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
 def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     export_path = Path(args.export_path)
-    out_dir = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    out_dir = Path(args.out) if args.out else DEFAULT_CHATGPT_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     html_enabled = args.html or SETTINGS.html_previews
     html_theme = args.html_theme or SETTINGS.html_theme
@@ -653,7 +695,7 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
 def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     export_path = Path(args.export_path)
-    out_dir = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     html_enabled = args.html or SETTINGS.html_previews
     html_theme = args.html_theme or SETTINGS.html_theme
@@ -720,7 +762,7 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
             return
         session_id = selection[0].split("\t")[-1]
 
-    out_dir = Path(args.out) if args.out else DEFAULT_RENDER_OUT
+    out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     html_enabled = args.html or SETTINGS.html_previews
     html_theme = args.html_theme or SETTINGS.html_theme
@@ -755,7 +797,7 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         limit=args.limit,
     )
 
-    sample_config = Path(__file__).resolve().parent / "docs" / "polylogue.config.sample.jsonc"
+    sample_config = Path(__file__).resolve().parent.parent / "docs" / "polylogue.config.sample.jsonc"
     config_hint = {
         "cmd": "doctor",
         "checked": {k: int(v) for k, v in report.checked.items()},
