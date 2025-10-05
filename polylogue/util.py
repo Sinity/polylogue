@@ -1,13 +1,13 @@
+import datetime
+import difflib
 import json
 import os
 import re
-import sys
-import datetime
-import difflib
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
-from typing import Optional, Any, Dict
+from typing import Any, Dict, Optional
 
 
 def colorize(text: str, color: str) -> str:
@@ -21,7 +21,7 @@ def colorize(text: str, color: str) -> str:
         "cyan": "\033[96m",
         "grey": "\033[90m",
     }
-    if os.environ.get("NO_COLOR") or os.environ.get("POLYLOGUE_NO_COLOR") or os.environ.get("GMD_NO_COLOR"):
+    if os.environ.get("NO_COLOR") or os.environ.get("POLYLOGUE_NO_COLOR"):
         return text
     return f"{colors.get(color, '')}{text}{colors['reset']}" if sys.stderr.isatty() else text
 
@@ -65,8 +65,9 @@ def parse_input_time_to_epoch(s: Optional[str]) -> Optional[float]:
 
 
 # Simple cache for discovered Drive IDs
-STATE_PATH = Path.home() / ".polylogue_state.json"
-RUNS_PATH = Path.home() / ".polylogue_runs.json"
+STATE_HOME = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "polylogue"
+STATE_PATH = STATE_HOME / "state.json"
+RUNS_PATH = STATE_HOME / "runs.json"
 
 
 def _load_state() -> dict:
@@ -80,6 +81,7 @@ def _load_state() -> dict:
 
 def _save_state(state: dict) -> None:
     try:
+        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
     except Exception:
         pass
@@ -109,6 +111,7 @@ def add_run(record: Dict[str, Any]) -> None:
         runs.append(payload)
         # Keep last 200
         runs = runs[-200:]
+        RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
         RUNS_PATH.write_text(json.dumps(runs, indent=2), encoding="utf-8")
     except Exception:
         pass

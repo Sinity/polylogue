@@ -24,11 +24,11 @@ TOKEN_FILE = "token.json"
 def _retry(fn, *, retries: int = 3, base_delay: float = 0.5):
     # Allow env overrides for tuning
     try:
-        retries = int(os.environ.get("GMD_RETRIES", retries))
+        retries = int(os.environ.get("POLYLOGUE_RETRIES", retries))
     except Exception:
         pass
     try:
-        base_delay = float(os.environ.get("GMD_RETRY_BASE", base_delay))
+        base_delay = float(os.environ.get("POLYLOGUE_RETRY_BASE", base_delay))
     except Exception:
         pass
     last_err = None
@@ -48,7 +48,7 @@ def get_drive_service(credentials_path: Path, verbose: bool = False):
         print(colorize("Google API libraries not available.", "red"))
         return None
     creds = None
-    token_env = os.environ.get("GMD_TOKEN_PATH")
+    token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
     token_path = Path(token_env) if token_env else (credentials_path.parent / TOKEN_FILE)
     if token_path.exists():
         try:
@@ -68,7 +68,7 @@ def get_drive_service(credentials_path: Path, verbose: bool = False):
                 print(colorize(f"Missing credentials at {credentials_path}", "red"))
                 return None
             flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
-            mode = os.environ.get("GMD_AUTH_MODE", "console").lower()
+            mode = os.environ.get("POLYLOGUE_AUTH_MODE", "console").lower()
             try:
                 if mode == "local":
                     creds = flow.run_local_server(port=0)
@@ -78,6 +78,7 @@ def get_drive_service(credentials_path: Path, verbose: bool = False):
                 # fallback to console
                 creds = flow.run_console()
             try:
+                token_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(token_path, "w") as f:
                     f.write(creds.to_json())
             except Exception:
