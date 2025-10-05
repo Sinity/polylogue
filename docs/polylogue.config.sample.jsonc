@@ -1,0 +1,14 @@
+{
+  // Copy this file to ~/.polylogueconfig or $XDG_CONFIG_HOME/polylogue/config.json and adjust as needed.
+  "defaults": {
+    "collapse_threshold": 30,
+    "html_previews": true,
+    "html_theme": "dark",
+    "output_dirs": {
+      "render": "~/workspace/polylogue_render",
+      "sync_drive": "~/workspace/polylogue_gemini_sync",
+      "sync_codex": "~/workspace/polylogue_codex_sync",
+      "sync_claude_code": "~/workspace/polylogue_claude_code_sync"
+    }
+  }
+}
