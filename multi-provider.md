@@ -36,15 +36,15 @@
     - `response_item:type == "reasoning"` currently carries encrypted content, so omit them until OpenAI surfaces plaintext traces.
     - A helper script (see `/tmp/codex-session.md` during analysis) already demonstrates this flow: it harvests messages, extracts oversized payloads, and feeds the result into the shared Markdown pipeline.
 
-- **Claude Code (`~/.config/claude`)**
+- **Claude Code (`~/.claude`)**
   - Directory structure captures IDE/workflow state: `projects/<workspace>/*.jsonl` contains session logs with `summary` nodes (context/compaction checkpoints), `user` prompts, `assistant` replies, and tool interactions. Each record includes `parentUuid`, `cwd`, and `sessionId`, so conversations can branch; “compacted” summaries signal that earlier nodes were rolled up.
-  - Workspace folders mirror absolute paths with `/` replaced by `-` (e.g., `/realm/project/sinnix` → `-realm-project-sinnix`). Rows mix `summary`, `user`, `assistant`, `tool_use`, and `tool_result` payloads; use `parentUuid`/`leafUuid` to stitch branches and pair tool calls with their results.
+- Workspace folders mirror absolute paths with `/` replaced by `-` (e.g., `/realm/project/sinnix` → `-realm-project-sinnix`). Rows mix `summary`, `user`, `assistant`, `tool_use`, and `tool_result` payloads; use `parentUuid`/`leafUuid` to stitch branches and pair tool calls with their results.
   - Supplemental folders—`commands/` (prompt macros), `extras/` (binary assets), `ide/` (editor state), `shell-snapshots/` (timestamped shell transcripts and `.lock` sentinels), `todos/`, and `tools/` (Python helpers)—hold artefacts that may need attachment or metadata treatment during import.
   - Import approach:
     - Traverse the JSONL entries in order, reconstruct parent/child relationships when necessary (sidechains, branching uuids), and normalise `user` / `assistant` messages into chunks (extracting embedded code diffs or logs when large). Treat `summary` entries as front-matter notes describing the compaction intervals.
     - Treat summaries as front-matter notes or inline callouts; attach file snapshots when present.
     - Apply the same attachment heuristics as Codex so mega-byte diffs/tool outputs are captured without overwhelming the Markdown body.
-  - Additional indexes: `history.json` tracks recent sessions per workspace, `activeProject.json` points to the open workspace, and `recentCommands.json` enumerates macro usage. These can seed sync dashboards without reparsing every JSONL.
+- Additional indexes: `history.json` tracks recent sessions per workspace, `activeProject.json` points to the open workspace, and `recentCommands.json` enumerates macro usage. These can seed sync dashboards without reparsing every JSONL.
   - The IDE also keeps `shell-snapshots/<session>/<timestamp>.jsonl` deltas that mirror `tool_result` payloads; when present, link them as attachments so command histories remain accessible even after compaction.
 
 ## Live Capture Considerations
@@ -87,7 +87,7 @@
   - Validate each provider’s JSON payloads via Pydantic/jsonschema (with a bypass flag if files drift from spec).
   - Plan for optional PII/“sensitive content” detection that redacts or moves such material to attachments.
 - **Automation targets**:
-  - Support a “sync” mode for local stores (`~/.codex`, `~/.config/claude/projects/`) akin to the Drive sync—watch directories, ingest new sessions automatically, and write Markdown incrementally.
+  - Support a “sync” mode for local stores (`~/.codex`, `~/.claude/projects/`) akin to the Drive sync—watch directories, ingest new sessions automatically, and write Markdown incrementally.
   - Keep automation friendly to systemd timers/services: non-interactive defaults should honour the same extraction rules as the interactive flow.
   - When dealing with repeated exports (e.g., recurring ChatGPT take-outs), track per-conversation state so prior formatting decisions persist; if state tracking is unavailable initially, document the wipe-and-rebuild behaviour clearly.
 - **Future GUI**: The interactive workflow may benefit from a richer UI (TUI/HTML) to visualise chunk sizes, attachments, and preview Markdown/HTML side by side.
@@ -101,7 +101,7 @@
 | ChatGPT import | chat.openai.com export ZIP | `/realm/data/chatlog/markdown/chatgpt` |
 | Claude.ai import | claude.ai export bundle | `/realm/data/chatlog/markdown/claude` |
 | Codex sync/import | `~/.codex/sessions/*.jsonl` | `/realm/data/chatlog/markdown/codex` |
-| Claude Code sync/import | `~/.config/claude/projects/**` | `/realm/data/chatlog/markdown/claude-code` |
+| Claude Code sync/import | `~/.claude/projects/**` | `/realm/data/chatlog/markdown/claude-code` |
 
 Run caches (`state.json`, `runs.json`) stay under `$XDG_STATE_HOME/polylogue/`, while credentials and tokens live in `$XDG_CONFIG_HOME/polylogue/`.
 

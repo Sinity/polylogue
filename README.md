@@ -12,7 +12,7 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 ## What You Can Do
 - **Render local logs:** Choose a file or directory; skim previews candidates, rich shows progress, and outputs land in the configured render directory (default `/realm/data/chatlog/markdown/gemini-render`). Add `--html` for themed previews or `--diff` to see deltas when re-rendering.
 - **Sync Drive folders:** Connect to the default Drive folder (`AI Studio`) and pull chats to Markdown in `/realm/data/chatlog/markdown/gemini-sync`, downloading attachments unless you opt to link only.
-- **Sync Codex / Claude Code sessions:** Mirror local CLI transcripts from `~/.codex/sessions/` and `~/.config/claude/projects/` via `polylogue sync-codex` / `polylogue sync-claude-code`, with optional JSON summaries, pruning, diffs, and HTML previews. Outputs land in `/realm/data/chatlog/markdown/codex` and `/realm/data/chatlog/markdown/claude-code` by default.
+- **Sync Codex / Claude Code sessions:** Mirror local CLI transcripts from `~/.codex/sessions/` and `~/.claude/projects/` via `polylogue sync-codex` / `polylogue sync-claude-code`, with optional JSON summaries, pruning, diffs, and HTML previews. Outputs land in `/realm/data/chatlog/markdown/codex` and `/realm/data/chatlog/markdown/claude-code` by default.
 - **Import exported providers:** Convert ChatGPT zips, Claude exports, Claude Code sessions, or Codex JSONLs via `polylogue import …` subcommands. Skim lets you cherry-pick conversations; `--all` batches them.
 - **Doctor & Stats:** `polylogue doctor` sanity-checks source directories; `polylogue stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters).
 - **View recent runs:** The status dashboard shows the last operations, including attachment MiB and diff counts per command.
@@ -31,7 +31,7 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 - Front matter records `sourcePlatform: claude.ai`, `conversationId`, `sourceModel`, and `sourceExportPath`.
 
 ### Claude Code Sessions
-- Local IDE logs live under `~/.config/claude/projects/`. Use `polylogue sync-claude-code --out /realm/data/chatlog/markdown/claude-code --html --diff` for continuous mirroring or `polylogue import claude-code SESSION_ID` for one-offs.
+- Local IDE logs live under `~/.claude/projects/`. Use `polylogue sync-claude-code --out /realm/data/chatlog/markdown/claude-code --html --diff` for continuous mirroring or `polylogue import claude-code SESSION_ID` for one-offs.
 - Each Markdown file captures summaries, tool invocations, shell transcripts, and provenance fields (`sourceSessionPath`, `sourceWorkspace`).
 
 ### OpenAI Codex CLI
