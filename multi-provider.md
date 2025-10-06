@@ -63,9 +63,7 @@
 - CLI command `polylogue import <path>` detects provider type (zip/json) and delegates to the right importer.
   - Implemented: `polylogue import chatgpt`, `polylogue import claude`, `polylogue import claude-code`, and `polylogue import codex` share a common Markdown pipeline with interactive skim pickers and consistent attachment policies.
 - Local sync parity: `polylogue sync-codex` and `polylogue sync-claude-code` mirror local session stores with the same folding/attachment rules as cloud sync, including skip/prune logic and optional HTML previews.
-- Optional workflows to push rendered Markdown into knowledge bases (Obsidian vaults, Git repos) or build searchable indices.
 - Document recommended export schedules for both services so users can automate regular backups feeding into Polylogue.
-- Explore optional “import assistant” prompts: use an LLM to propose extraction thresholds/tool policies based on a sample session, while still letting the user review diffs before writing files.
 
 ## Requirements & UX Considerations
 
@@ -85,11 +83,11 @@
   - Include provider badges or metadata tags in both Markdown and HTML previews to indicate provenance.
 - **Validation & safety**:
   - Validate each provider’s JSON payloads via Pydantic/jsonschema (with a bypass flag if files drift from spec).
-  - Plan for optional PII/“sensitive content” detection that redacts or moves such material to attachments.
+  - Keep an opt-in hook that can scan content just before Markdown is written (e.g., via Presidio-style classifiers) or encrypt the entire document with a user-supplied public key instead of redacting inline.
 - **Automation targets**:
-  - Support a “sync” mode for local stores (`~/.codex`, `~/.claude/projects/`) akin to the Drive sync—watch directories, ingest new sessions automatically, and write Markdown incrementally.
-  - Keep automation friendly to systemd timers/services: non-interactive defaults should honour the same extraction rules as the interactive flow.
-  - When dealing with repeated exports (e.g., recurring ChatGPT take-outs), track per-conversation state so prior formatting decisions persist; if state tracking is unavailable initially, document the wipe-and-rebuild behaviour clearly.
+  - Build an optional watcher-driven mode for local stores (`~/.codex`, `~/.claude/projects/`) that tails appended JSONL files and updates the corresponding Markdown in real time without ever deleting prior renders.
+  - Provide ready-to-use systemd/cron snippets so unattended runs inherit the same defaults as the interactive flow and expose clear logs if nothing new is synced.
+  - For recurring full exports (e.g., ChatGPT take-outs), persist decisions per conversation so a subsequent run merges or replaces output deterministically rather than forcing manual cleanup.
 - **Future GUI**: The interactive workflow may benefit from a richer UI (TUI/HTML) to visualise chunk sizes, attachments, and preview Markdown/HTML side by side.
 
 ## Data Directory Map
