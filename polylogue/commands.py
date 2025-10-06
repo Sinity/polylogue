@@ -35,7 +35,15 @@ from .render import (
     remote_attachment_info,
 )
 from .ui import UI
-from .util import RUNS_PATH, STATE_PATH, add_run, parse_rfc3339_to_epoch, sanitize_filename
+from .util import (
+    RUNS_PATH,
+    STATE_PATH,
+    add_run,
+    parse_rfc3339_to_epoch,
+    sanitize_filename,
+    snapshot_for_diff,
+    write_delta_diff,
+)
 
 
 @dataclass
@@ -84,6 +92,9 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
         chunks = validate_chunks(chunks_raw)
         md_path = output_dir / f"{sanitize_filename(src.stem)}.md"
         context = _context_from_local(obj, src.stem)
+        snapshot = None
+        if options.diff and not options.dry_run:
+            snapshot = snapshot_for_diff(md_path)
         doc = _build_markdown_output(
             chunks,
             context,
@@ -100,12 +111,26 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
             html_path = md_path.with_suffix(".html")
             write_html(doc, html_path, options.html_theme)
 
+        diff_path: Optional[Path] = None
+        if options.diff and not options.dry_run and snapshot is not None:
+            diff_path = write_delta_diff(snapshot, md_path) or None
+            try:
+                snapshot.unlink()
+            except Exception:
+                pass
+        elif snapshot is not None:
+            try:
+                snapshot.unlink()
+            except Exception:
+                pass
+
         render_files.append(
             RenderFile(
                 output=md_path,
                 attachments=len(doc.attachments),
                 stats=doc.stats,
                 html=html_path,
+                diff=diff_path,
             )
         )
         totals["attachments"] += len(doc.attachments)
@@ -113,7 +138,18 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
             if isinstance(value, (int, float)):
                 totals[key] += value
 
-    add_run({"cmd": "render", "count": len(render_files), "out": str(output_dir)})
+    diff_count = sum(1 for item in render_files if item.diff)
+    add_run(
+        {
+            "cmd": "render",
+            "count": len(render_files),
+            "out": str(output_dir),
+            "attachments": totals.get("attachments", 0),
+            "attachmentBytes": totals.get("attachmentBytes", 0),
+            "tokens": totals.get("totalTokensApprox", 0),
+            "diffs": diff_count,
+        }
+    )
     totals.setdefault("attachments", 0)
     return RenderResult(
         count=len(render_files),
@@ -280,6 +316,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
 
     items: List[SyncItem] = []
     totals = defaultdict(int)
+    diff_count = 0
     for meta in chats:
         file_id = meta.get("id")
         name_safe = sanitize_filename(meta.get("name") or file_id or "chat")
@@ -299,6 +336,9 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
             continue
         chunks = validate_chunks(chunks_raw)
         context = _context_from_drive(meta, obj, name_safe)
+        snapshot = None
+        if options.diff and not options.dry_run:
+            snapshot = snapshot_for_diff(md_path)
         doc = _build_markdown_output(
             chunks,
             context,
@@ -322,6 +362,19 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
             html_path = md_path.with_suffix(".html")
             write_html(doc, html_path, options.html_theme)
 
+        diff_path: Optional[Path] = None
+        if options.diff and not options.dry_run and snapshot is not None:
+            diff_path = write_delta_diff(snapshot, md_path) or None
+            try:
+                snapshot.unlink()
+            except Exception:
+                pass
+        elif snapshot is not None:
+            try:
+                snapshot.unlink()
+            except Exception:
+                pass
+
         items.append(
             SyncItem(
                 id=file_id,
@@ -330,13 +383,17 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
                 attachments=len(doc.attachments),
                 stats=doc.stats,
                 html=html_path,
+                diff=diff_path,
             )
         )
+        if diff_path:
+            diff_count += 1
         totals["attachments"] += len(doc.attachments)
         for key, value in doc.stats.items():
             if isinstance(value, (int, float)):
                 totals[key] += value
 
+    pruned_count = 0
     if options.prune:
         wanted = {sanitize_filename(item.name or item.id or "") for item in items}
         to_delete = compute_prune_paths(options.output_dir, wanted)
@@ -359,6 +416,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
                     env.ui.console.print(f"[red]Failed to remove {path}")
             if removed:
                 env.ui.console.print(f"Removed {removed} stale path(s)")
+            pruned_count = removed
 
     add_run(
         {
@@ -367,6 +425,12 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
             "out": str(options.output_dir),
             "folder_name": options.folder_name,
             "folder_id": folder_id,
+            "attachments": totals.get("attachments", 0),
+            "attachmentBytes": totals.get("attachmentBytes", 0),
+            "tokens": totals.get("totalTokensApprox", 0),
+            "skipped": 0,
+            "pruned": pruned_count,
+            "diffs": diff_count,
         }
     )
 
@@ -385,11 +449,39 @@ def status_command(env: CommandEnv) -> StatusResult:
     credentials_present = DEFAULT_CREDENTIALS.exists()
     token_present = DEFAULT_TOKEN.exists()
     recent_runs: List[dict] = []
+    run_summary: Dict[str, Any] = {}
     if RUNS_PATH.exists():
         try:
             data = json.loads(RUNS_PATH.read_text(encoding="utf-8"))
             if isinstance(data, list):
                 recent_runs = data[-10:]
+                for entry in data:
+                    cmd = entry.get("cmd") or "unknown"
+                    stats = run_summary.setdefault(
+                        cmd,
+                        {
+                            "count": 0,
+                            "attachments": 0,
+                            "attachmentBytes": 0,
+                            "tokens": 0,
+                            "skipped": 0,
+                            "pruned": 0,
+                            "diffs": 0,
+                            "last": None,
+                            "last_out": None,
+                            "last_count": None,
+                        },
+                    )
+                    stats["count"] += entry.get("count", 0) or 0
+                    stats["attachments"] += entry.get("attachments", 0) or 0
+                    stats["attachmentBytes"] += entry.get("attachmentBytes", 0) or 0
+                    stats["tokens"] += entry.get("tokens", 0) or 0
+                    stats["skipped"] += entry.get("skipped", 0) or 0
+                    stats["pruned"] += entry.get("pruned", 0) or 0
+                    stats["diffs"] += entry.get("diffs", 0) or 0
+                    stats["last"] = entry.get("timestamp")
+                    stats["last_out"] = entry.get("out")
+                    stats["last_count"] = entry.get("count")
         except Exception:
             pass
     return StatusResult(
@@ -398,4 +490,5 @@ def status_command(env: CommandEnv) -> StatusResult:
         state_path=STATE_PATH,
         runs_path=RUNS_PATH,
         recent_runs=recent_runs,
+        run_summary=run_summary,
     )

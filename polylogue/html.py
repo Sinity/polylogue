@@ -64,6 +64,30 @@ HTML_TEMPLATE = """
         margin-left: 0;
         background: {{ theme.callout_border }}11;
       }
+      details.callout {
+        margin: 1rem 0;
+        border-left: 4px solid {{ theme.callout_border }};
+        padding-left: 1rem;
+        background: {{ theme.callout_border }}11;
+      }
+      details.callout summary {
+        cursor: pointer;
+        font-weight: 600;
+        list-style: none;
+      }
+      details.callout summary::-webkit-details-marker {
+        display: none;
+      }
+      details.callout summary::before {
+        content: '▶';
+        display: inline-block;
+        margin-right: 0.5rem;
+        transform: rotate(0deg);
+        transition: transform 0.2s ease;
+      }
+      details.callout[open] summary::before {
+        transform: rotate(90deg);
+      }
       pre {
         background: {{ theme.foreground }}11;
         padding: 0.75rem;
@@ -106,6 +130,7 @@ def render_html(document: MarkdownDocument, options: HtmlRenderOptions) -> str:
     theme = THEMES.get(options.theme, THEMES["light"])
     md = MarkdownIt("commonmark", {"html": True}).enable("table").enable("strikethrough")
     body_html = md.render(document.body)
+    body_html = _transform_callouts(body_html)
     metadata_rows = {k: v for k, v in document.metadata.items() if k != "attachments"}
     metadata_rows["attachments"] = len(document.attachments)
 
@@ -153,3 +178,30 @@ def write_html(document: MarkdownDocument, path: Path, theme: str) -> None:
     options = HtmlRenderOptions(theme=theme)
     html_text = render_html(document, options)
     path.write_text(html_text, encoding="utf-8")
+
+
+def _transform_callouts(html: str) -> str:
+    import re
+
+    pattern = re.compile(
+        r"<blockquote>\s*<p>\[!([A-Z]+)\]([+-])\s+(.*?)</p>(.*?)</blockquote>",
+        flags=re.DOTALL,
+    )
+
+    def repl(match: re.Match[str]) -> str:
+        kind, fold, header, body = match.groups()
+        open_attr = " open" if fold == "+" else ""
+        summary = header.strip()
+        body_html = body.strip()
+        if body_html and not body_html.startswith("<"):
+            body_html = f"<p>{body_html}</p>"
+        parts = [
+            f"<details class=\"callout\" data-kind=\"{kind.lower()}\"{open_attr}>",
+            f"<summary>{summary}</summary>",
+        ]
+        if body_html:
+            parts.append(body_html)
+        parts.append("</details>")
+        return "\n".join(parts)
+
+    return pattern.sub(repl, html)

@@ -16,8 +16,10 @@ pkgs.mkShell {
     pkgs.python3Packages.python-frontmatter
     pkgs.python3Packages.jinja2
     pkgs.python3Packages.markdown-it-py
+    pkgs.python3Packages.pyperclip
+    pkgs.python3Packages.watchfiles
 
-    # CLI helpers used by gmd
+    # CLI helpers used by Polylogue
     pkgs.skim
     pkgs.gum
     pkgs.bat
