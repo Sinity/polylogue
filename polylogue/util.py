@@ -9,6 +9,15 @@ import tempfile
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+try:  # pragma: no cover - optional dependency
+    import pyperclip  # type: ignore
+    from pyperclip import PyperclipException  # type: ignore
+except Exception:  # pragma: no cover
+    pyperclip = None  # type: ignore
+
+    class PyperclipException(Exception):
+        pass
+
 
 def colorize(text: str, color: str) -> str:
     colors = {
@@ -98,9 +107,101 @@ def set_cached_folder_id(name: str, folder_id: str) -> None:
     _save_state(st)
 
 
+def get_conversation_state(provider: str, conversation_id: str) -> Optional[Dict[str, Any]]:
+    st = _load_state()
+    convs = st.get("conversations") if isinstance(st.get("conversations"), dict) else {}
+    provider_map = convs.get(provider) if isinstance(convs.get(provider), dict) else {}
+    entry = provider_map.get(conversation_id)
+    if isinstance(entry, dict):
+        return entry
+    return None
+def assign_conversation_slug(
+    provider: str,
+    conversation_id: str,
+    title: Optional[str],
+    *,
+    id_hint: Optional[str] = None,
+) -> str:
+    st = _load_state()
+    convs = st.setdefault("conversations", {})
+    if not isinstance(convs, dict):
+        convs = {}
+        st["conversations"] = convs
+    provider_map = convs.setdefault(provider, {})
+    if not isinstance(provider_map, dict):
+        provider_map = {}
+        convs[provider] = provider_map
+
+    entry = provider_map.get(conversation_id)
+    if isinstance(entry, dict) and entry.get("slug"):
+        return entry["slug"]
+
+    base_source = title or id_hint or conversation_id or "conversation"
+    base = sanitize_filename(base_source)
+    if not base:
+        base = conversation_id[:8] if conversation_id else "conversation"
+
+    existing_slugs = {
+        data.get("slug")
+        for data in provider_map.values()
+        if isinstance(data, dict) and data.get("slug")
+    }
+    slug = base
+    counter = 1
+    while slug in existing_slugs:
+        slug = f"{base}-{counter}"
+        counter += 1
+
+    provider_map[conversation_id] = {"slug": slug}
+    _save_state(st)
+    return slug
+
+
+def update_conversation_state(
+    provider: str,
+    conversation_id: str,
+    **updates: Any,
+) -> None:
+    st = _load_state()
+    convs = st.setdefault("conversations", {})
+    if not isinstance(convs, dict):
+        convs = {}
+        st["conversations"] = convs
+    provider_map = convs.setdefault(provider, {})
+    if not isinstance(provider_map, dict):
+        provider_map = {}
+        convs[provider] = provider_map
+    entry = provider_map.get(conversation_id)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry.update({k: v for k, v in updates.items() if v is not None})
+    provider_map[conversation_id] = entry
+    _save_state(st)
+
+
+def conversation_is_current(
+    provider: str,
+    conversation_id: str,
+    *,
+    updated_at: Optional[str],
+    content_hash: Optional[str],
+    output_path: Optional[Path],
+) -> bool:
+    entry = get_conversation_state(provider, conversation_id)
+    if not entry:
+        return False
+    if updated_at and entry.get("lastUpdated") and entry["lastUpdated"] != updated_at:
+        return False
+    if content_hash and entry.get("contentHash") and entry["contentHash"] != content_hash:
+        return False
+    if output_path and not output_path.exists():
+        return False
+    return True
+
+
 def add_run(record: Dict[str, Any]) -> None:
     payload = dict(record)
-    payload.setdefault("timestamp", datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z")
+    payload.setdefault("timestamp", current_utc_timestamp())
     try:
         if RUNS_PATH.exists():
             runs = json.loads(RUNS_PATH.read_text(encoding="utf-8"))
@@ -166,3 +267,34 @@ def snapshot_for_diff(path: Path) -> Optional[Path]:
     finally:
         tmp.close()
     return Path(tmp.name)
+
+
+def current_utc_timestamp() -> str:
+    return (
+        datetime.datetime.now(datetime.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def read_clipboard_text() -> Optional[str]:
+    if pyperclip is None:
+        return None
+    try:
+        text = pyperclip.paste()  # type: ignore[attr-defined]
+    except PyperclipException:  # pragma: no cover - clipboard backend unavailable
+        return None
+    if not text:
+        return None
+    return text
+
+
+def write_clipboard_text(text: str) -> bool:
+    if pyperclip is None:
+        return False
+    try:
+        pyperclip.copy(text)  # type: ignore[attr-defined]
+        return True
+    except PyperclipException:  # pragma: no cover - clipboard backend unavailable
+        return False

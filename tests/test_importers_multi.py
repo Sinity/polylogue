@@ -2,9 +2,18 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
+
 from polylogue.importers.chatgpt import import_chatgpt_export
 from polylogue.importers.claude_ai import import_claude_export
 from polylogue.importers.claude_code import import_claude_code_session
+
+
+@pytest.fixture(autouse=True)
+def _polylogue_state_home(tmp_path, monkeypatch):
+    state_home = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    return state_home
 
 
 def _write(path: Path, data) -> Path:
@@ -303,3 +312,48 @@ def test_import_claude_export_zip_with_attachment(tmp_path):
     attachments = list(results[0].attachments_dir.iterdir())
     assert attachments and attachments[0].name.startswith("result")
     assert attachments[0].read_text(encoding="utf-8") == "claude attachment"
+
+
+def test_import_chatgpt_export_repeat_skips(tmp_path):
+    export_dir = tmp_path / "chatgpt_repeat"
+    export_dir.mkdir()
+    conversations = [
+        {
+            "id": "repeat-id",
+            "title": "Repeat Chat",
+            "create_time": 1,
+            "update_time": 2,
+            "mapping": {
+                "user": {
+                    "message": {
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["Hello"]},
+                    }
+                }
+            },
+        }
+    ]
+    (export_dir / "conversations.json").write_text(json.dumps(conversations), encoding="utf-8")
+
+    out_dir = tmp_path / "out_repeat"
+    first = import_chatgpt_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    assert len(first) == 1
+    assert not first[0].skipped
+
+    second = import_chatgpt_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    assert len(second) == 1
+    assert second[0].skipped
+    assert second[0].document is None
+    assert second[0].markdown_path == first[0].markdown_path

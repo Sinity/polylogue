@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -33,7 +34,12 @@ from .ui import create_ui
 from .settings import SETTINGS, reset_settings
 from .config import CONFIG, CONFIG_PATH, DEFAULT_PATHS, CONFIG_ENV
 from .doctor import run_doctor as doctor_run
-from .util import add_run, parse_input_time_to_epoch
+from .util import add_run, parse_input_time_to_epoch, write_clipboard_text
+
+try:  # pragma: no cover - optional dependency
+    from watchfiles import watch as watch_directory
+except Exception:  # pragma: no cover - watcher dependency optional
+    watch_directory = None
 
 DEFAULT_COLLAPSE = CONFIG.defaults.collapse_threshold
 DEFAULT_RENDER_OUT = CONFIG.defaults.output_dirs.render
@@ -51,11 +57,20 @@ def summarize_import(ui, title: str, results: List[ImportResult]) -> None:
     if not results:
         ui.summary(title, ["No files written."])
         return
-    output_dir = results[0].markdown_path.parent
-    lines = [f"{len(results)} file(s) → {output_dir}"]
-    attachments_total = sum(len(res.document.attachments) for res in results)
-    attachment_bytes = sum(res.document.metadata.get("attachmentBytes", 0) or 0 for res in results)
-    diff_total = sum(1 for res in results if getattr(res, "diff_path", None))
+
+    written = [res for res in results if not res.skipped]
+    skipped = [res for res in results if res.skipped]
+
+    if written:
+        output_dir = written[0].markdown_path.parent
+        lines = [f"{len(written)} file(s) → {output_dir}"]
+    else:
+        output_dir = results[0].markdown_path.parent
+        lines = [f"No files written (existing files up to date in {output_dir})."]
+
+    attachments_total = sum(len(res.document.attachments) for res in written if res.document)
+    attachment_bytes = sum(res.document.metadata.get("attachmentBytes", 0) or 0 for res in written if res.document)
+    diff_total = sum(1 for res in written if getattr(res, "diff_path", None))
     if attachments_total:
         lines.append(f"Attachments: {attachments_total}")
     if attachment_bytes:
@@ -71,19 +86,28 @@ def summarize_import(ui, title: str, results: List[ImportResult]) -> None:
     ]
     for key, label in stats_to_sum:
         total = 0
-        for res in results:
+        for res in written:
+            if not res.document:
+                continue
             value = res.document.stats.get(key)
             if isinstance(value, (int, float)):
                 total += int(value)
         if total:
             lines.append(f"{label}: {total}")
-    for res in results:
-        info = f"- {res.markdown_path.name} (attachments: {len(res.document.attachments)})"
+    for res in written:
+        att_count = len(res.document.attachments) if res.document else 0
+        info = f"- {res.markdown_path.name} (attachments: {att_count})"
         if res.html_path:
             info += " [+html]"
         if getattr(res, "diff_path", None):
             info += " [+diff]"
         lines.append(info)
+    if skipped:
+        skipped_line = f"Skipped {len(skipped)} conversation(s)"
+        reasons = {res.skip_reason for res in skipped if res.skip_reason}
+        if reasons:
+            skipped_line += f" ({'; '.join(sorted(reasons))})"
+        lines.append(skipped_line)
     if not ui.plain:
         try:
             from rich.table import Table
@@ -93,10 +117,15 @@ def summarize_import(ui, title: str, results: List[ImportResult]) -> None:
             table.add_column("Attachments", justify="right")
             table.add_column("Attachment MiB", justify="right")
             table.add_column("Tokens", justify="right")
-            for res in results:
-                att_count = len(res.document.attachments)
-                att_bytes = res.document.metadata.get("attachmentBytes", 0) or 0
-                tokens = res.document.stats.get("totalTokensApprox", 0) or 0
+            for res in written:
+                if res.document:
+                    att_count = len(res.document.attachments)
+                    att_bytes = res.document.metadata.get("attachmentBytes", 0) or 0
+                    tokens = res.document.stats.get("totalTokensApprox", 0) or 0
+                else:
+                    att_count = 0
+                    att_bytes = 0
+                    tokens = 0
                 table.add_row(
                     res.markdown_path.name,
                     str(att_count),
@@ -107,6 +136,40 @@ def summarize_import(ui, title: str, results: List[ImportResult]) -> None:
         except Exception:
             pass
     ui.summary(title, lines)
+
+
+def copy_import_to_clipboard(ui, results: List[ImportResult]) -> None:
+    written = [res for res in results if not res.skipped]
+    if not written:
+        ui.console.print("[yellow]Clipboard copy skipped; no new files were written.")
+        return
+    if len(written) != 1:
+        ui.console.print("[yellow]Clipboard copy skipped (requires exactly one updated file).")
+        return
+    target = written[0]
+    if target.document is not None:
+        text = target.document.to_markdown()
+    else:
+        try:
+            text = target.markdown_path.read_text(encoding="utf-8")
+        except Exception as exc:  # pragma: no cover - unlikely
+            ui.console.print(f"[red]Failed to read {target.markdown_path.name}: {exc}")
+            return
+    if write_clipboard_text(text):
+        ui.console.print(f"[green]Copied {target.markdown_path.name} to clipboard.")
+    else:
+        ui.console.print("[yellow]Clipboard support unavailable on this system.")
+
+
+def _log_local_sync(ui, title: str, result: LocalSyncResult) -> None:
+    if result.written:
+        summarize_import(ui, title, result.written)
+    else:
+        ui.console.print(f"[cyan]{title}: no new Markdown files.")
+    if result.skipped:
+        ui.console.print(f"[cyan]{title}: skipped {result.skipped} up-to-date session(s).")
+    if result.pruned:
+        ui.console.print(f"[cyan]{title}: pruned {result.pruned} path(s).")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -130,6 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--html", action="store_true", help="Also write HTML previews")
     p_render.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
     p_render.add_argument("--diff", action="store_true", help="Write delta diff when output already exists")
+    p_render.add_argument("--to-clipboard", action="store_true", help="Copy rendered Markdown to the clipboard when a single file is produced")
 
     p_sync = sub.add_parser("sync")
     p_sync.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME)
@@ -207,6 +271,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--name-filter", type=str, default=None)
     p_list.add_argument("--json", action="store_true")
 
+    p_watch = sub.add_parser("watch", help="Watch local session stores and sync on changes")
+    watch_sub = p_watch.add_subparsers(dest="watch_target", required=True)
+
+    p_watch_codex = watch_sub.add_parser("codex", help="Watch ~/.codex/sessions for changes")
+    p_watch_codex.add_argument("--base-dir", type=Path, default=None)
+    p_watch_codex.add_argument("--out", type=Path, default=None)
+    p_watch_codex.add_argument("--collapse-threshold", type=int, default=None)
+    p_watch_codex.add_argument("--html", action="store_true")
+    p_watch_codex.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"])
+    p_watch_codex.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
+
+    p_watch_claude = watch_sub.add_parser("claude-code", help="Watch ~/.claude/projects for changes")
+    p_watch_claude.add_argument("--base-dir", type=Path, default=None)
+    p_watch_claude.add_argument("--out", type=Path, default=None)
+    p_watch_claude.add_argument("--collapse-threshold", type=int, default=None)
+    p_watch_claude.add_argument("--html", action="store_true")
+    p_watch_claude.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"])
+    p_watch_claude.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
+
     sub.add_parser("status")
 
     p_import = sub.add_parser("import")
@@ -225,6 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_chatgpt.add_argument("--collapse-threshold", type=int, default=None)
     p_import_chatgpt.add_argument("--html", action="store_true", help="Also write HTML previews")
     p_import_chatgpt.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
+    p_import_chatgpt.add_argument("--to-clipboard", action="store_true", help="Copy the rendered Markdown to the clipboard when a single file is updated")
 
     p_import_claude = import_sub.add_parser("claude", help="Convert an Anthropic Claude export to Markdown")
     p_import_claude.add_argument("export_path", type=Path, help="Path to Claude export .zip or directory")
@@ -239,6 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_claude.add_argument("--collapse-threshold", type=int, default=None)
     p_import_claude.add_argument("--html", action="store_true", help="Also write HTML previews")
     p_import_claude.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
+    p_import_claude.add_argument("--to-clipboard", action="store_true", help="Copy the rendered Markdown to the clipboard when a single file is updated")
 
     p_import_claude_code = import_sub.add_parser("claude-code", help="Convert a Claude Code session to Markdown")
     p_import_claude_code.add_argument("session_id", type=str, help="Session UUID or suffix")
@@ -252,6 +337,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_claude_code.add_argument("--collapse-threshold", type=int, default=None)
     p_import_claude_code.add_argument("--html", action="store_true", help="Also write HTML preview")
     p_import_claude_code.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML preview")
+    p_import_claude_code.add_argument("--to-clipboard", action="store_true", help="Copy the rendered Markdown to the clipboard")
 
     p_import_codex = import_sub.add_parser("codex", help="Convert a Codex CLI session to Markdown")
     p_import_codex.add_argument("session_id", type=str, help="Codex session UUID (or suffix)")
@@ -265,6 +351,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_codex.add_argument("--collapse-threshold", type=int, default=None, help="Fold responses longer than this many lines")
     p_import_codex.add_argument("--html", action="store_true", help="Also write HTML preview")
     p_import_codex.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML preview")
+    p_import_codex.add_argument("--to-clipboard", action="store_true", help="Copy the rendered Markdown to the clipboard")
 
     return parser
 
@@ -361,6 +448,21 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
             info += " [+html]"
         lines.append(info)
     ui.summary("Render", lines)
+
+    if getattr(args, "to_clipboard", False):
+        if result.count != 1 or not result.files:
+            ui.console.print("[yellow]Clipboard copy skipped (requires exactly one rendered file).")
+        else:
+            target = result.files[0].output
+            try:
+                text = target.read_text(encoding="utf-8")
+            except Exception as exc:  # pragma: no cover - unlikely
+                ui.console.print(f"[red]Failed to read {target.name}: {exc}")
+            else:
+                if write_clipboard_text(text):
+                    ui.console.print(f"[green]Copied {target.name} to clipboard.")
+                else:
+                    ui.console.print("[yellow]Clipboard support unavailable on this system.")
 
 
 def run_list_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -> None:
@@ -598,6 +700,20 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         raise SystemExit(f"Unknown import target: {target}")
 
 
+def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+    if watch_directory is None:
+        env.ui.console.print(
+            "[red]The watchfiles package is not available. Enable it in your environment to use watcher commands."
+        )
+        return
+    if args.watch_target == "codex":
+        run_watch_codex(args, env)
+    elif args.watch_target == "claude-code":
+        run_watch_claude_code(args, env)
+    else:
+        raise SystemExit(f"Unknown watch target: {args.watch_target}")
+
+
 def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
@@ -637,6 +753,55 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
         if value:
             lines.append(f"{label}: {int(value)}")
     ui.summary("Codex Import", lines)
+    if getattr(args, "to_clipboard", False):
+        copy_import_to_clipboard(ui, [result])
+
+
+def run_watch_codex(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
+    base_dir = base_dir.expanduser()
+    base_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
+    out_dir.mkdir(parents=True, exist_ok=True)
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+    debounce = max(0.5, args.debounce)
+
+    ui.banner("Watching Codex sessions", str(base_dir))
+
+    def sync_once() -> None:
+        try:
+            result = sync_codex_sessions(
+                base_dir=base_dir,
+                output_dir=out_dir,
+                collapse_threshold=collapse,
+                html=html_enabled,
+                html_theme=html_theme,
+                force=False,
+                prune=False,
+                diff=False,
+                sessions=None,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            ui.console.print(f"[red]Codex sync failed: {exc}")
+        else:
+            _log_local_sync(ui, "Codex Watch", result)
+
+    sync_once()
+    last_run = time.monotonic()
+    try:
+        for changes in watch_directory(base_dir, recursive=True):  # type: ignore[arg-type]
+            if not any(Path(path).suffix == ".jsonl" for _, path in changes):
+                continue
+            now = time.monotonic()
+            if now - last_run < debounce:
+                continue
+            sync_once()
+            last_run = now
+    except KeyboardInterrupt:  # pragma: no cover - user interrupt
+        ui.console.print("[cyan]Codex watcher stopped.")
 
 
 def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -690,6 +855,8 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
         return
 
     summarize_import(ui, "ChatGPT Import", results)
+    if getattr(args, "to_clipboard", False):
+        copy_import_to_clipboard(ui, results)
 
 
 def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -743,6 +910,8 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
         return
 
     summarize_import(ui, "Claude Import", results)
+    if getattr(args, "to_clipboard", False):
+        copy_import_to_clipboard(ui, results)
 
 
 def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -785,6 +954,55 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
         return
 
     summarize_import(ui, "Claude Code Import", [result])
+    if getattr(args, "to_clipboard", False):
+        copy_import_to_clipboard(ui, [result])
+
+
+def run_watch_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
+    ui = env.ui
+    base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_PROJECT_ROOT
+    base_dir = base_dir.expanduser()
+    base_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
+    out_dir.mkdir(parents=True, exist_ok=True)
+    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    html_enabled = args.html or SETTINGS.html_previews
+    html_theme = args.html_theme or SETTINGS.html_theme
+    debounce = max(0.5, args.debounce)
+
+    ui.banner("Watching Claude Code sessions", str(base_dir))
+
+    def sync_once() -> None:
+        try:
+            result = sync_claude_code_sessions(
+                base_dir=base_dir,
+                output_dir=out_dir,
+                collapse_threshold=collapse,
+                html=html_enabled,
+                html_theme=html_theme,
+                force=False,
+                prune=False,
+                diff=False,
+                sessions=None,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            ui.console.print(f"[red]Claude Code sync failed: {exc}")
+        else:
+            _log_local_sync(ui, "Claude Code Watch", result)
+
+    sync_once()
+    last_run = time.monotonic()
+    try:
+        for changes in watch_directory(base_dir, recursive=True):  # type: ignore[arg-type]
+            if not any(Path(path).suffix == ".jsonl" for _, path in changes):
+                continue
+            now = time.monotonic()
+            if now - last_run < debounce:
+                continue
+            sync_once()
+            last_run = now
+    except KeyboardInterrupt:  # pragma: no cover - user interrupt
+        ui.console.print("[cyan]Claude Code watcher stopped.")
 
 
 def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -1305,6 +1523,7 @@ def show_help(env: CommandEnv) -> None:
     ui.console.print("  sync    Sync Google Drive chats to local Markdown")
     ui.console.print("  list    List chats available in the configured Drive folder")
     ui.console.print("  status  Show cached Drive info and recent runs")
+    ui.console.print("  watch   Watch Codex/Claude Code directories and sync on change")
     ui.console.print("  --plain Disable interactive UI for automation")
     ui.console.print("  --json  Emit machine-readable summaries when supported")
 
@@ -1363,6 +1582,8 @@ def main() -> None:
         run_status_cli(env)
     elif args.cmd == "import":
         run_import_cli(args, env)
+    elif args.cmd == "watch":
+        run_watch_cli(args, env)
     elif args.cmd == "doctor":
         run_doctor_cli(args, env)
     elif args.cmd == "stats":

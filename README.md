@@ -13,6 +13,7 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 - **Render local logs:** Choose a file or directory; skim previews candidates, rich shows progress, and outputs land in the configured render directory (default `/realm/data/chatlog/markdown/gemini-render`). Add `--html` for themed previews or `--diff` to see deltas when re-rendering.
 - **Sync Drive folders:** Connect to the default Drive folder (`AI Studio`) and pull chats to Markdown in `/realm/data/chatlog/markdown/gemini-sync`, downloading attachments unless you opt to link only.
 - **Sync Codex / Claude Code sessions:** Mirror local CLI transcripts from `~/.codex/sessions/` and `~/.claude/projects/` via `polylogue sync-codex` / `polylogue sync-claude-code`, with optional JSON summaries, pruning, diffs, and HTML previews. Outputs land in `/realm/data/chatlog/markdown/codex` and `/realm/data/chatlog/markdown/claude-code` by default.
+- **Watch local sessions in real time:** `polylogue watch codex` and `polylogue watch claude-code` keep those directories synced automatically; adjust debounce, HTML, and collapse settings per watcher.
 - **Import exported providers:** Convert ChatGPT zips, Claude exports, Claude Code sessions, or Codex JSONLs via `polylogue import …` subcommands. Skim lets you cherry-pick conversations; `--all` batches them.
 - **Doctor & Stats:** `polylogue doctor` sanity-checks source directories; `polylogue stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters).
 - **View recent runs:** The status dashboard shows the last operations, including attachment MiB and diff counts per command.
@@ -54,6 +55,7 @@ Although the CLI is interactive by default, the same functionality is available 
 - `python3 polylogue.py stats [--dir DIR] [--since DATE] [--until DATE] [--json]`
 
 `--plain` disables gum/skim/Rich styling for CI or scripts; `--json` prints machine-readable summaries.
+Use `--to-clipboard` on `render`/`import` commands to copy a single Markdown result directly to your system clipboard.
 
 ## Tooling & UX Stack
 The dev shell equips Polylogue with:
@@ -63,6 +65,8 @@ The dev shell equips Polylogue with:
 - `bat`, `delta`, `fd`, `ripgrep`, `glow` as supporting CLIs.
 
 Everything falls back gracefully when `--plain` is specified or stdout isn’t a TTY.
+
+See `docs/automation.md` for watcher usage and ready-made systemd/cron templates.
 
 ## Configuration
 - Polylogue reads configuration from `$POLYLOGUE_CONFIG`, `$XDG_CONFIG_HOME/polylogue/config.json`, or (legacy) `~/.polylogueconfig`.
