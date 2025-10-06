@@ -6,19 +6,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-CONFIG_ENV = "GMD_CONFIG"
+CONFIG_ENV = "POLYLOGUE_CONFIG"
+CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+CONFIG_DIR = CONFIG_HOME / "polylogue"
 DEFAULT_PATHS = [
-    Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "gmd" / "config.json",
-    Path.home() / ".gmdconfig",
+    CONFIG_DIR / "config.json",
+    Path.home() / ".polylogueconfig",
 ]
+
+ARCHIVE_ROOT = Path("/realm/data/chatlog")
+MARKDOWN_ROOT = ARCHIVE_ROOT / "markdown"
 
 
 @dataclass
 class OutputDirs:
-    render: Path = Path("gmd_out")
-    sync_drive: Path = Path("gemini_synced")
-    sync_codex: Path = Path("codex_synced")
-    sync_claude_code: Path = Path("claude_code_synced")
+    render: Path = MARKDOWN_ROOT / "gemini-render"
+    sync_drive: Path = MARKDOWN_ROOT / "gemini-sync"
+    sync_codex: Path = MARKDOWN_ROOT / "codex"
+    sync_claude_code: Path = MARKDOWN_ROOT / "claude-code"
+    import_chatgpt: Path = MARKDOWN_ROOT / "chatgpt"
+    import_claude: Path = MARKDOWN_ROOT / "claude"
 
 
 @dataclass
@@ -67,6 +74,10 @@ def _load_defaults(data: Dict[str, Any]) -> Defaults:
             output_dirs.sync_codex = Path(out_dirs_cfg["sync_codex"]).expanduser()
         if out_dirs_cfg.get("sync_claude_code"):
             output_dirs.sync_claude_code = Path(out_dirs_cfg["sync_claude_code"]).expanduser()
+        if out_dirs_cfg.get("import_chatgpt"):
+            output_dirs.import_chatgpt = Path(out_dirs_cfg["import_chatgpt"]).expanduser()
+        if out_dirs_cfg.get("import_claude"):
+            output_dirs.import_claude = Path(out_dirs_cfg["import_claude"]).expanduser()
     return Defaults(
         collapse_threshold=int(collapse) if isinstance(collapse, (int, float)) else 25,
         html_previews=bool(html_previews) if html_previews is not None else False,
