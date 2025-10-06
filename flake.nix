@@ -42,6 +42,8 @@
               python-frontmatter
               jinja2
               markdown-it-py
+              pyperclip
+              watchfiles
               pytest
             ]))
           ];

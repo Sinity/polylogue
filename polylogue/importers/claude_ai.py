@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import zipfile
 from pathlib import Path
@@ -7,7 +8,13 @@ from tempfile import TemporaryDirectory
 from typing import Dict, List, Optional, Tuple
 
 from ..render import AttachmentInfo, build_markdown_from_chunks
-from ..util import sanitize_filename
+from ..util import (
+    assign_conversation_slug,
+    conversation_is_current,
+    get_conversation_state,
+    current_utc_timestamp,
+    update_conversation_state,
+)
 from .base import ImportResult
 from .utils import estimate_token_count, store_large_text
 
@@ -101,9 +108,41 @@ def _render_claude_conversation(
 ) -> ImportResult:
     title = conv.get("name") or conv.get("title") or "claude-chat"
     conv_id = conv.get("uuid") or conv.get("id") or "claude"
-    safe_name = sanitize_filename(f"{title}-{conv_id[:8]}")
-    markdown_path = output_dir / f"{safe_name}.md"
-    attachments_dir = markdown_path.parent / f"{markdown_path.stem}_attachments"
+    slug = assign_conversation_slug("claude.ai", conv_id, title, id_hint=conv_id[:8])
+    markdown_path = output_dir / f"{slug}.md"
+    attachments_dir = markdown_path.parent / f"{slug}_attachments"
+
+    state_entry = get_conversation_state("claude.ai", conv_id)
+    existing_html: Optional[Path] = None
+    existing_attachments_dir: Optional[Path] = None
+    if state_entry:
+        html_candidate = state_entry.get("htmlPath")
+        if html_candidate:
+            html_path = Path(html_candidate)
+            if html_path.exists():
+                existing_html = html_path
+        attach_candidate = state_entry.get("attachmentsDir")
+        if attach_candidate:
+            attach_path = Path(attach_candidate)
+            if attach_path.exists():
+                existing_attachments_dir = attach_path
+
+    updated_at = conv.get("updated_at") or conv.get("modified_at")
+    if conversation_is_current(
+        "claude.ai",
+        conv_id,
+        updated_at=updated_at,
+        content_hash=None,
+        output_path=markdown_path,
+    ):
+        return ImportResult(
+            markdown_path=markdown_path,
+            html_path=existing_html,
+            attachments_dir=existing_attachments_dir,
+            document=None,
+            skipped=True,
+            skip_reason="up-to-date",
+        )
 
     model_id = conv.get("model") or conv.get("model_id")
 
@@ -196,6 +235,20 @@ def _render_claude_conversation(
             attachments_dir = None
         except OSError:
             pass
+
+    content_hash = hashlib.sha256(document.body.encode("utf-8")).hexdigest()
+    update_conversation_state(
+        "claude.ai",
+        conv_id,
+        slug=slug,
+        lastUpdated=updated_at,
+        contentHash=content_hash,
+        outputPath=str(markdown_path),
+        htmlPath=str(html_path) if html_path else (state_entry.get("htmlPath") if state_entry else None),
+        attachmentsDir=str(attachments_dir) if attachments_dir else (state_entry.get("attachmentsDir") if state_entry else None),
+        title=title,
+        lastImported=current_utc_timestamp(),
+    )
 
     return ImportResult(
         markdown_path=markdown_path,

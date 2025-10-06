@@ -52,11 +52,26 @@
 - **ChatGPT**: The official REST API only covers developer-created assistants, not consumer chatgpt.com history. Capturing live logs would require browser automation against chatgpt.com, imitating private backend endpoints (`conversation`, `backend-api/conversation`). This is fragile and may breach ToS; treat as opt-in tooling with explicit warnings if pursued.
 - **Claude.ai**: Similar story—anthropics’s public APIs target Claude for developers, not claude.ai web traffic. Any live capture would need browser automation using session tokens, with the same caveats.
 
+## Watch Command Behavior
+
+- `polylogue watch codex` and `polylogue watch claude-code` wrap the existing sync routines in a `watchfiles` loop. Each watcher performs an initial full sync, then re-runs whenever `.jsonl` session files change underneath `~/.codex/sessions/` or `~/.claude/projects/`.
+- Watchers honour the same knobs as their one-shot counterparts (`--collapse-threshold`, `--html`, `--html-theme`, `--out`, `--base-dir`) and gate repeated runs with `--debounce` (default: 2s) so bursts of edits don’t thrash the pipeline.
+- When the optional `watchfiles` dependency is missing, the CLI prints a clear instruction instead of failing, preserving compatibility with minimal environments.
+- Each run flows through `_log_local_sync`, so watcher activity shows up in `polylogue status --json` alongside manual syncs.
+
 ## Import Adapter Architecture
 
 - Introduce `polylogue/importers/` with provider-specific modules exposing a common interface (e.g., `Iterable[Chunk]`). Each adapter normalises exports into the internal chunk schema before handing off to the Markdown pipeline.
 - Validate export payloads via Pydantic/jsonschema to catch format drift per provider.
 - Reuse the new MarkdownDocument pipeline for formatting; attachments, stats, and HTML previews become provider-agnostic.
+
+## Conversation State & Re-imports
+
+- The importer layer now persists per-conversation metadata under `$XDG_STATE_HOME/polylogue/state.json` in a `conversations.<provider>.<conversation_id>` map. Entries record the stable slug, last update timestamp, content hash, disk paths, title, and the most recent import time.
+- `assign_conversation_slug()` guarantees deterministic filenames by reusing stored slugs and appending numeric suffixes only when collisions occur. This avoids churn in Git even when provider titles change.
+- Before rendering, `conversation_is_current()` checks the cached `lastUpdated` value, stored hash, and presence of the Markdown file; if nothing changed, the importer short-circuits and returns an `ImportResult` marked `skipped` with a reason (`"up-to-date"`).
+- The CLI summaries now separate written and skipped conversations, include aggregated skip counts, and suppress clipboard copies when no new files land. Tests such as `test_import_chatgpt_export_repeat_skips` cover the idempotent path.
+- Stored HTML and attachment directories are reused when present so reruns keep pointing at the original artefacts instead of reallocating paths.
 
 ## Future Enhancements
 
@@ -64,6 +79,12 @@
   - Implemented: `polylogue import chatgpt`, `polylogue import claude`, `polylogue import claude-code`, and `polylogue import codex` share a common Markdown pipeline with interactive skim pickers and consistent attachment policies.
 - Local sync parity: `polylogue sync-codex` and `polylogue sync-claude-code` mirror local session stores with the same folding/attachment rules as cloud sync, including skip/prune logic and optional HTML previews.
 - Confirm which providers expose automated export hooks (e.g., ChatGPT email links, Claude downloads) and expose scripts/env vars so users can schedule imports at their preferred cadence.
+
+## Clipboard & Credential Workflows
+
+- The Drive credential onboarding now inspects the system clipboard for a pasted OAuth client JSON; when present, the CLI offers to save it directly into `$XDG_CONFIG_HOME/polylogue/credentials.json`, trimming several manual steps.
+- Render/import commands accept `--to-clipboard`. When exactly one Markdown file is produced, Polylogue copies its contents to the clipboard via `pyperclip`, confirming success or warning if the clipboard backend is unavailable.
+- Clipboard helpers are optional; missing dependencies merely disable the related convenience features without blocking the core import/export pipeline.
 
 ## Requirements & UX Considerations
 
@@ -84,9 +105,9 @@
 - **Validation & safety**:
   - Validate each provider’s JSON payloads via Pydantic/jsonschema (with a bypass flag if files drift from spec).
 - **Automation targets**:
-  - Build an optional watcher-driven mode for local stores (`~/.codex`, `~/.claude/projects/`) that tails appended JSONL files and updates the corresponding Markdown in real time without ever deleting prior renders.
-  - Provide ready-to-use systemd/cron snippets so unattended runs inherit the same defaults as the interactive flow and expose clear logs if nothing new is synced.
-  - For recurring full exports (e.g., ChatGPT take-outs), persist decisions per conversation so a subsequent run merges or replaces output deterministically rather than forcing manual cleanup.
+  - Real-time watchers now exist (`polylogue watch codex`, `polylogue watch claude-code`) to mirror local stores as files change.
+  - `docs/automation.md` documents reusable systemd/cron templates for scheduled runs.
+  - Remaining gap: for recurring full exports (e.g., ChatGPT take-outs), persist per-conversation decisions so a subsequent run merges or replaces output deterministically rather than forcing manual cleanup.
 - **Future GUI**: The interactive workflow may benefit from a richer UI (TUI/HTML) to visualise chunk sizes, attachments, and preview Markdown/HTML side by side.
 
 ## Data Directory Map
@@ -110,3 +131,22 @@ Run caches (`state.json`, `runs.json`) stay under `$XDG_STATE_HOME/polylogue/`, 
 - **Terminal UX**: `rich`, `gum`, `skim`, `bat`, `glow`, and `delta` cover current needs. For more advanced TUIs, `textual` or `prompt_toolkit` could stage a live preview/tuning panel.
 - **Automation**: Use `systemd` timers or `cron` to trigger `polylogue sync-*` commands; browser automation (Playwright/Selenium) can schedule ChatGPT / Claude exports when APIs are absent.
 - **Data post-processing**: Tools like `ripgrep`, `jq`, or `sqlite-utils` can index the rendered Markdown/HTML; consider wiring an optional SQLite catalogue for cross-provider search.
+- **Optional helpers**: `watchfiles` powers the watcher commands; `pyperclip` underpins clipboard read/write helpers for credentials and quick sharing. Both are treated as optional dependencies with graceful fallbacks.
+
+## Immediate Implementation Tasks
+
+1. **Persist formatting decisions & dirty markers**
+   - Extend the per-conversation state cache (`$XDG_STATE_HOME/polylogue/state.json`) with the collapse threshold used, attachment extraction decisions, and the content hash written to disk.
+   - Embed the same metadata inside each Markdown’s YAML front matter (e.g., a `polylogue:` block) and set a `dirty: true` flag when the on-disk file diverges from the stored hash.
+   - On import/sync reruns, reuse the metadata to skip unchanged conversations while flagging edited files for review.
+   - Update importer tests to assert the metadata round-trips and dirty detection work.
+
+2. **Unify render/sync/import pipeline**
+   - Extract a single helper that takes normalised chunks + metadata and handles Markdown/HTML writing, attachment management, and state updates.
+   - Refactor `render_command`, all provider importers, and watcher-triggered syncs to call the helper instead of duplicating logic.
+   - Ensure the helper honours the persisted state from step 1 so slug reuse, dirty flags, and hashes remain consistent across entry points.
+
+3. **Polish automation surfaces**
+   - Enhance the watcher subcommands with structured logging, clear exit codes, and a `--once` mode for scheduled runs.
+   - Add a generator (or documented script) that emits systemd service/timer or cron snippets based on the patterns in `docs/automation.md`.
+   - Thread watcher and scheduled-run stats into `polylogue status --json` so unattended environments can monitor results programmatically.
