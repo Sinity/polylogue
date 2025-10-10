@@ -17,6 +17,7 @@ from .commands import (
     status_command,
     sync_command,
 )
+from .automation import REPO_ROOT, TARGETS, cron_snippet, describe_targets, systemd_snippet
 from .drive_client import DEFAULT_FOLDER_NAME, DriveClient
 from .importers import (
     ImportResult,
@@ -170,6 +171,20 @@ def _log_local_sync(ui, title: str, result: LocalSyncResult) -> None:
         ui.console.print(f"[cyan]{title}: skipped {result.skipped} up-to-date session(s).")
     if result.pruned:
         ui.console.print(f"[cyan]{title}: pruned {result.pruned} path(s).")
+    add_run(
+        {
+            "cmd": title.lower().replace(" ", "-"),
+            "count": len(result.written),
+            "out": str(result.output_dir),
+            "attachments": result.attachments,
+            "attachmentBytes": result.attachment_bytes,
+            "tokens": result.tokens,
+            "diffs": result.diffs,
+            "skipped": result.skipped,
+            "pruned": result.pruned,
+            "duration": getattr(result, "duration", 0.0),
+        }
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -281,6 +296,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch_codex.add_argument("--html", action="store_true")
     p_watch_codex.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"])
     p_watch_codex.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
+    p_watch_codex.add_argument("--once", action="store_true", help="Run a single sync and exit")
 
     p_watch_claude = watch_sub.add_parser("claude-code", help="Watch ~/.claude/projects for changes")
     p_watch_claude.add_argument("--base-dir", type=Path, default=None)
@@ -289,8 +305,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch_claude.add_argument("--html", action="store_true")
     p_watch_claude.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"])
     p_watch_claude.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
+    p_watch_claude.add_argument("--once", action="store_true", help="Run a single sync and exit")
 
-    sub.add_parser("status")
+    automation_choices = sorted(TARGETS.keys())
+    p_automation = sub.add_parser("automation", help="Generate scheduler snippets")
+    automation_sub = p_automation.add_subparsers(dest="automation_format", required=True)
+
+    p_auto_systemd = automation_sub.add_parser("systemd", help="Emit a systemd service/timer pair")
+    p_auto_systemd.add_argument("--target", choices=automation_choices, required=True)
+    p_auto_systemd.add_argument("--interval", type=str, default="10m", help="Interval passed to OnUnitActiveSec")
+    p_auto_systemd.add_argument("--boot-delay", type=str, default="2m", help="Delay before the first run (OnBootSec)")
+    p_auto_systemd.add_argument("--working-dir", type=Path, default=None, help="Working directory for the service")
+    p_auto_systemd.add_argument("--out", type=Path, default=None, help="Override --out argument for the sync command")
+    p_auto_systemd.add_argument("--extra-arg", action="append", default=[], help="Additional argument to append to the sync command")
+    p_auto_systemd.add_argument("--collapse-threshold", type=int, default=None, help="Override collapse threshold for the sync command")
+    p_auto_systemd.add_argument("--html", action="store_true", help="Enable HTML generation in the sync command")
+
+    p_auto_describe = automation_sub.add_parser("describe", help="Show automation target metadata")
+    p_auto_describe.add_argument("--target", choices=automation_choices, default=None)
+
+    p_auto_cron = automation_sub.add_parser("cron", help="Emit a cron entry")
+    p_auto_cron.add_argument("--target", choices=automation_choices, required=True)
+    p_auto_cron.add_argument("--schedule", type=str, default="*/30 * * * *", help="Cron schedule expression")
+    p_auto_cron.add_argument("--log", type=str, default="$HOME/.cache/polylogue-sync.log", help="Log file path")
+    p_auto_cron.add_argument("--state-home", type=str, default="$HOME/.local/state", help="Value for XDG_STATE_HOME")
+    p_auto_cron.add_argument("--working-dir", type=Path, default=None, help="Working directory for the cron entry")
+    p_auto_cron.add_argument("--out", type=Path, default=None, help="Override --out argument for the sync command")
+    p_auto_cron.add_argument("--extra-arg", action="append", default=[], help="Additional argument to append to the sync command")
+    p_auto_cron.add_argument("--collapse-threshold", type=int, default=None, help="Override collapse threshold for the sync command")
+    p_auto_cron.add_argument("--html", action="store_true", help="Enable HTML generation in the sync command")
+
+    p_status = sub.add_parser("status", help="Show cached Drive info and recent runs")
+    p_status.add_argument("--json", action="store_true", help="Emit machine-readable summary")
+    p_status.add_argument("--watch", action="store_true", help="Continuously refresh the status output")
+    p_status.add_argument("--interval", type=float, default=5.0, help="Seconds between refresh while watching")
 
     p_import = sub.add_parser("import")
     import_sub = p_import.add_subparsers(dest="import_target", required=True)
@@ -431,6 +479,9 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
     attachments_total = result.total_stats.get("attachments", 0)
     if attachments_total:
         lines.append(f"Attachments: {attachments_total}")
+    skipped_total = result.total_stats.get("skipped", 0)
+    if skipped_total:
+        lines.append(f"Skipped: {skipped_total}")
     if "totalTokensApprox" in result.total_stats:
         total_tokens = int(result.total_stats["totalTokensApprox"])
         lines.append(f"Approx tokens: {total_tokens}")
@@ -569,6 +620,9 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
     attachments_total = result.total_stats.get("attachments", 0)
     if attachments_total:
         lines.append(f"Attachments: {attachments_total}")
+    skipped_total = result.total_stats.get("skipped", 0)
+    if skipped_total:
+        lines.append(f"Skipped: {skipped_total}")
     if "totalTokensApprox" in result.total_stats:
         total_tokens = int(result.total_stats["totalTokensApprox"])
         lines.append(f"Approx tokens: {total_tokens}")
@@ -590,62 +644,121 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
     ui.summary("Sync", lines)
 
 
-def run_status_cli(env: CommandEnv) -> None:
-    result = status_command(env)
+def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
-    if ui.plain:
-        ui.console.print("Environment:")
-        ui.console.print(f"  credentials.json: {'present' if result.credentials_present else 'missing'}")
-        ui.console.print(f"  token.json: {'present' if result.token_present else 'missing'}")
-        ui.console.print(f"  state cache: {result.state_path}")
-        ui.console.print(f"  runs log: {result.runs_path}")
-        if result.run_summary:
-            ui.console.print("Run summary:")
-            for cmd, stats in result.run_summary.items():
-                ui.console.print(
-                    f"  {cmd}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} diffs={stats['diffs']}"
-                )
-                if stats.get("last"):
-                    ui.console.print(
-                        f"    last={stats['last']} out={stats['last_out']} count={stats['last_count']} skipped={stats['skipped']} pruned={stats['pruned']}"
-                    )
-    else:
-        from rich.table import Table
 
-        table = Table(title="Environment", show_lines=False)
-        table.add_column("Item")
-        table.add_column("Value")
-        table.add_row("credentials.json", "present" if result.credentials_present else "missing")
-        table.add_row("token.json", "present" if result.token_present else "missing")
-        table.add_row("state cache", str(result.state_path))
-        table.add_row("runs log", str(result.runs_path))
-        ui.console.print(table)
-        if result.run_summary:
-            summary_table = Table(title="Run Summary", show_lines=False)
-            summary_table.add_column("Command")
-            summary_table.add_column("Runs", justify="right")
-            summary_table.add_column("Attachments", justify="right")
-            summary_table.add_column("Attachment MiB", justify="right")
-            summary_table.add_column("Tokens", justify="right")
-            summary_table.add_column("Diffs", justify="right")
-            summary_table.add_column("Last Run", justify="left")
-            for cmd, stats in result.run_summary.items():
-                summary_table.add_row(
-                    cmd,
-                    str(stats["count"]),
-                    str(stats["attachments"]),
-                    f"{stats['attachmentBytes'] / (1024 * 1024):.2f}",
-                    str(stats["tokens"]),
-                    str(stats["diffs"]),
-                    (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
-                )
-            ui.console.print(summary_table)
-    if not result.recent_runs:
-        ui.console.print("Recent runs: (none)")
+    def emit() -> None:
+        result = status_command(env)
+        if getattr(args, "json", False):
+            payload = {
+                "credentials_present": result.credentials_present,
+                "token_present": result.token_present,
+                "state_path": str(result.state_path),
+                "runs_path": str(result.runs_path),
+                "recent_runs": result.recent_runs,
+                "run_summary": result.run_summary,
+                "provider_summary": result.provider_summary,
+            }
+            print(json.dumps(payload, indent=2))
+            return
+
+        if ui.plain:
+            ui.console.print("Environment:")
+            ui.console.print(f"  credentials.json: {'present' if result.credentials_present else 'missing'}")
+            ui.console.print(f"  token.json: {'present' if result.token_present else 'missing'}")
+            ui.console.print(f"  state cache: {result.state_path}")
+            ui.console.print(f"  runs log: {result.runs_path}")
+            if result.run_summary:
+                ui.console.print("Run summary:")
+                for cmd, stats in result.run_summary.items():
+                    ui.console.print(
+                        f"  {cmd}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} diffs={stats['diffs']}"
+                    )
+                    if stats.get("last"):
+                        ui.console.print(
+                            f"    last={stats['last']} out={stats['last_out']} count={stats['last_count']} skipped={stats['skipped']} pruned={stats['pruned']}"
+                        )
+            if result.provider_summary:
+                ui.console.print("Provider summary:")
+                for provider, stats in result.provider_summary.items():
+                    ui.console.print(
+                        f"  {provider}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} diffs={stats['diffs']}"
+                    )
+                    if stats.get("last"):
+                        ui.console.print(
+                            f"    last={stats['last']} out={stats['last_out']} commands={', '.join(stats['commands'])}"
+                        )
+        else:
+            from rich.table import Table
+
+            table = Table(title="Environment", show_lines=False)
+            table.add_column("Item")
+            table.add_column("Value")
+            table.add_row("credentials.json", "present" if result.credentials_present else "missing")
+            table.add_row("token.json", "present" if result.token_present else "missing")
+            table.add_row("state cache", str(result.state_path))
+            table.add_row("runs log", str(result.runs_path))
+            ui.console.print(table)
+            if result.run_summary:
+                summary_table = Table(title="Run Summary", show_lines=False)
+                summary_table.add_column("Command")
+                summary_table.add_column("Runs", justify="right")
+                summary_table.add_column("Attachments", justify="right")
+                summary_table.add_column("Attachment MiB", justify="right")
+                summary_table.add_column("Tokens", justify="right")
+                summary_table.add_column("Diffs", justify="right")
+                summary_table.add_column("Last Run", justify="left")
+                for cmd, stats in result.run_summary.items():
+                    summary_table.add_row(
+                        cmd,
+                        str(stats["count"]),
+                        str(stats["attachments"]),
+                        f"{stats['attachmentBytes'] / (1024 * 1024):.2f}",
+                        str(stats["tokens"]),
+                        str(stats["diffs"]),
+                        (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
+                    )
+                ui.console.print(summary_table)
+            if result.provider_summary:
+                provider_table = Table(title="Provider Summary", show_lines=False)
+                provider_table.add_column("Provider")
+                provider_table.add_column("Runs", justify="right")
+                provider_table.add_column("Attachments", justify="right")
+                provider_table.add_column("Attachment MiB", justify="right")
+                provider_table.add_column("Tokens", justify="right")
+                provider_table.add_column("Diffs", justify="right")
+                provider_table.add_column("Last Run", justify="left")
+                for provider, stats in result.provider_summary.items():
+                    provider_table.add_row(
+                        provider,
+                        str(stats["count"]),
+                        str(stats["attachments"]),
+                        f"{stats['attachmentBytes'] / (1024 * 1024):.2f}",
+                        str(stats["tokens"]),
+                        str(stats["diffs"]),
+                        (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
+                    )
+                ui.console.print(provider_table)
+        if not result.recent_runs:
+            ui.console.print("Recent runs: (none)")
+        else:
+            ui.console.print("Recent runs (last 10):")
+            for entry in result.recent_runs:
+                ui.console.print(f"- {entry.get('cmd')} → {entry.get('out')}")
+
+    if getattr(args, "watch", False):
+        try:
+            interval = max(getattr(args, "interval", 5.0), 0.5)
+            while True:
+                emit()
+                if not getattr(args, "json", False):
+                    ui.console.print("")
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            if not getattr(args, "json", False):
+                ui.console.print("[cyan]Status watch stopped.")
     else:
-        ui.console.print("Recent runs (last 10):")
-        for entry in result.recent_runs:
-            ui.console.print(f"- {entry.get('cmd')} → {entry.get('out')}")
+        emit()
 
 
 def interactive_menu(env: CommandEnv) -> None:
@@ -677,7 +790,8 @@ def interactive_menu(env: CommandEnv) -> None:
         elif choice == "List Drive Chats":
             prompt_list(env)
         elif choice == "View Recent Runs":
-            run_status_cli(env)
+            status_args = argparse.Namespace(json=False, watch=False, interval=5.0)
+            run_status_cli(status_args, env)
         elif choice == "Settings":
             settings_menu(env)
         elif choice == "Help":
@@ -790,6 +904,8 @@ def run_watch_codex(args: argparse.Namespace, env: CommandEnv) -> None:
             _log_local_sync(ui, "Codex Watch", result)
 
     sync_once()
+    if getattr(args, "once", False):
+        return
     last_run = time.monotonic()
     try:
         for changes in watch_directory(base_dir, recursive=True):  # type: ignore[arg-type]
@@ -958,6 +1074,58 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
         copy_import_to_clipboard(ui, [result])
 
 
+def run_automation_cli(args: argparse.Namespace, env: CommandEnv) -> None:  # noqa: D401
+    """Print scheduler snippets for automation targets."""
+
+    target = TARGETS[args.target]
+    defaults = target.defaults or {}
+
+    if args.automation_format == "describe":
+        data = describe_targets(getattr(args, "target", None))
+        print(json.dumps(data, indent=2))
+        return
+
+    working_dir_value = getattr(args, "working_dir", None)
+    if working_dir_value is None and defaults.get("workingDir"):
+        working_dir_value = defaults["workingDir"]
+    working_dir = Path(working_dir_value) if working_dir_value else REPO_ROOT
+    working_dir = working_dir.resolve()
+
+    extra_args: List[str] = []
+    out_value = getattr(args, "out", None)
+    if out_value is None and defaults.get("outputDir"):
+        out_value = defaults["outputDir"]
+    if out_value:
+        extra_args.extend(["--out", str(Path(out_value).resolve())])
+    extra_args.extend(getattr(args, "extra_arg", []) or [])
+
+    collapse_value = getattr(args, "collapse_threshold", None)
+    html_override = True if getattr(args, "html", False) else None
+
+    if args.automation_format == "systemd":
+        snippet = systemd_snippet(
+            target_key=args.target,
+            interval=args.interval,
+            working_dir=working_dir,
+            extra_args=extra_args,
+            boot_delay=args.boot_delay,
+            collapse_threshold=collapse_value,
+            html=html_override,
+        )
+    else:
+        snippet = cron_snippet(
+            target_key=args.target,
+            schedule=args.schedule,
+            working_dir=working_dir,
+            log_path=args.log,
+            extra_args=extra_args,
+            state_env=args.state_home,
+            collapse_threshold=collapse_value,
+            html=html_override,
+        )
+    print(snippet, end="")
+
+
 def run_watch_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_PROJECT_ROOT
@@ -991,6 +1159,8 @@ def run_watch_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
             _log_local_sync(ui, "Claude Code Watch", result)
 
     sync_once()
+    if getattr(args, "once", False):
+        return
     last_run = time.monotonic()
     try:
         for changes in watch_directory(base_dir, recursive=True):  # type: ignore[arg-type]
@@ -1578,8 +1748,10 @@ def main() -> None:
         run_sync_claude_code(args, env)
     elif args.cmd == "list":
         run_list_cli(args, env, json_output=getattr(args, "json", False))
+    elif args.cmd == "automation":
+        run_automation_cli(args, env)
     elif args.cmd == "status":
-        run_status_cli(env)
+        run_status_cli(args, env)
     elif args.cmd == "import":
         run_import_cli(args, env)
     elif args.cmd == "watch":

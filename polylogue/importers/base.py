@@ -16,3 +16,5 @@ class ImportResult:
     diff_path: Optional[Path] = None
     skipped: bool = False
     skip_reason: Optional[str] = None
+    dirty: bool = False
+    content_hash: Optional[str] = None

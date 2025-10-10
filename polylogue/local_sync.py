@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -24,6 +25,7 @@ class LocalSyncResult:
     attachment_bytes: int = 0
     tokens: int = 0
     diffs: int = 0
+    duration: float = 0.0
 
 
 def _is_up_to_date(source: Path, target: Path) -> bool:
@@ -49,6 +51,7 @@ def _sync_sessions(
     importer_kwargs: Optional[dict] = None,
 ) -> LocalSyncResult:
     output_dir.mkdir(parents=True, exist_ok=True)
+    start_time = time.perf_counter()
     written: List[ImportResult] = []
     skipped = 0
     wanted: List[str] = []
@@ -78,6 +81,14 @@ def _sync_sessions(
             html_theme=html_theme,
             **importer_kwargs,
         )
+        if result.skipped:
+            if snapshot is not None:
+                try:
+                    snapshot.unlink()
+                except Exception:
+                    pass
+            skipped += 1
+            continue
         if diff and snapshot is not None:
             result.diff_path = write_delta_diff(snapshot, result.markdown_path)
             try:
@@ -101,9 +112,10 @@ def _sync_sessions(
                 os.utime(result.html_path, (session_mtime, session_mtime))
             except OSError:
                 pass
-        attachments_total += len(result.document.attachments)
-        attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
-        tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
+        if result.document:
+            attachments_total += len(result.document.attachments)
+            attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
+            tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
         written.append(result)
 
     pruned = 0
@@ -121,6 +133,8 @@ def _sync_sessions(
             except OSError:
                 continue
 
+    duration = time.perf_counter() - start_time
+
     return LocalSyncResult(
         written=written,
         skipped=skipped,
@@ -130,6 +144,7 @@ def _sync_sessions(
         attachment_bytes=attachment_bytes_total,
         tokens=tokens_total,
         diffs=diff_total,
+        duration=duration,
     )
 
 

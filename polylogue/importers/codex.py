@@ -6,8 +6,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from ..render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
-from ..util import sanitize_filename
+from ..render import AttachmentInfo, build_markdown_from_chunks
+from ..document_store import persist_document
+from ..util import assign_conversation_slug
 from .base import ImportResult
 from .utils import CHAR_THRESHOLD, LINE_THRESHOLD, PREVIEW_LINES, estimate_token_count
 
@@ -64,9 +65,10 @@ def import_codex_session(
     call_index: Dict[str, int] = {}
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    markdown_name = sanitize_filename(session_path.stem) + ".md"
-    markdown_path = output_dir / markdown_name
-    attachments_dir = markdown_path.parent / f"{markdown_path.stem}_attachments"
+    title = session_path.stem
+    slug = assign_conversation_slug("codex", session_id, title, id_hint=title[:8])
+    markdown_path = output_dir / f"{slug}.md"
+    attachments_dir = markdown_path.parent / f"{slug}_attachments"
     attachments_dir.mkdir(parents=True, exist_ok=True)
 
     with session_path.open(encoding="utf-8") as handle:
@@ -150,11 +152,15 @@ def import_codex_session(
         chunk["text"] = _truncate_with_preview(text, attachment_name)
 
     metadata = {"model": "gpt-5-codex"}
+    extra_yaml = {
+        "sourcePlatform": "codex",
+        "sessionPath": str(session_path),
+    }
 
     document = build_markdown_from_chunks(
         chunks,
         per_chunk_links,
-        title=markdown_path.stem,
+        title=title,
         source_file_id=session_id,
         run_settings=metadata,
         collapse_threshold=collapse_threshold,
@@ -164,27 +170,50 @@ def import_codex_session(
         modified_time=None,
         created_time=None,
         citations=None,
+        extra_yaml=extra_yaml,
     )
 
-    markdown_path.write_text(document.to_markdown(), encoding="utf-8")
+    persist_result = persist_document(
+        provider="codex",
+        conversation_id=session_id,
+        title=title,
+        document=document,
+        output_dir=output_dir,
+        collapse_threshold=collapse_threshold,
+        attachments=attachments,
+        updated_at=None,
+        created_at=None,
+        html=html,
+        html_theme=html_theme,
+        attachment_policy={
+            "previewLines": PREVIEW_LINES,
+            "lineThreshold": LINE_THRESHOLD,
+            "charThreshold": CHAR_THRESHOLD,
+        },
+        extra_state={
+            "sessionPath": str(session_path),
+        },
+        slug_hint=slug,
+        id_hint=title[:8],
+    )
 
-    html_path: Optional[Path] = None
-    if html:
-        from ..html import write_html
-
-        html_path = markdown_path.with_suffix(".html")
-        write_html(document, html_path, html_theme)
-
-    if not attachments:
-        try:
-            attachments_dir.rmdir()
-            attachments_dir = None
-        except OSError:
-            pass
+    if persist_result.skipped:
+        return ImportResult(
+            markdown_path=persist_result.markdown_path,
+            html_path=persist_result.html_path,
+            attachments_dir=persist_result.attachments_dir,
+            document=None,
+            skipped=True,
+            skip_reason=persist_result.skip_reason,
+            dirty=persist_result.dirty,
+            content_hash=persist_result.content_hash,
+        )
 
     return ImportResult(
-        markdown_path=markdown_path,
-        html_path=html_path,
-        attachments_dir=attachments_dir,
-        document=document,
+        markdown_path=persist_result.markdown_path,
+        html_path=persist_result.html_path,
+        attachments_dir=persist_result.attachments_dir,
+        document=persist_result.document or document,
+        dirty=persist_result.dirty,
+        content_hash=persist_result.content_hash,
     )

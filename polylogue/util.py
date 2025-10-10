@@ -115,6 +115,8 @@ def get_conversation_state(provider: str, conversation_id: str) -> Optional[Dict
     if isinstance(entry, dict):
         return entry
     return None
+
+
 def assign_conversation_slug(
     provider: str,
     conversation_id: str,
@@ -186,9 +188,17 @@ def conversation_is_current(
     updated_at: Optional[str],
     content_hash: Optional[str],
     output_path: Optional[Path],
+    collapse_threshold: Optional[int] = None,
+    attachment_policy: Optional[Dict[str, Any]] = None,
+    html: Optional[bool] = None,
+    dirty: Optional[bool] = None,
 ) -> bool:
     entry = get_conversation_state(provider, conversation_id)
     if not entry:
+        return False
+    if dirty:
+        return False
+    if entry.get("dirty"):
         return False
     if updated_at and entry.get("lastUpdated") and entry["lastUpdated"] != updated_at:
         return False
@@ -196,6 +206,28 @@ def conversation_is_current(
         return False
     if output_path and not output_path.exists():
         return False
+    if collapse_threshold is not None:
+        if entry.get("collapseThreshold") != collapse_threshold:
+            return False
+    if attachment_policy is not None:
+        stored_policy = entry.get("attachmentPolicy")
+        if stored_policy != attachment_policy:
+            return False
+    if html is not None:
+        stored_html = bool(entry.get("html"))
+        if stored_html != bool(html):
+            return False
+        if html:
+            html_path = entry.get("htmlPath")
+            if html_path and not Path(html_path).exists():
+                return False
+    attachments_dir = entry.get("attachmentsDir")
+    if attachments_dir:
+        try:
+            if not Path(attachments_dir).exists():
+                return False
+        except Exception:
+            return False
     return True
 
 

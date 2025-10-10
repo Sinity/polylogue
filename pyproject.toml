@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polylogue"
+version = "0.1.0"
+description = "Polylogue CLI for AI chat archives"
+readme = "README.md"
+authors = [{ name = "Polylogue Maintainers" }]
+requires-python = ">=3.10"
+dependencies = [
+  "google-api-python-client",
+  "google-auth-oauthlib",
+  "google-auth-httplib2",
+  "pathvalidate",
+  "aiohttp",
+  "aiofiles",
+  "google-generativeai",
+  "rich",
+  "pydantic",
+  "python-frontmatter",
+  "jinja2",
+  "markdown-it-py",
+  "pyperclip",
+  "watchfiles",
+]
+
+[project.scripts]
+polylogue = "polylogue.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["polylogue"]
+
+[tool.setuptools.package-data]
+polylogue = ["automation_targets.json"]

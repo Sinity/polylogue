@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import zipfile
 from pathlib import Path
@@ -8,13 +7,8 @@ from tempfile import TemporaryDirectory
 from typing import Dict, List, Optional, Tuple
 
 from ..render import AttachmentInfo, build_markdown_from_chunks
-from ..util import (
-    assign_conversation_slug,
-    conversation_is_current,
-    get_conversation_state,
-    current_utc_timestamp,
-    update_conversation_state,
-)
+from ..document_store import persist_document
+from ..util import assign_conversation_slug
 from .base import ImportResult
 from .utils import estimate_token_count, store_large_text
 
@@ -97,6 +91,8 @@ def list_claude_conversations(export_path: Path) -> List[Dict[str, Optional[str]
             tmp.cleanup()
 
 
+
+
 def _render_claude_conversation(
     conv: Dict,
     export_root: Path,
@@ -108,154 +104,128 @@ def _render_claude_conversation(
 ) -> ImportResult:
     title = conv.get("name") or conv.get("title") or "claude-chat"
     conv_id = conv.get("uuid") or conv.get("id") or "claude"
-    slug = assign_conversation_slug("claude.ai", conv_id, title, id_hint=conv_id[:8])
+    slug = assign_conversation_slug("claude.ai", conv_id, title, id_hint=(conv_id or "")[:8])
     markdown_path = output_dir / f"{slug}.md"
     attachments_dir = markdown_path.parent / f"{slug}_attachments"
 
-    state_entry = get_conversation_state("claude.ai", conv_id)
-    existing_html: Optional[Path] = None
-    existing_attachments_dir: Optional[Path] = None
-    if state_entry:
-        html_candidate = state_entry.get("htmlPath")
-        if html_candidate:
-            html_path = Path(html_candidate)
-            if html_path.exists():
-                existing_html = html_path
-        attach_candidate = state_entry.get("attachmentsDir")
-        if attach_candidate:
-            attach_path = Path(attach_candidate)
-            if attach_path.exists():
-                existing_attachments_dir = attach_path
-
-    updated_at = conv.get("updated_at") or conv.get("modified_at")
-    if conversation_is_current(
-        "claude.ai",
-        conv_id,
-        updated_at=updated_at,
-        content_hash=None,
-        output_path=markdown_path,
-    ):
-        return ImportResult(
-            markdown_path=markdown_path,
-            html_path=existing_html,
-            attachments_dir=existing_attachments_dir,
-            document=None,
-            skipped=True,
-            skip_reason="up-to-date",
-        )
-
-    model_id = conv.get("model") or conv.get("model_id")
-
-    messages = conv.get("chat_messages") or conv.get("messages") or []
     attachments: List[AttachmentInfo] = []
+    file_index = _index_export_files(export_root)
+
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
     chunks: List[Dict] = []
 
-    # Files are stored under attachments/ or files/
-    file_index = _index_files(export_root)
+    model_id = conv.get("model") or conv.get("model_id")
 
-    for idx, message in enumerate(messages):
-        sender = message.get("sender") or message.get("role")
-        role = _normalise_sender(sender)
-        content_blocks = message.get("content") or []
-        text, block_links = _render_content_blocks(
-            content_blocks,
+    for idx, message in enumerate(conv.get("chat_messages", [])):
+        sender = message.get("sender") or "assistant"
+        timestamp = message.get("created_at") or message.get("updated_at")
+        blocks = message.get("content") or []
+        text_block, links = _render_content_blocks(
+            blocks,
             attachments,
             attachments_dir,
             markdown_path.parent,
             file_index,
         )
+        canonical_role = "user" if sender == "human" else "model"
         chunk = {
-            "role": role,
-            "text": text,
-            "tokenCount": estimate_token_count(text, model=model_id),
+            "role": canonical_role,
+            "text": text_block,
+            "tokenCount": estimate_token_count(text_block, model=model_id),
         }
-        if message.get("created_at"):
-            chunk["timestamp"] = message["created_at"]
+        if timestamp:
+            chunk["timestamp"] = timestamp
+        per_chunk_links[idx] = links
         chunks.append(chunk)
+        if text_block:
+            preview = store_large_text(
+                text_block,
+                chunk_index=idx,
+                attachments_dir=attachments_dir,
+                markdown_dir=markdown_path.parent,
+                attachments=attachments,
+                per_chunk_links=per_chunk_links,
+                prefix="claude",
+            )
+            if preview != text_block:
+                chunks[idx]["text"] = preview
 
-        if block_links:
-            per_chunk_links.setdefault(idx, []).extend(block_links)
-        preview = store_large_text(
-            text,
-            chunk_index=idx,
-            attachments_dir=attachments_dir,
-            markdown_dir=markdown_path.parent,
-            attachments=attachments,
-            per_chunk_links=per_chunk_links,
-            prefix="claude",
-        )
-        if preview != text:
-            chunks[idx]["text"] = preview
-
-    metadata = {
-        "title": title,
+    extra_yaml = {
         "sourcePlatform": "claude.ai",
         "conversationId": conv_id,
         "sourceExportPath": str(export_root),
     }
-
-    frontmatter = {
-        "sourcePlatform": "claude.ai",
-        "conversationId": conv_id,
-        "sourceExportPath": str(export_root),
-    }
-
     if model_id:
-        frontmatter["sourceModel"] = model_id
-        metadata["model"] = model_id
+        extra_yaml["sourceModel"] = model_id
 
     document = build_markdown_from_chunks(
         chunks,
         per_chunk_links,
-        title=metadata["title"],
+        title=title,
         source_file_id=conv_id,
-        modified_time=conv.get("updated_at"),
+        modified_time=conv.get("updated_at") or conv.get("modified_at"),
         created_time=conv.get("created_at"),
         run_settings=None,
         citations=None,
         source_mime="application/json",
         source_size=None,
         collapse_threshold=collapse_threshold,
-        extra_yaml=frontmatter,
+        extra_yaml=extra_yaml,
         attachments=attachments,
     )
 
-    markdown_path.write_text(document.to_markdown(), encoding="utf-8")
-    html_path: Optional[Path] = None
-    if html:
-        from ..html import write_html
-
-        html_path = markdown_path.with_suffix(".html")
-        write_html(document, html_path, html_theme)
-
-    if not attachments:
-        try:
-            attachments_dir.rmdir()
-            attachments_dir = None
-        except OSError:
-            pass
-
-    content_hash = hashlib.sha256(document.body.encode("utf-8")).hexdigest()
-    update_conversation_state(
-        "claude.ai",
-        conv_id,
-        slug=slug,
-        lastUpdated=updated_at,
-        contentHash=content_hash,
-        outputPath=str(markdown_path),
-        htmlPath=str(html_path) if html_path else (state_entry.get("htmlPath") if state_entry else None),
-        attachmentsDir=str(attachments_dir) if attachments_dir else (state_entry.get("attachmentsDir") if state_entry else None),
+    persist_result = persist_document(
+        provider="claude.ai",
+        conversation_id=conv_id,
         title=title,
-        lastImported=current_utc_timestamp(),
+        document=document,
+        output_dir=output_dir,
+        collapse_threshold=collapse_threshold,
+        attachments=attachments,
+        updated_at=conv.get("updated_at") or conv.get("modified_at"),
+        created_at=conv.get("created_at"),
+        html=html,
+        html_theme=html_theme,
+        attachment_policy=None,
+        extra_state={
+            "sourceModel": model_id,
+            "sourceExportPath": str(export_root),
+        },
+        slug_hint=slug,
+        id_hint=(conv_id or "")[:8],
     )
+
+    if persist_result.skipped:
+        return ImportResult(
+            markdown_path=persist_result.markdown_path,
+            html_path=persist_result.html_path,
+            attachments_dir=persist_result.attachments_dir,
+            document=None,
+            skipped=True,
+            skip_reason=persist_result.skip_reason,
+            dirty=persist_result.dirty,
+            content_hash=persist_result.content_hash,
+        )
 
     return ImportResult(
-        markdown_path=markdown_path,
-        html_path=html_path,
-        attachments_dir=attachments_dir,
-        document=document,
+        markdown_path=persist_result.markdown_path,
+        html_path=persist_result.html_path,
+        attachments_dir=persist_result.attachments_dir,
+        document=persist_result.document or document,
+        dirty=persist_result.dirty,
+        content_hash=persist_result.content_hash,
     )
+
+
+def _index_export_files(root: Path) -> Dict[str, Path]:
+    index: Dict[str, Path] = {}
+    if not root.exists():
+        return index
+    for path in root.rglob("*"):
+        if path.is_file():
+            index[path.name] = path
+    return index
+
 
 
 def _render_content_blocks(

@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from ..render import AttachmentInfo, build_markdown_from_chunks
-from ..util import sanitize_filename
+from ..document_store import persist_document
+from ..util import assign_conversation_slug
 from .base import ImportResult
 from .utils import estimate_token_count, store_large_text
 
@@ -28,8 +29,9 @@ def import_claude_code_session(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     title = session_path.stem
-    markdown_path = output_dir / f"{sanitize_filename(title)}.md"
-    attachments_dir = markdown_path.parent / f"{markdown_path.stem}_attachments"
+    slug = assign_conversation_slug("claude-code", session_id, title, id_hint=title[:8])
+    markdown_path = output_dir / f"{slug}.md"
+    attachments_dir = markdown_path.parent / f"{slug}_attachments"
 
     chunks: List[Dict] = []
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
@@ -117,7 +119,7 @@ def import_claude_code_session(
     document = build_markdown_from_chunks(
         chunks,
         per_chunk_links,
-        title=markdown_path.stem,
+        title=title,
         source_file_id=session_path.name,
         modified_time=None,
         created_time=None,
@@ -131,27 +133,47 @@ def import_claude_code_session(
     )
     document.metadata["sourceSessionPath"] = str(session_path)
     document.metadata["sourceWorkspace"] = session_path.parent.name
-    markdown_path.write_text(document.to_markdown(), encoding="utf-8")
 
-    html_path: Optional[Path] = None
-    if html:
-        from ..html import write_html
+    persist_result = persist_document(
+        provider="claude-code",
+        conversation_id=session_id,
+        title=title,
+        document=document,
+        output_dir=output_dir,
+        collapse_threshold=collapse_threshold,
+        attachments=attachments,
+        updated_at=None,
+        created_at=None,
+        html=html,
+        html_theme=html_theme,
+        attachment_policy=None,
+        extra_state={
+            "sessionFile": str(session_path),
+            "workspace": session_path.parent.name,
+        },
+        slug_hint=slug,
+        id_hint=title[:8],
+    )
 
-        html_path = markdown_path.with_suffix(".html")
-        write_html(document, html_path, html_theme)
-
-    if not attachments:
-        try:
-            attachments_dir.rmdir()
-            attachments_dir = None
-        except OSError:
-            pass
+    if persist_result.skipped:
+        return ImportResult(
+            markdown_path=persist_result.markdown_path,
+            html_path=persist_result.html_path,
+            attachments_dir=persist_result.attachments_dir,
+            document=None,
+            skipped=True,
+            skip_reason=persist_result.skip_reason,
+            dirty=persist_result.dirty,
+            content_hash=persist_result.content_hash,
+        )
 
     return ImportResult(
-        markdown_path=markdown_path,
-        html_path=html_path,
-        attachments_dir=attachments_dir,
-        document=document,
+        markdown_path=persist_result.markdown_path,
+        html_path=persist_result.html_path,
+        attachments_dir=persist_result.attachments_dir,
+        document=persist_result.document or document,
+        dirty=persist_result.dirty,
+        content_hash=persist_result.content_hash,
     )
 
 
