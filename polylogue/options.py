@@ -48,7 +48,9 @@ class ListOptions:
 
 @dataclass
 class StatusOptions:
-    pass
+    json: bool = False
+    watch: bool = False
+    interval: float = 5.0
 
 
 @dataclass
@@ -104,3 +106,4 @@ class StatusResult:
     runs_path: Path
     recent_runs: List[dict]
     run_summary: Dict[str, Any]
+    provider_summary: Dict[str, Any]
