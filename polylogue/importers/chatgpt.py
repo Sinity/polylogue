@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import zipfile
 from dataclasses import dataclass
@@ -8,22 +7,11 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from ..render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
-from ..util import (
-    assign_conversation_slug,
-    conversation_is_current,
-    get_conversation_state,
-    current_utc_timestamp,
-    update_conversation_state,
-)
+from ..render import AttachmentInfo, build_markdown_from_chunks
+from ..document_store import persist_document
+from ..util import assign_conversation_slug
 from .base import ImportResult
 from .utils import estimate_token_count, store_large_text
-
-
-@dataclass
-class _Conversation:
-    data: Dict
-    path: Path
 
 
 def _load_export(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
@@ -193,6 +181,8 @@ def list_chatgpt_conversations(export_path: Path) -> List[Dict[str, Optional[str
             tmp.cleanup()
 
 
+
+
 def _render_chatgpt_conversation(
     conv: Dict,
     export_root: Path,
@@ -204,41 +194,9 @@ def _render_chatgpt_conversation(
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
     conv_id = conv.get("id") or conv.get("conversation_id") or "chat"
-    slug = assign_conversation_slug("chatgpt", conv_id, title, id_hint=conv_id[:8])
+    slug = assign_conversation_slug("chatgpt", conv_id, title, id_hint=(conv_id or "")[:8])
     markdown_path = output_dir / f"{slug}.md"
     attachments_dir = markdown_path.parent / f"{slug}_attachments"
-
-    state_entry = get_conversation_state("chatgpt", conv_id)
-    existing_html: Optional[Path] = None
-    existing_attachments_dir: Optional[Path] = None
-    if state_entry:
-        html_candidate = state_entry.get("htmlPath")
-        if html_candidate:
-            html_path = Path(html_candidate)
-            if html_path.exists():
-                existing_html = html_path
-        attach_candidate = state_entry.get("attachmentsDir")
-        if attach_candidate:
-            attach_path = Path(attach_candidate)
-            if attach_path.exists():
-                existing_attachments_dir = attach_path
-
-    updated_at = conv.get("update_time") or conv.get("modified_time")
-    if conversation_is_current(
-        "chatgpt",
-        conv_id,
-        updated_at=updated_at,
-        content_hash=None,
-        output_path=markdown_path,
-    ):
-        return ImportResult(
-            markdown_path=markdown_path,
-            html_path=existing_html,
-            attachments_dir=existing_attachments_dir,
-            document=None,
-            skipped=True,
-            skip_reason="up-to-date",
-        )
 
     chunks: List[Dict] = []
     attachments: List[AttachmentInfo] = []
@@ -258,23 +216,31 @@ def _render_chatgpt_conversation(
     for idx, msg in enumerate(messages):
         role = msg.get("author") or "assistant"
         content = msg.get("content") or {}
-        text = _extract_text(role, content)
+        text_block = _extract_text(role, content)
         metadata = msg.get("metadata") or {}
         canonical_role = _normalise_role(role)
         chunk = {
             "role": canonical_role,
-            "text": text,
-            "tokenCount": estimate_token_count(text, model=model_slug),
+            "text": text_block,
+            "tokenCount": estimate_token_count(text_block, model=model_slug),
         }
         if msg.get("create_time"):
             chunk["timestamp"] = msg["create_time"]
         chunks.append(chunk)
         attachment_refs = metadata.get("attachments") or []
         for ref in attachment_refs:
-            _copy_attachment(ref, file_index, attachments_dir, markdown_path.parent, attachments, per_chunk_links, idx)
-        if text:
+            _copy_attachment(
+                ref,
+                file_index,
+                attachments_dir,
+                markdown_path.parent,
+                attachments,
+                per_chunk_links,
+                idx,
+            )
+        if text_block:
             preview = store_large_text(
-                text,
+                text_block,
                 chunk_index=idx,
                 attachments_dir=attachments_dir,
                 markdown_dir=markdown_path.parent,
@@ -282,73 +248,74 @@ def _render_chatgpt_conversation(
                 per_chunk_links=per_chunk_links,
                 prefix="chatgpt",
             )
-            if preview != text:
+            if preview != text_block:
                 chunks[idx]["text"] = preview
 
-    metadata = {
-        "title": conv.get("title") or safe_name,
+    conversation_id = conv.get("id") or conv.get("conversation_id")
+    extra_yaml = {
         "sourcePlatform": "chatgpt",
-        "conversationId": conv.get("id") or conv.get("conversation_id"),
+        "conversationId": conversation_id,
+        "sourceModel": model_slug,
+        "sourceExportPath": str(export_root),
     }
-    if model_slug:
-        metadata["model"] = model_slug
 
     document = build_markdown_from_chunks(
         chunks,
         per_chunk_links,
-        title=metadata["title"],
-        source_file_id=metadata.get("conversationId"),
-        modified_time=conv.get("update_time"),
+        title=title,
+        source_file_id=conversation_id,
+        modified_time=conv.get("update_time") or conv.get("modified_time"),
         created_time=conv.get("create_time"),
         run_settings=None,
         citations=None,
         source_mime="application/json",
         source_size=None,
         collapse_threshold=collapse_threshold,
-        extra_yaml={
-            "sourcePlatform": "chatgpt",
-            "conversationId": metadata.get("conversationId"),
+        extra_yaml=extra_yaml,
+        attachments=attachments,
+    )
+
+    persist_result = persist_document(
+        provider="chatgpt",
+        conversation_id=conversation_id,
+        title=title,
+        document=document,
+        output_dir=output_dir,
+        collapse_threshold=collapse_threshold,
+        attachments=attachments,
+        updated_at=conv.get("update_time") or conv.get("modified_time"),
+        created_at=conv.get("create_time"),
+        html=html,
+        html_theme=html_theme,
+        attachment_policy=None,
+        extra_state={
             "sourceModel": model_slug,
             "sourceExportPath": str(export_root),
         },
-        attachments=attachments,
+        slug_hint=slug,
+        id_hint=(conv_id or "")[:8],
     )
-    markdown_path.write_text(document.to_markdown(), encoding="utf-8")
-    html_path: Optional[Path] = None
-    if html:
-        from ..html import write_html
 
-        html_path = markdown_path.with_suffix(".html")
-        write_html(document, html_path, html_theme)
-
-    if not attachments:
-        try:
-            attachments_dir.rmdir()
-            attachments_dir = None
-        except OSError:
-            pass
-
-    content_hash = hashlib.sha256(document.body.encode("utf-8")).hexdigest()
-    update_conversation_state(
-        "chatgpt",
-        conv_id,
-        slug=slug,
-        lastUpdated=updated_at,
-        contentHash=content_hash,
-        outputPath=str(markdown_path),
-        htmlPath=str(html_path) if html_path else (state_entry.get("htmlPath") if state_entry else None),
-        attachmentsDir=str(attachments_dir) if attachments_dir else (state_entry.get("attachmentsDir") if state_entry else None),
-        title=title,
-        lastImported=current_utc_timestamp(),
-    )
+    if persist_result.skipped:
+        return ImportResult(
+            markdown_path=persist_result.markdown_path,
+            html_path=persist_result.html_path,
+            attachments_dir=persist_result.attachments_dir,
+            document=None,
+            skipped=True,
+            skip_reason=persist_result.skip_reason,
+            dirty=persist_result.dirty,
+            content_hash=persist_result.content_hash,
+        )
 
     return ImportResult(
-        markdown_path=markdown_path,
-        html_path=html_path,
-        attachments_dir=attachments_dir,
-        document=document,
+        markdown_path=persist_result.markdown_path,
+        html_path=persist_result.html_path,
+        attachments_dir=persist_result.attachments_dir,
+        document=persist_result.document or document,
+        dirty=persist_result.dirty,
+        content_hash=persist_result.content_hash,
     )
-
 
 def _normalise_role(role: Optional[str]) -> str:
     if not role:
