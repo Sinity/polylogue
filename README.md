@@ -13,10 +13,12 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 - **Render local logs:** Choose a file or directory; skim previews candidates, rich shows progress, and outputs land in the configured render directory (default `/realm/data/chatlog/markdown/gemini-render`). Add `--html` for themed previews or `--diff` to see deltas when re-rendering.
 - **Sync Drive folders:** Connect to the default Drive folder (`AI Studio`) and pull chats to Markdown in `/realm/data/chatlog/markdown/gemini-sync`, downloading attachments unless you opt to link only.
 - **Sync Codex / Claude Code sessions:** Mirror local CLI transcripts from `~/.codex/sessions/` and `~/.claude/projects/` via `polylogue sync-codex` / `polylogue sync-claude-code`, with optional JSON summaries, pruning, diffs, and HTML previews. Outputs land in `/realm/data/chatlog/markdown/codex` and `/realm/data/chatlog/markdown/claude-code` by default.
-- **Watch local sessions in real time:** `polylogue watch codex` and `polylogue watch claude-code` keep those directories synced automatically; adjust debounce, HTML, and collapse settings per watcher.
-- **Import exported providers:** Convert ChatGPT zips, Claude exports, Claude Code sessions, or Codex JSONLs via `polylogue import …` subcommands. Skim lets you cherry-pick conversations; `--all` batches them.
+- **Watch local sessions in real time:** `polylogue watch codex` and `polylogue watch claude-code` keep those directories synced automatically; adjust debounce, HTML, collapse settings per watcher, or run a single pass with `--once`. Every sync is logged to `polylogue status --json` so scheduled runs and watchers share the same telemetry.
+- **Import exported providers:** Convert ChatGPT zips, Claude exports, Claude Code sessions, or Codex JSONLs via `polylogue import …` subcommands. Skim lets you cherry-pick conversations; `--all` batches them. Automation targets exist for Codex, Claude Code, Drive sync, Gemini render, and ChatGPT imports (see `polylogue automation describe`).
 - **Doctor & Stats:** `polylogue doctor` sanity-checks source directories; `polylogue stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters).
 - **View recent runs:** The status dashboard shows the last operations, including attachment MiB and diff counts per command.
+- **Monitor automation:** `polylogue status --json --watch` now streams provider-level stats for dashboards or terminal monitoring.
+- **SQLite/Qdrant indexing:** Every successful write updates a local SQLite FTS index (and, optionally, a Qdrant collection) so downstream tooling can query or sync metadata without reparsing Markdown.
 
 ## Provider Cheat Sheet
 
@@ -46,7 +48,7 @@ Although the CLI is interactive by default, the same functionality is available 
 - `python3 polylogue.py sync-codex [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--force] [--prune] [--all] [--json] [--diff]`
 - `python3 polylogue.py sync-claude-code [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--force] [--prune] [--all] [--json] [--diff]`
 - `python3 polylogue.py list [--folder-name NAME] [--folder-id ID] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--json] [--plain]`
-- `python3 polylogue.py status`
+- `python3 polylogue.py status [--json] [--watch] [--interval seconds]`
 - `python3 polylogue.py import chatgpt EXPORT_PATH [--conversation-id ID ...] [--all] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
 - `python3 polylogue.py import claude EXPORT_PATH [--conversation-id ID ...] [--all] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
 - `python3 polylogue.py import claude-code SESSION_ID [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
@@ -66,7 +68,26 @@ The dev shell equips Polylogue with:
 
 Everything falls back gracefully when `--plain` is specified or stdout isn’t a TTY.
 
-See `docs/automation.md` for watcher usage and ready-made systemd/cron templates.
+See `docs/automation.md` for watcher usage, ready-made systemd/cron templates, and the `polylogue automation systemd|cron|describe` helper that prints the snippets or metadata for you.
+Available automation targets: `codex`, `claude-code`, `drive-sync`, `gemini-render`, `chatgpt-import` (pass `--target <name>` for snippet generation or declarative modules). Per-target defaults (collapse thresholds, Drive folders, HTML flags) are baked into the metadata but can be overridden via CLI flags or the NixOS module.
+
+## Nix Flake Usage
+- This repository is a self-contained flake: add `inputs.polylogue.url = "github:yourname/polylogue";` (or your fork) to another flake and reference the packaged CLI as `inputs.polylogue.packages.${system}.polylogue` or `inputs.polylogue.apps.${system}.polylogue`.
+- Import the NixOS module via `imports = [ inputs.polylogue.nixosModules.polylogue ];` to enable declarative automation. Example:
+  ```nix
+  services.polylogue = {
+    enable = true;
+    user = "polylogue";
+    workingDir = "/var/lib/polylogue";
+    targets.codex = {
+      enable = true;
+      outputDir = "/realm/data/chatlog/markdown/codex";
+      timer.interval = "10m";
+    };
+    targets."claude-code".enable = true;
+  };
+  ```
+- The module reads the same automation metadata as the CLI (see `polylogue automation describe --target codex`) and wires systemd timers around the packaged binary. Override `targets.<name>.extraArgs`, `collapseThreshold`, `html`, or set per-target `workingDir`/`outputDir` as needed.
 
 ## Configuration
 - Polylogue reads configuration from `$POLYLOGUE_CONFIG`, `$XDG_CONFIG_HOME/polylogue/config.json`, or (legacy) `~/.polylogueconfig`.
@@ -74,6 +95,7 @@ See `docs/automation.md` for watcher usage and ready-made systemd/cron templates
 - Run state (`state.json`, `runs.json`) lives under `$XDG_STATE_HOME/polylogue/` so automation can tail recent activity.
 - `polylogue doctor` reports the discovered paths when no config is detected.
 - Drive behaviour can be tuned with environment variables such as `$POLYLOGUE_RETRIES`, `$POLYLOGUE_RETRY_BASE`, `$POLYLOGUE_AUTH_MODE`, and `$POLYLOGUE_TOKEN_PATH`.
+- Indexing backends are controlled via `$POLYLOGUE_INDEX_BACKEND` (`sqlite`, `qdrant`, or `none`) alongside optional Qdrant knobs (`POLYLOGUE_QDRANT_URL`, `POLYLOGUE_QDRANT_API_KEY`, `POLYLOGUE_QDRANT_COLLECTION`).
 
 ## Credentials & Tokens
 1. Create an OAuth client for a “Desktop app” in the Google Cloud Console (we link you directly from the prompt).
