@@ -1,0 +1,187 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pytest
+
+from polylogue.commands import (
+    CommandEnv,
+    RenderOptions,
+    SyncOptions,
+    render_command,
+    sync_command,
+)
+from polylogue import commands as cmd_module, util
+
+
+class DummyConsole:
+    def __init__(self):
+        self.messages = []
+
+    def print(self, *args, **kwargs):  # pragma: no cover - debug helper
+        self.messages.append((args, kwargs))
+
+
+@dataclass
+class DummyUI:
+    plain: bool = True
+    console: DummyConsole = field(default_factory=DummyConsole)
+
+    def summary(self, *args, **kwargs):  # pragma: no cover - unused in tests
+        pass
+
+    def banner(self, *args, **kwargs):  # pragma: no cover - unused in tests
+        pass
+
+
+@pytest.fixture
+def state_env(tmp_path, monkeypatch):
+    state_home = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    new_home = state_home / "polylogue"
+    state_path = new_home / "state.json"
+    runs_path = new_home / "runs.json"
+    monkeypatch.setattr(util, "STATE_HOME", new_home, raising=False)
+    monkeypatch.setattr(util, "STATE_PATH", state_path, raising=False)
+    monkeypatch.setattr(util, "RUNS_PATH", runs_path, raising=False)
+    monkeypatch.setattr(cmd_module, "STATE_PATH", state_path, raising=False)
+    monkeypatch.setattr(cmd_module, "RUNS_PATH", runs_path, raising=False)
+    from polylogue import index_sqlite as index_sqlite_module
+
+    monkeypatch.setattr(index_sqlite_module, "STATE_HOME", new_home, raising=False)
+    return new_home
+
+
+def test_render_command_persists_state(tmp_path, state_env, monkeypatch):
+    records = []
+    monkeypatch.setattr(cmd_module, "add_run", lambda record: records.append(record))
+    src = tmp_path / "sample.json"
+    payload = {
+        "id": "conv-1",
+        "title": "Sample Chat",
+        "chunkedPrompt": {
+            "chunks": [
+                {"role": "user", "text": "Hello"},
+                {"role": "model", "text": "Hi!"},
+            ]
+        },
+    }
+    src.write_text(json.dumps(payload), encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    options = RenderOptions(
+        inputs=[src],
+        output_dir=out_dir,
+        collapse_threshold=16,
+        download_attachments=False,
+        dry_run=False,
+        force=False,
+        html=False,
+        html_theme="light",
+        diff=False,
+    )
+    result = render_command(options, CommandEnv(ui=DummyUI()))
+
+    assert len(result.files) == 1
+    md_path = out_dir / "sample.md"
+    assert md_path.exists()
+    state_data = json.loads((state_env / "state.json").read_text(encoding="utf-8"))
+    conv_state = state_data["conversations"]["render"]["conv-1"]
+    assert conv_state["collapseThreshold"] == 16
+    assert conv_state["dirty"] is False
+    assert records and records[0].get("duration") is not None
+    assert records[0]["duration"] >= 0
+
+    db_path = state_env / "index.sqlite"
+    assert db_path.exists()
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT title FROM conversations WHERE provider = ? AND conversation_id = ?",
+            ("render", "conv-1"),
+        ).fetchone()
+        assert row and row[0] == "Sample Chat"
+        fts_row = conn.execute(
+            "SELECT content FROM conversations_fts WHERE provider = ? AND conversation_id = ?",
+            ("render", "conv-1"),
+        ).fetchone()
+        assert fts_row and "Hello" in fts_row[0]
+    finally:
+        conn.close()
+    # rerun should skip due to unchanged content
+    second = render_command(options, CommandEnv(ui=DummyUI()))
+    assert second.files == []
+
+
+def test_sync_command_with_stub_drive(tmp_path, monkeypatch, state_env):
+    records = []
+    monkeypatch.setattr(cmd_module, "add_run", lambda record: records.append(record))
+    class StubDrive:
+        def __init__(self, ui):
+            self.ui = ui
+
+        def resolve_folder_id(self, folder_name, folder_id):  # noqa: ARG002
+            return "folder-123"
+
+        def list_chats(self, folder_name, folder_id):  # noqa: ARG002
+            return [
+                {
+                    "id": "drive-1",
+                    "name": "Drive Sample",
+                    "modifiedTime": "2024-01-01T00:00:00Z",
+                }
+            ]
+
+        def download_chat_bytes(self, file_id):  # noqa: ARG002
+            payload = {
+                "chunkedPrompt": {
+                    "chunks": [
+                        {"role": "user", "text": "Question"},
+                        {"role": "model", "text": "Answer"},
+                    ]
+                }
+            }
+            return json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setattr(cmd_module, "DriveClient", StubDrive)
+
+    out_dir = tmp_path / "drive"
+    options = SyncOptions(
+        folder_name="AI Studio",
+        folder_id=None,
+        output_dir=out_dir,
+        collapse_threshold=12,
+        download_attachments=False,
+        dry_run=False,
+        force=False,
+        prune=False,
+        since=None,
+        until=None,
+        name_filter=None,
+        html=False,
+        html_theme="light",
+        diff=False,
+    )
+    result = sync_command(options, CommandEnv(ui=DummyUI()))
+
+    assert result.count == 1
+    expected_output = out_dir / f"{util.sanitize_filename('Drive Sample')}.md"
+    assert result.items[0].output == expected_output
+    assert expected_output.exists()
+    assert records and records[0].get("duration") is not None
+    assert records[0]["duration"] >= 0
+
+    db_path = state_env / "index.sqlite"
+    assert db_path.exists()
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT title FROM conversations WHERE provider = ? AND conversation_id = ?",
+            ("drive-sync", "drive-1"),
+        ).fetchone()
+        assert row and row[0] == "Drive Sample"
+    finally:
+        conn.close()
