@@ -10,7 +10,6 @@ pkgs.mkShell {
     pkgs.python3Packages.pathvalidate
     pkgs.python3Packages.aiohttp
     pkgs.python3Packages.aiofiles
-    pkgs.python3Packages.google-generativeai
     pkgs.python3Packages.rich
     pkgs.python3Packages.pydantic
     pkgs.python3Packages.python-frontmatter

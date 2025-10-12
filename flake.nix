@@ -41,7 +41,6 @@
             pathvalidate
             aiohttp
             aiofiles
-            google-generativeai
             rich
             pydantic
             python-frontmatter
