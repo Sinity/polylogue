@@ -29,46 +29,62 @@
         };
         python = pkgs.python3;
         pyPkgs = pkgs.python3Packages;
+        baseDeps = with pyPkgs; [
+          pathvalidate
+          aiohttp
+          aiofiles
+          rich
+          pydantic
+          python-frontmatter
+          jinja2
+          markdown-it-py
+          pyperclip
+          watchfiles
+        ];
+        driveDeps = with pyPkgs; [
+          google-api-python-client
+          google-auth-oauthlib
+          google-auth-httplib2
+        ];
         polylogueApp = pyPkgs.buildPythonApplication {
           pname = "polylogue";
           version = "0.1.0";
           format = "pyproject";
           src = self;
-          propagatedBuildInputs = with pyPkgs; [
-            google-api-python-client
-            google-auth-oauthlib
-            google-auth-httplib2
-            pathvalidate
-            aiohttp
-            aiofiles
-            rich
-            pydantic
-            python-frontmatter
-            jinja2
-            markdown-it-py
-            pyperclip
-            watchfiles
-          ];
+          propagatedBuildInputs = baseDeps;
           nativeCheckInputs = with pyPkgs; [ pytest ];
           checkPhase = "pytest";
         };
+        polylogueWithDrive = polylogueApp.overridePythonAttrs (old: {
+          propagatedBuildInputs = old.propagatedBuildInputs ++ driveDeps;
+        });
         cliApp = {
           type = "app";
           program = "${polylogueApp}/bin/polylogue";
+        };
+        cliAppWithDrive = {
+          type = "app";
+          program = "${polylogueWithDrive}/bin/polylogue";
         };
       in {
         packages = {
           default = polylogueApp;
           polylogue = polylogueApp;
+          polylogue-with-drive = polylogueWithDrive;
         };
 
         apps = {
           default = cliApp;
           polylogue = cliApp;
+          polylogue-with-drive = cliAppWithDrive;
         };
 
         devShells = {
           default = import ./nix/devshell.nix { inherit pkgs; };
+          drive = import ./nix/devshell.nix {
+            inherit pkgs;
+            extraPythonPackages = driveDeps;
+          };
           ci = pkgs.mkShell {
             buildInputs = [ polylogueApp pkgs.git pkgs.which ];
             shellHook = ''
