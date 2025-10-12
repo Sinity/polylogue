@@ -4,6 +4,8 @@ let
   py = pkgs.python3;
   pyPkgs = pkgs.python3Packages;
   pythonLibs = with pyPkgs; [
+    google-auth-oauthlib
+    requests
     pathvalidate
     aiohttp
     aiofiles
