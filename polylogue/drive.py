@@ -14,12 +14,28 @@ try:
     from googleapiclient.errors import HttpError
     from googleapiclient.http import MediaIoBaseDownload
     HAS_GOOGLE = True
-except Exception:
+    GOOGLE_IMPORT_ERROR = None
+except Exception as exc:
     HAS_GOOGLE = False
+    GOOGLE_IMPORT_ERROR = exc
+
+GOOGLE_HINT = (
+    "Install Polylogue with Drive extras: pip install 'polylogue[drive]' "
+    "or use the 'polylogue-with-drive' Nix package or dev shell."
+)
 
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 TOKEN_FILE = "token.json"
+
+
+def require_google():
+    if HAS_GOOGLE:
+        return
+    raise RuntimeError(
+        "Google Drive support requires optional dependencies. "
+        f"{GOOGLE_HINT}"
+    ) from GOOGLE_IMPORT_ERROR
 
 def _retry(fn, *, retries: int = 3, base_delay: float = 0.5):
     # Allow env overrides for tuning
@@ -44,9 +60,7 @@ def _retry(fn, *, retries: int = 3, base_delay: float = 0.5):
 
 
 def get_drive_service(credentials_path: Path, verbose: bool = False):
-    if not HAS_GOOGLE:
-        print(colorize("Google API libraries not available.", "red"))
-        return None
+    require_google()
     creds = None
     token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
     token_path = Path(token_env) if token_env else (credentials_path.parent / TOKEN_FILE)

@@ -99,7 +99,14 @@ class DriveClient:
     def service(self):
         if self._service is None:
             cred_path = self.ensure_credentials()
-            svc = get_drive_service(cred_path, verbose=not self.ui.plain)
+            try:
+                svc = get_drive_service(cred_path, verbose=not self.ui.plain)
+            except RuntimeError as exc:
+                message = str(exc)
+                if self.ui.plain:
+                    raise SystemExit(message) from exc
+                self.ui.banner("Drive dependencies missing", message)
+                raise SystemExit(message) from exc
             if not svc:
                 raise SystemExit("Drive auth failed")
             self._service = svc
