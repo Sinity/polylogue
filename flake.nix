@@ -29,26 +29,29 @@
         };
         python = pkgs.python3;
         pyPkgs = pkgs.python3Packages;
+        baseDeps = with pyPkgs; [
+          google-auth-oauthlib
+          requests
+          pathvalidate
+          aiohttp
+          aiofiles
+          rich
+          pydantic
+          python-frontmatter
+          jinja2
+          markdown-it-py
+          pyperclip
+          watchfiles
+        ];
         polylogueApp = pyPkgs.buildPythonApplication {
           pname = "polylogue";
           version = "0.1.0";
-          format = "pyproject";
+          pyproject = true;
           src = self;
-          propagatedBuildInputs = with pyPkgs; [
-            google-api-python-client
-            google-auth-oauthlib
-            google-auth-httplib2
-            pathvalidate
-            aiohttp
-            aiofiles
-            google-generativeai
-            rich
-            pydantic
-            python-frontmatter
-            jinja2
-            markdown-it-py
-            pyperclip
-            watchfiles
+          propagatedBuildInputs = baseDeps;
+          nativeBuildInputs = with pyPkgs; [
+            setuptools
+            wheel
           ];
           nativeCheckInputs = with pyPkgs; [ pytest ];
           checkPhase = "pytest";

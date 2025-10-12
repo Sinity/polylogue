@@ -1,25 +1,45 @@
+from __future__ import annotations
+
 import io
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
 import os
 import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from .util import colorize, get_cached_folder_id, set_cached_folder_id
 
 try:
-    from google.auth.transport.requests import Request
+    import requests
+    from google.auth.transport.requests import AuthorizedSession, Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
-    from googleapiclient.discovery import build
-    from googleapiclient.errors import HttpError
-    from googleapiclient.http import MediaIoBaseDownload
+
     HAS_GOOGLE = True
-except Exception:
+    GOOGLE_IMPORT_ERROR = None
+except Exception as exc:
     HAS_GOOGLE = False
+    GOOGLE_IMPORT_ERROR = exc
 
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 TOKEN_FILE = "token.json"
+DRIVE_BASE = "https://www.googleapis.com/drive/v3"
+
+
+class DriveApiError(RuntimeError):
+    def __init__(self, message: str, status: int, payload: Optional[Dict[str, Any]] = None):
+        super().__init__(message)
+        self.status = status
+        self.payload = payload or {}
+
+
+def require_google():
+    if HAS_GOOGLE:
+        return
+    raise RuntimeError(
+        "Google Drive support requires google-auth and requests dependencies."
+    ) from GOOGLE_IMPORT_ERROR
+
 
 def _retry(fn, *, retries: int = 3, base_delay: float = 0.5):
     # Allow env overrides for tuning
@@ -35,7 +55,7 @@ def _retry(fn, *, retries: int = 3, base_delay: float = 0.5):
     for i in range(retries):
         try:
             return fn()
-        except Exception as e:  # HttpError or transport errors
+        except Exception as e:
             last_err = e
             time.sleep(base_delay * (2 ** i))
     if last_err:
@@ -43,10 +63,72 @@ def _retry(fn, *, retries: int = 3, base_delay: float = 0.5):
     return None
 
 
+def _raise_for_status(resp: requests.Response) -> None:
+    if resp.status_code < 400:
+        return
+    message = f"HTTP {resp.status_code}"
+    payload: Optional[Dict[str, Any]] = None
+    try:
+        payload = resp.json()
+        msg = payload.get("error", {}).get("message")
+        if isinstance(msg, str) and msg.strip():
+            message = msg
+    except Exception:
+        text = resp.text.strip()
+        if text:
+            message = text
+    raise DriveApiError(message, resp.status_code, payload)
+
+
+def _authorized_session(creds: Credentials) -> AuthorizedSession:
+    return AuthorizedSession(creds)
+
+
+def _run_console_flow(flow: InstalledAppFlow, *, verbose: bool) -> Credentials:
+    """Console-mode auth fallback when InstalledAppFlow.run_console is unavailable."""
+    run_console = getattr(flow, "run_console", None)
+    if callable(run_console):
+        return run_console()
+
+    auth_url, _ = flow.authorization_url(prompt="consent")
+    prompt = (
+        "Open this link in your browser to authorize Polylogue:\n"
+        f"  {auth_url}\n"
+    )
+    print(colorize(prompt, "magenta") if verbose else prompt)
+
+    try:
+        code = input(
+            colorize("Enter the authorization code: ", "cyan")
+            if verbose
+            else "Enter the authorization code: "
+        ).strip()
+    except EOFError as exc:
+        raise RuntimeError("Authorization cancelled") from exc
+
+    if not code:
+        raise RuntimeError("Empty authorization code supplied.")
+
+    flow.fetch_token(code=code)
+    return flow.credentials
+
+
+def _drive_get_json(session: AuthorizedSession, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    url = f"{DRIVE_BASE}/{path}"
+
+    def call():
+        resp = session.get(url, params=params, timeout=60)
+        try:
+            _raise_for_status(resp)
+            return resp.json()
+        finally:
+            resp.close()
+
+    return _retry(call)
+
+
 def get_drive_service(credentials_path: Path, verbose: bool = False):
-    if not HAS_GOOGLE:
-        print(colorize("Google API libraries not available.", "red"))
-        return None
+    require_google()
     creds = None
     token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
     token_path = Path(token_env) if token_env else (credentials_path.parent / TOKEN_FILE)
@@ -73,32 +155,37 @@ def get_drive_service(credentials_path: Path, verbose: bool = False):
                 if mode == "local":
                     creds = flow.run_local_server(port=0)
                 else:
-                    creds = flow.run_console()
+                    creds = _run_console_flow(flow, verbose=verbose)
             except Exception:
-                # fallback to console
-                creds = flow.run_console()
+                creds = _run_console_flow(flow, verbose=verbose)
             try:
                 token_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(token_path, "w") as f:
+                with open(token_path, "w", encoding="utf-8") as f:
                     f.write(creds.to_json())
             except Exception:
                 pass
+    if not creds:
+        return None
     try:
-        return build("drive", "v3", credentials=creds)
-    except HttpError:
+        return _authorized_session(creds)
+    except Exception:
         return None
 
 
-def list_children(service, folder_id: str) -> List[Dict[str, Any]]:
+def list_children(session, folder_id: str) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
-    page_token = None
+    page_token: Optional[str] = None
+    params = {
+        "q": f"'{folder_id}' in parents and trashed=false",
+        "fields": "nextPageToken, files(id, name, mimeType, modifiedTime, createdTime, size)",
+        "pageSize": 1000,
+    }
     while True:
-        resp = _retry(lambda: service.files().list(
-            q=f"'{folder_id}' in parents and trashed=false",
-            fields="nextPageToken, files(id, name, mimeType, modifiedTime, createdTime, size)",
-            pageSize=1000,
-            pageToken=page_token,
-        ).execute())
+        if page_token:
+            params["pageToken"] = page_token
+        elif "pageToken" in params:
+            del params["pageToken"]
+        resp = _drive_get_json(session, "files", params)
         items.extend(resp.get("files", []))
         page_token = resp.get("nextPageToken")
         if not page_token:
@@ -106,23 +193,25 @@ def list_children(service, folder_id: str) -> List[Dict[str, Any]]:
     return items
 
 
-def find_folder_id(service, folder_name: str) -> Optional[str]:
+def find_folder_id(session, folder_name: str) -> Optional[str]:
     cached = get_cached_folder_id(folder_name)
     if cached:
         try:
-            # Validate cached id exists
-            meta = _retry(lambda: service.files().get(fileId=cached, fields="id").execute())
+            meta = _drive_get_json(session, f"files/{cached}", {"fields": "id"})
             if meta and meta.get("id"):
                 return cached
         except Exception:
             pass
-    # Exact name search, pick most recently modified
     try:
-        resp = _retry(lambda: service.files().list(
-            q=f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false",
-            fields="files(id, name, modifiedTime)",
-            pageSize=50,
-        ).execute())
+        resp = _drive_get_json(
+            session,
+            "files",
+            {
+                "q": f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false",
+                "fields": "files(id, name, modifiedTime)",
+                "pageSize": 50,
+            },
+        )
         files = resp.get("files", [])
         if not files:
             return None
@@ -130,34 +219,40 @@ def find_folder_id(service, folder_name: str) -> Optional[str]:
         sel = files[0]["id"]
         set_cached_folder_id(folder_name, sel)
         return sel
-    except HttpError:
+    except DriveApiError:
         return None
 
 
-def get_file_meta(service, file_id: str, fields: str = "id, name, mimeType, modifiedTime, createdTime, size") -> Optional[Dict[str, Any]]:
+def get_file_meta(session, file_id: str, fields: str = "id, name, mimeType, modifiedTime, createdTime, size") -> Optional[Dict[str, Any]]:
     try:
-        return _retry(lambda: service.files().get(fileId=file_id, fields=fields).execute())
-    except HttpError:
+        return _drive_get_json(session, f"files/{file_id}", {"fields": fields})
+    except DriveApiError:
         return None
 
 
-def download_file(service, file_id: str) -> Optional[bytes]:
+def download_file(session, file_id: str) -> Optional[bytes]:
+    url = f"{DRIVE_BASE}/files/{file_id}"
+
+    def fetch():
+        resp = session.get(url, params={"alt": "media"}, timeout=120, stream=True)
+        try:
+            _raise_for_status(resp)
+            buf = io.BytesIO()
+            for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                if chunk:
+                    buf.write(chunk)
+            return buf.getvalue()
+        finally:
+            resp.close()
+
     try:
-        req = service.files().get_media(fileId=file_id)
-        buf = io.BytesIO()
-        downloader = MediaIoBaseDownload(buf, req)
-        done = False
-        while not done:
-            def _next():
-                return downloader.next_chunk()
-            _, done = _retry(_next)
-        return buf.getvalue()
-    except HttpError:
+        return _retry(fetch)
+    except DriveApiError:
         return None
 
 
-def download_to_path(service, file_id: str, target_path: Path) -> bool:
-    data = download_file(service, file_id)
+def download_to_path(session, file_id: str, target_path: Path) -> bool:
+    data = download_file(session, file_id)
     if data is None:
         return False
     target_path.parent.mkdir(parents=True, exist_ok=True)
