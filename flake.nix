@@ -7,6 +7,9 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
+    let
+      polylogueModule = import ./nix/modules/polylogue.nix { inherit self; };
+    in
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -24,8 +27,65 @@
             })
           ];
         };
+        python = pkgs.python3;
+        pyPkgs = pkgs.python3Packages;
+        polylogueApp = pyPkgs.buildPythonApplication {
+          pname = "polylogue";
+          version = "0.1.0";
+          format = "pyproject";
+          src = self;
+          propagatedBuildInputs = with pyPkgs; [
+            google-api-python-client
+            google-auth-oauthlib
+            google-auth-httplib2
+            pathvalidate
+            aiohttp
+            aiofiles
+            rich
+            pydantic
+            python-frontmatter
+            jinja2
+            markdown-it-py
+            pyperclip
+            watchfiles
+          ];
+          nativeCheckInputs = with pyPkgs; [ pytest ];
+          checkPhase = "pytest";
+        };
+        cliApp = {
+          type = "app";
+          program = "${polylogueApp}/bin/polylogue";
+        };
       in {
-        devShells.default = import ./nix/devshell.nix { inherit pkgs; };
+        packages = {
+          default = polylogueApp;
+          polylogue = polylogueApp;
+        };
+
+        apps = {
+          default = cliApp;
+          polylogue = cliApp;
+        };
+
+        devShells = {
+          default = import ./nix/devshell.nix { inherit pkgs; };
+          ci = pkgs.mkShell {
+            buildInputs = [ polylogueApp pkgs.git pkgs.which ];
+            shellHook = ''
+              export PATH=${polylogueApp}/bin:''${PATH}
+              echo "Using packaged polylogue at ${polylogueApp}/bin/polylogue"
+            '';
+          };
+        };
+
+        checks = {
+          default = polylogueApp;
+        };
       }
-    );
+    ) // {
+      nixosModules = {
+        default = polylogueModule;
+        polylogue = polylogueModule;
+      };
+    };
 }

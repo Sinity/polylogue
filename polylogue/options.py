@@ -15,6 +15,7 @@ class RenderOptions:
     force: bool
     html: bool = False
     html_theme: str = "light"
+    diff: bool = False
 
 
 @dataclass
@@ -33,6 +34,7 @@ class SyncOptions:
     selected_ids: Optional[List[str]] = None
     html: bool = False
     html_theme: str = "light"
+    diff: bool = False
 
 
 @dataclass
@@ -46,7 +48,9 @@ class ListOptions:
 
 @dataclass
 class StatusOptions:
-    pass
+    json: bool = False
+    watch: bool = False
+    interval: float = 5.0
 
 
 @dataclass
@@ -55,6 +59,7 @@ class RenderFile:
     attachments: int
     stats: Dict[str, Any]
     html: Optional[Path] = None
+    diff: Optional[Path] = None
 
 
 @dataclass
@@ -73,6 +78,7 @@ class SyncItem:
     attachments: int
     stats: Dict[str, Any]
     html: Optional[Path] = None
+    diff: Optional[Path] = None
 
 
 @dataclass
@@ -99,3 +105,5 @@ class StatusResult:
     state_path: Path
     runs_path: Path
     recent_runs: List[dict]
+    run_summary: Dict[str, Any]
+    provider_summary: Dict[str, Any]

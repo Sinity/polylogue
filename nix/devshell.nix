@@ -10,14 +10,15 @@ pkgs.mkShell {
     pkgs.python3Packages.pathvalidate
     pkgs.python3Packages.aiohttp
     pkgs.python3Packages.aiofiles
-    pkgs.python3Packages.google-generativeai
     pkgs.python3Packages.rich
     pkgs.python3Packages.pydantic
     pkgs.python3Packages.python-frontmatter
     pkgs.python3Packages.jinja2
     pkgs.python3Packages.markdown-it-py
+    pkgs.python3Packages.pyperclip
+    pkgs.python3Packages.watchfiles
 
-    # CLI helpers used by gmd
+    # CLI helpers used by Polylogue
     pkgs.skim
     pkgs.gum
     pkgs.bat

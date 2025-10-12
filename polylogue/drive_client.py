@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import shutil
 import webbrowser
 from pathlib import Path
@@ -13,12 +15,13 @@ from .drive import (
     get_file_meta,
     list_children,
 )
-from .util import parse_rfc3339_to_epoch
+from .util import parse_rfc3339_to_epoch, read_clipboard_text
 from .ui import UI
 
 GDRIVE_INSTRUCTIONS = "https://developers.google.com/drive/api/quickstart/python"
-DEFAULT_CREDENTIALS = Path("credentials.json")
-DEFAULT_TOKEN = Path("token.json")
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "polylogue"
+DEFAULT_CREDENTIALS = CONFIG_DIR / "credentials.json"
+DEFAULT_TOKEN = CONFIG_DIR / "token.json"
 DEFAULT_FOLDER_NAME = "AI Studio"
 
 
@@ -40,10 +43,28 @@ class DriveClient:
             return cred_path
         if self.ui.plain:
             raise SystemExit(
-                "Missing credentials.json. Download a Google OAuth client secret and place it next to gmd.py."
+                "Missing credentials.json. Download a Google OAuth client secret and place it next to polylogue.py."
             )
         self.ui.banner("Google Drive access needs credentials", "Download OAuth client for Desktop app")
+        clipboard_checked = False
         while True:
+            if not clipboard_checked:
+                clipboard_checked = True
+                clip_text = read_clipboard_text()
+                if clip_text:
+                    try:
+                        parsed = json.loads(clip_text)
+                    except json.JSONDecodeError:
+                        parsed = None
+                    if isinstance(parsed, dict) and (set(parsed.keys()) & {"installed", "web"}):
+                        if self.ui.confirm("Use OAuth client JSON from clipboard?", default=True):
+                            try:
+                                cred_path.parent.mkdir(parents=True, exist_ok=True)
+                                cred_path.write_text(clip_text, encoding="utf-8")
+                                self.ui.banner("Saved credentials", f"Captured from clipboard → {cred_path}")
+                                return cred_path
+                            except Exception as exc:
+                                self.ui.banner("Failed to write credentials", str(exc))
             choice = self.ui.choose(
                 "Provide credentials",
                 ["Paste path to credentials.json", "Open setup guide", "Cancel"],
@@ -65,6 +86,7 @@ class DriveClient:
                 self.ui.banner("File not found", str(src))
                 continue
             try:
+                cred_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(src, cred_path)
                 self.ui.banner("Saved credentials", f"Copied to {cred_path}")
             except shutil.SameFileError:
