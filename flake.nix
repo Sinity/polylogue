@@ -46,9 +46,13 @@
         polylogueApp = pyPkgs.buildPythonApplication {
           pname = "polylogue";
           version = "0.1.0";
-          format = "pyproject";
+          pyproject = true;
           src = self;
           propagatedBuildInputs = baseDeps;
+          nativeBuildInputs = with pyPkgs; [
+            setuptools
+            wheel
+          ];
           nativeCheckInputs = with pyPkgs; [ pytest ];
           checkPhase = "pytest";
         };
