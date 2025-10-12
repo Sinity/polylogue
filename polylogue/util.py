@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 try:  # pragma: no cover - optional dependency
     import pyperclip  # type: ignore
@@ -59,8 +59,23 @@ def parse_rfc3339_to_epoch(ts: Optional[str]) -> Optional[float]:
         return None
 
 
-def parse_input_time_to_epoch(s: Optional[str]) -> Optional[float]:
-    if not s:
+def parse_input_time_to_epoch(s: Optional[Union[str, float, int, datetime.date, datetime.datetime]]) -> Optional[float]:
+    if s is None:
+        return None
+    if isinstance(s, (int, float)):
+        try:
+            return float(s)
+        except Exception:
+            return None
+    if isinstance(s, datetime.datetime):
+        dt = s
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=datetime.timezone.utc)
+        return dt.timestamp()
+    if isinstance(s, datetime.date):
+        dt = datetime.datetime.combine(s, datetime.time.min, tzinfo=datetime.timezone.utc)
+        return dt.timestamp()
+    if not isinstance(s, str):
         return None
     try:
         if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
