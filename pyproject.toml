@@ -10,9 +10,6 @@ readme = "README.md"
 authors = [{ name = "Polylogue Maintainers" }]
 requires-python = ">=3.10"
 dependencies = [
-  "google-api-python-client",
-  "google-auth-oauthlib",
-  "google-auth-httplib2",
   "pathvalidate",
   "aiohttp",
   "aiofiles",
@@ -23,6 +20,13 @@ dependencies = [
   "markdown-it-py",
   "pyperclip",
   "watchfiles",
+]
+
+[project.optional-dependencies]
+drive = [
+  "google-api-python-client",
+  "google-auth-oauthlib",
+  "google-auth-httplib2",
 ]
 
 [project.scripts]

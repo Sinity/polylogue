@@ -4,6 +4,7 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 
 ## Quick Start
 - Enable the direnv-managed dev shell: `direnv allow` (uses `.envrc` to call `nix develop`).
+- Drive integrations require optional Google client libraries; install them with `pip install "polylogue[drive]"`, run `nix develop .#drive`, or use the `polylogue-with-drive` package output.
 - Prefer manual entry? `nix develop` installs Python plus gum, skim, rich, bat, glow, etc.
 - Run `python3 polylogue.py` and pick an action from the gum menu (Render, Sync, Local Syncs, Doctor, Stats, etc.).
 - When a directory has multiple JSON logs, the skim picker previews files with `bat`; press `Ctrl+G` for a live `glow` render before confirming.
@@ -11,7 +12,7 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 
 ## What You Can Do
 - **Render local logs:** Choose a file or directory; skim previews candidates, rich shows progress, and outputs land in the configured render directory (default `/realm/data/chatlog/markdown/gemini-render`). Add `--html` for themed previews or `--diff` to see deltas when re-rendering.
-- **Sync Drive folders:** Connect to the default Drive folder (`AI Studio`) and pull chats to Markdown in `/realm/data/chatlog/markdown/gemini-sync`, downloading attachments unless you opt to link only.
+- **Sync Drive folders:** Connect to the default Drive folder (`AI Studio`) and pull chats to Markdown in `/realm/data/chatlog/markdown/gemini-sync`, downloading attachments unless you opt to link only. Install the Drive extras before running these commands.
 - **Sync Codex / Claude Code sessions:** Mirror local CLI transcripts from `~/.codex/sessions/` and `~/.claude/projects/` via `polylogue sync-codex` / `polylogue sync-claude-code`, with optional JSON summaries, pruning, diffs, and HTML previews. Outputs land in `/realm/data/chatlog/markdown/codex` and `/realm/data/chatlog/markdown/claude-code` by default.
 - **Watch local sessions in real time:** `polylogue watch codex` and `polylogue watch claude-code` keep those directories synced automatically; adjust debounce, HTML, collapse settings per watcher, or run a single pass with `--once`. Every sync is logged to `polylogue status --json` so scheduled runs and watchers share the same telemetry.
 - **Import exported providers:** Convert ChatGPT zips, Claude exports, Claude Code sessions, or Codex JSONLs via `polylogue import …` subcommands. Skim lets you cherry-pick conversations; `--all` batches them. Automation targets exist for Codex, Claude Code, Drive sync, Gemini render, and ChatGPT imports (see `polylogue automation describe`).
