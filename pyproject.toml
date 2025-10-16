@@ -29,7 +29,7 @@ polylogue = "polylogue.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["polylogue"]
+include = ["polylogue", "polylogue.*"]
 
 [tool.setuptools.package-data]
 polylogue = ["automation_targets.json"]
