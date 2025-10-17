@@ -1268,7 +1268,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 post = frontmatter.load(path)  # type: ignore[attr-defined]
                 return dict(post.metadata)
             except Exception:
-                return {}
+                pass
         # Minimal front matter parser: expects simple key: value pairs.
         try:
             text = path.read_text(encoding="utf-8")
