@@ -84,6 +84,35 @@ def _authorized_session(creds: Credentials) -> AuthorizedSession:
     return AuthorizedSession(creds)
 
 
+def _run_console_flow(flow: InstalledAppFlow, *, verbose: bool) -> Credentials:
+    """Console-mode auth fallback when InstalledAppFlow.run_console is unavailable."""
+    run_console = getattr(flow, "run_console", None)
+    if callable(run_console):
+        return run_console()
+
+    auth_url, _ = flow.authorization_url(prompt="consent")
+    prompt = (
+        "Open this link in your browser to authorize Polylogue:\n"
+        f"  {auth_url}\n"
+    )
+    print(colorize(prompt, "magenta") if verbose else prompt)
+
+    try:
+        code = input(
+            colorize("Enter the authorization code: ", "cyan")
+            if verbose
+            else "Enter the authorization code: "
+        ).strip()
+    except EOFError as exc:
+        raise RuntimeError("Authorization cancelled") from exc
+
+    if not code:
+        raise RuntimeError("Empty authorization code supplied.")
+
+    flow.fetch_token(code=code)
+    return flow.credentials
+
+
 def _drive_get_json(session: AuthorizedSession, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
     url = f"{DRIVE_BASE}/{path}"
 
@@ -126,9 +155,9 @@ def get_drive_service(credentials_path: Path, verbose: bool = False):
                 if mode == "local":
                     creds = flow.run_local_server(port=0)
                 else:
-                    creds = flow.run_console()
+                    creds = _run_console_flow(flow, verbose=verbose)
             except Exception:
-                creds = flow.run_console()
+                creds = _run_console_flow(flow, verbose=verbose)
             try:
                 token_path.parent.mkdir(parents=True, exist_ok=True)
                 with open(token_path, "w", encoding="utf-8") as f:
