@@ -533,8 +533,10 @@ def _format_reference_description(reference: Dict[str, Any], attachments_by_id: 
     refs = reference.get("refs") or []
     if refs:
         ref_id = refs[0]
-        if ref_id.startswith("hidden"):
-            return "Live market quote"
+        if isinstance(ref_id, dict):
+            ref_id = ref_id.get("ref_type") or ref_id.get("id") or "internal"
+        if isinstance(ref_id, str) and ref_id.startswith("hidden"):
+            return "Live market quote (tool result)"
         return f"Internal reference {ref_id}"
     matched = reference.get("matched_text")
     if matched:
