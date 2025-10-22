@@ -249,6 +249,10 @@ def _render_content_blocks(
         elif block_type == "tool_result":
             result_text = block.get("text") or block.get("result") or ""
             fragments.append(f"Tool result\n````\n{result_text}\n````")
+        elif block_type == "thinking":
+            thought = block.get("thinking") or block.get("text") or ""
+            if thought:
+                fragments.append(f"_(internal thought)_\n{thought}")
         elif block_type in {"image", "file"}:
             file_id = block.get("file_id") or block.get("asset_pointer")
             name = block.get("file_name") or file_id

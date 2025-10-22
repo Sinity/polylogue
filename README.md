@@ -3,6 +3,13 @@
 Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—rendering local exports to Markdown, syncing Drive sessions, and keeping local Codex/Claude Code transcripts tidy with diffs, stats, and diagnostics.
 
 ## Quick Start
+
+## Quality Gates
+- `pytest` is expected to stay green (`24 passed` in CI); add tests for new behaviours whenever possible.
+- Newly generated Markdown is spot-checked with `polylogue stats --dir …` and quick greps (timestamps, footnotes, attachment counts) before shipping.
+- Provider slugs are deterministic kebab-case so Git diffs stay tidy. Avoid manual renames unless conversation metadata truly changes.
+- Run `python3 polylogue.py --plain import …`/`sync …` after importer changes to ensure real data still parses.
+
 - Enable the direnv-managed dev shell: `direnv allow` (uses `.envrc` to call `nix develop`).
 - Prefer manual entry? `nix develop` installs Python plus gum, skim, rich, bat, glow, etc.
 - Run `python3 polylogue.py` and pick an action from the gum menu (Render, Sync, Local Syncs, Doctor, Stats, etc.).

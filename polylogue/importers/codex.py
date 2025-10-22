@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-
-from pydantic import BaseModel, ConfigDict, ValidationError
+from typing import Any, Dict, List, Tuple
 
 from ..render import AttachmentInfo, build_markdown_from_chunks
 from ..document_store import persist_document
@@ -13,23 +11,6 @@ from .base import ImportResult
 from .utils import CHAR_THRESHOLD, LINE_THRESHOLD, PREVIEW_LINES, estimate_token_count
 
 _DEFAULT_BASE = Path.home() / ".codex" / "sessions"
-
-
-class _Payload(BaseModel):
-    type: str
-    role: Optional[str] = None
-    content: Optional[List[Dict[str, Any]]] = None
-    name: Optional[str] = None
-    arguments: Optional[Any] = None
-    call_id: Optional[str] = None
-    output: Optional[str] = None
-    model_config = ConfigDict(extra="allow")
-
-
-class _ResponseItem(BaseModel):
-    type: str
-    payload: _Payload
-    model_config = ConfigDict(extra="allow")
 
 def _truncate_with_preview(text: str, attachment_name: str) -> str:
     lines = text.splitlines()
@@ -71,23 +52,64 @@ def import_codex_session(
     attachments_dir = markdown_path.parent / f"{slug}_attachments"
     attachments_dir.mkdir(parents=True, exist_ok=True)
 
+    def _format_json(value: Any) -> str:
+        try:
+            return json.dumps(value, indent=2, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
+
+    def _normalise_output(value: Any) -> str:
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return value
+            if isinstance(parsed, dict):
+                if isinstance(parsed.get("output"), str):
+                    return parsed["output"]
+                return _format_json(parsed)
+            if isinstance(parsed, list):
+                return _format_json(parsed)
+            return str(parsed)
+        return _format_json(value)
+
     with session_path.open(encoding="utf-8") as handle:
         for raw in handle:
-            entry = json.loads(raw)
             try:
-                model = _ResponseItem.model_validate(entry)
-            except ValidationError:
+                entry = json.loads(raw)
+            except json.JSONDecodeError:
+                fallback = raw.strip()
+                if not fallback:
+                    continue
+                chunk_text = "Unparsed Codex log line\n```\n{}```".format(fallback)
+                chunks.append(
+                    {
+                        "role": "model",
+                        "text": chunk_text,
+                        "tokenCount": estimate_token_count(chunk_text, model="gpt-5-codex"),
+                    }
+                )
                 continue
-            if model.type != "response_item":
+            if not isinstance(entry, dict):
                 continue
-            payload = model.payload
-            ptype = payload.type
+            entry_type = entry.get("type")
+            if entry_type in {None, "session_meta"}:
+                continue
+            payload = entry.get("payload") if entry_type == "response_item" else entry
+            if not isinstance(payload, dict):
+                continue
+            ptype = payload.get("type") or entry_type
+            if not isinstance(ptype, str):
+                continue
 
             if ptype == "message":
-                role = payload.role or "assistant"
+                role = payload.get("role") or "assistant"
                 canonical_role = "model" if role in {"assistant", "model"} else "user"
                 parts: List[str] = []
-                for seg in payload.content or []:
+                content_segments = payload.get("content") or []
+                if not isinstance(content_segments, list):
+                    content_segments = []
+                for seg in content_segments:
                     if not isinstance(seg, dict):
                         continue
                     text = seg.get("text") or ""
@@ -106,12 +128,22 @@ def import_codex_session(
                     }
                 )
 
-            elif ptype == "function_call":
-                name = payload.name or "tool"
-                args = payload.arguments or "{}"
-                if not isinstance(args, str):
-                    args = json.dumps(args, indent=2, ensure_ascii=False)
-                chunk_text = f"Tool call `{name}`\n```json\n{args}\n```"
+            elif ptype in {"function_call", "local_shell_call"}:
+                if ptype == "local_shell_call":
+                    action = payload.get("action") or {}
+                    name = action.get("type") or "shell"
+                    args_obj: Any = {
+                        key: value
+                        for key, value in action.items()
+                        if key not in {"type"}
+                    }
+                    if payload.get("status"):
+                        args_obj["status"] = payload["status"]
+                else:
+                    name = payload.get("name") or "tool"
+                    args_obj = payload.get("arguments") or {}
+                args_json = args_obj if isinstance(args_obj, str) else _format_json(args_obj)
+                chunk_text = f"Tool call `{name}`\n```json\n{args_json}\n```"
                 chunks.append(
                     {
                         "role": "model",
@@ -119,15 +151,28 @@ def import_codex_session(
                         "tokenCount": estimate_token_count(chunk_text, model="gpt-5-codex"),
                     }
                 )
-                call_index[payload.call_id or ""] = len(chunks) - 1
+                call_id = (
+                    payload.get("call_id")
+                    or payload.get("callId")
+                    or entry.get("call_id")
+                    or ""
+                )
+                call_index[call_id] = len(chunks) - 1
 
             elif ptype == "function_call_output":
-                output_text = payload.output or ""
-                call_id = payload.call_id or ""
+                output_text = _normalise_output(payload.get("output"))
+                call_id = (
+                    payload.get("call_id")
+                    or payload.get("callId")
+                    or entry.get("call_id")
+                    or ""
+                )
                 idx = call_index.get(call_id)
                 if idx is not None:
                     chunks[idx]["text"] += f"\n\nOutput:\n{output_text}"
-                    chunks[idx]["tokenCount"] = estimate_token_count(chunks[idx]["text"], model="gpt-5-codex")
+                    chunks[idx]["tokenCount"] = estimate_token_count(
+                        chunks[idx]["text"], model="gpt-5-codex"
+                    )
                 else:
                     chunks.append(
                         {

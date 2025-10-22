@@ -1505,6 +1505,7 @@ def run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     html_theme = args.html_theme or SETTINGS.html_theme
     force = args.force
     prune = args.prune
+    diff_enabled = getattr(args, "diff", False)
 
     selected_paths: Optional[List[Path]] = None
     if not args.all and not ui.plain:
