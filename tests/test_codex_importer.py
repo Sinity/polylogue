@@ -69,6 +69,7 @@ def test_import_codex_session_extracts_tool_attachment(tmp_path):
     assert stats["chunkCount"] >= 2
     assert stats["modelTurns"] >= 0
     assert stats["userTurns"] >= 1
+    assert stats["totalWordsApprox"] >= 1
 
     # ensure attachment metadata references the saved file
     links = [info for info in result.document.attachments]
@@ -100,3 +101,32 @@ def test_import_codex_session_removes_empty_attachment_dir(tmp_path):
 
     assert result.attachments_dir is None
     assert not (out_dir / "simple_attachments").exists()
+
+
+def test_import_codex_session_normalises_footnotes(tmp_path):
+    entries = [
+        {"type": "session_meta", "payload": {"session_id": "foot"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "\\[9\\] Footnote"}],
+            },
+        },
+    ]
+    path = _write_session(tmp_path, "session-foot", entries)
+    out_dir = tmp_path / "out_foot"
+
+    result = import_codex_session(
+        "session-foot",
+        base_dir=tmp_path / "sessions",
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+    )
+
+    assert result.markdown_path.exists()
+    text = result.markdown_path.read_text(encoding="utf-8")
+    assert "[9] Footnote" in text
+    assert "\\[9\\]" not in text
