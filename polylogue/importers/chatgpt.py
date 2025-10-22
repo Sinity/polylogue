@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
+import urllib.parse
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from ..render import AttachmentInfo, build_markdown_from_chunks
 from ..document_store import persist_document
@@ -200,6 +201,7 @@ def _render_chatgpt_conversation(
 
     chunks: List[Dict] = []
     attachments: List[AttachmentInfo] = []
+    attachment_lookup: Dict[str, AttachmentInfo] = {}
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
 
     files_dir = export_root / "files"
@@ -229,7 +231,7 @@ def _render_chatgpt_conversation(
         chunks.append(chunk)
         attachment_refs = metadata.get("attachments") or []
         for ref in attachment_refs:
-            _copy_attachment(
+            info = _copy_attachment(
                 ref,
                 file_index,
                 attachments_dir,
@@ -238,9 +240,15 @@ def _render_chatgpt_conversation(
                 per_chunk_links,
                 idx,
             )
-        if text_block:
+            if info is not None:
+                file_id = ref.get("id") or ref.get("file_id")
+                if file_id:
+                    attachment_lookup[file_id] = info
+        chunks[idx]["text"] = _inject_citations(chunks[idx]["text"], metadata, attachment_lookup)
+        current_text = chunks[idx]["text"]
+        if current_text:
             preview = store_large_text(
-                text_block,
+                current_text,
                 chunk_index=idx,
                 attachments_dir=attachments_dir,
                 markdown_dir=markdown_path.parent,
@@ -248,7 +256,7 @@ def _render_chatgpt_conversation(
                 per_chunk_links=per_chunk_links,
                 prefix="chatgpt",
             )
-            if preview != text_block:
+            if preview != current_text:
                 chunks[idx]["text"] = preview
 
     conversation_id = conv.get("id") or conv.get("conversation_id")
@@ -361,28 +369,27 @@ def _copy_attachment(
     attachments: List[AttachmentInfo],
     per_chunk_links: Dict[int, List[Tuple[str, Path]]],
     chunk_idx: int,
-) -> None:
+) -> Optional[AttachmentInfo]:
     file_id = ref.get("id") or ref.get("file_id")
     name = ref.get("name") or ref.get("filename") or file_id
     if not name:
-        return
+        return None
     src = None
     if file_id and file_id in file_index:
         src = file_index[file_id]
     elif name in file_index:
         src = file_index[name]
     if src is None:
-        attachments.append(
-            AttachmentInfo(
-                name=name,
-                link=ref.get("url") or f"attachment://{name}",
-                local_path=None,
-                size_bytes=ref.get("size"),
-                remote=True,
-            )
+        info = AttachmentInfo(
+            name=name,
+            link=ref.get("url") or f"attachment://{name}",
+            local_path=None,
+            size_bytes=ref.get("size"),
+            remote=True,
         )
+        attachments.append(info)
         per_chunk_links.setdefault(chunk_idx, []).append((name, ref.get("url") or f"attachment://{name}"))
-        return
+        return info
 
     attachments_dir.mkdir(parents=True, exist_ok=True)
     target = attachments_dir / name
@@ -395,13 +402,141 @@ def _copy_attachment(
         rel = target.relative_to(markdown_root)
     except ValueError:
         rel = target
-    attachments.append(
-        AttachmentInfo(
-            name=target.name,
-            link=str(rel),
-            local_path=rel,
-            size_bytes=target.stat().st_size,
-            remote=False,
-        )
+    info = AttachmentInfo(
+        name=target.name,
+        link=str(rel),
+        local_path=rel,
+        size_bytes=target.stat().st_size,
+        remote=False,
     )
+    attachments.append(info)
     per_chunk_links.setdefault(chunk_idx, []).append((target.name, rel))
+    return info
+
+
+_CITE_TOKEN_RE = re.compile(r"\uE200(?P<tag>[^\uE200\uE201]+)((?:\uE202[^\uE200\uE201]+)*)\uE201")
+
+
+def _inject_citations(text: str, metadata: Dict[str, Any], attachments_by_id: Dict[str, AttachmentInfo]) -> str:
+    if not text:
+        return text
+    citations = metadata.get("citations") or []
+    ref_map = {
+        ref.get("matched_text"): ref
+        for ref in metadata.get("content_references") or []
+        if isinstance(ref, dict) and ref.get("matched_text")
+    }
+    if not citations and not ref_map:
+        return text
+
+    labels: Dict[Tuple[str, Optional[str]], str] = {}
+    footnotes: Dict[str, str] = {}
+    counter = 1
+    cite_index = 0
+    total_cites = len(citations)
+
+    def ensure_label(key: Tuple[str, Optional[str]], description_provider) -> str:
+        nonlocal counter
+        label = labels.get(key)
+        if label is None:
+            label = f"cite{counter}"
+            counter += 1
+            description = description_provider()
+            if description:
+                footnotes[label] = description
+            labels[key] = label
+        return label
+
+    def replacer(match: re.Match[str]) -> str:
+        nonlocal cite_index
+        if cite_index < total_cites:
+            citation = citations[cite_index]
+            cite_index += 1
+            key = ("citation",) + _citation_key(citation)
+            label = ensure_label(key, lambda: _format_citation_description(citation, attachments_by_id))
+            return f"[^{label}]"
+
+        ref = ref_map.get(match.group(0))
+        if ref:
+            ref_key = ("reference", ref.get("matched_text"))
+            label = ensure_label(ref_key, lambda: _format_reference_description(ref, attachments_by_id))
+            return f"[^{label}]"
+        return ""
+
+    rendered = _CITE_TOKEN_RE.sub(replacer, text)
+    if not footnotes:
+        return rendered
+    footnote_lines = [f"[^{label}]: {desc}" for label, desc in footnotes.items()]
+    return rendered.rstrip() + "\n\n" + "\n".join(footnote_lines)
+
+
+def _citation_key(citation: Dict[str, Any]) -> Tuple[str, Optional[str]]:
+    meta = citation.get("metadata") or {}
+    ctype = meta.get("type") or "unknown"
+    if ctype == "file":
+        return (ctype, meta.get("id") or meta.get("name"))
+    if ctype == "webpage":
+        return (ctype, meta.get("url"))
+    if ctype == "image_inline":
+        links = meta.get("asset_pointer_links") or []
+        return (ctype, links[0] if links else meta.get("clicked_from_url"))
+    return (ctype, None)
+
+
+def _format_citation_description(citation: Dict[str, Any], attachments_by_id: Dict[str, AttachmentInfo]) -> str:
+    meta = citation.get("metadata") or {}
+    ctype = meta.get("type")
+    if ctype == "file":
+        file_id = meta.get("id")
+        info = attachments_by_id.get(file_id)
+        name = meta.get("name") or (info.name if info else file_id) or "attachment"
+        if info:
+            if info.local_path:
+                target = urllib.parse.quote(info.local_path.as_posix())
+            else:
+                target = info.link
+            return f"[{name}]({target})"
+        link = meta.get("url") or f"attachment://{name}"
+        return f"[{name}]({link})"
+    if ctype == "webpage":
+        title = meta.get("title") or meta.get("url") or "Source"
+        url = meta.get("url")
+        return f"[{title}]({url})" if url else title
+    if ctype == "image_inline":
+        title = meta.get("clicked_from_title") or "Image reference"
+        url = meta.get("clicked_from_url")
+        if not url:
+            links = meta.get("asset_pointer_links") or []
+            url = links[0] if links else None
+        return f"{title} — {url}" if url else title
+    text = meta.get("text")
+    if text:
+        return text
+    name = meta.get("name")
+    if name:
+        return name
+    return "Citation"
+
+
+def _format_reference_description(reference: Dict[str, Any], attachments_by_id: Dict[str, AttachmentInfo]) -> str:
+    alt = reference.get("alt")
+    if isinstance(alt, str):
+        alt = alt.strip()
+        if alt.startswith("(") and alt.endswith(")"):
+            alt = alt[1:-1].strip()
+        if alt:
+            return alt
+    urls = reference.get("safe_urls") or []
+    if urls:
+        title = reference.get("title") or reference.get("matched_text") or "Reference"
+        return f"[{title}]({urls[0]})"
+    refs = reference.get("refs") or []
+    if refs:
+        ref_id = refs[0]
+        if ref_id.startswith("hidden"):
+            return "Live market quote"
+        return f"Internal reference {ref_id}"
+    matched = reference.get("matched_text")
+    if matched:
+        return f"Reference {matched.strip()}"
+    return "Reference"

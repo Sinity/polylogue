@@ -43,7 +43,31 @@ def import_claude_code_session(
         for line in handle:
             if not line.strip():
                 continue
-            entry = json.loads(line)
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                fallback = line.strip()
+                if not fallback:
+                    continue
+                chunk_text = "Unparsed Claude Code log line\n```\n{}```".format(fallback)
+                chunks.append(
+                    {
+                        "role": "model",
+                        "text": chunk_text,
+                        "tokenCount": estimate_token_count(chunk_text, model="claude-code"),
+                    }
+                )
+                continue
+            if not isinstance(entry, dict):
+                chunk_text = "Unparsed Claude Code entry\n```\n{}```".format(entry)
+                chunks.append(
+                    {
+                        "role": "model",
+                        "text": chunk_text,
+                        "tokenCount": estimate_token_count(chunk_text, model="claude-code"),
+                    }
+                )
+                continue
             etype = entry.get("type")
             if etype == "summary":
                 text = entry.get("summary")
@@ -215,14 +239,17 @@ def _extract_text(entry: Dict) -> str:
     content = message.get("content") or []
     fragments: List[str] = []
     for block in content:
-        if block.get("type") == "text":
-            text = block.get("text")
-            if isinstance(text, str):
-                fragments.append(text)
-        elif block.get("type") == "command_output":
-            stdout = block.get("text") or block.get("output")
-            if stdout:
-                fragments.append(f"````\n{stdout}\n````")
+        if isinstance(block, dict):
+            if block.get("type") == "text":
+                text = block.get("text")
+                if isinstance(text, str):
+                    fragments.append(text)
+            elif block.get("type") == "command_output":
+                stdout = block.get("text") or block.get("output")
+                if stdout:
+                    fragments.append(f"````\n{stdout}\n````")
+        elif isinstance(block, str):
+            fragments.append(block)
     if not fragments and isinstance(message.get("text"), str):
         fragments.append(message["text"])
     return "\n\n".join(fragments)
