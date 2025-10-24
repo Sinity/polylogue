@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -38,6 +39,7 @@ def colorize(text: str, color: str) -> str:
 def sanitize_filename(filename: str) -> str:
     sanitized = "".join(c for c in filename if ord(c) >= 32)
     sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1F]', "_", sanitized)
+    sanitized = re.sub(r"\s+", " ", sanitized)
     sanitized = sanitized.strip(". ")
     max_len = 200
     encoded = sanitized.encode("utf-8")
@@ -154,9 +156,10 @@ def assign_conversation_slug(
         return entry["slug"]
 
     base_source = title or id_hint or conversation_id or "conversation"
-    base = sanitize_filename(base_source)
+    base = slugify_title(base_source)
     if not base:
-        base = conversation_id[:8] if conversation_id else "conversation"
+        fallback = sanitize_filename(base_source)
+        base = fallback.replace(" ", "-") or (conversation_id[:8] if conversation_id else "conversation")
 
     existing_slugs = {
         data.get("slug")
@@ -194,6 +197,18 @@ def update_conversation_state(
     entry.update({k: v for k, v in updates.items() if v is not None})
     provider_map[conversation_id] = entry
     _save_state(st)
+
+
+def slugify_title(value: str) -> str:
+    if not value:
+        return ""
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    ascii_text = ascii_text.lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_text)
+    slug = slug.strip("-")
+    slug = re.sub(r"-+", "-", slug)
+    return slug
 
 
 def conversation_is_current(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -8,6 +9,32 @@ from ..render import AttachmentInfo
 PREVIEW_LINES = 5
 LINE_THRESHOLD = 40
 CHAR_THRESHOLD = 4000
+
+_ESCAPED_FOOTNOTE_RE = re.compile(r"\\\[([^\]\n]{1,12})\\\]")
+
+
+def normalise_inline_footnotes(text: str) -> str:
+    if not text or "\\[" not in text:
+        return text
+    # Exports can double escape the brackets (``\\\[``); collapse those first.
+    text = text.replace("\\\\[", "\\[").replace("\\\\]", "\\]")
+
+    def is_candidate(label: str) -> bool:
+        if not label:
+            return False
+        if re.fullmatch(r"\d+[A-Za-z]?", label):
+            return True
+        if len(label) <= 5 and re.fullmatch(r"[A-Za-z0-9-]+", label):
+            return True
+        return False
+
+    def replacer(match: re.Match[str]) -> str:
+        label = match.group(1)
+        if is_candidate(label):
+            return f"[{label}]"
+        return match.group(0)
+
+    return _ESCAPED_FOOTNOTE_RE.sub(replacer, text)
 
 try:  # optional dependency for accurate counts
     import tiktoken  # type: ignore
