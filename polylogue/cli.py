@@ -71,6 +71,14 @@ def summarize_import(ui, title: str, results: List[ImportResult]) -> None:
 
     attachments_total = sum(len(res.document.attachments) for res in written if res.document)
     attachment_bytes = sum(res.document.metadata.get("attachmentBytes", 0) or 0 for res in written if res.document)
+    total_tokens = 0
+    total_words = 0
+    for res in written:
+        if not res.document:
+            continue
+        stats = res.document.stats
+        total_tokens += int(stats.get("totalTokensApprox", 0) or 0)
+        total_words += int(stats.get("totalWordsApprox", 0) or 0)
     diff_total = sum(1 for res in written if getattr(res, "diff_path", None))
     if attachments_total:
         lines.append(f"Attachments: {attachments_total}")
@@ -79,8 +87,15 @@ def summarize_import(ui, title: str, results: List[ImportResult]) -> None:
         lines.append(f"Attachment size: {mb:.2f} MiB")
     if diff_total:
         lines.append(f"Diffs written: {diff_total}")
+    if total_tokens:
+        if total_words:
+            lines.append(f"Approx tokens: {total_tokens} (~{total_words} words)")
+        else:
+            lines.append(f"Approx tokens: {total_tokens}")
+    branch_total = sum(res.branch_count for res in written if hasattr(res, "branch_count"))
+    if branch_total:
+        lines.append(f"Branches rendered: {branch_total}")
     stats_to_sum = [
-        ("totalTokensApprox", "Approx tokens"),
         ("chunkCount", "Total chunks"),
         ("userTurns", "User turns"),
         ("modelTurns", "Model turns"),
@@ -97,7 +112,8 @@ def summarize_import(ui, title: str, results: List[ImportResult]) -> None:
             lines.append(f"{label}: {total}")
     for res in written:
         att_count = len(res.document.attachments) if res.document else 0
-        info = f"- {res.markdown_path.name} (attachments: {att_count})"
+        branch_info = f", branches: {res.branch_count}" if getattr(res, "branch_count", 1) > 1 else ""
+        info = f"- {res.markdown_path.name} (attachments: {att_count}{branch_info})"
         if res.html_path:
             info += " [+html]"
         if getattr(res, "diff_path", None):
@@ -117,21 +133,23 @@ def summarize_import(ui, title: str, results: List[ImportResult]) -> None:
             table.add_column("File")
             table.add_column("Attachments", justify="right")
             table.add_column("Attachment MiB", justify="right")
-            table.add_column("Tokens", justify="right")
+            table.add_column("Tokens (~words)", justify="right")
             for res in written:
                 if res.document:
                     att_count = len(res.document.attachments)
                     att_bytes = res.document.metadata.get("attachmentBytes", 0) or 0
-                    tokens = res.document.stats.get("totalTokensApprox", 0) or 0
+                    tokens = int(res.document.stats.get("totalTokensApprox", 0) or 0)
+                    words = int(res.document.stats.get("totalWordsApprox", 0) or 0)
                 else:
                     att_count = 0
                     att_bytes = 0
                     tokens = 0
+                    words = 0
                 table.add_row(
                     res.markdown_path.name,
                     str(att_count),
                     f"{att_bytes / (1024 * 1024):.2f}" if att_bytes else "0.00",
-                    str(tokens),
+                    f"{tokens} (~{words} words)" if tokens and words else str(tokens),
                 )
             ui.console.print(table)
         except Exception:
@@ -179,6 +197,7 @@ def _log_local_sync(ui, title: str, result: LocalSyncResult) -> None:
             "attachments": result.attachments,
             "attachmentBytes": result.attachment_bytes,
             "tokens": result.tokens,
+            "words": result.words,
             "diffs": result.diffs,
             "skipped": result.skipped,
             "pruned": result.pruned,
@@ -357,6 +376,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_chatgpt.add_argument("--html", action="store_true", help="Also write HTML previews")
     p_import_chatgpt.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
     p_import_chatgpt.add_argument("--to-clipboard", action="store_true", help="Copy the rendered Markdown to the clipboard when a single file is updated")
+    p_import_chatgpt.add_argument("--force", action="store_true", help="Overwrite local changes when re-importing")
 
     p_import_claude = import_sub.add_parser("claude", help="Convert an Anthropic Claude export to Markdown")
     p_import_claude.add_argument("export_path", type=Path, help="Path to Claude export .zip or directory")
@@ -372,6 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_claude.add_argument("--html", action="store_true", help="Also write HTML previews")
     p_import_claude.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML previews")
     p_import_claude.add_argument("--to-clipboard", action="store_true", help="Copy the rendered Markdown to the clipboard when a single file is updated")
+    p_import_claude.add_argument("--force", action="store_true", help="Overwrite local changes when re-importing")
 
     p_import_claude_code = import_sub.add_parser("claude-code", help="Convert a Claude Code session to Markdown")
     p_import_claude_code.add_argument("session_id", type=str, help="Session UUID or suffix")
@@ -386,6 +407,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_claude_code.add_argument("--html", action="store_true", help="Also write HTML preview")
     p_import_claude_code.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML preview")
     p_import_claude_code.add_argument("--to-clipboard", action="store_true", help="Copy the rendered Markdown to the clipboard")
+    p_import_claude_code.add_argument("--force", action="store_true", help="Overwrite local changes when re-importing")
 
     p_import_codex = import_sub.add_parser("codex", help="Convert a Codex CLI session to Markdown")
     p_import_codex.add_argument("session_id", type=str, help="Codex session UUID (or suffix)")
@@ -400,6 +422,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import_codex.add_argument("--html", action="store_true", help="Also write HTML preview")
     p_import_codex.add_argument("--html-theme", type=str, default=None, choices=["light", "dark"], help="Theme for HTML preview")
     p_import_codex.add_argument("--to-clipboard", action="store_true", help="Copy the rendered Markdown to the clipboard")
+    p_import_codex.add_argument("--force", action="store_true", help="Overwrite local changes when re-importing")
 
     return parser
 
@@ -484,7 +507,11 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         lines.append(f"Skipped: {skipped_total}")
     if "totalTokensApprox" in result.total_stats:
         total_tokens = int(result.total_stats["totalTokensApprox"])
-        lines.append(f"Approx tokens: {total_tokens}")
+        total_words = int(result.total_stats.get("totalWordsApprox", 0) or 0)
+        if total_words:
+            lines.append(f"Approx tokens: {total_tokens} (~{total_words} words)")
+        else:
+            lines.append(f"Approx tokens: {total_tokens}")
     for key, label in (
         ("chunkCount", "Total chunks"),
         ("userTurns", "User turns"),
@@ -625,7 +652,11 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
         lines.append(f"Skipped: {skipped_total}")
     if "totalTokensApprox" in result.total_stats:
         total_tokens = int(result.total_stats["totalTokensApprox"])
-        lines.append(f"Approx tokens: {total_tokens}")
+        total_words = int(result.total_stats.get("totalWordsApprox", 0) or 0)
+        if total_words:
+            lines.append(f"Approx tokens: {total_tokens} (~{total_words} words)")
+        else:
+            lines.append(f"Approx tokens: {total_tokens}")
     for key, label in (
         ("chunkCount", "Total chunks"),
         ("userTurns", "User turns"),
@@ -672,7 +703,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 ui.console.print("Run summary:")
                 for cmd, stats in result.run_summary.items():
                     ui.console.print(
-                        f"  {cmd}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} diffs={stats['diffs']}"
+                        f"  {cmd}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} (~{stats.get('words', 0)} words) diffs={stats['diffs']}"
                     )
                     if stats.get("last"):
                         ui.console.print(
@@ -682,7 +713,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 ui.console.print("Provider summary:")
                 for provider, stats in result.provider_summary.items():
                     ui.console.print(
-                        f"  {provider}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} diffs={stats['diffs']}"
+                        f"  {provider}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} (~{stats.get('words', 0)} words) diffs={stats['diffs']}"
                     )
                     if stats.get("last"):
                         ui.console.print(
@@ -705,7 +736,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 summary_table.add_column("Runs", justify="right")
                 summary_table.add_column("Attachments", justify="right")
                 summary_table.add_column("Attachment MiB", justify="right")
-                summary_table.add_column("Tokens", justify="right")
+                summary_table.add_column("Tokens (~words)", justify="right")
                 summary_table.add_column("Diffs", justify="right")
                 summary_table.add_column("Last Run", justify="left")
                 for cmd, stats in result.run_summary.items():
@@ -714,7 +745,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                         str(stats["count"]),
                         str(stats["attachments"]),
                         f"{stats['attachmentBytes'] / (1024 * 1024):.2f}",
-                        str(stats["tokens"]),
+                        f"{stats['tokens']} (~{stats.get('words', 0)} words)" if stats.get("tokens") else "0",
                         str(stats["diffs"]),
                         (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
                     )
@@ -725,7 +756,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 provider_table.add_column("Runs", justify="right")
                 provider_table.add_column("Attachments", justify="right")
                 provider_table.add_column("Attachment MiB", justify="right")
-                provider_table.add_column("Tokens", justify="right")
+                provider_table.add_column("Tokens (~words)", justify="right")
                 provider_table.add_column("Diffs", justify="right")
                 provider_table.add_column("Last Run", justify="left")
                 for provider, stats in result.provider_summary.items():
@@ -734,7 +765,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                         str(stats["count"]),
                         str(stats["attachments"]),
                         f"{stats['attachmentBytes'] / (1024 * 1024):.2f}",
-                        str(stats["tokens"]),
+                        f"{stats['tokens']} (~{stats.get('words', 0)} words)" if stats.get("tokens") else "0",
                         str(stats["diffs"]),
                         (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
                     )
@@ -844,6 +875,7 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
         collapse_threshold=collapse,
         html=html_enabled,
         html_theme=html_theme,
+        force=getattr(args, "force", False),
     )
 
     lines = [f"Markdown: {result.markdown_path}"]
@@ -857,7 +889,11 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
         lines.append(f"Attachment count: {attachments_total}")
     tokens = stats.get("totalTokensApprox")
     if tokens is not None:
-        lines.append(f"Approx tokens: {int(tokens)}")
+        words = stats.get("totalWordsApprox") or 0
+        if words:
+            lines.append(f"Approx tokens: {int(tokens)} (~{int(words)} words)")
+        else:
+            lines.append(f"Approx tokens: {int(tokens)}")
     for key, label in (
         ("chunkCount", "Chunks"),
         ("userTurns", "User turns"),
@@ -965,6 +1001,7 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
             html=html_enabled,
             html_theme=html_theme,
             selected_ids=selected_ids,
+            force=getattr(args, "force", False),
         )
     except Exception as exc:
         ui.console.print(f"[red]Import failed: {exc}")
@@ -1020,6 +1057,7 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
             html=html_enabled,
             html_theme=html_theme,
             selected_ids=selected_ids,
+            force=getattr(args, "force", False),
         )
     except Exception as exc:
         ui.console.print(f"[red]Import failed: {exc}")
@@ -1063,6 +1101,7 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
             collapse_threshold=collapse,
             html=html_enabled,
             html_theme=html_theme,
+            force=getattr(args, "force", False),
             **kwargs,
         )
     except Exception as exc:
@@ -1292,6 +1331,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         "attachments": 0,
         "attachmentBytes": 0,
         "tokens": 0,
+        "words": 0,
     }
     per_provider: Dict[str, Dict[str, Any]] = {}
     rows: List[Dict[str, Any]] = []
@@ -1306,6 +1346,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             attachment_count = 0
         attachment_bytes = meta.get("attachmentBytes") or 0
         tokens = meta.get("totalTokensApprox") or meta.get("tokensApprox") or 0
+        words = meta.get("totalWordsApprox") or 0
         provider = meta.get("sourcePlatform") or "unknown"
 
         timestamp = None
@@ -1337,15 +1378,17 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         totals["attachments"] += int(attachment_count)
         totals["attachmentBytes"] += int(attachment_bytes)
         totals["tokens"] += int(tokens)
+        totals["words"] += int(words)
 
         prov = per_provider.setdefault(
             provider,
-            {"files": 0, "attachments": 0, "attachmentBytes": 0, "tokens": 0},
+            {"files": 0, "attachments": 0, "attachmentBytes": 0, "tokens": 0, "words": 0},
         )
         prov["files"] += 1
         prov["attachments"] += int(attachment_count)
         prov["attachmentBytes"] += int(attachment_bytes)
         prov["tokens"] += int(tokens)
+        prov["words"] += int(words)
 
         rows.append(
             {
@@ -1354,6 +1397,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 "attachments": int(attachment_count),
                 "attachmentBytes": int(attachment_bytes),
                 "tokens": int(tokens),
+                "words": int(words),
             }
         )
 
@@ -1371,7 +1415,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
     lines = [
         f"Directory: {directory}",
-        f"Files: {totals['files']} Attachments: {totals['attachments']} (~{totals['attachmentBytes'] / (1024 * 1024):.2f} MiB) Tokens≈ {totals['tokens']}",
+        f"Files: {totals['files']} Attachments: {totals['attachments']} (~{totals['attachmentBytes'] / (1024 * 1024):.2f} MiB) Tokens≈ {totals['tokens']} (~{totals['words']} words)",
     ]
     if filtered_out:
         lines.append(f"Filtered out {filtered_out} file(s) outside date range.")
@@ -1384,14 +1428,14 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             table.add_column("Files", justify="right")
             table.add_column("Attachments", justify="right")
             table.add_column("Attachment MiB", justify="right")
-            table.add_column("Tokens", justify="right")
+            table.add_column("Tokens (~words)", justify="right")
             for provider, data in per_provider.items():
                 table.add_row(
                     provider,
                     str(data["files"]),
                     str(data["attachments"]),
                     f"{data['attachmentBytes'] / (1024 * 1024):.2f}",
-                    str(data["tokens"]),
+                    f"{data['tokens']} (~{data.get('words', 0)} words)" if data.get("tokens") else "0",
                 )
             ui.console.print(table)
         except Exception:
@@ -1402,8 +1446,17 @@ def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optiona
     if not sessions:
         ui.console.print("No sessions found.")
         return None
-    lines = [f"{path.stem}\t{path.parent.name}\t{path}" for path in sessions]
-    selection = sk_select(lines, header=header)
+    name_width = min(max(len(path.stem) for path in sessions), 72)
+    parent_width = min(max(len(path.parent.name) for path in sessions), 24)
+    lines = [
+        f"{path.stem[:name_width]:<{name_width}}\t{path.parent.name[:parent_width]:<{parent_width}}\t{path}"
+        for path in sessions
+    ]
+    selection = sk_select(
+        lines,
+        header=f"{header} — tab to toggle, ctrl-a select all, enter accept",
+        prompt="Sessions> ",
+    )
     if selection is None:
         ui.console.print("[yellow]Sync cancelled; no sessions selected.")
         return None
@@ -1449,8 +1502,22 @@ def run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     attachments = result.attachments
     attachment_bytes = result.attachment_bytes
     tokens = result.tokens
+    words = result.words
 
     if getattr(args, "json", False):
+        files_payload = []
+        for item in result.written:
+            doc = item.document
+            files_payload.append(
+                {
+                    "output": str(item.markdown_path),
+                    "attachments": len(doc.attachments) if doc else 0,
+                    "attachmentBytes": doc.metadata.get("attachmentBytes") if doc and doc.metadata else None,
+                    "stats": doc.stats if doc and doc.stats else {},
+                    "html": str(item.html_path) if item.html_path else None,
+                    "diff": str(item.diff_path) if item.diff_path else None,
+                }
+            )
         payload = {
             "cmd": "sync-codex",
             "count": len(result.written),
@@ -1460,18 +1527,9 @@ def run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
             "attachments": attachments,
             "attachmentBytes": attachment_bytes,
             "tokensApprox": tokens,
+            "wordsApprox": words,
             "diffs": result.diffs,
-            "files": [
-                {
-                    "output": str(item.markdown_path),
-                    "attachments": len(item.document.attachments),
-                    "attachmentBytes": item.document.metadata.get("attachmentBytes"),
-                    "stats": item.document.stats,
-                    "html": str(item.html_path) if item.html_path else None,
-                    "diff": str(item.diff_path) if item.diff_path else None,
-                }
-                for item in result.written
-            ],
+            "files": files_payload,
         }
         print(json.dumps(payload, indent=2))
     else:
@@ -1489,6 +1547,7 @@ def run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
             "attachments": attachments,
             "attachmentBytes": attachment_bytes,
             "tokens": tokens,
+            "words": words,
             "skipped": result.skipped,
             "pruned": result.pruned,
             "diffs": result.diffs,
@@ -1533,8 +1592,22 @@ def run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     attachments = result.attachments
     attachment_bytes = result.attachment_bytes
     tokens = result.tokens
+    words = result.words
 
     if getattr(args, "json", False):
+        files_payload = []
+        for item in result.written:
+            doc = item.document
+            files_payload.append(
+                {
+                    "output": str(item.markdown_path),
+                    "attachments": len(doc.attachments) if doc else 0,
+                    "attachmentBytes": doc.metadata.get("attachmentBytes") if doc and doc.metadata else None,
+                    "stats": doc.stats if doc and doc.stats else {},
+                    "html": str(item.html_path) if item.html_path else None,
+                    "diff": str(item.diff_path) if item.diff_path else None,
+                }
+            )
         payload = {
             "cmd": "sync-claude-code",
             "count": len(result.written),
@@ -1544,18 +1617,9 @@ def run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
             "attachments": attachments,
             "attachmentBytes": attachment_bytes,
             "tokensApprox": tokens,
+            "wordsApprox": words,
             "diffs": result.diffs,
-            "files": [
-                {
-                    "output": str(item.markdown_path),
-                    "attachments": len(item.document.attachments),
-                    "attachmentBytes": item.document.metadata.get("attachmentBytes"),
-                    "stats": item.document.stats,
-                    "html": str(item.html_path) if item.html_path else None,
-                    "diff": str(item.diff_path) if item.diff_path else None,
-                }
-                for item in result.written
-            ],
+            "files": files_payload,
         }
         print(json.dumps(payload, indent=2))
     else:
@@ -1573,11 +1637,13 @@ def run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
             "attachments": attachments,
             "attachmentBytes": attachment_bytes,
             "tokens": tokens,
+            "words": words,
             "skipped": result.skipped,
             "pruned": result.pruned,
             "diffs": result.diffs,
         }
     )
+
 def prompt_render(env: CommandEnv) -> None:
     ui = env.ui
     default_input = str(Path.cwd())

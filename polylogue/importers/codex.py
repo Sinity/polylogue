@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Set, Tuple
 
-from ..render import AttachmentInfo, build_markdown_from_chunks
-from ..document_store import persist_document
+from ..render import AttachmentInfo
 from ..util import assign_conversation_slug
+from ..conversation import process_conversation
+from ..branching import MessageRecord
 from .base import ImportResult
-from .utils import CHAR_THRESHOLD, LINE_THRESHOLD, PREVIEW_LINES, estimate_token_count
+from .utils import CHAR_THRESHOLD, LINE_THRESHOLD, PREVIEW_LINES, estimate_token_count, normalise_inline_footnotes
 
 _DEFAULT_BASE = Path.home() / ".codex" / "sessions"
 
@@ -30,6 +31,7 @@ def import_codex_session(
     collapse_threshold: int = 24,
     html: bool = False,
     html_theme: str = "light",
+    force: bool = False,
 ) -> ImportResult:
     candidate = Path(session_id)
     if candidate.exists() and candidate.is_file():
@@ -44,6 +46,8 @@ def import_codex_session(
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
     chunks: List[Dict[str, str]] = []
     call_index: Dict[str, int] = {}
+    message_records: List[MessageRecord] = []
+    seen_message_ids: Set[str] = set()
 
     output_dir.mkdir(parents=True, exist_ok=True)
     title = session_path.stem
@@ -63,18 +67,18 @@ def import_codex_session(
             try:
                 parsed = json.loads(value)
             except json.JSONDecodeError:
-                return value
+                return normalise_inline_footnotes(value)
             if isinstance(parsed, dict):
                 if isinstance(parsed.get("output"), str):
-                    return parsed["output"]
-                return _format_json(parsed)
+                    return normalise_inline_footnotes(parsed["output"])
+                return normalise_inline_footnotes(_format_json(parsed))
             if isinstance(parsed, list):
-                return _format_json(parsed)
-            return str(parsed)
-        return _format_json(value)
+                return normalise_inline_footnotes(_format_json(parsed))
+            return normalise_inline_footnotes(str(parsed))
+        return normalise_inline_footnotes(_format_json(value))
 
     with session_path.open(encoding="utf-8") as handle:
-        for raw in handle:
+        for line_idx, raw in enumerate(handle, start=1):
             try:
                 entry = json.loads(raw)
             except json.JSONDecodeError:
@@ -101,6 +105,21 @@ def import_codex_session(
             ptype = payload.get("type") or entry_type
             if not isinstance(ptype, str):
                 continue
+            message_id = (
+                payload.get("message_id")
+                or payload.get("id")
+                or entry.get("message_id")
+                or entry.get("id")
+                or payload.get("call_id")
+                or payload.get("callId")
+                or f"item-{line_idx}"
+            )
+            parent_id = (
+                payload.get("parent_id")
+                or payload.get("parentId")
+                or entry.get("parent_id")
+                or entry.get("parentId")
+            )
 
             if ptype == "message":
                 role = payload.get("role") or "assistant"
@@ -119,14 +138,18 @@ def import_codex_session(
                     parts.append(text)
                 if not parts:
                     continue
-                text = "\n".join(parts)
+                text = normalise_inline_footnotes("\n".join(parts))
                 chunks.append(
                     {
                         "role": canonical_role,
                         "text": text,
                         "tokenCount": estimate_token_count(text, model="gpt-5-codex"),
+                        "messageId": message_id,
                     }
                 )
+                if parent_id:
+                    chunks[-1]["parentId"] = parent_id
+                    chunks[-1]["branchParent"] = parent_id
 
             elif ptype in {"function_call", "local_shell_call"}:
                 if ptype == "local_shell_call":
@@ -149,6 +172,7 @@ def import_codex_session(
                         "role": "model",
                         "text": chunk_text,
                         "tokenCount": estimate_token_count(chunk_text, model="gpt-5-codex"),
+                        "messageId": payload.get("call_id") or payload.get("callId") or message_id,
                     }
                 )
                 call_id = (
@@ -158,6 +182,9 @@ def import_codex_session(
                     or ""
                 )
                 call_index[call_id] = len(chunks) - 1
+                if parent_id:
+                    chunks[-1]["parentId"] = parent_id
+                    chunks[-1]["branchParent"] = parent_id
 
             elif ptype == "function_call_output":
                 output_text = _normalise_output(payload.get("output"))
@@ -173,14 +200,22 @@ def import_codex_session(
                     chunks[idx]["tokenCount"] = estimate_token_count(
                         chunks[idx]["text"], model="gpt-5-codex"
                     )
+                    if parent_id and "parentId" not in chunks[idx]:
+                        chunks[idx]["parentId"] = parent_id
+                        chunks[idx]["branchParent"] = parent_id
                 else:
                     chunks.append(
                         {
                             "role": "tool",
                             "text": output_text,
                             "tokenCount": estimate_token_count(output_text, model="gpt-5-codex"),
+                            "messageId": message_id,
                         }
                     )
+                    parent_ref = parent_id or call_id
+                    if parent_ref:
+                        chunks[-1]["parentId"] = parent_ref
+                        chunks[-1]["branchParent"] = parent_ref
 
     # attachment extraction pass
     for idx, chunk in enumerate(chunks):
@@ -196,69 +231,63 @@ def import_codex_session(
         per_chunk_links.setdefault(idx, []).append((attachment_name, rel))
         chunk["text"] = _truncate_with_preview(text, attachment_name)
 
+    for idx, chunk in enumerate(chunks):
+        message_id = chunk.get("messageId") or f"{session_id}-msg-{idx}"
+        while message_id in seen_message_ids:
+            message_id = f"{message_id}-dup"
+        seen_message_ids.add(message_id)
+        parent_id = chunk.get("parentId") or (message_records[-1].message_id if message_records else None)
+        if parent_id and "parentId" not in chunk:
+            chunk["parentId"] = parent_id
+            chunk["branchParent"] = parent_id
+        message_records.append(
+            MessageRecord(
+                message_id=message_id,
+                parent_id=parent_id,
+                role=chunk.get("role", "model"),
+                text=chunk.get("text", ""),
+                token_count=int(chunk.get("tokenCount", 0) or 0),
+                word_count=len((chunk.get("text", "") or "").split()),
+                timestamp=chunk.get("timestamp"),
+                attachments=len(per_chunk_links.get(idx, [])),
+                chunk=chunk,
+                links=list(per_chunk_links.get(idx, [])),
+                metadata={"raw": {}},
+            )
+        )
+
     metadata = {"model": "gpt-5-codex"}
     extra_yaml = {
         "sourcePlatform": "codex",
         "sessionPath": str(session_path),
     }
 
-    document = build_markdown_from_chunks(
-        chunks,
-        per_chunk_links,
-        title=title,
-        source_file_id=session_id,
-        run_settings=metadata,
-        collapse_threshold=collapse_threshold,
-        attachments=attachments,
-        source_mime="application/jsonl",
-        source_size=session_path.stat().st_size,
-        modified_time=None,
-        created_time=None,
-        citations=None,
-        extra_yaml=extra_yaml,
-    )
-
-    persist_result = persist_document(
+    return process_conversation(
         provider="codex",
         conversation_id=session_id,
+        slug=slug,
         title=title,
-        document=document,
-        output_dir=output_dir,
-        collapse_threshold=collapse_threshold,
+        message_records=message_records,
         attachments=attachments,
-        updated_at=None,
-        created_at=None,
+        canonical_leaf_id=message_records[-1].message_id if message_records else None,
+        collapse_threshold=collapse_threshold,
         html=html,
         html_theme=html_theme,
+        output_dir=output_dir,
+        extra_yaml=extra_yaml,
+        extra_state={
+            "sessionPath": str(session_path),
+        },
+        source_file_id=session_id,
+        modified_time=None,
+        created_time=None,
+        run_settings=metadata,
+        source_mime="application/jsonl",
+        source_size=session_path.stat().st_size,
         attachment_policy={
             "previewLines": PREVIEW_LINES,
             "lineThreshold": LINE_THRESHOLD,
             "charThreshold": CHAR_THRESHOLD,
         },
-        extra_state={
-            "sessionPath": str(session_path),
-        },
-        slug_hint=slug,
-        id_hint=title[:8],
-    )
-
-    if persist_result.skipped:
-        return ImportResult(
-            markdown_path=persist_result.markdown_path,
-            html_path=persist_result.html_path,
-            attachments_dir=persist_result.attachments_dir,
-            document=None,
-            skipped=True,
-            skip_reason=persist_result.skip_reason,
-            dirty=persist_result.dirty,
-            content_hash=persist_result.content_hash,
-        )
-
-    return ImportResult(
-        markdown_path=persist_result.markdown_path,
-        html_path=persist_result.html_path,
-        attachments_dir=persist_result.attachments_dir,
-        document=persist_result.document or document,
-        dirty=persist_result.dirty,
-        content_hash=persist_result.content_hash,
+        force=force,
     )
