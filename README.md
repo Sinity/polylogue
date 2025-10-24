@@ -25,7 +25,8 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 - **Doctor & Stats:** `polylogue doctor` sanity-checks source directories; `polylogue stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters).
 - **View recent runs:** The status dashboard shows the last operations, including attachment MiB and diff counts per command.
 - **Monitor automation:** `polylogue status --json --watch` now streams provider-level stats for dashboards or terminal monitoring.
-- **SQLite/Qdrant indexing:** Every successful write updates a local SQLite FTS index (and, optionally, a Qdrant collection) so downstream tooling can query or sync metadata without reparsing Markdown.
+- **Branch-aware transcripts:** Canonical Markdown still lives at `<slug>.md`, but every import now writes `<slug>/conversation.md`, `<slug>/conversation.common.md`, and `branches/<branch-id>/{<branch-id>.md, overlay.md}` so historical forks remain accessible.
+- **SQLite/Qdrant indexing:** Every successful write updates `XDG_STATE_HOME/polylogue/polylogue.db` (and, optionally, a Qdrant collection) so downstream tooling can query or sync metadata without reparsing Markdown.
 
 ## Provider Cheat Sheet
 

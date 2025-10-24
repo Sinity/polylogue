@@ -9,9 +9,11 @@ from typing import Iterable, List, Optional
 try:
     from rich.console import Console
     from rich.panel import Panel
+    from rich.text import Text
 except ModuleNotFoundError:  # pragma: no cover - optional dependency
     Console = None  # type: ignore[assignment]
     Panel = None  # type: ignore[assignment]
+    Text = None  # type: ignore[assignment]
 
 
 class PlainConsole:
@@ -95,7 +97,8 @@ class UI:
         if Console is None or Panel is None:
             self.console.print(f"== {title} ==\n{text}")
             return
-        self.console.print(Panel(text, title=title))
+        renderable = Text(text) if Text is not None else text
+        self.console.print(Panel(renderable, title=title))
 
     # Prompting ------------------------------------------------------------
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
