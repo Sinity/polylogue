@@ -24,6 +24,7 @@ class LocalSyncResult:
     attachments: int = 0
     attachment_bytes: int = 0
     tokens: int = 0
+    words: int = 0
     diffs: int = 0
     duration: float = 0.0
 
@@ -59,6 +60,7 @@ def _sync_sessions(
     attachments_total = 0
     attachment_bytes_total = 0
     tokens_total = 0
+    words_total = 0
 
     diff_total = 0
     for session_path in sorted(sessions):
@@ -79,6 +81,7 @@ def _sync_sessions(
             collapse_threshold=collapse_threshold,
             html=html,
             html_theme=html_theme,
+            force=force,
             **importer_kwargs,
         )
         if result.skipped:
@@ -116,6 +119,7 @@ def _sync_sessions(
             attachments_total += len(result.document.attachments)
             attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
             tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
+            words_total += result.document.stats.get("totalWordsApprox", 0) or 0
         written.append(result)
 
     pruned = 0
@@ -143,6 +147,7 @@ def _sync_sessions(
         attachments=attachments_total,
         attachment_bytes=attachment_bytes_total,
         tokens=tokens_total,
+        words=words_total,
         diffs=diff_total,
         duration=duration,
     )

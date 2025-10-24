@@ -4,13 +4,14 @@ import json
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
-from ..render import AttachmentInfo, build_markdown_from_chunks
-from ..document_store import persist_document
+from ..render import AttachmentInfo
 from ..util import assign_conversation_slug
+from ..conversation import process_conversation
+from ..branching import MessageRecord
 from .base import ImportResult
-from .utils import estimate_token_count, store_large_text
+from .utils import estimate_token_count, normalise_inline_footnotes, store_large_text
 
 
 def _load_bundle(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
@@ -32,6 +33,7 @@ def import_claude_export(
     html: bool,
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
+    force: bool = False,
 ) -> List[ImportResult]:
     root, tmp = _load_bundle(export_path)
     try:
@@ -57,6 +59,7 @@ def import_claude_export(
                     collapse_threshold=collapse_threshold,
                     html=html,
                     html_theme=html_theme,
+                    force=force,
                 )
             )
         return results
@@ -101,6 +104,7 @@ def _render_claude_conversation(
     collapse_threshold: int,
     html: bool,
     html_theme: str,
+    force: bool,
 ) -> ImportResult:
     title = conv.get("name") or conv.get("title") or "claude-chat"
     conv_id = conv.get("uuid") or conv.get("id") or "claude"
@@ -113,6 +117,8 @@ def _render_claude_conversation(
 
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
     chunks: List[Dict] = []
+    message_records: List[MessageRecord] = []
+    seen_message_ids: Set[str] = set()
 
     model_id = conv.get("model") or conv.get("model_id")
 
@@ -128,11 +134,33 @@ def _render_claude_conversation(
             file_index,
         )
         canonical_role = "user" if sender == "human" else "model"
+        message_id = (
+            message.get("uuid")
+            or message.get("id")
+            or message.get("message_id")
+            or message.get("messageId")
+        )
+        parent_id = (
+            message.get("parent_id")
+            or message.get("parentUuid")
+            or message.get("parent_message_id")
+            or message.get("parentMessageId")
+        )
         chunk = {
             "role": canonical_role,
             "text": text_block,
             "tokenCount": estimate_token_count(text_block, model=model_id),
         }
+        if message_id:
+            chunk["messageId"] = message_id
+        if parent_id:
+            chunk["parentId"] = parent_id
+            chunk["branchParent"] = parent_id
+        elif message_records:
+            fallback_parent = message_records[-1].message_id
+            chunk["parentId"] = fallback_parent
+            chunk["branchParent"] = fallback_parent
+            parent_id = fallback_parent
         if timestamp:
             chunk["timestamp"] = timestamp
         per_chunk_links[idx] = links
@@ -150,6 +178,26 @@ def _render_claude_conversation(
             if preview != text_block:
                 chunks[idx]["text"] = preview
 
+        effective_message_id = message_id or f"{conv_id}-msg-{idx}"
+        while effective_message_id in seen_message_ids:
+            effective_message_id = f"{effective_message_id}-dup"
+        seen_message_ids.add(effective_message_id)
+        message_records.append(
+            MessageRecord(
+                message_id=effective_message_id,
+                parent_id=parent_id,
+                role=chunk["role"],
+                text=chunks[idx].get("text", ""),
+                token_count=int(chunk.get("tokenCount", 0) or 0),
+                word_count=len((chunks[idx].get("text", "") or "").split()),
+                timestamp=chunk.get("timestamp"),
+                attachments=len(per_chunk_links.get(idx, [])),
+                chunk=chunks[idx],
+                links=list(per_chunk_links.get(idx, [])),
+                metadata={"raw": message},
+            )
+        )
+
     extra_yaml = {
         "sourcePlatform": "claude.ai",
         "conversationId": conv_id,
@@ -158,62 +206,33 @@ def _render_claude_conversation(
     if model_id:
         extra_yaml["sourceModel"] = model_id
 
-    document = build_markdown_from_chunks(
-        chunks,
-        per_chunk_links,
-        title=title,
-        source_file_id=conv_id,
-        modified_time=conv.get("updated_at") or conv.get("modified_at"),
-        created_time=conv.get("created_at"),
-        run_settings=None,
-        citations=None,
-        source_mime="application/json",
-        source_size=None,
-        collapse_threshold=collapse_threshold,
-        extra_yaml=extra_yaml,
-        attachments=attachments,
-    )
+    canonical_leaf_id = message_records[-1].message_id if message_records else None
 
-    persist_result = persist_document(
+    return process_conversation(
         provider="claude.ai",
         conversation_id=conv_id,
+        slug=slug,
         title=title,
-        document=document,
-        output_dir=output_dir,
-        collapse_threshold=collapse_threshold,
+        message_records=message_records,
         attachments=attachments,
-        updated_at=conv.get("updated_at") or conv.get("modified_at"),
-        created_at=conv.get("created_at"),
+        canonical_leaf_id=canonical_leaf_id,
+        collapse_threshold=collapse_threshold,
         html=html,
         html_theme=html_theme,
-        attachment_policy=None,
+        output_dir=output_dir,
+        extra_yaml=extra_yaml,
         extra_state={
             "sourceModel": model_id,
             "sourceExportPath": str(export_root),
         },
-        slug_hint=slug,
-        id_hint=(conv_id or "")[:8],
-    )
-
-    if persist_result.skipped:
-        return ImportResult(
-            markdown_path=persist_result.markdown_path,
-            html_path=persist_result.html_path,
-            attachments_dir=persist_result.attachments_dir,
-            document=None,
-            skipped=True,
-            skip_reason=persist_result.skip_reason,
-            dirty=persist_result.dirty,
-            content_hash=persist_result.content_hash,
-        )
-
-    return ImportResult(
-        markdown_path=persist_result.markdown_path,
-        html_path=persist_result.html_path,
-        attachments_dir=persist_result.attachments_dir,
-        document=persist_result.document or document,
-        dirty=persist_result.dirty,
-        content_hash=persist_result.content_hash,
+        source_file_id=conv_id,
+        modified_time=conv.get("updated_at") or conv.get("modified_at"),
+        created_time=conv.get("created_at"),
+        run_settings=None,
+        source_mime="application/json",
+        source_size=None,
+        attachment_policy=None,
+        force=force,
     )
 
 
@@ -265,7 +284,7 @@ def _render_content_blocks(
                 else:
                     fragments.append(f"[{name}](attachment://{file_id})")
     text = "\n\n".join([frag for frag in fragments if frag])
-    return text, chunk_links
+    return normalise_inline_footnotes(text), chunk_links
 
 
 def _copy_file(

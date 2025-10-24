@@ -38,25 +38,27 @@ def test_import_chatgpt_export_basic(tmp_path):
             "title": "Sample Chat",
             "create_time": 1,
             "update_time": 2,
-            "mapping": {
-                "node-user": {
-                    "id": "node-user",
-                    "message": {
-                        "id": "msg-user",
-                        "author": {"role": "user"},
-                        "content": {"content_type": "text", "parts": ["Hello"]},
+                "mapping": {
+                    "node-user": {
+                        "id": "node-user",
+                        "message": {
+                            "id": "msg-user",
+                            "author": {"role": "user"},
+                            "create_time": 1,
+                            "content": {"content_type": "text", "parts": ["Hello"]},
+                        },
+                    },
+                    "node-assistant": {
+                        "id": "node-assistant",
+                        "message": {
+                            "id": "msg-assistant",
+                            "author": {"role": "assistant"},
+                            "create_time": 2,
+                            "content": {"content_type": "text", "parts": ["Hi there"]},
+                        },
                     },
                 },
-                "node-assistant": {
-                    "id": "node-assistant",
-                    "message": {
-                        "id": "msg-assistant",
-                        "author": {"role": "assistant"},
-                        "content": {"content_type": "text", "parts": ["Hi there"]},
-                    },
-                },
-            },
-        }
+            }
     ]
     _write(export_dir / "conversations.json", conversations)
 
@@ -71,10 +73,18 @@ def test_import_chatgpt_export_basic(tmp_path):
     assert len(results) == 1
     result = results[0]
     assert result.markdown_path.exists()
+    assert result.branch_count >= 1
+    if result.branch_directories:
+        for branch_dir in result.branch_directories:
+            assert branch_dir.exists()
     text = result.markdown_path.read_text(encoding="utf-8")
     assert "Sample Chat" in text
+    assert "totalWordsApprox: 3" in text
     assert "Hello" in text
     assert "Hi there" in text
+    assert "> [!INFO]+ User · 1970-01-01T00:00:01Z" in text
+    assert "> [!INFO]+ Model" in text
+    assert "1970-01-01T00:00:02Z (+1s)" in text
 
 
 def test_import_claude_export_basic(tmp_path):
@@ -109,6 +119,92 @@ def test_import_claude_export_basic(tmp_path):
     assert "Claude Chat" in body
     assert "Hi" in body
     assert "Hello" in body
+
+
+def test_claude_import_unescapes_inline_footnotes(tmp_path):
+    export_dir = tmp_path / "claude_footnote"
+    export_dir.mkdir()
+    conversations = {
+        "conversations": [
+            {
+                "uuid": "claude-foot",
+                "name": "Footnote Claude",
+                "chat_messages": [
+                    {"sender": "user", "content": [{"type": "text", "text": "Say hi"}]},
+                    {
+                        "sender": "assistant",
+                        "content": [{"type": "text", "text": "\\[3\\] Sample reply"}],
+                    },
+                ],
+            }
+        ]
+    }
+    _write(export_dir / "conversations.json", conversations)
+
+    out_dir = tmp_path / "out_claude_foot"
+    results = import_claude_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    assert results
+    content = results[0].markdown_path.read_text(encoding="utf-8")
+    assert "[3] Sample reply" in content
+    assert "\\[3\\]" not in content
+
+
+def test_claude_import_force_overwrites_dirty_files(tmp_path):
+    export_dir = tmp_path / "claude_force"
+    export_dir.mkdir()
+    conversations = {
+        "conversations": [
+            {
+                "uuid": "claude-force",
+                "name": "Force Claude",
+                "chat_messages": [
+                    {"sender": "user", "content": [{"type": "text", "text": "Hello"}]},
+                    {"sender": "assistant", "content": [{"type": "text", "text": "World"}]},
+                ],
+            }
+        ]
+    }
+    _write(export_dir / "conversations.json", conversations)
+
+    out_dir = tmp_path / "out_claude_force"
+    first = import_claude_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    assert first and not first[0].skipped
+    md_path = first[0].markdown_path
+    original = md_path.read_text(encoding="utf-8")
+    md_path.write_text(original + "\nMANUAL EDIT\n", encoding="utf-8")
+
+    second = import_claude_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    assert second and second[0].skipped
+    assert "MANUAL EDIT" in md_path.read_text(encoding="utf-8")
+
+    third = import_claude_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=True,
+    )
+    assert third and not third[0].skipped
+    assert "MANUAL EDIT" not in md_path.read_text(encoding="utf-8")
 
 
 def test_import_claude_code_session_basic(tmp_path):
@@ -146,6 +242,86 @@ def test_import_claude_code_session_basic(tmp_path):
     assert "Run command" in text
     assert "Command output" in text
     assert "Initial summary" in text
+
+
+def test_claude_code_unescapes_inline_footnotes(tmp_path):
+    sessions_dir = tmp_path / "claude_code"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_path = sessions_dir / "session-foot.jsonl"
+    session_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "user", "message": {"content": [{"type": "text", "text": "Ask"}]}}),
+                json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "\\[7\\] Reply"}]}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out_claude_code"
+    result = import_claude_code_session(
+        "session-foot",
+        base_dir=sessions_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    content = result.markdown_path.read_text(encoding="utf-8")
+    assert "[7] Reply" in content
+    assert "\\[7\\]" not in content
+
+
+def test_claude_code_force_overwrites_dirty_files(tmp_path):
+    sessions_dir = tmp_path / "force_sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
+    session_path = sessions_dir / "session-force.jsonl"
+    session_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"type": "user", "message": {"content": [{"type": "text", "text": "Run"}]}}),
+                json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "Command done"}]}}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "out_force_cc"
+    first = import_claude_code_session(
+        "session-force",
+        base_dir=sessions_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    assert not first.skipped
+    md_path = first.markdown_path
+    original = md_path.read_text(encoding="utf-8")
+    md_path.write_text(original + "\nLOCAL\n", encoding="utf-8")
+
+    second = import_claude_code_session(
+        "session-force",
+        base_dir=sessions_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    assert second.skipped
+    assert "LOCAL" in md_path.read_text(encoding="utf-8")
+
+    third = import_claude_code_session(
+        "session-force",
+        base_dir=sessions_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=True,
+    )
+    assert not third.skipped
+    assert "LOCAL" not in md_path.read_text(encoding="utf-8")
 
 
 def test_import_chatgpt_tool_call_pairing(tmp_path):
@@ -207,6 +383,116 @@ def test_import_chatgpt_tool_call_pairing(tmp_path):
     body = results[0].markdown_path.read_text(encoding="utf-8")
     assert "Tool call" in body
     assert "Tool result" in body
+
+
+def test_chatgpt_unescapes_inline_footnotes(tmp_path):
+    export_dir = tmp_path / "chatgpt_footnotes"
+    export_dir.mkdir()
+    conversations = [
+        {
+            "id": "conv-footnote",
+            "title": "Footnote Chat",
+            "mapping": {
+                "node-user": {
+                    "id": "node-user",
+                    "message": {
+                        "id": "msg-user",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["Say something"]},
+                    },
+                },
+                "node-assistant": {
+                    "id": "node-assistant",
+                    "message": {
+                        "id": "msg-assistant",
+                        "author": {"role": "assistant"},
+                        "content": {
+                            "content_type": "text",
+                            "parts": ["\\\\[5\\\\] Sample response with footnote"],
+                        },
+                    },
+                },
+            },
+        }
+    ]
+    (export_dir / "conversations.json").write_text(json.dumps(conversations), encoding="utf-8")
+    out_dir = tmp_path / "footnote_out"
+    results = import_chatgpt_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    assert results
+    content = results[0].markdown_path.read_text(encoding="utf-8")
+    assert "[5] Sample response with footnote" in content
+    assert "\\[5\\]" not in content
+
+
+def test_chatgpt_force_overwrites_dirty_files(tmp_path):
+    export_dir = tmp_path / "chatgpt_force"
+    export_dir.mkdir()
+    conversations = [
+        {
+            "id": "conv-force",
+            "title": "Force Chat",
+            "create_time": 1,
+            "update_time": 2,
+            "mapping": {
+                "node-user": {
+                    "id": "node-user",
+                    "message": {
+                        "id": "msg-user",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["Hello"]},
+                    },
+                },
+                "node-assistant": {
+                    "id": "node-assistant",
+                    "message": {
+                        "id": "msg-assistant",
+                        "author": {"role": "assistant"},
+                        "content": {"content_type": "text", "parts": ["Hi there"]},
+                    },
+                },
+            },
+        }
+    ]
+    (export_dir / "conversations.json").write_text(json.dumps(conversations), encoding="utf-8")
+    out_dir = tmp_path / "force_out"
+    first = import_chatgpt_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    assert first and not first[0].skipped
+    md_path = first[0].markdown_path
+    original = md_path.read_text(encoding="utf-8")
+    md_path.write_text(original + "\nMANUAL EDIT\n", encoding="utf-8")
+
+    second = import_chatgpt_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+    )
+    assert second and second[0].skipped
+    assert "MANUAL EDIT" in md_path.read_text(encoding="utf-8")
+
+    third = import_chatgpt_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=True,
+    )
+    assert third and not third[0].skipped
+    assert "MANUAL EDIT" not in md_path.read_text(encoding="utf-8")
 
 
 def test_import_chatgpt_export_zip_with_attachment(tmp_path):
@@ -377,7 +663,6 @@ def test_import_chatgpt_export_repeat_skips(tmp_path):
     )
     assert len(second) == 1
     assert second[0].skipped
-    assert second[0].document is None
     assert second[0].markdown_path == first[0].markdown_path
     assert second[0].skip_reason == "dirty-local"
     assert second[0].dirty

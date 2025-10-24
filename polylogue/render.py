@@ -3,7 +3,7 @@ import math
 import re
 import urllib.parse
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
@@ -159,6 +159,12 @@ def _render_content_parts(cont: List[Dict[str, Any]]) -> str:
     return "\n\n".join(fragments)
 
 
+def _count_words(text: Optional[str]) -> int:
+    if not text:
+        return 0
+    return len([word for word in text.split() if word])
+
+
 def content_text_from_entry(entry: Dict[str, Any]) -> str:
     msg = entry.get("message")
     if isinstance(msg, dict):
@@ -243,7 +249,7 @@ def build_markdown_from_jsonl(
     md_parts.append("---\n")
     md_parts.append(f"title: \"{title}\"\n")
     if source_file_id:
-        md_parts.append(f"sourceDriveId: {source_file_id}\n")
+        md_parts.append(f"sourceId: {source_file_id}\n")
     if modified_time:
         md_parts.append(f"sourceModifiedTime: {modified_time}\n")
     if created_time:
@@ -349,7 +355,7 @@ def build_markdown_from_chunks(
 
     metadata: Dict[str, Any] = {"title": title}
     if source_file_id:
-        metadata["sourceDriveId"] = source_file_id
+        metadata["sourceId"] = source_file_id
     if modified_time:
         metadata["sourceModifiedTime"] = modified_time
     if created_time:
@@ -368,10 +374,13 @@ def build_markdown_from_chunks(
     stats: Dict[str, Any] = {}
     try:
         total_tokens = sum(int(c.get("tokenCount", 0)) for c in chunks)
+        total_words = sum(_count_words(c.get("text")) for c in chunks)
         model_turns = sum(1 for c in chunks if c.get("role") == "model")
         user_turns = sum(1 for c in chunks if c.get("role") == "user")
         model_tokens = sum(int(c.get("tokenCount", 0)) for c in chunks if c.get("role") == "model")
         user_tokens = sum(int(c.get("tokenCount", 0)) for c in chunks if c.get("role") == "user")
+        model_words = sum(_count_words(c.get("text")) for c in chunks if c.get("role") == "model")
+        user_words = sum(_count_words(c.get("text")) for c in chunks if c.get("role") == "user")
         thought_blocks = sum(1 for c in chunks if c.get("role") == "model" and c.get("isThought", False))
         att_docs = sum(1 for c in chunks if c.get("role") == "user" and "driveDocument" in c)
         att_imgs = sum(1 for c in chunks if c.get("role") == "user" and "driveImage" in c)
@@ -381,6 +390,9 @@ def build_markdown_from_chunks(
                 "totalTokensApprox": total_tokens,
                 "inputTokensApprox": user_tokens,
                 "outputTokensApprox": model_tokens,
+                "totalWordsApprox": total_words,
+                "inputWordsApprox": user_words,
+                "outputWordsApprox": model_words,
                 "userTurns": user_turns,
                 "modelTurns": model_turns,
                 "thoughtBlocks": thought_blocks,
@@ -433,28 +445,36 @@ def build_markdown_from_chunks(
         return "".join(out)
 
     parts: List[str] = []
+    chunk_datetimes: List[Optional[datetime]] = []
+    origin_time: Optional[datetime] = None
+    for chunk in chunks:
+        dt = _coerce_datetime(chunk.get("timestamp"))
+        chunk_datetimes.append(dt)
+        if dt is not None and origin_time is None:
+            origin_time = dt
+
     i = 0
     while i < len(chunks):
         c = chunks[i]
         role = c.get("role", "model")
         is_thought = bool(c.get("isThought", False))
-        timestamp = c.get("timestamp")
         if role == "user":
             user_text = c.get("text")
             if not user_text and isinstance(c.get("content"), list):
                 user_text = _render_content_parts(c.get("content"))
             links = per_chunk_links.get(i, [])
+            ts_label = _format_timestamp(chunk_datetimes[i], origin_time)
             if user_text:
-                parts.append(fmt_text_block("User", user_text, "+", timestamp))
+                parts.append(fmt_text_block("User", user_text, "+", ts_label))
             elif "driveDocument" in c:
                 header = "User (attachment)"
-                if timestamp:
-                    header += f" · {timestamp}"
+                if ts_label:
+                    header += f" · {ts_label}"
                 parts.append(f"> [!QUOTE]+ {header}\n")
             elif "driveImage" in c:
                 header = "User (image)"
-                if timestamp:
-                    header += f" · {timestamp}"
+                if ts_label:
+                    header += f" · {ts_label}"
                 parts.append(f"> [!TIP]+ {header}\n")
             else:
                 # Nothing meaningful to render for this chunk; skip it entirely.
@@ -483,12 +503,17 @@ def build_markdown_from_chunks(
             fr = resp_chunk.get("finishReason")
             if fr:
                 header += f" (Finish: {fr})"
-            resp_ts = resp_chunk.get("timestamp")
+            resp_ts = _format_timestamp(chunk_datetimes[i + 1], origin_time)
             if "branchParent" in resp_chunk:
                 bp = resp_chunk.get("branchParent") or {}
-                disp = bp.get("displayName") or bp.get("id")
+                if isinstance(bp, dict):
+                    disp = bp.get("displayName") or bp.get("id")
+                else:
+                    disp = str(bp) if bp else None
                 if disp:
                     header += f" (Parent: {disp})"
+            if resp_ts:
+                header += f" · {resp_ts}"
             parts.append(f"> [!INFO]{fold} {header}\n")
             if thought.strip():
                 parts.append(f"> > [!QUESTION]- Model Thought\n")
@@ -519,13 +544,16 @@ def build_markdown_from_chunks(
                 header += f" (Finish: {fr})"
             if "branchParent" in c:
                 bp = c.get("branchParent") or {}
-                disp = bp.get("displayName") or bp.get("id")
+                if isinstance(bp, dict):
+                    disp = bp.get("displayName") or bp.get("id")
+                else:
+                    disp = str(bp) if bp else None
                 if disp:
                     header += f" (Parent: {disp})"
             if not txt.strip():
                 i += 1
                 continue
-            parts.append(fmt_text_block(header, txt, fold, timestamp))
+            parts.append(fmt_text_block(header, txt, fold, _format_timestamp(chunk_datetimes[i], origin_time)))
             links = per_chunk_links.get(i, [])
             for name, relpath in links:
                 if hasattr(relpath, "as_posix"):
@@ -558,18 +586,19 @@ def build_markdown_from_chunks(
     attachment_bytes = sum(info.size_bytes or 0 for info in attachments_list)
     stats["attachments"] = attachment_count
     stats["attachmentBytes"] = attachment_bytes
-    metadata["attachments"] = [
-        {
-            "name": info.name,
-            "link": info.link,
-            "local": info.local_path.as_posix() if info.local_path else None,
-            "size": info.size_bytes,
-            "remote": info.remote,
-        }
-        for info in attachments_list
-    ]
-    metadata["attachmentCount"] = attachment_count
-    metadata["attachmentBytes"] = attachment_bytes
+    if attachments_list:
+        metadata["attachments"] = [
+            {
+                "name": info.name,
+                "link": info.link,
+                "local": info.local_path.as_posix() if info.local_path else None,
+                "size": info.size_bytes,
+                "remote": info.remote,
+            }
+            for info in attachments_list
+        ]
+        metadata["attachmentCount"] = attachment_count
+        metadata["attachmentBytes"] = attachment_bytes
     return MarkdownDocument(body=body, metadata=metadata, attachments=attachments_list, stats=stats)
 
 
@@ -616,3 +645,36 @@ def _coerce_datetime(value: Any) -> Optional[datetime]:
         except Exception:
             return None
     return None
+
+
+def _format_timestamp(dt: Optional[datetime], base: Optional[datetime]) -> Optional[str]:
+    if dt is None:
+        return None
+    utc_dt = dt.astimezone(timezone.utc)
+    timespec = "seconds" if utc_dt.microsecond == 0 else "milliseconds"
+    iso = utc_dt.isoformat(timespec=timespec).replace("+00:00", "Z")
+    rel = _format_relative_delta(utc_dt - base) if base is not None else None
+    if rel:
+        return f"{iso} ({rel})"
+    return iso
+
+
+def _format_relative_delta(delta: Optional[timedelta]) -> Optional[str]:
+    if delta is None:
+        return None
+    total_seconds = int(delta.total_seconds())
+    if total_seconds <= 0:
+        return None
+    parts: List[str] = []
+    days, rem = divmod(total_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes:
+        parts.append(f"{minutes}m")
+    if seconds or not parts:
+        parts.append(f"{seconds}s")
+    return "+" + " ".join(parts)

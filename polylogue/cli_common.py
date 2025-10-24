@@ -38,6 +38,16 @@ def filter_chats(
     return out
 
 
+DEFAULT_SK_BINDINGS = (
+    "tab:toggle+down",
+    "btab:toggle+up",
+    "ctrl-a:select-all",
+    "ctrl-d:deselect-all",
+    "ctrl-space:toggle",
+    "alt-a:select-all+accept",
+)
+
+
 def sk_select(
     lines: Sequence[str],
     *,
@@ -45,6 +55,8 @@ def sk_select(
     preview: Optional[str] = None,
     header: Optional[str] = None,
     bindings: Optional[Sequence[str]] = None,
+    prompt: Optional[str] = None,
+    cycle: bool = True,
 ) -> Optional[List[str]]:
     """Return the lines selected via skim, or None if the picker was aborted."""
 
@@ -54,13 +66,19 @@ def sk_select(
     cmd = ["sk", "--ansi"]
     if multi:
         cmd.append("--multi")
+    if cycle:
+        cmd.append("--cycle")
+    if prompt:
+        cmd.extend(["--prompt", prompt])
     if preview:
         cmd.extend(["--preview", preview])
     if header:
         cmd.extend(["--header", header])
-    if bindings:
-        for binding in bindings:
-            cmd.extend(["--bind", binding])
+    effective_bindings = list(bindings) if bindings else []
+    if multi and not bindings:
+        effective_bindings = list(DEFAULT_SK_BINDINGS)
+    for binding in effective_bindings:
+        cmd.extend(["--bind", binding])
 
     try:
         proc = subprocess.run(

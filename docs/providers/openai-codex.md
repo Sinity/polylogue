@@ -29,3 +29,7 @@ Polylogue mirrors `~/.codex` session logs, pairing tool calls with their outputs
 
 - `polylogue sync-codex` and `polylogue watch codex` traverse `sessions/`, apply the import pipeline, and preserve modification times on generated Markdown/HTML.
 - Repeated runs reuse stored slugs and hashes, skipping untouched sessions while logging summary statistics to `polylogue status`.
+- Pass `--force` if you need to overwrite local tweaks to a rendered session; otherwise Polylogue keeps the edits and marks the transcript dirty.
+- Escaped markers such as `\[2]` are normalised to `[2]` during import so numbered references stay readable.
+- Stats now include `totalWordsApprox`/`inputWordsApprox` so token counts in the Markdown metadata and CLI summaries always ship with approximate word counts.
+- Each session sync updates the SQLite store at `XDG_STATE_HOME/polylogue/polylogue.db` and emits a branch-aware filesystem layout: the canonical transcript remains `<slug>.md`, while `<slug>/conversation.md`, `<slug>/conversation.common.md`, and `branches/<branch-id>/{<branch-id>.md, overlay.md}` capture every fork in the Codex history.

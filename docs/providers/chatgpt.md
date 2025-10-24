@@ -29,3 +29,8 @@ Polylogue ingests chat.openai.com exports (consumer ChatGPT) by walking the prov
 
 - There is no public API for historical exports. Users must trigger the ZIP export manually (Settings → Data Controls → Export) or orchestrate a headless browser flow.
 - Polylogue runs are idempotent: once the ZIP is refreshed, `polylogue import chatgpt` reuses stored slugs and skips conversations whose hashes match previous runs.
+- Use `--force` when you need to overwrite locally-edited Markdown; otherwise the importer preserves manual tweaks and marks the conversation as dirty.
+- Inline escape sequences such as `\[1]` in the export are normalised to `[1]` so numeric references render cleanly.
+- Per-turn headers show UTC timestamps with a relative offset from the start of the conversation (for example, `2024-04-30T19:00:46Z (+22s)`), keeping both absolute and contextual timing at a glance.
+- Front matter stats now add `totalWordsApprox`/`inputWordsApprox` alongside the token counts so every “tokens” figure has a matching word estimate.
+- Each import populates `XDG_STATE_HOME/polylogue/polylogue.db` with conversation, branch, and message metadata. The canonical transcript still lives at `<slug>.md`, while a branch-aware directory tree is written alongside it: `<slug>/conversation.md`, `<slug>/conversation.common.md`, and `branches/<branch-id>/{<branch-id>.md, overlay.md}`.

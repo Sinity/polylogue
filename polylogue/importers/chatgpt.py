@@ -6,13 +6,14 @@ import urllib.parse
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from ..render import AttachmentInfo, build_markdown_from_chunks
-from ..document_store import persist_document
+from ..render import AttachmentInfo
 from ..util import assign_conversation_slug
+from ..conversation import process_conversation
+from ..branching import MessageRecord
 from .base import ImportResult
-from .utils import estimate_token_count, store_large_text
+from .utils import estimate_token_count, normalise_inline_footnotes, store_large_text
 
 
 def _load_export(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
@@ -111,6 +112,8 @@ def _gather_messages(conv: Dict) -> List[Dict]:
                 "content": msg.get("content"),
                 "metadata": msg.get("metadata") or {},
                 "create_time": created,
+                "node_id": node.get("id"),
+                "parent": node.get("parent"),
             }
         )
     messages.sort(key=lambda m: (m.get("create_time") or 0, m.get("id") or ""))
@@ -125,6 +128,7 @@ def import_chatgpt_export(
     html: bool,
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
+    force: bool = False,
 ) -> List[ImportResult]:
     base_path, tmp = _load_export(export_path)
     try:
@@ -149,6 +153,7 @@ def import_chatgpt_export(
                     collapse_threshold=collapse_threshold,
                     html=html,
                     html_theme=html_theme,
+                    force=force,
                 )
             )
         return results
@@ -192,6 +197,7 @@ def _render_chatgpt_conversation(
     collapse_threshold: int,
     html: bool,
     html_theme: str,
+    force: bool,
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
     conv_id = conv.get("id") or conv.get("conversation_id") or "chat"
@@ -203,6 +209,8 @@ def _render_chatgpt_conversation(
     attachments: List[AttachmentInfo] = []
     attachment_lookup: Dict[str, AttachmentInfo] = {}
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
+    message_records: List[MessageRecord] = []
+    seen_message_ids: Set[str] = set()
 
     files_dir = export_root / "files"
     file_index = _build_file_index(files_dir)
@@ -219,6 +227,7 @@ def _render_chatgpt_conversation(
         role = msg.get("author") or "assistant"
         content = msg.get("content") or {}
         text_block = _extract_text(role, content)
+        text_block = normalise_inline_footnotes(text_block)
         metadata = msg.get("metadata") or {}
         canonical_role = _normalise_role(role)
         chunk = {
@@ -226,6 +235,19 @@ def _render_chatgpt_conversation(
             "text": text_block,
             "tokenCount": estimate_token_count(text_block, model=model_slug),
         }
+        message_id = msg.get("id") or msg.get("node_id")
+        parent_id = msg.get("parent")
+        if message_id:
+            chunk["messageId"] = message_id
+            chunk["nodeId"] = msg.get("node_id") or message_id
+        if parent_id:
+            chunk["parentId"] = parent_id
+            chunk["branchParent"] = parent_id
+        elif message_records:
+            fallback_parent = message_records[-1].message_id
+            chunk["parentId"] = fallback_parent
+            chunk["branchParent"] = fallback_parent
+            parent_id = fallback_parent
         if msg.get("create_time"):
             chunk["timestamp"] = msg["create_time"]
         chunks.append(chunk)
@@ -247,6 +269,7 @@ def _render_chatgpt_conversation(
         chunks[idx]["text"] = _inject_citations(chunks[idx]["text"], metadata, attachment_lookup)
         current_text = chunks[idx]["text"]
         if current_text:
+            current_text = normalise_inline_footnotes(current_text)
             preview = store_large_text(
                 current_text,
                 chunk_index=idx,
@@ -259,6 +282,26 @@ def _render_chatgpt_conversation(
             if preview != current_text:
                 chunks[idx]["text"] = preview
 
+        effective_message_id = message_id or f"{(conv_id or 'chat')}-msg-{idx}"
+        while effective_message_id in seen_message_ids:
+            effective_message_id = f"{effective_message_id}-dup"
+        seen_message_ids.add(effective_message_id)
+        message_records.append(
+            MessageRecord(
+                message_id=effective_message_id,
+                parent_id=parent_id,
+                role=chunk["role"],
+                text=chunks[idx]["text"],
+                token_count=int(chunk.get("tokenCount", 0) or 0),
+                word_count=len((chunks[idx]["text"] or "").split()),
+                timestamp=chunk.get("timestamp"),
+                attachments=len(per_chunk_links.get(idx, [])),
+                chunk=chunks[idx],
+                links=list(per_chunk_links.get(idx, [])),
+                metadata={"raw": metadata},
+            )
+        )
+
     conversation_id = conv.get("id") or conv.get("conversation_id")
     extra_yaml = {
         "sourcePlatform": "chatgpt",
@@ -267,62 +310,31 @@ def _render_chatgpt_conversation(
         "sourceExportPath": str(export_root),
     }
 
-    document = build_markdown_from_chunks(
-        chunks,
-        per_chunk_links,
-        title=title,
-        source_file_id=conversation_id,
-        modified_time=conv.get("update_time") or conv.get("modified_time"),
-        created_time=conv.get("create_time"),
-        run_settings=None,
-        citations=None,
-        source_mime="application/json",
-        source_size=None,
-        collapse_threshold=collapse_threshold,
-        extra_yaml=extra_yaml,
-        attachments=attachments,
-    )
-
-    persist_result = persist_document(
+    return process_conversation(
         provider="chatgpt",
         conversation_id=conversation_id,
+        slug=slug,
         title=title,
-        document=document,
-        output_dir=output_dir,
-        collapse_threshold=collapse_threshold,
+        message_records=message_records,
         attachments=attachments,
-        updated_at=conv.get("update_time") or conv.get("modified_time"),
-        created_at=conv.get("create_time"),
+        canonical_leaf_id=conv.get("current_node"),
+        collapse_threshold=collapse_threshold,
         html=html,
         html_theme=html_theme,
-        attachment_policy=None,
+        output_dir=output_dir,
+        extra_yaml=extra_yaml,
         extra_state={
             "sourceModel": model_slug,
             "sourceExportPath": str(export_root),
         },
-        slug_hint=slug,
-        id_hint=(conv_id or "")[:8],
-    )
-
-    if persist_result.skipped:
-        return ImportResult(
-            markdown_path=persist_result.markdown_path,
-            html_path=persist_result.html_path,
-            attachments_dir=persist_result.attachments_dir,
-            document=None,
-            skipped=True,
-            skip_reason=persist_result.skip_reason,
-            dirty=persist_result.dirty,
-            content_hash=persist_result.content_hash,
-        )
-
-    return ImportResult(
-        markdown_path=persist_result.markdown_path,
-        html_path=persist_result.html_path,
-        attachments_dir=persist_result.attachments_dir,
-        document=persist_result.document or document,
-        dirty=persist_result.dirty,
-        content_hash=persist_result.content_hash,
+        source_file_id=conversation_id,
+        modified_time=conv.get("update_time") or conv.get("modified_time"),
+        created_time=conv.get("create_time"),
+        run_settings=None,
+        source_mime="application/json",
+        source_size=None,
+        attachment_policy=None,
+        force=force,
     )
 
 def _normalise_role(role: Optional[str]) -> str:
