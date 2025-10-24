@@ -3,6 +3,13 @@
 Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—rendering local exports to Markdown, syncing Drive sessions, and keeping local Codex/Claude Code transcripts tidy with diffs, stats, and diagnostics.
 
 ## Quick Start
+
+## Quality Gates
+- `pytest` is expected to stay green (`24 passed` in CI); add tests for new behaviours whenever possible.
+- Newly generated Markdown is spot-checked with `polylogue stats --dir …` and quick greps (timestamps, footnotes, attachment counts) before shipping.
+- Provider slugs are deterministic kebab-case so Git diffs stay tidy. Avoid manual renames unless conversation metadata truly changes.
+- Run `python3 polylogue.py --plain import …`/`sync …` after importer changes to ensure real data still parses.
+
 - Enable the direnv-managed dev shell: `direnv allow` (uses `.envrc` to call `nix develop`).
 - Prefer manual entry? `nix develop` installs Python plus gum, skim, rich, bat, glow, etc.
 - Run `python3 polylogue.py` and pick an action from the gum menu (Render, Sync, Local Syncs, Doctor, Stats, etc.).
@@ -10,15 +17,16 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 - The first Drive action walks you through supplying a Google OAuth client JSON; credentials and tokens are stored under `$XDG_CONFIG_HOME/polylogue/` (defaults to `~/.config/polylogue/`).
 
 ## What You Can Do
-- **Render local logs:** Choose a file or directory; skim previews candidates, rich shows progress, and outputs land in the configured render directory (default `/realm/data/chatlog/markdown/gemini-render`). Add `--html` for themed previews or `--diff` to see deltas when re-rendering.
+- **Render local logs:** Choose a file or directory; skim previews candidates, rich shows progress, and outputs land in the configured render directory (default `/realm/data/chatlog/markdown/gemini-render`, a legacy name that works for any provider JSON). Add `--html` for themed previews or `--diff` to see deltas when re-rendering.
 - **Sync Drive folders:** Connect to the default Drive folder (`AI Studio`) and pull chats to Markdown in `/realm/data/chatlog/markdown/gemini-sync`, downloading attachments unless you opt to link only.
 - **Sync Codex / Claude Code sessions:** Mirror local CLI transcripts from `~/.codex/sessions/` and `~/.claude/projects/` via `polylogue sync-codex` / `polylogue sync-claude-code`, with optional JSON summaries, pruning, diffs, and HTML previews. Outputs land in `/realm/data/chatlog/markdown/codex` and `/realm/data/chatlog/markdown/claude-code` by default.
 - **Watch local sessions in real time:** `polylogue watch codex` and `polylogue watch claude-code` keep those directories synced automatically; adjust debounce, HTML, collapse settings per watcher, or run a single pass with `--once`. Every sync is logged to `polylogue status --json` so scheduled runs and watchers share the same telemetry.
-- **Import exported providers:** Convert ChatGPT zips, Claude exports, Claude Code sessions, or Codex JSONLs via `polylogue import …` subcommands. Skim lets you cherry-pick conversations; `--all` batches them. Automation targets exist for Codex, Claude Code, Drive sync, Gemini render, and ChatGPT imports (see `polylogue automation describe`).
+- **Import exported providers:** Convert ChatGPT zips, Claude exports, Claude Code sessions, or Codex JSONLs via `polylogue import …` subcommands. Skim lets you cherry-pick conversations; `--all` batches them. Automation targets exist for Codex, Claude Code, Drive sync, render jobs, and ChatGPT imports (see `polylogue automation describe`). (A Gemini-specific importer is not bundled yet; use `render` if you have raw JSON.)
 - **Doctor & Stats:** `polylogue doctor` sanity-checks source directories; `polylogue stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters).
 - **View recent runs:** The status dashboard shows the last operations, including attachment MiB and diff counts per command.
 - **Monitor automation:** `polylogue status --json --watch` now streams provider-level stats for dashboards or terminal monitoring.
-- **SQLite/Qdrant indexing:** Every successful write updates a local SQLite FTS index (and, optionally, a Qdrant collection) so downstream tooling can query or sync metadata without reparsing Markdown.
+- **Branch-aware transcripts:** Canonical Markdown still lives at `<slug>.md`, but every import now writes `<slug>/conversation.md`, `<slug>/conversation.common.md`, and `branches/<branch-id>/{<branch-id>.md, overlay.md}` so historical forks remain accessible.
+- **SQLite/Qdrant indexing:** Every successful write updates `XDG_STATE_HOME/polylogue/polylogue.db` (and, optionally, a Qdrant collection) so downstream tooling can query or sync metadata without reparsing Markdown.
 
 ## Provider Cheat Sheet
 

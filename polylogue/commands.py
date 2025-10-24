@@ -208,6 +208,7 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
             "attachments": totals.get("attachments", 0),
             "attachmentBytes": totals.get("attachmentBytes", 0),
             "tokens": totals.get("totalTokensApprox", 0),
+            "words": totals.get("totalWordsApprox", 0),
             "diffs": diff_count,
             "duration": duration,
         }
@@ -525,6 +526,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
             "attachments": totals.get("attachments", 0),
             "attachmentBytes": totals.get("attachmentBytes", 0),
             "tokens": totals.get("totalTokensApprox", 0),
+            "words": totals.get("totalWordsApprox", 0),
             "skipped": totals.get("skipped", 0),
             "pruned": pruned_count,
             "diffs": diff_count,
@@ -564,6 +566,7 @@ def status_command(env: CommandEnv) -> StatusResult:
                             "attachments": 0,
                             "attachmentBytes": 0,
                             "tokens": 0,
+                            "words": 0,
                             "skipped": 0,
                             "pruned": 0,
                             "diffs": 0,
@@ -577,6 +580,7 @@ def status_command(env: CommandEnv) -> StatusResult:
                     stats["attachments"] += entry.get("attachments", 0) or 0
                     stats["attachmentBytes"] += entry.get("attachmentBytes", 0) or 0
                     stats["tokens"] += entry.get("tokens", 0) or 0
+                    stats["words"] += entry.get("words", 0) or 0
                     stats["skipped"] += entry.get("skipped", 0) or 0
                     stats["pruned"] += entry.get("pruned", 0) or 0
                     stats["diffs"] += entry.get("diffs", 0) or 0
@@ -597,6 +601,7 @@ def status_command(env: CommandEnv) -> StatusResult:
                 "attachments": 0,
                 "attachmentBytes": 0,
                 "tokens": 0,
+                "words": 0,
                 "skipped": 0,
                 "pruned": 0,
                 "diffs": 0,
@@ -611,6 +616,7 @@ def status_command(env: CommandEnv) -> StatusResult:
         entry["attachments"] += stats.get("attachments", 0) or 0
         entry["attachmentBytes"] += stats.get("attachmentBytes", 0) or 0
         entry["tokens"] += stats.get("tokens", 0) or 0
+        entry["words"] += stats.get("words", 0) or 0
         entry["skipped"] += stats.get("skipped", 0) or 0
         entry["pruned"] += stats.get("pruned", 0) or 0
         entry["diffs"] += stats.get("diffs", 0) or 0
