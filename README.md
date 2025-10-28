@@ -17,52 +17,55 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 - The first Drive action walks you through supplying a Google OAuth client JSON; credentials and tokens are stored under `$XDG_CONFIG_HOME/polylogue/` (defaults to `~/.config/polylogue/`).
 
 ## What You Can Do
-- **Render local logs:** Choose a file or directory; skim previews candidates, rich shows progress, and outputs land in the configured render directory (default `/realm/data/chatlog/markdown/gemini-render`, a legacy name that works for any provider JSON). Add `--html` for themed previews or `--diff` to see deltas when re-rendering.
-- **Sync Drive folders:** Connect to the default Drive folder (`AI Studio`) and pull chats to Markdown in `/realm/data/chatlog/markdown/gemini-sync`, downloading attachments unless you opt to link only.
-- **Sync Codex / Claude Code sessions:** Mirror local CLI transcripts from `~/.codex/sessions/` and `~/.claude/projects/` via `polylogue sync-codex` / `polylogue sync-claude-code`, with optional JSON summaries, pruning, diffs, and HTML previews. Outputs land in `/realm/data/chatlog/markdown/codex` and `/realm/data/chatlog/markdown/claude-code` by default.
+- **Render local logs:** Choose a file or directory; skim previews candidates, rich shows progress, and outputs land in the configured render directory (defaults to something like `~/polylogue-data/render`). Add `--html` for themed previews or `--diff` to see deltas when re-rendering.
+- **Sync provider archives:** `polylogue sync drive|codex|claude-code` unifies Drive pulls and local IDE session mirroring with consistent flags for collapse thresholds, HTML, pruning, diffs, and JSON output. Defaults from `polylogue.config` keep outputs in locations such as `~/polylogue-data/sync-drive`, `~/polylogue-data/codex`, and `~/polylogue-data/claude-code`.
+- **Import provider exports:** `polylogue import chatgpt|claude|codex|claude-code …` normalises exports into Markdown/HTML, reusing provider metadata and letting you cherry-pick conversations interactively when desired.
+- **Inspect archives:** `polylogue inspect branches` renders branch trees (and auto-writes HTML explorers), `polylogue inspect search` queries the SQLite FTS index with rich filters, and `polylogue inspect stats` summarises tokens/attachments per provider.
 - **Watch local sessions in real time:** `polylogue watch codex` and `polylogue watch claude-code` keep those directories synced automatically; adjust debounce, HTML, collapse settings per watcher, or run a single pass with `--once`. Every sync is logged to `polylogue status --json` so scheduled runs and watchers share the same telemetry.
-- **Import exported providers:** Convert ChatGPT zips, Claude exports, Claude Code sessions, or Codex JSONLs via `polylogue import …` subcommands. Skim lets you cherry-pick conversations; `--all` batches them. Automation targets exist for Codex, Claude Code, Drive sync, render jobs, and ChatGPT imports (see `polylogue automation describe`). (A Gemini-specific importer is not bundled yet; use `render` if you have raw JSON.)
 - **Doctor & Stats:** `polylogue doctor` sanity-checks source directories; `polylogue stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters).
 - **View recent runs:** The status dashboard shows the last operations, including attachment MiB and diff counts per command.
 - **Monitor automation:** `polylogue status --json --watch` now streams provider-level stats for dashboards or terminal monitoring.
-- **Branch-aware transcripts:** Canonical Markdown still lives at `<slug>.md`, but every import now writes `<slug>/conversation.md`, `<slug>/conversation.common.md`, and `branches/<branch-id>/{<branch-id>.md, overlay.md}` so historical forks remain accessible.
+- **Branch-aware transcripts:** Canonical Markdown now lives at `<slug>/conversation.md`, with `<slug>/conversation.common.md` capturing shared context and `branches/<branch-id>/{<branch-id>.md, overlay.md}` preserving every alternate path.
+- **Explore branch graphs:** `polylogue inspect branches` renders a skim-driven branch picker, prints the tree view, and auto-writes an HTML explorer when branches diverge (override output with `--html-out`, disable via `--html off`).
+- **Search transcripts:** `polylogue inspect search` queries the SQLite FTS index with filters for provider, model, date range, and attachment metadata; add `--no-picker` to skip the skim preview or `--json` for automation.
+- **Prune legacy outputs:** `polylogue prune` cleans up flat `<slug>.md` files and `_attachments/` folders left behind by older releases, keeping only the canonical conversation directories.
 - **SQLite/Qdrant indexing:** Every successful write updates `XDG_STATE_HOME/polylogue/polylogue.db` (and, optionally, a Qdrant collection) so downstream tooling can query or sync metadata without reparsing Markdown.
 
 ## Provider Cheat Sheet
 
 ### ChatGPT Exports
 - Export a ZIP from chat.openai.com → Settings → Data Controls → Export.
-- Render with `polylogue import chatgpt EXPORT.zip --all --out /realm/data/chatlog/markdown/chatgpt --html`.
+- Render with `polylogue import chatgpt EXPORT.zip --all --out ~/polylogue-data/chatgpt --html`.
 - Metadata includes `sourcePlatform: chatgpt`, `conversationId`, `sourceExportPath`, and detected `sourceModel`.
-- Attachments land in `<chat>_attachments/`; oversized tool outputs are truncated inline with full payloads saved beside the Markdown.
+- Attachments land in `<chat>/attachments/`; oversized tool outputs are truncated inline with full payloads saved beside the Markdown.
 
 ### Claude.ai Bundles
-- Export a bundle from claude.ai, then run `polylogue import claude EXPORT.zip --out /realm/data/chatlog/markdown/claude --html`.
+- Export a bundle from claude.ai, then run `polylogue import claude EXPORT.zip --out ~/polylogue-data/claude --html`.
 - Tool use/result blocks are rendered as paired call/result sections; attachments copy from the bundle’s `attachments/` directory.
 - Front matter records `sourcePlatform: claude.ai`, `conversationId`, `sourceModel`, and `sourceExportPath`.
 
 ### Claude Code Sessions
-- Local IDE logs live under `~/.claude/projects/`. Use `polylogue sync-claude-code --out /realm/data/chatlog/markdown/claude-code --html --diff` for continuous mirroring or `polylogue import claude-code SESSION_ID` for one-offs.
+- Local IDE logs live under `~/.claude/projects/`. Use `polylogue sync claude-code --out ~/polylogue-data/claude-code --html --diff` for continuous mirroring or `polylogue import claude-code [SESSION_ID]` for one-offs.
 - Each Markdown file captures summaries, tool invocations, shell transcripts, and provenance fields (`sourceSessionPath`, `sourceWorkspace`).
 
 ### OpenAI Codex CLI
-- Session JSONL files live under `~/.codex/sessions/`. `polylogue sync-codex --out /realm/data/chatlog/markdown/codex --html --diff` keeps them current.
-- Tool call/output pairs are merged, oversized logs spill into `_attachments/`, and metadata records the absolute source path.
+- Session JSONL files live under `~/.codex/sessions/`. `polylogue sync codex --out ~/polylogue-data/codex --html --diff` keeps them current.
+- Tool call/output pairs are merged, oversized logs spill into `attachments/`, and metadata records the absolute source path.
 
 ## Automation & Flags
 Although the CLI is interactive by default, the same functionality is available non-interactively:
-- `python3 polylogue.py render PATH [--out DIR] [--links-only] [--dry-run] [--force] [--collapse-threshold N] [--json] [--plain] [--diff]`
-- `python3 polylogue.py sync [--folder-name NAME] [--folder-id ID] [--out DIR] [--links-only] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--dry-run] [--force] [--prune] [--json] [--plain] [--diff]`
-- `python3 polylogue.py sync-codex [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--force] [--prune] [--all] [--json] [--diff]`
-- `python3 polylogue.py sync-claude-code [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--force] [--prune] [--all] [--json] [--diff]`
-- `python3 polylogue.py list [--folder-name NAME] [--folder-id ID] [--since RFC3339] [--until RFC3339] [--name-filter REGEX] [--json] [--plain]`
+- `python3 polylogue.py render PATH [--out DIR] [--links-only] [--dry-run] [--force] [--collapse-threshold N] [--json] [--plain] [--html [on|off|auto]] [--diff]`
+- `python3 polylogue.py sync drive|codex|claude-code [--out DIR] [--links-only] [--dry-run] [--force] [--prune] [--collapse-threshold N] [--html [on|off|auto]] [--diff] [--json]`
+  - Drive extras: `--folder-name`, `--folder-id`, `--since`, `--until`, `--name-filter`, `--list-only`
+  - Local extras: `--base-dir`, `--all`
+- `python3 polylogue.py import chatgpt|claude|codex|claude-code SOURCE … [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--force] [--all] [--conversation-id ID ...] [--base-dir DIR] [--json]`
+- `python3 polylogue.py inspect branches [--provider NAME] [--slug SLUG] [--conversation-id ID] [--branch BRANCH_ID] [--diff] [--html [on|off|auto]] [--html-out PATH] [--theme light|dark] [--no-picker]`
+- `python3 polylogue.py inspect search QUERY [--limit N] [--provider NAME] [--slug SLUG] [--conversation-id ID] [--branch BRANCH_ID] [--model MODEL] [--since RFC3339] [--until RFC3339] [--with-attachments|--without-attachments] [--no-picker] [--json]`
+- `python3 polylogue.py inspect stats [--dir DIR] [--since DATE] [--until DATE] [--json]`
+- `python3 polylogue.py watch codex|claude-code [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--debounce seconds] [--once]`
 - `python3 polylogue.py status [--json] [--watch] [--interval seconds]`
-- `python3 polylogue.py import chatgpt EXPORT_PATH [--conversation-id ID ...] [--all] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
-- `python3 polylogue.py import claude EXPORT_PATH [--conversation-id ID ...] [--all] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
-- `python3 polylogue.py import claude-code SESSION_ID [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html] [--html-theme THEME] [--plain]`
-- `python3 polylogue.py import codex SESSION_ID [--out DIR] [--base-dir DIR] [--collapse-threshold N] [--html] [--plain]`
+- `python3 polylogue.py prune [--dir DIR] [--dry-run]`
 - `python3 polylogue.py doctor [--codex-dir DIR] [--claude-code-dir DIR] [--limit N] [--json]`
-- `python3 polylogue.py stats [--dir DIR] [--since DATE] [--until DATE] [--json]`
 
 `--plain` disables gum/skim/Rich styling for CI or scripts; `--json` prints machine-readable summaries.
 Use `--to-clipboard` on `render`/`import` commands to copy a single Markdown result directly to your system clipboard.
@@ -111,7 +114,7 @@ Available automation targets: `codex`, `claude-code`, `drive-sync`, `gemini-rend
 3. Tokens are written to `$XDG_CONFIG_HOME/polylogue/token.json` and refreshed automatically. Override locations with `$POLYLOGUE_TOKEN_PATH` if necessary.
 
 ## Formatting
-- Markdown keeps attachments in per-chat `_attachments` folders when downloads are enabled.
+- Markdown keeps attachments in per-chat `attachments/` folders when downloads are enabled.
 - Responses are folded at 25 lines by default (configurable via flag or interactive setting per run).
 - Summaries are shown both as rich panels and gum-formatted Markdown for easy copy/paste.
 - Collapsible callouts stay as Markdown blockquotes; open the generated `.html` preview for interactive folding when terminal renderers (e.g., `glow`) don’t support it.
