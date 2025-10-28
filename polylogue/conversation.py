@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -8,7 +9,10 @@ from .branching import BranchPlan, BranchInfo, MessageRecord, build_branch_plan
 from .db import open_connection, replace_branches, replace_messages, upsert_conversation
 from .importers.base import ImportResult
 from .render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
-from .document_store import persist_document
+from .repository import ConversationRepository
+
+
+REPOSITORY = ConversationRepository()
 
 
 def _compute_branch_stats(
@@ -238,7 +242,7 @@ def process_conversation(
         per_chunk_links=canonical_links,
     )
 
-    persist_result = persist_document(
+    persist_result = REPOSITORY.persist(
         provider=provider,
         conversation_id=conversation_id,
         title=title,
@@ -259,14 +263,16 @@ def process_conversation(
 
     branch_directories: List[Path] = []
     if not persist_result.skipped and persist_result.markdown_path:
-        conversation_dir = persist_result.markdown_path.parent / persist_result.slug
+        conversation_dir = persist_result.markdown_path.parent
         branches_dir = conversation_dir / "branches"
         attachments_dir = persist_result.attachments_dir
-        conversation_dir.mkdir(parents=True, exist_ok=True)
         branches_dir.mkdir(parents=True, exist_ok=True)
 
-        canonical_path = conversation_dir / "conversation.md"
-        canonical_path.write_text(persist_result.document.to_markdown() if persist_result.document else canonical_document.to_markdown(), encoding="utf-8")
+        canonical_path = persist_result.markdown_path
+        canonical_path.write_text(
+            (persist_result.document or canonical_document).to_markdown(),
+            encoding="utf-8",
+        )
 
         common_ids = _common_prefix(plan)
         common_records = [records_by_id[mid] for mid in common_ids if mid in records_by_id]
@@ -334,11 +340,21 @@ def process_conversation(
                 # Ensure attachments dir is preserved; branches can reference relative paths.
                 (branch_dir / "attachments").mkdir(exist_ok=True)
 
+        existing_branch_dirs = [path for path in branches_dir.iterdir() if path.is_dir()]
+        active_branch_names = {branch_id for branch_id in plan.branches}
+        for path in existing_branch_dirs:
+            if path.name not in active_branch_names:
+                try:
+                    shutil.rmtree(path)
+                except OSError:
+                    continue
+
     return ImportResult(
         markdown_path=persist_result.markdown_path,
         html_path=persist_result.html_path,
         attachments_dir=persist_result.attachments_dir,
         document=persist_result.document or canonical_document,
+        slug=persist_result.slug,
         diff_path=None,
         skipped=persist_result.skipped,
         skip_reason=persist_result.skip_reason,

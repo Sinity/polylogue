@@ -14,12 +14,12 @@ Polylogue treats every provider through the same pipeline: adapters normalise ra
 - Polylogue persists per-conversation metadata under `$XDG_STATE_HOME/polylogue/state.json`, recording the slug, content hash, timestamps, and output paths written during the last run.
 - Slugs come from `assign_conversation_slug()`, which reuses previously stored names and appends numeric suffixes deterministically when collisions appear—keeping Git history tidy even if provider titles change.
 - Before writing files, `conversation_is_current()` compares the provider’s `lastUpdated` value (when available) and the stored hash. If nothing changed, the importer returns an `ImportResult` tagged `skipped` so the CLI can report the outcome without touching disk.
-- Stored HTML and `_attachments/` directories are reused whenever possible so reruns do not duplicate artefacts or churn timestamps unnecessarily.
+- Stored HTML and `attachments/` directories are reused whenever possible so reruns do not duplicate artefacts or churn timestamps unnecessarily.
 
 ## UX & Output Considerations
 
 - **Provider parity**: Adapters preserve provider-specific metadata (tool calls, citations, attachment provenance) while still mapping onto the shared chunk schema.
-- **Attachment extraction**: Default heuristics spill large payloads into `_attachments/` with short inline previews. Provider-specific overrides can fine-tune thresholds without overwhelming the CLI surface with toggles.
+- **Attachment extraction**: Default heuristics spill large payloads into `attachments/` with short inline previews. Provider-specific overrides can fine-tune thresholds without overwhelming the CLI surface with toggles.
 - **Tool interactions**: When an export links tool calls to their results, Polylogue renders them as a single Markdown block and attaches oversized inputs/outputs for later inspection.
 - **Interactive tuning**: CLI summaries surface attachment counts, extracted MiB, and token totals so you can spot outliers quickly during imports or watcher runs.
 - **Formatting fidelity**: Tables, lists, code blocks, and JSON segments render exactly; Markdown and HTML carry provenance tags (provider, conversation IDs, timestamps) in the front matter.

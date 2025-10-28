@@ -9,7 +9,9 @@ from polylogue.cli import run_stats_cli
 def test_run_stats_json(tmp_path, capsys):
     md_dir = tmp_path / "out"
     md_dir.mkdir()
-    sample = md_dir / "example.md"
+    sample_dir = md_dir / "example"
+    sample_dir.mkdir()
+    sample = sample_dir / "conversation.md"
     sample.write_text(
         "---\n"
         "title: Example\n"
