@@ -8,13 +8,13 @@ The CLI includes long-running watchers that mirror local Codex and Claude Code s
 
 ```bash
 # Watch ~/.codex/sessions/ and sync into the standard archive
-python3 polylogue.py watch codex --out /realm/data/chatlog/markdown/codex
+python3 polylogue.py watch codex --out ~/polylogue-data/codex
 
 # Watch ~/.claude/projects/ for Claude Code sessions
-python3 polylogue.py watch claude-code --out /realm/data/chatlog/markdown/claude-code
+python3 polylogue.py watch claude-code --out ~/polylogue-data/claude-code
 ```
 
-Watchers run an initial full sync, then rerun whenever `.jsonl` session files change inside the source tree. They reuse your configured collapse thresholds and HTML defaults; pass `--collapse-threshold`, `--html`, or `--html-theme` to override. The `--debounce` flag (default: 2 seconds) throttles rapid bursts of file events so a single editing session doesn’t thrash the pipeline.
+Watchers run an initial full sync, then rerun whenever `.jsonl` session files change inside the source tree. They reuse your configured collapse thresholds and HTML defaults; pass `--collapse-threshold` or `--html` to override. The `--debounce` flag (default: 2 seconds) throttles rapid bursts of file events so a single editing session doesn’t thrash the pipeline.
 
 If the optional `watchfiles` dependency is missing, the CLI prints guidance instead of failing—meaning you can still fall back to scheduled syncs. Every watcher pass flows through `_log_local_sync`, so the resulting telemetry (attachment counts, diffs, skipped sessions) appears in `polylogue status --json` alongside one-shot runs.
 
@@ -30,8 +30,8 @@ Description=Polylogue Codex sync
 [Service]
 Type=oneshot
 Environment=XDG_STATE_HOME=%h/.local/state
-WorkingDirectory=/realm/project/aichat-to-md
-ExecStart=%h/.nix-profile/bin/python3 polylogue.py sync-codex --plain --json
+WorkingDirectory=/srv/polylogue
+ExecStart=%h/.nix-profile/bin/python3 polylogue.py sync codex --plain --json
 ```
 
 `~/.config/systemd/user/polylogue-sync-codex.timer`
@@ -48,14 +48,14 @@ Persistent=true
 WantedBy=default.target
 ```
 
-Enable the timer with `systemctl --user enable --now polylogue-sync-codex.timer`. Duplicate the pair with different names for Claude Code or Drive syncs, adjusting arguments as needed.
+Enable the timer with `systemctl --user enable --now polylogue-sync-codex.timer`. Duplicate the pair with different names for Claude Code or Drive syncs (for Drive use `sync drive` and add the folder flags).
 
 ## Cron Alternative
 
 When systemd is unavailable, a simple cron entry can invoke the same non-interactive commands:
 
 ```
-*/30 * * * * XDG_STATE_HOME="$HOME/.local/state" cd /realm/project/aichat-to-md && python3 polylogue.py sync-codex --plain --json >> "$HOME/.cache/polylogue-sync.log" 2>&1
+*/30 * * * * XDG_STATE_HOME="$HOME/.local/state" cd /srv/polylogue && python3 polylogue.py sync codex --plain --json >> "$HOME/.cache/polylogue-sync.log" 2>&1
 ```
 
 Combine cron with `polylogue status --json` to monitor recent runs or parse the generated log file.
@@ -66,10 +66,10 @@ Polylogue now bundles helpers for both ad-hoc snippets and declarative configs:
 
 ```bash
 # systemd service + timer (defaults to repo root + sys.executable)
-python3 polylogue.py automation systemd --target codex --interval 15m --out /realm/data/chatlog/markdown/codex
+python3 polylogue.py automation systemd --target codex --interval 15m --out ~/polylogue-data/codex
 
 # matching cron entry
-python3 polylogue.py automation cron --target codex --schedule "*/20 * * * *" --out /realm/data/chatlog/markdown/codex
+python3 polylogue.py automation cron --target codex --schedule "*/20 * * * *" --out ~/polylogue-data/codex
 
 # inspect the underlying metadata (used by the NixOS module)
 python3 polylogue.py automation describe --target codex
@@ -92,7 +92,7 @@ When using Polylogue as a flake input, import `inputs.polylogue.nixosModules.pol
     stateDir = "/var/lib/polylogue/state";
     targets.codex = {
       enable = true;
-      outputDir = "/realm/data/chatlog/markdown/codex";
+      outputDir = "~/polylogue-data/codex";
       collapseThreshold = 18;
       html = true;
       timer.interval = "15m";

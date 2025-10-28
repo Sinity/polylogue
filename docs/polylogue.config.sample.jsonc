@@ -5,12 +5,12 @@
     "html_previews": true,
     "html_theme": "dark",
     "output_dirs": {
-      "render": "/realm/data/chatlog/markdown/gemini-render",
-      "sync_drive": "/realm/data/chatlog/markdown/gemini-sync",
-      "sync_codex": "/realm/data/chatlog/markdown/codex",
-      "sync_claude_code": "/realm/data/chatlog/markdown/claude-code",
-      "import_chatgpt": "/realm/data/chatlog/markdown/chatgpt",
-      "import_claude": "/realm/data/chatlog/markdown/claude"
+      "render": "~/polylogue-data/render",
+      "sync_drive": "~/polylogue-data/sync-drive",
+      "sync_codex": "~/polylogue-data/codex",
+      "sync_claude_code": "~/polylogue-data/claude-code",
+      "import_chatgpt": "~/polylogue-data/chatgpt",
+      "import_claude": "~/polylogue-data/claude"
     }
   }
 }

@@ -22,7 +22,7 @@ Polylogue ingests chat.openai.com exports (consumer ChatGPT) by walking the prov
 
 ## Attachments
 
-- When attachments exist inside the ZIP, copy them into the conversation’s `_attachments/` directory and link from Markdown.
+- When attachments exist inside the ZIP, copy them into the conversation’s `attachments/` directory and link from Markdown.
 - If the export references a remote Google Drive asset without including the file, fall back to an external link so the reader can still reach the asset.
 
 ## Operational Notes
