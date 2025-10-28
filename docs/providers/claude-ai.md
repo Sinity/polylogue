@@ -15,7 +15,7 @@ Claude workspace exports (`claude-ai-data-*.zip`) provide a linear conversation 
 
 - Iterate `chat_messages` chronologically. Emit one Markdown section per content block, preserving the original order inside each turn.
 - Render `tool_use` blocks with the tool name and the JSON arguments; pair them with the subsequent `tool_result` block that references the same ID.
-- Capture attachments into `_attachments/`, recording the filename, type, and size so downstream summaries can surface them.
+- Capture attachments into `attachments/`, recording the filename, type, and size so downstream summaries can surface them.
 - Populate YAML front matter with conversation metadata (`name`, timestamps, source bundle path) to support reruns and UI summaries.
 
 ## Automation Considerations
