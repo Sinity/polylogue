@@ -72,7 +72,16 @@
         };
 
         devShells = {
-          default = import ./nix/devshell.nix { inherit pkgs; };
+          default = import ./nix/devshell.nix {
+            inherit pkgs;
+            extraPythonPackages = with pkgs.python3Packages; [
+              pytest
+              pytest-cov
+              coverage
+              mypy
+              types-requests
+            ];
+          };
           ci = pkgs.mkShell {
             buildInputs = [ polylogueApp pkgs.git pkgs.which ];
             shellHook = ''

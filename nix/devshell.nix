@@ -3,25 +3,26 @@
 let
   py = pkgs.python3;
   pyPkgs = pkgs.python3Packages;
-  pythonLibs = with pyPkgs; [
-    google-auth-oauthlib
-    requests
-    pathvalidate
-    aiohttp
-    aiofiles
-    rich
-    pydantic
-    python-frontmatter
-    jinja2
-    markdown-it-py
-    pyperclip
-    watchfiles
-  ] ++ extraPythonPackages;
+  pythonEnv = py.withPackages (ps: (
+    with ps; [
+      google-auth-oauthlib
+      requests
+      pathvalidate
+      aiohttp
+      aiofiles
+      rich
+      pydantic
+      python-frontmatter
+      jinja2
+      markdown-it-py
+      pyperclip
+      watchfiles
+    ]
+  ) ++ extraPythonPackages);
 in
 pkgs.mkShell {
   buildInputs =
-    [ py ]
-    ++ pythonLibs
+    [ pythonEnv ]
     ++ [
       # CLI helpers used by Polylogue
       pkgs.skim
