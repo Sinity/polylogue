@@ -40,7 +40,7 @@ def patched_state(tmp_path, monkeypatch):
 def test_status_provider_summary(patched_state):
     runs = [
         {
-            "cmd": "sync",
+            "cmd": "sync drive",
             "count": 1,
             "attachments": 2,
             "attachmentBytes": 2048,
@@ -72,11 +72,12 @@ def test_status_provider_summary(patched_state):
     env = CommandEnv(ui=DummyUI())
     result = status_command(env)
 
-    assert "drive-sync" in result.provider_summary
-    assert result.provider_summary["drive-sync"]["count"] == 1
-    assert result.provider_summary["drive-sync"]["commands"] == ["sync"]
-    assert result.provider_summary["drive-sync"]["duration"] > 0
+    assert "drive" in result.provider_summary
+    assert result.provider_summary["drive"]["count"] == 1
+    assert result.provider_summary["drive"]["commands"] == ["sync drive"]
+    assert result.provider_summary["drive"]["duration"] > 0
     assert "codex" in result.provider_summary
     assert result.provider_summary["codex"]["count"] == 2
     assert "codex-watch" in result.provider_summary["codex"]["commands"]
-    assert result.run_summary["sync"]["duration"] > 0
+    assert result.run_summary["sync drive"]["duration"] > 0
+    assert result.run_summary["sync drive"]["provider"] == "drive"

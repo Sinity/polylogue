@@ -109,8 +109,10 @@ def _render_claude_conversation(
     title = conv.get("name") or conv.get("title") or "claude-chat"
     conv_id = conv.get("uuid") or conv.get("id") or "claude"
     slug = assign_conversation_slug("claude.ai", conv_id, title, id_hint=(conv_id or "")[:8])
-    markdown_path = output_dir / f"{slug}.md"
-    attachments_dir = markdown_path.parent / f"{slug}_attachments"
+    conversation_dir = output_dir / slug
+    conversation_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = conversation_dir / "conversation.md"
+    attachments_dir = conversation_dir / "attachments"
 
     attachments: List[AttachmentInfo] = []
     file_index = _index_export_files(export_root)

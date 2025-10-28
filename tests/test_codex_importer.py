@@ -100,7 +100,7 @@ def test_import_codex_session_removes_empty_attachment_dir(tmp_path):
     )
 
     assert result.attachments_dir is None
-    assert not (out_dir / "simple_attachments").exists()
+    assert not (result.markdown_path.parent / "attachments").exists()
 
 
 def test_import_codex_session_normalises_footnotes(tmp_path):

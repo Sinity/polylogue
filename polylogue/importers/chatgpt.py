@@ -202,8 +202,10 @@ def _render_chatgpt_conversation(
     title = conv.get("title") or "chatgpt-conversation"
     conv_id = conv.get("id") or conv.get("conversation_id") or "chat"
     slug = assign_conversation_slug("chatgpt", conv_id, title, id_hint=(conv_id or "")[:8])
-    markdown_path = output_dir / f"{slug}.md"
-    attachments_dir = markdown_path.parent / f"{slug}_attachments"
+    conversation_dir = output_dir / slug
+    conversation_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = conversation_dir / "conversation.md"
+    attachments_dir = conversation_dir / "attachments"
 
     chunks: List[Dict] = []
     attachments: List[AttachmentInfo] = []
