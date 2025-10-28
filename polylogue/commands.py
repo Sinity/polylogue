@@ -5,8 +5,9 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
+from .branch_explorer import list_branch_conversations
 from .cli_common import compute_prune_paths, filter_chats
 from .drive_client import (
     DEFAULT_CREDENTIALS,
@@ -25,16 +26,12 @@ from .options import (
     SyncItem,
     SyncOptions,
     SyncResult,
+    BranchExploreOptions,
+    BranchExploreResult,
+    SearchOptions,
+    SearchResult,
 )
-from .render import (
-    AttachmentInfo,
-    MarkdownDocument,
-    build_markdown_from_chunks,
-    extract_drive_ids,
-    per_chunk_remote_links,
-    remote_attachment_info,
-)
-from .document_store import persist_document
+from .render import MarkdownDocument
 from .ui import UI
 from .util import (
     RUNS_PATH,
@@ -45,27 +42,42 @@ from .util import (
     snapshot_for_diff,
     write_delta_diff,
 )
+from .search import execute_search
+from .pipeline import ChatContext, build_document_from_chunks
+from .repository import ConversationRepository
+
+
+REPOSITORY = ConversationRepository()
 
 
 PROVIDER_ALIASES = {
-    "sync": "drive-sync",
-    "polylogue-sync-drive": "drive-sync",
     "render": "render",
+    "sync drive": "drive",
+    "sync codex": "codex",
+    "sync claude-code": "claude-code",
+    "polylogue-sync-drive": "drive",
     "polylogue-sync-codex": "codex",
     "polylogue-sync-claude-code": "claude-code",
 }
 
 
 def _provider_from_cmd(cmd: str) -> str:
-    if cmd in PROVIDER_ALIASES:
-        return PROVIDER_ALIASES[cmd]
-    if cmd.startswith("codex"):
+    if not cmd:
+        return "unknown"
+    key = cmd.strip().lower().replace("_", "-")
+    if key in PROVIDER_ALIASES:
+        return PROVIDER_ALIASES[key]
+    if key.startswith("sync "):
+        return key.split(" ", 1)[1]
+    if key.startswith("polylogue-sync-"):
+        return key[len("polylogue-sync-") :]
+    if key.startswith("codex"):
         return "codex"
-    if cmd.startswith("claude-code"):
+    if key.startswith("claude-code"):
         return "claude-code"
-    if cmd.startswith("drive"):
-        return "drive-sync"
-    return cmd
+    if key.startswith("drive"):
+        return "drive"
+    return key
 
 
 @dataclass
@@ -74,15 +86,18 @@ class CommandEnv:
     drive: Optional[DriveClient] = None
 
 
-@dataclass
-class ChatContext:
-    title: str
-    chat_id: Optional[str]
-    modified_time: Optional[str]
-    created_time: Optional[str]
-    run_settings: Optional[Any]
-    citations: Optional[Any]
-    source_mime: Optional[str]
+def branches_command(options: BranchExploreOptions) -> BranchExploreResult:
+    conversations = list_branch_conversations(
+        provider=options.provider,
+        slug=options.slug,
+        conversation_id=options.conversation_id,
+        min_branches=options.min_branches,
+    )
+    return BranchExploreResult(conversations=conversations)
+
+
+def search_command(options: SearchOptions) -> SearchResult:
+    return execute_search(options)
 
 
 def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
@@ -112,14 +127,17 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
             ui.console.print(f"[yellow]No chunks in {src.name}")
             continue
         chunks = validate_chunks(chunks_raw)
-        md_path = output_dir / f"{sanitize_filename(src.stem)}.md"
+        slug = sanitize_filename(src.stem)
+        conversation_dir = output_dir / slug
+        if not options.dry_run:
+            conversation_dir.mkdir(parents=True, exist_ok=True)
+        md_path = conversation_dir / "conversation.md"
         context = _context_from_local(obj, src.stem)
-        conversation_id = context.chat_id or md_path.stem
-        doc = _build_markdown_output(
+        conversation_id = context.chat_id or slug
+        doc = build_document_from_chunks(
             chunks,
             context,
             md_path,
-            output_dir,
             collapse_threshold=options.collapse_threshold,
             download_attachments=attachment_needed,
             drive=drive,
@@ -133,7 +151,7 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
         if not options.dry_run:
             if options.diff:
                 snapshot = snapshot_for_diff(md_path)
-            persist_result = persist_document(
+            persist_result = REPOSITORY.persist(
                 provider="render",
                 conversation_id=conversation_id,
                 title=context.title,
@@ -150,8 +168,8 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
                     "sourceFile": str(src),
                     "sourceMimeType": context.source_mime,
                 },
-                slug_hint=md_path.stem,
-                id_hint=md_path.stem[:8],
+                slug_hint=slug,
+                id_hint=slug[:8],
                 force=options.force,
             )
             if options.diff and snapshot is not None and persist_result and not persist_result.skipped:
@@ -184,9 +202,11 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
                     pass
             continue
 
+        file_slug = persist_result.slug if persist_result else slug
         render_files.append(
             RenderFile(
                 output=output_path,
+                slug=file_slug,
                 attachments=len(doc.attachments),
                 stats=doc.stats,
                 html=html_path,
@@ -203,6 +223,7 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
     add_run(
         {
             "cmd": "render",
+            "provider": "render",
             "count": len(render_files),
             "out": str(output_dir),
             "attachments": totals.get("attachments", 0),
@@ -213,7 +234,6 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
             "duration": duration,
         }
     )
-    totals.setdefault("attachments", 0)
     totals.setdefault("attachments", 0)
     totals.setdefault("skipped", 0)
     return RenderResult(
@@ -250,105 +270,6 @@ def _context_from_drive(meta: Dict, obj: Dict, fallback: str) -> ChatContext:
     )
 
 
-def _build_markdown_output(
-    chunks: List[Dict],
-    context: ChatContext,
-    md_path: Path,
-    out_dir: Path,
-    *,
-    collapse_threshold: int,
-    download_attachments: bool,
-    drive: Optional[DriveClient],
-    force: bool,
-    dry_run: bool,
-) -> MarkdownDocument:
-    if download_attachments and drive is not None:
-        per_index_links, attachments = _collect_attachments(
-            drive,
-            chunks,
-            md_path,
-            out_dir,
-            force=force,
-            dry_run=dry_run,
-        )
-    else:
-        per_index_links = per_chunk_remote_links(chunks)
-        attachments = remote_attachment_info(per_index_links)
-
-    doc = build_markdown_from_chunks(
-        chunks,
-        per_index_links,
-        context.title,
-        context.chat_id,
-        context.modified_time,
-        context.created_time,
-        run_settings=context.run_settings,
-        citations=context.citations,
-        source_mime=context.source_mime,
-        collapse_threshold=collapse_threshold,
-        attachments=attachments,
-    )
-    return doc
-
-
-def _collect_attachments(
-    drive: DriveClient,
-    chunks: List[Dict],
-    md_path: Path,
-    out_dir: Path,
-    *,
-    force: bool,
-    dry_run: bool,
-) -> Tuple[Dict[int, List], List[AttachmentInfo]]:
-    per_index_links: Dict[int, List] = {}
-    attachments: List[AttachmentInfo] = []
-    seen: set[Tuple[str, str]] = set()
-    attachments_dir = out_dir / f"{md_path.stem}_attachments"
-    if not dry_run:
-        attachments_dir.mkdir(parents=True, exist_ok=True)
-    for idx, chunk in enumerate(chunks):
-        ids = extract_drive_ids(chunk)
-        if not ids:
-            continue
-        per_index_links[idx] = []
-        for att_id in ids:
-            meta_att = drive.attachment_meta(att_id)
-            if not meta_att:
-                continue
-            fname = sanitize_filename(meta_att.get("name", att_id))
-            local_path = attachments_dir / fname
-            if not dry_run:
-                if force or not local_path.exists():
-                    ok = drive.download_attachment(att_id, local_path)
-                    if not ok:
-                        continue
-                drive.touch_mtime(local_path, meta_att.get("modifiedTime"))
-            try:
-                rel = local_path.relative_to(out_dir)
-            except Exception:
-                rel = local_path
-            per_index_links[idx].append((fname, rel))
-            size = None
-            if not dry_run and local_path.exists():
-                try:
-                    size = local_path.stat().st_size
-                except OSError:
-                    size = None
-            key = (fname, att_id)
-            if key not in seen:
-                seen.add(key)
-                attachments.append(
-                    AttachmentInfo(
-                        name=fname,
-                        link=f"attachment://{att_id}",
-                        local_path=None if dry_run else rel,
-                        size_bytes=size,
-                        remote=False,
-                    )
-                )
-    return per_index_links, attachments
-
-
 def list_command(options: ListOptions, env: CommandEnv) -> ListResult:
     drive = env.drive or DriveClient(env.ui)
     env.drive = drive
@@ -372,7 +293,20 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         chats = [c for c in chats if c.get("id") in ids]
 
     if not chats:
-        return SyncResult(0, options.output_dir, options.folder_name, folder_id, [])
+        return SyncResult(
+            count=0,
+            output_dir=options.output_dir,
+            folder_name=options.folder_name,
+            folder_id=folder_id,
+            items=[],
+            total_stats={
+                "attachments": 0,
+                "attachmentBytes": 0,
+                "totalTokensApprox": 0,
+                "totalWordsApprox": 0,
+                "skipped": 0,
+            },
+        )
 
     if not options.dry_run:
         options.output_dir.mkdir(parents=True, exist_ok=True)
@@ -385,7 +319,10 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     for meta in chats:
         file_id = meta.get("id")
         name_safe = sanitize_filename(meta.get("name") or file_id or "chat")
-        md_path = options.output_dir / f"{name_safe}.md"
+        conversation_dir = options.output_dir / name_safe
+        if not options.dry_run:
+            conversation_dir.mkdir(parents=True, exist_ok=True)
+        md_path = conversation_dir / "conversation.md"
         data_bytes = drive.download_chat_bytes(file_id) if file_id else None
         if data_bytes is None:
             env.ui.console.print(f"[red]Failed to download {meta.get('name')}")
@@ -402,11 +339,10 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         chunks = validate_chunks(chunks_raw)
         context = _context_from_drive(meta, obj, name_safe)
         conversation_id = file_id or name_safe
-        doc = _build_markdown_output(
+        doc = build_document_from_chunks(
             chunks,
             context,
             md_path,
-            options.output_dir,
             collapse_threshold=options.collapse_threshold,
             download_attachments=options.download_attachments,
             drive=drive,
@@ -421,7 +357,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         if not options.dry_run:
             if options.diff:
                 snapshot = snapshot_for_diff(md_path)
-            persist_result = persist_document(
+            persist_result = REPOSITORY.persist(
                 provider="drive-sync",
                 conversation_id=conversation_id,
                 title=context.title,
@@ -461,7 +397,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
 
         if not options.dry_run and context.modified_time and persist_result:
             mtime = parse_rfc3339_to_epoch(context.modified_time)
-            if mtime:
+            if mtime is not None:
                 try:
                     os.utime(persist_result.markdown_path, (mtime, mtime))
                 except Exception:
@@ -472,11 +408,13 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
                     except Exception:
                         pass
 
+        item_slug = persist_result.slug if persist_result else name_safe
         items.append(
             SyncItem(
                 id=file_id,
                 name=meta.get("name"),
                 output=output_path,
+                slug=item_slug,
                 attachments=len(doc.attachments),
                 stats=doc.stats,
                 html=html_path,
@@ -492,7 +430,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
 
     pruned_count = 0
     if options.prune:
-        wanted = {sanitize_filename(item.name or item.id or "") for item in items}
+        wanted = {item.slug for item in items}
         to_delete = compute_prune_paths(options.output_dir, wanted)
         if options.dry_run:
             env.ui.console.print(f"[yellow][dry-run] Would prune {len(to_delete)} path(s)")
@@ -518,7 +456,8 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     duration = time.perf_counter() - start_time
     add_run(
         {
-            "cmd": "sync",
+            "cmd": "sync drive",
+            "provider": "drive",
             "count": len(items),
             "out": str(options.output_dir),
             "folder_name": options.folder_name,
@@ -534,7 +473,6 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         }
     )
 
-    totals.setdefault("attachments", 0)
     totals.setdefault("attachments", 0)
     totals.setdefault("skipped", 0)
     return SyncResult(
@@ -559,6 +497,7 @@ def status_command(env: CommandEnv) -> StatusResult:
                 recent_runs = data[-10:]
                 for entry in data:
                     cmd = entry.get("cmd") or "unknown"
+                    provider_hint = entry.get("provider")
                     stats = run_summary.setdefault(
                         cmd,
                         {
@@ -574,8 +513,11 @@ def status_command(env: CommandEnv) -> StatusResult:
                             "last": None,
                             "last_out": None,
                             "last_count": None,
+                            "provider": provider_hint or _provider_from_cmd(cmd),
                         },
                     )
+                    if provider_hint and not stats.get("provider"):
+                        stats["provider"] = provider_hint
                     stats["count"] += entry.get("count", 0) or 0
                     stats["attachments"] += entry.get("attachments", 0) or 0
                     stats["attachmentBytes"] += entry.get("attachmentBytes", 0) or 0
@@ -592,7 +534,7 @@ def status_command(env: CommandEnv) -> StatusResult:
             pass
     provider_summary: Dict[str, Any] = {}
     for cmd, stats in run_summary.items():
-        provider = _provider_from_cmd(cmd)
+        provider = stats.get("provider") or _provider_from_cmd(cmd)
         entry = provider_summary.setdefault(
             provider,
             {

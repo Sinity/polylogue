@@ -2,18 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from argparse import Namespace
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
-from polylogue.commands import (
-    CommandEnv,
-    RenderOptions,
-    SyncOptions,
-    render_command,
-    sync_command,
-)
+from polylogue.commands import CommandEnv, RenderOptions, SyncOptions, render_command, sync_command
+from polylogue.cli import run_prune_cli
 from polylogue import commands as cmd_module, util
 
 
@@ -86,8 +82,9 @@ def test_render_command_persists_state(tmp_path, state_env, monkeypatch):
     result = render_command(options, CommandEnv(ui=DummyUI()))
 
     assert len(result.files) == 1
-    md_path = out_dir / "sample.md"
+    md_path = out_dir / "sample" / "conversation.md"
     assert md_path.exists()
+    assert result.files[0].slug == "sample"
     state_data = json.loads((state_env / "state.json").read_text(encoding="utf-8"))
     conv_state = state_data["conversations"]["render"]["conv-1"]
     assert conv_state["collapseThreshold"] == 16
@@ -168,8 +165,9 @@ def test_sync_command_with_stub_drive(tmp_path, monkeypatch, state_env):
     result = sync_command(options, CommandEnv(ui=DummyUI()))
 
     assert result.count == 1
-    expected_output = out_dir / f"{util.sanitize_filename('Drive Sample')}.md"
+    expected_output = out_dir / util.sanitize_filename('Drive Sample') / "conversation.md"
     assert result.items[0].output == expected_output
+    assert result.items[0].slug == util.sanitize_filename('Drive Sample')
     assert expected_output.exists()
     assert records and records[0].get("duration") is not None
     assert records[0]["duration"] >= 0
@@ -185,3 +183,25 @@ def test_sync_command_with_stub_drive(tmp_path, monkeypatch, state_env):
         assert row and row[0] == "Drive Sample"
     finally:
         conn.close()
+
+
+def test_run_prune_cli_removes_legacy(tmp_path):
+    root = tmp_path / "legacy"
+    root.mkdir()
+    legacy_md = root / "old.md"
+    legacy_md.write_text("legacy", encoding="utf-8")
+    legacy_html = root / "old.html"
+    legacy_html.write_text("legacy", encoding="utf-8")
+    attachment_dir = root / "old_attachments"
+    attachment_dir.mkdir()
+    (attachment_dir / "file.txt").write_text("data", encoding="utf-8")
+
+    ui = DummyUI()
+    env = CommandEnv(ui=ui)
+    args = Namespace(dirs=[root], dry_run=False)
+
+    run_prune_cli(args, env)
+
+    assert not legacy_md.exists()
+    assert not legacy_html.exists()
+    assert not attachment_dir.exists()

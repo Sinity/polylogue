@@ -40,6 +40,15 @@ class UI:
             self.console = PlainConsole()
         else:
             self.console = Console(no_color=self.plain, force_terminal=not self.plain)
+        self._plain_warnings: set[str] = set()
+
+    def _warn_plain(self, topic: str) -> None:
+        if topic in self._plain_warnings:
+            return
+        self._plain_warnings.add(topic)
+        self.console.print(
+            f"[yellow]Plain mode cannot prompt for {topic}; using defaults."
+        )
 
     # Presentation helpers -------------------------------------------------
     def banner(self, title: str, subtitle: Optional[str] = None) -> None:
@@ -103,6 +112,7 @@ class UI:
     # Prompting ------------------------------------------------------------
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
         if self.plain:
+            self._warn_plain("confirmation")
             return default
         try:
             result = subprocess.run(
@@ -117,7 +127,8 @@ class UI:
         if not options:
             return None
         if self.plain:
-            return options[0]
+            self._warn_plain("selection")
+            return None
         try:
             result = subprocess.run(
                 ["gum", "choose", "--header", prompt, *options],
@@ -132,6 +143,7 @@ class UI:
 
     def input(self, prompt: str, *, default: Optional[str] = None) -> Optional[str]:
         if self.plain:
+            self._warn_plain("input")
             return default
         cmd = ["gum", "input", "--placeholder", prompt]
         if default:
