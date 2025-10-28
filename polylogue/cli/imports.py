@@ -120,12 +120,11 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     )
 
     lines = [f"Markdown: {result.markdown_path}"]
-    if result.html_path:
     doc = result.document
     if doc is None:
         console.print("[red]Import produced no document; aborting.")
         return
-
+    if result.html_path:
         lines.append(f"HTML preview: {result.html_path}")
     if result.attachments_dir:
         lines.append(f"Attachments directory: {result.attachments_dir}")
