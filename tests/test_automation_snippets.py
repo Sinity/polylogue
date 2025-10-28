@@ -58,9 +58,9 @@ def test_describe_targets_roundtrip():
     assert "codex" in data and "claude-code" in data and "drive-sync" in data and "gemini-render" in data
     codex = describe_targets("codex")
     assert list(codex.keys()) == ["codex"]
-    assert codex["codex"]["command"][0] == "sync-codex"
+    assert codex["codex"]["command"][:2] == ["sync", "codex"]
     drive = describe_targets("drive-sync")
-    assert drive["drive-sync"]["command"][0] == "sync"
+    assert drive["drive-sync"]["command"][:2] == ["sync", "drive"]
 
 
 def test_run_automation_cli_systemd(capsys, tmp_path):
@@ -98,5 +98,5 @@ def test_run_automation_cli_describe(capsys):
     )
     run_automation_cli(args, CommandEnv(ui=DummyUI()))
     payload = json.loads(capsys.readouterr().out)
-    assert payload["codex"]["command"][0] == "sync-codex"
+    assert payload["codex"]["command"][:2] == ["sync", "codex"]
     assert "defaults" in payload["codex"]

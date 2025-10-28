@@ -56,6 +56,7 @@ class StatusOptions:
 @dataclass
 class RenderFile:
     output: Path
+    slug: str
     attachments: int
     stats: Dict[str, Any]
     html: Optional[Path] = None
@@ -75,6 +76,7 @@ class SyncItem:
     id: Optional[str]
     name: Optional[str]
     output: Path
+    slug: str
     attachments: int
     stats: Dict[str, Any]
     html: Optional[Path] = None
@@ -107,3 +109,54 @@ class StatusResult:
     recent_runs: List[dict]
     run_summary: Dict[str, Any]
     provider_summary: Dict[str, Any]
+
+
+@dataclass
+class BranchExploreOptions:
+    provider: Optional[str]
+    slug: Optional[str]
+    conversation_id: Optional[str]
+    min_branches: int
+
+
+@dataclass
+class BranchExploreResult:
+    conversations: List[Any]
+
+
+@dataclass
+class SearchOptions:
+    query: str
+    limit: int
+    provider: Optional[str]
+    slug: Optional[str]
+    conversation_id: Optional[str]
+    branch_id: Optional[str]
+    model: Optional[str]
+    since: Optional[str]
+    until: Optional[str]
+    has_attachments: Optional[bool]
+
+
+@dataclass
+class SearchHit:
+    provider: str
+    conversation_id: str
+    slug: str
+    title: Optional[str]
+    branch_id: str
+    message_id: str
+    position: int
+    timestamp: Optional[str]
+    attachment_count: int
+    score: float
+    snippet: str
+    body: str
+    conversation_path: Optional[Path]
+    branch_path: Optional[Path]
+    model: Optional[str]
+
+
+@dataclass
+class SearchResult:
+    hits: List[SearchHit]

@@ -11,7 +11,6 @@ from .importers import import_claude_code_session, import_codex_session
 from .importers.base import ImportResult
 from .importers.claude_code import DEFAULT_PROJECT_ROOT as CLAUDE_CODE_DEFAULT
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
-from .render import MarkdownDocument
 from .util import sanitize_filename, snapshot_for_diff, write_delta_diff
 
 
@@ -24,6 +23,7 @@ class LocalSyncResult:
     attachments: int = 0
     attachment_bytes: int = 0
     tokens: int = 0
+    words: int = 0
     diffs: int = 0
     duration: float = 0.0
 
@@ -54,19 +54,21 @@ def _sync_sessions(
     start_time = time.perf_counter()
     written: List[ImportResult] = []
     skipped = 0
-    wanted: List[str] = []
+    wanted: set[str] = set()
     importer_kwargs = importer_kwargs or {}
     attachments_total = 0
     attachment_bytes_total = 0
     tokens_total = 0
+    words_total = 0
 
     diff_total = 0
     for session_path in sorted(sessions):
         if not session_path.is_file():
             continue
         safe_name = sanitize_filename(session_path.stem)
-        md_path = output_dir / f"{safe_name}.md"
-        wanted.append(safe_name)
+        conversation_dir = output_dir / safe_name
+        md_path = conversation_dir / "conversation.md"
+        wanted.add(safe_name)
         if not force and _is_up_to_date(session_path, md_path):
             skipped += 1
             continue
@@ -79,6 +81,7 @@ def _sync_sessions(
             collapse_threshold=collapse_threshold,
             html=html,
             html_theme=html_theme,
+            force=force,
             **importer_kwargs,
         )
         if result.skipped:
@@ -104,6 +107,7 @@ def _sync_sessions(
             diff_total += 1
         session_mtime = int(session_path.stat().st_mtime)
         try:
+            result.markdown_path.parent.mkdir(parents=True, exist_ok=True)
             os.utime(result.markdown_path, (session_mtime, session_mtime))
         except OSError:
             pass
@@ -112,16 +116,18 @@ def _sync_sessions(
                 os.utime(result.html_path, (session_mtime, session_mtime))
             except OSError:
                 pass
+        if not result.skipped:
+            wanted.add(result.slug)
         if result.document:
             attachments_total += len(result.document.attachments)
             attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
             tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
+            words_total += result.document.stats.get("totalWordsApprox", 0) or 0
         written.append(result)
 
     pruned = 0
     if prune:
-        wanted_set = set(wanted)
-        for path in compute_prune_paths(output_dir, wanted_set):
+        for path in compute_prune_paths(output_dir, wanted):
             try:
                 if path.is_dir():
                     import shutil
@@ -143,6 +149,7 @@ def _sync_sessions(
         attachments=attachments_total,
         attachment_bytes=attachment_bytes_total,
         tokens=tokens_total,
+        words=words_total,
         diffs=diff_total,
         duration=duration,
     )

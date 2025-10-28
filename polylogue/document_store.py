@@ -17,6 +17,7 @@ from .util import (
     conversation_is_current,
     current_utc_timestamp,
     get_conversation_state,
+    slugify_title,
     sanitize_filename,
     update_conversation_state,
 )
@@ -175,6 +176,19 @@ def _ensure_polylogue_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+def _prune_empty_values(payload: Dict[str, Any]) -> Dict[str, Any]:
+    cleaned: Dict[str, Any] = {}
+    for key, value in payload.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and value == "":
+            continue
+        if isinstance(value, (list, dict)) and not value:
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
 def persist_document(
     *,
     provider: Optional[str],
@@ -199,13 +213,18 @@ def persist_document(
     elif provider and conversation_id:
         slug = assign_conversation_slug(provider, conversation_id, title, id_hint=id_hint)
     else:
-        base = sanitize_filename(slug_hint or title)
+        base = slugify_title(slug_hint or title)
+        if not base:
+            base = sanitize_filename(slug_hint or title)
+            base = base.replace(" ", "-")
         slug = base or "document"
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    markdown_path = output_dir / f"{slug}.md"
-    attachments_dir = output_dir / f"{slug}_attachments"
-    html_path = markdown_path.with_suffix(".html") if html else None
+    conversation_dir = output_dir / slug
+    conversation_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = conversation_dir / "conversation.md"
+    attachments_dir = conversation_dir / "attachments"
+    html_path = conversation_dir / "conversation.html" if html else None
 
     state_entry: Optional[Dict[str, Any]] = None
     if provider and conversation_id:
@@ -340,10 +359,13 @@ def persist_document(
             "html": html,
             "contentHash": content_hash,
             "lastImported": current_utc_timestamp(),
-            "attachmentsDir": str(attachments_dir) if attachments else None,
             "dirty": False,
         }
     )
+    if attachments:
+        polylogue_meta["attachmentsDir"] = str(attachments_dir)
+    else:
+        polylogue_meta.pop("attachmentsDir", None)
     if html_path and html:
         polylogue_meta["htmlPath"] = str(html_path)
     if provider:
@@ -354,6 +376,7 @@ def persist_document(
         for key, value in extra_state.items():
             if value is not None:
                 polylogue_meta[key] = value
+    polylogue_meta = _prune_empty_values(polylogue_meta)
     metadata["polylogue"] = polylogue_meta
     document.metadata = metadata
 
@@ -383,12 +406,14 @@ def persist_document(
             "attachmentPolicy": policy,
             "outputPath": str(markdown_path),
             "htmlPath": str(html_path) if html_path else None,
-            "attachmentsDir": str(attachments_dir) if attachments else None,
             "html": html,
             "dirty": False,
         }
+        if attachments:
+            state_payload["attachmentsDir"] = str(attachments_dir)
         if extra_state:
             state_payload.update({k: v for k, v in extra_state.items() if v is not None})
+        state_payload = {k: v for k, v in state_payload.items() if v is not None}
         update_conversation_state(provider, conversation_id, **state_payload)
 
         try:  # pragma: no cover - indexing failures shouldn't abort writes

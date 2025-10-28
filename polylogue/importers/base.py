@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from ..render import MarkdownDocument
 
@@ -13,8 +13,12 @@ class ImportResult:
     html_path: Optional[Path]
     attachments_dir: Optional[Path]
     document: Optional[MarkdownDocument]
+    slug: str
     diff_path: Optional[Path] = None
     skipped: bool = False
     skip_reason: Optional[str] = None
     dirty: bool = False
     content_hash: Optional[str] = None
+    branch_count: int = 1
+    canonical_branch_id: Optional[str] = None
+    branch_directories: Optional[List[Path]] = None
