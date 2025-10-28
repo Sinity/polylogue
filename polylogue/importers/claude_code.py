@@ -32,8 +32,10 @@ def import_claude_code_session(
     output_dir.mkdir(parents=True, exist_ok=True)
     title = session_path.stem
     slug = assign_conversation_slug("claude-code", session_id, title, id_hint=title[:8])
-    markdown_path = output_dir / f"{slug}.md"
-    attachments_dir = markdown_path.parent / f"{slug}_attachments"
+    conversation_dir = output_dir / slug
+    conversation_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = conversation_dir / "conversation.md"
+    attachments_dir = conversation_dir / "attachments"
 
     chunks: List[Dict] = []
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}

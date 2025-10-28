@@ -13,6 +13,7 @@ class ImportResult:
     html_path: Optional[Path]
     attachments_dir: Optional[Path]
     document: Optional[MarkdownDocument]
+    slug: str
     diff_path: Optional[Path] = None
     skipped: bool = False
     skip_reason: Optional[str] = None

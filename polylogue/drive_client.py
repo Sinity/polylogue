@@ -23,6 +23,7 @@ CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / 
 DEFAULT_CREDENTIALS = CONFIG_DIR / "credentials.json"
 DEFAULT_TOKEN = CONFIG_DIR / "token.json"
 DEFAULT_FOLDER_NAME = "AI Studio"
+DRIVE_CREDENTIAL_ENV = "POLYLOGUE_DRIVE_CREDENTIALS"
 
 
 class DriveClient:
@@ -41,9 +42,23 @@ class DriveClient:
         cred_path = self._credentials_path
         if cred_path.exists():
             return cred_path
+        env_credential = os.environ.get(DRIVE_CREDENTIAL_ENV)
+        if env_credential:
+            src = Path(env_credential).expanduser()
+            if not src.exists():
+                raise SystemExit(
+                    f"Credential path from ${DRIVE_CREDENTIAL_ENV} not found: {src}"
+                )
+            try:
+                cred_path.parent.mkdir(parents=True, exist_ok=True)
+                if src.resolve() != cred_path.resolve():
+                    shutil.copyfile(src, cred_path)
+            except Exception as exc:
+                raise SystemExit(f"Failed to copy credentials from ${DRIVE_CREDENTIAL_ENV}: {exc}") from exc
+            return cred_path
         if self.ui.plain:
             raise SystemExit(
-                "Missing credentials.json. Download a Google OAuth client secret and place it next to polylogue.py."
+                "Missing credentials.json. Set ${DRIVE_CREDENTIAL_ENV} or download a Google OAuth client secret and place it next to polylogue.py."
             )
         self.ui.banner("Google Drive access needs credentials", "Download OAuth client for Desktop app")
         clipboard_checked = False
@@ -156,7 +171,7 @@ class DriveClient:
 
     def touch_mtime(self, path: Path, iso_time: Optional[str]) -> None:
         mtime = parse_rfc3339_to_epoch(iso_time)
-        if not mtime:
+        if mtime is None:
             return
         try:
             path.touch(exist_ok=True)

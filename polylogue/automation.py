@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 from textwrap import dedent
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

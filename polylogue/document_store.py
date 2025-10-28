@@ -220,9 +220,11 @@ def persist_document(
         slug = base or "document"
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    markdown_path = output_dir / f"{slug}.md"
-    attachments_dir = output_dir / f"{slug}_attachments"
-    html_path = markdown_path.with_suffix(".html") if html else None
+    conversation_dir = output_dir / slug
+    conversation_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = conversation_dir / "conversation.md"
+    attachments_dir = conversation_dir / "attachments"
+    html_path = conversation_dir / "conversation.html" if html else None
 
     state_entry: Optional[Dict[str, Any]] = None
     if provider and conversation_id:

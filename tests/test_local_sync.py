@@ -52,7 +52,9 @@ def test_sync_codex_sessions_creates_markdown(tmp_path):
     assert result_skip.skipped >= 1
 
     # prune removes stale outputs
-    stale = out_dir / "stale.md"
+    stale_dir = out_dir / "stale"
+    stale_dir.mkdir(parents=True, exist_ok=True)
+    stale = stale_dir / "conversation.md"
     stale.write_text("old", encoding="utf-8")
     result_prune = sync_codex_sessions(
         base_dir=base_dir,
@@ -66,6 +68,7 @@ def test_sync_codex_sessions_creates_markdown(tmp_path):
     )
     assert result_prune.pruned >= 1
     assert not stale.exists()
+    assert not stale_dir.exists()
 
 
 def _write_claude_code_session(root: Path, name: str, lines: list[str]) -> Path:
