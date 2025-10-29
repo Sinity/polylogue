@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -32,6 +32,7 @@ from .options import (
     SearchResult,
 )
 from .render import MarkdownDocument
+from .settings import Settings
 from .ui import UI
 from .util import (
     RUNS_PATH,
@@ -45,9 +46,6 @@ from .util import (
 from .search import execute_search
 from .pipeline import ChatContext, build_document_from_chunks
 from .repository import ConversationRepository
-
-
-REPOSITORY = ConversationRepository()
 
 
 PROVIDER_ALIASES = {
@@ -84,6 +82,8 @@ def _provider_from_cmd(cmd: str) -> str:
 class CommandEnv:
     ui: UI
     drive: Optional[DriveClient] = None
+    repository: ConversationRepository = field(default_factory=ConversationRepository)
+    settings: Settings = field(default_factory=Settings)
 
 
 def branches_command(options: BranchExploreOptions) -> BranchExploreResult:
@@ -111,6 +111,7 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
     if attachment_needed and drive is None:
         drive = DriveClient(ui)
         env.drive = drive
+    repository = env.repository
 
     from collections import defaultdict
 
@@ -151,7 +152,7 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
         if not options.dry_run:
             if options.diff:
                 snapshot = snapshot_for_diff(md_path)
-            persist_result = REPOSITORY.persist(
+            persist_result = repository.persist(
                 provider="render",
                 conversation_id=conversation_id,
                 title=context.title,
@@ -282,6 +283,7 @@ def list_command(options: ListOptions, env: CommandEnv) -> ListResult:
 def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     drive = env.drive or DriveClient(env.ui)
     env.drive = drive
+    repository = env.repository
     folder_id = drive.resolve_folder_id(options.folder_name, options.folder_id)
     chats = drive.list_chats(options.folder_name, folder_id)
     chats = filter_chats(chats, options.name_filter, options.since, options.until)
@@ -357,7 +359,8 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         if not options.dry_run:
             if options.diff:
                 snapshot = snapshot_for_diff(md_path)
-            persist_result = REPOSITORY.persist(
+            repository = env.repository
+            persist_result = repository.persist(
                 provider="drive-sync",
                 conversation_id=conversation_id,
                 title=context.title,

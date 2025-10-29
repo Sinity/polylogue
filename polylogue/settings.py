@@ -13,8 +13,9 @@ class Settings:
 SETTINGS = Settings()
 
 
-def reset_settings() -> None:
-    SETTINGS.html_previews = False
-    SETTINGS.html_theme = "light"
-
+def reset_settings(settings: Optional[Settings] = None) -> Settings:
+    target = settings or SETTINGS
+    target.html_previews = False
+    target.html_theme = "light"
+    return target
 

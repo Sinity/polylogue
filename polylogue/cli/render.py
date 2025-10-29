@@ -3,14 +3,13 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, List, Optional, Sequence, cast
+from typing import List, Optional, Sequence
 
 from ..cli_common import sk_select
 from ..commands import CommandEnv, render_command
 from ..drive_client import DriveClient
 from ..importers import ImportResult
 from ..options import RenderOptions
-from ..settings import SETTINGS
 from ..ui import UI
 from ..util import write_clipboard_text
 from .context import DEFAULT_COLLAPSE, DEFAULT_RENDER_OUT, resolve_html_enabled
@@ -41,7 +40,7 @@ def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
 
 def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -> None:
     ui = env.ui
-    console: Any = ui.console
+    console = ui.console
     inputs = resolve_inputs(args.input, ui.plain)
     if inputs is None:
         console.print("[yellow]Render cancelled.")
@@ -54,8 +53,9 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
     download_attachments = not args.links_only
     if not ui.plain and not args.links_only:
         download_attachments = ui.confirm("Download attachments to local folders?", default=True)
-    html_enabled = resolve_html_enabled(args)
-    html_theme = SETTINGS.html_theme
+    settings = env.settings
+    html_enabled = resolve_html_enabled(args, settings)
+    html_theme = settings.html_theme
     options = RenderOptions(
         inputs=inputs,
         output_dir=output,
@@ -136,7 +136,7 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
 
 
 def copy_import_to_clipboard(ui: UI, results: Sequence[ImportResult]) -> None:
-    console: Any = ui.console
+    console = ui.console
     written = [res for res in results if not res.skipped]
     if not written:
         console.print("[yellow]Clipboard copy skipped; no new files were written.")

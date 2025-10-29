@@ -3,29 +3,26 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
-from typing import Any, List, Optional, cast
+from typing import Any, Callable, Iterable, Optional, Set, Tuple, cast
 
+from ..commands import CommandEnv
 from ..local_sync import sync_claude_code_sessions, sync_codex_sessions
-from ..settings import SETTINGS
 from .context import DEFAULT_CLAUDE_CODE_SYNC_OUT, DEFAULT_CODEX_SYNC_OUT, DEFAULT_COLLAPSE, resolve_html_enabled
-from .summaries import summarize_import
 from .sync import _log_local_sync
-from ..util import add_run
 
-watch_directory: Any
+WatchChange = Tuple[Any, str]
+WatchBatch = Iterable[Set[WatchChange]]
+WatchDirectoryFn = Callable[..., WatchBatch]
+
 try:  # pragma: no cover - optional dependency
-    from watchfiles import watch as watch_directory  # type: ignore[assignment]
+    from watchfiles import watch as _watch_directory
 except Exception:  # pragma: no cover
-    watch_directory = None
-
-watch_directory = cast(Any, watch_directory)
-
-
-def _console(ui) -> Any:
-    return cast(Any, ui.console)
+    watch_directory: Optional[WatchDirectoryFn] = None
+else:
+    watch_directory = cast(WatchDirectoryFn, _watch_directory)
 
 
-def run_watch_cli(args: argparse.Namespace, env) -> None:
+def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     if watch_directory is None:
         env.ui.console.print(
             "[red]The watchfiles package is not available. Enable it in your environment to use watcher commands."
@@ -41,7 +38,10 @@ def run_watch_cli(args: argparse.Namespace, env) -> None:
         raise SystemExit(f"Unsupported provider for watch: {provider}")
 
 
-def run_watch_codex(args: argparse.Namespace, env) -> None:
+def run_watch_codex(args: argparse.Namespace, env: CommandEnv) -> None:
+    if watch_directory is None:
+        raise RuntimeError("watchfiles support is unavailable")
+    watch_fn = watch_directory
     ui = env.ui
     base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
     base_dir = base_dir.expanduser()
@@ -49,11 +49,12 @@ def run_watch_codex(args: argparse.Namespace, env) -> None:
     out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
-    html_enabled = resolve_html_enabled(args)
-    html_theme = SETTINGS.html_theme
+    settings = env.settings
+    html_enabled = resolve_html_enabled(args, settings)
+    html_theme = settings.html_theme
     debounce = max(0.5, args.debounce)
 
-    console = _console(ui)
+    console = ui.console
     ui.banner("Watching Codex sessions", str(base_dir))
 
     def sync_once() -> None:
@@ -79,7 +80,7 @@ def run_watch_codex(args: argparse.Namespace, env) -> None:
         return
     last_run = time.monotonic()
     try:
-        for changes in watch_directory(base_dir, recursive=True):
+        for changes in watch_fn(base_dir, recursive=True):
             if not any(Path(path).suffix == ".jsonl" for _, path in changes):
                 continue
             now = time.monotonic()
@@ -91,7 +92,10 @@ def run_watch_codex(args: argparse.Namespace, env) -> None:
         console.print("[cyan]Codex watcher stopped.")
 
 
-def run_watch_claude_code(args: argparse.Namespace, env) -> None:
+def run_watch_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
+    if watch_directory is None:
+        raise RuntimeError("watchfiles support is unavailable")
+    watch_fn = watch_directory
     ui = env.ui
     base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_CLAUDE_CODE_SYNC_OUT
     base_dir = base_dir.expanduser()
@@ -99,11 +103,12 @@ def run_watch_claude_code(args: argparse.Namespace, env) -> None:
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
-    html_enabled = resolve_html_enabled(args)
-    html_theme = SETTINGS.html_theme
+    settings = env.settings
+    html_enabled = resolve_html_enabled(args, settings)
+    html_theme = settings.html_theme
     debounce = max(0.5, args.debounce)
 
-    console = _console(ui)
+    console = ui.console
     ui.banner("Watching Claude Code sessions", str(base_dir))
 
     def sync_once() -> None:
@@ -129,7 +134,7 @@ def run_watch_claude_code(args: argparse.Namespace, env) -> None:
         return
     last_run = time.monotonic()
     try:
-        for changes in watch_directory(base_dir, recursive=True):
+        for changes in watch_fn(base_dir, recursive=True):
             if not any(Path(path).suffix == ".jsonl" for _, path in changes):
                 continue
             now = time.monotonic()

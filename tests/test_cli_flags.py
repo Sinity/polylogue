@@ -69,6 +69,6 @@ def test_run_sync_cli_dispatch(monkeypatch):
     def fake_drive(args, env):  # noqa: ARG001
         calls.append("drive")
 
-    monkeypatch.setattr("polylogue.cli._run_sync_drive", fake_drive)
+    monkeypatch.setattr("polylogue.cli.sync._run_sync_drive", fake_drive)
     run_sync_cli(Namespace(provider="drive"), CommandEnv(ui=DummyUI()))
     assert calls == ["drive"]

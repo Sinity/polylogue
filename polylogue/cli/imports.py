@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Any, List, Optional, cast
+from typing import List, Optional
 
 from ..cli_common import sk_select
 from ..commands import CommandEnv
@@ -15,7 +15,6 @@ from ..importers import (
 from ..importers.chatgpt import list_chatgpt_conversations
 from ..importers.claude_ai import list_claude_conversations
 from ..importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
-from ..settings import SETTINGS
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
     DEFAULT_CHATGPT_OUT,
@@ -25,11 +24,7 @@ from .context import (
     resolve_html_enabled,
 )
 from .render import copy_import_to_clipboard
-from .summaries import SummaryUI, summarize_import
-
-
-def _console(ui) -> Any:
-    return cast(Any, ui.console)
+from .summaries import summarize_import
 
 
 def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -101,13 +96,14 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
 def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
-    console = _console(ui)
+    console = ui.console
     base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
     out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
-    html_enabled = resolve_html_enabled(args)
-    html_theme = SETTINGS.html_theme
+    settings = env.settings
+    html_enabled = resolve_html_enabled(args, settings)
+    html_theme = settings.html_theme
 
     result = import_codex_session(
         args.session_id,
@@ -154,12 +150,13 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
 
 def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
-    console = _console(ui)
+    console = ui.console
     export_path = Path(args.export_path)
     out_dir = Path(args.out) if args.out else DEFAULT_CHATGPT_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
-    html_enabled = resolve_html_enabled(args)
-    html_theme = SETTINGS.html_theme
+    settings = env.settings
+    html_enabled = resolve_html_enabled(args, settings)
+    html_theme = settings.html_theme
     selected_ids = args.conversation_ids[:] if args.conversation_ids else None
 
     if not args.all and not selected_ids and not ui.plain:
@@ -204,19 +201,20 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
         console.print(f"[red]Import failed: {exc}")
         return
 
-    summarize_import(cast(SummaryUI, ui), "ChatGPT Import", results)
+    summarize_import(ui, "ChatGPT Import", results)
     if getattr(args, "to_clipboard", False):
         copy_import_to_clipboard(ui, results)
 
 
 def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
-    console = _console(ui)
+    console = ui.console
     export_path = Path(args.export_path)
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
-    html_enabled = resolve_html_enabled(args)
-    html_theme = SETTINGS.html_theme
+    settings = env.settings
+    html_enabled = resolve_html_enabled(args, settings)
+    html_theme = settings.html_theme
     selected_ids = args.conversation_ids[:] if args.conversation_ids else None
 
     if not args.all and not selected_ids and not ui.plain:
@@ -261,14 +259,14 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
         console.print(f"[red]Import failed: {exc}")
         return
 
-    summarize_import(cast(SummaryUI, ui), "Claude Import", results)
+    summarize_import(ui, "Claude Import", results)
     if getattr(args, "to_clipboard", False):
         copy_import_to_clipboard(ui, results)
 
 
 def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
-    console = _console(ui)
+    console = ui.console
     base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_PROJECT_ROOT
     session_id = args.session_id
 
@@ -286,8 +284,9 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
 
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
-    html_enabled = resolve_html_enabled(args)
-    html_theme = SETTINGS.html_theme
+    settings = env.settings
+    html_enabled = resolve_html_enabled(args, settings)
+    html_theme = settings.html_theme
 
     kwargs = {}
     if args.base_dir:
@@ -307,7 +306,7 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
         console.print(f"[red]Import failed: {exc}")
         return
 
-    summarize_import(cast(SummaryUI, ui), "Claude Code Import", [result])
+    summarize_import(ui, "Claude Code Import", [result])
     if getattr(args, "to_clipboard", False):
         copy_import_to_clipboard(ui, [result])
 

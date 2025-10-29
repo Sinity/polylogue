@@ -5,15 +5,12 @@ from typing import Iterable, List, Protocol
 
 from ..importers import ImportResult
 from ..results import summarize_import_results
+from ..ui import ConsoleLike
 
 
 class SummaryUI(Protocol):
     plain: bool
-
-    class Console(Protocol):
-        def print(self, *args, **kwargs) -> None: ...
-
-    console: Console
+    console: ConsoleLike
 
     def summary(self, title: str, lines: Iterable[str]) -> None: ...
 
@@ -59,4 +56,3 @@ def summarize_import(ui: SummaryUI, title: str, results: List[ImportResult]) -> 
         lines.append(f"{label}: {count}")
 
     ui.summary(title, lines)
-
