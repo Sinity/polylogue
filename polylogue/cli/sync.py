@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any, List, Optional, cast
+from typing import List, Optional
 
 from ..cli_common import filter_chats, sk_select
 from ..commands import CommandEnv, list_command, sync_command
@@ -11,7 +11,6 @@ from ..drive_client import DriveClient
 from ..importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
 from ..local_sync import LocalSyncResult, sync_claude_code_sessions, sync_codex_sessions
 from ..options import ListOptions, SyncOptions
-from ..settings import SETTINGS
 from ..util import add_run
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
@@ -22,17 +21,13 @@ from .context import (
     resolve_html_enabled,
     merge_with_defaults,
 )
-from .summaries import SummaryUI, summarize_import
-
-
-def _console(ui) -> Any:
-    return cast(Any, ui.console)
+from .summaries import summarize_import
 
 
 def _log_local_sync(ui, title: str, result: LocalSyncResult, *, provider: str) -> None:
-    console = _console(ui)
+    console = ui.console
     if result.written:
-        summarize_import(cast(SummaryUI, ui), title, result.written)
+        summarize_import(ui, title, result.written)
     else:
         console.print(f"[cyan]{title}: no new Markdown files.")
     if result.skipped:
@@ -77,10 +72,10 @@ def run_list_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
                     "files": result.files,
                 },
                 indent=2,
-            )
+        )
         )
         return
-    console = _console(env.ui)
+    console = env.ui.console
     console.print(f"{len(result.files)} chat(s) in {result.folder_name}:")
     for chat in result.files:
         console.print(f"- {chat.get('name')}  {chat.get('modifiedTime', '')}  {chat.get('id', '')}")
@@ -88,26 +83,23 @@ def run_list_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
 
 def run_sync_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     provider = getattr(args, "provider", None)
-    cli_module = __import__("polylogue.cli", fromlist=["_run_sync_drive"])
+    settings = env.settings
     if provider == "drive":
-        merged = merge_with_defaults(default_sync_namespace("drive"), args)
-        handler = getattr(cli_module, "_run_sync_drive", _run_sync_drive)
-        handler(merged, env)
+        merged = merge_with_defaults(default_sync_namespace("drive", settings), args)
+        _run_sync_drive(merged, env)
     elif provider == "codex":
-        merged = merge_with_defaults(default_sync_namespace("codex"), args)
-        handler = getattr(cli_module, "_run_sync_codex", _run_sync_codex)
-        handler(merged, env)
+        merged = merge_with_defaults(default_sync_namespace("codex", settings), args)
+        _run_sync_codex(merged, env)
     elif provider == "claude-code":
-        merged = merge_with_defaults(default_sync_namespace("claude-code"), args)
-        handler = getattr(cli_module, "_run_sync_claude_code", _run_sync_claude_code)
-        handler(merged, env)
+        merged = merge_with_defaults(default_sync_namespace("claude-code", settings), args)
+        _run_sync_claude_code(merged, env)
     else:
         raise SystemExit(f"Unsupported provider for sync: {provider}")
 
 
 def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
-    console = _console(ui)
+    console = ui.console
     json_mode = getattr(args, "json", False)
 
     if getattr(args, "list_only", False):
@@ -144,8 +136,9 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
             return
         selected_ids = [line.split("\t")[-1] for line in selection]
 
-    html_enabled = resolve_html_enabled(args)
-    html_theme = SETTINGS.html_theme
+    settings = env.settings
+    html_enabled = resolve_html_enabled(args, settings)
+    html_theme = settings.html_theme
     options = SyncOptions(
         folder_name=args.folder_name,
         folder_id=args.folder_id,
@@ -227,7 +220,7 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optional[List[Path]]:
-    console = _console(ui)
+    console = ui.console
     if not sessions:
         console.print("No sessions found.")
         return None
@@ -256,8 +249,9 @@ def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
     out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
-    html_enabled = resolve_html_enabled(args)
-    html_theme = SETTINGS.html_theme
+    settings = env.settings
+    html_enabled = resolve_html_enabled(args, settings)
+    html_theme = settings.html_theme
     force = args.force
     prune = args.prune
     diff_enabled = getattr(args, "diff", False)
@@ -319,8 +313,8 @@ def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
         }
         print(json.dumps(payload, indent=2))
     else:
-        summarize_import(cast(SummaryUI, ui), "Codex Sync", result.written)
-        console = _console(ui)
+        summarize_import(ui, "Codex Sync", result.written)
+        console = ui.console
         if result.skipped:
             console.print(f"Skipped {result.skipped} up-to-date session(s).")
         if result.pruned:
@@ -348,8 +342,9 @@ def _run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_PROJECT_ROOT
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
-    html_enabled = resolve_html_enabled(args)
-    html_theme = SETTINGS.html_theme
+    settings = env.settings
+    html_enabled = resolve_html_enabled(args, settings)
+    html_theme = settings.html_theme
     force = args.force
     prune = args.prune
     diff_enabled = getattr(args, "diff", False)
@@ -412,8 +407,8 @@ def _run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
         }
         print(json.dumps(payload, indent=2))
     else:
-        summarize_import(cast(SummaryUI, ui), "Claude Code Sync", result.written)
-        console = _console(ui)
+        summarize_import(ui, "Claude Code Sync", result.written)
+        console = ui.console
         if result.skipped:
             console.print(f"Skipped {result.skipped} up-to-date session(s).")
         if result.pruned:
