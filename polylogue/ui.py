@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Protocol, Set
 
 try:
     from rich.console import Console
@@ -14,6 +14,11 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency
     Console = None  # type: ignore[assignment]
     Panel = None  # type: ignore[assignment]
     Text = None  # type: ignore[assignment]
+
+
+class ConsoleLike(Protocol):
+    def print(self, *objects: object, **kwargs: object) -> None:
+        ...
 
 
 class PlainConsole:
@@ -33,6 +38,8 @@ class UI:
     """Abstraction over interactive (gum) and plain terminal interactions."""
 
     plain: bool
+    console: ConsoleLike = field(init=False)
+    _plain_warnings: Set[str] = field(init=False, default_factory=set)
 
     def __post_init__(self) -> None:
         if Console is None:
@@ -40,7 +47,6 @@ class UI:
             self.console = PlainConsole()
         else:
             self.console = Console(no_color=self.plain, force_terminal=not self.plain)
-        self._plain_warnings: set[str] = set()
 
     def _warn_plain(self, topic: str) -> None:
         if topic in self._plain_warnings:

@@ -25,7 +25,6 @@ from ..drive_client import DEFAULT_FOLDER_NAME, DriveClient
 from ..importers.claude_code import DEFAULT_PROJECT_ROOT
 from ..options import BranchExploreOptions, SearchHit, SearchOptions, SyncOptions
 from ..ui import create_ui
-from ..settings import SETTINGS, reset_settings
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
     DEFAULT_CLAUDE_OUT,
@@ -35,11 +34,9 @@ from .context import (
     DEFAULT_RENDER_OUT,
     DEFAULT_SYNC_OUT,
     DEFAULT_CHATGPT_OUT,
-    default_html_mode,
     default_import_namespace,
     default_sync_namespace,
-    merge_with_defaults,
-    resolve_html_enabled,
+    ensure_settings_defaults,
     resolve_html_settings,
 )
 from ..config import CONFIG
@@ -127,30 +124,20 @@ def run_prune_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             ui.console.print(f"[green]Pruned {removed_here} legacy path(s) in {root}")
             total_removed += removed_here
 
+    summary_lines = [
+        f"Roots scanned: {len(unique_roots)}",
+        f"Legacy paths discovered: {total_candidates}",
+    ]
     if dry_run:
-        message = (
-            f"Identified {total_candidates} legacy path(s)."
-            if total_candidates
-            else "No legacy paths found."
-        )
-        if ui.plain:
-            ui.console.print(message)
-        else:
-            ui.console.print(f"[cyan]{message}")
+        summary_lines.append("Dry run: no paths removed.")
     else:
-        message = (
-            f"Removed {total_removed} legacy path(s)."
-            if total_removed
-            else "No legacy paths found."
-        )
-        if ui.plain:
-            ui.console.print(message)
-        else:
-            ui.console.print(f"[green]{message}")
+        summary_lines.append(f"Paths removed: {total_removed}")
+    ui.summary("Prune Legacy Outputs", summary_lines)
 
 
 def run_inspect_branches(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
+    settings = env.settings
     options = BranchExploreOptions(
         provider=getattr(args, "provider", None),
         slug=getattr(args, "slug", None),
@@ -223,7 +210,7 @@ def run_inspect_branches(args: argparse.Namespace, env: CommandEnv) -> None:
                 ui.console.print(tree)
 
         html_path = None
-        html_enabled, html_explicit = resolve_html_settings(args)
+        html_enabled, html_explicit = resolve_html_settings(args, settings)
         html_out = getattr(args, "html_out", None)
         should_auto_html = html_enabled and not html_explicit and html_out is None and conv.branch_count > 1
         force_html = html_out is not None or (html_explicit and html_enabled)
@@ -231,7 +218,7 @@ def run_inspect_branches(args: argparse.Namespace, env: CommandEnv) -> None:
             html_path = _generate_branch_html(
                 conv,
                 target=_resolve_html_output_path(conv, html_out, multi_html),
-                theme=args.theme or SETTINGS.html_theme,
+                theme=args.theme or settings.html_theme,
                 ui=ui,
                 auto=should_auto_html and not force_html,
             )
@@ -248,7 +235,7 @@ def run_inspect_branches(args: argparse.Namespace, env: CommandEnv) -> None:
         if branch_id:
             _display_branch_diff_for_id(conv, branch_id, ui)
 
-        html_path = _prompt_branch_followups(ui, conv, args, html_path)
+        html_path = _prompt_branch_followups(ui, conv, args, html_path, settings)
 
 
 def _generate_branch_html(conversation, target: Optional[Path], theme: str, ui, *, auto: bool) -> Optional[Path]:
@@ -321,7 +308,7 @@ def _display_branch_diff_for_id(conversation, branch_id: str, ui) -> None:
     _display_diff(diff_text, ui)
 
 
-def _prompt_branch_followups(ui, conversation, args, html_path: Optional[Path]) -> Optional[Path]:
+def _prompt_branch_followups(ui, conversation, args, html_path: Optional[Path], settings) -> Optional[Path]:
     if getattr(ui, "plain", False):
         return html_path
 
@@ -348,7 +335,7 @@ def _prompt_branch_followups(ui, conversation, args, html_path: Optional[Path]) 
             current_html = _generate_branch_html(
                 conversation,
                 target=target,
-                theme=args.theme or SETTINGS.html_theme,
+                theme=args.theme or settings.html_theme,
                 ui=ui,
                 auto=False,
             ) or current_html
@@ -856,6 +843,7 @@ def interactive_menu(env: CommandEnv) -> None:
 
 def prompt_render(env: CommandEnv) -> None:
     ui = env.ui
+    settings = env.settings
     default_input = str(Path.cwd())
     user_input = ui.input("Directory or file to render", default=default_input)
     if not user_input:
@@ -874,7 +862,7 @@ def prompt_render(env: CommandEnv) -> None:
     args.force = False
     args.collapse_threshold = None
     args.json = False
-    args.html_mode = "on" if SETTINGS.html_previews else "off"
+    args.html_mode = "on" if settings.html_previews else "off"
     run_render_cli(args, env, json_output=False)
 
 
@@ -884,7 +872,7 @@ def prompt_sync(env: CommandEnv) -> None:
     if not provider:
         return
 
-    args = default_sync_namespace(provider)
+    args = default_sync_namespace(provider, env.settings)
     run_sync_cli(args, env)
 
 
@@ -922,6 +910,7 @@ def prompt_import(env: CommandEnv) -> None:
         base_dir=base_dir,
         all_flag=all_flag,
         conversation_ids=conversation_ids,
+        settings=env.settings,
     )
     run_import_cli(args, env)
 
@@ -1027,16 +1016,17 @@ def show_help(env: CommandEnv) -> None:
 
 def settings_menu(env: CommandEnv) -> None:
     ui = env.ui
+    settings = env.settings
     while True:
-        toggle_label = f"Toggle HTML previews ({'on' if SETTINGS.html_previews else 'off'})"
-        theme_label = f"HTML theme ({SETTINGS.html_theme})"
+        toggle_label = f"Toggle HTML previews ({'on' if settings.html_previews else 'off'})"
+        theme_label = f"HTML theme ({settings.html_theme})"
         choices = [toggle_label, theme_label, "Reset defaults", "Back"]
         choice = ui.choose("Settings", choices)
         if choice is None or choice == "Back":
             return
         if choice == toggle_label:
-            SETTINGS.html_previews = not SETTINGS.html_previews
-            state = "enabled" if SETTINGS.html_previews else "disabled"
+            settings.html_previews = not settings.html_previews
+            state = "enabled" if settings.html_previews else "disabled"
             ui.console.print(f"HTML previews {state}.")
         elif choice == theme_label:
             if ui.plain:
@@ -1044,10 +1034,10 @@ def settings_menu(env: CommandEnv) -> None:
                 continue
             selection = ui.choose("Select HTML theme", ["light", "dark"])
             if selection:
-                SETTINGS.html_theme = selection
+                settings.html_theme = selection
                 ui.console.print(f"HTML theme set to {selection}.")
         elif choice == "Reset defaults":
-            reset_settings()
+            ensure_settings_defaults(settings)
             ui.console.print("Settings reset to defaults.")
 
 
@@ -1056,6 +1046,7 @@ def main() -> None:
     args = parser.parse_args()
     ui = create_ui(args.plain)
     env = CommandEnv(ui=ui)
+    ensure_settings_defaults(env.settings)
 
     if args.cmd is None:
         if ui.plain:
