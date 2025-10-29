@@ -12,15 +12,13 @@ from ..commands import CommandEnv, status_command
 from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
 from ..util import parse_input_time_to_epoch
 from .context import DEFAULT_OUTPUT_ROOTS, DEFAULT_RENDER_OUT
-from .summaries import summarize_import
-
 
 def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
 
     def emit() -> None:
         result = status_command(env)
-        console: Any = ui.console
+        console = ui.console
         if getattr(args, "json", False):
             payload = {
                 "credentials_present": result.credentials_present,
@@ -99,7 +97,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 emit()
                 time.sleep(interval)
         except KeyboardInterrupt:  # pragma: no cover - user interrupt
-            console: Any = ui.console
+            console = ui.console
             console.print("[cyan]Status watch stopped.")
         return
 
@@ -110,7 +108,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     from ..cli_common import sk_select
 
     ui = env.ui
-    console: Any = ui.console
+    console = ui.console
     directory = Path(args.dir) if args.dir else DEFAULT_RENDER_OUT
     if not directory.exists():
         console.print(f"[red]Directory not found: {directory}")
