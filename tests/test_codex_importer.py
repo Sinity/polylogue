@@ -1,7 +1,19 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from polylogue.importers.codex import import_codex_session
+@pytest.fixture(autouse=True)
+def _isolate_state(monkeypatch, tmp_path):
+    state_dir = tmp_path / "xdg-state"
+    cache_dir = tmp_path / "xdg-cache"
+    home_dir = tmp_path / "home"
+    for path in (state_dir, cache_dir, home_dir):
+        path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    monkeypatch.setenv("HOME", str(home_dir))
 
 
 def _write_session(tmp_path: Path, name: str, entries: list[dict]) -> Path:
