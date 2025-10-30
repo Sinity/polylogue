@@ -3,9 +3,12 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional, Set, Tuple, cast
+from typing import Any, Callable, Iterable, Set, Tuple
+
+from watchfiles import watch as _watch_directory
 
 from ..commands import CommandEnv
+from ..importers.claude_code import DEFAULT_PROJECT_ROOT
 from ..local_sync import sync_claude_code_sessions, sync_codex_sessions
 from .context import DEFAULT_CLAUDE_CODE_SYNC_OUT, DEFAULT_CODEX_SYNC_OUT, DEFAULT_COLLAPSE, resolve_html_enabled
 from .sync import _log_local_sync
@@ -14,21 +17,8 @@ WatchChange = Tuple[Any, str]
 WatchBatch = Iterable[Set[WatchChange]]
 WatchDirectoryFn = Callable[..., WatchBatch]
 
-try:  # pragma: no cover - optional dependency
-    from watchfiles import watch as _watch_directory
-except Exception:  # pragma: no cover
-    watch_directory: Optional[WatchDirectoryFn] = None
-else:
-    watch_directory = cast(WatchDirectoryFn, _watch_directory)
-
 
 def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
-    if watch_directory is None:
-        env.ui.console.print(
-            "[red]The watchfiles package is not available. Enable it in your environment to use watcher commands."
-        )
-        return
-
     provider = getattr(args, "provider", None)
     if provider == "codex":
         run_watch_codex(args, env)
@@ -39,9 +29,7 @@ def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 def run_watch_codex(args: argparse.Namespace, env: CommandEnv) -> None:
-    if watch_directory is None:
-        raise RuntimeError("watchfiles support is unavailable")
-    watch_fn = watch_directory
+    watch_fn = _watch_directory
     ui = env.ui
     base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
     base_dir = base_dir.expanduser()
@@ -93,11 +81,9 @@ def run_watch_codex(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 def run_watch_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
-    if watch_directory is None:
-        raise RuntimeError("watchfiles support is unavailable")
-    watch_fn = watch_directory
+    watch_fn = _watch_directory
     ui = env.ui
-    base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_CLAUDE_CODE_SYNC_OUT
+    base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_PROJECT_ROOT
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
