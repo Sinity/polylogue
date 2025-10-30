@@ -63,7 +63,12 @@
             ++ cliDeps
             ++ [ pkgs.makeWrapper ];
           nativeCheckInputs = (with pyPkgs; [ pytest ]) ++ cliDeps;
-          checkPhase = "pytest";
+          checkPhase = ''
+            export HOME=$TMPDIR
+            export XDG_STATE_HOME=$TMPDIR
+            export XDG_CACHE_HOME=$TMPDIR
+            pytest
+          '';
           postInstall = ''
             wrapProgram $out/bin/polylogue \
               --prefix PATH : ${cliBinPath}
