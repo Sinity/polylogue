@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, TypeVar
 
@@ -89,25 +88,15 @@ def sk_select(
             stderr=subprocess.PIPE,
             check=True,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        _warn_skim_unavailable()
+    except FileNotFoundError as exc:
+        raise RuntimeError("Required command 'sk' is not available in PATH.") from exc
+    except subprocess.CalledProcessError:
         return None
 
     output = proc.stdout.decode("utf-8").strip()
     if not output:
         return []
     return [line for line in output.splitlines() if line.strip()]
-
-
-_skim_warning_emitted = False
-
-
-def _warn_skim_unavailable() -> None:
-    global _skim_warning_emitted
-    if _skim_warning_emitted:
-        return
-    _skim_warning_emitted = True
-    print("[polylogue] skim is unavailable; defaulting to non-interactive selection.", file=sys.stderr)
 
 
 T = TypeVar("T")

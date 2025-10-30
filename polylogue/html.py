@@ -4,12 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict
 
-try:
-    from jinja2 import Environment, BaseLoader
-except ImportError:  # pragma: no cover
-    Environment = None  # type: ignore
-    BaseLoader = object  # type: ignore
-
+from jinja2 import Environment, BaseLoader
 from markdown_it import MarkdownIt
 
 from .render import MarkdownDocument

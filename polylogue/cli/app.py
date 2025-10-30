@@ -199,13 +199,20 @@ def run_inspect_branches(args: argparse.Namespace, env: CommandEnv) -> None:
         if not tree.strip():
             ui.console.print("[yellow]No branch data recorded.")
         else:
-            if not ui.plain and shutil.which("gum"):
-                subprocess.run(
+            if not ui.plain:
+                result = subprocess.run(
                     ["gum", "format"],
                     input=f"```\n{tree}\n```",
                     text=True,
-                    check=False,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=True,
                 )
+                output = result.stdout.strip()
+                if output:
+                    ui.console.print(output)
+                else:
+                    ui.console.print(tree)
             else:
                 ui.console.print(tree)
 
@@ -348,8 +355,8 @@ def _display_diff(diff_text: str, ui) -> None:
     if not diff_text.strip():
         ui.console.print("[cyan]No diff to display.")
         return
-    if not ui.plain and shutil.which("gum"):
-        subprocess.run(["gum", "pager"], input=diff_text, text=True, check=False)
+    if not ui.plain:
+        subprocess.run(["gum", "pager"], input=diff_text, text=True, check=True)
         return
     ui.console.print(diff_text)
 
@@ -526,8 +533,8 @@ def _render_search_hit(hit: SearchHit, ui) -> None:
         ui.console.print("[cyan](Message body empty)")
         return
 
-    if not ui.plain and shutil.which("gum"):
-        subprocess.run(["gum", "format"], input=body, text=True, check=False)
+    if not ui.plain:
+        subprocess.run(["gum", "format"], input=body, text=True, check=True)
     else:
         ui.console.print(body)
 
