@@ -3,6 +3,7 @@ import difflib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -10,14 +11,14 @@ import unicodedata
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-try:  # pragma: no cover - optional dependency
-    import pyperclip  # type: ignore
-    from pyperclip import PyperclipException  # type: ignore
-except Exception:  # pragma: no cover
-    pyperclip = None  # type: ignore
+import pyperclip  # type: ignore
+from pyperclip import PyperclipException  # type: ignore
 
-    class PyperclipException(Exception):
-        pass
+
+_REQUIRED_COMMANDS = ("delta",)
+for _cmd in _REQUIRED_COMMANDS:
+    if shutil.which(_cmd) is None:
+        raise RuntimeError(f"Required external command '{_cmd}' is not available in PATH.")
 
 
 def colorize(text: str, color: str) -> str:
@@ -284,16 +285,13 @@ def write_delta_diff(old_path: Path, new_path: Path, *, suffix: str = ".diff.txt
     if not old_path.exists() or not new_path.exists():
         return None
     diff_path = new_path.with_suffix(new_path.suffix + suffix)
-    try:
-        result = subprocess.run(
-            ["delta", str(old_path), str(new_path)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        output = (result.stdout or "").strip()
-    except FileNotFoundError:
-        output = ""
+    result = subprocess.run(
+        ["delta", str(old_path), str(new_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    output = (result.stdout or "").strip()
 
     if not output:
         try:

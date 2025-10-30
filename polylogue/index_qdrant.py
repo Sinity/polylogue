@@ -22,11 +22,8 @@ def update_qdrant_index(
     size = int(os.environ.get("POLYLOGUE_QDRANT_VECTOR_SIZE", "1"))
     api_key = os.environ.get("POLYLOGUE_QDRANT_API_KEY")
 
-    try:  # pragma: no cover - optional dependency
-        from qdrant_client import QdrantClient
-        from qdrant_client.http import models as rest
-    except Exception:
-        return
+    from qdrant_client import QdrantClient
+    from qdrant_client.http import models as rest
 
     client = QdrantClient(url=url, api_key=api_key)
     try:

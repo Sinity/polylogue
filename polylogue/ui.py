@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional, Protocol, Set
 
-try:
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.text import Text
-except ModuleNotFoundError:  # pragma: no cover - optional dependency
-    Console = None  # type: ignore[assignment]
-    Panel = None  # type: ignore[assignment]
-    Text = None  # type: ignore[assignment]
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+
+
+_REQUIRED_COMMANDS = ("gum", "sk")
+for _cmd in _REQUIRED_COMMANDS:
+    if shutil.which(_cmd) is None:
+        raise RuntimeError(f"Required external command '{_cmd}' is not available in PATH.")
 
 
 class ConsoleLike(Protocol):
@@ -42,11 +44,10 @@ class UI:
     _plain_warnings: Set[str] = field(init=False, default_factory=set)
 
     def __post_init__(self) -> None:
-        if Console is None:
-            self.plain = True
+        if self.plain:
             self.console = PlainConsole()
         else:
-            self.console = Console(no_color=self.plain, force_terminal=not self.plain)
+            self.console = Console(no_color=False, force_terminal=True)
 
     def _warn_plain(self, topic: str) -> None:
         if topic in self._plain_warnings:
@@ -64,29 +65,26 @@ class UI:
                 self.console.print(subtitle)
             return
         body = title if not subtitle else f"{title}\n{subtitle}"
-        try:
-            result = subprocess.run(
-                [
-                    "gum",
-                    "style",
-                    "--border",
-                    "rounded",
-                    "--margin",
-                    "1",
-                    "--padding",
-                    "1",
-                    body,
-                ],
-                check=False,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            if result.stdout.strip():
-                self.console.print(result.stdout.rstrip())
-            else:
-                self.console.print(body)
-        except Exception:
+        result = subprocess.run(
+            [
+                "gum",
+                "style",
+                "--border",
+                "rounded",
+                "--margin",
+                "1",
+                "--padding",
+                "1",
+                body,
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if result.stdout.strip():
+            self.console.print(result.stdout.rstrip())
+        else:
             self.console.print(body)
 
     def summary(self, title: str, lines: Iterable[str]) -> None:
@@ -95,22 +93,16 @@ class UI:
             self.console.print(f"-- {title} --")
             self.console.print(text)
             return
-        try:
-            result = subprocess.run(
-                ["gum", "format"],
-                input=f"## {title}\n{text}\n",
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
-            if result.stdout.strip():
-                self.console.print(result.stdout.rstrip())
-                return
-        except Exception:
-            pass
-        if Console is None or Panel is None:
-            self.console.print(f"== {title} ==\n{text}")
+        result = subprocess.run(
+            ["gum", "format"],
+            input=f"## {title}\n{text}\n",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        if result.stdout.strip():
+            self.console.print(result.stdout.rstrip())
             return
         renderable = Text(text) if Text is not None else text
         self.console.print(Panel(renderable, title=title))
@@ -120,14 +112,11 @@ class UI:
         if self.plain:
             self._warn_plain("confirmation")
             return default
-        try:
-            result = subprocess.run(
-                ["gum", "confirm", "--default", "true" if default else "false", prompt],
-                check=False,
-            )
-            return result.returncode == 0
-        except Exception:
-            return default
+        result = subprocess.run(
+            ["gum", "confirm", "--default", "true" if default else "false", prompt],
+            check=False,
+        )
+        return result.returncode == 0
 
     def choose(self, prompt: str, options: List[str]) -> Optional[str]:
         if not options:
@@ -135,17 +124,14 @@ class UI:
         if self.plain:
             self._warn_plain("selection")
             return None
-        try:
-            result = subprocess.run(
-                ["gum", "choose", "--header", prompt, *options],
-                check=False,
-                stdout=subprocess.PIPE,
-                text=True,
-            )
-            choice = result.stdout.strip()
-            return choice or None
-        except Exception:
-            return options[0]
+        result = subprocess.run(
+            ["gum", "choose", "--header", prompt, *options],
+            check=False,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        choice = result.stdout.strip()
+        return choice or None
 
     def input(self, prompt: str, *, default: Optional[str] = None) -> Optional[str]:
         if self.plain:
@@ -154,14 +140,11 @@ class UI:
         cmd = ["gum", "input", "--placeholder", prompt]
         if default:
             cmd.extend(["--value", default])
-        try:
-            result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, text=True)
-            value = result.stdout.strip()
-            if not value:
-                return default
-            return value
-        except Exception:
+        result = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, text=True)
+        value = result.stdout.strip()
+        if not value:
             return default
+        return value
 
 
 def detect_plain(flag_plain: bool) -> bool:

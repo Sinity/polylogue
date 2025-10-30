@@ -34,8 +34,8 @@ def update_index(
     if backend == "qdrant":
         try:
             from .index_qdrant import update_qdrant_index
-        except ImportError:  # pragma: no cover - optional dependency
-            return
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("POLYLOGUE_INDEX_BACKEND=qdrant requires the 'qdrant-client' package.") from exc
         update_qdrant_index(
             provider=provider,
             conversation_id=conversation_id,

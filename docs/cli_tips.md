@@ -13,3 +13,8 @@ Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetit
 
 - **Branch picker**: `polylogue inspect branches` lists branch-aware conversations, opens a skim picker when `sk` is available, prints the tree, and writes a shareable HTML explorer automatically when forks exist (override with `--html-out`, disable via `--html off`). Inline prompts can queue a branch diff or on-demand HTML write/directory reveal without rerunning the command.
 - **FTS search**: `polylogue inspect search` queries the SQLite `messages_fts` index. Filters include provider, slug, conversation/branch IDs, model, date range (`--since/--until`), and attachment presence. Interactive previews default to skim; add `--no-picker` in CI or scripts, or `--json` for automation.
+
+## Session Settings & Themes
+
+- **Interactive toggles**: From the main menu, choose `Settings` to enable/disable HTML previews, flip between light/dark themes, or restore config defaults. Changes apply immediately to render, sync, import, and watch commands for the current session.
+- **Automation defaults**: Non-interactive runs still respect `polylogue.config` defaults. Update the config file or pass explicit CLI flags when a permanent HTML/theme change is required in scripts.

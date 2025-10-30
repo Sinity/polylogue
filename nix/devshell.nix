@@ -17,6 +17,8 @@ let
       markdown-it-py
       pyperclip
       watchfiles
+      tiktoken
+      "qdrant-client"
     ]
   ) ++ extraPythonPackages);
 in

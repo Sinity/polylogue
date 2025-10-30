@@ -7,10 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
-try:  # pragma: no cover
-    import frontmatter
-except ImportError:  # pragma: no cover
-    frontmatter = None
+import frontmatter
 
 from .util import sanitize_filename
 

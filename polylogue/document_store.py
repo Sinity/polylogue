@@ -6,10 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-try:  # pragma: no cover - optional dependency
-    import frontmatter  # type: ignore
-except Exception:  # pragma: no cover
-    frontmatter = None  # type: ignore
+import frontmatter  # type: ignore
 
 from .render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
 from .util import (

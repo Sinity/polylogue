@@ -139,14 +139,16 @@ def test_run_import_chatgpt_invokes_summary(monkeypatch, tmp_path):
     assert title == "ChatGPT Import"
 
 
-def test_run_watch_cli_reports_missing_dependency(monkeypatch):
-    monkeypatch.setattr("polylogue.cli.watch.watch_directory", None)
-    ui = RecordingUI()
-    args = Namespace(provider="codex")
+def test_run_watch_cli_dispatches_based_on_provider(monkeypatch):
+    markers: List[str] = []
 
-    run_watch_cli(args, CommandEnv(ui=ui))
+    monkeypatch.setattr("polylogue.cli.watch.run_watch_codex", lambda *args: markers.append("codex"))
+    monkeypatch.setattr("polylogue.cli.watch.run_watch_claude_code", lambda *args: markers.append("claude"))
 
-    assert any("watchfiles package is not available" in message for message in ui.console.messages)
+    run_watch_cli(Namespace(provider="codex"), CommandEnv(ui=RecordingUI()))
+    run_watch_cli(Namespace(provider="claude-code"), CommandEnv(ui=RecordingUI()))
+
+    assert markers == ["codex", "claude"], "watch CLI should delegate to provider-specific runners"
 
 
 def test_run_watch_codex_once_triggers_sync(monkeypatch, tmp_path):
@@ -181,7 +183,7 @@ def test_run_watch_codex_once_triggers_sync(monkeypatch, tmp_path):
         )
         return LocalSyncResult(written=[], skipped=0, pruned=0, output_dir=Path(output_dir))
 
-    monkeypatch.setattr(watch_module, "watch_directory", lambda *args, **kwargs: iter(()))
+    monkeypatch.setattr(watch_module, "_watch_directory", lambda *args, **kwargs: iter(()))
     monkeypatch.setattr(watch_module, "sync_codex_sessions", fake_sync_codex_sessions)
 
     records: List[dict] = []

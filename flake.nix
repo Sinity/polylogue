@@ -29,20 +29,24 @@
         };
         python = pkgs.python3;
         pyPkgs = pkgs.python3Packages;
-        baseDeps = with pyPkgs; [
-          google-auth-oauthlib
-          requests
-          pathvalidate
-          aiohttp
-          aiofiles
-          rich
-          pydantic
-          python-frontmatter
-          jinja2
-          markdown-it-py
-          pyperclip
-          watchfiles
-        ];
+        baseDeps =
+          with pyPkgs;
+          [
+            google-auth-oauthlib
+            requests
+            pathvalidate
+            aiohttp
+            aiofiles
+            rich
+            pydantic
+            python-frontmatter
+            jinja2
+            markdown-it-py
+            pyperclip
+            watchfiles
+            tiktoken
+            qdrant-client
+          ];
         polylogueApp = pyPkgs.buildPythonApplication {
           pname = "polylogue";
           version = "0.1.0";
@@ -53,7 +57,9 @@
             setuptools
             wheel
           ];
-          nativeCheckInputs = with pyPkgs; [ pytest ];
+          nativeCheckInputs =
+            (with pyPkgs; [ pytest ])
+            ++ (with pkgs; [ delta gum git ]);
           checkPhase = "pytest";
         };
         cliApp = {

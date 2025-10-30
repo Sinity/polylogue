@@ -22,6 +22,8 @@ dependencies = [
   "markdown-it-py",
   "pyperclip",
   "watchfiles",
+  "tiktoken",
+  "qdrant-client",
 ]
 
 [project.optional-dependencies]
