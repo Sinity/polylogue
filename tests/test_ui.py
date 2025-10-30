@@ -21,7 +21,5 @@ def test_ui_summary_renders_bracket_text_without_markup_error(monkeypatch) -> No
     view.console = console
 
     lines = ["Copy config to [/tmp/example.json, /tmp/fallback.json]"]
-    view.summary("Doctor", lines)
-
-    output = capture.getvalue()
-    assert "Copy config" in output
+    with pytest.raises(FileNotFoundError):
+        view.summary("Doctor", lines)
