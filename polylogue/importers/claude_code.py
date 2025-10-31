@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from ..render import AttachmentInfo
-from ..util import CLAUDE_CODE_PROJECT_ROOT, assign_conversation_slug
+from ..util import CLAUDE_CODE_PROJECT_ROOT, assign_conversation_slug, path_order_key
 from ..conversation import process_conversation
 from ..branching import MessageRecord
 from .base import ImportResult
@@ -239,19 +239,12 @@ def import_claude_code_session(
     )
 
 
-def _session_order(path: Path) -> tuple[float, str]:
-    try:
-        return (path.stat().st_mtime, str(path))
-    except OSError:
-        return (0.0, str(path))
-
-
 def list_claude_code_sessions(base_dir: Path = DEFAULT_PROJECT_ROOT) -> List[Dict[str, str]]:
     base_dir = base_dir.expanduser()
     sessions: List[Dict[str, str]] = []
     if not base_dir.exists():
         return sessions
-    for path in sorted(base_dir.rglob("*.jsonl"), key=_session_order, reverse=True):
+    for path in sorted(base_dir.rglob("*.jsonl"), key=path_order_key, reverse=True):
         sessions.append(
             {
                 "path": str(path),
@@ -275,7 +268,7 @@ def _locate_session_file(session_id: str, base_dir: Path) -> Optional[Path]:
     pattern = f"*{session_id}*.jsonl"
     matches = list(base_dir.rglob(pattern))
     if matches:
-        return max(matches, key=_session_order)
+        return max(matches, key=path_order_key)
     return None
 
 
