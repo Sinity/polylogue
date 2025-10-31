@@ -239,11 +239,19 @@ def import_claude_code_session(
     )
 
 
+def _session_order(path: Path) -> tuple[float, str]:
+    try:
+        return (path.stat().st_mtime, str(path))
+    except OSError:
+        return (0.0, str(path))
+
+
 def list_claude_code_sessions(base_dir: Path = DEFAULT_PROJECT_ROOT) -> List[Dict[str, str]]:
+    base_dir = base_dir.expanduser()
     sessions: List[Dict[str, str]] = []
     if not base_dir.exists():
         return sessions
-    for path in base_dir.rglob("*.jsonl"):
+    for path in sorted(base_dir.rglob("*.jsonl"), key=_session_order, reverse=True):
         sessions.append(
             {
                 "path": str(path),
@@ -251,7 +259,6 @@ def list_claude_code_sessions(base_dir: Path = DEFAULT_PROJECT_ROOT) -> List[Dic
                 "workspace": path.parent.name,
             }
         )
-    sessions.sort(key=lambda s: s["path"])
     return sessions
 
 
@@ -268,7 +275,7 @@ def _locate_session_file(session_id: str, base_dir: Path) -> Optional[Path]:
     pattern = f"*{session_id}*.jsonl"
     matches = list(base_dir.rglob(pattern))
     if matches:
-        return matches[0]
+        return max(matches, key=_session_order)
     return None
 
 
