@@ -11,7 +11,7 @@ from .importers import import_claude_code_session, import_codex_session
 from .importers.base import ImportResult
 from .importers.claude_code import DEFAULT_PROJECT_ROOT as CLAUDE_CODE_DEFAULT
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
-from .util import sanitize_filename, snapshot_for_diff, write_delta_diff
+from .util import path_order_key, sanitize_filename, snapshot_for_diff, write_delta_diff
 
 
 @dataclass
@@ -53,13 +53,6 @@ def _is_up_to_date(source: Path, target: Path) -> bool:
     return True
 
 
-def _session_order_key(path: Path) -> tuple[float, str]:
-    try:
-        return (path.stat().st_mtime, str(path))
-    except OSError:
-        return (0.0, str(path))
-
-
 def _sync_sessions(
     sessions: Iterable[Path],
     *,
@@ -86,7 +79,7 @@ def _sync_sessions(
 
     diff_total = 0
     if isinstance(sessions, (list, tuple)):
-        iterable: Iterable[Path] = sorted(sessions, key=_session_order_key)
+        iterable: Iterable[Path] = sorted(sessions, key=path_order_key)
     else:
         iterable = sessions
 

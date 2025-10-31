@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unicodedata
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import pyperclip  # type: ignore
 from pyperclip import PyperclipException  # type: ignore
@@ -80,6 +80,14 @@ def sanitize_filename(filename: str) -> str:
     if not sanitized:
         sanitized = "_unnamed_"
     return sanitized
+
+
+def path_order_key(path: Path) -> Tuple[float, str]:
+    try:
+        stat_result = path.stat()
+        return (stat_result.st_mtime, str(path))
+    except OSError:
+        return (0.0, str(path))
 
 
 def parse_rfc3339_to_epoch(ts: Optional[str]) -> Optional[float]:

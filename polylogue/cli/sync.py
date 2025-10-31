@@ -11,7 +11,7 @@ from ..drive_client import DriveClient
 from ..importers.claude_code import list_claude_code_sessions
 from ..local_sync import LocalSyncResult, sync_claude_code_sessions, sync_codex_sessions
 from ..options import ListOptions, SyncOptions
-from ..util import CLAUDE_CODE_PROJECT_ROOT, CODEX_SESSIONS_ROOT, add_run
+from ..util import CLAUDE_CODE_PROJECT_ROOT, CODEX_SESSIONS_ROOT, add_run, path_order_key
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
     DEFAULT_CODEX_SYNC_OUT,
@@ -258,7 +258,7 @@ def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
 
     selected_paths: Optional[List[Path]] = None
     if not args.all and not ui.plain:
-        sessions = sorted(base_dir.rglob("*.jsonl"))
+        sessions = sorted(base_dir.rglob("*.jsonl"), key=path_order_key, reverse=True)
         selection = _collect_session_selection(ui, sessions, "Select Codex sessions")
         if selection is None:
             return
