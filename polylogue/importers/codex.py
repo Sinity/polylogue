@@ -5,13 +5,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Set, Tuple
 
 from ..render import AttachmentInfo
-from ..util import assign_conversation_slug
+from ..util import CODEX_SESSIONS_ROOT, assign_conversation_slug
 from ..conversation import process_conversation
 from ..branching import MessageRecord
 from .base import ImportResult
 from .utils import CHAR_THRESHOLD, LINE_THRESHOLD, PREVIEW_LINES, estimate_token_count, normalise_inline_footnotes
 
-_DEFAULT_BASE = Path.home() / ".codex" / "sessions"
+_DEFAULT_BASE = CODEX_SESSIONS_ROOT
 
 def _truncate_with_preview(text: str, attachment_name: str) -> str:
     lines = text.splitlines()
@@ -33,14 +33,18 @@ def import_codex_session(
     html_theme: str = "light",
     force: bool = False,
 ) -> ImportResult:
+    base_dir = base_dir.expanduser()
     candidate = Path(session_id)
     if candidate.exists() and candidate.is_file():
         session_path = candidate
     else:
-        session_glob = sorted(base_dir.rglob(f"*{session_id}.jsonl"))
-        if not session_glob:
+        matches = list(base_dir.rglob(f"*{session_id}.jsonl"))
+        if not matches:
             raise FileNotFoundError(f"Could not locate session {session_id} under {base_dir}")
-        session_path = session_glob[0]
+        session_path = max(
+            matches,
+            key=lambda p: (p.stat().st_mtime if p.exists() else 0.0, str(p)),
+        )
 
     attachments: List[AttachmentInfo] = []
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
