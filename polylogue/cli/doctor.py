@@ -8,14 +8,14 @@ from typing import Any, cast
 from ..commands import CommandEnv
 from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
 from ..doctor import run_doctor as doctor_run
-from ..importers.claude_code import DEFAULT_PROJECT_ROOT
+from ..util import CLAUDE_CODE_PROJECT_ROOT, CODEX_SESSIONS_ROOT
 
 
 def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     console = cast(Any, ui.console)
-    codex_dir = Path(args.codex_dir) if args.codex_dir else Path.home() / ".codex" / "sessions"
-    claude_dir = Path(args.claude_code_dir) if args.claude_code_dir else DEFAULT_PROJECT_ROOT
+    codex_dir = Path(args.codex_dir).expanduser() if args.codex_dir else CODEX_SESSIONS_ROOT
+    claude_dir = Path(args.claude_code_dir).expanduser() if args.claude_code_dir else CLAUDE_CODE_PROJECT_ROOT
     report = doctor_run(
         codex_dir=codex_dir,
         claude_code_dir=claude_dir,

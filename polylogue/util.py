@@ -15,6 +15,37 @@ import pyperclip  # type: ignore
 from pyperclip import PyperclipException  # type: ignore
 
 
+def _xdg_path(env_var: str, fallback: Path) -> Path:
+    raw = os.environ.get(env_var)
+    if raw:
+        return Path(raw).expanduser()
+    return fallback
+
+
+CONFIG_ROOT = _xdg_path("XDG_CONFIG_HOME", Path.home() / ".config")
+DATA_ROOT = _xdg_path("XDG_DATA_HOME", Path.home() / ".local/share")
+CACHE_ROOT = _xdg_path("XDG_CACHE_HOME", Path.home() / ".cache")
+STATE_ROOT = _xdg_path("XDG_STATE_HOME", Path.home() / ".local/state")
+
+
+CONFIG_HOME = CONFIG_ROOT / "polylogue"
+DATA_HOME = DATA_ROOT / "polylogue"
+CACHE_HOME = CACHE_ROOT / "polylogue"
+
+
+STATE_HOME = STATE_ROOT / "polylogue"
+
+
+CODEX_SESSIONS_ROOT = Path(
+    os.environ.get("POLYLOGUE_CODEX_SESSIONS", str(DATA_HOME / "codex" / "sessions"))
+).expanduser()
+
+
+CLAUDE_CODE_PROJECT_ROOT = Path(
+    os.environ.get("POLYLOGUE_CLAUDE_CODE_PROJECTS", str(DATA_HOME / "claude" / "projects"))
+).expanduser()
+
+
 _REQUIRED_COMMANDS = ("delta",)
 for _cmd in _REQUIRED_COMMANDS:
     if shutil.which(_cmd) is None:
@@ -92,7 +123,6 @@ def parse_input_time_to_epoch(s: Optional[Union[str, float, int, datetime.date, 
 
 
 # Simple cache for discovered Drive IDs
-STATE_HOME = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "polylogue"
 STATE_PATH = STATE_HOME / "state.json"
 RUNS_PATH = STATE_HOME / "runs.json"
 
@@ -291,7 +321,11 @@ def write_delta_diff(old_path: Path, new_path: Path, *, suffix: str = ".diff.txt
         text=True,
         check=False,
     )
-    output = (result.stdout or "").strip()
+
+    if result.returncode == 0:
+        output = (result.stdout or "").strip()
+    else:
+        output = ""
 
     if not output:
         try:

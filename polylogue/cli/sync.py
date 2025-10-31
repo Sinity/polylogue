@@ -8,10 +8,10 @@ from typing import List, Optional
 from ..cli_common import filter_chats, sk_select
 from ..commands import CommandEnv, list_command, sync_command
 from ..drive_client import DriveClient
-from ..importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
+from ..importers.claude_code import list_claude_code_sessions
 from ..local_sync import LocalSyncResult, sync_claude_code_sessions, sync_codex_sessions
 from ..options import ListOptions, SyncOptions
-from ..util import add_run
+from ..util import CLAUDE_CODE_PROJECT_ROOT, CODEX_SESSIONS_ROOT, add_run
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
     DEFAULT_CODEX_SYNC_OUT,
@@ -246,7 +246,7 @@ def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optiona
 
 def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
-    base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
+    base_dir = Path(args.base_dir).expanduser() if args.base_dir else CODEX_SESSIONS_ROOT
     out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     settings = env.settings
@@ -339,7 +339,7 @@ def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
 
 def _run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
-    base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_PROJECT_ROOT
+    base_dir = Path(args.base_dir).expanduser() if args.base_dir else CLAUDE_CODE_PROJECT_ROOT
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     settings = env.settings

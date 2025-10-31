@@ -15,6 +15,7 @@ from ..importers import (
 from ..importers.chatgpt import list_chatgpt_conversations
 from ..importers.claude_ai import list_claude_conversations
 from ..importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
+from ..util import CODEX_SESSIONS_ROOT
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
     DEFAULT_CHATGPT_OUT,
@@ -97,7 +98,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     console = ui.console
-    base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
+    base_dir = Path(args.base_dir).expanduser() if args.base_dir else CODEX_SESSIONS_ROOT
     out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
@@ -267,7 +268,7 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
 def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     console = ui.console
-    base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_PROJECT_ROOT
+    base_dir = Path(args.base_dir).expanduser() if args.base_dir else DEFAULT_PROJECT_ROOT
     session_id = args.session_id
 
     if session_id in {"pick", "?"} or (session_id == "-" and not ui.plain):

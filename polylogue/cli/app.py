@@ -62,7 +62,7 @@ from .sync import (
     _run_sync_codex,
     _run_sync_drive,
 )
-from ..util import add_run, parse_input_time_to_epoch, write_clipboard_text
+from ..util import CODEX_SESSIONS_ROOT, add_run, parse_input_time_to_epoch, write_clipboard_text
 from ..branch_explorer import branch_diff, build_branch_html, format_branch_tree
 
 SCRIPT_PATH = Path(__file__).resolve().parents[2] / "polylogue.py"
@@ -905,7 +905,7 @@ def prompt_import(env: CommandEnv) -> None:
         if session_hint:
             sources.append(session_hint)
         if provider == "codex":
-            base_dir_input = ui.input("Codex sessions directory", default=str(Path.home() / ".codex" / "sessions"))
+            base_dir_input = ui.input("Codex sessions directory", default=str(CODEX_SESSIONS_ROOT))
             base_dir = Path(base_dir_input) if base_dir_input else None
         else:
             base_dir_input = ui.input("Claude Code projects directory", default=str(DEFAULT_PROJECT_ROOT))

@@ -8,8 +8,8 @@ from typing import Any, Callable, Iterable, Set, Tuple
 from watchfiles import watch as _watch_directory
 
 from ..commands import CommandEnv
-from ..importers.claude_code import DEFAULT_PROJECT_ROOT
 from ..local_sync import sync_claude_code_sessions, sync_codex_sessions
+from ..util import CLAUDE_CODE_PROJECT_ROOT, CODEX_SESSIONS_ROOT
 from .context import DEFAULT_CLAUDE_CODE_SYNC_OUT, DEFAULT_CODEX_SYNC_OUT, DEFAULT_COLLAPSE, resolve_html_enabled
 from .sync import _log_local_sync
 
@@ -31,8 +31,7 @@ def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 def run_watch_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     watch_fn = _watch_directory
     ui = env.ui
-    base_dir = Path(args.base_dir) if args.base_dir else Path.home() / ".codex" / "sessions"
-    base_dir = base_dir.expanduser()
+    base_dir = Path(args.base_dir).expanduser() if args.base_dir else CODEX_SESSIONS_ROOT
     base_dir.mkdir(parents=True, exist_ok=True)
     out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -83,8 +82,7 @@ def run_watch_codex(args: argparse.Namespace, env: CommandEnv) -> None:
 def run_watch_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     watch_fn = _watch_directory
     ui = env.ui
-    base_dir = Path(args.base_dir) if args.base_dir else DEFAULT_PROJECT_ROOT
-    base_dir = base_dir.expanduser()
+    base_dir = Path(args.base_dir).expanduser() if args.base_dir else CLAUDE_CODE_PROJECT_ROOT
     base_dir.mkdir(parents=True, exist_ok=True)
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
