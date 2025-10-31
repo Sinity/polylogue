@@ -28,13 +28,36 @@ class LocalSyncResult:
     duration: float = 0.0
 
 
+def _mtime_ns(path: Path) -> int:
+    stat_result = path.stat()
+    return getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000))
+
+
 def _is_up_to_date(source: Path, target: Path) -> bool:
     if not target.exists():
         return False
     try:
-        return int(target.stat().st_mtime) >= int(source.stat().st_mtime)
+        source_ns = _mtime_ns(source)
+        target_ns = _mtime_ns(target)
     except OSError:
         return False
+    if target_ns < source_ns:
+        return False
+    delta = target_ns - source_ns
+    if delta <= 1_000_000:  # ≤1ms difference, verify contents match
+        try:
+            if target.read_bytes() != source.read_bytes():
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _session_order_key(path: Path) -> tuple[float, str]:
+    try:
+        return (path.stat().st_mtime, str(path))
+    except OSError:
+        return (0.0, str(path))
 
 
 def _sync_sessions(
@@ -62,7 +85,12 @@ def _sync_sessions(
     words_total = 0
 
     diff_total = 0
-    for session_path in sorted(sessions):
+    if isinstance(sessions, (list, tuple)):
+        iterable: Iterable[Path] = sorted(sessions, key=_session_order_key)
+    else:
+        iterable = sessions
+
+    for session_path in iterable:
         if not session_path.is_file():
             continue
         safe_name = sanitize_filename(session_path.stem)

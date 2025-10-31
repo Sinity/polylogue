@@ -15,11 +15,11 @@ from .drive import (
     get_file_meta,
     list_children,
 )
-from .util import parse_rfc3339_to_epoch, read_clipboard_text
+from .util import CONFIG_HOME, parse_rfc3339_to_epoch, read_clipboard_text
 from .ui import UI
 
 GDRIVE_INSTRUCTIONS = "https://developers.google.com/drive/api/quickstart/python"
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "polylogue"
+CONFIG_DIR = CONFIG_HOME
 DEFAULT_CREDENTIALS = CONFIG_DIR / "credentials.json"
 DEFAULT_TOKEN = CONFIG_DIR / "token.json"
 DEFAULT_FOLDER_NAME = "AI Studio"
@@ -174,10 +174,9 @@ class DriveClient:
         if mtime is None:
             return
         try:
-            path.touch(exist_ok=True)
-            path.stat()  # ensure exists
-            import os
-
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                path.touch()
             os.utime(path, (mtime, mtime))
         except Exception:
             pass
