@@ -4,7 +4,7 @@
 - `polylogue.py`: interactive CLI entrypoint for rendering AI chat exports and syncing provider archives.
 - `polylogue/`: implementation modules (commands, importers, rendering, UI utilities).
 - `nix/devshell.nix`: dev shell defining Python deps plus gum, skim, rich, bat, glow, etc.
-- `gemini/`, `sinex_md/`: sample inputs and generated Markdown artifacts.
+- Provider walkthroughs and sample workflows live under `docs/` (see `docs/providers/`).
 
 ## Development Workflow
 - Use `nix develop` to enter the environment with all required tools.

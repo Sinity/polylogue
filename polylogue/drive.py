@@ -44,13 +44,17 @@ def require_google():
 def _retry(fn, *, retries: int = 3, base_delay: float = 0.5):
     # Allow env overrides for tuning
     try:
-        retries = int(os.environ.get("POLYLOGUE_RETRIES", retries))
+        override = int(os.environ.get("POLYLOGUE_RETRIES", retries))
+        if override >= 0:
+            retries = override
     except Exception:
         pass
     try:
         base_delay = float(os.environ.get("POLYLOGUE_RETRY_BASE", base_delay))
     except Exception:
         pass
+    base_delay = max(0.0, base_delay)
+    retries = max(1, retries)
     last_err = None
     for i in range(retries):
         try:
@@ -203,11 +207,12 @@ def find_folder_id(session, folder_name: str) -> Optional[str]:
         except Exception:
             pass
     try:
+        escaped_name = folder_name.replace("'", "\\'")
         resp = _drive_get_json(
             session,
             "files",
             {
-                "q": f"mimeType='application/vnd.google-apps.folder' and name='{folder_name}' and trashed=false",
+                "q": f"mimeType='application/vnd.google-apps.folder' and name='{escaped_name}' and trashed=false",
                 "fields": "files(id, name, modifiedTime)",
                 "pageSize": 50,
             },

@@ -1,7 +1,19 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from polylogue.importers.codex import import_codex_session
+@pytest.fixture(autouse=True)
+def _isolate_state(monkeypatch, tmp_path):
+    state_dir = tmp_path / "xdg-state"
+    cache_dir = tmp_path / "xdg-cache"
+    home_dir = tmp_path / "home"
+    for path in (state_dir, cache_dir, home_dir):
+        path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    monkeypatch.setenv("HOME", str(home_dir))
 
 
 def _write_session(tmp_path: Path, name: str, entries: list[dict]) -> Path:
@@ -100,7 +112,7 @@ def test_import_codex_session_removes_empty_attachment_dir(tmp_path):
     )
 
     assert result.attachments_dir is None
-    assert not (out_dir / "simple_attachments").exists()
+    assert not (result.markdown_path.parent / "attachments").exists()
 
 
 def test_import_codex_session_normalises_footnotes(tmp_path):
