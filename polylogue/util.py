@@ -65,7 +65,11 @@ def colorize(text: str, color: str) -> str:
     }
     if os.environ.get("NO_COLOR") or os.environ.get("POLYLOGUE_NO_COLOR"):
         return text
-    return f"{colors.get(color, '')}{text}{colors['reset']}" if sys.stderr.isatty() else text
+    stream = sys.stdout if sys.stdout.isatty() else sys.stderr
+    if not stream.isatty():
+        return text
+    prefix = colors.get(color, "")
+    return f"{prefix}{text}{colors['reset']}" if prefix else text
 
 
 def sanitize_filename(filename: str) -> str:
@@ -326,7 +330,11 @@ def update_conversation_state(
         entry = provider_map.get(conversation_id)
         if not isinstance(entry, dict):
             entry = {}
-        entry.update({k: v for k, v in updates.items() if v is not None})
+        for key, value in updates.items():
+            if value is None:
+                entry.pop(key, None)
+            else:
+                entry[key] = value
         provider_map[conversation_id] = entry
 
     get_state_store().mutate(_mutator)

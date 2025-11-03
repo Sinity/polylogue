@@ -129,9 +129,9 @@ def build_branch_plan(
         # No explicit leaves – treat roots as single-node branches.
         all_paths = [[root_id] for root_id in roots]
 
-    def path_score(path: List[str]) -> Tuple[int, Optional[str]]:
-        last_ts = node_map[path[-1]].timestamp if path else None
-        return (len(path), last_ts)  # length first, then timestamp ordering
+    def path_score(path: List[str]) -> Tuple[int, str]:
+        last = node_map[path[-1]].timestamp if path else None
+        return (len(path), last or "")  # length first, then timestamp ordering
 
     canonical_path: List[str]
     if canonical_leaf_id:
@@ -147,7 +147,7 @@ def build_branch_plan(
         parent_branch_id=None,
         message_ids=canonical_path,
         is_canonical=True,
-        depth=0,
+        depth=len(canonical_path),
         divergence_index=0,
     )
 
