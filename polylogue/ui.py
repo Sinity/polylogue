@@ -7,15 +7,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional, Protocol, Set
 
-from rich.console import Console
-from rich.panel import Panel
-from rich.text import Text
-
-
-_REQUIRED_COMMANDS = ("gum", "sk")
-for _cmd in _REQUIRED_COMMANDS:
-    if shutil.which(_cmd) is None:
-        raise RuntimeError(f"Required external command '{_cmd}' is not available in PATH.")
+try:  # pragma: no cover - optional rich dependency
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.text import Text
+except ImportError:  # pragma: no cover - fall back to plain console
+    Console = None
+    Panel = None
+    Text = None
 
 
 class ConsoleLike(Protocol):
@@ -44,10 +43,18 @@ class UI:
     _plain_warnings: Set[str] = field(init=False, default_factory=set)
 
     def __post_init__(self) -> None:
-        if self.plain:
+        if self.plain or Console is None:
+            self.plain = True
             self.console = PlainConsole()
         else:
             self.console = Console(no_color=False, force_terminal=True)
+            missing = [cmd for cmd in ("gum", "sk") if shutil.which(cmd) is None]
+            if missing:
+                self.plain = True
+                self.console = PlainConsole()
+                self._warn_plain(
+                    " and ".join(missing) + " command(s)",
+                )
 
     def _warn_plain(self, topic: str) -> None:
         if topic in self._plain_warnings:

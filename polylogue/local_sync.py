@@ -11,7 +11,7 @@ from .importers import import_claude_code_session, import_codex_session
 from .importers.base import ImportResult
 from .importers.claude_code import DEFAULT_PROJECT_ROOT as CLAUDE_CODE_DEFAULT
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
-from .util import path_order_key, sanitize_filename, snapshot_for_diff, write_delta_diff
+from .util import DiffTracker, path_order_key, sanitize_filename
 
 
 @dataclass
@@ -93,9 +93,7 @@ def _sync_sessions(
         if not force and _is_up_to_date(session_path, md_path):
             skipped += 1
             continue
-        snapshot = None
-        if diff:
-            snapshot = snapshot_for_diff(md_path)
+        diff_tracker = DiffTracker(md_path, diff)
         result = import_fn(
             str(session_path),
             output_dir=output_dir,
@@ -106,24 +104,10 @@ def _sync_sessions(
             **importer_kwargs,
         )
         if result.skipped:
-            if snapshot is not None:
-                try:
-                    snapshot.unlink()
-                except Exception:
-                    pass
+            diff_tracker.cleanup()
             skipped += 1
             continue
-        if diff and snapshot is not None:
-            result.diff_path = write_delta_diff(snapshot, result.markdown_path)
-            try:
-                snapshot.unlink()
-            except Exception:
-                pass
-        elif snapshot is not None:
-            try:
-                snapshot.unlink()
-            except Exception:
-                pass
+        result.diff_path = diff_tracker.finalize(result.markdown_path)
         if result.diff_path:
             diff_total += 1
         session_mtime = int(session_path.stat().st_mtime)
