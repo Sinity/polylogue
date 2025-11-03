@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from polylogue.automation import SCRIPT_PATH, cron_snippet, describe_targets, systemd_snippet
+from polylogue.automation import SCRIPT_MODULE, cron_snippet, describe_targets, systemd_snippet
 from polylogue.cli import run_automation_cli
 from polylogue.commands import CommandEnv
 
@@ -29,7 +29,7 @@ def test_systemd_snippet_includes_paths(tmp_path):
         boot_delay="1m",
     )
     assert "polylogue-sync-codex.service" in snippet
-    assert str(SCRIPT_PATH) in snippet
+    assert f"-m {SCRIPT_MODULE}" in snippet
     assert f"WorkingDirectory={tmp_path}" in snippet
     assert "OnUnitActiveSec=15m" in snippet
     assert "--collapse-threshold 24" in snippet
@@ -58,9 +58,9 @@ def test_describe_targets_roundtrip():
     assert "codex" in data and "claude-code" in data and "drive-sync" in data and "gemini-render" in data
     codex = describe_targets("codex")
     assert list(codex.keys()) == ["codex"]
-    assert codex["codex"]["command"][0] == "sync-codex"
+    assert codex["codex"]["command"][:2] == ["sync", "codex"]
     drive = describe_targets("drive-sync")
-    assert drive["drive-sync"]["command"][0] == "sync"
+    assert drive["drive-sync"]["command"][:2] == ["sync", "drive"]
 
 
 def test_run_automation_cli_systemd(capsys, tmp_path):
@@ -80,7 +80,8 @@ def test_run_automation_cli_systemd(capsys, tmp_path):
     assert "polylogue-sync-drive.service" in output
     assert "--collapse-threshold 20" in output
     assert "--html" in output
-    assert "--folder-name AI Studio" in output
+    assert "--folder-name" in output
+    assert "'AI Studio'" in output
     assert "--plain" in output
 
 
@@ -98,5 +99,5 @@ def test_run_automation_cli_describe(capsys):
     )
     run_automation_cli(args, CommandEnv(ui=DummyUI()))
     payload = json.loads(capsys.readouterr().out)
-    assert payload["codex"]["command"][0] == "sync-codex"
+    assert payload["codex"]["command"][:2] == ["sync", "codex"]
     assert "defaults" in payload["codex"]

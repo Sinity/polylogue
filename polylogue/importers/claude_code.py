@@ -5,14 +5,14 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from ..render import AttachmentInfo
-from ..util import assign_conversation_slug
+from ..util import CLAUDE_CODE_PROJECT_ROOT, assign_conversation_slug, path_order_key
 from ..conversation import process_conversation
 from ..branching import MessageRecord
 from .base import ImportResult
 from .utils import estimate_token_count, normalise_inline_footnotes, store_large_text
 
 
-DEFAULT_PROJECT_ROOT = Path.home() / ".claude" / "projects"
+DEFAULT_PROJECT_ROOT = CLAUDE_CODE_PROJECT_ROOT
 
 
 def import_claude_code_session(
@@ -25,6 +25,7 @@ def import_claude_code_session(
     html_theme: str,
     force: bool = False,
 ) -> ImportResult:
+    base_dir = base_dir.expanduser()
     session_path = _locate_session_file(session_id, base_dir)
     if session_path is None:
         raise FileNotFoundError(f"Claude Code session {session_id} not found under {base_dir}")
@@ -32,8 +33,10 @@ def import_claude_code_session(
     output_dir.mkdir(parents=True, exist_ok=True)
     title = session_path.stem
     slug = assign_conversation_slug("claude-code", session_id, title, id_hint=title[:8])
-    markdown_path = output_dir / f"{slug}.md"
-    attachments_dir = markdown_path.parent / f"{slug}_attachments"
+    conversation_dir = output_dir / slug
+    conversation_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = conversation_dir / "conversation.md"
+    attachments_dir = conversation_dir / "attachments"
 
     chunks: List[Dict] = []
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
@@ -237,10 +240,11 @@ def import_claude_code_session(
 
 
 def list_claude_code_sessions(base_dir: Path = DEFAULT_PROJECT_ROOT) -> List[Dict[str, str]]:
+    base_dir = base_dir.expanduser()
     sessions: List[Dict[str, str]] = []
     if not base_dir.exists():
         return sessions
-    for path in base_dir.rglob("*.jsonl"):
+    for path in sorted(base_dir.rglob("*.jsonl"), key=path_order_key, reverse=True):
         sessions.append(
             {
                 "path": str(path),
@@ -248,7 +252,6 @@ def list_claude_code_sessions(base_dir: Path = DEFAULT_PROJECT_ROOT) -> List[Dic
                 "workspace": path.parent.name,
             }
         )
-    sessions.sort(key=lambda s: s["path"])
     return sessions
 
 
@@ -265,7 +268,7 @@ def _locate_session_file(session_id: str, base_dir: Path) -> Optional[Path]:
     pattern = f"*{session_id}*.jsonl"
     matches = list(base_dir.rglob(pattern))
     if matches:
-        return matches[0]
+        return max(matches, key=path_order_key)
     return None
 
 

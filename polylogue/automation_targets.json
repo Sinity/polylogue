@@ -2,7 +2,7 @@
   "codex": {
     "name": "polylogue-sync-codex",
     "description": "Polylogue Codex sync",
-    "command": ["sync-codex", "--plain", "--json"],
+    "command": ["sync", "codex", "--plain", "--json"],
     "defaults": {
       "collapseThreshold": 24,
       "extraArgs": [],
@@ -12,7 +12,7 @@
   "claude-code": {
     "name": "polylogue-sync-claude-code",
     "description": "Polylogue Claude Code sync",
-    "command": ["sync-claude-code", "--plain", "--json"],
+    "command": ["sync", "claude-code", "--plain", "--json"],
     "defaults": {
       "collapseThreshold": 20,
       "extraArgs": [],
@@ -22,7 +22,7 @@
   "drive-sync": {
     "name": "polylogue-sync-drive",
     "description": "Polylogue Drive folder sync",
-    "command": ["sync", "--plain", "--json"],
+    "command": ["sync", "drive", "--plain", "--json"],
     "defaults": {
       "collapseThreshold": 16,
       "extraArgs": ["--folder-name", "AI Studio"],

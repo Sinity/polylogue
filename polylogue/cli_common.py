@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, TypeVar
 
 from .util import parse_input_time_to_epoch, parse_rfc3339_to_epoch
 
@@ -23,15 +23,15 @@ def filter_chats(
             pass
     s_epoch = parse_input_time_to_epoch(since)
     u_epoch = parse_input_time_to_epoch(until)
-    if s_epoch or u_epoch:
+    if s_epoch is not None or u_epoch is not None:
         tmp: List[Dict[str, Any]] = []
         for c in out:
             mt = parse_rfc3339_to_epoch(c.get("modifiedTime"))
             if mt is None:
                 continue
-            if s_epoch and mt < s_epoch:
+            if s_epoch is not None and mt < s_epoch:
                 continue
-            if u_epoch and mt > u_epoch:
+            if u_epoch is not None and mt > u_epoch:
                 continue
             tmp.append(c)
         out = tmp
@@ -88,7 +88,9 @@ def sk_select(
             stderr=subprocess.PIPE,
             check=True,
         )
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except FileNotFoundError as exc:
+        raise RuntimeError("Required command 'sk' is not available in PATH.") from exc
+    except subprocess.CalledProcessError:
         return None
 
     output = proc.stdout.decode("utf-8").strip()
@@ -97,17 +99,64 @@ def sk_select(
     return [line for line in output.splitlines() if line.strip()]
 
 
+T = TypeVar("T")
+
+
+def choose_single_entry(
+    ui,
+    entries: Sequence[T],
+    *,
+    format_line: Callable[[T, int], str],
+    header: Optional[str] = None,
+    prompt: Optional[str] = None,
+    preview: Optional[str] = None,
+) -> Tuple[Optional[T], bool]:
+    """Unified helper for skim-based single selection.
+
+    Returns (selection, cancelled). When cancelled is True, the caller should treat the
+    action as aborted by the user. When selection is None and cancelled is False, the caller
+    may fall back to a default behaviour (e.g., first entry or no-op).
+    """
+
+    if not entries:
+        return None, False
+
+    mapping: Dict[str, T] = {}
+    lines: List[str] = []
+    for idx, entry in enumerate(entries):
+        body = format_line(entry, idx)
+        line = f"{idx}\t{body}"
+        mapping[str(idx)] = entry
+        lines.append(line)
+
+    if getattr(ui, "plain", False):
+        return entries[0], False
+
+    selection = sk_select(
+        lines,
+        multi=False,
+        preview=preview,
+        header=header,
+        prompt=prompt,
+    )
+    if selection is None:
+        return None, True  # cancelled or skim unavailable
+    if not selection:
+        return None, False
+    key = selection[0].split("\t", 1)[0]
+    return mapping.get(key), False
+
+
 def compute_prune_paths(out_dir: Path, wanted_basenames: Set[str]) -> List[Path]:
     to_delete: List[Path] = []
     for p in out_dir.iterdir():
+        if p.is_dir():
+            slug = p.name
+            if slug not in wanted_basenames:
+                to_delete.append(p)
+            continue
         if p.is_file() and p.suffix.lower() == ".md":
-            base = p.stem
-            if base not in wanted_basenames:
-                to_delete.append(p)
-        elif p.is_dir() and p.name.endswith("_attachments"):
-            base = p.name[:-12]
-            if base not in wanted_basenames:
-                to_delete.append(p)
+            to_delete.append(p)
     return to_delete
 
 
