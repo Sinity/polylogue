@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -338,6 +339,15 @@ def process_conversation(
             if attachments_dir and attachments_dir.exists():
                 # Ensure attachments dir is preserved; branches can reference relative paths.
                 (branch_dir / "attachments").mkdir(exist_ok=True)
+
+        existing_branch_dirs = [path for path in branches_dir.iterdir() if path.is_dir()]
+        active_branch_names = {branch_id for branch_id in plan.branches}
+        for path in existing_branch_dirs:
+            if path.name not in active_branch_names:
+                try:
+                    shutil.rmtree(path)
+                except OSError:
+                    continue
 
     return ImportResult(
         markdown_path=persist_result.markdown_path,
