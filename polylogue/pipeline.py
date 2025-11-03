@@ -12,7 +12,7 @@ from .render import (
     per_chunk_remote_links,
     remote_attachment_info,
 )
-from .util import sanitize_filename
+from .util import sanitize_filename, parse_rfc3339_to_epoch
 
 PerChunkLink = Tuple[str, Union[Path, str]]
 PerIndexLinks = Dict[int, List[PerChunkLink]]
@@ -89,7 +89,17 @@ def collect_attachments(
             fname = sanitize_filename(meta_att.get("name", att_id))
             local_path = collector.attachments_dir / fname
             if not dry_run:
-                if force or not local_path.exists():
+                remote_epoch = parse_rfc3339_to_epoch(meta_att.get("modifiedTime"))
+                needs_download = force or not local_path.exists()
+                if not needs_download and remote_epoch is not None:
+                    try:
+                        local_epoch = int(local_path.stat().st_mtime)
+                    except OSError:
+                        needs_download = True
+                    else:
+                        if local_epoch != int(remote_epoch):
+                            needs_download = True
+                if needs_download:
                     ok = drive.download_attachment(att_id, local_path)
                     if not ok:
                         continue
