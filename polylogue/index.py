@@ -2,9 +2,99 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Protocol
 
 from .render import MarkdownDocument
+
+
+class IndexBackend(Protocol):
+    def update(
+        self,
+        *,
+        provider: str,
+        conversation_id: str,
+        slug: str,
+        path: Path,
+        document: MarkdownDocument,
+        metadata: Dict[str, Any],
+    ) -> None:
+        ...
+
+
+class SqliteBackend:
+    def update(
+        self,
+        *,
+        provider: str,
+        conversation_id: str,
+        slug: str,
+        path: Path,
+        document: MarkdownDocument,
+        metadata: Dict[str, Any],
+    ) -> None:
+        from .index_sqlite import update_sqlite_index
+
+        update_sqlite_index(
+            provider=provider,
+            conversation_id=conversation_id,
+            slug=slug,
+            path=path,
+            document=document,
+            metadata=metadata,
+        )
+
+
+class NullBackend:
+    def update(self, **_: Any) -> None:  # pragma: no cover - intentionally no-op
+        return
+
+
+class QdrantBackend:
+    def __init__(self) -> None:
+        try:
+            from .index_qdrant import update_qdrant_index
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("POLYLOGUE_INDEX_BACKEND=qdrant requires the 'qdrant-client' package.") from exc
+        self._update = update_qdrant_index
+
+    def update(
+        self,
+        *,
+        provider: str,
+        conversation_id: str,
+        slug: str,
+        path: Path,
+        document: MarkdownDocument,
+        metadata: Dict[str, Any],
+    ) -> None:
+        self._update(
+            provider=provider,
+            conversation_id=conversation_id,
+            slug=slug,
+            path=path,
+            document=document,
+            metadata=metadata,
+        )
+
+
+_BACKEND_CACHE: Optional[IndexBackend] = None
+
+
+def _resolve_backend() -> IndexBackend:
+    global _BACKEND_CACHE
+    if _BACKEND_CACHE is not None:
+        return _BACKEND_CACHE
+
+    backend_name = os.environ.get("POLYLOGUE_INDEX_BACKEND", "sqlite").strip().lower()
+    if backend_name in ("", "sqlite"):
+        _BACKEND_CACHE = SqliteBackend()
+    elif backend_name in ("none", "disabled"):
+        _BACKEND_CACHE = NullBackend()
+    elif backend_name == "qdrant":
+        _BACKEND_CACHE = QdrantBackend()
+    else:
+        raise ValueError(f"Unknown POLYLOGUE_INDEX_BACKEND '{backend_name}'")
+    return _BACKEND_CACHE
 
 
 def update_index(
@@ -16,33 +106,12 @@ def update_index(
     document: MarkdownDocument,
     metadata: Dict[str, Any],
 ) -> None:
-    backend = os.environ.get("POLYLOGUE_INDEX_BACKEND", "sqlite").strip().lower()
-    if backend in ("", "sqlite"):
-        from .index_sqlite import update_sqlite_index
-
-        update_sqlite_index(
-            provider=provider,
-            conversation_id=conversation_id,
-            slug=slug,
-            path=path,
-            document=document,
-            metadata=metadata,
-        )
-        return
-    if backend in ("none", "disabled"):
-        return
-    if backend == "qdrant":
-        try:
-            from .index_qdrant import update_qdrant_index
-        except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("POLYLOGUE_INDEX_BACKEND=qdrant requires the 'qdrant-client' package.") from exc
-        update_qdrant_index(
-            provider=provider,
-            conversation_id=conversation_id,
-            slug=slug,
-            path=path,
-            document=document,
-            metadata=metadata,
-        )
-        return
-    raise ValueError(f"Unknown POLYLOGUE_INDEX_BACKEND '{backend}'")
+    backend = _resolve_backend()
+    backend.update(
+        provider=provider,
+        conversation_id=conversation_id,
+        slug=slug,
+        path=path,
+        document=document,
+        metadata=metadata,
+    )

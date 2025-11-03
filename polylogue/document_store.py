@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import frontmatter  # type: ignore
+try:  # pragma: no cover - optional dependency
+    import frontmatter  # type: ignore
+except ImportError:  # pragma: no cover
+    frontmatter = None
 
 from .render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
 from .util import (
@@ -329,7 +332,7 @@ def persist_document(
                 attachments_existing = Path(attach_entry)
         if html_existing is None and html:
             html_existing = html_path
-        if attachments_existing is None and attachments:
+        if attachments_existing is None and attachments and attachments_dir.exists():
             attachments_existing = attachments_dir
         return DocumentPersistenceResult(
             markdown_path=markdown_path,
@@ -359,7 +362,7 @@ def persist_document(
             "dirty": False,
         }
     )
-    if attachments:
+    if attachments and attachments_dir.exists():
         polylogue_meta["attachmentsDir"] = str(attachments_dir)
     else:
         polylogue_meta.pop("attachmentsDir", None)
@@ -386,7 +389,7 @@ def persist_document(
     else:
         html_path = None
 
-    if not attachments:
+    if not attachments and attachments_dir.exists():
         try:
             attachments_dir.rmdir()
         except OSError:

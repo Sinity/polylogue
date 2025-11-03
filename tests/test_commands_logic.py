@@ -43,6 +43,7 @@ def state_env(tmp_path, monkeypatch):
     monkeypatch.setattr(util, "STATE_HOME", new_home, raising=False)
     monkeypatch.setattr(util, "STATE_PATH", state_path, raising=False)
     monkeypatch.setattr(util, "RUNS_PATH", runs_path, raising=False)
+    util.configure_state_store(util.StateStore(state_path))
     monkeypatch.setattr(cmd_module, "STATE_PATH", state_path, raising=False)
     monkeypatch.setattr(cmd_module, "RUNS_PATH", runs_path, raising=False)
     from polylogue import index_sqlite as index_sqlite_module
