@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict
 
 from jinja2 import Environment, BaseLoader
+from markupsafe import escape
 from markdown_it import MarkdownIt
 
 from .render import MarkdownDocument
@@ -122,7 +123,7 @@ class HtmlRenderOptions:
 
 
 _MD_RENDERER = MarkdownIt("commonmark", {"html": True}).enable("table").enable("strikethrough")
-_JINJA_ENV = Environment(loader=BaseLoader(), autoescape=False) if Environment is not None else None
+_JINJA_ENV = Environment(loader=BaseLoader(), autoescape=True) if Environment is not None else None
 _JINJA_TEMPLATE = _JINJA_ENV.from_string(HTML_TEMPLATE) if _JINJA_ENV is not None else None
 
 
@@ -135,7 +136,7 @@ def render_html(document: MarkdownDocument, options: HtmlRenderOptions) -> str:
 
     if _JINJA_TEMPLATE is None:
         rows = "".join(
-            f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in metadata_rows.items()
+            f"<tr><th>{escape(str(k))}</th><td>{escape(str(v))}</td></tr>" for k, v in metadata_rows.items()
         )
         return f"""
 <!DOCTYPE html>
@@ -154,7 +155,7 @@ def render_html(document: MarkdownDocument, options: HtmlRenderOptions) -> str:
     </style>
   </head>
   <body>
-    <h1>{document.metadata.get('title', 'Conversation')}</h1>
+    <h1>{escape(str(document.metadata.get('title', 'Conversation')))}</h1>
     <div class=\"metadata\">
       <table><tbody>{rows}</tbody></table>
     </div>

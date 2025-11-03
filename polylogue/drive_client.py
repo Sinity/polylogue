@@ -170,8 +170,7 @@ class DriveClient:
         chats = [
             c
             for c in children
-            if ("." not in (c.get("name") or ""))
-            and not c.get("mimeType", "").startswith("application/vnd.google-apps.")
+            if not c.get("mimeType", "").startswith("application/vnd.google-apps.")
         ]
         return chats
 

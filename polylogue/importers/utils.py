@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import tiktoken
 from tiktoken.core import Encoding
@@ -116,3 +116,32 @@ def store_large_text(
         + tail
     )
     return preview
+
+
+def _is_within_directory(root: Path, candidate: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(root.resolve())
+    except Exception:
+        return False
+    return True
+
+
+def safe_extract(archive, members: Iterable[str], target: Path) -> None:
+    """Extract archive members while preventing path traversal."""
+
+    target = target.resolve()
+    for member in members:
+        if not member:
+            continue
+        destination = target / member
+        parent = destination.parent
+        if not _is_within_directory(target, parent):
+            raise ValueError(f"Blocked unsafe archive entry: {member}")
+        parent.mkdir(parents=True, exist_ok=True)
+        archive.extract(member, target)
+
+
+def safe_extractall(archive, target: Path) -> None:
+    """Safely extract the entire archive to ``target``."""
+
+    safe_extract(archive, archive.namelist(), target)

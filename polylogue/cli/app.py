@@ -12,6 +12,7 @@ import time
 import tempfile
 import textwrap
 import shlex
+from collections import Counter
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -65,7 +66,7 @@ from .sync import (
 from ..util import CODEX_SESSIONS_ROOT, add_run, parse_input_time_to_epoch, write_clipboard_text
 from ..branch_explorer import branch_diff, build_branch_html, format_branch_tree
 
-SCRIPT_PATH = Path(__file__).resolve().parents[2] / "polylogue.py"
+SCRIPT_MODULE = "polylogue.cli"
 
 
 def _legacy_candidates(root: Path) -> List[Path]:
@@ -501,7 +502,7 @@ def _run_search_picker(ui, hits: List[SearchHit]) -> Tuple[Optional[SearchHit], 
 
 
 def _build_search_preview_command(data_file: Path) -> str:
-    python_cmd = f"{shlex.quote(sys.executable)} {shlex.quote(str(SCRIPT_PATH))}"
+    python_cmd = f"{shlex.quote(sys.executable)} -m {SCRIPT_MODULE}"
     return (
         "bash -lc "
         f"\"{python_cmd} _search-preview --data-file {shlex.quote(str(data_file))} "

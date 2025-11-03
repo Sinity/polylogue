@@ -9,11 +9,16 @@ from tempfile import TemporaryDirectory
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from ..render import AttachmentInfo
-from ..util import assign_conversation_slug
+from ..util import assign_conversation_slug, sanitize_filename
 from ..conversation import process_conversation
 from ..branching import MessageRecord
 from .base import ImportResult
-from .utils import estimate_token_count, normalise_inline_footnotes, store_large_text
+from .utils import (
+    estimate_token_count,
+    normalise_inline_footnotes,
+    safe_extractall,
+    store_large_text,
+)
 
 
 def _load_export(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
@@ -23,7 +28,7 @@ def _load_export(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
         raise FileNotFoundError(f"Unsupported ChatGPT export: {path}")
     tmp = TemporaryDirectory(prefix="chatgpt-export-")
     with zipfile.ZipFile(path) as zf:
-        zf.extractall(tmp.name)
+        safe_extractall(zf, Path(tmp.name))
     return Path(tmp.name), tmp
 
 
@@ -385,28 +390,35 @@ def _copy_attachment(
     chunk_idx: int,
 ) -> Optional[AttachmentInfo]:
     file_id = ref.get("id") or ref.get("file_id")
-    name = ref.get("name") or ref.get("filename") or file_id
-    if not name:
+    raw_name = ref.get("name") or ref.get("filename") or file_id
+    if not raw_name:
         return None
+    safe_name = sanitize_filename(raw_name)
+    if not safe_name:
+        safe_name = sanitize_filename(file_id or "attachment")
+    if not safe_name:
+        safe_name = "attachment"
     src = None
     if file_id and file_id in file_index:
         src = file_index[file_id]
-    elif name in file_index:
-        src = file_index[name]
+    elif raw_name in file_index:
+        src = file_index[raw_name]
     if src is None:
         info = AttachmentInfo(
-            name=name,
-            link=ref.get("url") or f"attachment://{name}",
+            name=raw_name,
+            link=ref.get("url") or f"attachment://{raw_name}",
             local_path=None,
             size_bytes=ref.get("size"),
             remote=True,
         )
         attachments.append(info)
-        per_chunk_links.setdefault(chunk_idx, []).append((name, ref.get("url") or f"attachment://{name}"))
+        per_chunk_links.setdefault(chunk_idx, []).append(
+            (raw_name, ref.get("url") or f"attachment://{raw_name}")
+        )
         return info
 
     attachments_dir.mkdir(parents=True, exist_ok=True)
-    target = attachments_dir / name
+    target = attachments_dir / safe_name
     counter = 1
     while target.exists():
         target = attachments_dir / f"{target.stem}_{counter}{target.suffix}"

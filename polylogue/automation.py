@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import sys
 import json
+import shlex
+import sys
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SCRIPT_PATH = REPO_ROOT / "polylogue.py"
+SCRIPT_MODULE = "polylogue.cli"
 
 
 @dataclass
@@ -37,8 +38,8 @@ def resolve_target(target: str) -> AutomationTarget:
 
 
 def build_command(target: AutomationTarget, extra_args: Iterable[str]) -> str:
-    parts = [sys.executable, str(SCRIPT_PATH)] + target.command + list(extra_args)
-    return " ".join(parts)
+    parts = [sys.executable, "-m", SCRIPT_MODULE] + target.command + list(extra_args)
+    return shlex.join(parts)
 
 
 def describe_targets(target: Optional[str] = None) -> Dict[str, Dict[str, object]]:
@@ -99,6 +100,11 @@ def _merge_args(
     return args
 
 
+def _escape_systemd_path(path: Path) -> str:
+    text = str(path)
+    return text.replace(" ", "\\x20")
+
+
 def prepare_automation_command(
     target_key: str,
     *,
@@ -129,6 +135,7 @@ def systemd_snippet(
     )
     service_name = target.name
     command = build_command(target, merged_args)
+    working_directory = _escape_systemd_path(working_dir)
     service = dedent(
         f"""# ~/.config/systemd/user/{service_name}.service
 [Unit]
@@ -136,7 +143,7 @@ Description={target.description}
 
 [Service]
 Type=oneshot
-WorkingDirectory={working_dir}
+WorkingDirectory={working_directory}
 ExecStart={command}
 """
     ).strip()
@@ -178,6 +185,6 @@ def cron_snippet(
     )
     command = build_command(target, merged_args)
     snippet = (
-        f"{schedule} XDG_STATE_HOME=\"{state_env}\" cd {working_dir} && {command} >> \"{log_path}\" 2>&1"
+        f"{schedule} XDG_STATE_HOME={shlex.quote(state_env)} cd {shlex.quote(str(working_dir))} && {command} >> {shlex.quote(log_path)} 2>&1"
     )
     return snippet + "\n"

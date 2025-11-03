@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import html
 import json
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 from .db import open_connection
 from .util import colorize, get_conversation_state
@@ -405,30 +407,45 @@ def build_branch_html(conversation: BranchConversationSummary, *, theme: str = "
         "alternate_bg": "#dbeafe",
     })
 
+    def _escape(text: Optional[str]) -> str:
+        return html.escape(text or "")
+
+    def _href(path: Optional[Path]) -> Optional[str]:
+        if not path:
+            return None
+        as_posix = path.as_posix()
+        return quote(as_posix, safe="/:")
+
     def render_node(node: BranchNodeSummary) -> str:
         badges: List[str] = []
         if node.is_canonical:
             badges.append("<span class=\"badge canonical\">canonical</span>")
         else:
-            badges.append(f"<span class=\"badge\">parent: {node.parent_branch_id or '—'}</span>")
-        badges.append(f"<span class=\"badge\">messages: {node.message_count}</span>")
+            badges.append(
+                f"<span class=\"badge\">parent: {_escape(node.parent_branch_id) or '&#8212;'}</span>"
+            )
+        badges.append(f"<span class=\"badge\">messages: {_escape(str(node.message_count))}</span>")
         if node.token_count:
-            badges.append(f"<span class=\"badge\">tokens: {node.token_count}</span>")
+            badges.append(f"<span class=\"badge\">tokens: {_escape(str(node.token_count))}</span>")
         if node.attachment_count:
-            badges.append(f"<span class=\"badge\">attachments: {node.attachment_count}</span>")
+            badges.append(
+                f"<span class=\"badge\">attachments: {_escape(str(node.attachment_count))}</span>"
+            )
         divergence_html = ""
         if node.divergence_index and not node.is_canonical:
             delta = node.divergence_index + 1
-            role = node.divergence_role or ""
-            snippet = node.divergence_snippet or ""
+            role = _escape(node.divergence_role)
+            snippet = _escape(node.divergence_snippet)
             divergence_html = (
                 f"<div class=\"divergence\"><strong>delta message #{delta}</strong> {role}: {snippet}</div>"
             )
         links: List[str] = []
-        if node.branch_path:
-            links.append(f"<a href=\"{node.branch_path}\">branch markdown</a>")
-        if node.overlay_path:
-            links.append(f"<a href=\"{node.overlay_path}\">overlay</a>")
+        branch_href = _href(node.branch_path)
+        if branch_href:
+            links.append(f"<a href=\"{branch_href}\">branch markdown</a>")
+        overlay_href = _href(node.overlay_path)
+        if overlay_href:
+            links.append(f"<a href=\"{overlay_href}\">overlay</a>")
         link_html = ""
         if links:
             link_html = " • ".join(links)
@@ -440,7 +457,7 @@ def build_branch_html(conversation: BranchConversationSummary, *, theme: str = "
         return f"""
         <div class="branch-card {'canonical' if node.is_canonical else 'alternate'}">
           <div class="branch-header">
-            <h3>{node.branch_id}</h3>
+            <h3>{_escape(node.branch_id)}</h3>
             <div class="badges">{''.join(badges)}</div>
           </div>
           {divergence_html}
@@ -458,16 +475,20 @@ def build_branch_html(conversation: BranchConversationSummary, *, theme: str = "
     canonical_node = conversation.nodes[canonical_id]
     child_list = "".join(render_child(child) for child in conversation.ordered_children(canonical_id))
 
-    title = conversation.title or conversation.slug
-    provider = conversation.provider
-    last_updated = conversation.last_updated or "unknown"
+    title = _escape(conversation.title or conversation.slug)
+    provider = _escape(conversation.provider)
+    last_updated = _escape(conversation.last_updated or "unknown")
     conversation_meta = []
     conversation_meta.append(f"<span><strong>Provider:</strong> {provider}</span>")
-    conversation_meta.append(f"<span><strong>Slug:</strong> {conversation.slug}</span>")
-    conversation_meta.append(f"<span><strong>Conversation ID:</strong> {conversation.conversation_id}</span>")
+    conversation_meta.append(f"<span><strong>Slug:</strong> {_escape(conversation.slug)}</span>")
+    conversation_meta.append(
+        f"<span><strong>Conversation ID:</strong> {_escape(conversation.conversation_id)}</span>"
+    )
     conversation_meta.append(f"<span><strong>Last updated:</strong> {last_updated}</span>")
     if conversation.conversation_path:
-        conversation_meta.append(f"<span><strong>Canonical file:</strong> {conversation.conversation_path}</span>")
+        conversation_meta.append(
+            f"<span><strong>Canonical file:</strong> {_escape(str(conversation.conversation_path))}</span>"
+        )
 
     return textwrap.dedent(
         f"""\
