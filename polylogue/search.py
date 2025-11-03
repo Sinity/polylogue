@@ -66,66 +66,65 @@ def execute_search(options: SearchOptions) -> SearchResult:
     sql.append("LIMIT ?")
     params.append(fetch_limit)
 
-    rows: List[sqlite3.Row] = []
-    with open_connection() as conn:
-        try:
-            rows = conn.execute("\n".join(sql), params).fetchall()
-        except sqlite3.OperationalError:
-            return SearchResult(hits=[])
-
     since_epoch = parse_input_time_to_epoch(options.since)
     until_epoch = parse_input_time_to_epoch(options.until)
 
     hits: List[SearchHit] = []
-    for row in rows:
-        timestamp = row["timestamp"]
-        ts_epoch = parse_rfc3339_to_epoch(timestamp) if timestamp else None
-        if since_epoch is not None and (ts_epoch is None or ts_epoch < since_epoch):
-            continue
-        if until_epoch is not None and (ts_epoch is None or ts_epoch > until_epoch):
-            continue
-
-        state = get_conversation_state(row["provider"], row["conversation_id"]) or {}
-        model = _extract_model(state)
-        if options.model and model:
-            if model.lower() != options.model.lower():
-                continue
-        if options.model and not model:
-            continue
-
-        conversation_path = _safe_path(state.get("outputPath"))
-        branch_path = _branch_path(conversation_path, row["branch_id"])
-
-        score = row["score"]
+    with open_connection() as conn:
         try:
-            score_val = float(score)
-        except (TypeError, ValueError):
-            score_val = 0.0
+            cursor = conn.execute("\n".join(sql), params)
+        except sqlite3.OperationalError:
+            return SearchResult(hits=[])
 
-        snippet = (row["snippet"] or "").replace("\n", " ").strip()
-        body = row["body"] or ""
+        for row in cursor:
+            if len(hits) >= limit:
+                break
+            timestamp = row["timestamp"]
+            ts_epoch = parse_rfc3339_to_epoch(timestamp) if timestamp else None
+            if since_epoch is not None and (ts_epoch is None or ts_epoch < since_epoch):
+                continue
+            if until_epoch is not None and (ts_epoch is None or ts_epoch > until_epoch):
+                continue
 
-        hits.append(
-            SearchHit(
-                provider=row["provider"],
-                conversation_id=row["conversation_id"],
-                slug=row["slug"],
-                title=row["title"],
-                branch_id=row["branch_id"],
-                message_id=row["message_id"],
-                position=row["position"],
-                timestamp=timestamp,
-                attachment_count=row["attachment_count"] or 0,
-                score=score_val,
-                snippet=snippet,
-                body=body,
-                conversation_path=conversation_path,
-                branch_path=branch_path,
-                model=model,
+            state = get_conversation_state(row["provider"], row["conversation_id"]) or {}
+            model = _extract_model(state)
+            if options.model and model:
+                if model.lower() != options.model.lower():
+                    continue
+            if options.model and not model:
+                continue
+
+            conversation_path = _safe_path(state.get("outputPath"))
+            branch_path = _branch_path(conversation_path, row["branch_id"])
+
+            score = row["score"]
+            try:
+                score_val = float(score)
+            except (TypeError, ValueError):
+                score_val = 0.0
+
+            snippet = (row["snippet"] or "").replace("\n", " ").strip()
+            body = row["body"] or ""
+
+            hits.append(
+                SearchHit(
+                    provider=row["provider"],
+                    conversation_id=row["conversation_id"],
+                    slug=row["slug"],
+                    title=row["title"],
+                    branch_id=row["branch_id"],
+                    message_id=row["message_id"],
+                    position=row["position"],
+                    timestamp=timestamp,
+                    attachment_count=row["attachment_count"] or 0,
+                    score=score_val,
+                    snippet=snippet,
+                    body=body,
+                    conversation_path=conversation_path,
+                    branch_path=branch_path,
+                    model=model,
+                )
             )
-        )
-        if len(hits) >= limit:
-            break
 
     return SearchResult(hits=hits)
 

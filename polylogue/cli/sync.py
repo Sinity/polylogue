@@ -18,7 +18,9 @@ from .context import (
     DEFAULT_COLLAPSE,
     DEFAULT_SYNC_OUT,
     default_sync_namespace,
+    resolve_collapse_value,
     resolve_html_enabled,
+    resolve_output_path,
     merge_with_defaults,
 )
 from .summaries import summarize_import
@@ -142,8 +144,8 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
     options = SyncOptions(
         folder_name=args.folder_name,
         folder_id=args.folder_id,
-        output_dir=Path(args.out) if args.out else DEFAULT_SYNC_OUT,
-        collapse_threshold=args.collapse_threshold or DEFAULT_COLLAPSE,
+        output_dir=resolve_output_path(args.out, DEFAULT_SYNC_OUT),
+        collapse_threshold=resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE),
         download_attachments=download_attachments,
         dry_run=args.dry_run,
         force=args.force,
@@ -247,8 +249,8 @@ def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optiona
 def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else CODEX_SESSIONS_ROOT
-    out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
-    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    out_dir = resolve_output_path(args.out, DEFAULT_CODEX_SYNC_OUT)
+    collapse = resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE)
     settings = env.settings
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
@@ -340,8 +342,8 @@ def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
 def _run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else CLAUDE_CODE_PROJECT_ROOT
-    out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
-    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    out_dir = resolve_output_path(args.out, DEFAULT_CLAUDE_CODE_SYNC_OUT)
+    collapse = resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE)
     settings = env.settings
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme

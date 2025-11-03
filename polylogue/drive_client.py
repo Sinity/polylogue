@@ -42,44 +42,47 @@ class DriveClient:
         cred_path = self._credentials_path
         if cred_path.exists():
             return cred_path
-        env_credential = os.environ.get(DRIVE_CREDENTIAL_ENV)
-        if env_credential:
-            src = Path(env_credential).expanduser()
-            if not src.exists():
-                raise SystemExit(
-                    f"Credential path from ${DRIVE_CREDENTIAL_ENV} not found: {src}"
-                )
-            try:
-                cred_path.parent.mkdir(parents=True, exist_ok=True)
-                if src.resolve() != cred_path.resolve():
-                    shutil.copyfile(src, cred_path)
-            except Exception as exc:
-                raise SystemExit(f"Failed to copy credentials from ${DRIVE_CREDENTIAL_ENV}: {exc}") from exc
-            return cred_path
+        env_copy = self._copy_credentials_from_env()
+        if env_copy:
+            return env_copy
         if self.ui.plain:
             raise SystemExit(
                 "Missing credentials.json. Set ${DRIVE_CREDENTIAL_ENV} or download a Google OAuth client secret and place it next to polylogue.py."
             )
+        return self._prompt_for_credentials()
+
+    def _copy_credentials_from_env(self) -> Optional[Path]:
+        env_credential = os.environ.get(DRIVE_CREDENTIAL_ENV)
+        if not env_credential:
+            return None
+        src = Path(env_credential).expanduser()
+        if not src.exists():
+            raise SystemExit(
+                f"Credential path from ${DRIVE_CREDENTIAL_ENV} not found: {src}"
+            )
+        return self._copy_credentials_from_path(src)
+
+    def _copy_credentials_from_path(self, src: Path) -> Path:
+        cred_path = self._credentials_path
+        try:
+            cred_path.parent.mkdir(parents=True, exist_ok=True)
+            if src.resolve() != cred_path.resolve():
+                shutil.copyfile(src, cred_path)
+        except shutil.SameFileError:
+            pass
+        except Exception as exc:
+            raise RuntimeError(f"Failed to copy credentials: {exc}") from exc
+        return cred_path
+
+    def _prompt_for_credentials(self) -> Path:
         self.ui.banner("Google Drive access needs credentials", "Download OAuth client for Desktop app")
         clipboard_checked = False
         while True:
             if not clipboard_checked:
                 clipboard_checked = True
-                clip_text = read_clipboard_text()
-                if clip_text:
-                    try:
-                        parsed = json.loads(clip_text)
-                    except json.JSONDecodeError:
-                        parsed = None
-                    if isinstance(parsed, dict) and (set(parsed.keys()) & {"installed", "web"}):
-                        if self.ui.confirm("Use OAuth client JSON from clipboard?", default=True):
-                            try:
-                                cred_path.parent.mkdir(parents=True, exist_ok=True)
-                                cred_path.write_text(clip_text, encoding="utf-8")
-                                self.ui.banner("Saved credentials", f"Captured from clipboard → {cred_path}")
-                                return cred_path
-                            except Exception as exc:
-                                self.ui.banner("Failed to write credentials", str(exc))
+                clip_path = self._try_clipboard_credentials()
+                if clip_path:
+                    return clip_path
             choice = self.ui.choose(
                 "Provide credentials",
                 ["Paste path to credentials.json", "Open setup guide", "Cancel"],
@@ -101,15 +104,33 @@ class DriveClient:
                 self.ui.banner("File not found", str(src))
                 continue
             try:
-                cred_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(src, cred_path)
-                self.ui.banner("Saved credentials", f"Copied to {cred_path}")
-            except shutil.SameFileError:
-                self.ui.banner("Using credentials", str(cred_path))
-            except Exception as exc:
+                cred_path = self._copy_credentials_from_path(src)
+            except RuntimeError as exc:
                 self.ui.banner("Failed to copy credentials", str(exc))
                 continue
+            self.ui.banner("Saved credentials", f"Copied to {cred_path}")
             return cred_path
+
+    def _try_clipboard_credentials(self) -> Optional[Path]:
+        clip_text = read_clipboard_text()
+        if not clip_text:
+            return None
+        try:
+            parsed = json.loads(clip_text)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(parsed, dict) or not (set(parsed.keys()) & {"installed", "web"}):
+            return None
+        if not self.ui.confirm("Use OAuth client JSON from clipboard?", default=True):
+            return None
+        try:
+            self._credentials_path.parent.mkdir(parents=True, exist_ok=True)
+            self._credentials_path.write_text(clip_text, encoding="utf-8")
+            self.ui.banner("Saved credentials", f"Captured from clipboard → {self._credentials_path}")
+            return self._credentials_path
+        except Exception as exc:  # pragma: no cover - I/O failures are rare
+            self.ui.banner("Failed to write credentials", str(exc))
+            return None
 
     def service(self):
         if self._service is None:

@@ -142,16 +142,18 @@ def test_run_import_chatgpt_invokes_summary(monkeypatch, tmp_path):
 def test_run_watch_cli_dispatches_based_on_provider(monkeypatch):
     markers: List[str] = []
 
-    monkeypatch.setattr("polylogue.cli.watch.run_watch_codex", lambda *args: markers.append("codex"))
-    monkeypatch.setattr("polylogue.cli.watch.run_watch_claude_code", lambda *args: markers.append("claude"))
+    def recorder(*_, **kwargs):
+        markers.append(kwargs.get("provider"))
+
+    monkeypatch.setattr("polylogue.cli.watch._run_watch_sessions", recorder)
 
     run_watch_cli(Namespace(provider="codex"), CommandEnv(ui=RecordingUI()))
     run_watch_cli(Namespace(provider="claude-code"), CommandEnv(ui=RecordingUI()))
 
-    assert markers == ["codex", "claude"], "watch CLI should delegate to provider-specific runners"
+    assert markers == ["codex", "claude-code"], "watch CLI should delegate to provider-specific runners"
 
 
-def test_run_watch_codex_once_triggers_sync(monkeypatch, tmp_path):
+def test_run_watch_sessions_once_triggers_sync(monkeypatch, tmp_path):
     from polylogue.cli import watch as watch_module
 
     calls = []
@@ -203,7 +205,16 @@ def test_run_watch_codex_once_triggers_sync(monkeypatch, tmp_path):
         prune=False,
     )
 
-    run_watch_cli(args, CommandEnv(ui=ui))
+    watch_module._run_watch_sessions(
+        args,
+        CommandEnv(ui=ui),
+        provider="codex",
+        base_default=watch_module.CODEX_SESSIONS_ROOT,
+        out_default=watch_module.DEFAULT_CODEX_SYNC_OUT,
+        banner="Watching Codex sessions",
+        log_title="Codex Watch",
+        sync_fn=fake_sync_codex_sessions,
+    )
 
     assert calls, "expected sync_codex_sessions to be invoked"
     assert ui.banners and ui.banners[0][0] == "Watching Codex sessions"
