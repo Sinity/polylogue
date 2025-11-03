@@ -3,16 +3,22 @@ import difflib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 import unicodedata
+from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Callable, Dict, Optional, Tuple, Union
 
-import pyperclip  # type: ignore
-from pyperclip import PyperclipException  # type: ignore
+try:  # pragma: no cover - optional dependency
+    import pyperclip  # type: ignore
+    from pyperclip import PyperclipException  # type: ignore
+except ImportError:  # pragma: no cover - clipboard support optional
+    pyperclip = None
+
+    class PyperclipException(Exception):
+        pass
 
 
 def _xdg_path(env_var: str, fallback: Path) -> Path:
@@ -44,12 +50,6 @@ CODEX_SESSIONS_ROOT = Path(
 CLAUDE_CODE_PROJECT_ROOT = Path(
     os.environ.get("POLYLOGUE_CLAUDE_CODE_PROJECTS", str(DATA_HOME / "claude" / "projects"))
 ).expanduser()
-
-
-_REQUIRED_COMMANDS = ("delta",)
-for _cmd in _REQUIRED_COMMANDS:
-    if shutil.which(_cmd) is None:
-        raise RuntimeError(f"Required external command '{_cmd}' is not available in PATH.")
 
 
 def colorize(text: str, color: str) -> str:
@@ -135,42 +135,130 @@ STATE_PATH = STATE_HOME / "state.json"
 RUNS_PATH = STATE_HOME / "runs.json"
 
 
-def _load_state() -> dict:
-    try:
-        if STATE_PATH.exists():
-            return json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    return {}
+class StateStore:
+    """Lightweight JSON state persistence with injectable storage for tests."""
+
+    def __init__(self, path: Path):
+        self.path = path
+
+    def load(self) -> dict:
+        try:
+            if self.path.exists():
+                return json.loads(self.path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {}
+
+    def save(self, state: dict) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def mutate(self, mutator: Callable[[dict], None]) -> dict:
+        state = self.load()
+        mutator(state)
+        self.save(state)
+        return state
 
 
-def _save_state(state: dict) -> None:
-    try:
-        STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+STATE_STORE = StateStore(STATE_PATH)
+
+
+def get_state_store() -> StateStore:
+    global STATE_STORE
+    if isinstance(STATE_STORE, StateStore) and STATE_STORE.path != STATE_PATH:
+        STATE_STORE = StateStore(STATE_PATH)
+    return STATE_STORE
+
+
+def configure_state_store(store: StateStore) -> None:
+    global STATE_STORE
+    STATE_STORE = store
+
+
+class DiffTracker:
+    """Manage pre/post snapshots when diff output is requested."""
+
+    def __init__(self, path: Path, enabled: bool):
+        self._enabled = enabled
+        self._snapshot = snapshot_for_diff(path) if enabled else None
+
+    def finalize(self, new_path: Path) -> Optional[Path]:
+        if not self._enabled or self._snapshot is None:
+            return None
+        try:
+            return write_delta_diff(self._snapshot, new_path)
+        finally:
+            self.cleanup()
+
+    def cleanup(self) -> None:
+        if self._snapshot is None:
+            return
+        try:
+            if self._snapshot.exists():
+                self._snapshot.unlink()
+        except Exception:
+            pass
+        finally:
+            self._snapshot = None
+
+
+class RunAccumulator:
+    """Collect numeric statistics across processed conversations."""
+
+    def __init__(self) -> None:
+        self._totals: Dict[str, int] = defaultdict(int)
+
+    def add_stats(self, attachments: int, stats: Dict[str, Any]) -> None:
+        self._totals["attachments"] += int(attachments)
+        for key, value in stats.items():
+            if isinstance(value, (int, float)):
+                self._totals[key] += int(value)
+
+    def increment(self, key: str, value: int = 1) -> None:
+        self._totals[key] += value
+
+    def totals(self) -> Dict[str, int]:
+        totals = dict(self._totals)
+        totals.setdefault("attachments", 0)
+        totals.setdefault("skipped", 0)
+        totals.setdefault("diffs", 0)
+        return totals
 
 
 def get_cached_folder_id(name: str) -> Optional[str]:
-    st = _load_state()
-    return (st.get("folders") or {}).get(name)
+    state = get_state_store().load()
+    folders = state.get("folders") if isinstance(state.get("folders"), dict) else None
+    if isinstance(folders, dict):
+        value = folders.get(name)
+        if isinstance(value, str):
+            return value
+    return None
 
 
 def set_cached_folder_id(name: str, folder_id: str) -> None:
-    st = _load_state()
-    st.setdefault("folders", {})[name] = folder_id
-    _save_state(st)
+    def _mutator(state: dict) -> None:
+        folders = state.get("folders")
+        if not isinstance(folders, dict):
+            folders = {}
+            state["folders"] = folders
+        folders[name] = folder_id
+
+    get_state_store().mutate(_mutator)
 
 
 def get_conversation_state(provider: str, conversation_id: str) -> Optional[Dict[str, Any]]:
-    st = _load_state()
-    convs = st.get("conversations") if isinstance(st.get("conversations"), dict) else {}
-    provider_map = convs.get(provider) if isinstance(convs.get(provider), dict) else {}
+    state = get_state_store().load()
+    conversations = state.get("conversations")
+    if not isinstance(conversations, dict):
+        return None
+    provider_map = conversations.get(provider)
+    if not isinstance(provider_map, dict):
+        return None
     entry = provider_map.get(conversation_id)
-    if isinstance(entry, dict):
-        return entry
-    return None
+    return entry if isinstance(entry, dict) else None
 
 
 def assign_conversation_slug(
@@ -180,40 +268,45 @@ def assign_conversation_slug(
     *,
     id_hint: Optional[str] = None,
 ) -> str:
-    st = _load_state()
-    convs = st.setdefault("conversations", {})
-    if not isinstance(convs, dict):
-        convs = {}
-        st["conversations"] = convs
-    provider_map = convs.setdefault(provider, {})
-    if not isinstance(provider_map, dict):
-        provider_map = {}
-        convs[provider] = provider_map
+    chosen: Dict[str, Optional[str]] = {"value": None}
 
-    entry = provider_map.get(conversation_id)
-    if isinstance(entry, dict) and entry.get("slug"):
-        return entry["slug"]
+    def _mutator(state: dict) -> None:
+        conversations = state.get("conversations")
+        if not isinstance(conversations, dict):
+            conversations = {}
+            state["conversations"] = conversations
+        provider_map = conversations.get(provider)
+        if not isinstance(provider_map, dict):
+            provider_map = {}
+            conversations[provider] = provider_map
 
-    base_source = title or id_hint or conversation_id or "conversation"
-    base = slugify_title(base_source)
-    if not base:
-        fallback = sanitize_filename(base_source)
-        base = fallback.replace(" ", "-") or (conversation_id[:8] if conversation_id else "conversation")
+        entry = provider_map.get(conversation_id)
+        if isinstance(entry, dict) and entry.get("slug"):
+            chosen["value"] = entry["slug"]
+            return
 
-    existing_slugs = {
-        data.get("slug")
-        for data in provider_map.values()
-        if isinstance(data, dict) and data.get("slug")
-    }
-    slug = base
-    counter = 1
-    while slug in existing_slugs:
-        slug = f"{base}-{counter}"
-        counter += 1
+        base_source = title or id_hint or conversation_id or "conversation"
+        base = slugify_title(base_source)
+        if not base:
+            fallback = sanitize_filename(base_source)
+            base = fallback.replace(" ", "-") or (conversation_id[:8] if conversation_id else "conversation")
 
-    provider_map[conversation_id] = {"slug": slug}
-    _save_state(st)
-    return slug
+        existing_slugs = {
+            data.get("slug")
+            for data in provider_map.values()
+            if isinstance(data, dict) and data.get("slug")
+        }
+        slug_candidate = base
+        counter = 1
+        while slug_candidate in existing_slugs:
+            slug_candidate = f"{base}-{counter}"
+            counter += 1
+
+        provider_map[conversation_id] = {"slug": slug_candidate}
+        chosen["value"] = slug_candidate
+
+    get_state_store().mutate(_mutator)
+    return chosen["value"] or "conversation"
 
 
 def update_conversation_state(
@@ -221,21 +314,22 @@ def update_conversation_state(
     conversation_id: str,
     **updates: Any,
 ) -> None:
-    st = _load_state()
-    convs = st.setdefault("conversations", {})
-    if not isinstance(convs, dict):
-        convs = {}
-        st["conversations"] = convs
-    provider_map = convs.setdefault(provider, {})
-    if not isinstance(provider_map, dict):
-        provider_map = {}
-        convs[provider] = provider_map
-    entry = provider_map.get(conversation_id)
-    if not isinstance(entry, dict):
-        entry = {}
-    entry.update({k: v for k, v in updates.items() if v is not None})
-    provider_map[conversation_id] = entry
-    _save_state(st)
+    def _mutator(state: dict) -> None:
+        conversations = state.get("conversations")
+        if not isinstance(conversations, dict):
+            conversations = {}
+            state["conversations"] = conversations
+        provider_map = conversations.get(provider)
+        if not isinstance(provider_map, dict):
+            provider_map = {}
+            conversations[provider] = provider_map
+        entry = provider_map.get(conversation_id)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry.update({k: v for k, v in updates.items() if v is not None})
+        provider_map[conversation_id] = entry
+
+    get_state_store().mutate(_mutator)
 
 
 def slugify_title(value: str) -> str:

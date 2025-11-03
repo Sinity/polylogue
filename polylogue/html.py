@@ -121,15 +121,19 @@ class HtmlRenderOptions:
     theme: str = "light"
 
 
+_MD_RENDERER = MarkdownIt("commonmark", {"html": True}).enable("table").enable("strikethrough")
+_JINJA_ENV = Environment(loader=BaseLoader(), autoescape=False) if Environment is not None else None
+_JINJA_TEMPLATE = _JINJA_ENV.from_string(HTML_TEMPLATE) if _JINJA_ENV is not None else None
+
+
 def render_html(document: MarkdownDocument, options: HtmlRenderOptions) -> str:
     theme = THEMES.get(options.theme, THEMES["light"])
-    md = MarkdownIt("commonmark", {"html": True}).enable("table").enable("strikethrough")
-    body_html = md.render(document.body)
+    body_html = _MD_RENDERER.render(document.body)
     body_html = _transform_callouts(body_html)
     metadata_rows = {k: v for k, v in document.metadata.items() if k != "attachments"}
     metadata_rows["attachments"] = len(document.attachments)
 
-    if Environment is None:
+    if _JINJA_TEMPLATE is None:
         rows = "".join(
             f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in metadata_rows.items()
         )
@@ -159,9 +163,7 @@ def render_html(document: MarkdownDocument, options: HtmlRenderOptions) -> str:
 </html>
 """
 
-    env = Environment(loader=BaseLoader(), autoescape=False)
-    template = env.from_string(HTML_TEMPLATE)
-    return template.render(
+    return _JINJA_TEMPLATE.render(
         title=document.metadata.get("title", "Conversation"),
         metadata=metadata_rows,
         body_html=body_html,

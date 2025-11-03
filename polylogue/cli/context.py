@@ -118,3 +118,15 @@ def resolve_html_settings(args: argparse.Namespace, settings: Optional[Settings]
 
 def resolve_html_enabled(args: argparse.Namespace, settings: Optional[Settings] = None) -> bool:
     return resolve_html_settings(args, settings)[0]
+
+
+def resolve_output_path(path_value: Optional[str], fallback: Path) -> Path:
+    if path_value:
+        return Path(path_value).expanduser()
+    return fallback
+
+
+def resolve_collapse_value(value: Optional[int], default: int) -> int:
+    if isinstance(value, int) and value > 0:
+        return value
+    return default

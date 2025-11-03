@@ -12,7 +12,13 @@ from ..importers import ImportResult
 from ..options import RenderOptions
 from ..ui import UI
 from ..util import write_clipboard_text
-from .context import DEFAULT_COLLAPSE, DEFAULT_RENDER_OUT, resolve_html_enabled
+from .context import (
+    DEFAULT_COLLAPSE,
+    DEFAULT_RENDER_OUT,
+    resolve_collapse_value,
+    resolve_html_enabled,
+    resolve_output_path,
+)
 
 
 def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
@@ -48,8 +54,8 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
     if not inputs:
         console.print("No JSON files to render")
         return
-    output = Path(args.out) if args.out else DEFAULT_RENDER_OUT
-    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
+    output = resolve_output_path(args.out, DEFAULT_RENDER_OUT)
+    collapse = resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE)
     download_attachments = not args.links_only
     if not ui.plain and not args.links_only:
         download_attachments = ui.confirm("Download attachments to local folders?", default=True)
