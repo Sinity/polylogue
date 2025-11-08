@@ -77,7 +77,7 @@ python3 polylogue.py automation describe --target codex
 
 Available targets today: `codex`, `claude-code`, `drive-sync`, `gemini-render`, `chatgpt-import` (each target carries sensible defaults for collapse thresholds, HTML flags, and folder names that you can override with CLI/Nix options).
 
-Use `--working-dir`, `--extra-arg`, `--collapse-threshold`, or `--html` to customise the generated command. Pipe the output to `tee` or redirect into your service/cron files as desired.
+Use `--working-dir`, `--extra-arg`, `--collapse-threshold`, or `--html on|off|auto` to customise the generated command. Because the automation CLI reuses the same flag builders as the main commands, the snippets exactly mirror how `--html` behaves elsewhere (`--html` alone implies `on`). Pipe the output to `tee` or redirect into your service/cron files as desired.
 
 ### NixOS module
 

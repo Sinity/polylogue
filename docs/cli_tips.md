@@ -17,4 +17,4 @@ Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetit
 ## Session Settings & Themes
 
 - **Interactive toggles**: From the main menu, choose `Settings` to enable/disable HTML previews, flip between light/dark themes, or restore config defaults. Changes apply immediately to render, sync, import, and watch commands for the current session.
-- **Automation defaults**: Non-interactive runs still respect `polylogue.config` defaults. Update the config file or pass explicit CLI flags when a permanent HTML/theme change is required in scripts.
+- **Automation defaults**: Non-interactive runs still respect `polylogue.config` defaults. Update the config file or run `polylogue settings --html on --theme dark` when a permanent HTML/theme change is required in scripts.

@@ -13,6 +13,7 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 - Enable the direnv-managed dev shell: `direnv allow` (uses `.envrc` to call `nix develop`).
 - Prefer manual entry? `nix develop` installs Python plus gum, skim, rich, bat, glow, etc.
 - Run `python3 polylogue.py` and pick an action from the gum menu (Render, Sync, Local Syncs, Doctor, Stats, etc.).
+- Menu navigation assumes gum is present (thanks, Nix!): use the arrow keys, hit Enter to choose an action, and press `q` to back out of pickers without making a selection.
 - When a directory has multiple JSON logs, the skim picker previews files with `bat`; press `Ctrl+G` for a live `glow` render before confirming.
 - The first Drive action walks you through supplying a Google OAuth client JSON; credentials and tokens are stored under `$XDG_CONFIG_HOME/polylogue/` (defaults to `~/.config/polylogue/`).
 
@@ -23,8 +24,9 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 - **Inspect archives:** `polylogue inspect branches` renders branch trees (and auto-writes HTML explorers), `polylogue inspect search` queries the SQLite FTS index with rich filters, and `polylogue inspect stats` summarises tokens/attachments per provider.
 - **Watch local sessions in real time:** `polylogue watch codex` and `polylogue watch claude-code` keep those directories synced automatically; adjust debounce, HTML, collapse settings per watcher, or run a single pass with `--once`. Every sync is logged to `polylogue status --json` so scheduled runs and watchers share the same telemetry.
 - **Tweak session defaults on the fly:** The interactive menu's `Settings` pane toggles HTML previews, switches light/dark themes, and resets to config defaults. Adjustments flow through render, sync, import, and watch commands for the duration of the session.
-- **Doctor & Stats:** `polylogue doctor` sanity-checks source directories; `polylogue stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters).
-- **View recent runs:** The status dashboard shows the last operations, including attachment MiB and diff counts per command.
+- **Doctor & Stats:** `polylogue doctor` sanity-checks source directories and now surfaces Drive retry/failure rates from recent runs; `polylogue stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters).
+- **Settings:** `polylogue settings --html on --theme dark` updates the default render/sync preferences so automation and interactive flows inherit the same HTML behaviour without extra flags.
+- **View recent runs:** The status dashboard shows the last operations, including attachment MiB, diff counts, and Drive retry/failure stats per command.
 - **Monitor automation:** `polylogue status --json --watch` now streams provider-level stats for dashboards or terminal monitoring.
 - **Branch-aware transcripts:** Canonical Markdown now lives at `<slug>/conversation.md`, with `<slug>/conversation.common.md` capturing shared context and `branches/<branch-id>/{<branch-id>.md, overlay.md}` preserving every alternate path.
 - **Explore branch graphs:** `polylogue inspect branches` renders a skim-driven branch picker, prints the tree view, and auto-writes an HTML explorer when branches diverge (override output with `--html-out`, disable via `--html off`).
@@ -67,6 +69,7 @@ Although the CLI is interactive by default, the same functionality is available 
 - `python3 polylogue.py status [--json] [--watch] [--interval seconds]`
 - `python3 polylogue.py prune [--dir DIR] [--dry-run]`
 - `python3 polylogue.py doctor [--codex-dir DIR] [--claude-code-dir DIR] [--limit N] [--json]`
+- `python3 polylogue.py settings [--html on|off] [--theme light|dark] [--reset] [--json]`
 
 `--plain` disables gum/skim/Rich styling for CI or scripts; `--json` prints machine-readable summaries.
 Use `--to-clipboard` on `render`/`import` commands to copy a single Markdown result directly to your system clipboard.
@@ -78,9 +81,9 @@ The dev shell equips Polylogue with:
 - `rich` for progress bars, tables, and styled output.
 - `bat`, `delta`, `fd`, `ripgrep`, `glow` as supporting CLIs.
 
-Everything falls back gracefully when `--plain` is specified or stdout isn’t a TTY.
+Interactive features assume the gum/skim/Rich toolchain from the dev shell; use `--plain` if you intentionally need raw stdout or CI-friendly output.
 
-See `docs/automation.md` for watcher usage, ready-made systemd/cron templates, and the `polylogue automation systemd|cron|describe` helper that prints the snippets or metadata for you.
+See `docs/automation.md` for watcher usage, ready-made systemd/cron templates, and the `polylogue automation systemd|cron|describe` helper that prints the snippets or metadata for you. Automation subcommands now share the same `--html` semantics as render/sync/import (`on|off|auto` with `--html` implying `on`), so generated snippets exactly match the flags you would type by hand.
 Available automation targets: `codex`, `claude-code`, `drive-sync`, `gemini-render`, `chatgpt-import` (pass `--target <name>` for snippet generation or declarative modules). Per-target defaults (collapse thresholds, Drive folders, HTML flags) are baked into the metadata but can be overridden via CLI flags or the NixOS module.
 
 ## Nix Flake Usage
