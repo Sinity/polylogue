@@ -20,6 +20,8 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         codex_dir=codex_dir,
         claude_code_dir=claude_dir,
         limit=args.limit,
+        service=env.conversations,
+        archive=env.archive,
     )
 
     sample_config = Path(__file__).resolve().parent.parent / "docs" / "polylogue.config.sample.jsonc"

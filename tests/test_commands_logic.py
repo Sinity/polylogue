@@ -33,25 +33,6 @@ class DummyUI:
         pass
 
 
-@pytest.fixture
-def state_env(tmp_path, monkeypatch):
-    state_home = tmp_path / "state"
-    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
-    new_home = state_home / "polylogue"
-    state_path = new_home / "state.json"
-    runs_path = new_home / "runs.json"
-    monkeypatch.setattr(util, "STATE_HOME", new_home, raising=False)
-    monkeypatch.setattr(util, "STATE_PATH", state_path, raising=False)
-    monkeypatch.setattr(util, "RUNS_PATH", runs_path, raising=False)
-    util.configure_state_store(util.StateStore(state_path))
-    monkeypatch.setattr(cmd_module, "STATE_PATH", state_path, raising=False)
-    monkeypatch.setattr(cmd_module, "RUNS_PATH", runs_path, raising=False)
-    from polylogue import index_sqlite as index_sqlite_module
-
-    monkeypatch.setattr(index_sqlite_module, "STATE_HOME", new_home, raising=False)
-    return new_home
-
-
 def test_render_command_persists_state(tmp_path, state_env, monkeypatch):
     records = []
     monkeypatch.setattr(cmd_module, "add_run", lambda record: records.append(record))
@@ -170,6 +151,10 @@ def test_sync_command_with_stub_drive(tmp_path, monkeypatch, state_env):
     assert result.items[0].output == expected_output
     assert result.items[0].slug == util.sanitize_filename('Drive Sample')
     assert expected_output.exists()
+    state_data = json.loads((state_env / "state.json").read_text(encoding="utf-8"))
+    drive_state = state_data["conversations"]['drive-sync']['drive-1']
+    assert drive_state['slug'] == util.sanitize_filename('Drive Sample')
+    assert drive_state['outputPath'] == str(expected_output)
     assert records and records[0].get("duration") is not None
     assert records[0]["duration"] >= 0
 

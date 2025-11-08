@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 from ..config import CONFIG
-from ..settings import SETTINGS, Settings
+from ..settings import SETTINGS, Settings, ensure_settings_defaults
 from ..drive_client import DEFAULT_FOLDER_NAME
 
 
@@ -88,13 +88,6 @@ DEFAULT_OUTPUT_ROOTS = list(
         ]
     )
 )
-
-
-def ensure_settings_defaults(settings: Optional[Settings] = None) -> Settings:
-    active = _resolve_settings(settings)
-    active.html_previews = CONFIG.defaults.html_previews
-    active.html_theme = CONFIG.defaults.html_theme
-    return active
 
 
 ensure_settings_defaults()

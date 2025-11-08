@@ -96,9 +96,10 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def open_connection() -> sqlite3.Connection:
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+def open_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
+    target_path = Path(db_path) if db_path is not None else DB_PATH
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(target_path)
     conn.row_factory = sqlite3.Row
     _apply_schema(conn)
     try:
