@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Dict, Optional
 
 from .document_store import DocumentPersistenceResult, persist_document
+from .services.conversation_registrar import ConversationRegistrar
 from .render import AttachmentInfo, MarkdownDocument
 
 
@@ -29,7 +30,10 @@ class ConversationRepository:
         slug_hint: Optional[str] = None,
         id_hint: Optional[str] = None,
         force: bool = False,
+        registrar: ConversationRegistrar = None,
     ) -> DocumentPersistenceResult:
+        if registrar is None:
+            raise ValueError("ConversationRegistrar instance required")
         return persist_document(
             provider=provider,
             conversation_id=conversation_id,
@@ -47,4 +51,5 @@ class ConversationRepository:
             slug_hint=slug_hint,
             id_hint=id_hint,
             force=force,
+            registrar=registrar,
         )

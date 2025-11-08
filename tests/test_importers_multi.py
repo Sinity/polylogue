@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import zipfile
 from pathlib import Path
 
@@ -8,19 +9,12 @@ import pytest
 from polylogue.importers.chatgpt import import_chatgpt_export
 from polylogue.importers.claude_ai import import_claude_export
 from polylogue.importers.claude_code import import_claude_code_session
+from tests.conftest import _configure_state
 
 
 @pytest.fixture(autouse=True)
 def _polylogue_state_home(tmp_path, monkeypatch):
-    state_home = tmp_path / "state"
-    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
-    from polylogue import util
-
-    state_dir = state_home / "polylogue"
-    monkeypatch.setattr(util, "STATE_HOME", state_dir)
-    monkeypatch.setattr(util, "STATE_PATH", state_dir / "state.json")
-    monkeypatch.setattr(util, "RUNS_PATH", state_dir / "runs.json")
-    return state_home
+    return _configure_state(monkeypatch, tmp_path)
 
 
 def _write(path: Path, data) -> Path:
@@ -639,9 +633,18 @@ def test_import_chatgpt_export_repeat_skips(tmp_path):
     assert len(first) == 1
     assert not first[0].skipped
 
-    state_path = Path(os.environ["XDG_STATE_HOME"]) / "polylogue/state.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    entry = state["conversations"]["chatgpt"]["repeat-id"]
+    db_path = Path(os.environ["XDG_STATE_HOME"]) / "polylogue/polylogue.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT metadata_json FROM conversations WHERE provider = ? AND conversation_id = ?",
+            ("chatgpt", "repeat-id"),
+        ).fetchone()
+        assert row is not None
+        entry = json.loads(row["metadata_json"])
+    finally:
+        conn.close()
     assert entry["collapseThreshold"] == 10
     assert entry["dirty"] is False
     assert entry["attachmentPolicy"]["lineThreshold"] >= 10
@@ -667,8 +670,16 @@ def test_import_chatgpt_export_repeat_skips(tmp_path):
     assert second[0].skip_reason == "dirty-local"
     assert second[0].dirty
 
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    entry = state["conversations"]["chatgpt"]["repeat-id"]
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT metadata_json FROM conversations WHERE provider = ? AND conversation_id = ?",
+            ("chatgpt", "repeat-id"),
+        ).fetchone()
+        entry = json.loads(row["metadata_json"])
+    finally:
+        conn.close()
     assert entry["dirty"] is True
     assert "localHash" in entry
 

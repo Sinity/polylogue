@@ -11,7 +11,7 @@ Polylogue treats every provider through the same pipeline: adapters normalise ra
 
 ## Conversation State & Re-imports
 
-- Polylogue persists per-conversation metadata under `$XDG_STATE_HOME/polylogue/state.json`, recording the slug, content hash, timestamps, and output paths written during the last run.
+- Polylogue persists per-conversation metadata inside `$XDG_STATE_HOME/polylogue/polylogue.db` (SQLite), recording the slug, content hash, timestamps, run settings, and output paths written during the last run.
 - Slugs come from `assign_conversation_slug()`, which reuses previously stored names and appends numeric suffixes deterministically when collisions appear—keeping Git history tidy even if provider titles change.
 - Before writing files, `conversation_is_current()` compares the provider’s `lastUpdated` value (when available) and the stored hash. If nothing changed, the importer returns an `ImportResult` tagged `skipped` so the CLI can report the outcome without touching disk.
 - Stored HTML and `attachments/` directories are reused whenever possible so reruns do not duplicate artefacts or churn timestamps unnecessarily.

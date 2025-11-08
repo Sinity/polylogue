@@ -16,6 +16,7 @@ class RenderOptions:
     html: bool = False
     html_theme: str = "light"
     diff: bool = False
+    branch_export: str = "full"
 
 
 @dataclass
@@ -35,6 +36,7 @@ class SyncOptions:
     html: bool = False
     html_theme: str = "light"
     diff: bool = False
+    branch_export: str = "full"
 
 
 @dataclass
@@ -109,6 +111,7 @@ class StatusResult:
     recent_runs: List[dict]
     run_summary: Dict[str, Any]
     provider_summary: Dict[str, Any]
+    runs: List[dict]
 
 
 @dataclass

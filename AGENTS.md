@@ -10,6 +10,8 @@
 - Use `nix develop` to enter the environment with all required tools.
 - Launch `python3 polylogue.py` for the interactive menu (render, sync, list, stats, doctor, help).
 - The first Drive action requests a Google OAuth client JSON and stores credentials/tokens under `$XDG_CONFIG_HOME/polylogue/`.
+- Assume dependencies are always present: do **not** add graceful-degradation branches for missing CLI tools or libraries. Our NixOS devshell supplies gum, skim, rich, etc., so code should hard-require them.
+- **Never add graceful-degradation fallbacks.** We run on NixOS and can guarantee every dependency; if a tool is missing it should be treated as a hard failure, not a best-effort path.
 
 ## Automation & Testing
 - Non-interactive paths use `--plain` to disable gum/skim/Rich; combine with `--json` for machine-readable summaries.

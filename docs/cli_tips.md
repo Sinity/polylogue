@@ -1,13 +1,13 @@
 # CLI Tips
 
-Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetitive workflows. These features are optional and fail gracefully when the environment lacks the required dependencies.
+Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetitive workflows. The Nix/devshell environment ships every required dependency (gum, skim, Rich, pyperclip, etc.), so these helpers are always available unless you deliberately run with `--plain`.
 
 ## Clipboard & Credential Workflows
 
 - **Drive onboarding**: During the first Drive sync, Polylogue checks the system clipboard for an OAuth client JSON. If found (and confirmed), it saves the payload to `$XDG_CONFIG_HOME/polylogue/credentials.json`, avoiding manual copy/paste steps.
 - **Manual credential import**: When no clipboard payload exists, the CLI guides you through selecting a local file or opening Google’s setup guide. Credentials and tokens always land under `$XDG_CONFIG_HOME/polylogue/`.
 - **Copy rendered Markdown**: Pass `--to-clipboard` to render/import commands. When exactly one Markdown file is produced, Polylogue copies it via `pyperclip` and reports success or a warning if clipboard support is unavailable.
-- **Graceful fallbacks**: Missing `pyperclip` or clipboard backends never block imports—they only suppress the convenience prompts.
+- **Clipboard failures**: `pyperclip` ships with the devshell, but if the OS clipboard rejects writes Polylogue simply reports the warning while continuing the import.
 
 ## Branch Explorer & Search
 
@@ -17,4 +17,4 @@ Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetit
 ## Session Settings & Themes
 
 - **Interactive toggles**: From the main menu, choose `Settings` to enable/disable HTML previews, flip between light/dark themes, or restore config defaults. Changes apply immediately to render, sync, import, and watch commands for the current session.
-- **Automation defaults**: Non-interactive runs still respect `polylogue.config` defaults. Update the config file or pass explicit CLI flags when a permanent HTML/theme change is required in scripts.
+- **Automation defaults**: Non-interactive runs still respect `polylogue.config` defaults. Update the config file or run `polylogue settings --html on --theme dark` when a permanent HTML/theme change is required in scripts.

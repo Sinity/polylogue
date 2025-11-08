@@ -15,7 +15,8 @@ from .drive import (
     get_file_meta,
     list_children,
 )
-from .util import CONFIG_HOME, parse_rfc3339_to_epoch, read_clipboard_text
+from .paths import CONFIG_HOME
+from .util import parse_rfc3339_to_epoch, read_clipboard_text
 from .ui import UI
 
 GDRIVE_INSTRUCTIONS = "https://developers.google.com/drive/api/quickstart/python"
@@ -176,7 +177,7 @@ class DriveClient:
 
     def download_chat_bytes(self, file_id: str) -> Optional[bytes]:
         svc = self.service()
-        return download_file(svc, file_id)
+        return download_file(svc, file_id, operation="chat")
 
     def attachment_meta(self, file_id: str) -> Optional[Dict[str, Any]]:
         svc = self.service()
@@ -184,7 +185,7 @@ class DriveClient:
 
     def download_attachment(self, file_id: str, path: Path) -> bool:
         svc = self.service()
-        ok = download_to_path(svc, file_id, path)
+        ok = download_to_path(svc, file_id, path, operation="attachment")
         if not ok:
             return False
         return True

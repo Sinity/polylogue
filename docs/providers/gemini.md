@@ -14,6 +14,10 @@ Polylogue renders Gemini conversation exports—whether pulled from Google AI St
 - Populate YAML front matter with transcript metadata (title, provider, timestamps) so reruns can reuse slugs, hashes, and attachment decisions.
 - Optional HTML previews respect the configured theme (set via the interactive settings menu or config defaults) and include quick links to attachments and Drive assets.
 
+### Branch Export Modes
+
+Gemini renders also support `--branch-export full|overlay|canonical` whenever you run `polylogue render`, `polylogue sync drive`, or trigger the same flows through automation. Use `full` to keep the entire branch tree for divergent chats, `overlay` when only the delta files matter, or `canonical` to emit a single `conversation.md` per slug.
+
 ## Sync Notes
 
 - `polylogue render` targets local JSON exports; `polylogue sync drive` connects to the designated Drive folder (`AI Studio` by default) to pull new conversations, honouring filters like `--since`, `--until`, and `--name-filter`.
