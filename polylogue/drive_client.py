@@ -176,7 +176,7 @@ class DriveClient:
 
     def download_chat_bytes(self, file_id: str) -> Optional[bytes]:
         svc = self.service()
-        return download_file(svc, file_id)
+        return download_file(svc, file_id, operation="chat")
 
     def attachment_meta(self, file_id: str) -> Optional[Dict[str, Any]]:
         svc = self.service()
@@ -184,7 +184,7 @@ class DriveClient:
 
     def download_attachment(self, file_id: str, path: Path) -> bool:
         svc = self.service()
-        ok = download_to_path(svc, file_id, path)
+        ok = download_to_path(svc, file_id, path, operation="attachment")
         if not ok:
             return False
         return True
