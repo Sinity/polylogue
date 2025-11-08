@@ -5,6 +5,12 @@ from polylogue.doctor import run_doctor
 from polylogue import doctor as doctor_module
 from polylogue import db as db_module
 from polylogue.config import Defaults, OutputDirs
+from polylogue.services.conversation_registrar import ConversationRegistrar
+from polylogue.services.conversation_service import ConversationService
+from polylogue.persistence.state import ConversationStateRepository
+from polylogue.persistence.database import ConversationDatabase
+from polylogue.archive import Archive
+from polylogue.persistence.state_store import StateStore
 
 
 def _fake_defaults(tmp_path):
@@ -66,7 +72,6 @@ def test_doctor_prunes_state_and_db(tmp_path, monkeypatch):
     }
     state_path.write_text(json.dumps(state_data), encoding="utf-8")
 
-    monkeypatch.setattr(doctor_module, "STATE_PATH", state_path)
     monkeypatch.setattr(doctor_module, "STATE_HOME", state_home)
     monkeypatch.setattr(db_module, "STATE_HOME", state_home)
     db_module.DB_PATH = state_home / "polylogue.db"
@@ -84,7 +89,14 @@ def test_doctor_prunes_state_and_db(tmp_path, monkeypatch):
     codex_dir.mkdir()
     claude_dir.mkdir()
 
-    report = run_doctor(codex_dir=codex_dir, claude_code_dir=claude_dir, limit=0)
+    registrar = ConversationRegistrar(
+        state_repo=ConversationStateRepository(store=StateStore(state_path)),
+        database=ConversationDatabase(path=db_module.DB_PATH),
+        archive=Archive(doctor_module.CONFIG),
+    )
+    service = ConversationService(registrar=registrar)
+
+    report = run_doctor(codex_dir=codex_dir, claude_code_dir=claude_dir, limit=0, service=service)
 
     assert any(issue.provider == "state" and "Removed" in issue.message for issue in report.issues)
     assert any(issue.provider == "database" for issue in report.issues)
@@ -120,7 +132,6 @@ def test_doctor_skips_external_attachments(tmp_path, monkeypatch):
     }
     state_path.write_text(json.dumps(state_data), encoding="utf-8")
 
-    monkeypatch.setattr(doctor_module, "STATE_PATH", state_path)
     monkeypatch.setattr(doctor_module, "STATE_HOME", state_home)
     monkeypatch.setattr(db_module, "STATE_HOME", state_home)
     db_module.DB_PATH = state_home / "polylogue.db"
@@ -130,10 +141,55 @@ def test_doctor_skips_external_attachments(tmp_path, monkeypatch):
     codex_dir.mkdir()
     claude_dir.mkdir()
 
-    report = run_doctor(codex_dir=codex_dir, claude_code_dir=claude_dir, limit=0)
+    registrar = ConversationRegistrar(
+        state_repo=ConversationStateRepository(store=StateStore(state_path)),
+        database=ConversationDatabase(path=db_module.DB_PATH),
+        archive=Archive(doctor_module.CONFIG),
+    )
+    service = ConversationService(registrar=registrar)
+
+    report = run_doctor(codex_dir=codex_dir, claude_code_dir=claude_dir, limit=0, service=service)
 
     assert external_dir.exists()
     assert any(
         issue.provider == "state" and "Skipped removing attachment path outside managed directories" in issue.message
         for issue in report.issues
     )
+
+
+def test_doctor_reports_drive_failures(tmp_path, monkeypatch):
+    runs = [
+        {
+            "cmd": "sync drive",
+            "provider": "drive",
+            "driveRequests": 5,
+            "driveFailures": 2,
+            "driveLastError": "timeout",
+        }
+    ]
+    monkeypatch.setattr(doctor_module, "load_runs", lambda limit=None: runs)
+
+    state_home = tmp_path / "state"
+    state_home.mkdir()
+    state_path = state_home / "state.json"
+    state_path.write_text(json.dumps({}, indent=2), encoding="utf-8")
+
+    monkeypatch.setattr(doctor_module, "STATE_HOME", state_home)
+    monkeypatch.setattr(db_module, "STATE_HOME", state_home)
+    db_module.DB_PATH = state_home / "polylogue.db"
+
+    codex_dir = tmp_path / "codex"
+    claude_dir = tmp_path / "claude"
+    codex_dir.mkdir()
+    claude_dir.mkdir()
+
+    registrar = ConversationRegistrar(
+        state_repo=ConversationStateRepository(store=StateStore(state_path)),
+        database=ConversationDatabase(path=db_module.DB_PATH),
+        archive=Archive(doctor_module.CONFIG),
+    )
+    service = ConversationService(registrar=registrar)
+
+    report = run_doctor(codex_dir=codex_dir, claude_code_dir=claude_dir, limit=0, service=service)
+
+    assert any(issue.provider == "drive" and "failures" in issue.message for issue in report.issues)

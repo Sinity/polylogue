@@ -3,6 +3,8 @@ from __future__ import annotations
 import io
 import os
 import time
+from collections import defaultdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -26,6 +28,49 @@ TOKEN_FILE = "token.json"
 DRIVE_BASE = "https://www.googleapis.com/drive/v3"
 
 
+@dataclass
+class DriveMetrics:
+    requests: int = 0
+    retries: int = 0
+    failures: int = 0
+    last_error: Optional[str] = None
+    operations: Dict[str, Dict[str, int]] = field(
+        default_factory=lambda: defaultdict(lambda: {"requests": 0, "retries": 0, "failures": 0})
+    )
+
+
+_DRIVE_METRICS = DriveMetrics()
+
+
+def _record_drive_completion(operation: str, attempts: int, error: Optional[Exception] = None) -> None:
+    global _DRIVE_METRICS
+    _DRIVE_METRICS.requests += 1
+    op_stats = _DRIVE_METRICS.operations[operation]
+    op_stats["requests"] += 1
+    if attempts > 1:
+        retries = attempts - 1
+        _DRIVE_METRICS.retries += retries
+        op_stats["retries"] += retries
+    if error is not None:
+        _DRIVE_METRICS.failures += 1
+        op_stats["failures"] += 1
+        _DRIVE_METRICS.last_error = str(error)
+
+
+def snapshot_drive_metrics(*, reset: bool = False) -> Dict[str, Any]:
+    global _DRIVE_METRICS
+    snapshot = {
+        "requests": _DRIVE_METRICS.requests,
+        "retries": _DRIVE_METRICS.retries,
+        "failures": _DRIVE_METRICS.failures,
+        "lastError": _DRIVE_METRICS.last_error,
+        "operations": {k: dict(v) for k, v in _DRIVE_METRICS.operations.items()},
+    }
+    if reset:
+        _DRIVE_METRICS = DriveMetrics()
+    return snapshot
+
+
 class DriveApiError(RuntimeError):
     def __init__(self, message: str, status: int, payload: Optional[Dict[str, Any]] = None):
         super().__init__(message)
@@ -41,7 +86,7 @@ def require_google():
     ) from GOOGLE_IMPORT_ERROR
 
 
-def _retry(fn, *, retries: int = 3, base_delay: float = 0.5):
+def _retry(fn, *, retries: int = 3, base_delay: float = 0.5, operation: str = "request"):
     # Allow env overrides for tuning
     try:
         override = int(os.environ.get("POLYLOGUE_RETRIES", retries))
@@ -56,11 +101,18 @@ def _retry(fn, *, retries: int = 3, base_delay: float = 0.5):
     base_delay = max(0.0, base_delay)
     retries = max(1, retries)
     last_err = None
+    attempts = 0
     for i in range(retries):
+        attempts += 1
         try:
-            return fn()
+            result = fn()
+            _record_drive_completion(operation, attempts)
+            return result
         except Exception as e:
             last_err = e
+            if i == retries - 1:
+                _record_drive_completion(operation, attempts, error=e)
+                raise
             time.sleep(base_delay * (2 ** i))
     if last_err:
         raise last_err
@@ -94,7 +146,17 @@ def _run_console_flow(flow: InstalledAppFlow, *, verbose: bool) -> Credentials:
     if callable(run_console):
         return run_console()
 
-    auth_url, _ = flow.authorization_url(prompt="consent")
+    redirect_uri = getattr(flow, "redirect_uri", None)
+    if not redirect_uri:
+        client_config = getattr(flow, "client_config", {}) or {}
+        redirect_candidates = client_config.get("redirect_uris") or []
+        redirect_uri = redirect_candidates[0] if redirect_candidates else "urn:ietf:wg:oauth:2.0:oob"
+        flow.redirect_uri = redirect_uri
+    session = getattr(flow, "oauth2session", None)
+    if session is not None and getattr(session, "redirect_uri", None) != flow.redirect_uri:
+        session.redirect_uri = flow.redirect_uri
+
+    auth_url, _ = flow.authorization_url(prompt="consent", redirect_uri=flow.redirect_uri)
     prompt = (
         "Open this link in your browser to authorize Polylogue:\n"
         f"  {auth_url}\n"
@@ -128,7 +190,7 @@ def _drive_get_json(session: AuthorizedSession, path: str, params: Dict[str, Any
         finally:
             resp.close()
 
-    return _retry(call)
+    return _retry(call, operation="metadata")
 
 
 def get_drive_service(credentials_path: Path, verbose: bool = False):
@@ -235,7 +297,7 @@ def get_file_meta(session, file_id: str, fields: str = "id, name, mimeType, modi
         return None
 
 
-def download_file(session, file_id: str) -> Optional[bytes]:
+def download_file(session, file_id: str, *, operation: str = "download") -> Optional[bytes]:
     url = f"{DRIVE_BASE}/files/{file_id}"
 
     def fetch():
@@ -251,13 +313,13 @@ def download_file(session, file_id: str) -> Optional[bytes]:
             resp.close()
 
     try:
-        return _retry(fetch)
+        return _retry(fetch, operation=operation)
     except DriveApiError:
         return None
 
 
-def download_to_path(session, file_id: str, target_path: Path) -> bool:
-    data = download_file(session, file_id)
+def download_to_path(session, file_id: str, target_path: Path, *, operation: str = "download") -> bool:
+    data = download_file(session, file_id, operation=operation)
     if data is None:
         return False
     target_path.parent.mkdir(parents=True, exist_ok=True)
