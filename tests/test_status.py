@@ -81,3 +81,4 @@ def test_status_provider_summary(patched_state):
     assert "codex-watch" in result.provider_summary["codex"]["commands"]
     assert result.run_summary["sync drive"]["duration"] > 0
     assert result.run_summary["sync drive"]["provider"] == "drive"
+    assert result.run_summary["sync drive"].get("retries", 0) == 0

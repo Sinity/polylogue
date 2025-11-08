@@ -42,22 +42,26 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 console.print("Run summary:")
                 for cmd, stats in result.run_summary.items():
                     console.print(
-                        f"  {cmd}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} (~{stats.get('words', 0)} words) diffs={stats['diffs']}"
+                        f"  {cmd}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} (~{stats.get('words', 0)} words) diffs={stats['diffs']} retries={stats.get('retries', 0)} failures={stats.get('failures', 0)}"
                     )
                     if stats.get("last"):
                         console.print(
                             f"    last={stats['last']} out={stats['last_out']} count={stats['last_count']} skipped={stats['skipped']} pruned={stats['pruned']}"
                         )
+                    if stats.get("last_error"):
+                        console.print(f"    last_error={stats['last_error']}")
             if result.provider_summary:
                 console.print("Provider summary:")
                 for provider, stats in result.provider_summary.items():
                     console.print(
-                        f"  {provider}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} (~{stats.get('words', 0)} words) diffs={stats['diffs']}"
+                        f"  {provider}: runs={stats['count']} attachments={stats['attachments']} (~{stats['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={stats['tokens']} (~{stats.get('words', 0)} words) diffs={stats['diffs']} retries={stats.get('retries', 0)} failures={stats.get('failures', 0)}"
                     )
                     if stats.get("last"):
                         console.print(
                             f"    last={stats['last']} out={stats['last_out']} commands={', '.join(stats['commands'])}"
                         )
+                    if stats.get("last_error"):
+                        console.print(f"    last_error={stats['last_error']}")
         else:
             from rich.table import Table
 
@@ -77,6 +81,8 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 summary_table.add_column("Attachment MiB", justify="right")
                 summary_table.add_column("Tokens (~words)", justify="right")
                 summary_table.add_column("Diffs", justify="right")
+                summary_table.add_column("Retries", justify="right")
+                summary_table.add_column("Failures", justify="right")
                 summary_table.add_column("Last Run", justify="left")
                 for cmd, stats in result.run_summary.items():
                     summary_table.add_row(
@@ -86,9 +92,37 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                         f"{stats['attachmentBytes'] / (1024 * 1024):.2f}",
                         f"{stats['tokens']} (~{stats.get('words', 0)} words)" if stats.get("tokens") else "0",
                         str(stats["diffs"]),
+                        str(stats.get("retries", 0)),
+                        str(stats.get("failures", 0)),
                         (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
                     )
                 console.print(summary_table)
+            if result.provider_summary:
+                provider_table = Table(title="Provider Summary", show_lines=False)
+                provider_table.add_column("Provider")
+                provider_table.add_column("Runs", justify="right")
+                provider_table.add_column("Attachments", justify="right")
+                provider_table.add_column("Attachment MiB", justify="right")
+                provider_table.add_column("Tokens (~words)", justify="right")
+                provider_table.add_column("Diffs", justify="right")
+                provider_table.add_column("Retries", justify="right")
+                provider_table.add_column("Failures", justify="right")
+                provider_table.add_column("Commands")
+                provider_table.add_column("Last Run", justify="left")
+                for provider, stats in result.provider_summary.items():
+                    provider_table.add_row(
+                        provider,
+                        str(stats["count"]),
+                        str(stats["attachments"]),
+                        f"{stats['attachmentBytes'] / (1024 * 1024):.2f}",
+                        f"{stats['tokens']} (~{stats.get('words', 0)} words)" if stats.get("tokens") else "0",
+                        str(stats["diffs"]),
+                        str(stats.get("retries", 0)),
+                        str(stats.get("failures", 0)),
+                        ", ".join(stats.get("commands", [])),
+                        (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
+                    )
+                console.print(provider_table)
 
     if getattr(args, "watch", False):
         interval = getattr(args, "interval", 5.0)
@@ -114,11 +148,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         console.print(f"[red]Directory not found: {directory}")
         return
 
-    canonical_files = [
-        path
-        for path in directory.glob("*/conversation.md")
-        if path.parent.parent == directory
-    ]
+    canonical_files = list(directory.rglob("conversation.md"))
     legacy_files = list(directory.glob("*.md"))
     md_files = sorted(set(legacy_files + canonical_files))
     if not md_files:
