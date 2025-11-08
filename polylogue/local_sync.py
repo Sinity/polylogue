@@ -11,7 +11,11 @@ from .importers import import_claude_code_session, import_codex_session
 from .importers.base import ImportResult
 from .importers.claude_code import DEFAULT_PROJECT_ROOT as CLAUDE_CODE_DEFAULT
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
-from .util import DiffTracker, path_order_key, sanitize_filename
+from .util import DiffTracker, path_order_key, sanitize_filename, slugify_title
+from .services.conversation_registrar import ConversationRegistrar, create_default_registrar
+from .persistence.database import ConversationDatabase
+from .archive import Archive
+from .config import CONFIG
 
 
 @dataclass
@@ -41,15 +45,10 @@ def _is_up_to_date(source: Path, target: Path) -> bool:
         target_ns = _mtime_ns(target)
     except OSError:
         return False
-    if target_ns < source_ns:
+    # Allow for minor clock skew (≤5ms) to avoid unnecessary re-imports on equal times.
+    tolerance = 5_000_000
+    if target_ns + tolerance < source_ns:
         return False
-    delta = target_ns - source_ns
-    if delta <= 1_000_000:  # ≤1ms difference, verify contents match
-        try:
-            if target.read_bytes() != source.read_bytes():
-                return False
-        except OSError:
-            return False
     return True
 
 
@@ -63,15 +62,20 @@ def _sync_sessions(
     force: bool,
     prune: bool,
     diff: bool = False,
+    provider: str,
     import_fn,
     importer_kwargs: Optional[dict] = None,
+    registrar: Optional[ConversationRegistrar] = None,
 ) -> LocalSyncResult:
+    registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
     start_time = time.perf_counter()
     written: List[ImportResult] = []
     skipped = 0
     wanted: set[str] = set()
     importer_kwargs = importer_kwargs or {}
+    importer_kwargs = dict(importer_kwargs)
+    importer_kwargs.setdefault("registrar", registrar)
     attachments_total = 0
     attachment_bytes_total = 0
     tokens_total = 0
@@ -83,13 +87,45 @@ def _sync_sessions(
     else:
         iterable = sessions
 
+    output_root = output_dir.resolve()
+
     for session_path in iterable:
         if not session_path.is_file():
             continue
-        safe_name = sanitize_filename(session_path.stem)
-        conversation_dir = output_dir / safe_name
-        md_path = conversation_dir / "conversation.md"
-        wanted.add(safe_name)
+        conversation_id = str(session_path)
+        state_entry = registrar.get_state(provider, conversation_id)
+
+        state_slug = None
+        if isinstance(state_entry, dict):
+            raw_slug = state_entry.get("slug")
+            if isinstance(raw_slug, str) and raw_slug.strip():
+                state_slug = raw_slug.strip()
+
+        fallback_title = session_path.stem
+        fallback_slug = slugify_title(fallback_title)
+        if not fallback_slug:
+            fallback_slug = sanitize_filename(fallback_title).replace(" ", "-") or fallback_title
+
+        slug_hint = state_slug or fallback_slug
+
+        md_path = output_dir / slug_hint / "conversation.md"
+        if isinstance(state_entry, dict):
+            raw_output = state_entry.get("outputPath")
+            if isinstance(raw_output, str) and raw_output.strip():
+                candidate_path = Path(raw_output)
+                if candidate_path.exists():
+                    md_path = candidate_path
+
+        slug_for_prune = slug_hint
+        try:
+            rel = md_path.parent.resolve().relative_to(output_root)
+            if rel.parts:
+                slug_for_prune = rel.parts[0]
+        except ValueError:
+            pass
+
+        wanted.add(slug_for_prune)
+
         if not force and _is_up_to_date(session_path, md_path):
             skipped += 1
             continue
@@ -171,6 +207,7 @@ def sync_codex_sessions(
     prune: bool,
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
+    registrar: Optional[ConversationRegistrar] = None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -184,11 +221,13 @@ def sync_codex_sessions(
         force=force,
         prune=prune,
         diff=diff,
+        provider="codex",
         import_fn=lambda session_id, **kwargs: import_codex_session(
             session_id,
             base_dir=base_dir,
             **kwargs,
         ),
+        registrar=registrar,
     )
 
 
@@ -203,6 +242,7 @@ def sync_claude_code_sessions(
     prune: bool,
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
+    registrar: Optional[ConversationRegistrar] = None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -216,9 +256,11 @@ def sync_claude_code_sessions(
         force=force,
         prune=prune,
         diff=diff,
+        provider="claude-code",
         import_fn=lambda session_id, **kwargs: import_claude_code_session(
             session_id,
             base_dir=base_dir,
             **kwargs,
         ),
+        registrar=registrar,
     )

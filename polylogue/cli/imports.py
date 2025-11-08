@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from ..cli_common import sk_select
 from ..commands import CommandEnv
@@ -15,6 +16,8 @@ from ..importers import (
 from ..importers.chatgpt import list_chatgpt_conversations
 from ..importers.claude_ai import list_claude_conversations
 from ..importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
+from ..importers.base import ImportResult
+from ..pipeline_runner import Pipeline, PipelineContext
 from ..util import CODEX_SESSIONS_ROOT
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
@@ -26,6 +29,66 @@ from .context import (
 )
 from .render import copy_import_to_clipboard
 from .summaries import summarize_import
+
+
+class ImportExecuteStage:
+    def run(self, context: PipelineContext) -> None:
+        env: CommandEnv = context.env
+        func = context.get("import_callable")
+        if func is None:
+            env.ui.console.print("[red]Import callable not configured.")
+            context.abort()
+            return
+        kwargs: Dict[str, object] = context.get("import_kwargs", {})
+        error_message = context.get("import_error_message", "Import failed")
+        try:
+            results = func(**kwargs)
+        except Exception as exc:
+            env.ui.console.print(f"[red]{error_message}: {exc}")
+            context.set("error", exc)
+            context.abort()
+            return
+        if results is None:
+            result_list: List[ImportResult] = []
+        elif isinstance(results, ImportResult):
+            result_list = [results]
+        else:
+            result_list = list(results)
+        context.set("import_results", result_list)
+
+
+class ImportSummarizeStage:
+    def __init__(self, title: str) -> None:
+        self.title = title
+
+    def run(self, context: PipelineContext) -> None:
+        results: List[ImportResult] = context.get("import_results", [])
+        ui = context.env.ui
+        if not results:
+            ui.console.print(f"[yellow]{self.title}: no conversations imported.")
+            return
+        summarize_import(ui, self.title, results)
+
+
+def _emit_import_json(results: List[ImportResult]) -> None:
+    payload = {
+        "count": len(results),
+        "results": [
+            {
+                "slug": res.slug,
+                "markdown": str(res.markdown_path),
+                "html": str(res.html_path) if res.html_path else None,
+                "attachmentsDir": str(res.attachments_dir) if res.attachments_dir else None,
+                "diff": str(res.diff_path) if res.diff_path else None,
+                "skipped": res.skipped,
+                "skipReason": res.skip_reason,
+                "dirty": res.dirty,
+                "contentHash": res.content_hash,
+            }
+            for res in results
+        ],
+    }
+    print(json.dumps(payload, indent=2))
 
 
 def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -97,7 +160,6 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
 def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
-    console = ui.console
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else CODEX_SESSIONS_ROOT
     out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -106,47 +168,38 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
 
-    result = import_codex_session(
-        args.session_id,
-        base_dir=base_dir,
-        output_dir=out_dir,
-        collapse_threshold=collapse,
-        html=html_enabled,
-        html_theme=html_theme,
-        force=getattr(args, "force", False),
+    pipeline = Pipeline(
+        [
+            ImportExecuteStage(),
+            ImportSummarizeStage("Codex Import"),
+        ]
     )
-
-    lines = [f"Markdown: {result.markdown_path}"]
-    doc = result.document
-    if doc is None:
-        console.print("[red]Import produced no document; aborting.")
+    ctx = PipelineContext(
+        env=env,
+        options=args,
+        data={
+            "import_callable": import_codex_session,
+            "import_kwargs": {
+                "session_id": args.session_id,
+                "base_dir": base_dir,
+                "output_dir": out_dir,
+                "collapse_threshold": collapse,
+                "html": html_enabled,
+                "html_theme": html_theme,
+                "force": getattr(args, "force", False),
+                "registrar": env.registrar,
+            },
+            "import_error_message": "Import failed",
+        },
+    )
+    pipeline.run(ctx)
+    if ctx.aborted:
         return
-    if result.html_path:
-        lines.append(f"HTML preview: {result.html_path}")
-    if result.attachments_dir:
-        lines.append(f"Attachments directory: {result.attachments_dir}")
-    stats = doc.stats
-    attachments_total = stats.get("attachments", 0)
-    if attachments_total:
-        lines.append(f"Attachment count: {attachments_total}")
-    tokens = stats.get("totalTokensApprox")
-    if tokens is not None:
-        words = stats.get("totalWordsApprox") or 0
-        if words:
-            lines.append(f"Approx tokens: {int(tokens)} (~{int(words)} words)")
-        else:
-            lines.append(f"Approx tokens: {int(tokens)}")
-    for key, label in (
-        ("chunkCount", "Chunks"),
-        ("userTurns", "User turns"),
-        ("modelTurns", "Model turns"),
-    ):
-        value = stats.get(key)
-        if value:
-            lines.append(f"{label}: {int(value)}")
-    ui.summary("Codex Import", lines)
+    results: List[ImportResult] = ctx.get("import_results", [])
+    if getattr(args, "json", False):
+        _emit_import_json(results)
     if getattr(args, "to_clipboard", False):
-        copy_import_to_clipboard(ui, [result])
+        copy_import_to_clipboard(ui, results)
 
 
 def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -188,21 +241,36 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
     elif args.all:
         selected_ids = None
 
-    try:
-        results = import_chatgpt_export(
-            export_path,
-            output_dir=out_dir,
-            collapse_threshold=collapse,
-            html=html_enabled,
-            html_theme=html_theme,
-            selected_ids=selected_ids,
-            force=getattr(args, "force", False),
-        )
-    except Exception as exc:
-        console.print(f"[red]Import failed: {exc}")
+    pipeline = Pipeline(
+        [
+            ImportExecuteStage(),
+            ImportSummarizeStage("ChatGPT Import"),
+        ]
+    )
+    ctx = PipelineContext(
+        env=env,
+        options=args,
+        data={
+            "import_callable": import_chatgpt_export,
+            "import_kwargs": {
+                "export_path": export_path,
+                "output_dir": out_dir,
+                "collapse_threshold": collapse,
+                "html": html_enabled,
+                "html_theme": html_theme,
+                "selected_ids": selected_ids,
+                "force": getattr(args, "force", False),
+                "registrar": env.registrar,
+            },
+            "import_error_message": "Import failed",
+        },
+    )
+    pipeline.run(ctx)
+    if ctx.aborted:
         return
-
-    summarize_import(ui, "ChatGPT Import", results)
+    results: List[ImportResult] = ctx.get("import_results", [])
+    if getattr(args, "json", False):
+        _emit_import_json(results)
     if getattr(args, "to_clipboard", False):
         copy_import_to_clipboard(ui, results)
 
@@ -246,21 +314,36 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
     elif args.all:
         selected_ids = None
 
-    try:
-        results = import_claude_export(
-            export_path,
-            output_dir=out_dir,
-            collapse_threshold=collapse,
-            html=html_enabled,
-            html_theme=html_theme,
-            selected_ids=selected_ids,
-            force=getattr(args, "force", False),
-        )
-    except Exception as exc:
-        console.print(f"[red]Import failed: {exc}")
+    pipeline = Pipeline(
+        [
+            ImportExecuteStage(),
+            ImportSummarizeStage("Claude Import"),
+        ]
+    )
+    ctx = PipelineContext(
+        env=env,
+        options=args,
+        data={
+            "import_callable": import_claude_export,
+            "import_kwargs": {
+                "export_path": export_path,
+                "output_dir": out_dir,
+                "collapse_threshold": collapse,
+                "html": html_enabled,
+                "html_theme": html_theme,
+                "selected_ids": selected_ids,
+                "force": getattr(args, "force", False),
+                "registrar": env.registrar,
+            },
+            "import_error_message": "Import failed",
+        },
+    )
+    pipeline.run(ctx)
+    if ctx.aborted:
         return
-
-    summarize_import(ui, "Claude Import", results)
+    results: List[ImportResult] = ctx.get("import_results", [])
+    if getattr(args, "json", False):
+        _emit_import_json(results)
     if getattr(args, "to_clipboard", False):
         copy_import_to_clipboard(ui, results)
 
@@ -293,23 +376,38 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     if args.base_dir:
         kwargs["base_dir"] = base_dir
 
-    try:
-        result = import_claude_code_session(
-            session_id,
-            output_dir=out_dir,
-            collapse_threshold=collapse,
-            html=html_enabled,
-            html_theme=html_theme,
-            force=getattr(args, "force", False),
-            **kwargs,
-        )
-    except Exception as exc:
-        console.print(f"[red]Import failed: {exc}")
+    pipeline = Pipeline(
+        [
+            ImportExecuteStage(),
+            ImportSummarizeStage("Claude Code Import"),
+        ]
+    )
+    ctx = PipelineContext(
+        env=env,
+        options=args,
+        data={
+            "import_callable": import_claude_code_session,
+            "import_kwargs": {
+                "session_id": session_id,
+                "output_dir": out_dir,
+                "collapse_threshold": collapse,
+                "html": html_enabled,
+                "html_theme": html_theme,
+                "force": getattr(args, "force", False),
+                "registrar": env.registrar,
+                **kwargs,
+            },
+            "import_error_message": "Import failed",
+        },
+    )
+    pipeline.run(ctx)
+    if ctx.aborted:
         return
-
-    summarize_import(ui, "Claude Code Import", [result])
+    results: List[ImportResult] = ctx.get("import_results", [])
+    if getattr(args, "json", False):
+        _emit_import_json(results)
     if getattr(args, "to_clipboard", False):
-        copy_import_to_clipboard(ui, [result])
+        copy_import_to_clipboard(ui, results)
 
 
 __all__ = [

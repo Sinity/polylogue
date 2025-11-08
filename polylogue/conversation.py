@@ -3,13 +3,13 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from .branching import BranchPlan, BranchInfo, MessageRecord, build_branch_plan
-from .db import open_connection, replace_branches, replace_messages, upsert_conversation
 from .importers.base import ImportResult
 from .render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
 from .repository import ConversationRepository
+from .services.conversation_registrar import ConversationRegistrar
 
 
 REPOSITORY = ConversationRepository()
@@ -149,81 +149,16 @@ def process_conversation(
     source_size: Optional[int],
     attachment_policy,
     force: bool,
+    registrar: Optional[ConversationRegistrar] = None,
 ) -> ImportResult:
+    if registrar is None:
+        raise ValueError("ConversationRegistrar instance required")
+
     records_by_id = {record.message_id: record for record in message_records}
     plan = build_branch_plan(message_records, canonical_leaf_id=canonical_leaf_id)
     branch_stats = _compute_branch_stats(plan, records_by_id)
 
-    canonical_stats = branch_stats.get(plan.canonical_branch_id, {})
-    total_tokens = canonical_stats.get("token_count", 0)
-    total_words = canonical_stats.get("word_count", 0)
-
-    with open_connection() as conn:
-        upsert_conversation(
-            conn,
-            provider=provider,
-            conversation_id=conversation_id,
-            slug=slug,
-            title=title,
-            current_branch=plan.canonical_branch_id,
-            last_updated=modified_time,
-            content_hash=None,
-            token_count=total_tokens,
-            word_count=total_words,
-            attachment_bytes=sum(att.size_bytes or 0 for att in attachments),
-            dirty=False,
-            metadata=None,
-        )
-        branch_payloads: List[Dict[str, object]] = []
-        for branch_id, info in plan.branches.items():
-            stats = branch_stats.get(branch_id, {})
-            branch_payloads.append(
-                {
-                    "branch_id": branch_id,
-                    "parent_branch_id": info.parent_branch_id,
-                    "is_canonical": info.is_canonical,
-                    "depth": info.depth,
-                    "message_count": stats.get("message_count", 0),
-                    "token_count": stats.get("token_count", 0),
-                    "word_count": stats.get("word_count", 0),
-                    "first_message_id": stats.get("first_message_id"),
-                    "last_message_id": stats.get("last_message_id"),
-                    "first_timestamp": stats.get("first_timestamp"),
-                    "last_timestamp": stats.get("last_timestamp"),
-                    "metadata": {"divergence_index": info.divergence_index},
-                }
-            )
-        replace_branches(
-            conn,
-            provider=provider,
-            conversation_id=conversation_id,
-            branches=branch_payloads,
-        )
-        for branch_id, info in plan.branches.items():
-            branch_records = [records_by_id[mid] for mid in info.message_ids if mid in records_by_id]
-            messages = [
-                {
-                    "message_id": record.message_id,
-                    "parent_id": record.parent_id,
-                    "role": record.role,
-                    "position": idx,
-                    "timestamp": record.timestamp,
-                    "token_count": record.token_count,
-                    "word_count": record.word_count,
-                    "attachment_count": record.attachments,
-                    "body": record.text,
-                    "metadata": record.metadata,
-                }
-                for idx, record in enumerate(branch_records)
-            ]
-            replace_messages(
-                conn,
-                provider=provider,
-                conversation_id=conversation_id,
-                branch_id=branch_id,
-                messages=messages,
-            )
-        conn.commit()
+    attachment_bytes = sum(att.size_bytes or 0 for att in attachments)
 
     canonical_records = [records_by_id[mid] for mid in plan.messages_for_branch(plan.canonical_branch_id) if mid in records_by_id]
     canonical_links = _links_mapping(canonical_records)
@@ -259,6 +194,7 @@ def process_conversation(
         slug_hint=slug,
         id_hint=conversation_id[:8] if conversation_id else None,
         force=force,
+        registrar=registrar,
     )
 
     branch_directories: List[Path] = []
@@ -348,6 +284,16 @@ def process_conversation(
                     shutil.rmtree(path)
                 except OSError:
                     continue
+
+    registrar.record_branch_plan(
+        provider=provider,
+        conversation_id=conversation_id,
+        slug=persist_result.slug,
+        plan=plan,
+        branch_stats=branch_stats,
+        records_by_id=records_by_id,
+        attachment_bytes=attachment_bytes,
+    )
 
     return ImportResult(
         markdown_path=persist_result.markdown_path,

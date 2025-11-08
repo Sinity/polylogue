@@ -8,6 +8,7 @@ from ..render import AttachmentInfo
 from ..util import CLAUDE_CODE_PROJECT_ROOT, assign_conversation_slug, path_order_key
 from ..conversation import process_conversation
 from ..branching import MessageRecord
+from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .base import ImportResult
 from .utils import estimate_token_count, normalise_inline_footnotes, store_large_text
 
@@ -24,7 +25,9 @@ def import_claude_code_session(
     html: bool,
     html_theme: str,
     force: bool = False,
+    registrar: Optional[ConversationRegistrar] = None,
 ) -> ImportResult:
+    registrar = registrar or create_default_registrar()
     base_dir = base_dir.expanduser()
     session_path = _locate_session_file(session_id, base_dir)
     if session_path is None:
@@ -236,6 +239,7 @@ def import_claude_code_session(
         source_size=session_path.stat().st_size,
         attachment_policy=None,
         force=force,
+        registrar=registrar,
     )
 
 

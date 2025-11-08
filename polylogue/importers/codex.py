@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..render import AttachmentInfo
 from ..util import CODEX_SESSIONS_ROOT, assign_conversation_slug
@@ -10,6 +10,7 @@ from ..conversation import process_conversation
 from ..branching import MessageRecord
 from .base import ImportResult
 from .utils import CHAR_THRESHOLD, LINE_THRESHOLD, PREVIEW_LINES, estimate_token_count, normalise_inline_footnotes
+from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 
 _DEFAULT_BASE = CODEX_SESSIONS_ROOT
 
@@ -32,7 +33,9 @@ def import_codex_session(
     html: bool = False,
     html_theme: str = "light",
     force: bool = False,
+    registrar: Optional[ConversationRegistrar] = None,
 ) -> ImportResult:
+    registrar = registrar or create_default_registrar()
     base_dir = base_dir.expanduser()
     candidate = Path(session_id)
     if candidate.exists() and candidate.is_file():
@@ -296,4 +299,5 @@ def import_codex_session(
             "charThreshold": CHAR_THRESHOLD,
         },
         force=force,
+        registrar=registrar,
     )

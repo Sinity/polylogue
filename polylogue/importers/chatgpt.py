@@ -12,6 +12,7 @@ from ..render import AttachmentInfo
 from ..util import assign_conversation_slug, sanitize_filename
 from ..conversation import process_conversation
 from ..branching import MessageRecord
+from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .base import ImportResult
 from .utils import (
     estimate_token_count,
@@ -134,7 +135,9 @@ def import_chatgpt_export(
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
     force: bool = False,
+    registrar: Optional[ConversationRegistrar] = None,
 ) -> List[ImportResult]:
+    registrar = registrar or create_default_registrar()
     base_path, tmp = _load_export(export_path)
     try:
         convo_path = base_path / "conversations.json"
@@ -159,6 +162,7 @@ def import_chatgpt_export(
                     html=html,
                     html_theme=html_theme,
                     force=force,
+                    registrar=registrar,
                 )
             )
         return results
@@ -203,6 +207,7 @@ def _render_chatgpt_conversation(
     html: bool,
     html_theme: str,
     force: bool,
+    registrar: Optional[ConversationRegistrar],
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
     conv_id = conv.get("id") or conv.get("conversation_id") or "chat"
@@ -342,6 +347,7 @@ def _render_chatgpt_conversation(
         source_size=None,
         attachment_policy=None,
         force=force,
+        registrar=registrar,
     )
 
 def _normalise_role(role: Optional[str]) -> str:

@@ -95,6 +95,7 @@ def _run_watch_sessions(
                 prune=False,
                 diff=False,
                 sessions=None,
+                registrar=env.registrar,
             )
         except Exception as exc:  # pragma: no cover - defensive
             console.print(f"[red]{log_title} failed: {exc}")
