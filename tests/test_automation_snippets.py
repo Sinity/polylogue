@@ -73,7 +73,7 @@ def test_run_automation_cli_systemd(capsys, tmp_path):
         out=str(tmp_path / "out"),
         extra_arg=["--plain"],
         collapse_threshold=20,
-        html=True,
+        html_mode="on",
     )
     run_automation_cli(args, CommandEnv(ui=DummyUI()))
     output = capsys.readouterr().out
@@ -93,7 +93,7 @@ def test_run_automation_cli_describe(capsys):
         out=None,
         extra_arg=[],
         collapse_threshold=None,
-        html=False,
+        html_mode=None,
         interval=5,
         boot_delay=2,
     )
@@ -101,3 +101,15 @@ def test_run_automation_cli_describe(capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["codex"]["command"][:2] == ["sync", "codex"]
     assert "defaults" in payload["codex"]
+
+
+def test_systemd_snippet_html_mode_off(tmp_path):
+    snippet = systemd_snippet(
+        target_key="codex",
+        interval="10m",
+        working_dir=tmp_path,
+        extra_args=[],
+        boot_delay="1m",
+        html="off",
+    )
+    assert "--html off" in snippet
