@@ -1,5 +1,6 @@
-from pathlib import Path
 import json
+from argparse import Namespace
+from pathlib import Path
 
 from polylogue.commands import CommandEnv
 from polylogue.ui import UI
@@ -63,3 +64,30 @@ def test_run_stats_json(tmp_path, capsys):
     assert filtered_payload["totals"]["files"] == 1
     assert filtered_payload["totals"].get("words") == 96
     assert filtered_payload["filteredOut"] == 1
+
+
+def test_run_stats_nested_provider_dirs(tmp_path, capsys):
+    archive_dir = tmp_path / "archive"
+    conversation_dir = archive_dir / "codex" / "example"
+    conversation_dir.mkdir(parents=True)
+    sample = conversation_dir / "conversation.md"
+    sample.write_text(
+        "---\n"
+        "title: Nested Example\n"
+        "attachmentCount: 1\n"
+        "attachmentBytes: 512\n"
+        "totalTokensApprox: 32\n"
+        "totalWordsApprox: 24\n"
+        "sourcePlatform: codex\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+
+    args = Namespace(dir=archive_dir, json=True, since=None, until=None)
+    env = CommandEnv(ui=UI(plain=True))
+    run_stats_cli(args, env)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["totals"]["files"] == 1
+    assert payload["providers"]["codex"]["files"] == 1

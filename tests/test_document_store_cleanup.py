@@ -6,14 +6,11 @@ import pytest
 
 from polylogue.document_store import persist_document
 from polylogue.render import AttachmentInfo, MarkdownDocument
-from polylogue.util import StateStore, configure_state_store
-
-
-@pytest.fixture(autouse=True)
-def isolated_state(tmp_path: Path):
-    store = StateStore(tmp_path / "state.json")
-    configure_state_store(store)
-    yield
+from polylogue.services.conversation_registrar import ConversationRegistrar
+from polylogue.persistence.state import ConversationStateRepository
+from polylogue.persistence.database import ConversationDatabase
+from polylogue.archive import Archive
+from polylogue.config import CONFIG
 
 
 def _make_document(body: str, attachments: list[AttachmentInfo]) -> MarkdownDocument:
@@ -22,6 +19,16 @@ def _make_document(body: str, attachments: list[AttachmentInfo]) -> MarkdownDocu
         metadata={"title": "Test Conversation"},
         attachments=attachments,
         stats={"totalTokensApprox": 1},
+    )
+
+
+def _registrar(state_file: Path) -> ConversationRegistrar:
+    from polylogue.persistence.state_store import StateStore
+
+    return ConversationRegistrar(
+        state_repo=ConversationStateRepository(store=StateStore(state_file)),
+        database=ConversationDatabase(),
+        archive=Archive(CONFIG),
     )
 
 
@@ -41,6 +48,8 @@ def test_persist_document_cleans_stale_attachments(tmp_path: Path) -> None:
         remote=False,
     )
 
+    state_file = tmp_path / "state.json"
+
     doc = _make_document("First", [attachment])
     result = persist_document(
         provider="test",
@@ -59,6 +68,7 @@ def test_persist_document_cleans_stale_attachments(tmp_path: Path) -> None:
         slug_hint="conversation",
         id_hint=None,
         force=False,
+        registrar=_registrar(state_file),
     )
 
     assert result.attachments_dir and result.attachments_dir.exists()
@@ -83,9 +93,9 @@ def test_persist_document_cleans_stale_attachments(tmp_path: Path) -> None:
         slug_hint="conversation",
         id_hint=None,
         force=False,
+        registrar=_registrar(state_file),
     )
 
     assert result2.attachments_dir is None
     assert not attachments_dir.exists()
     assert not (result2.markdown_path.parent / "conversation.html").exists()
-

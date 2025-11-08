@@ -11,6 +11,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
+from .persistence.state_store import StateStore
+
 try:  # pragma: no cover - optional dependency
     import pyperclip  # type: ignore
     from pyperclip import PyperclipException  # type: ignore
@@ -139,47 +141,22 @@ STATE_PATH = STATE_HOME / "state.json"
 RUNS_PATH = STATE_HOME / "runs.json"
 
 
-class StateStore:
-    """Lightweight JSON state persistence with injectable storage for tests."""
-
-    def __init__(self, path: Path):
-        self.path = path
-
-    def load(self) -> dict:
-        try:
-            if self.path.exists():
-                return json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-        return {}
-
-    def save(self, state: dict) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    def mutate(self, mutator: Callable[[dict], None]) -> dict:
-        state = self.load()
-        mutator(state)
-        self.save(state)
-        return state
+def _state_store() -> StateStore:
+    return StateStore(STATE_PATH)
 
 
-STATE_STORE = StateStore(STATE_PATH)
-
-
-def get_state_store() -> StateStore:
-    global STATE_STORE
-    if isinstance(STATE_STORE, StateStore) and STATE_STORE.path != STATE_PATH:
-        STATE_STORE = StateStore(STATE_PATH)
-    return STATE_STORE
-
-
-def configure_state_store(store: StateStore) -> None:
-    global STATE_STORE
-    STATE_STORE = store
+def load_runs(limit: Optional[int] = None) -> list[dict]:
+    if not RUNS_PATH.exists():
+        return []
+    try:
+        data = json.loads(RUNS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    if limit is not None and limit > 0:
+        return data[-limit:]
+    return data
 
 
 class DiffTracker:
@@ -233,7 +210,7 @@ class RunAccumulator:
 
 
 def get_cached_folder_id(name: str) -> Optional[str]:
-    state = get_state_store().load()
+    state = _state_store().load()
     folders = state.get("folders") if isinstance(state.get("folders"), dict) else None
     if isinstance(folders, dict):
         value = folders.get(name)
@@ -250,20 +227,7 @@ def set_cached_folder_id(name: str, folder_id: str) -> None:
             state["folders"] = folders
         folders[name] = folder_id
 
-    get_state_store().mutate(_mutator)
-
-
-def get_conversation_state(provider: str, conversation_id: str) -> Optional[Dict[str, Any]]:
-    state = get_state_store().load()
-    conversations = state.get("conversations")
-    if not isinstance(conversations, dict):
-        return None
-    provider_map = conversations.get(provider)
-    if not isinstance(provider_map, dict):
-        return None
-    entry = provider_map.get(conversation_id)
-    return entry if isinstance(entry, dict) else None
-
+    _state_store().mutate(_mutator)
 
 def assign_conversation_slug(
     provider: str,
@@ -309,35 +273,8 @@ def assign_conversation_slug(
         provider_map[conversation_id] = {"slug": slug_candidate}
         chosen["value"] = slug_candidate
 
-    get_state_store().mutate(_mutator)
+    _state_store().mutate(_mutator)
     return chosen["value"] or "conversation"
-
-
-def update_conversation_state(
-    provider: str,
-    conversation_id: str,
-    **updates: Any,
-) -> None:
-    def _mutator(state: dict) -> None:
-        conversations = state.get("conversations")
-        if not isinstance(conversations, dict):
-            conversations = {}
-            state["conversations"] = conversations
-        provider_map = conversations.get(provider)
-        if not isinstance(provider_map, dict):
-            provider_map = {}
-            conversations[provider] = provider_map
-        entry = provider_map.get(conversation_id)
-        if not isinstance(entry, dict):
-            entry = {}
-        for key, value in updates.items():
-            if value is None:
-                entry.pop(key, None)
-            else:
-                entry[key] = value
-        provider_map[conversation_id] = entry
-
-    get_state_store().mutate(_mutator)
 
 
 def slugify_title(value: str) -> str:
@@ -363,8 +300,8 @@ def conversation_is_current(
     attachment_policy: Optional[Dict[str, Any]] = None,
     html: Optional[bool] = None,
     dirty: Optional[bool] = None,
+    entry: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    entry = get_conversation_state(provider, conversation_id)
     if not entry:
         return False
     if dirty:
