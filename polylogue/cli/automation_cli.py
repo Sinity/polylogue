@@ -36,7 +36,8 @@ def run_automation_cli(args: argparse.Namespace, env: CommandEnv) -> None:  # no
     extra_args.extend(getattr(args, "extra_arg", []) or [])
 
     collapse_value = getattr(args, "collapse_threshold", None)
-    html_override = True if getattr(args, "html", False) else None
+    html_mode = getattr(args, "html_mode", None)
+    html_override = html_mode if html_mode not in (None, "auto") else None
 
     if args.automation_format == "systemd":
         snippet = systemd_snippet(
