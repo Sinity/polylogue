@@ -278,6 +278,7 @@ def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
         prune=prune,
         diff=diff_enabled,
         sessions=selected_paths,
+        registrar=env.registrar,
     )
 
     attachments = result.attachments
@@ -372,6 +373,7 @@ def _run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
         prune=prune,
         diff=diff_enabled,
         sessions=selected_paths,
+        registrar=env.registrar,
     )
 
     attachments = result.attachments

@@ -9,7 +9,12 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from .db import open_connection
-from .util import colorize, get_conversation_state
+from .util import colorize
+from .persistence.state import ConversationStateRepository
+
+
+def _state_repo() -> ConversationStateRepository:
+    return ConversationStateRepository()
 
 
 @dataclass
@@ -277,7 +282,7 @@ def list_branch_conversations(
         rows = conn.execute(query, params).fetchall()
 
     for row in rows:
-        state = get_conversation_state(row["provider"], row["conversation_id"]) or {}
+        state = _state_repo().get(row["provider"], row["conversation_id"]) or {}
         output_path = _safe_path(state.get("outputPath"))
         summary = _load_branch_overview(
             provider=row["provider"],
