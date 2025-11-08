@@ -19,9 +19,13 @@ Claude Code stores IDE transcripts beneath `~/.claude/projects/`. Polylogue mirr
 - Render `user` and `assistant` events as Markdown turns, keeping embedded code diffs or logs intact.
 - Treat `summary` nodes as front-matter notes or callouts—the compaction checkpoints provide useful context for truncated histories.
 - Pair `tool_use` entries with matching `tool_result` payloads (shared IDs) and decide whether to inline or extract long outputs using the same heuristics as the Codex importer.
-- Attach shell snapshots or referenced files from `shell-snapshots/` and `extras/` into the conversation’s `_attachments/` folder so nothing is lost during compaction.
+- Attach shell snapshots or referenced files from `shell-snapshots/` and `extras/` into the conversation’s `attachments/` folder so nothing is lost during compaction.
 
 ## Automation
 
-- Run `polylogue sync-claude-code` for one-shot mirroring or `polylogue watch claude-code` for continuous sync. Both commands honour collapse thresholds, HTML output, pruning, and diff generation.
+- Run `polylogue sync claude-code` for one-shot mirroring or `polylogue watch claude-code` for continuous sync. Both commands honour collapse thresholds, HTML output, pruning, and diff generation.
 - The importer preserves file mtimes and reuses per-conversation slugs so reruns remain idempotent and Git-friendly.
+- Use the `--force` flag when you need to overwrite locally edited transcripts; otherwise manual tweaks stay intact and the session is marked dirty.
+- Inline markers such as `\[1]` are normalised to `[1]` so footnotes or numbered references read cleanly in the rendered Markdown.
+- Session stats expose `totalWordsApprox`/`inputWordsApprox`, keeping word estimates next to every token count.
+- The importer writes canonical and branch-aware artifacts side by side. After each run you’ll find `<slug>.md` plus `<slug>/conversation.md`, `<slug>/conversation.common.md`, and a `branches/<branch-id>/` tree containing `<branch-id>.md` and `overlay.md`. Metadata is recorded in `XDG_STATE_HOME/polylogue/polylogue.db` so downstream tools can query the branch graph.

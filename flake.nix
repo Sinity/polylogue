@@ -8,27 +8,30 @@
 
   outputs = { self, nixpkgs, flake-utils }:
     let
+      inherit (flake-utils.lib) eachDefaultSystem;
+
+      re2Overlay = final: prev: {
+        re2 = prev.re2.overrideAttrs (_: {
+          src = prev.fetchFromGitHub {
+            owner = "google";
+            repo = "re2";
+            rev = "ac82d4f628a2045d89964ae11c48403d3b091af1";
+            hash = "sha256-qRNV0O55L+r2rNSUJjU6nMqkPWXENZQvyr5riTU3e5o=";
+          };
+        });
+      };
+
       polylogueModule = import ./nix/modules/polylogue.nix { inherit self; };
     in
-    flake-utils.lib.eachDefaultSystem (system:
+    eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
           inherit system;
-          overlays = [
-            (final: prev: {
-              re2 = prev.re2.overrideAttrs (old: {
-                src = prev.fetchFromGitHub {
-                  owner = "google";
-                  repo = "re2";
-                  rev = "ac82d4f628a2045d89964ae11c48403d3b091af1";
-                  hash = "sha256-qRNV0O55L+r2rNSUJjU6nMqkPWXENZQvyr5riTU3e5o=";
-                };
-              });
-            })
-          ];
+          overlays = [ re2Overlay ];
         };
-        python = pkgs.python3;
+
         pyPkgs = pkgs.python3Packages;
+
         baseDeps = with pyPkgs; [
           google-auth-oauthlib
           requests
@@ -42,37 +45,64 @@
           markdown-it-py
           pyperclip
           watchfiles
+          tiktoken
+          qdrant-client
         ];
+
+        cliDeps = with pkgs; [ gum skim delta git ];
+        cliBinPath = pkgs.lib.makeBinPath cliDeps;
+
         polylogueApp = pyPkgs.buildPythonApplication {
           pname = "polylogue";
           version = "0.1.0";
           pyproject = true;
           src = self;
           propagatedBuildInputs = baseDeps;
-          nativeBuildInputs = with pyPkgs; [
-            setuptools
-            wheel
-          ];
-          nativeCheckInputs = with pyPkgs; [ pytest ];
-          checkPhase = "pytest";
+          nativeBuildInputs =
+            (with pyPkgs; [ setuptools wheel ])
+            ++ cliDeps
+            ++ [ pkgs.makeWrapper ];
+          nativeCheckInputs = (with pyPkgs; [ pytest ]) ++ cliDeps;
+          checkPhase = ''
+            export HOME=$TMPDIR
+            export XDG_STATE_HOME=$TMPDIR
+            export XDG_CACHE_HOME=$TMPDIR
+            pytest
+          '';
+          postInstall = ''
+            wrapProgram $out/bin/polylogue \
+              --prefix PATH : ${cliBinPath}
+          '';
         };
+
+        defaultDevShell = import ./nix/devshell.nix {
+          inherit pkgs;
+          extraPythonPackages = with pyPkgs; [
+            pytest
+            pytest-cov
+            coverage
+            mypy
+            types-requests
+          ];
+        };
+
         cliApp = {
           type = "app";
           program = "${polylogueApp}/bin/polylogue";
         };
       in {
         packages = {
-          default = polylogueApp;
           polylogue = polylogueApp;
+          default = polylogueApp;
         };
 
         apps = {
-          default = cliApp;
           polylogue = cliApp;
+          default = cliApp;
         };
 
         devShells = {
-          default = import ./nix/devshell.nix { inherit pkgs; };
+          default = defaultDevShell;
           ci = pkgs.mkShell {
             buildInputs = [ polylogueApp pkgs.git pkgs.which ];
             shellHook = ''
@@ -82,9 +112,7 @@
           };
         };
 
-        checks = {
-          default = polylogueApp;
-        };
+        checks.default = polylogueApp;
       }
     ) // {
       nixosModules = {

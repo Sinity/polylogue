@@ -6,15 +6,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
+from .util import CONFIG_HOME, DATA_HOME
+
 CONFIG_ENV = "POLYLOGUE_CONFIG"
-CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-CONFIG_DIR = CONFIG_HOME / "polylogue"
+CONFIG_DIR = CONFIG_HOME
 DEFAULT_PATHS = [
     CONFIG_DIR / "config.json",
     Path.home() / ".polylogueconfig",
 ]
 
-ARCHIVE_ROOT = Path("/realm/data/chatlog")
+DEFAULT_ARCHIVE_ROOT = Path(
+    os.environ.get("POLYLOGUE_ARCHIVE_ROOT", str(DATA_HOME / "archive"))
+).expanduser()
+ARCHIVE_ROOT = DEFAULT_ARCHIVE_ROOT
 MARKDOWN_ROOT = ARCHIVE_ROOT / "markdown"
 
 
@@ -34,6 +38,30 @@ class Defaults:
     html_previews: bool = False
     html_theme: str = "light"
     output_dirs: OutputDirs = field(default_factory=OutputDirs)
+
+    @property
+    def render(self) -> Path:
+        return self.output_dirs.render
+
+    @property
+    def sync_drive(self) -> Path:
+        return self.output_dirs.sync_drive
+
+    @property
+    def sync_codex(self) -> Path:
+        return self.output_dirs.sync_codex
+
+    @property
+    def sync_claude_code(self) -> Path:
+        return self.output_dirs.sync_claude_code
+
+    @property
+    def import_chatgpt(self) -> Path:
+        return self.output_dirs.import_chatgpt
+
+    @property
+    def import_claude(self) -> Path:
+        return self.output_dirs.import_claude
 
 
 @dataclass
