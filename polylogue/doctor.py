@@ -6,9 +6,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from .archive import Archive
 from .config import CONFIG
-from .db import open_connection
-from .util import STATE_PATH, STATE_HOME, get_conversation_state
+from .persistence.database import ConversationDatabase
+from .persistence.state import ConversationStateRepository
+from .util import STATE_HOME, RUNS_PATH, load_runs
+from .services.conversation_service import ConversationService, create_conversation_service
 
 
 @dataclass
@@ -75,41 +78,70 @@ def inspect_claude_code(base_dir: Path, limit: Optional[int]) -> DoctorReport:
     return DoctorReport({"claude-code": checked}, issues)
 
 
-def _provider_output_root(provider: str) -> Optional[Path]:
-    defaults = CONFIG.defaults.output_dirs
-    mapping = {
-        "render": defaults.render,
-        "drive-sync": defaults.sync_drive,
-        "codex": defaults.sync_codex,
-        "claude-code": defaults.sync_claude_code,
-        "chatgpt": defaults.import_chatgpt,
-        "claude.ai": defaults.import_claude,
-    }
-    return mapping.get(provider)
+_PROVIDER_ALIASES = {
+    "drive-sync": "drive",
+    "claude.ai": "claude",
+}
 
 
-def prune_state_entries() -> Tuple[int, List[DoctorIssue]]:
+def _drive_failure_issues() -> List[DoctorIssue]:
+    data = load_runs()
+    aggregates: Dict[str, Dict[str, Any]] = {}
+    for entry in data:
+        if not isinstance(entry, dict):
+            continue
+        provider = entry.get("provider")
+        if not provider:
+            continue
+        requests = int(entry.get("driveRequests", 0) or 0)
+        failures = int(entry.get("driveFailures", 0) or 0)
+        if requests == 0 and failures == 0:
+            continue
+        bucket = aggregates.setdefault(provider, {"requests": 0, "failures": 0, "last_error": None})
+        bucket["requests"] += requests
+        bucket["failures"] += failures
+        last_error = entry.get("driveLastError")
+        if isinstance(last_error, str) and last_error.strip():
+            bucket["last_error"] = last_error.strip()
+
     issues: List[DoctorIssue] = []
-    if not STATE_PATH.exists():
-        return 0, issues
-    try:
-        data = json.loads(STATE_PATH.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        issues.append(DoctorIssue("state", STATE_PATH, f"Invalid JSON: {exc}", "error"))
-        return 0, issues
-    except Exception as exc:  # pragma: no cover
-        issues.append(DoctorIssue("state", STATE_PATH, str(exc), "error"))
-        return 0, issues
+    for provider, stats in aggregates.items():
+        failures = stats["failures"]
+        requests = stats["requests"] or 1
+        if failures <= 0:
+            continue
+        rate = failures / requests
+        severity = "error" if rate >= 0.5 else "warning"
+        message = f"Drive retries/failures: {failures} out of {requests} requests ({rate:.0%})."
+        if stats.get("last_error"):
+            message += f" Last error: {stats['last_error']}"
+        issues.append(DoctorIssue(provider, RUNS_PATH, message, severity))
+    return issues
 
-    conversations = data.get("conversations")
+
+def _resolve_provider_root(archive: Archive, provider: str) -> Optional[Path]:
+    canonical = _PROVIDER_ALIASES.get(provider, provider)
+    try:
+        return archive.provider_root(canonical)
+    except Exception:
+        return None
+
+
+def prune_state_entries(
+    state_repo: ConversationStateRepository,
+    archive: Archive,
+) -> Tuple[int, List[DoctorIssue]]:
+    issues: List[DoctorIssue] = []
+    state = state_repo.load()
+    conversations = state.get("conversations")
     if not isinstance(conversations, dict):
         return 0, issues
 
     removed = 0
     for provider, conv_map in list(conversations.items()):
-        provider_root = _provider_output_root(provider)
         if not isinstance(conv_map, dict):
             continue
+        provider_root = _resolve_provider_root(archive, provider)
         for conversation_id, entry in list(conv_map.items()):
             if not isinstance(entry, dict):
                 conv_map.pop(conversation_id, None)
@@ -127,10 +159,9 @@ def prune_state_entries() -> Tuple[int, List[DoctorIssue]]:
             if attachment_dir:
                 attachment_dir = Path(attachment_dir)
                 allowed = False
-                attachment_parent = conv_path.parent
                 candidates: List[Path] = []
-                if attachment_parent:
-                    candidates.append(attachment_parent.resolve())
+                if conv_path.parent:
+                    candidates.append(conv_path.parent.resolve())
                 if provider_root:
                     try:
                         candidates.append(provider_root.resolve())
@@ -164,66 +195,72 @@ def prune_state_entries() -> Tuple[int, List[DoctorIssue]]:
                         else:
                             attachment_dir.unlink()
                     except Exception:
-                        issues.append(DoctorIssue("state", attachment_dir, "Failed to remove stale attachment path", "warning"))
+                        issues.append(
+                            DoctorIssue(
+                                "state",
+                                attachment_dir,
+                                "Failed to remove stale attachment path",
+                                "warning",
+                            )
+                        )
         if not conv_map:
             conversations.pop(provider, None)
 
     if removed:
         try:
-            STATE_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            state_repo.store.save(state)
         except Exception as exc:  # pragma: no cover
-            issues.append(DoctorIssue("state", STATE_PATH, f"Failed to write state: {exc}", "error"))
+            issues.append(DoctorIssue("state", state_repo.store.path, f"Failed to write state: {exc}", "error"))
         else:
-            issues.append(DoctorIssue("state", STATE_PATH, f"Removed {removed} stale entries", "info"))
+            issues.append(DoctorIssue("state", state_repo.store.path, f"Removed {removed} stale entries", "info"))
     return removed, issues
 
 
-def prune_database_entries() -> Tuple[int, List[DoctorIssue]]:
+def prune_database_entries(
+    database: ConversationDatabase,
+    state_repo: ConversationStateRepository,
+    archive: Archive,
+) -> Tuple[int, List[DoctorIssue]]:
     issues: List[DoctorIssue] = []
     to_delete: List[Tuple[str, str]] = []
     try:
-        with open_connection() as conn:
-            rows = conn.execute(
-                "SELECT provider, conversation_id, slug FROM conversations"
-            ).fetchall()
-            for row in rows:
-                provider = row["provider"]
-                conversation_id = row["conversation_id"]
-                slug = row["slug"]
-                candidate_paths: List[Path] = []
-                state_entry = get_conversation_state(provider, conversation_id)
-                output_path = None
-                if isinstance(state_entry, dict):
-                    raw_output = state_entry.get("outputPath")
-                    if isinstance(raw_output, str):
-                        output_path = Path(raw_output)
-                        candidate_paths.append(output_path)
-                root = _provider_output_root(provider)
-                if root is not None:
-                    candidate_paths.append(root / slug / "conversation.md")
-                exists = False
-                for path in candidate_paths:
-                    try:
-                        if path.exists():
-                            exists = True
-                            break
-                    except Exception:
-                        continue
-                if not exists:
-                    to_delete.append((provider, conversation_id))
-            for provider, conversation_id in to_delete:
-                conn.execute(
-                    "DELETE FROM conversations WHERE provider = ? AND conversation_id = ?",
-                    (provider, conversation_id),
-                )
-            if to_delete:
-                conn.commit()
+        rows = database.query("SELECT provider, conversation_id, slug FROM conversations")
+        for row in rows:
+            provider = row["provider"]
+            conversation_id = row["conversation_id"]
+            slug = row["slug"]
+            candidate_paths: List[Path] = []
+            state_entry = state_repo.get(provider, conversation_id)
+            if isinstance(state_entry, dict):
+                raw_output = state_entry.get("outputPath")
+                if isinstance(raw_output, str):
+                    candidate_paths.append(Path(raw_output))
+            provider_root = _resolve_provider_root(archive, provider)
+            if provider_root is not None:
+                candidate_paths.append(provider_root / slug / "conversation.md")
+            exists = False
+            for path in candidate_paths:
+                try:
+                    if path.exists():
+                        exists = True
+                        break
+                except Exception:
+                    continue
+            if not exists:
+                to_delete.append((provider, conversation_id))
+        for provider, conversation_id in to_delete:
+            database.execute(
+                "DELETE FROM conversations WHERE provider = ? AND conversation_id = ?",
+                (provider, conversation_id),
+            )
     except Exception as exc:
-        issues.append(DoctorIssue("database", STATE_HOME / "polylogue.db", str(exc), "error"))
+        db_path = database.path or STATE_HOME / "polylogue.db"
+        issues.append(DoctorIssue("database", db_path, str(exc), "error"))
         return 0, issues
 
     if to_delete:
-        issues.append(DoctorIssue("database", STATE_HOME / "polylogue.db", f"Removed {len(to_delete)} stale entries", "info"))
+        db_path = database.path or STATE_HOME / "polylogue.db"
+        issues.append(DoctorIssue("database", db_path, f"Removed {len(to_delete)} stale entries", "info"))
     return len(to_delete), issues
 
 
@@ -232,20 +269,29 @@ def run_doctor(
     codex_dir: Path,
     claude_code_dir: Path,
     limit: Optional[int] = None,
+    service: Optional[ConversationService] = None,
+    archive: Optional[Archive] = None,
 ) -> DoctorReport:
     codex_report = inspect_codex(codex_dir, limit)
     claude_report = inspect_claude_code(claude_code_dir, limit)
     issues = codex_report.issues + claude_report.issues
     counts = {**codex_report.checked, **claude_report.checked}
 
-    removed_state, state_issues = prune_state_entries()
+    service = service or create_conversation_service()
+    state_repo = service.state_repo
+    database = service.database
+    archive = archive or Archive(CONFIG)
+
+    removed_state, state_issues = prune_state_entries(state_repo, archive)
     if removed_state:
         counts["state"] = removed_state
     issues.extend(state_issues)
 
-    removed_db, db_issues = prune_database_entries()
+    removed_db, db_issues = prune_database_entries(database, state_repo, archive)
     if removed_db:
         counts["database"] = removed_db
     issues.extend(db_issues)
+
+    issues.extend(_drive_failure_issues())
 
     return DoctorReport(checked=counts, issues=issues)
