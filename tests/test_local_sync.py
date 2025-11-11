@@ -1,7 +1,13 @@
 import json
 from pathlib import Path
 
-from polylogue.local_sync import sync_claude_code_sessions, sync_codex_sessions
+from polylogue.importers.base import ImportResult
+from polylogue.local_sync import (
+    sync_chatgpt_exports,
+    sync_claude_code_sessions,
+    sync_claude_exports,
+    sync_codex_sessions,
+)
 
 
 def _write_codex_session(root: Path, name: str, lines: list[dict]) -> Path:
@@ -104,3 +110,83 @@ def test_sync_claude_code_sessions(tmp_path):
     body = md_path.read_text(encoding="utf-8")
     assert "task" in body
     assert "answer" in body
+
+
+def test_sync_chatgpt_exports(monkeypatch, tmp_path):
+    base_dir = tmp_path / "chatgpt"
+    zip_path = base_dir / "bundle-1.zip"
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+    zip_path.write_bytes(b"")
+    dir_path = base_dir / "bundle-dir"
+    dir_path.mkdir(parents=True, exist_ok=True)
+    (dir_path / "conversations.json").write_text("{}", encoding="utf-8")
+
+    out_dir = tmp_path / "chatgpt_out"
+    calls: list[Path] = []
+
+    def fake_import_chatgpt_export(*, export_path, output_dir, **_kwargs):  # noqa: ANN001
+        calls.append(Path(export_path))
+        slug = f"chatgpt-{Path(export_path).stem}"
+        md_path = output_dir / slug / "conversation.md"
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("body", encoding="utf-8")
+        return [
+            ImportResult(
+                markdown_path=md_path,
+                html_path=None,
+                attachments_dir=None,
+                document=None,
+                slug=slug,
+            )
+        ]
+
+    monkeypatch.setattr("polylogue.local_sync.import_chatgpt_export", fake_import_chatgpt_export)
+
+    result = sync_chatgpt_exports(
+        base_dir=base_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+        prune=False,
+    )
+
+    assert len(result.written) == 2
+    assert {res.slug for res in result.written} == {"chatgpt-bundle-1", "chatgpt-bundle-dir"}
+    assert set(calls) == {zip_path, dir_path}
+
+
+def test_sync_claude_exports_counts_skipped(monkeypatch, tmp_path):
+    base_dir = tmp_path / "claude"
+    bundle_dir = base_dir / "export"
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    (bundle_dir / "conversations.json").write_text("{}", encoding="utf-8")
+
+    def fake_import_claude_export(**_kwargs):  # noqa: ANN001
+        md_path = tmp_path / "claude_out" / "slug" / "conversation.md"
+        return [
+            ImportResult(
+                markdown_path=md_path,
+                html_path=None,
+                attachments_dir=None,
+                document=None,
+                slug="claude-slug",
+                skipped=True,
+            )
+        ]
+
+    monkeypatch.setattr("polylogue.local_sync.import_claude_export", fake_import_claude_export)
+
+    result = sync_claude_exports(
+        base_dir=base_dir,
+        output_dir=tmp_path / "claude_out",
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+        prune=False,
+    )
+
+    assert not result.written
+    assert result.skipped == 1
