@@ -36,6 +36,24 @@ def test_systemd_snippet_includes_paths(tmp_path):
     assert "--out" in snippet and str(tmp_path / "out") in snippet
 
 
+def test_systemd_snippet_emits_status_dump(tmp_path):
+    status_path = tmp_path / "status.json"
+    snippet = systemd_snippet(
+        target_key="codex",
+        interval="20m",
+        working_dir=tmp_path,
+        extra_args=[],
+        boot_delay="30s",
+        status_log=status_path,
+        status_limit=25,
+    )
+    assert "ExecStartPost" in snippet
+    assert "status --dump" in snippet
+    assert str(status_path) in snippet
+    assert "--dump-limit 25" in snippet
+    assert "--dump-only" in snippet
+
+
 def test_cron_snippet_default_schedule(tmp_path):
     log_path = "/tmp/polylogue-test.log"
     snippet = cron_snippet(
@@ -51,6 +69,23 @@ def test_cron_snippet_default_schedule(tmp_path):
     assert log_path in snippet
     assert "--html" in snippet
     assert "--collapse-threshold 20" in snippet
+
+
+def test_cron_snippet_appends_status(tmp_path):
+    status_path = tmp_path / "status-log.json"
+    snippet = cron_snippet(
+        target_key="claude-code",
+        schedule="*/15 * * * *",
+        working_dir=tmp_path,
+        log_path="/tmp/polylogue.log",
+        state_env="$STATE",
+        status_log=status_path,
+        status_limit=10,
+    )
+    assert "status --dump" in snippet
+    assert str(status_path) in snippet
+    assert "--dump-only" in snippet
+    assert "&& (" in snippet
 
 
 def test_describe_targets_roundtrip():
