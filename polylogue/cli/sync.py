@@ -157,6 +157,7 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         html=html_enabled,
         html_theme=html_theme,
         diff=getattr(args, "diff", False),
+        branch_export=getattr(args, "branch_export", "full"),
     )
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
@@ -279,6 +280,7 @@ def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
         diff=diff_enabled,
         sessions=selected_paths,
         registrar=env.registrar,
+        branch_mode=getattr(args, "branch_export", "full"),
     )
 
     attachments = result.attachments
@@ -374,6 +376,7 @@ def _run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
         diff=diff_enabled,
         sessions=selected_paths,
         registrar=env.registrar,
+        branch_mode=getattr(args, "branch_export", "full"),
     )
 
     attachments = result.attachments

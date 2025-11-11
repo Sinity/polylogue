@@ -95,6 +95,7 @@ def _run_watch_sessions(
                 prune=False,
                 diff=False,
                 sessions=None,
+                branch_mode=getattr(args, "branch_export", "full"),
                 registrar=env.registrar,
             )
         except Exception as exc:  # pragma: no cover - defensive

@@ -14,6 +14,7 @@ from ..conversation import process_conversation
 from ..branching import MessageRecord
 from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .base import ImportResult
+from .normalizer import build_message_record
 from .utils import (
     estimate_token_count,
     normalise_inline_footnotes,
@@ -82,6 +83,36 @@ def _render_parts(parts: Iterable) -> str:
     return "\n\n".join([frag for frag in fragments if frag])
 
 
+def _extract_tool_calls(content: Dict[str, Any]) -> List[Dict[str, Any]]:
+    parts = content.get("parts") if isinstance(content, dict) else None
+    if not isinstance(parts, list):
+        return []
+    calls: List[Dict[str, Any]] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        content_type = part.get("content_type") or part.get("type")
+        if content_type in {"tool_calls", "tool_call"}:
+            payload = part.get("input") or part.get("arguments")
+            call = {
+                "type": content_type,
+                "name": part.get("name") or part.get("id") or "tool",
+            }
+            if part.get("id"):
+                call["id"] = part["id"]
+            if payload is not None:
+                call["arguments"] = payload
+            calls.append(call)
+        elif content_type in {"tool_result", "tool_results"}:
+            call_result = {
+                "type": content_type,
+                "id": part.get("id"),
+                "output": part.get("text") or part.get("output"),
+            }
+            calls.append(call_result)
+    return calls
+
+
 def _format_table(rows: List, header: Iterable) -> str:
     def fmt_row(row: Iterable) -> List[str]:
         result: List[str] = []
@@ -135,6 +166,7 @@ def import_chatgpt_export(
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
     force: bool = False,
+    branch_mode: str = "full",
     registrar: Optional[ConversationRegistrar] = None,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
@@ -162,6 +194,7 @@ def import_chatgpt_export(
                     html=html,
                     html_theme=html_theme,
                     force=force,
+                    branch_mode=branch_mode,
                     registrar=registrar,
                 )
             )
@@ -207,6 +240,7 @@ def _render_chatgpt_conversation(
     html: bool,
     html_theme: str,
     force: bool,
+    branch_mode: str,
     registrar: Optional[ConversationRegistrar],
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
@@ -294,23 +328,18 @@ def _render_chatgpt_conversation(
             if preview != current_text:
                 chunks[idx]["text"] = preview
 
-        effective_message_id = message_id or f"{(conv_id or 'chat')}-msg-{idx}"
-        while effective_message_id in seen_message_ids:
-            effective_message_id = f"{effective_message_id}-dup"
-        seen_message_ids.add(effective_message_id)
+        links = list(per_chunk_links.get(idx, []))
         message_records.append(
-            MessageRecord(
-                message_id=effective_message_id,
-                parent_id=parent_id,
-                role=chunk["role"],
-                text=chunks[idx]["text"],
-                token_count=int(chunk.get("tokenCount", 0) or 0),
-                word_count=len((chunks[idx]["text"] or "").split()),
-                timestamp=chunk.get("timestamp"),
-                attachments=len(per_chunk_links.get(idx, [])),
+            build_message_record(
+                provider="chatgpt",
+                conversation_id=conv_id,
+                chunk_index=idx,
                 chunk=chunks[idx],
-                links=list(per_chunk_links.get(idx, [])),
-                metadata={"raw": metadata},
+                raw_metadata=metadata,
+                attachments=links,
+                tool_calls=_extract_tool_calls(content if isinstance(content, dict) else {}),
+                seen_ids=seen_message_ids,
+                fallback_prefix=slug,
             )
         )
 
@@ -347,6 +376,7 @@ def _render_chatgpt_conversation(
         source_size=None,
         attachment_policy=None,
         force=force,
+        branch_mode=branch_mode,
         registrar=registrar,
     )
 

@@ -30,6 +30,7 @@ from ..options import BranchExploreOptions, SearchHit, SearchOptions, SyncOption
 from ..ui import create_ui
 from .registry import CommandRegistry
 from .arg_helpers import (
+    add_branch_mode_option,
     add_collapse_option,
     add_diff_option,
     add_dry_run_option,
@@ -708,6 +709,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--prune", action="store_true", help="Remove outputs for conversations that vanished upstream")
     add_collapse_option(p_sync)
     add_html_option(p_sync)
+    add_branch_mode_option(p_sync)
     add_diff_option(p_sync, help_text="Write delta diff alongside updated Markdown")
     p_sync.add_argument("--json", action="store_true", help="Emit machine-readable summary")
     p_sync.add_argument("--base-dir", type=Path, default=None, help="Override local session directory (codex/claude-code)")
@@ -725,6 +727,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--out", type=Path, default=None, help="Override output directory")
     add_collapse_option(p_import)
     add_html_option(p_import)
+    add_branch_mode_option(p_import)
     add_force_option(p_import, help_text="Rewrite even if conversations appear up-to-date")
     p_import.add_argument("--all", action="store_true", help="Process every conversation in the export (ChatGPT/Claude)")
     p_import.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Specific conversation ID to import (repeatable)")
@@ -783,6 +786,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_out_option(p_watch, default_path=DEFAULT_CODEX_SYNC_OUT, help_text="Override output directory")
     add_collapse_option(p_watch)
     add_html_option(p_watch, description="HTML preview mode while watching: on/off/auto (default auto)")
+    add_branch_mode_option(p_watch)
     p_watch.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
     p_watch.add_argument("--once", action="store_true", help="Run a single sync pass and exit")
 

@@ -149,10 +149,18 @@ def process_conversation(
     source_size: Optional[int],
     attachment_policy,
     force: bool,
+    branch_mode: str = "full",
     registrar: Optional[ConversationRegistrar] = None,
 ) -> ImportResult:
     if registrar is None:
         raise ValueError("ConversationRegistrar instance required")
+
+    branch_mode_normalized = (branch_mode or "full").lower()
+    if branch_mode_normalized not in {"full", "overlay", "canonical"}:
+        raise ValueError(f"Unsupported branch export mode: {branch_mode}")
+    write_branch_tree = branch_mode_normalized in {"full", "overlay"}
+    write_full_branch_docs = branch_mode_normalized == "full"
+    write_overlay_docs = branch_mode_normalized in {"full", "overlay"}
 
     records_by_id = {record.message_id: record for record in message_records}
     plan = build_branch_plan(message_records, canonical_leaf_id=canonical_leaf_id)
@@ -202,7 +210,6 @@ def process_conversation(
         conversation_dir = persist_result.markdown_path.parent
         branches_dir = conversation_dir / "branches"
         attachments_dir = persist_result.attachments_dir
-        branches_dir.mkdir(parents=True, exist_ok=True)
 
         canonical_path = persist_result.markdown_path
         canonical_path.write_text(
@@ -210,55 +217,28 @@ def process_conversation(
             encoding="utf-8",
         )
 
-        common_ids = _common_prefix(plan)
-        common_records = [records_by_id[mid] for mid in common_ids if mid in records_by_id]
-        if common_records:
-            common_links = _links_mapping(common_records)
-            common_doc = _render_markdown_document(
-                common_records,
-                title=f"{title} — Common Prefix",
-                source_file_id=source_file_id,
-                modified_time=modified_time,
-                created_time=created_time,
-                run_settings=run_settings,
-                source_mime=source_mime,
-                source_size=source_size,
-                collapse_threshold=collapse_threshold,
-                extra_yaml=extra_yaml,
-                attachments=None,
-                per_chunk_links=_adjust_links_for_base(common_links, conversation_dir, persist_result.markdown_path.parent),
-            )
-            (conversation_dir / "conversation.common.md").write_text(common_doc.to_markdown(), encoding="utf-8")
+        common_path = conversation_dir / "conversation.common.md"
+        if not write_branch_tree:
+            if common_path.exists():
+                try:
+                    common_path.unlink()
+                except OSError:
+                    pass
+            if branches_dir.exists():
+                try:
+                    shutil.rmtree(branches_dir)
+                except OSError:
+                    pass
+        else:
+            branches_dir.mkdir(parents=True, exist_ok=True)
 
-        for branch_id, info in plan.branches.items():
-            branch_records = [records_by_id[mid] for mid in info.message_ids if mid in records_by_id]
-            branch_dir = branches_dir / branch_id
-            branch_dir.mkdir(parents=True, exist_ok=True)
-            branch_directories.append(branch_dir)
-
-            branch_links = _links_mapping(branch_records)
-            branch_doc = _render_markdown_document(
-                branch_records,
-                title=f"{title} — {branch_id}",
-                source_file_id=source_file_id,
-                modified_time=modified_time,
-                created_time=created_time,
-                run_settings=run_settings,
-                source_mime=source_mime,
-                source_size=source_size,
-                collapse_threshold=collapse_threshold,
-                extra_yaml=extra_yaml,
-                attachments=None,
-                per_chunk_links=_adjust_links_for_base(branch_links, branch_dir, persist_result.markdown_path.parent),
-            )
-            (branch_dir / f"{branch_id}.md").write_text(branch_doc.to_markdown(), encoding="utf-8")
-
-            overlay_records = branch_records[info.divergence_index :] if info.divergence_index else branch_records
-            if overlay_records:
-                overlay_links = _links_mapping(overlay_records)
-                overlay_doc = _render_markdown_document(
-                    overlay_records,
-                    title=f"{title} — {branch_id} Overlay",
+            common_ids = _common_prefix(plan)
+            common_records = [records_by_id[mid] for mid in common_ids if mid in records_by_id]
+            if common_records:
+                common_links = _links_mapping(common_records)
+                common_doc = _render_markdown_document(
+                    common_records,
+                    title=f"{title} — Common Prefix",
                     source_file_id=source_file_id,
                     modified_time=modified_time,
                     created_time=created_time,
@@ -268,22 +248,85 @@ def process_conversation(
                     collapse_threshold=collapse_threshold,
                     extra_yaml=extra_yaml,
                     attachments=None,
-                    per_chunk_links=_adjust_links_for_base(overlay_links, branch_dir, persist_result.markdown_path.parent),
+                    per_chunk_links=_adjust_links_for_base(common_links, conversation_dir, persist_result.markdown_path.parent),
                 )
-                (branch_dir / "overlay.md").write_text(overlay_doc.to_markdown(), encoding="utf-8")
-
-            if attachments_dir and attachments_dir.exists():
-                # Ensure attachments dir is preserved; branches can reference relative paths.
-                (branch_dir / "attachments").mkdir(exist_ok=True)
-
-        existing_branch_dirs = [path for path in branches_dir.iterdir() if path.is_dir()]
-        active_branch_names = {branch_id for branch_id in plan.branches}
-        for path in existing_branch_dirs:
-            if path.name not in active_branch_names:
+                common_path.write_text(common_doc.to_markdown(), encoding="utf-8")
+            elif common_path.exists():
                 try:
-                    shutil.rmtree(path)
+                    common_path.unlink()
                 except OSError:
-                    continue
+                    pass
+
+            for branch_id, info in plan.branches.items():
+                branch_records = [records_by_id[mid] for mid in info.message_ids if mid in records_by_id]
+                branch_dir = branches_dir / branch_id
+                branch_dir.mkdir(parents=True, exist_ok=True)
+                branch_directories.append(branch_dir)
+
+                branch_links = _links_mapping(branch_records)
+                branch_doc_path = branch_dir / f"{branch_id}.md"
+                if write_full_branch_docs and branch_records:
+                    branch_doc = _render_markdown_document(
+                        branch_records,
+                        title=f"{title} — {branch_id}",
+                        source_file_id=source_file_id,
+                        modified_time=modified_time,
+                        created_time=created_time,
+                        run_settings=run_settings,
+                        source_mime=source_mime,
+                        source_size=source_size,
+                        collapse_threshold=collapse_threshold,
+                        extra_yaml=extra_yaml,
+                        attachments=None,
+                        per_chunk_links=_adjust_links_for_base(
+                            branch_links, branch_dir, persist_result.markdown_path.parent
+                        ),
+                    )
+                    branch_doc_path.write_text(branch_doc.to_markdown(), encoding="utf-8")
+                elif branch_doc_path.exists():
+                    try:
+                        branch_doc_path.unlink()
+                    except OSError:
+                        pass
+
+                overlay_records = branch_records[info.divergence_index :] if info.divergence_index else branch_records
+                overlay_path = branch_dir / "overlay.md"
+                if write_overlay_docs and overlay_records:
+                    overlay_links = _links_mapping(overlay_records)
+                    overlay_doc = _render_markdown_document(
+                        overlay_records,
+                        title=f"{title} — {branch_id} Overlay",
+                        source_file_id=source_file_id,
+                        modified_time=modified_time,
+                        created_time=created_time,
+                        run_settings=run_settings,
+                        source_mime=source_mime,
+                        source_size=source_size,
+                        collapse_threshold=collapse_threshold,
+                        extra_yaml=extra_yaml,
+                        attachments=None,
+                        per_chunk_links=_adjust_links_for_base(
+                            overlay_links, branch_dir, persist_result.markdown_path.parent
+                        ),
+                    )
+                    overlay_path.write_text(overlay_doc.to_markdown(), encoding="utf-8")
+                elif overlay_path.exists():
+                    try:
+                        overlay_path.unlink()
+                    except OSError:
+                        pass
+
+                if attachments_dir and attachments_dir.exists():
+                    (branch_dir / "attachments").mkdir(exist_ok=True)
+
+            existing_branch_dirs = [path for path in branches_dir.iterdir() if path.is_dir()]
+            active_branch_names = {branch_id for branch_id in plan.branches}
+            for path in existing_branch_dirs:
+                if path.name not in active_branch_names:
+                    try:
+                        shutil.rmtree(path)
+                    except OSError:
+                        continue
 
     registrar.record_branch_plan(
         provider=provider,

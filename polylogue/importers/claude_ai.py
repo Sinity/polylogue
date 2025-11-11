@@ -12,6 +12,7 @@ from ..conversation import process_conversation
 from ..branching import MessageRecord
 from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .base import ImportResult
+from .normalizer import build_message_record
 from .utils import (
     estimate_token_count,
     normalise_inline_footnotes,
@@ -40,6 +41,7 @@ def import_claude_export(
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
     force: bool = False,
+    branch_mode: str = "full",
     registrar: Optional[ConversationRegistrar] = None,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
@@ -68,6 +70,7 @@ def import_claude_export(
                     html=html,
                     html_theme=html_theme,
                     force=force,
+                    branch_mode=branch_mode,
                     registrar=registrar,
                 )
             )
@@ -114,6 +117,7 @@ def _render_claude_conversation(
     html: bool,
     html_theme: str,
     force: bool,
+    branch_mode: str,
     registrar: Optional[ConversationRegistrar],
 ) -> ImportResult:
     title = conv.get("name") or conv.get("title") or "claude-chat"
@@ -190,23 +194,18 @@ def _render_claude_conversation(
             if preview != text_block:
                 chunks[idx]["text"] = preview
 
-        effective_message_id = message_id or f"{conv_id}-msg-{idx}"
-        while effective_message_id in seen_message_ids:
-            effective_message_id = f"{effective_message_id}-dup"
-        seen_message_ids.add(effective_message_id)
+        links = list(per_chunk_links.get(idx, []))
         message_records.append(
-            MessageRecord(
-                message_id=effective_message_id,
-                parent_id=parent_id,
-                role=chunk["role"],
-                text=chunks[idx].get("text", ""),
-                token_count=int(chunk.get("tokenCount", 0) or 0),
-                word_count=len((chunks[idx].get("text", "") or "").split()),
-                timestamp=chunk.get("timestamp"),
-                attachments=len(per_chunk_links.get(idx, [])),
+            build_message_record(
+                provider="claude.ai",
+                conversation_id=conv_id,
+                chunk_index=idx,
                 chunk=chunks[idx],
-                links=list(per_chunk_links.get(idx, [])),
-                metadata={"raw": message},
+                raw_metadata=message,
+                attachments=links,
+                tool_calls=_extract_tool_metadata(blocks if isinstance(blocks, list) else []),
+                seen_ids=seen_message_ids,
+                fallback_prefix=slug,
             )
         )
 
@@ -245,6 +244,7 @@ def _render_claude_conversation(
         source_size=None,
         attachment_policy=None,
         force=force,
+        branch_mode=branch_mode,
         registrar=registrar,
     )
 
@@ -257,6 +257,35 @@ def _index_export_files(root: Path) -> Dict[str, Path]:
         if path.is_file():
             index[path.name] = path
     return index
+
+
+
+def _extract_tool_metadata(blocks: List[Dict]) -> List[Dict[str, object]]:
+    details: List[Dict[str, object]] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "tool_use":
+            details.append(
+                {
+                    "type": block_type,
+                    "name": block.get("name") or block.get("tool_name"),
+                    "id": block.get("id") or block.get("tool_use_id"),
+                    "input": block.get("input"),
+                    "status": block.get("status"),
+                }
+            )
+        elif block_type == "tool_result":
+            details.append(
+                {
+                    "type": block_type,
+                    "name": block.get("name"),
+                    "id": block.get("id"),
+                    "output": block.get("text") or block.get("result"),
+                }
+            )
+    return details
 
 
 

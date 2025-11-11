@@ -190,25 +190,27 @@ class ConversationRegistrar:
                     for mid in info.message_ids
                     if mid in records_by_id
                 ]
-                messages = [
-                    {
-                        "message_id": record.message_id,
-                        "parent_id": record.parent_id,
-                        "role": record.role,
-                        "position": idx,
-                        "timestamp": record.timestamp,
-                        "token_count": record.token_count,
-                        "word_count": record.word_count,
-                        "attachment_count": record.attachments,
-                        "rendered_text": record.text,
-                        "content_hash": hashlib.sha256(record.text.encode("utf-8")).hexdigest()
-                        if record.text
-                        else None,
-                        "raw_json": json.dumps(record.chunk, ensure_ascii=False),
-                        "metadata": record.metadata,
-                    }
-                    for idx, record in enumerate(branch_records)
-                ]
+                messages = []
+                for idx, record in enumerate(branch_records):
+                    content_hash = record.content_hash
+                    if not content_hash and record.text:
+                        content_hash = hashlib.sha256(record.text.encode("utf-8")).hexdigest()
+                    messages.append(
+                        {
+                            "message_id": record.message_id,
+                            "parent_id": record.parent_id,
+                            "role": record.role,
+                            "position": idx,
+                            "timestamp": record.timestamp,
+                            "token_count": record.token_count,
+                            "word_count": record.word_count,
+                            "attachment_count": record.attachments,
+                            "rendered_text": record.text,
+                            "content_hash": content_hash,
+                            "raw_json": json.dumps(record.chunk, ensure_ascii=False),
+                            "metadata": record.metadata,
+                        }
+                    )
                 replace_messages(
                     conn,
                     provider=provider,

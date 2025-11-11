@@ -10,6 +10,7 @@ from ..conversation import process_conversation
 from ..branching import MessageRecord
 from .base import ImportResult
 from .utils import CHAR_THRESHOLD, LINE_THRESHOLD, PREVIEW_LINES, estimate_token_count, normalise_inline_footnotes
+from .normalizer import build_message_record
 from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 
 _DEFAULT_BASE = CODEX_SESSIONS_ROOT
@@ -33,6 +34,7 @@ def import_codex_session(
     html: bool = False,
     html_theme: str = "light",
     force: bool = False,
+    branch_mode: str = "full",
     registrar: Optional[ConversationRegistrar] = None,
 ) -> ImportResult:
     registrar = registrar or create_default_registrar()
@@ -52,6 +54,7 @@ def import_codex_session(
     attachments: List[AttachmentInfo] = []
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
     chunks: List[Dict[str, str]] = []
+    chunk_metadata: List[Dict[str, object]] = []
     call_index: Dict[str, int] = {}
     message_records: List[MessageRecord] = []
     seen_message_ids: Set[str] = set()
@@ -102,6 +105,7 @@ def import_codex_session(
                         "tokenCount": estimate_token_count(chunk_text, model="gpt-5-codex"),
                     }
                 )
+                chunk_metadata.append({"raw": {"type": "unparsed", "payload": fallback}})
                 continue
             if not isinstance(entry, dict):
                 continue
@@ -156,6 +160,7 @@ def import_codex_session(
                         "messageId": message_id,
                     }
                 )
+                chunk_metadata.append({"raw": payload})
                 if parent_id:
                     chunks[-1]["parentId"] = parent_id
                     chunks[-1]["branchParent"] = parent_id
@@ -184,6 +189,13 @@ def import_codex_session(
                         "messageId": payload.get("call_id") or payload.get("callId") or message_id,
                     }
                 )
+                call_meta = {
+                    "type": ptype,
+                    "name": name,
+                    "id": payload.get("call_id") or payload.get("callId") or entry.get("call_id"),
+                    "arguments": args_obj,
+                }
+                chunk_metadata.append({"raw": payload, "tool_calls": [call_meta]})
                 call_id = (
                     payload.get("call_id")
                     or payload.get("callId")
@@ -212,6 +224,12 @@ def import_codex_session(
                     if parent_id and "parentId" not in chunks[idx]:
                         chunks[idx]["parentId"] = parent_id
                         chunks[idx]["branchParent"] = parent_id
+                    meta = chunk_metadata[idx]
+                    calls = meta.setdefault("tool_calls", [])
+                    if calls:
+                        calls[0]["output"] = output_text
+                    else:
+                        calls.append({"type": "function_call_output", "output": output_text, "id": call_id})
                 else:
                     chunks.append(
                         {
@@ -219,6 +237,18 @@ def import_codex_session(
                             "text": output_text,
                             "tokenCount": estimate_token_count(output_text, model="gpt-5-codex"),
                             "messageId": message_id,
+                        }
+                    )
+                    chunk_metadata.append(
+                        {
+                            "raw": payload,
+                            "tool_calls": [
+                                {
+                                    "type": "function_call_output",
+                                    "id": call_id,
+                                    "output": output_text,
+                                }
+                            ],
                         }
                     )
                     parent_ref = parent_id or call_id
@@ -241,27 +271,23 @@ def import_codex_session(
         chunk["text"] = _truncate_with_preview(text, attachment_name)
 
     for idx, chunk in enumerate(chunks):
-        message_id = chunk.get("messageId") or f"{session_id}-msg-{idx}"
-        while message_id in seen_message_ids:
-            message_id = f"{message_id}-dup"
-        seen_message_ids.add(message_id)
         parent_id = chunk.get("parentId") or (message_records[-1].message_id if message_records else None)
         if parent_id and "parentId" not in chunk:
             chunk["parentId"] = parent_id
             chunk["branchParent"] = parent_id
+        meta = chunk_metadata[idx] if idx < len(chunk_metadata) else {}
+        links = list(per_chunk_links.get(idx, []))
         message_records.append(
-            MessageRecord(
-                message_id=message_id,
-                parent_id=parent_id,
-                role=chunk.get("role", "model"),
-                text=chunk.get("text", ""),
-                token_count=int(chunk.get("tokenCount", 0) or 0),
-                word_count=len((chunk.get("text", "") or "").split()),
-                timestamp=chunk.get("timestamp"),
-                attachments=len(per_chunk_links.get(idx, [])),
+            build_message_record(
+                provider="codex",
+                conversation_id=session_id,
+                chunk_index=idx,
                 chunk=chunk,
-                links=list(per_chunk_links.get(idx, [])),
-                metadata={"raw": {}},
+                raw_metadata=meta.get("raw") if isinstance(meta, dict) else None,
+                attachments=links,
+                tool_calls=meta.get("tool_calls") if isinstance(meta, dict) else None,
+                seen_ids=seen_message_ids,
+                fallback_prefix=slug,
             )
         )
 
@@ -299,5 +325,6 @@ def import_codex_session(
             "charThreshold": CHAR_THRESHOLD,
         },
         force=force,
+        branch_mode=branch_mode,
         registrar=registrar,
     )
