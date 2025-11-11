@@ -55,6 +55,7 @@ from .pipeline_runner import Pipeline, PipelineContext
 from .persistence.database import ConversationDatabase
 from .persistence.state import ConversationStateRepository
 from .repository import ConversationRepository
+from .branching import BranchInfo, BranchPlan, MessageRecord
 
 
 PROVIDER_ALIASES = {
@@ -202,6 +203,7 @@ class RenderPersistStage:
                 "sourceMimeType": chat_context.source_mime,
                 **(extra_state if isinstance(extra_state, dict) else {}),
             },
+            chunks=context.get("chunks"),
         )
         context.set("persist_outcome", outcome)
 
@@ -404,6 +406,7 @@ def _persist_conversation(
     provider: str,
     md_path: Path,
     extra_state: Optional[Dict[str, Any]] = None,
+    chunks: Optional[List[Dict[str, Any]]] = None,
 ) -> PersistOutcome:
     if not options.dry_run:
         md_path.parent.mkdir(parents=True, exist_ok=True)
@@ -449,6 +452,20 @@ def _persist_conversation(
             skipped=True,
             persist_result=persist_result,
         )
+
+    attachment_bytes = sum(att.size_bytes or 0 for att in doc.attachments)
+    if provider and conversation_id and isinstance(chunks, list) and chunks:
+        try:
+            _register_chunks_with_registrar(
+                env.registrar,
+                provider=provider,
+                conversation_id=conversation_id,
+                slug=persist_result.slug,
+                chunks=chunks,
+                attachment_bytes=attachment_bytes,
+            )
+        except Exception:  # pragma: no cover - do not block persistence on indexing
+            pass
 
     diff_path = diff_tracker.finalize(persist_result.markdown_path)
     return PersistOutcome(
@@ -771,4 +788,80 @@ def status_command(env: CommandEnv, runs_limit: Optional[int] = 200) -> StatusRe
         run_summary=run_summary,
         provider_summary=provider_summary,
         runs=run_data,
+    )
+def _register_chunks_with_registrar(
+    registrar: ConversationRegistrar,
+    *,
+    provider: Optional[str],
+    conversation_id: Optional[str],
+    slug: str,
+    chunks: List[Dict[str, Any]],
+    attachment_bytes: int,
+) -> None:
+    if not provider or not conversation_id or not chunks:
+        return
+
+    records: List[MessageRecord] = []
+    records_by_id: Dict[str, MessageRecord] = {}
+    seen_ids: set[str] = set()
+
+    for idx, chunk in enumerate(chunks):
+        text = chunk.get("text") or ""
+        role = chunk.get("role") or "model"
+        message_id = chunk.get("messageId") or f"{slug}-msg-{idx:04d}"
+        while message_id in seen_ids:
+            message_id = f"{message_id}-{idx}"
+        seen_ids.add(message_id)
+        parent_id = records[-1].message_id if records else None
+        token_count = int(chunk.get("tokenCount", 0) or 0)
+        word_count = len(text.split()) if text else 0
+        record = MessageRecord(
+            message_id=message_id,
+            parent_id=parent_id,
+            role=role if role in {"user", "model", "tool", "system"} else "model",
+            text=text,
+            token_count=token_count,
+            word_count=word_count,
+            timestamp=chunk.get("timestamp"),
+            attachments=0,
+            chunk=chunk,
+            links=[],
+            metadata={"source": "render"},
+        )
+        records.append(record)
+        records_by_id[message_id] = record
+
+    if not records:
+        return
+
+    message_ids = [rec.message_id for rec in records]
+    canonical_branch = BranchInfo(
+        branch_id="branch-000",
+        parent_branch_id=None,
+        message_ids=message_ids,
+        is_canonical=True,
+        depth=len(message_ids),
+        divergence_index=0,
+    )
+    plan = BranchPlan(branches={canonical_branch.branch_id: canonical_branch}, canonical_branch_id=canonical_branch.branch_id)
+    branch_stats = {
+        canonical_branch.branch_id: {
+            "message_count": len(records),
+            "token_count": sum(rec.token_count for rec in records),
+            "word_count": sum(rec.word_count for rec in records),
+            "first_message_id": records[0].message_id,
+            "last_message_id": records[-1].message_id,
+            "first_timestamp": records[0].timestamp,
+            "last_timestamp": records[-1].timestamp,
+        }
+    }
+
+    registrar.record_branch_plan(
+        provider=provider,
+        conversation_id=conversation_id,
+        slug=slug,
+        plan=plan,
+        branch_stats=branch_stats,
+        records_by_id=records_by_id,
+        attachment_bytes=attachment_bytes,
     )

@@ -251,8 +251,8 @@ Environment variables:
    - [x] Update tests (`tests/test_status.py`).
 
 6. **Index Integration**
-   - [ ] Adjust FTS to index messages.  
-   - [ ] Keep Qdrant adapter stub; plan for real embeddings once Voyage pipeline consumes SQLite.
+   - [x] Adjust FTS to index messages (render/sync pipelines now register chunks directly with the registrar so `messages_fts` stays authoritative).  
+   - [x] Keep Qdrant adapter stub; plan for real embeddings once Voyage pipeline consumes SQLite.
 
 7. **Documentation & Rollout**
    - [ ] Update README, docs/automation.md, and provider docs with the new architecture, branch export modes, environment variables, and local sync behaviour.  
