@@ -44,5 +44,6 @@ To keep recurring Claude exports in lockstep with the rest of your archive:
 1. Stash every bundle (ZIP or extracted directory with `conversations.json`) under `$XDG_DATA_HOME/polylogue/exports/claude` — typically `~/.local/share/polylogue/exports/claude`.
 2. Run `polylogue sync claude` to import the new bundles. Without `--all`, the CLI offers an interactive picker so you can cherry-pick which exports to process.
 3. Use `--base-dir` to point at another directory, and reuse familiar options like `--branch-export`, `--html`, and `--prune` to control the output layout.
+4. Launch `polylogue watch claude` to monitor the export directory continuously; every new ZIP or refreshed `conversations.json` automatically kicks off the same pipeline as a manual sync.
 
-Claude exports are also one-off bundles, so watch mode stays disabled. Trigger `polylogue sync claude` whenever a new export lands and the registrar will reuse existing slugs, token stats, and branch metadata automatically.
+Whether you sync on demand or rely on `polylogue watch claude`, the registrar keeps slugs, token stats, and branch metadata perfectly aligned with the latest export.
