@@ -148,3 +148,38 @@ def test_systemd_snippet_html_mode_off(tmp_path):
         html="off",
     )
     assert "--html off" in snippet
+
+
+def test_systemd_snippet_status_summary(tmp_path):
+    summary_path = tmp_path / "metrics.json"
+    snippet = systemd_snippet(
+        target_key="drive-sync",
+        interval="5m",
+        working_dir=tmp_path,
+        extra_args=[],
+        boot_delay="1m",
+        status_summary=summary_path,
+        status_summary_providers="drive,codex",
+    )
+    assert "status --summary" in snippet
+    assert str(summary_path) in snippet
+    assert "--summary-only" in snippet
+    assert "--providers drive,codex" in snippet
+
+
+def test_cron_snippet_status_summary(tmp_path):
+    summary_path = tmp_path / "summary.json"
+    snippet = cron_snippet(
+        target_key="codex",
+        schedule="*/5 * * * *",
+        working_dir=tmp_path,
+        log_path="/tmp/polylogue.log",
+        extra_args=[],
+        state_env="$STATE",
+        status_summary=summary_path,
+        status_summary_providers="drive",
+    )
+    assert "status --summary" in snippet
+    assert str(summary_path) in snippet
+    assert "--summary-only" in snippet
+    assert "--providers drive" in snippet

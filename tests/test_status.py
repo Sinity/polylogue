@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 
 from polylogue.commands import CommandEnv, status_command
+from polylogue.cli import build_parser
 from polylogue.cli.status import run_status_cli
 from polylogue import util
 
@@ -88,6 +89,23 @@ def test_status_dump_to_file(state_env, tmp_path):
     data = json.loads(dump_path.read_text(encoding="utf-8"))
     assert len(data) == 2
     assert data[-1]["cmd"] == "render"
+
+
+def test_status_cli_parser_summary(state_env, capsys):
+    util.add_run(
+        {
+            "cmd": "render",
+            "provider": "render",
+            "count": 1,
+            "attachments": 0,
+            "timestamp": "2024-04-01T00:00:00Z",
+        }
+    )
+    parser = build_parser()
+    args = parser.parse_args(["status", "--providers", "render", "--summary", "-", "--summary-only"])
+    run_status_cli(args, CommandEnv(ui=DummyUI()))
+    payload = json.loads(capsys.readouterr().out)
+    assert list(payload["providerSummary"].keys()) == ["render"]
 
 
 def test_status_provider_filter_and_summary(state_env, tmp_path, capsys):
