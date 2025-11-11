@@ -21,6 +21,7 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 - **Render local logs:** Choose a file or directory; skim previews candidates, rich shows progress, and outputs land in the configured render directory (defaults to something like `~/polylogue-data/render`). Add `--html` for themed previews or `--diff` to see deltas when re-rendering.
 - **Sync provider archives:** `polylogue sync drive|codex|claude-code` unifies Drive pulls and local IDE session mirroring with consistent flags for collapse thresholds, HTML, pruning, diffs, and JSON output. Defaults from `polylogue.config` keep outputs in locations such as `~/polylogue-data/sync-drive`, `~/polylogue-data/codex`, and `~/polylogue-data/claude-code`.
 - **Import provider exports:** `polylogue import chatgpt|claude|codex|claude-code …` normalises exports into Markdown/HTML, reusing provider metadata and letting you cherry-pick conversations interactively when desired.
+- **Control branch layouts:** add `--branch-export full|overlay|canonical` to render/import/sync/watch commands to choose between the full branch tree, overlay-only deltas, or flat canonical transcripts.
 - **Inspect archives:** `polylogue inspect branches` renders branch trees (and auto-writes HTML explorers), `polylogue inspect search` queries the SQLite FTS index with rich filters, and `polylogue inspect stats` summarises tokens/attachments per provider.
 - **Watch local sessions in real time:** `polylogue watch codex` and `polylogue watch claude-code` keep those directories synced automatically; adjust debounce, HTML, collapse settings per watcher, or run a single pass with `--once`. Every pass goes through the same registrar/pipeline stack as the batch commands, so attachment counts, Drive retries, and diffs show up in `polylogue status --json` and in the structured `polylogue_run` JSON lines emitted on stderr (set `POLYLOGUE_RUN_LOG=0` to disable the latter when embedding Polylogue in other tooling).
 - **Tweak session defaults on the fly:** The interactive menu's `Settings` pane toggles HTML previews, switches light/dark themes, and resets to config defaults. Adjustments flow through render, sync, import, and watch commands for the duration of the session.
@@ -58,15 +59,15 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 
 ## Automation & Flags
 Although the CLI is interactive by default, the same functionality is available non-interactively:
-- `python3 polylogue.py render PATH [--out DIR] [--links-only] [--dry-run] [--force] [--collapse-threshold N] [--json] [--plain] [--html [on|off|auto]] [--diff]`
-- `python3 polylogue.py sync drive|codex|claude-code [--out DIR] [--links-only] [--dry-run] [--force] [--prune] [--collapse-threshold N] [--html [on|off|auto]] [--diff] [--json]`
+- `python3 polylogue.py render PATH [--out DIR] [--links-only] [--dry-run] [--force] [--collapse-threshold N] [--json] [--plain] [--html [on|off|auto]] [--branch-export full|overlay|canonical] [--diff]`
+- `python3 polylogue.py sync drive|codex|claude-code [--out DIR] [--links-only] [--dry-run] [--force] [--prune] [--collapse-threshold N] [--html [on|off|auto]] [--branch-export full|overlay|canonical] [--diff] [--json]`
   - Drive extras: `--folder-name`, `--folder-id`, `--since`, `--until`, `--name-filter`, `--list-only`
   - Local extras: `--base-dir`, `--all`
-- `python3 polylogue.py import chatgpt|claude|codex|claude-code SOURCE … [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--force] [--all] [--conversation-id ID ...] [--base-dir DIR] [--json]`
+- `python3 polylogue.py import chatgpt|claude|codex|claude-code SOURCE … [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--branch-export full|overlay|canonical] [--force] [--all] [--conversation-id ID ...] [--base-dir DIR] [--json]`
 - `python3 polylogue.py inspect branches [--provider NAME] [--slug SLUG] [--conversation-id ID] [--branch BRANCH_ID] [--diff] [--html [on|off|auto]] [--html-out PATH] [--theme light|dark] [--no-picker]`
 - `python3 polylogue.py inspect search QUERY [--limit N] [--provider NAME] [--slug SLUG] [--conversation-id ID] [--branch BRANCH_ID] [--model MODEL] [--since RFC3339] [--until RFC3339] [--with-attachments|--without-attachments] [--no-picker] [--json]`
 - `python3 polylogue.py inspect stats [--dir DIR] [--since DATE] [--until DATE] [--json]`
-- `python3 polylogue.py watch codex|claude-code [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--debounce seconds] [--once]`
+- `python3 polylogue.py watch codex|claude-code [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--branch-export full|overlay|canonical] [--debounce seconds] [--once]`
 - `python3 polylogue.py status [--json] [--watch] [--interval seconds] [--dump path] [--dump-only]`
 - `python3 polylogue.py prune [--dir DIR] [--dry-run]`
 - `python3 polylogue.py doctor [--codex-dir DIR] [--claude-code-dir DIR] [--limit N] [--json]`

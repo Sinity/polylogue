@@ -20,6 +20,16 @@ Polylogue ingests chat.openai.com exports (consumer ChatGPT) by walking the prov
   - Convert citation markers (private-use characters such as `\uE200`) into Markdown footnotes using the accompanying entry in `message.metadata.citations`.
 - Tool/function messages show up as `recipient == "assistant"` payloads or `content_type == "tool_results"`. Pair the call/result when the export links them so the Markdown contains a single tool block.
 
+### Branch Export Modes
+
+`polylogue import chatgpt` (and downstream sync/watch flows) accept `--branch-export full|overlay|canonical` so you can control how the on-disk tree looks:
+
+- `full` (default) writes `conversation.md`, `conversation.common.md`, and every branch’s `branches/<branch-id>/{<branch-id>.md, overlay.md}` directory.
+- `overlay` keeps the canonical transcript plus per-branch `overlay.md` files, omitting the full per-branch copies when all you need are the deltas.
+- `canonical` limits the output to `conversation.md` under each slug, skipping the branch tree entirely when you want a flat archive.
+
+Because chat imports now travel through the same registrar/pipeline stack as sync/watch, the `--branch-export` flag behaves consistently everywhere (render, sync drive/codex/claude-code, and watchers).
+
 ## Attachments
 
 - When attachments exist inside the ZIP, copy them into the conversation’s `attachments/` directory and link from Markdown.

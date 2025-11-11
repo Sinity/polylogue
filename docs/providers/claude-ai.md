@@ -18,6 +18,16 @@ Claude workspace exports (`claude-ai-data-*.zip`) provide a linear conversation 
 - Capture attachments into `attachments/`, recording the filename, type, and size so downstream summaries can surface them.
 - Populate YAML front matter with conversation metadata (`name`, timestamps, source bundle path) to support reruns and UI summaries.
 
+### Branch Export Modes
+
+Use `--branch-export full|overlay|canonical` to control how Polylogue writes Claude.ai transcripts:
+
+- `full` (default) emits the canonical transcript plus the branch tree (`conversation.common.md`, `branches/<branch-id>/{<branch-id>.md, overlay.md}`).
+- `overlay` keeps only the canonical Markdown and per-branch overlays, ideal when Git history only needs the deltas.
+- `canonical` writes the top-level `conversation.md` and omits the branch directory entirely.
+
+The flag is available on `polylogue import claude`, watcher/sync commands, and automation snippets since they all use the same registrar-backed pipeline.
+
 ## Automation Considerations
 
 - Anthropic does not expose a public API for claude.ai history. Users must initiate exports by hand or automate a browser session (Playwright/Selenium) with a stored login.
