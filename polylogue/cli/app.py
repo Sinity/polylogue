@@ -823,6 +823,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--dump-limit", type=int, default=100, help="Number of runs to include when dumping")
     p_status.add_argument("--runs-limit", type=int, default=200, help="Number of historical runs to include in summaries")
     p_status.add_argument("--dump-only", action="store_true", help="Only perform the dump action without printing summaries")
+    p_status.add_argument(
+        "--providers",
+        type=str,
+        default=None,
+        help="Comma-separated provider filter (limits summaries, dumps, and JSON output)",
+    )
+    p_status.add_argument(
+        "--summary",
+        type=str,
+        default=None,
+        help="Write aggregated provider/run summary JSON to a file ('-' for stdout)",
+    )
+    p_status.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Only emit the summary JSON without printing tables",
+    )
 
     p_settings_cmd = sub.add_parser("settings", help="Show or update Polylogue defaults")
     p_settings_cmd.add_argument("--html", choices=["on", "off"], default=None, help="Enable or disable default HTML previews")
