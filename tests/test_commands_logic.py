@@ -88,20 +88,26 @@ def test_render_command_persists_state(tmp_path, state_env, monkeypatch):
     assert records and records[0].get("duration") is not None
     assert records[0]["duration"] >= 0
 
-    db_path = state_env / "index.sqlite"
-    assert db_path.exists()
+    db_path = state_env / "polylogue.db"
     conn = sqlite3.connect(db_path)
     try:
+        conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT title FROM conversations WHERE provider = ? AND conversation_id = ?",
             ("render", "conv-1"),
         ).fetchone()
-        assert row and row[0] == "Sample Chat"
-        fts_row = conn.execute(
-            "SELECT content FROM conversations_fts WHERE provider = ? AND conversation_id = ?",
+        assert row and row["title"] == "Sample Chat"
+        msg_row = conn.execute(
+            """
+            SELECT rendered_text
+              FROM messages
+             WHERE provider = ? AND conversation_id = ?
+             ORDER BY position ASC
+             LIMIT 1
+            """,
             ("render", "conv-1"),
         ).fetchone()
-        assert fts_row and "Hello" in fts_row[0]
+        assert msg_row and "Hello" in msg_row["rendered_text"]
     finally:
         conn.close()
     # rerun should skip due to unchanged content
@@ -171,15 +177,15 @@ def test_sync_command_with_stub_drive(tmp_path, monkeypatch, state_env):
     assert records and records[0].get("duration") is not None
     assert records[0]["duration"] >= 0
 
-    db_path = state_env / "index.sqlite"
-    assert db_path.exists()
+    db_path = state_env / "polylogue.db"
     conn = sqlite3.connect(db_path)
     try:
+        conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT title FROM conversations WHERE provider = ? AND conversation_id = ?",
             ("drive-sync", "drive-1"),
         ).fetchone()
-        assert row and row[0] == "Drive Sample"
+        assert row and row["title"] == "Drive Sample"
     finally:
         conn.close()
 
