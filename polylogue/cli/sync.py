@@ -114,11 +114,10 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         return
 
     download_attachments = not args.links_only
-    if not ui.plain and not args.links_only:
-        download_attachments = ui.confirm("Download attachments for synced chats?", default=True)
 
-    selected_ids: Optional[List[str]] = None
-    if not ui.plain and not json_mode:
+    cli_ids = [item.strip() for item in getattr(args, "chat_ids", []) if item and item.strip()]
+    selected_ids: Optional[List[str]] = cli_ids or None
+    if selected_ids is None and not ui.plain and not json_mode:
         drive = env.drive or DriveClient(ui)
         env.drive = drive
         raw_chats = drive.list_chats(args.folder_name, args.folder_id)
@@ -126,15 +125,19 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         if not filtered:
             console.print("No chats to sync")
             return
-        lines = [f"{c.get('name') or '(untitled)'}\t{c.get('modifiedTime') or ''}\t{c.get('id')}" for c in filtered]
-        selection = sk_select(lines, preview="printf '%s' {+}")
-        if selection is None:
-            console.print("[yellow]Sync cancelled; no chats selected.")
-            return
-        if not selection:
-            console.print("[yellow]No chats selected; nothing to sync.")
-            return
-        selected_ids = [line.split("\t")[-1] for line in selection]
+        if not getattr(args, "all", False):
+            lines = [
+                f"{c.get('name') or '(untitled)'}\t{c.get('modifiedTime') or ''}\t{c.get('id')}"
+                for c in filtered
+            ]
+            selection = sk_select(lines, preview="printf '%s' {+}")
+            if selection is None:
+                console.print("[yellow]Sync cancelled; no chats selected.")
+                return
+            if not selection:
+                console.print("[yellow]No chats selected; nothing to sync.")
+                return
+            selected_ids = [line.split("\t")[-1] for line in selection]
 
     settings = env.settings
     html_enabled = resolve_html_enabled(args, settings)
@@ -264,7 +267,10 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
         base_dir.mkdir(parents=True, exist_ok=True)
 
     selected_paths: Optional[List[Path]] = None
-    if not args.all and not ui.plain:
+    cli_sessions = getattr(args, "sessions", None)
+    if cli_sessions:
+        selected_paths = [Path(path).expanduser() for path in cli_sessions if path]
+    elif not args.all and not ui.plain:
         sessions = provider.list_sessions(base_dir)
         selection = _collect_session_selection(ui, sessions, f"Select {provider.title} sessions")
         if selection is None:

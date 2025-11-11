@@ -72,3 +72,18 @@ def test_run_sync_cli_dispatch(monkeypatch):
     monkeypatch.setattr("polylogue.cli.sync._run_sync_drive", fake_drive)
     run_sync_cli(Namespace(provider="drive"), CommandEnv(ui=DummyUI()))
     assert calls == ["drive"]
+
+
+def test_sync_parser_supports_selection_flags(tmp_path):
+    parser = build_parser()
+    drive_args = parser.parse_args(
+        ["sync", "drive", "--chat-id", "file-a", "--chat-id", "file-b"]
+    )
+    assert drive_args.chat_ids == ["file-a", "file-b"]
+
+    session_one = tmp_path / "one.jsonl"
+    session_two = tmp_path / "two.jsonl"
+    local_args = parser.parse_args(
+        ["sync", "codex", "--session", str(session_one), "--session", str(session_two)]
+    )
+    assert local_args.sessions == [session_one, session_two]
