@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -37,9 +37,13 @@ def resolve_target(target: str) -> AutomationTarget:
         raise ValueError(f"Unsupported automation target: {target}") from exc
 
 
-def build_command(target: AutomationTarget, extra_args: Iterable[str]) -> str:
-    parts = [sys.executable, "-m", SCRIPT_MODULE] + target.command + list(extra_args)
+def _python_module_command(args: Iterable[str]) -> str:
+    parts = [sys.executable, "-m", SCRIPT_MODULE] + list(args)
     return shlex.join(parts)
+
+
+def build_command(target: AutomationTarget, extra_args: Iterable[str]) -> str:
+    return _python_module_command(target.command + list(extra_args))
 
 
 def describe_targets(target: Optional[str] = None) -> Dict[str, Dict[str, object]]:
@@ -62,11 +66,45 @@ def describe_targets(target: Optional[str] = None) -> Dict[str, Dict[str, object
     }
 
 
+def _normalize_html_mode(value: Optional[object]) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "on" if value else None
+    if isinstance(value, str):
+        lowered = value.lower()
+        if lowered in {"on", "off"}:
+            return lowered
+        if lowered == "auto":
+            return None
+    return None
+
+
+def _apply_html_mode(args: List[str], mode: Optional[str]) -> List[str]:
+    cleaned: List[str] = []
+    skip_next = False
+    for idx, token in enumerate(args):
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "--html":
+            if idx + 1 < len(args) and not args[idx + 1].startswith("-"):
+                skip_next = True
+            continue
+        cleaned.append(token)
+    if mode is None:
+        return cleaned
+    cleaned.append("--html")
+    if mode != "on":
+        cleaned.append(mode)
+    return cleaned
+
+
 def _merge_args(
     target: AutomationTarget,
     user_extra: Iterable[str],
     collapse_threshold: Optional[int],
-    html: Optional[bool],
+    html_mode: Optional[str],
 ) -> List[str]:
     defaults = target.defaults or {}
     user_list = list(user_extra)
@@ -82,20 +120,12 @@ def _merge_args(
             args.extend(["--collapse-threshold", str(default_collapse)])
 
     user_requested_html = "--html" in user_list
-    html_pref: Optional[bool]
-    if html is None:
-        if user_requested_html:
-            html_pref = True
-        else:
-            html_pref = defaults.get("html")
-    else:
-        html_pref = html
-
-    if html_pref:
-        if "--html" not in args:
-            args.append("--html")
-    else:
-        args = [flag for flag in args if flag != "--html"]
+    if html_mode is not None:
+        args = _apply_html_mode(args, html_mode)
+    elif not user_requested_html:
+        default_mode = _normalize_html_mode(defaults.get("html"))
+        if default_mode is not None:
+            args = _apply_html_mode(args, default_mode)
 
     return args
 
@@ -110,10 +140,11 @@ def prepare_automation_command(
     *,
     user_extra: Iterable[str],
     collapse_threshold: Optional[int],
-    html: Optional[bool],
+    html: Optional[object],
 ) -> Tuple[AutomationTarget, List[str]]:
     target = resolve_target(target_key)
-    merged = _merge_args(target, user_extra, collapse_threshold, html)
+    html_mode = _normalize_html_mode(html)
+    merged = _merge_args(target, user_extra, collapse_threshold, html_mode)
     return target, merged
 
 
@@ -125,7 +156,11 @@ def systemd_snippet(
     extra_args: Iterable[str] = (),
     boot_delay: str = "2m",
     collapse_threshold: Optional[int] = None,
-    html: Optional[bool] = None,
+    html: Optional[object] = None,
+    status_log: Optional[Path] = None,
+    status_limit: int = 50,
+    status_summary: Optional[Path] = None,
+    status_summary_providers: Optional[str] = None,
 ) -> str:
     target, merged_args = prepare_automation_command(
         target_key,
@@ -136,6 +171,31 @@ def systemd_snippet(
     service_name = target.name
     command = build_command(target, merged_args)
     working_directory = _escape_systemd_path(working_dir)
+    post_cmds: List[str] = []
+    if status_log is not None:
+        post_cmds.append(
+            _python_module_command(
+                [
+                    "status",
+                    "--dump",
+                    str(status_log),
+                    "--dump-limit",
+                    str(max(1, status_limit)),
+                    "--dump-only",
+                ]
+            )
+        )
+    if status_summary is not None:
+        summary_args = [
+            "status",
+            "--summary",
+            str(status_summary),
+            "--summary-only",
+        ]
+        if status_summary_providers:
+            summary_args.extend(["--providers", status_summary_providers])
+        post_cmds.append(_python_module_command(summary_args))
+    post_section = "\n".join(f"ExecStartPost={cmd}" for cmd in post_cmds if cmd)
     service = dedent(
         f"""# ~/.config/systemd/user/{service_name}.service
 [Unit]
@@ -145,6 +205,7 @@ Description={target.description}
 Type=oneshot
 WorkingDirectory={working_directory}
 ExecStart={command}
+{post_section}
 """
     ).strip()
 
@@ -175,7 +236,11 @@ def cron_snippet(
     extra_args: Iterable[str] = (),
     state_env: str = '$HOME/.local/state',
     collapse_threshold: Optional[int] = None,
-    html: Optional[bool] = None,
+    html: Optional[object] = None,
+    status_log: Optional[Path] = None,
+    status_limit: int = 50,
+    status_summary: Optional[Path] = None,
+    status_summary_providers: Optional[str] = None,
 ) -> str:
     target, merged_args = prepare_automation_command(
         target_key,
@@ -184,7 +249,36 @@ def cron_snippet(
         html=html,
     )
     command = build_command(target, merged_args)
+    followups: List[str] = []
+    if status_log is not None:
+        followups.append(
+            _python_module_command(
+                [
+                    "status",
+                    "--dump",
+                    str(status_log),
+                    "--dump-limit",
+                    str(max(1, status_limit)),
+                    "--dump-only",
+                ]
+            )
+        )
+    if status_summary is not None:
+        summary_args = [
+            "status",
+            "--summary",
+            str(status_summary),
+            "--summary-only",
+        ]
+        if status_summary_providers:
+            summary_args.extend(["--providers", status_summary_providers])
+        followups.append(_python_module_command(summary_args))
+
+    if followups:
+        combined = f"({' && '.join([command] + followups)})"
+    else:
+        combined = command
     snippet = (
-        f"{schedule} XDG_STATE_HOME={shlex.quote(state_env)} cd {shlex.quote(str(working_dir))} && {command} >> {shlex.quote(log_path)} 2>&1"
+        f"{schedule} XDG_STATE_HOME={shlex.quote(state_env)} cd {shlex.quote(str(working_dir))} && {combined} >> {shlex.quote(log_path)} 2>&1"
     )
     return snippet + "\n"

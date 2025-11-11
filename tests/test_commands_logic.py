@@ -13,6 +13,21 @@ from polylogue.cli import run_prune_cli
 from polylogue import commands as cmd_module, util
 
 
+def _read_state_entry(state_home: Path, provider: str, conversation_id: str) -> dict:
+    conn = sqlite3.connect(state_home / "polylogue.db")
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT metadata_json FROM conversations WHERE provider = ? AND conversation_id = ?",
+            (provider, conversation_id),
+        ).fetchone()
+        if not row or not row["metadata_json"]:
+            return {}
+        return json.loads(row["metadata_json"])
+    finally:
+        conn.close()
+
+
 class DummyConsole:
     def __init__(self):
         self.messages = []
@@ -31,25 +46,6 @@ class DummyUI:
 
     def banner(self, *args, **kwargs):  # pragma: no cover - unused in tests
         pass
-
-
-@pytest.fixture
-def state_env(tmp_path, monkeypatch):
-    state_home = tmp_path / "state"
-    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
-    new_home = state_home / "polylogue"
-    state_path = new_home / "state.json"
-    runs_path = new_home / "runs.json"
-    monkeypatch.setattr(util, "STATE_HOME", new_home, raising=False)
-    monkeypatch.setattr(util, "STATE_PATH", state_path, raising=False)
-    monkeypatch.setattr(util, "RUNS_PATH", runs_path, raising=False)
-    util.configure_state_store(util.StateStore(state_path))
-    monkeypatch.setattr(cmd_module, "STATE_PATH", state_path, raising=False)
-    monkeypatch.setattr(cmd_module, "RUNS_PATH", runs_path, raising=False)
-    from polylogue import index_sqlite as index_sqlite_module
-
-    monkeypatch.setattr(index_sqlite_module, "STATE_HOME", new_home, raising=False)
-    return new_home
 
 
 def test_render_command_persists_state(tmp_path, state_env, monkeypatch):
@@ -86,27 +82,32 @@ def test_render_command_persists_state(tmp_path, state_env, monkeypatch):
     md_path = out_dir / "sample" / "conversation.md"
     assert md_path.exists()
     assert result.files[0].slug == "sample"
-    state_data = json.loads((state_env / "state.json").read_text(encoding="utf-8"))
-    conv_state = state_data["conversations"]["render"]["conv-1"]
+    conv_state = _read_state_entry(state_env, "render", "conv-1")
     assert conv_state["collapseThreshold"] == 16
     assert conv_state["dirty"] is False
     assert records and records[0].get("duration") is not None
     assert records[0]["duration"] >= 0
 
-    db_path = state_env / "index.sqlite"
-    assert db_path.exists()
+    db_path = state_env / "polylogue.db"
     conn = sqlite3.connect(db_path)
     try:
+        conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT title FROM conversations WHERE provider = ? AND conversation_id = ?",
             ("render", "conv-1"),
         ).fetchone()
-        assert row and row[0] == "Sample Chat"
-        fts_row = conn.execute(
-            "SELECT content FROM conversations_fts WHERE provider = ? AND conversation_id = ?",
+        assert row and row["title"] == "Sample Chat"
+        msg_row = conn.execute(
+            """
+            SELECT rendered_text
+              FROM messages
+             WHERE provider = ? AND conversation_id = ?
+             ORDER BY position ASC
+             LIMIT 1
+            """,
             ("render", "conv-1"),
         ).fetchone()
-        assert fts_row and "Hello" in fts_row[0]
+        assert msg_row and "Hello" in msg_row["rendered_text"]
     finally:
         conn.close()
     # rerun should skip due to unchanged content
@@ -170,18 +171,21 @@ def test_sync_command_with_stub_drive(tmp_path, monkeypatch, state_env):
     assert result.items[0].output == expected_output
     assert result.items[0].slug == util.sanitize_filename('Drive Sample')
     assert expected_output.exists()
+    drive_state = _read_state_entry(state_env, "drive-sync", "drive-1")
+    assert drive_state['slug'] == util.sanitize_filename('Drive Sample')
+    assert drive_state['outputPath'] == str(expected_output)
     assert records and records[0].get("duration") is not None
     assert records[0]["duration"] >= 0
 
-    db_path = state_env / "index.sqlite"
-    assert db_path.exists()
+    db_path = state_env / "polylogue.db"
     conn = sqlite3.connect(db_path)
     try:
+        conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT title FROM conversations WHERE provider = ? AND conversation_id = ?",
             ("drive-sync", "drive-1"),
         ).fetchone()
-        assert row and row[0] == "Drive Sample"
+        assert row and row["title"] == "Drive Sample"
     finally:
         conn.close()
 

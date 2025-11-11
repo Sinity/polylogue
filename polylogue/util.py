@@ -11,6 +11,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
+from .db import open_connection, record_run
+from .paths import CACHE_HOME, CONFIG_HOME, DATA_HOME, STATE_HOME
+from .persistence.state import ConversationStateRepository
+
 try:  # pragma: no cover - optional dependency
     import pyperclip  # type: ignore
     from pyperclip import PyperclipException  # type: ignore
@@ -19,27 +23,6 @@ except ImportError:  # pragma: no cover - clipboard support optional
 
     class PyperclipException(Exception):
         pass
-
-
-def _xdg_path(env_var: str, fallback: Path) -> Path:
-    raw = os.environ.get(env_var)
-    if raw:
-        return Path(raw).expanduser()
-    return fallback
-
-
-CONFIG_ROOT = _xdg_path("XDG_CONFIG_HOME", Path.home() / ".config")
-DATA_ROOT = _xdg_path("XDG_DATA_HOME", Path.home() / ".local/share")
-CACHE_ROOT = _xdg_path("XDG_CACHE_HOME", Path.home() / ".cache")
-STATE_ROOT = _xdg_path("XDG_STATE_HOME", Path.home() / ".local/state")
-
-
-CONFIG_HOME = CONFIG_ROOT / "polylogue"
-DATA_HOME = DATA_ROOT / "polylogue"
-CACHE_HOME = CACHE_ROOT / "polylogue"
-
-
-STATE_HOME = STATE_ROOT / "polylogue"
 
 
 CODEX_SESSIONS_ROOT = Path(
@@ -135,51 +118,69 @@ def parse_input_time_to_epoch(s: Optional[Union[str, float, int, datetime.date, 
 
 
 # Simple cache for discovered Drive IDs
-STATE_PATH = STATE_HOME / "state.json"
-RUNS_PATH = STATE_HOME / "runs.json"
+_STATE_REPO: Optional[ConversationStateRepository] = None
 
 
-class StateStore:
-    """Lightweight JSON state persistence with injectable storage for tests."""
-
-    def __init__(self, path: Path):
-        self.path = path
-
-    def load(self) -> dict:
-        try:
-            if self.path.exists():
-                return json.loads(self.path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-        return {}
-
-    def save(self, state: dict) -> None:
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    def mutate(self, mutator: Callable[[dict], None]) -> dict:
-        state = self.load()
-        mutator(state)
-        self.save(state)
-        return state
+def _state_repository() -> ConversationStateRepository:
+    global _STATE_REPO
+    if _STATE_REPO is None:
+        _STATE_REPO = ConversationStateRepository()
+    return _STATE_REPO
 
 
-STATE_STORE = StateStore(STATE_PATH)
+def _get_meta_value(key: str) -> Optional[str]:
+    with open_connection(None) as conn:
+        row = conn.execute("SELECT value FROM state_meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
 
 
-def get_state_store() -> StateStore:
-    global STATE_STORE
-    if isinstance(STATE_STORE, StateStore) and STATE_STORE.path != STATE_PATH:
-        STATE_STORE = StateStore(STATE_PATH)
-    return STATE_STORE
+def _set_meta_value(key: str, value: str) -> None:
+    with open_connection(None) as conn:
+        conn.execute(
+            """
+            INSERT INTO state_meta(key, value)
+            VALUES(?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (key, value),
+        )
+        conn.commit()
 
 
-def configure_state_store(store: StateStore) -> None:
-    global STATE_STORE
-    STATE_STORE = store
+def load_runs(limit: Optional[int] = None) -> list[dict]:
+    sql = "SELECT * FROM runs ORDER BY id DESC"
+    params: Tuple[Any, ...] = ()
+    if limit is not None and limit > 0:
+        sql += " LIMIT ?"
+        params = (limit,)
+    with open_connection(None) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    results: list[dict] = []
+    for row in rows:
+        payload = {
+            "timestamp": row["timestamp"],
+            "cmd": row["cmd"],
+            "count": row["count"],
+            "attachments": row["attachments"],
+            "attachment_bytes": row["attachment_bytes"],
+            "tokens": row["tokens"],
+            "skipped": row["skipped"],
+            "pruned": row["pruned"],
+            "diffs": row["diffs"],
+            "duration": row["duration"],
+            "out": row["out"],
+            "provider": row["provider"],
+            "branch_id": row["branch_id"],
+        }
+        metadata = row["metadata_json"]
+        if metadata:
+            try:
+                payload.update(json.loads(metadata))
+            except Exception:
+                pass
+        results.append(payload)
+    results.reverse()  # restore chronological order
+    return results
 
 
 class DiffTracker:
@@ -233,37 +234,11 @@ class RunAccumulator:
 
 
 def get_cached_folder_id(name: str) -> Optional[str]:
-    state = get_state_store().load()
-    folders = state.get("folders") if isinstance(state.get("folders"), dict) else None
-    if isinstance(folders, dict):
-        value = folders.get(name)
-        if isinstance(value, str):
-            return value
-    return None
+    return _get_meta_value(f"drive.folder.{name}")
 
 
 def set_cached_folder_id(name: str, folder_id: str) -> None:
-    def _mutator(state: dict) -> None:
-        folders = state.get("folders")
-        if not isinstance(folders, dict):
-            folders = {}
-            state["folders"] = folders
-        folders[name] = folder_id
-
-    get_state_store().mutate(_mutator)
-
-
-def get_conversation_state(provider: str, conversation_id: str) -> Optional[Dict[str, Any]]:
-    state = get_state_store().load()
-    conversations = state.get("conversations")
-    if not isinstance(conversations, dict):
-        return None
-    provider_map = conversations.get(provider)
-    if not isinstance(provider_map, dict):
-        return None
-    entry = provider_map.get(conversation_id)
-    return entry if isinstance(entry, dict) else None
-
+    _set_meta_value(f"drive.folder.{name}", folder_id)
 
 def assign_conversation_slug(
     provider: str,
@@ -272,72 +247,31 @@ def assign_conversation_slug(
     *,
     id_hint: Optional[str] = None,
 ) -> str:
-    chosen: Dict[str, Optional[str]] = {"value": None}
+    repo = _state_repository()
+    existing = repo.get(provider, conversation_id)
+    if existing and isinstance(existing.get("slug"), str):
+        return str(existing["slug"])
 
-    def _mutator(state: dict) -> None:
-        conversations = state.get("conversations")
-        if not isinstance(conversations, dict):
-            conversations = {}
-            state["conversations"] = conversations
-        provider_map = conversations.get(provider)
-        if not isinstance(provider_map, dict):
-            provider_map = {}
-            conversations[provider] = provider_map
+    base_source = title or id_hint or conversation_id or "conversation"
+    base = slugify_title(base_source)
+    if not base:
+        fallback = sanitize_filename(base_source)
+        base = fallback.replace(" ", "-") or (conversation_id[:8] if conversation_id else "conversation")
 
-        entry = provider_map.get(conversation_id)
-        if isinstance(entry, dict) and entry.get("slug"):
-            chosen["value"] = entry["slug"]
-            return
+    with open_connection(repo.database.resolve_path()) as conn:
+        rows = conn.execute(
+            "SELECT slug FROM conversations WHERE provider = ? AND slug IS NOT NULL",
+            (provider,),
+        ).fetchall()
+    existing_slugs = {row["slug"] for row in rows if row["slug"]}
+    slug_candidate = base
+    counter = 1
+    while slug_candidate in existing_slugs:
+        slug_candidate = f"{base}-{counter}"
+        counter += 1
 
-        base_source = title or id_hint or conversation_id or "conversation"
-        base = slugify_title(base_source)
-        if not base:
-            fallback = sanitize_filename(base_source)
-            base = fallback.replace(" ", "-") or (conversation_id[:8] if conversation_id else "conversation")
-
-        existing_slugs = {
-            data.get("slug")
-            for data in provider_map.values()
-            if isinstance(data, dict) and data.get("slug")
-        }
-        slug_candidate = base
-        counter = 1
-        while slug_candidate in existing_slugs:
-            slug_candidate = f"{base}-{counter}"
-            counter += 1
-
-        provider_map[conversation_id] = {"slug": slug_candidate}
-        chosen["value"] = slug_candidate
-
-    get_state_store().mutate(_mutator)
-    return chosen["value"] or "conversation"
-
-
-def update_conversation_state(
-    provider: str,
-    conversation_id: str,
-    **updates: Any,
-) -> None:
-    def _mutator(state: dict) -> None:
-        conversations = state.get("conversations")
-        if not isinstance(conversations, dict):
-            conversations = {}
-            state["conversations"] = conversations
-        provider_map = conversations.get(provider)
-        if not isinstance(provider_map, dict):
-            provider_map = {}
-            conversations[provider] = provider_map
-        entry = provider_map.get(conversation_id)
-        if not isinstance(entry, dict):
-            entry = {}
-        for key, value in updates.items():
-            if value is None:
-                entry.pop(key, None)
-            else:
-                entry[key] = value
-        provider_map[conversation_id] = entry
-
-    get_state_store().mutate(_mutator)
+    repo.upsert(provider, conversation_id, {"slug": slug_candidate})
+    return slug_candidate
 
 
 def slugify_title(value: str) -> str:
@@ -363,8 +297,8 @@ def conversation_is_current(
     attachment_policy: Optional[Dict[str, Any]] = None,
     html: Optional[bool] = None,
     dirty: Optional[bool] = None,
+    entry: Optional[Dict[str, Any]] = None,
 ) -> bool:
-    entry = get_conversation_state(provider, conversation_id)
     if not entry:
         return False
     if dirty:
@@ -402,23 +336,102 @@ def conversation_is_current(
     return True
 
 
+def _run_log_enabled() -> bool:
+    flag = os.environ.get("POLYLOGUE_RUN_LOG")
+    if flag is None:
+        return True
+    return str(flag).strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _emit_structured_run_log(entry: Dict[str, Any]) -> None:
+    if not _run_log_enabled():  # pragma: no cover - optional emission
+        return
+    try:
+        serialized = json.dumps(entry, default=str, ensure_ascii=False)
+    except Exception:
+        serialized = json.dumps({k: str(v) for k, v in entry.items()}, ensure_ascii=False)
+    stream = sys.stderr
+    stream.write(serialized + "\n")
+    stream.flush()
+
+
 def add_run(record: Dict[str, Any]) -> None:
     payload = dict(record)
-    payload.setdefault("timestamp", current_utc_timestamp())
-    try:
-        if RUNS_PATH.exists():
-            runs = json.loads(RUNS_PATH.read_text(encoding="utf-8"))
-            if not isinstance(runs, list):
-                runs = []
-        else:
-            runs = []
-        runs.append(payload)
-        # Keep last 200
-        runs = runs[-200:]
-        RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        RUNS_PATH.write_text(json.dumps(runs, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    timestamp = payload.get("timestamp") or current_utc_timestamp()
+    cmd = payload.get("cmd") or "unknown"
+    count = int(payload.get("count") or 0)
+    attachments = int(payload.get("attachments") or 0)
+    attachment_bytes = int(payload.get("attachment_bytes") or 0)
+    tokens = int(payload.get("tokens") or 0)
+    skipped = int(payload.get("skipped") or 0)
+    pruned = int(payload.get("pruned") or 0)
+    diffs = int(payload.get("diffs") or 0)
+    duration = payload.get("duration")
+    out = payload.get("out")
+    provider = payload.get("provider")
+    branch_id = payload.get("branch_id")
+    metadata = {
+        key: value
+        for key, value in payload.items()
+        if key
+        not in {
+            "timestamp",
+            "cmd",
+            "count",
+            "attachments",
+            "attachment_bytes",
+            "tokens",
+            "skipped",
+            "pruned",
+            "diffs",
+            "duration",
+            "out",
+            "provider",
+            "branch_id",
+        }
+    }
+    with open_connection(None) as conn:
+        record_run(
+            conn,
+            timestamp=timestamp,
+            cmd=cmd,
+            count=count,
+            attachments=attachments,
+            attachment_bytes=attachment_bytes,
+            tokens=tokens,
+            skipped=skipped,
+            pruned=pruned,
+            diffs=diffs,
+            duration=float(duration) if isinstance(duration, (int, float)) else None,
+            out=str(out) if out is not None else None,
+            provider=str(provider) if provider is not None else None,
+            branch_id=str(branch_id) if branch_id is not None else None,
+            metadata=metadata or None,
+        )
+        conn.commit()
+
+    log_entry = {
+        "event": "polylogue_run",
+        "timestamp": timestamp,
+        "cmd": cmd,
+        "provider": provider,
+        "count": count,
+        "attachments": attachments,
+        "attachment_bytes": attachment_bytes,
+        "tokens": tokens,
+        "skipped": skipped,
+        "pruned": pruned,
+        "diffs": diffs,
+        "duration": float(duration) if isinstance(duration, (int, float)) else None,
+        "out": str(out) if out is not None else None,
+        "retries": metadata.get("driveRetries") or metadata.get("retries") or 0,
+        "failures": metadata.get("driveFailures") or metadata.get("failures") or 0,
+        "last_error": metadata.get("driveLastError") or metadata.get("lastError"),
+        "metadata": metadata or None,
+    }
+    # Remove None values for terser logs
+    log_entry = {key: value for key, value in log_entry.items() if value not in (None, "")}
+    _emit_structured_run_log(log_entry)
 
 
 def write_delta_diff(old_path: Path, new_path: Path, *, suffix: str = ".diff.txt") -> Optional[Path]:

@@ -22,26 +22,10 @@ class IndexBackend(Protocol):
 
 
 class SqliteBackend:
-    def update(
-        self,
-        *,
-        provider: str,
-        conversation_id: str,
-        slug: str,
-        path: Path,
-        document: MarkdownDocument,
-        metadata: Dict[str, Any],
-    ) -> None:
-        from .index_sqlite import update_sqlite_index
+    """Legacy shim: SQLite indexing now happens inside conversation_registrar."""
 
-        update_sqlite_index(
-            provider=provider,
-            conversation_id=conversation_id,
-            slug=slug,
-            path=path,
-            document=document,
-            metadata=metadata,
-        )
+    def update(self, **_: Any) -> None:
+        return
 
 
 class NullBackend:
