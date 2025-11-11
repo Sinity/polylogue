@@ -22,12 +22,13 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 - **Sync provider archives:** `polylogue sync drive|codex|claude-code` unifies Drive pulls and local IDE session mirroring with consistent flags for collapse thresholds, HTML, pruning, diffs, and JSON output. Defaults from `polylogue.config` keep outputs in locations such as `~/polylogue-data/sync-drive`, `~/polylogue-data/codex`, and `~/polylogue-data/claude-code`.
 - **Import provider exports:** `polylogue import chatgpt|claude|codex|claude-code …` normalises exports into Markdown/HTML, reusing provider metadata and letting you cherry-pick conversations interactively when desired.
 - **Inspect archives:** `polylogue inspect branches` renders branch trees (and auto-writes HTML explorers), `polylogue inspect search` queries the SQLite FTS index with rich filters, and `polylogue inspect stats` summarises tokens/attachments per provider.
-- **Watch local sessions in real time:** `polylogue watch codex` and `polylogue watch claude-code` keep those directories synced automatically; adjust debounce, HTML, collapse settings per watcher, or run a single pass with `--once`. Every sync is logged to `polylogue status --json` so scheduled runs and watchers share the same telemetry.
+- **Watch local sessions in real time:** `polylogue watch codex` and `polylogue watch claude-code` keep those directories synced automatically; adjust debounce, HTML, collapse settings per watcher, or run a single pass with `--once`. Every pass goes through the same registrar/pipeline stack as the batch commands, so attachment counts, Drive retries, and diffs show up in `polylogue status --json` and in the structured `polylogue_run` JSON lines emitted on stderr (set `POLYLOGUE_RUN_LOG=0` to disable the latter when embedding Polylogue in other tooling).
 - **Tweak session defaults on the fly:** The interactive menu's `Settings` pane toggles HTML previews, switches light/dark themes, and resets to config defaults. Adjustments flow through render, sync, import, and watch commands for the duration of the session.
 - **Doctor & Stats:** `polylogue doctor` sanity-checks source directories and now surfaces Drive retry/failure rates from recent runs; `polylogue stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters).
 - **Settings:** `polylogue settings --html on --theme dark` updates the default render/sync preferences so automation and interactive flows inherit the same HTML behaviour without extra flags.
 - **View recent runs:** The status dashboard shows the last operations, including attachment MiB, diff counts, and Drive retry/failure stats per command.
-- **Monitor automation:** `polylogue status --json --watch` now streams provider-level stats for dashboards or terminal monitoring.
+- **Monitor automation:** `polylogue status --json --watch` now streams provider-level stats for dashboards or terminal monitoring, and `polylogue status --dump <path> --dump-limit N --dump-only` writes a JSON snapshot without reprinting the tables—perfect for cron/systemd hooks.
+- **Structured run logs:** Every render/sync/import/watch operation appends a single-line JSON record (`{"event":"polylogue_run", ...}`) to stderr so journalctl/cron logs carry machine-readable telemetry. Disable this by exporting `POLYLOGUE_RUN_LOG=0` if you prefer silent runs.
 - **Branch-aware transcripts:** Canonical Markdown now lives at `<slug>/conversation.md`, with `<slug>/conversation.common.md` capturing shared context and `branches/<branch-id>/{<branch-id>.md, overlay.md}` preserving every alternate path.
 - **Explore branch graphs:** `polylogue inspect branches` renders a skim-driven branch picker, prints the tree view, and auto-writes an HTML explorer when branches diverge (override output with `--html-out`, disable via `--html off`).
 - **Search transcripts:** `polylogue inspect search` queries the SQLite FTS index with filters for provider, model, date range, and attachment metadata; add `--no-picker` to skip the skim preview or `--json` for automation.
@@ -66,7 +67,7 @@ Although the CLI is interactive by default, the same functionality is available 
 - `python3 polylogue.py inspect search QUERY [--limit N] [--provider NAME] [--slug SLUG] [--conversation-id ID] [--branch BRANCH_ID] [--model MODEL] [--since RFC3339] [--until RFC3339] [--with-attachments|--without-attachments] [--no-picker] [--json]`
 - `python3 polylogue.py inspect stats [--dir DIR] [--since DATE] [--until DATE] [--json]`
 - `python3 polylogue.py watch codex|claude-code [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--debounce seconds] [--once]`
-- `python3 polylogue.py status [--json] [--watch] [--interval seconds]`
+- `python3 polylogue.py status [--json] [--watch] [--interval seconds] [--dump path] [--dump-only]`
 - `python3 polylogue.py prune [--dir DIR] [--dry-run]`
 - `python3 polylogue.py doctor [--codex-dir DIR] [--claude-code-dir DIR] [--limit N] [--json]`
 - `python3 polylogue.py settings [--html on|off] [--theme light|dark] [--reset] [--json]`
@@ -83,7 +84,7 @@ The dev shell equips Polylogue with:
 
 Interactive features assume the gum/skim/Rich toolchain from the dev shell; use `--plain` if you intentionally need raw stdout or CI-friendly output.
 
-See `docs/automation.md` for watcher usage, ready-made systemd/cron templates, and the `polylogue automation systemd|cron|describe` helper that prints the snippets or metadata for you. Automation subcommands now share the same `--html` semantics as render/sync/import (`on|off|auto` with `--html` implying `on`), so generated snippets exactly match the flags you would type by hand.
+See `docs/automation.md` for watcher usage, ready-made systemd/cron templates, and the `polylogue automation systemd|cron|describe` helper that prints the snippets or metadata for you. Automation subcommands now share the same `--html` semantics as render/sync/import (`on|off|auto` with `--html` implying `on`), and expose new `--status-log/--status-limit` switches so generated services/cron entries automatically call `polylogue status --dump-only …` after each sync.
 Available automation targets: `codex`, `claude-code`, `drive-sync`, `gemini-render`, `chatgpt-import` (pass `--target <name>` for snippet generation or declarative modules). Per-target defaults (collapse thresholds, Drive folders, HTML flags) are baked into the metadata but can be overridden via CLI flags or the NixOS module.
 
 ## Nix Flake Usage
@@ -112,6 +113,7 @@ Available automation targets: `codex`, `claude-code`, `drive-sync`, `gemini-rend
 - `polylogue doctor` reports the discovered paths when no config is detected.
 - Drive behaviour can be tuned with environment variables such as `$POLYLOGUE_RETRIES`, `$POLYLOGUE_RETRY_BASE`, `$POLYLOGUE_AUTH_MODE`, and `$POLYLOGUE_TOKEN_PATH`.
 - Indexing backends are controlled via `$POLYLOGUE_INDEX_BACKEND` (`sqlite`, `qdrant`, or `none`) alongside optional Qdrant knobs (`POLYLOGUE_QDRANT_URL`, `POLYLOGUE_QDRANT_API_KEY`, `POLYLOGUE_QDRANT_COLLECTION`).
+- Structured run logging defaults to `on`; export `POLYLOGUE_RUN_LOG=0` to suppress the JSON line emitted on stderr after each command.
 
 ## Credentials & Tokens
 1. Create an OAuth client for a “Desktop app” in the Google Cloud Console (we link you directly from the prompt).
@@ -129,4 +131,4 @@ Available automation targets: `codex`, `claude-code`, `drive-sync`, `gemini-rend
 - Code follows PEP 8 with type hints where practical.
 - Run `pytest` for the automated test suite covering importers, sync flows, and HTML transforms.
 - Credentials (`credentials.json`, `token.json`) stay out of version control.
-- `polylogue status --dump runs.json` writes the latest run records to a JSON file (use `-` to emit on stdout) for downstream automation.
+- `polylogue status --dump runs.json` writes the latest run records to a JSON file (use `-` to emit on stdout). Combine with `--dump-only` to skip the human-readable tables when scripts just need structured data, or set `POLYLOGUE_RUN_LOG=0/1` to control whether per-run JSON logs are emitted on stderr.
