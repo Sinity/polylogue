@@ -204,6 +204,8 @@ Targets:
 - `status --json` returns structured payload; `status --watch --interval N` repeats.  
 - Optional `status --dump json` to export last N rows for external tooling.  
 - Mirror the summary to stderr/syslog-friendly lines so cron/systemd jobs surface failures without parsing JSON.  
+- Every render/sync/import/watch run emits a `polylogue_run` JSON line on stderr (set `POLYLOGUE_RUN_LOG=0` to disable) so journald/cron logs contain machine-readable telemetry, including Drive retry metadata.  
+- `status --dump-only` writes the requested JSON without printing summaries, and the automation snippets expose `--status-log/--status-limit` flags so `ExecStartPost`/cron entries automatically record those dumps for dashboards.  
 - No HTTP or Prometheus integration; users can run SQL queries or scripts as needed.
 
 ---
@@ -239,9 +241,9 @@ Environment variables:
    - [ ] Mirror provider-specific directory structures.
 
 4. **Local Sync Generalisation**
-   - [ ] Generic watcher that supports provider-specific parsers.  
+   - [x] Generic watcher that supports provider-specific parsers.  
    - [ ] Add ChatGPT/Claude exporters to pipeline.  
-   - [ ] Update CLI (`watch` subcommand).
+   - [x] Update CLI (`watch` subcommand).
 
 5. **Observability Update**
    - [x] Switch `status` to SQLite runs table.  
@@ -264,7 +266,7 @@ Environment variables:
 - **Drive sync discovery**: Replace the current “no dots in filename” filter in `DriveClient.list_chats()` with a MIME-type allowlist or explicit provider metadata so Gemini transcripts whose titles include periods are still synced, while Drive-native docs remain excluded.
 - **Gemini importer follow-ups**: After the message-level pipeline lands, migrate Gemini rendering onto it, replace filename heuristics with MIME detection, and evaluate optional embedding/vector indexing for Gemini content.
 - **Importer auto-detection**: Extend `polylogue import <path>` so archives automatically route to the correct importer (zip → provider module, JSON/JSONL → inferred provider).
-- **Watcher telemetry**: Emit structured watcher stats (diff counts, attachment totals, durations) through `polylogue status --json --watch` so unattended jobs can feed dashboards.
+- **Watcher telemetry**: (Done) Watchers now reuse the same run pipeline, emitting `polylogue_run` JSON lines and optional `status --dump` snapshots for automation snippets so unattended jobs feed dashboards.
 - **Recurring export guidance**: Document or script repeatable Playwright/automation flows for ChatGPT/Claude exports once we are confident in the workflow and messaging to users.
 - **Richer previews**: Prototype a TUI/HTML preview that shows Markdown, HTML, and attachments side by side, powered by the new chunk-level metadata.
 

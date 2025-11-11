@@ -14,9 +14,7 @@ python3 polylogue.py watch codex --out ~/polylogue-data/codex
 python3 polylogue.py watch claude-code --out ~/polylogue-data/claude-code
 ```
 
-Watchers run an initial full sync, then rerun whenever `.jsonl` session files change inside the source tree. They reuse your configured collapse thresholds and HTML defaults; pass `--collapse-threshold` or `--html` to override. The `--debounce` flag (default: 2 seconds) throttles rapid bursts of file events so a single editing session doesn’t thrash the pipeline.
-
-If the optional `watchfiles` dependency is missing, the CLI prints guidance instead of failing—meaning you can still fall back to scheduled syncs. Every watcher pass flows through `_log_local_sync`, so the resulting telemetry (attachment counts, diffs, skipped sessions) appears in `polylogue status --json` alongside one-shot runs.
+Watchers run an initial full sync, then rerun whenever `.jsonl` session files change inside the source tree. They reuse your configured collapse thresholds and HTML defaults; pass `--collapse-threshold` or `--html` to override. The `--debounce` flag (default: 2 seconds) throttles rapid bursts of file events so a single editing session doesn’t thrash the pipeline. Every run flows through the same registrar/pipeline stack as one-shot commands, so attachment counts, Drive retries, and diffs show up both in `polylogue status --json` and in the structured `polylogue_run` JSON lines that Polylogue now emits on stderr (set `POLYLOGUE_RUN_LOG=0` to silence those logs when needed).
 
 ## Systemd Timer Template
 
@@ -58,7 +56,7 @@ When systemd is unavailable, a simple cron entry can invoke the same non-interac
 */30 * * * * XDG_STATE_HOME="$HOME/.local/state" cd /srv/polylogue && python3 polylogue.py sync codex --plain --json >> "$HOME/.cache/polylogue-sync.log" 2>&1
 ```
 
-Combine cron with `polylogue status --json` to monitor recent runs or parse the generated log file.
+Combine cron with `polylogue status --json` to monitor recent runs or parse the generated log file. When you need a rolling JSON artifact for other tooling, append `&& python3 polylogue.py status --plain --dump "$HOME/.cache/polylogue-status.json" --dump-limit 50 --dump-only` after the sync command (the automation CLI can now do this for you automatically via `--status-log`).
 
 ## Automation CLI
 
@@ -77,7 +75,7 @@ python3 polylogue.py automation describe --target codex
 
 Available targets today: `codex`, `claude-code`, `drive-sync`, `gemini-render`, `chatgpt-import` (each target carries sensible defaults for collapse thresholds, HTML flags, and folder names that you can override with CLI/Nix options).
 
-Use `--working-dir`, `--extra-arg`, `--collapse-threshold`, or `--html on|off|auto` to customise the generated command. Because the automation CLI reuses the same flag builders as the main commands, the snippets exactly mirror how `--html` behaves elsewhere (`--html` alone implies `on`). Pipe the output to `tee` or redirect into your service/cron files as desired.
+Use `--working-dir`, `--extra-arg`, `--collapse-threshold`, or `--html on|off|auto` to customise the generated command. Because the automation CLI reuses the same flag builders as the main commands, the snippets exactly mirror how `--html` behaves elsewhere (`--html` alone implies `on`). Pipe the output to `tee` or redirect into your service/cron files as desired. New `--status-log /path/to/status.json` and `--status-limit N` options tell the generated service/cron entries to run `polylogue status --dump-only ...` immediately after each sync so you always have a fresh JSON view of recent runs on disk without extra scripting.
 
 ### NixOS module
 

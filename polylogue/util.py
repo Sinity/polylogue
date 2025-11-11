@@ -336,6 +336,25 @@ def conversation_is_current(
     return True
 
 
+def _run_log_enabled() -> bool:
+    flag = os.environ.get("POLYLOGUE_RUN_LOG")
+    if flag is None:
+        return True
+    return str(flag).strip().lower() not in {"0", "false", "off", "no"}
+
+
+def _emit_structured_run_log(entry: Dict[str, Any]) -> None:
+    if not _run_log_enabled():  # pragma: no cover - optional emission
+        return
+    try:
+        serialized = json.dumps(entry, default=str, ensure_ascii=False)
+    except Exception:
+        serialized = json.dumps({k: str(v) for k, v in entry.items()}, ensure_ascii=False)
+    stream = sys.stderr
+    stream.write(serialized + "\n")
+    stream.flush()
+
+
 def add_run(record: Dict[str, Any]) -> None:
     payload = dict(record)
     timestamp = payload.get("timestamp") or current_utc_timestamp()
@@ -390,6 +409,29 @@ def add_run(record: Dict[str, Any]) -> None:
             metadata=metadata or None,
         )
         conn.commit()
+
+    log_entry = {
+        "event": "polylogue_run",
+        "timestamp": timestamp,
+        "cmd": cmd,
+        "provider": provider,
+        "count": count,
+        "attachments": attachments,
+        "attachment_bytes": attachment_bytes,
+        "tokens": tokens,
+        "skipped": skipped,
+        "pruned": pruned,
+        "diffs": diffs,
+        "duration": float(duration) if isinstance(duration, (int, float)) else None,
+        "out": str(out) if out is not None else None,
+        "retries": metadata.get("driveRetries") or metadata.get("retries") or 0,
+        "failures": metadata.get("driveFailures") or metadata.get("failures") or 0,
+        "last_error": metadata.get("driveLastError") or metadata.get("lastError"),
+        "metadata": metadata or None,
+    }
+    # Remove None values for terser logs
+    log_entry = {key: value for key, value in log_entry.items() if value not in (None, "")}
+    _emit_structured_run_log(log_entry)
 
 
 def write_delta_diff(old_path: Path, new_path: Path, *, suffix: str = ".diff.txt") -> Optional[Path]:

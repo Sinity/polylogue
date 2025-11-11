@@ -816,6 +816,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--dump", type=str, default=None, help="Write recent runs to a file ('-' for stdout)")
     p_status.add_argument("--dump-limit", type=int, default=100, help="Number of runs to include when dumping")
     p_status.add_argument("--runs-limit", type=int, default=200, help="Number of historical runs to include in summaries")
+    p_status.add_argument("--dump-only", action="store_true", help="Only perform the dump action without printing summaries")
 
     p_settings_cmd = sub.add_parser("settings", help="Show or update Polylogue defaults")
     p_settings_cmd.add_argument("--html", choices=["on", "off"], default=None, help="Enable or disable default HTML previews")
@@ -835,6 +836,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_auto_systemd.add_argument("--out", type=Path, default=None, help="Override --out argument for the sync command")
     p_auto_systemd.add_argument("--extra-arg", action="append", default=[], help="Additional argument to append to the sync command")
     p_auto_systemd.add_argument("--collapse-threshold", type=int, default=None, help="Override collapse threshold for the sync command")
+    p_auto_systemd.add_argument("--status-log", type=Path, default=None, help="Dump polylogue status output to this path after each run")
+    p_auto_systemd.add_argument("--status-limit", type=int, default=50, help="Number of runs to include when dumping status logs")
     add_html_option(
         p_auto_systemd,
         description="HTML mode for generated sync commands: on/off/auto (default auto, inherits target defaults)",
@@ -852,6 +855,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_auto_cron.add_argument("--out", type=Path, default=None, help="Override --out argument for the sync command")
     p_auto_cron.add_argument("--extra-arg", action="append", default=[], help="Additional argument to append to the sync command")
     p_auto_cron.add_argument("--collapse-threshold", type=int, default=None, help="Override collapse threshold for the sync command")
+    p_auto_cron.add_argument("--status-log", type=Path, default=None, help="Dump polylogue status output to this path after each run")
+    p_auto_cron.add_argument("--status-limit", type=int, default=50, help="Number of runs to include when dumping status logs")
     add_html_option(
         p_auto_cron,
         description="HTML mode for generated sync commands: on/off/auto (default auto, inherits target defaults)",
