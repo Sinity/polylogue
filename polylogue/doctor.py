@@ -8,9 +8,10 @@ from typing import Dict, List, Optional, Tuple
 
 from .archive import Archive
 from .config import CONFIG
+from .paths import STATE_HOME
 from .persistence.database import ConversationDatabase
 from .persistence.state import ConversationStateRepository
-from .util import STATE_HOME, RUNS_PATH, load_runs
+from .util import load_runs
 from .services.conversation_service import ConversationService, create_conversation_service
 
 
@@ -115,7 +116,7 @@ def _drive_failure_issues() -> List[DoctorIssue]:
         message = f"Drive retries/failures: {failures} out of {requests} requests ({rate:.0%})."
         if stats.get("last_error"):
             message += f" Last error: {stats['last_error']}"
-        issues.append(DoctorIssue(provider, RUNS_PATH, message, severity))
+        issues.append(DoctorIssue(provider, STATE_HOME / "polylogue.db", message, severity))
     return issues
 
 
@@ -132,28 +133,17 @@ def prune_state_entries(
     archive: Archive,
 ) -> Tuple[int, List[DoctorIssue]]:
     issues: List[DoctorIssue] = []
-    state = state_repo.load()
-    conversations = state.get("conversations")
-    if not isinstance(conversations, dict):
-        return 0, issues
-
     removed = 0
-    for provider, conv_map in list(conversations.items()):
-        if not isinstance(conv_map, dict):
-            continue
+    for provider in state_repo.providers():
         provider_root = _resolve_provider_root(archive, provider)
-        for conversation_id, entry in list(conv_map.items()):
-            if not isinstance(entry, dict):
-                conv_map.pop(conversation_id, None)
-                removed += 1
-                continue
-            output_path = entry.get("outputPath")
+        for conversation_id, entry in state_repo.provider_items(provider):
+            output_path = entry.get("outputPath") if isinstance(entry, dict) else None
             if not output_path:
                 continue
             conv_path = Path(output_path)
             if conv_path.exists():
                 continue
-            conv_map.pop(conversation_id, None)
+            state_repo.remove(provider, conversation_id)
             removed += 1
             attachment_dir = entry.get("attachmentsDir")
             if attachment_dir:
@@ -203,16 +193,8 @@ def prune_state_entries(
                                 "warning",
                             )
                         )
-        if not conv_map:
-            conversations.pop(provider, None)
-
     if removed:
-        try:
-            state_repo.store.save(state)
-        except Exception as exc:  # pragma: no cover
-            issues.append(DoctorIssue("state", state_repo.store.path, f"Failed to write state: {exc}", "error"))
-        else:
-            issues.append(DoctorIssue("state", state_repo.store.path, f"Removed {removed} stale entries", "info"))
+        issues.append(DoctorIssue("state", state_repo.path, f"Removed {removed} stale entries", "info"))
     return removed, issues
 
 
