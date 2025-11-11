@@ -66,6 +66,7 @@ def _sync_sessions(
     import_fn,
     importer_kwargs: Optional[dict] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    branch_mode: str = "full",
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -76,6 +77,7 @@ def _sync_sessions(
     importer_kwargs = importer_kwargs or {}
     importer_kwargs = dict(importer_kwargs)
     importer_kwargs.setdefault("registrar", registrar)
+    importer_kwargs.setdefault("branch_mode", branch_mode)
     attachments_total = 0
     attachment_bytes_total = 0
     tokens_total = 0
@@ -208,6 +210,7 @@ def sync_codex_sessions(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    branch_mode: str = "full",
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -228,6 +231,7 @@ def sync_codex_sessions(
             **kwargs,
         ),
         registrar=registrar,
+        branch_mode=branch_mode,
     )
 
 
@@ -243,6 +247,7 @@ def sync_claude_code_sessions(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    branch_mode: str = "full",
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -263,4 +268,5 @@ def sync_claude_code_sessions(
             **kwargs,
         ),
         registrar=registrar,
+        branch_mode=branch_mode,
     )
