@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
-import pytest
+from types import SimpleNamespace
 
 from polylogue.commands import CommandEnv, status_command
-from polylogue import commands as cmd_module
+from polylogue.cli.status import run_status_cli
 from polylogue import util
 
 
@@ -18,26 +18,7 @@ class DummyUI:
     console = DummyConsole()
 
 
-def _patch_state(monkeypatch, tmp_path):
-    state_home = tmp_path / "state"
-    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
-    new_home = state_home / "polylogue"
-    state_path = new_home / "state.json"
-    runs_path = new_home / "runs.json"
-    monkeypatch.setattr(util, "STATE_HOME", new_home, raising=False)
-    monkeypatch.setattr(util, "STATE_PATH", state_path, raising=False)
-    monkeypatch.setattr(util, "RUNS_PATH", runs_path, raising=False)
-    monkeypatch.setattr(cmd_module, "STATE_PATH", state_path, raising=False)
-    monkeypatch.setattr(cmd_module, "RUNS_PATH", runs_path, raising=False)
-    return new_home
-
-
-@pytest.fixture
-def patched_state(tmp_path, monkeypatch):
-    return _patch_state(monkeypatch, tmp_path)
-
-
-def test_status_provider_summary(patched_state):
+def test_status_provider_summary(state_env):
     runs = [
         {
             "cmd": "sync drive",
@@ -66,8 +47,8 @@ def test_status_provider_summary(patched_state):
             "out": "/tmp/codex",
         },
     ]
-    util.RUNS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    util.RUNS_PATH.write_text(json.dumps(runs), encoding="utf-8")
+    for record in runs:
+        util.add_run(record)
 
     env = CommandEnv(ui=DummyUI())
     result = status_command(env)
@@ -82,3 +63,35 @@ def test_status_provider_summary(patched_state):
     assert result.run_summary["sync drive"]["duration"] > 0
     assert result.run_summary["sync drive"]["provider"] == "drive"
     assert result.run_summary["sync drive"].get("retries", 0) == 0
+    assert result.runs and len(result.runs) == len(runs)
+
+
+def test_status_dump_to_file(state_env, tmp_path):
+    for idx in range(3):
+        util.add_run(
+            {
+                "cmd": "render",
+                "count": 1,
+                "attachments": idx,
+                "attachmentBytes": 512 * idx,
+                "tokens": 10 * idx,
+                "timestamp": f"2024-01-0{idx+1}T00:00:00Z",
+            }
+        )
+
+    env = CommandEnv(ui=DummyUI())
+    dump_path = tmp_path / "runs.json"
+    args = SimpleNamespace(
+        json=False,
+        watch=False,
+        interval=1.0,
+        dump=str(dump_path),
+        dump_limit=2,
+        runs_limit=10,
+    )
+
+    run_status_cli(args, env)
+
+    data = json.loads(dump_path.read_text(encoding="utf-8"))
+    assert len(data) == 2
+    assert data[-1]["cmd"] == "render"
