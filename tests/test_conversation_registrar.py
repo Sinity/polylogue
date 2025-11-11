@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import hashlib
 
 from polylogue.branching import MessageRecord
 from polylogue.conversation import process_conversation
@@ -37,6 +38,12 @@ def test_process_conversation_populates_branch_metadata(tmp_path):
         timestamp="2024-01-01T00:00:00Z",
         attachments=0,
         chunk={"role": "user", "text": "Hello"},
+        metadata={
+            "tool_calls": [{"type": "debug", "name": "inspector"}],
+            "attachments": [],
+            "raw": {"role": "user"},
+        },
+        content_hash=hashlib.sha256(b"Hello").hexdigest(),
     )
     model_record = MessageRecord(
         message_id="model-1",
@@ -48,6 +55,7 @@ def test_process_conversation_populates_branch_metadata(tmp_path):
         timestamp="2024-01-01T00:00:05Z",
         attachments=0,
         chunk={"role": "model", "text": "Hi there"},
+        content_hash=hashlib.sha256(b"Hi there").hexdigest(),
     )
 
     result = process_conversation(
@@ -91,6 +99,14 @@ def test_process_conversation_populates_branch_metadata(tmp_path):
         metadata = json.loads(row["metadata_json"] or "{}")
         assert metadata.get("tokens", 0) >= 0
         assert metadata.get("words", 0) >= 0
+        message_row = conn.execute(
+            "SELECT content_hash, metadata_json FROM messages WHERE provider = ? AND conversation_id = ? ORDER BY position ASC LIMIT 1",
+            ("test", "conv-1"),
+        ).fetchone()
+        assert message_row is not None
+        assert message_row["content_hash"] == user_record.content_hash
+        message_meta = json.loads(message_row["metadata_json"] or "{}")
+        assert message_meta.get("tool_calls")[0]["name"] == "inspector"
 
         branch_count = conn.execute(
             "SELECT COUNT(*) FROM branches WHERE provider = ? AND conversation_id = ?",

@@ -10,6 +10,7 @@ from ..conversation import process_conversation
 from ..branching import MessageRecord
 from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .base import ImportResult
+from .normalizer import build_message_record
 from .utils import estimate_token_count, normalise_inline_footnotes, store_large_text
 
 
@@ -25,6 +26,7 @@ def import_claude_code_session(
     html: bool,
     html_theme: str,
     force: bool = False,
+    branch_mode: str = "full",
     registrar: Optional[ConversationRegistrar] = None,
 ) -> ImportResult:
     registrar = registrar or create_default_registrar()
@@ -42,6 +44,7 @@ def import_claude_code_session(
     attachments_dir = conversation_dir / "attachments"
 
     chunks: List[Dict] = []
+    chunk_metadata: List[Dict[str, object]] = []
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
     attachments: List[AttachmentInfo] = []
     message_records: List[MessageRecord] = []
@@ -67,6 +70,7 @@ def import_claude_code_session(
                         "tokenCount": estimate_token_count(chunk_text, model="claude-code"),
                     }
                 )
+                chunk_metadata.append({"raw": {"type": "unparsed", "payload": fallback}})
                 continue
             if not isinstance(entry, dict):
                 chunk_text = "Unparsed Claude Code entry\n```\n{}```".format(entry)
@@ -77,6 +81,7 @@ def import_claude_code_session(
                         "tokenCount": estimate_token_count(chunk_text, model="claude-code"),
                     }
                 )
+                chunk_metadata.append({"raw": {"type": "unparsed", "payload": entry}})
                 continue
             etype = entry.get("type")
             entry_id = (
@@ -111,6 +116,7 @@ def import_claude_code_session(
                         "messageId": entry_id,
                     }
                 )
+                chunk_metadata.append({"raw": entry})
                 if parent_id:
                     chunks[-1]["parentId"] = parent_id
                     chunks[-1]["branchParent"] = parent_id
@@ -124,6 +130,7 @@ def import_claude_code_session(
                         "messageId": entry_id,
                     }
                 )
+                chunk_metadata.append({"raw": entry})
                 if parent_id:
                     chunks[-1]["parentId"] = parent_id
                     chunks[-1]["branchParent"] = parent_id
@@ -137,6 +144,19 @@ def import_claude_code_session(
                         "text": text,
                         "tokenCount": estimate_token_count(text, model="claude-code"),
                         "messageId": entry_id,
+                    }
+                )
+                chunk_metadata.append(
+                    {
+                        "raw": entry,
+                        "tool_calls": [
+                            {
+                                "type": "tool_use",
+                                "name": name,
+                                "id": entry.get("id") or entry.get("toolUseId"),
+                                "input": input_payload,
+                            }
+                        ],
                     }
                 )
                 tool_results[entry.get("id") or entry.get("toolUseId") or ""] = len(chunks) - 1
@@ -155,6 +175,12 @@ def import_claude_code_session(
                     if parent_id and "parentId" not in chunks[idx]:
                         chunks[idx]["parentId"] = parent_id
                         chunks[idx]["branchParent"] = parent_id
+                    meta = chunk_metadata[idx]
+                    calls = meta.setdefault("tool_calls", [])
+                    if calls:
+                        calls[0]["output"] = result_text
+                    else:
+                        calls.append({"type": "tool_result", "id": tool_id, "output": result_text})
                 else:
                     chunks.append(
                         {
@@ -162,6 +188,18 @@ def import_claude_code_session(
                             "text": result_text,
                             "tokenCount": estimate_token_count(result_text, model="claude-code"),
                             "messageId": entry_id,
+                        }
+                    )
+                    chunk_metadata.append(
+                        {
+                            "raw": entry,
+                            "tool_calls": [
+                                {
+                                    "type": "tool_result",
+                                    "id": tool_id,
+                                    "output": result_text,
+                                }
+                            ],
                         }
                     )
                     parent_ref = parent_id or tool_id
@@ -182,27 +220,23 @@ def import_claude_code_session(
         )
         if preview != text:
             chunk["text"] = preview
-        message_id = chunk.get("messageId") or f"{session_id}-msg-{idx}"
-        while message_id in seen_message_ids:
-            message_id = f"{message_id}-dup"
-        seen_message_ids.add(message_id)
         parent_id = chunk.get("parentId") or (message_records[-1].message_id if message_records else None)
         if parent_id and "parentId" not in chunk:
             chunk["parentId"] = parent_id
             chunk["branchParent"] = parent_id
+        meta = chunk_metadata[idx] if idx < len(chunk_metadata) else {}
+        links = list(per_chunk_links.get(idx, []))
         message_records.append(
-            MessageRecord(
-                message_id=message_id,
-                parent_id=parent_id,
-                role=chunk.get("role", "model"),
-                text=chunk.get("text", ""),
-                token_count=int(chunk.get("tokenCount", 0) or 0),
-                word_count=len((chunk.get("text", "") or "").split()),
-                timestamp=chunk.get("timestamp"),
-                attachments=len(per_chunk_links.get(idx, [])),
+            build_message_record(
+                provider="claude-code",
+                conversation_id=session_id,
+                chunk_index=idx,
                 chunk=chunk,
-                links=list(per_chunk_links.get(idx, [])),
-                metadata={},
+                raw_metadata=meta.get("raw") if isinstance(meta, dict) else None,
+                attachments=links,
+                tool_calls=meta.get("tool_calls") if isinstance(meta, dict) else None,
+                seen_ids=seen_message_ids,
+                fallback_prefix=slug,
             )
         )
 
@@ -239,6 +273,7 @@ def import_claude_code_session(
         source_size=session_path.stat().st_size,
         attachment_policy=None,
         force=force,
+        branch_mode=branch_mode,
         registrar=registrar,
     )
 
