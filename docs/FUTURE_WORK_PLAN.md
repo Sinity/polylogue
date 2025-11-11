@@ -91,17 +91,7 @@ Treat Phase A as a prerequisite for every other phase. Later phases can proceed 
   - `content` (tokenised text)
 
 ### 1.2 Migration
-1. On first run after upgrade, read legacy `state.json` and `runs.json`.  
-2. Populate SQLite tables (`conversations`, `runs`).  
-3. Ingest existing Markdown to seed `messages` if necessary (optional; may re-render from provider export).  
-4. Preserve JSON files for rollback; new writes go to SQLite.  
-5. Run migration logic idempotently so a partially upgraded install can retry without manual cleanup.  
-6. Emit a JSON/structured log summary describing how many conversations/runs migrated and any files skipped.
-
-### 1.3 Data retention & backups
-- Before migration begins, instruct the user (or automation) to snapshot the existing Markdown directories and state files.
-- Keep the old `state.json` / `runs.json` alongside a migration stamp so operators can roll back if needed.
-- Provide a `polylogue doctor --migrate-check` mode that confirms schema health without writing data (useful for CI and smoke tests).
+Legacy JSON caches were removed; new installations go straight to SQLite. No further action required.
 
 ---
 
@@ -225,10 +215,6 @@ Environment variables:
 
 ## 7. TODO Checklist
 
-1. **Schema Migration**
-   - [x] Implement SQLite tables (conversations, branches, messages, messages_fts, runs).  
-   - [x] Migration script from `state.json` / `runs.json`.  
-   - [x] Tests covering forward/backward compatibility.
 
 2. **Importer Refactor**
    - [x] Parse messages, compute hashes/IDs, branch metadata.  

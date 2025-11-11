@@ -113,7 +113,6 @@ Available automation targets: `codex`, `claude-code`, `drive-sync`, `gemini-rend
 - Polylogue reads configuration from `$POLYLOGUE_CONFIG`, `$XDG_CONFIG_HOME/polylogue/config.json`, or (legacy) `~/.polylogueconfig`.
 - Copy `docs/polylogue.config.sample.jsonc` to `$XDG_CONFIG_HOME/polylogue/config.json` to customise collapse thresholds, HTML defaults, and per-provider output directories.
 - Run metadata and run history live in `$XDG_STATE_HOME/polylogue/polylogue.db` (SQLite) so automation can query recent activity without parsing JSON caches.
-- If you are upgrading from an older release that still used `state.json`/`runs.json`, run `polylogue migrate legacy` (add `--dry-run` to preview) to import those caches into the SQLite database.
 - `polylogue doctor` reports the discovered paths when no config is detected.
 - Drive behaviour can be tuned with environment variables such as `$POLYLOGUE_RETRIES`, `$POLYLOGUE_RETRY_BASE`, `$POLYLOGUE_AUTH_MODE`, and `$POLYLOGUE_TOKEN_PATH`.
 - Indexing backends are controlled via `$POLYLOGUE_INDEX_BACKEND` (`sqlite`, `qdrant`, or `none`) alongside optional Qdrant knobs (`POLYLOGUE_QDRANT_URL`, `POLYLOGUE_QDRANT_API_KEY`, `POLYLOGUE_QDRANT_COLLECTION`).

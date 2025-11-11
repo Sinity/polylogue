@@ -22,7 +22,6 @@ Thanks!
 
 ## Feedback Tracking
 
-- [ ] Confirm at least two beta users have rerun `polylogue migrate legacy` (or confirmed not needed).
 - [ ] Collect Drive sync latency feedback after 24h.
 - [ ] Confirm automation users tested the new `--summary` / `--providers` switches.
 

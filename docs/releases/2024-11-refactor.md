@@ -1,7 +1,6 @@
 # November 2024 Refresh
 
 - **Registrar everywhere:** Local Codex/Claude Code syncs now reuse the shared `ConversationRegistrar`, and all metadata/runs live in a single SQLite database under `$XDG_STATE_HOME/polylogue/`.
-- **Legacy migration:** `polylogue migrate legacy` imports pre-refactor `state.json` / `runs.json` caches; add `--dry-run` to preview and `--force` to replace existing run history.
 - **Status dumps:** `polylogue status --dump runs.json` emits recent run history (use `-` for stdout) so cron/systemd jobs can archive telemetry without querying SQLite manually.
 - **Structured run logs:** Every command now emits a single-line JSON payload (`{"event":"polylogue_run", ...}`) on stderr (set `POLYLOGUE_RUN_LOG=0` to silence it), and `status --dump-only` makes it easy to write pure JSON snapshots without reprinting the human-readable tables. Automation snippets gained `--status-log/--status-limit` so generated systemd/cron hooks automatically call `polylogue status --dump-only …` after each sync.
 - **Pipeline telemetry:** Every stage records name, status, and duration in `PipelineContext.history`, making it easy to assert on execution paths in tests and surface actionable errors when something fails.
