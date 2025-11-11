@@ -35,6 +35,7 @@ class SyncOptions:
     html: bool = False
     html_theme: str = "light"
     diff: bool = False
+    branch_export: str = "full"
 
 
 @dataclass

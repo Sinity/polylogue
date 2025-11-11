@@ -36,3 +36,17 @@ def add_force_option(parser: ArgumentParser, *, help_text: str) -> None:
 
 def add_dry_run_option(parser: ArgumentParser, *, help_text: str = "Report actions without writing files") -> None:
     parser.add_argument("--dry-run", action="store_true", help=help_text)
+
+
+def add_branch_mode_option(
+    parser: ArgumentParser,
+    *,
+    help_text: str = "Branch export mode: full (default), overlay (overlay-only), or canonical",
+    default: str = "full",
+) -> None:
+    parser.add_argument(
+        "--branch-export",
+        choices=["full", "overlay", "canonical"],
+        default=default,
+        help=help_text,
+    )
