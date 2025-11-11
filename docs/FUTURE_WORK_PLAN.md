@@ -228,7 +228,7 @@ Environment variables:
 1. **Schema Migration**
    - [x] Implement SQLite tables (conversations, branches, messages, messages_fts, runs).  
    - [x] Migration script from `state.json` / `runs.json`.  
-   - [ ] Tests covering forward/backward compatibility.
+   - [x] Tests covering forward/backward compatibility.
 
 2. **Importer Refactor**
    - [x] Parse messages, compute hashes/IDs, branch metadata.  
@@ -255,9 +255,9 @@ Environment variables:
    - [x] Keep Qdrant adapter stub; plan for real embeddings once Voyage pipeline consumes SQLite.
 
 7. **Documentation & Rollout**
-   - [ ] Update README, docs/automation.md, and provider docs with the new architecture, branch export modes, environment variables, and local sync behaviour.  
+   - [x] Update README, docs/automation.md, and provider docs with the new architecture, branch export modes, environment variables, and local sync behaviour.  
    - [x] Publish migration guidance (backup strategy, downgrade path, feature flag if applicable).  
-   - [ ] Announce the change to beta users and capture early feedback before the general release.
+   - [x] Announce the change to beta users and capture early feedback before the general release.
 
 ---
 

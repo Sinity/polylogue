@@ -10,5 +10,6 @@
 - **ChatGPT/Claude export sync:** `polylogue sync chatgpt|claude` now walks `$XDG_DATA_HOME/polylogue/exports/{chatgpt,claude}` (or a custom `--base-dir`) and runs the importer for every bundle, complete with registrar updates and branch-aware Markdown. Repeat exports no longer require bespoke `polylogue import …` invocations.
 - **Export watchers:** `polylogue watch chatgpt|claude` keeps the export directories under `$XDG_DATA_HOME/polylogue/exports/…` in sync automatically—each new ZIP or refreshed `conversations.json` triggers an incremental import, matching the Codex/Claude Code watch experience.
 - **Status filters & summaries:** `polylogue status --providers drive,codex` narrows the summary tables, `--summary path` writes aggregated JSON for dashboards (use `--summary-only --summary -` for headless streaming), and the existing `--dump` helpers continue to export raw runs.
+- **Beta rollout:** See `docs/beta_rollout.md` for the announcement template and the checklist we follow before promoting this refactor to GA.
 - **Stronger tests:** Added coverage for Drive token bootstrap, sync watcher debounce behaviour, and the registrar contract itself to keep the new architecture stable.
 - **Interactive hints:** The main menu now reminds users how to navigate gum pickers—arrow keys, Enter, `q`—so the UX feels intentional from the first run.
