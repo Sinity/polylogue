@@ -42,7 +42,6 @@ from .services.conversation_registrar import ConversationRegistrar
 from .services.conversation_service import ConversationService, create_conversation_service
 from .ui import UI
 from .util import (
-    RUNS_PATH,
     DiffTracker,
     RunAccumulator,
     add_run,
@@ -736,10 +735,11 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     )
 
 
-def status_command(env: CommandEnv) -> StatusResult:
+def status_command(env: CommandEnv, runs_limit: Optional[int] = 200) -> StatusResult:
     credentials_present = DEFAULT_CREDENTIALS.exists()
     token_present = DEFAULT_TOKEN.exists()
-    run_data = load_runs()
+    limit = runs_limit if runs_limit and runs_limit > 0 else None
+    run_data = load_runs(limit=limit)
     recent_runs: List[dict] = run_data[-10:]
     run_summary_entries: Dict[str, RunSummaryEntry] = {}
     for entry in run_data:
@@ -766,8 +766,9 @@ def status_command(env: CommandEnv) -> StatusResult:
         credentials_present=credentials_present,
         token_present=token_present,
         state_path=env.conversations.state_path,
-        runs_path=RUNS_PATH,
+        runs_path=env.conversations.state_path,
         recent_runs=recent_runs,
         run_summary=run_summary,
         provider_summary=provider_summary,
+        runs=run_data,
     )

@@ -16,7 +16,7 @@ This document captures the agreed architecture and implementation plan so develo
 
 | Phase | Focus | Key Deliverables |
 | --- | --- | --- |
-| **A. Persistence** | Replace ad-hoc JSON state with relational storage. | Section 1 (schema) and Section 7 (migration tasks). |
+| **A. Persistence** | Hardening the SQLite persistence layer and migration helpers. | Section 1 (schema) and Section 7 (migration tasks). |
 | **B. Message Pipeline** | Normalize provider payloads into a branch-aware graph and regenerate Markdown variants. | Sections 2–3 (ingestion, rendering, filesystem layout). |
 | **C. Automation** | Extend watchers/import commands to use the new pipeline for all providers. | Section 4 (generic watcher + CLI updates). |
 | **D. Insights** | Move telemetry and indexing onto SQLite; expose richer status outputs. | Sections 5–6 (observability + embeddings). |
@@ -29,7 +29,7 @@ Treat Phase A as a prerequisite for every other phase. Later phases can proceed 
 ## 1. Storage & Schema
 
 ### 1.1 SQLite database
-Replace `state.json` / `runs.json` with relational tables (while providing a migration path).
+`polylogue.db` is the single source of truth for state/runs; the schema below describes the canonical layout (legacy JSON caches are only read for migration).
 
 - `conversations`  
   - `provider TEXT`  
@@ -197,7 +197,7 @@ Targets:
 
 ## 5. Observability
 
-- Use `runs` table instead of `runs.json`.  
+- Use the SQLite `runs` table (JSON caches are legacy-only).  
 - CLI `status` reads from SQLite, aggregating per command and provider:
   - counts, attachments, tokens, diffs, duration.  
   - provider summary groups commands (`sync`, `codex-watch`, etc.).  
@@ -224,8 +224,8 @@ Environment variables:
 ## 7. TODO Checklist
 
 1. **Schema Migration**
-   - [ ] Implement SQLite tables (conversations, branches, messages, messages_fts, runs).  
-   - [ ] Migration script from `state.json` / `runs.json`.  
+   - [x] Implement SQLite tables (conversations, branches, messages, messages_fts, runs).  
+   - [x] Migration script from `state.json` / `runs.json`.  
    - [ ] Tests covering forward/backward compatibility.
 
 2. **Importer Refactor**
@@ -244,9 +244,9 @@ Environment variables:
    - [ ] Update CLI (`watch` subcommand).
 
 5. **Observability Update**
-   - [ ] Switch `status` to SQLite runs table.  
-   - [ ] Add `status --dump`.  
-   - [ ] Update tests (`tests/test_status.py`).
+   - [x] Switch `status` to SQLite runs table.  
+   - [x] Add `status --dump`.  
+   - [x] Update tests (`tests/test_status.py`).
 
 6. **Index Integration**
    - [ ] Adjust FTS to index messages.  
@@ -254,7 +254,7 @@ Environment variables:
 
 7. **Documentation & Rollout**
    - [ ] Update README, docs/automation.md, and provider docs with the new architecture, branch export modes, environment variables, and local sync behaviour.  
-   - [ ] Publish migration guidance (backup strategy, downgrade path, feature flag if applicable).  
+   - [x] Publish migration guidance (backup strategy, downgrade path, feature flag if applicable).  
    - [ ] Announce the change to beta users and capture early feedback before the general release.
 
 ---

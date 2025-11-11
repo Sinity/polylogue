@@ -13,9 +13,9 @@ Polylogue now follows a modular structure that separates orchestration concerns 
 - The interactive menu groups actions (“Render & Import”, “Sync & Inspect”, “Maintenance”), shows a status snapshot using `status_command`, and relies on the registry for help text.
 
 ## Persistence Layer
-- `polylogue/persistence/state.py` exposes `ConversationStateRepository` for working with the JSON state cache.
-- `polylogue/persistence/database.py` provides `ConversationDatabase`, a thin wrapper around the SQLite archive.
-- `polylogue/services/conversation_registrar.ConversationRegistrar` coordinates writes across state.json, SQLite metadata, and archive bookkeeping. Imports, sync, render, and branching now funnel persistence through the registrar so branch/message tables stay consistent.
+- `polylogue/persistence/state.py` exposes `ConversationStateRepository` backed entirely by SQLite metadata (no more JSON cache files).
+- `polylogue/persistence/database.py` provides `ConversationDatabase`, a thin wrapper around the archive database as well as helper queries for doctor/status/search.
+- `polylogue/services/conversation_registrar.ConversationRegistrar` coordinates writes across the SQLite metadata tables and the on-disk archive. Imports, sync, render, and branching now funnel persistence through the registrar so branch/message tables stay consistent.
 - `polylogue/services/conversation_service.ConversationService` presents a read-only facade (state iterators, conversation listings, deletes) so doctor/status/search no longer poke at repositories directly.
 - Doctor, status, and search use the service instead of touching JSON/SQLite directly.
 

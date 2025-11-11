@@ -107,7 +107,8 @@ Available automation targets: `codex`, `claude-code`, `drive-sync`, `gemini-rend
 ## Configuration
 - Polylogue reads configuration from `$POLYLOGUE_CONFIG`, `$XDG_CONFIG_HOME/polylogue/config.json`, or (legacy) `~/.polylogueconfig`.
 - Copy `docs/polylogue.config.sample.jsonc` to `$XDG_CONFIG_HOME/polylogue/config.json` to customise collapse thresholds, HTML defaults, and per-provider output directories.
-- Run state (`state.json`, `runs.json`) lives under `$XDG_STATE_HOME/polylogue/` so automation can tail recent activity.
+- Run metadata and run history live in `$XDG_STATE_HOME/polylogue/polylogue.db` (SQLite) so automation can query recent activity without parsing JSON caches.
+- If you are upgrading from an older release that still used `state.json`/`runs.json`, run `polylogue migrate legacy` (add `--dry-run` to preview) to import those caches into the SQLite database.
 - `polylogue doctor` reports the discovered paths when no config is detected.
 - Drive behaviour can be tuned with environment variables such as `$POLYLOGUE_RETRIES`, `$POLYLOGUE_RETRY_BASE`, `$POLYLOGUE_AUTH_MODE`, and `$POLYLOGUE_TOKEN_PATH`.
 - Indexing backends are controlled via `$POLYLOGUE_INDEX_BACKEND` (`sqlite`, `qdrant`, or `none`) alongside optional Qdrant knobs (`POLYLOGUE_QDRANT_URL`, `POLYLOGUE_QDRANT_API_KEY`, `POLYLOGUE_QDRANT_COLLECTION`).
@@ -128,3 +129,4 @@ Available automation targets: `codex`, `claude-code`, `drive-sync`, `gemini-rend
 - Code follows PEP 8 with type hints where practical.
 - Run `pytest` for the automated test suite covering importers, sync flows, and HTML transforms.
 - Credentials (`credentials.json`, `token.json`) stay out of version control.
+- `polylogue status --dump runs.json` writes the latest run records to a JSON file (use `-` to emit on stdout) for downstream automation.

@@ -15,7 +15,8 @@ from .drive import (
     get_file_meta,
     list_children,
 )
-from .util import CONFIG_HOME, parse_rfc3339_to_epoch, read_clipboard_text
+from .paths import CONFIG_HOME
+from .util import parse_rfc3339_to_epoch, read_clipboard_text
 from .ui import UI
 
 GDRIVE_INSTRUCTIONS = "https://developers.google.com/drive/api/quickstart/python"

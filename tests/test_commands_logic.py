@@ -13,6 +13,21 @@ from polylogue.cli import run_prune_cli
 from polylogue import commands as cmd_module, util
 
 
+def _read_state_entry(state_home: Path, provider: str, conversation_id: str) -> dict:
+    conn = sqlite3.connect(state_home / "polylogue.db")
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT metadata_json FROM conversations WHERE provider = ? AND conversation_id = ?",
+            (provider, conversation_id),
+        ).fetchone()
+        if not row or not row["metadata_json"]:
+            return {}
+        return json.loads(row["metadata_json"])
+    finally:
+        conn.close()
+
+
 class DummyConsole:
     def __init__(self):
         self.messages = []
@@ -67,8 +82,7 @@ def test_render_command_persists_state(tmp_path, state_env, monkeypatch):
     md_path = out_dir / "sample" / "conversation.md"
     assert md_path.exists()
     assert result.files[0].slug == "sample"
-    state_data = json.loads((state_env / "state.json").read_text(encoding="utf-8"))
-    conv_state = state_data["conversations"]["render"]["conv-1"]
+    conv_state = _read_state_entry(state_env, "render", "conv-1")
     assert conv_state["collapseThreshold"] == 16
     assert conv_state["dirty"] is False
     assert records and records[0].get("duration") is not None
@@ -151,8 +165,7 @@ def test_sync_command_with_stub_drive(tmp_path, monkeypatch, state_env):
     assert result.items[0].output == expected_output
     assert result.items[0].slug == util.sanitize_filename('Drive Sample')
     assert expected_output.exists()
-    state_data = json.loads((state_env / "state.json").read_text(encoding="utf-8"))
-    drive_state = state_data["conversations"]['drive-sync']['drive-1']
+    drive_state = _read_state_entry(state_env, "drive-sync", "drive-1")
     assert drive_state['slug'] == util.sanitize_filename('Drive Sample')
     assert drive_state['outputPath'] == str(expected_output)
     assert records and records[0].get("duration") is not None

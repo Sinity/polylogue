@@ -13,11 +13,27 @@ from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
 from ..util import parse_input_time_to_epoch
 from .context import DEFAULT_OUTPUT_ROOTS, DEFAULT_RENDER_OUT
 
+def _dump_runs(ui, records: List[dict], destination: str) -> None:
+    payload = json.dumps(records, indent=2)
+    if destination == "-":
+        print(payload)
+        return
+    path = Path(destination).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(payload, encoding="utf-8")
+    ui.console.print(f"[green]Wrote {len(records)} run(s) to {path}")
+
+
 def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
 
     def emit() -> None:
-        result = status_command(env)
+        runs_limit = max(1, getattr(args, "runs_limit", 200))
+        dump_limit = max(1, getattr(args, "dump_limit", 1)) if getattr(args, "dump", None) else None
+        effective_limit = runs_limit
+        if dump_limit is not None:
+            effective_limit = max(effective_limit, dump_limit)
+        result = status_command(env, runs_limit=effective_limit)
         console = ui.console
         if getattr(args, "json", False):
             payload = {
@@ -36,7 +52,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             console.print("Environment:")
             console.print(f"  credentials.json: {'present' if result.credentials_present else 'missing'}")
             console.print(f"  token.json: {'present' if result.token_present else 'missing'}")
-            console.print(f"  state cache: {result.state_path}")
+            console.print(f"  state db: {result.state_path}")
             console.print(f"  runs log: {result.runs_path}")
             if result.run_summary:
                 console.print("Run summary:")
@@ -70,7 +86,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             table.add_column("Value")
             table.add_row("credentials.json", "present" if result.credentials_present else "missing")
             table.add_row("token.json", "present" if result.token_present else "missing")
-            table.add_row("state cache", str(result.state_path))
+            table.add_row("state db", str(result.state_path))
             table.add_row("runs log", str(result.runs_path))
             console.print(table)
             if result.run_summary:
@@ -123,6 +139,11 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                         (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
                     )
                 console.print(provider_table)
+
+        if getattr(args, "dump", None):
+            limit = max(1, getattr(args, "dump_limit", 100))
+            dump_records = result.runs[-limit:]
+            _dump_runs(ui, dump_records, args.dump)
 
     if getattr(args, "watch", False):
         interval = getattr(args, "interval", 5.0)

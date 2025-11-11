@@ -26,13 +26,16 @@ class ConversationService:
 
     @property
     def state_path(self):
-        return self.state_repo.store.path
+        return self.database.resolve_path()
 
     def get_state(self, provider: str, conversation_id: str) -> Optional[Dict[str, object]]:
         return self.registrar.get_state(provider, conversation_id)
 
     def _state_path(self) -> Path:
-        return self.state_repo.store.path
+        resolved = self.database.resolve_path()
+        if resolved:
+            return resolved
+        return Path("polylogue.db")
 
     def _current_signature(self) -> Optional[Tuple[int, int]]:
         path = self._state_path()
@@ -54,10 +57,6 @@ class ConversationService:
             self._state_cache = self.state_repo.load()
             self._state_signature = signature
         return self._state_cache
-
-    def save_state(self, payload: Dict[str, object]) -> None:
-        self.state_repo.store.save(payload)
-        self.invalidate_state_cache()
 
     def iter_state(self) -> Iterator[Tuple[str, str, Dict[str, object]]]:
         state = self.load_state()

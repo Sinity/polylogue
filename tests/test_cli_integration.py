@@ -13,32 +13,29 @@ from polylogue.cli.doctor import run_doctor_cli
 from polylogue.doctor import DoctorIssue, DoctorReport
 from polylogue import ui as ui_module
 from polylogue.ui import UI
+from polylogue import util as util_module
+from polylogue import paths as paths_module
+from tests.conftest import _configure_state
 
 
 def _configure_isolated_state(monkeypatch, root: Path) -> None:
-    state_home = root / "state"
+    state_home = _configure_state(monkeypatch, root)
     data_home = root / "data"
     config_home = root / "config"
     cache_home = root / "cache"
-    for path in (state_home, data_home, config_home, cache_home):
+    for path in (data_home, config_home, cache_home):
         path.mkdir(parents=True, exist_ok=True)
 
-    from polylogue import util as util_module
-    from polylogue import db as db_module
-
-    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
     monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_home))
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache_home))
 
-    monkeypatch.setattr(util_module, "STATE_HOME", state_home, raising=False)
-    monkeypatch.setattr(util_module, "STATE_PATH", state_home / "state.json", raising=False)
-    monkeypatch.setattr(util_module, "RUNS_PATH", state_home / "runs.json", raising=False)
     monkeypatch.setattr(util_module, "DATA_HOME", data_home, raising=False)
     monkeypatch.setattr(util_module, "CONFIG_HOME", config_home, raising=False)
     monkeypatch.setattr(util_module, "CACHE_HOME", cache_home, raising=False)
-
-    monkeypatch.setattr(db_module, "DB_PATH", state_home / "polylogue.db", raising=False)
+    monkeypatch.setattr(paths_module, "DATA_HOME", data_home, raising=False)
+    monkeypatch.setattr(paths_module, "CONFIG_HOME", config_home, raising=False)
+    monkeypatch.setattr(paths_module, "CACHE_HOME", cache_home, raising=False)
 
 
 def test_cli_inspect_search_runs_without_name_error(monkeypatch, tmp_path, capsys):

@@ -120,13 +120,9 @@ def _load_branch_overview(
             SELECT
                 branch_id,
                 parent_branch_id,
-                is_canonical,
+                is_current,
+                label,
                 depth,
-                message_count,
-                token_count,
-                word_count,
-                first_timestamp,
-                last_timestamp,
                 metadata_json,
                 (
                     SELECT COALESCE(SUM(attachment_count), 0)
@@ -137,7 +133,7 @@ def _load_branch_overview(
                 ) AS attachment_count
             FROM branches
             WHERE provider = ? AND conversation_id = ?
-            ORDER BY is_canonical DESC, branch_id
+            ORDER BY is_current DESC, branch_id
             """,
             (provider, conversation_id),
         ).fetchall()
@@ -162,7 +158,8 @@ def _load_branch_overview(
         for row in rows:
             branch_id = row["branch_id"]
             metadata_json = row["metadata_json"]
-            divergence_index = _load_divergence_metadata(metadata_json)
+            metadata = json.loads(metadata_json) if metadata_json else {}
+            divergence_index = int(metadata.get("divergence_index") or 0)
             role, snippet = _fetch_divergence_message(
                 conn,
                 provider=provider,
@@ -174,13 +171,13 @@ def _load_branch_overview(
             nodes[branch_id] = BranchNodeSummary(
                 branch_id=branch_id,
                 parent_branch_id=row["parent_branch_id"],
-                is_canonical=bool(row["is_canonical"]),
+                is_canonical=bool(row["is_current"]),
                 depth=row["depth"] or 0,
-                message_count=row["message_count"] or 0,
-                token_count=row["token_count"] or 0,
-                word_count=row["word_count"] or 0,
-                first_timestamp=row["first_timestamp"],
-                last_timestamp=row["last_timestamp"],
+                message_count=int(metadata.get("message_count") or 0),
+                token_count=int(metadata.get("token_count") or 0),
+                word_count=int(metadata.get("word_count") or 0),
+                first_timestamp=metadata.get("first_timestamp"),
+                last_timestamp=metadata.get("last_timestamp"),
                 divergence_index=divergence_index,
                 divergence_role=role,
                 divergence_snippet=_short_snippet(snippet),
@@ -222,20 +219,20 @@ def _fetch_divergence_message(
 ) -> Tuple[Optional[str], Optional[str]]:
     row = conn.execute(
         """
-        SELECT role, body
-        FROM messages
-        WHERE provider = ?
-          AND conversation_id = ?
-          AND branch_id = ?
-        ORDER BY position
-        LIMIT 1 OFFSET ?
+        SELECT role, rendered_text
+          FROM messages
+         WHERE provider = ?
+           AND conversation_id = ?
+           AND branch_id = ?
+         ORDER BY position
+         LIMIT 1 OFFSET ?
         """,
         (provider, conversation_id, branch_id, max(divergence_index, 0)),
     ).fetchone()
     if not row:
         return None, None
     role = row["role"]
-    body = row["body"] or ""
+    body = row["rendered_text"] or ""
     return role, body
 
 

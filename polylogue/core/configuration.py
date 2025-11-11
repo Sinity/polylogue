@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from ..util import CONFIG_HOME, DATA_HOME
+from ..paths import CONFIG_HOME, DATA_HOME
 
 CONFIG_ENV = "POLYLOGUE_CONFIG"
 DEFAULT_CONFIG_LOCATIONS = [

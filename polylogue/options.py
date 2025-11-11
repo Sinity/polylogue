@@ -109,6 +109,7 @@ class StatusResult:
     recent_runs: List[dict]
     run_summary: Dict[str, Any]
     provider_summary: Dict[str, Any]
+    runs: List[dict]
 
 
 @dataclass

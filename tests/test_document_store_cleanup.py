@@ -22,12 +22,12 @@ def _make_document(body: str, attachments: list[AttachmentInfo]) -> MarkdownDocu
     )
 
 
-def _registrar(state_file: Path) -> ConversationRegistrar:
-    from polylogue.persistence.state_store import StateStore
-
+def _registrar(state_home: Path) -> ConversationRegistrar:
+    state_home.mkdir(parents=True, exist_ok=True)
+    database = ConversationDatabase(path=state_home / "polylogue.db")
     return ConversationRegistrar(
-        state_repo=ConversationStateRepository(store=StateStore(state_file)),
-        database=ConversationDatabase(),
+        state_repo=ConversationStateRepository(database=database),
+        database=database,
         archive=Archive(CONFIG),
     )
 
@@ -48,7 +48,7 @@ def test_persist_document_cleans_stale_attachments(tmp_path: Path) -> None:
         remote=False,
     )
 
-    state_file = tmp_path / "state.json"
+    state_home = tmp_path / "state"
 
     doc = _make_document("First", [attachment])
     result = persist_document(
@@ -68,7 +68,7 @@ def test_persist_document_cleans_stale_attachments(tmp_path: Path) -> None:
         slug_hint="conversation",
         id_hint=None,
         force=False,
-        registrar=_registrar(state_file),
+        registrar=_registrar(state_home),
     )
 
     assert result.attachments_dir and result.attachments_dir.exists()
@@ -93,7 +93,7 @@ def test_persist_document_cleans_stale_attachments(tmp_path: Path) -> None:
         slug_hint="conversation",
         id_hint=None,
         force=False,
-        registrar=_registrar(state_file),
+        registrar=_registrar(state_home),
     )
 
     assert result2.attachments_dir is None

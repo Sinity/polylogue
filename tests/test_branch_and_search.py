@@ -12,29 +12,6 @@ from polylogue.importers.chatgpt import import_chatgpt_export
 from polylogue.options import BranchExploreOptions, SearchOptions
 
 
-@pytest.fixture
-def state_env(tmp_path, monkeypatch):
-    state_home = tmp_path / "state"
-    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
-
-    state_dir = state_home / "polylogue"
-
-    from polylogue import util
-
-    monkeypatch.setattr(util, "STATE_HOME", state_dir, raising=False)
-    monkeypatch.setattr(util, "STATE_PATH", state_dir / "state.json", raising=False)
-    monkeypatch.setattr(util, "RUNS_PATH", state_dir / "runs.json", raising=False)
-
-    from polylogue import db as db_module
-
-    monkeypatch.setattr(db_module, "DB_PATH", state_dir / "polylogue.db", raising=False)
-
-    from polylogue import index_sqlite as index_sqlite_module
-
-    monkeypatch.setattr(index_sqlite_module, "STATE_HOME", state_dir, raising=False)
-    return state_dir
-
-
 def _create_branching_conversation(tmp_path: Path) -> None:
     export_dir = tmp_path / "export"
     export_dir.mkdir(parents=True, exist_ok=True)
