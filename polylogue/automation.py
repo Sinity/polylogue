@@ -159,6 +159,8 @@ def systemd_snippet(
     html: Optional[object] = None,
     status_log: Optional[Path] = None,
     status_limit: int = 50,
+    status_summary: Optional[Path] = None,
+    status_summary_providers: Optional[str] = None,
 ) -> str:
     target, merged_args = prepare_automation_command(
         target_key,
@@ -169,18 +171,31 @@ def systemd_snippet(
     service_name = target.name
     command = build_command(target, merged_args)
     working_directory = _escape_systemd_path(working_dir)
-    status_cmd = None
+    post_cmds: List[str] = []
     if status_log is not None:
-        status_cmd = _python_module_command(
-            [
-                "status",
-                "--dump",
-                str(status_log),
-                "--dump-limit",
-                str(max(1, status_limit)),
-                "--dump-only",
-            ]
+        post_cmds.append(
+            _python_module_command(
+                [
+                    "status",
+                    "--dump",
+                    str(status_log),
+                    "--dump-limit",
+                    str(max(1, status_limit)),
+                    "--dump-only",
+                ]
+            )
         )
+    if status_summary is not None:
+        summary_args = [
+            "status",
+            "--summary",
+            str(status_summary),
+            "--summary-only",
+        ]
+        if status_summary_providers:
+            summary_args.extend(["--providers", status_summary_providers])
+        post_cmds.append(_python_module_command(summary_args))
+    post_section = "\n".join(f"ExecStartPost={cmd}" for cmd in post_cmds if cmd)
     service = dedent(
         f"""# ~/.config/systemd/user/{service_name}.service
 [Unit]
@@ -190,7 +205,7 @@ Description={target.description}
 Type=oneshot
 WorkingDirectory={working_directory}
 ExecStart={command}
-{f"ExecStartPost={status_cmd}" if status_cmd else ""}
+{post_section}
 """
     ).strip()
 
@@ -224,6 +239,8 @@ def cron_snippet(
     html: Optional[object] = None,
     status_log: Optional[Path] = None,
     status_limit: int = 50,
+    status_summary: Optional[Path] = None,
+    status_summary_providers: Optional[str] = None,
 ) -> str:
     target, merged_args = prepare_automation_command(
         target_key,
@@ -232,19 +249,35 @@ def cron_snippet(
         html=html,
     )
     command = build_command(target, merged_args)
-    combined = command
+    followups: List[str] = []
     if status_log is not None:
-        status_cmd = _python_module_command(
-            [
-                "status",
-                "--dump",
-                str(status_log),
-                "--dump-limit",
-                str(max(1, status_limit)),
-                "--dump-only",
-            ]
+        followups.append(
+            _python_module_command(
+                [
+                    "status",
+                    "--dump",
+                    str(status_log),
+                    "--dump-limit",
+                    str(max(1, status_limit)),
+                    "--dump-only",
+                ]
+            )
         )
-        combined = f"({command} && {status_cmd})"
+    if status_summary is not None:
+        summary_args = [
+            "status",
+            "--summary",
+            str(status_summary),
+            "--summary-only",
+        ]
+        if status_summary_providers:
+            summary_args.extend(["--providers", status_summary_providers])
+        followups.append(_python_module_command(summary_args))
+
+    if followups:
+        combined = f"({' && '.join([command] + followups)})"
+    else:
+        combined = command
     snippet = (
         f"{schedule} XDG_STATE_HOME={shlex.quote(state_env)} cd {shlex.quote(str(working_dir))} && {combined} >> {shlex.quote(log_path)} 2>&1"
     )
