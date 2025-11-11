@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -37,9 +37,13 @@ def resolve_target(target: str) -> AutomationTarget:
         raise ValueError(f"Unsupported automation target: {target}") from exc
 
 
-def build_command(target: AutomationTarget, extra_args: Iterable[str]) -> str:
-    parts = [sys.executable, "-m", SCRIPT_MODULE] + target.command + list(extra_args)
+def _python_module_command(args: Iterable[str]) -> str:
+    parts = [sys.executable, "-m", SCRIPT_MODULE] + list(args)
     return shlex.join(parts)
+
+
+def build_command(target: AutomationTarget, extra_args: Iterable[str]) -> str:
+    return _python_module_command(target.command + list(extra_args))
 
 
 def describe_targets(target: Optional[str] = None) -> Dict[str, Dict[str, object]]:
@@ -153,6 +157,8 @@ def systemd_snippet(
     boot_delay: str = "2m",
     collapse_threshold: Optional[int] = None,
     html: Optional[object] = None,
+    status_log: Optional[Path] = None,
+    status_limit: int = 50,
 ) -> str:
     target, merged_args = prepare_automation_command(
         target_key,
@@ -163,6 +169,18 @@ def systemd_snippet(
     service_name = target.name
     command = build_command(target, merged_args)
     working_directory = _escape_systemd_path(working_dir)
+    status_cmd = None
+    if status_log is not None:
+        status_cmd = _python_module_command(
+            [
+                "status",
+                "--dump",
+                str(status_log),
+                "--dump-limit",
+                str(max(1, status_limit)),
+                "--dump-only",
+            ]
+        )
     service = dedent(
         f"""# ~/.config/systemd/user/{service_name}.service
 [Unit]
@@ -172,6 +190,7 @@ Description={target.description}
 Type=oneshot
 WorkingDirectory={working_directory}
 ExecStart={command}
+{f"ExecStartPost={status_cmd}" if status_cmd else ""}
 """
     ).strip()
 
@@ -203,6 +222,8 @@ def cron_snippet(
     state_env: str = '$HOME/.local/state',
     collapse_threshold: Optional[int] = None,
     html: Optional[object] = None,
+    status_log: Optional[Path] = None,
+    status_limit: int = 50,
 ) -> str:
     target, merged_args = prepare_automation_command(
         target_key,
@@ -211,7 +232,20 @@ def cron_snippet(
         html=html,
     )
     command = build_command(target, merged_args)
+    combined = command
+    if status_log is not None:
+        status_cmd = _python_module_command(
+            [
+                "status",
+                "--dump",
+                str(status_log),
+                "--dump-limit",
+                str(max(1, status_limit)),
+                "--dump-only",
+            ]
+        )
+        combined = f"({command} && {status_cmd})"
     snippet = (
-        f"{schedule} XDG_STATE_HOME={shlex.quote(state_env)} cd {shlex.quote(str(working_dir))} && {command} >> {shlex.quote(log_path)} 2>&1"
+        f"{schedule} XDG_STATE_HOME={shlex.quote(state_env)} cd {shlex.quote(str(working_dir))} && {combined} >> {shlex.quote(log_path)} 2>&1"
     )
     return snippet + "\n"
