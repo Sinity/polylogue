@@ -710,6 +710,19 @@ def build_parser() -> argparse.ArgumentParser:
     add_diff_option(p_sync, help_text="Write delta diff alongside updated Markdown")
     p_sync.add_argument("--json", action="store_true", help="Emit machine-readable summary")
     p_sync.add_argument(
+        "--chat-id",
+        dest="chat_ids",
+        action="append",
+        help="Drive chat/file ID to sync (repeatable)",
+    )
+    p_sync.add_argument(
+        "--session",
+        dest="sessions",
+        action="append",
+        type=Path,
+        help="Local session/export path to sync (repeatable; local providers)",
+    )
+    p_sync.add_argument(
         "--base-dir",
         type=Path,
         default=None,
