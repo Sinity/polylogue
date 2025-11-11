@@ -854,6 +854,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_auto_systemd.add_argument("--collapse-threshold", type=int, default=None, help="Override collapse threshold for the sync command")
     p_auto_systemd.add_argument("--status-log", type=Path, default=None, help="Dump polylogue status output to this path after each run")
     p_auto_systemd.add_argument("--status-limit", type=int, default=50, help="Number of runs to include when dumping status logs")
+    p_auto_systemd.add_argument("--status-summary", type=Path, default=None, help="Write polylogue status summary JSON after each run")
+    p_auto_systemd.add_argument("--status-summary-providers", type=str, default=None, help="Comma-separated providers for the status summary command")
     add_html_option(
         p_auto_systemd,
         description="HTML mode for generated sync commands: on/off/auto (default auto, inherits target defaults)",
@@ -873,6 +875,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_auto_cron.add_argument("--collapse-threshold", type=int, default=None, help="Override collapse threshold for the sync command")
     p_auto_cron.add_argument("--status-log", type=Path, default=None, help="Dump polylogue status output to this path after each run")
     p_auto_cron.add_argument("--status-limit", type=int, default=50, help="Number of runs to include when dumping status logs")
+    p_auto_cron.add_argument("--status-summary", type=Path, default=None, help="Write polylogue status summary JSON after each run")
+    p_auto_cron.add_argument("--status-summary-providers", type=str, default=None, help="Comma-separated providers for the status summary command")
     add_html_option(
         p_auto_cron,
         description="HTML mode for generated sync commands: on/off/auto (default auto, inherits target defaults)",

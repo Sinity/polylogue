@@ -41,6 +41,8 @@ def run_automation_cli(args: argparse.Namespace, env: CommandEnv) -> None:  # no
 
     status_log = getattr(args, "status_log", None)
     status_limit = getattr(args, "status_limit", 50)
+    status_summary = getattr(args, "status_summary", None)
+    status_summary_providers = getattr(args, "status_summary_providers", None)
 
     if args.automation_format == "systemd":
         snippet = systemd_snippet(
@@ -53,6 +55,8 @@ def run_automation_cli(args: argparse.Namespace, env: CommandEnv) -> None:  # no
             html=html_override,
             status_log=status_log,
             status_limit=status_limit,
+            status_summary=status_summary,
+            status_summary_providers=status_summary_providers,
         )
     else:
         snippet = cron_snippet(
@@ -66,6 +70,8 @@ def run_automation_cli(args: argparse.Namespace, env: CommandEnv) -> None:  # no
             html=html_override,
             status_log=status_log,
             status_limit=status_limit,
+            status_summary=status_summary,
+            status_summary_providers=status_summary_providers,
         )
     print(snippet, end="")
 
