@@ -7,13 +7,19 @@ from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .cli_common import compute_prune_paths
-from .importers import import_claude_code_session, import_codex_session
+from .importers import (
+    import_chatgpt_export,
+    import_claude_code_session,
+    import_claude_export,
+    import_codex_session,
+)
 from .importers.base import ImportResult
 from .importers.claude_code import (
     DEFAULT_PROJECT_ROOT as CLAUDE_CODE_DEFAULT,
     list_claude_code_sessions,
 )
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
+from .paths import DATA_HOME
 from .util import DiffTracker, path_order_key, sanitize_filename, slugify_title
 from .services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .pipeline_runner import Pipeline, PipelineContext
@@ -48,6 +54,9 @@ class LocalSyncProvider:
     watch_banner: str
     watch_log_title: str
     watch_suffixes: Tuple[str, ...] = (".jsonl",)
+    supports_watch: bool = True
+    supports_diff: bool = True
+    create_base_dir: bool = False
 
 
 class _LocalSessionStage:
@@ -78,6 +87,11 @@ def _is_up_to_date(source: Path, target: Path) -> bool:
     if target_ns + tolerance < source_ns:
         return False
     return True
+
+
+EXPORTS_ROOT = DATA_HOME / "exports"
+CHATGPT_EXPORTS_DEFAULT = EXPORTS_ROOT / "chatgpt"
+CLAUDE_EXPORTS_DEFAULT = EXPORTS_ROOT / "claude"
 
 
 def _sync_sessions(
@@ -259,6 +273,122 @@ def _sync_sessions(
     )
 
 
+def _discover_export_targets(base_dir: Path) -> List[Path]:
+    base = base_dir.expanduser()
+    if not base.exists():
+        return []
+    candidates: set[Path] = set()
+    try:
+        for zip_path in base.rglob("*.zip"):
+            candidates.add(zip_path)
+    except OSError:
+        pass
+    try:
+        for conv_file in base.rglob("conversations.json"):
+            candidates.add(conv_file.parent)
+    except OSError:
+        pass
+    return sorted(candidates, key=path_order_key, reverse=True)
+
+
+def _sync_export_bundles(
+    bundles: Iterable[Path],
+    *,
+    output_dir: Path,
+    collapse_threshold: int,
+    html: bool,
+    html_theme: str,
+    force: bool,
+    prune: bool,
+    provider: str,
+    import_fn: Callable[..., Sequence[ImportResult] | ImportResult | None],
+    registrar: Optional[ConversationRegistrar] = None,
+    branch_mode: str = "full",
+) -> LocalSyncResult:
+    registrar = registrar or create_default_registrar()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    start_time = time.perf_counter()
+    written: List[ImportResult] = []
+    skipped_exports = 0
+    wanted: set[str] = set()
+    attachments_total = 0
+    attachment_bytes_total = 0
+    tokens_total = 0
+    words_total = 0
+
+    if isinstance(bundles, (list, tuple)):
+        iterable: Iterable[Path] = sorted([Path(p) for p in bundles], key=path_order_key)
+    else:
+        iterable = sorted([Path(p) for p in bundles], key=path_order_key)
+
+    for export_path in iterable:
+        if not export_path.exists():
+            continue
+        results_raw = import_fn(
+            export_path=export_path,
+            output_dir=output_dir,
+            collapse_threshold=collapse_threshold,
+            html=html,
+            html_theme=html_theme,
+            selected_ids=None,
+            force=force,
+            branch_mode=branch_mode,
+            registrar=registrar,
+        )
+        if results_raw is None:
+            result_list: List[ImportResult] = []
+        elif isinstance(results_raw, ImportResult):
+            result_list = [results_raw]
+        else:
+            result_list = list(results_raw)
+
+        export_wrote = False
+        for result in result_list:
+            if not isinstance(result, ImportResult):
+                continue
+            wanted.add(result.slug)
+            if result.skipped:
+                continue
+            export_wrote = True
+            if result.document:
+                attachments_total += len(result.document.attachments)
+                attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
+                tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
+                words_total += result.document.stats.get("totalWordsApprox", 0) or 0
+            written.append(result)
+        if not export_wrote:
+            skipped_exports += 1
+
+    pruned = 0
+    if prune:
+        for path in compute_prune_paths(output_dir, wanted):
+            try:
+                if path.is_dir():
+                    import shutil
+
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+                pruned += 1
+            except OSError:
+                continue
+
+    duration = time.perf_counter() - start_time
+
+    return LocalSyncResult(
+        written=written,
+        skipped=skipped_exports,
+        pruned=pruned,
+        output_dir=output_dir,
+        attachments=attachments_total,
+        attachment_bytes=attachment_bytes_total,
+        tokens=tokens_total,
+        words=words_total,
+        diffs=0,
+        duration=duration,
+    )
+
+
 def sync_codex_sessions(
     *,
     base_dir: Path = CODEX_DEFAULT,
@@ -347,6 +477,78 @@ def _list_claude_code_paths(base_dir: Path) -> List[Path]:
     return paths
 
 
+def _list_chatgpt_exports(base_dir: Path) -> List[Path]:
+    return _discover_export_targets(base_dir)
+
+
+def _list_claude_exports(base_dir: Path) -> List[Path]:
+    return _discover_export_targets(base_dir)
+
+
+def sync_chatgpt_exports(
+    *,
+    base_dir: Path = CHATGPT_EXPORTS_DEFAULT,
+    output_dir: Path,
+    collapse_threshold: int,
+    html: bool,
+    html_theme: str,
+    force: bool,
+    prune: bool,
+    diff: bool = False,
+    sessions: Optional[Iterable[Path]] = None,
+    registrar: Optional[ConversationRegistrar] = None,
+    branch_mode: str = "full",
+) -> LocalSyncResult:
+    base_dir = base_dir.expanduser()
+    base_dir.mkdir(parents=True, exist_ok=True)
+    targets = sessions or _discover_export_targets(base_dir)
+    return _sync_export_bundles(
+        targets,
+        output_dir=output_dir,
+        collapse_threshold=collapse_threshold,
+        html=html,
+        html_theme=html_theme,
+        force=force,
+        prune=prune,
+        provider="chatgpt",
+        import_fn=import_chatgpt_export,
+        registrar=registrar,
+        branch_mode=branch_mode,
+    )
+
+
+def sync_claude_exports(
+    *,
+    base_dir: Path = CLAUDE_EXPORTS_DEFAULT,
+    output_dir: Path,
+    collapse_threshold: int,
+    html: bool,
+    html_theme: str,
+    force: bool,
+    prune: bool,
+    diff: bool = False,
+    sessions: Optional[Iterable[Path]] = None,
+    registrar: Optional[ConversationRegistrar] = None,
+    branch_mode: str = "full",
+) -> LocalSyncResult:
+    base_dir = base_dir.expanduser()
+    base_dir.mkdir(parents=True, exist_ok=True)
+    targets = sessions or _discover_export_targets(base_dir)
+    return _sync_export_bundles(
+        targets,
+        output_dir=output_dir,
+        collapse_threshold=collapse_threshold,
+        html=html,
+        html_theme=html_theme,
+        force=force,
+        prune=prune,
+        provider="claude",
+        import_fn=import_claude_export,
+        registrar=registrar,
+        branch_mode=branch_mode,
+    )
+
+
 LOCAL_SYNC_PROVIDERS: Dict[str, LocalSyncProvider] = {
     "codex": LocalSyncProvider(
         name="codex",
@@ -370,9 +572,40 @@ LOCAL_SYNC_PROVIDERS: Dict[str, LocalSyncProvider] = {
         watch_log_title="Claude Code Watch",
         watch_suffixes=(".jsonl",),
     ),
+    "chatgpt": LocalSyncProvider(
+        name="chatgpt",
+        title="ChatGPT Exports",
+        sync_fn=sync_chatgpt_exports,
+        default_base=CHATGPT_EXPORTS_DEFAULT,
+        default_output=CONFIG.defaults.output_dirs.import_chatgpt,
+        list_sessions=_list_chatgpt_exports,
+        watch_banner="ChatGPT exports cannot be watched",
+        watch_log_title="ChatGPT Export Sync",
+        watch_suffixes=(),
+        supports_watch=False,
+        supports_diff=False,
+        create_base_dir=True,
+    ),
+    "claude": LocalSyncProvider(
+        name="claude",
+        title="Claude.ai Exports",
+        sync_fn=sync_claude_exports,
+        default_base=CLAUDE_EXPORTS_DEFAULT,
+        default_output=CONFIG.defaults.output_dirs.import_claude,
+        list_sessions=_list_claude_exports,
+        watch_banner="Claude exports cannot be watched",
+        watch_log_title="Claude Export Sync",
+        watch_suffixes=(),
+        supports_watch=False,
+        supports_diff=False,
+        create_base_dir=True,
+    ),
 }
 
 LOCAL_SYNC_PROVIDER_NAMES: Tuple[str, ...] = tuple(LOCAL_SYNC_PROVIDERS.keys())
+WATCHABLE_LOCAL_PROVIDER_NAMES: Tuple[str, ...] = tuple(
+    name for name, provider in LOCAL_SYNC_PROVIDERS.items() if provider.supports_watch
+)
 
 
 def get_local_provider(name: str) -> LocalSyncProvider:
