@@ -27,14 +27,25 @@ def _dump_runs(ui, records: List[dict], destination: str) -> None:
 def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
 
+    dump_only = getattr(args, "dump_only", False)
+
     def emit() -> None:
         runs_limit = max(1, getattr(args, "runs_limit", 200))
-        dump_limit = max(1, getattr(args, "dump_limit", 1)) if getattr(args, "dump", None) else None
+        dump_requested = getattr(args, "dump", None)
+        dump_limit = max(1, getattr(args, "dump_limit", 1)) if dump_requested else None
         effective_limit = runs_limit
         if dump_limit is not None:
             effective_limit = max(effective_limit, dump_limit)
         result = status_command(env, runs_limit=effective_limit)
         console = ui.console
+
+        if dump_only:
+            destination = dump_requested or "-"
+            limit = max(1, getattr(args, "dump_limit", 100))
+            dump_records = result.runs[-limit:]
+            _dump_runs(ui, dump_records, destination)
+            return
+
         if getattr(args, "json", False):
             payload = {
                 "credentials_present": result.credentials_present,
@@ -140,12 +151,14 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                     )
                 console.print(provider_table)
 
-        if getattr(args, "dump", None):
+        if dump_requested:
             limit = max(1, getattr(args, "dump_limit", 100))
             dump_records = result.runs[-limit:]
-            _dump_runs(ui, dump_records, args.dump)
+            _dump_runs(ui, dump_records, dump_requested)
 
     if getattr(args, "watch", False):
+        if dump_only:
+            raise SystemExit("--dump-only cannot be combined with --watch")
         interval = getattr(args, "interval", 5.0)
         try:
             while True:
