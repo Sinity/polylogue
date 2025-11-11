@@ -29,12 +29,15 @@ Polylogue is an interactive-first toolkit for archiving AI/LLM conversations—r
 - **Settings:** `polylogue settings --html on --theme dark` updates the default render/sync preferences so automation and interactive flows inherit the same HTML behaviour without extra flags.
 - **View recent runs:** The status dashboard shows the last operations, including attachment MiB, diff counts, and Drive retry/failure stats per command.
 - **Monitor automation:** `polylogue status --json --watch` now streams provider-level stats for dashboards or terminal monitoring, and `polylogue status --dump <path> --dump-limit N --dump-only` writes a JSON snapshot without reprinting the tables—perfect for cron/systemd hooks.
+- **Observability exports:** Narrow status output with `--providers drive,codex`, stream summaries with `--watch`, and emit machine-readable aggregates via `polylogue status --summary metrics.json` or `--summary-only` for headless dashboards.
 - **Structured run logs:** Every render/sync/import/watch operation appends a single-line JSON record (`{"event":"polylogue_run", ...}`) to stderr so journalctl/cron logs carry machine-readable telemetry. Disable this by exporting `POLYLOGUE_RUN_LOG=0` if you prefer silent runs.
 - **Branch-aware transcripts:** Canonical Markdown now lives at `<slug>/conversation.md`, with `<slug>/conversation.common.md` capturing shared context and `branches/<branch-id>/{<branch-id>.md, overlay.md}` preserving every alternate path.
 - **Explore branch graphs:** `polylogue inspect branches` renders a skim-driven branch picker, prints the tree view, and auto-writes an HTML explorer when branches diverge (override output with `--html-out`, disable via `--html off`).
 - **Search transcripts:** `polylogue inspect search` queries the SQLite FTS index with filters for provider, model, date range, and attachment metadata; add `--no-picker` to skip the skim preview or `--json` for automation.
 - **Prune legacy outputs:** `polylogue prune` cleans up flat `<slug>.md` files and `_attachments/` folders left behind by older releases, keeping only the canonical conversation directories.
 - **SQLite/Qdrant indexing:** Every successful write updates `XDG_STATE_HOME/polylogue/polylogue.db` (and, optionally, a Qdrant collection) so downstream tooling can query or sync metadata without reparsing Markdown.
+
+For deeper observability notes (structured run logs, provider filters, automation exports), see `docs/observability.md`.
 
 ## Provider Cheat Sheet
 

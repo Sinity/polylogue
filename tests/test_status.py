@@ -81,17 +81,74 @@ def test_status_dump_to_file(state_env, tmp_path):
 
     env = CommandEnv(ui=DummyUI())
     dump_path = tmp_path / "runs.json"
-    args = SimpleNamespace(
-        json=False,
-        watch=False,
-        interval=1.0,
-        dump=str(dump_path),
-        dump_limit=2,
-        runs_limit=10,
-    )
+    args = _status_args(dump=str(dump_path), dump_limit=2, runs_limit=10)
 
     run_status_cli(args, env)
 
     data = json.loads(dump_path.read_text(encoding="utf-8"))
     assert len(data) == 2
     assert data[-1]["cmd"] == "render"
+
+
+def test_status_provider_filter_and_summary(state_env, tmp_path, capsys):
+    for name in ("drive", "codex"):
+        util.add_run(
+            {
+                "cmd": f"sync {name}",
+                "provider": name,
+                "count": 1,
+                "attachments": 0,
+                "timestamp": "2024-02-01T00:00:00Z",
+            }
+        )
+
+    env = CommandEnv(ui=DummyUI())
+    summary_path = tmp_path / "summary.json"
+    args = _status_args(json=True, providers="drive", summary=str(summary_path))
+
+    run_status_cli(args, env)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert list(payload["provider_summary"].keys()) == ["drive"]
+
+    summary_data = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert list(summary_data["providerSummary"].keys()) == ["drive"]
+    assert list(summary_data["runSummary"].keys()) == ["sync drive"]
+
+
+def test_status_summary_only_stdout(state_env, capsys):
+    util.add_run(
+        {
+            "cmd": "render",
+            "provider": "render",
+            "count": 1,
+            "timestamp": "2024-03-01T00:00:00Z",
+        }
+    )
+
+    env = CommandEnv(ui=DummyUI())
+    args = _status_args(summary_only=True, summary="-", json=False)
+
+    run_status_cli(args, env)
+
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert "runSummary" in data
+    assert list(data["runSummary"].keys()) == ["render"]
+
+
+def _status_args(**overrides):
+    defaults = dict(
+        json=False,
+        watch=False,
+        interval=1.0,
+        dump=None,
+        dump_limit=100,
+        runs_limit=200,
+        dump_only=False,
+        providers=None,
+        summary=None,
+        summary_only=False,
+    )
+    defaults.update(overrides)
+    return SimpleNamespace(**defaults)
