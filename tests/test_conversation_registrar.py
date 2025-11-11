@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from polylogue.branching import MessageRecord
@@ -11,13 +12,9 @@ from polylogue.persistence.state import ConversationStateRepository
 from polylogue.persistence.database import ConversationDatabase
 from polylogue.archive import Archive
 from polylogue.config import CONFIG
-from polylogue.persistence.state_store import StateStore
-
-
 def _build_registrar(root: Path) -> ConversationRegistrar:
-    store = StateStore(root / "state.json")
-    state_repo = ConversationStateRepository(store=store)
     database = ConversationDatabase(path=root / "polylogue.db")
+    state_repo = ConversationStateRepository(database=database)
     archive = Archive(CONFIG)
     return ConversationRegistrar(state_repo=state_repo, database=database, archive=archive)
 
@@ -85,14 +82,15 @@ def test_process_conversation_populates_branch_metadata(tmp_path):
 
     with open_connection(registrar.database.resolve_path()) as conn:
         row = conn.execute(
-            "SELECT slug, current_branch, token_count, word_count FROM conversations WHERE provider = ? AND conversation_id = ?",
+            "SELECT slug, current_branch, metadata_json FROM conversations WHERE provider = ? AND conversation_id = ?",
             ("test", "conv-1"),
         ).fetchone()
         assert row is not None
         assert row["slug"] == result.slug
         assert row["current_branch"] == result.canonical_branch_id
-        assert row["token_count"] >= 0
-        assert row["word_count"] >= 0
+        metadata = json.loads(row["metadata_json"] or "{}")
+        assert metadata.get("tokens", 0) >= 0
+        assert metadata.get("words", 0) >= 0
 
         branch_count = conn.execute(
             "SELECT COUNT(*) FROM branches WHERE provider = ? AND conversation_id = ?",
@@ -110,8 +108,6 @@ def test_process_conversation_populates_branch_metadata(tmp_path):
 def test_conversation_service_caches_state(tmp_path, monkeypatch):
     service = _build_service(tmp_path)
     repo = service.state_repo
-    repo.store.save({"conversations": {}})
-
     original_load = repo.load
     call_count = {"value": 0}
 
@@ -121,12 +117,15 @@ def test_conversation_service_caches_state(tmp_path, monkeypatch):
 
     monkeypatch.setattr(repo, "load", wrapped_load)
 
+    monkeypatch.setattr(service, "_current_signature", lambda: (1, 1))
+
     first = service.load_state()
     second = service.load_state()
     assert first is second
     assert call_count["value"] == 1
 
-    repo.store.save({"conversations": {"render": {}}})
+    service.invalidate_state_cache()
+    monkeypatch.setattr(service, "_current_signature", lambda: (2, 2))
     refreshed = service.load_state()
     assert call_count["value"] == 2
     assert refreshed is service.load_state()

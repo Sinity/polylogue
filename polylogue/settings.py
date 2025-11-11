@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import CONFIG
-from .util import CONFIG_HOME
+from .paths import CONFIG_HOME
 
 
 @dataclass

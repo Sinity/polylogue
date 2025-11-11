@@ -13,7 +13,7 @@ from .core.configuration import (
     OutputPaths as CoreOutputPaths,
     load_configuration,
 )
-from .util import CONFIG_HOME, DATA_HOME
+from .paths import CONFIG_HOME, DATA_HOME
 
 CONFIG_DIR = CONFIG_HOME
 DEFAULT_PATHS = list(DEFAULT_CONFIG_LOCATIONS)

@@ -30,8 +30,8 @@ def execute_search(
             m.timestamp,
             m.attachment_count,
             bm25(messages_fts) AS score,
-            snippet(messages_fts, '[', ']', ' … ', -1, 64) AS snippet,
-            m.body
+            snippet(messages_fts, '[', ']', ' … ', 4, 64) AS snippet,
+            m.rendered_text AS body
         FROM messages_fts
         JOIN messages AS m
           ON messages_fts.provider = m.provider

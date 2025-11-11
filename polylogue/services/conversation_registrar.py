@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -14,7 +16,7 @@ from ..persistence.state import ConversationStateRepository
 
 @dataclass
 class ConversationRegistrar:
-    """Coordinates state.json and SQLite metadata updates for conversations."""
+    """Coordinates SQLite persistence for conversations."""
 
     state_repo: ConversationStateRepository
     database: ConversationDatabase
@@ -79,6 +81,14 @@ class ConversationRegistrar:
             state_payload.update({k: v for k, v in extra_state.items() if v is not None})
         self.state_repo.upsert(provider, conversation_id, state_payload)
 
+        metadata = {
+            **state_payload,
+            "tokens": tokens,
+            "words": words,
+            "attachment_bytes": attachment_bytes,
+            "dirty": dirty,
+        }
+
         with open_connection(self.database.resolve_path()) as conn:
             upsert_conversation(
                 conn,
@@ -87,13 +97,10 @@ class ConversationRegistrar:
                 slug=slug,
                 title=title,
                 current_branch=None,
+                root_message_id=None,
                 last_updated=updated_at,
                 content_hash=content_hash,
-                token_count=tokens,
-                word_count=words,
-                attachment_bytes=attachment_bytes,
-                dirty=dirty,
-                metadata=None,
+                metadata=metadata,
             )
             conn.commit()
 
@@ -114,6 +121,10 @@ class ConversationRegistrar:
         canonical_stats = branch_stats.get(plan.canonical_branch_id, {}) if plan else {}
         total_tokens = int(canonical_stats.get("token_count", 0) or 0)
         total_words = int(canonical_stats.get("word_count", 0) or 0)
+        root_message_id = None
+        canonical_branch = plan.branches.get(plan.canonical_branch_id)
+        if canonical_branch and canonical_branch.message_ids:
+            root_message_id = canonical_branch.message_ids[0]
 
         branch_payloads: List[Dict[str, object]] = []
         for branch_id, info in plan.branches.items():
@@ -122,16 +133,19 @@ class ConversationRegistrar:
                 {
                     "branch_id": branch_id,
                     "parent_branch_id": info.parent_branch_id,
-                    "is_canonical": info.is_canonical,
+                    "label": branch_id,
+                    "is_current": info.is_canonical,
                     "depth": info.depth,
-                    "message_count": stats.get("message_count", 0),
-                    "token_count": stats.get("token_count", 0),
-                    "word_count": stats.get("word_count", 0),
-                    "first_message_id": stats.get("first_message_id"),
-                    "last_message_id": stats.get("last_message_id"),
-                    "first_timestamp": stats.get("first_timestamp"),
-                    "last_timestamp": stats.get("last_timestamp"),
-                    "metadata": {"divergence_index": info.divergence_index},
+                    "metadata": {
+                        "message_count": stats.get("message_count", 0),
+                        "token_count": stats.get("token_count", 0),
+                        "word_count": stats.get("word_count", 0),
+                        "first_message_id": stats.get("first_message_id"),
+                        "last_message_id": stats.get("last_message_id"),
+                        "first_timestamp": stats.get("first_timestamp"),
+                        "last_timestamp": stats.get("last_timestamp"),
+                        "divergence_index": info.divergence_index,
+                    },
                 }
             )
 
@@ -141,18 +155,23 @@ class ConversationRegistrar:
                     """
                     UPDATE conversations
                        SET current_branch = ?,
-                           token_count = ?,
-                           word_count = ?,
-                           attachment_bytes = ?,
-                           slug = COALESCE(?, slug)
+                           root_message_id = COALESCE(?, root_message_id),
+                           slug = COALESCE(?, slug),
+                           metadata_json = json_set(
+                               COALESCE(metadata_json, '{}'),
+                               '$.token_count', ?,
+                               '$.word_count', ?,
+                               '$.attachment_bytes', ?
+                           )
                      WHERE provider = ? AND conversation_id = ?
                     """,
                     (
                         plan.canonical_branch_id,
+                        root_message_id,
+                        slug,
                         total_tokens,
                         total_words,
                         attachment_bytes,
-                        slug,
                         provider,
                         conversation_id,
                     ),
@@ -181,7 +200,11 @@ class ConversationRegistrar:
                         "token_count": record.token_count,
                         "word_count": record.word_count,
                         "attachment_count": record.attachments,
-                        "body": record.text,
+                        "rendered_text": record.text,
+                        "content_hash": hashlib.sha256(record.text.encode("utf-8")).hexdigest()
+                        if record.text
+                        else None,
+                        "raw_json": json.dumps(record.chunk, ensure_ascii=False),
                         "metadata": record.metadata,
                     }
                     for idx, record in enumerate(branch_records)

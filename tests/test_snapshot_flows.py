@@ -40,6 +40,22 @@ def _open_conversation_row(db_path: Path, provider: str, conversation_id: str):
         conn.close()
 
 
+def _read_state_entry(state_home: Path, provider: str, conversation_id: str) -> dict:
+    db_path = state_home / "polylogue.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT metadata_json FROM conversations WHERE provider = ? AND conversation_id = ?",
+            (provider, conversation_id),
+        ).fetchone()
+        if not row or not row["metadata_json"]:
+            return {}
+        return json.loads(row["metadata_json"])
+    finally:
+        conn.close()
+
+
 @pytest.fixture
 def fake_diff(monkeypatch):
     def _fake(old_path, new_path, suffix=".diff.txt"):
@@ -87,8 +103,7 @@ def test_render_snapshot_with_html_and_diff(tmp_path, state_env, fake_diff):
     html_path = output_md.with_name("conversation.html")
     assert html_path.exists()
 
-    state_data = json.loads((state_env / "state.json").read_text(encoding="utf-8"))
-    render_state = state_data["conversations"]["render"]["conv-render"]
+    render_state = _read_state_entry(state_env, "render", "conv-render")
     assert render_state["outputPath"] == str(output_md)
     assert render_state["htmlPath"] == str(html_path)
 
@@ -166,8 +181,7 @@ def test_sync_snapshot_updates_state_and_diff(tmp_path, state_env, monkeypatch, 
     first = sync_command(options, env)
     assert first.count == 1
 
-    state_data = json.loads((state_env / "state.json").read_text(encoding="utf-8"))
-    drive_entry = state_data["conversations"]["drive-sync"]["drive-snapshot"]
+    drive_entry = _read_state_entry(state_env, "drive-sync", "drive-snapshot")
     expected_slug = util.sanitize_filename("Drive Snapshot")
     assert drive_entry["slug"] == expected_slug
 
@@ -234,8 +248,15 @@ def test_local_sync_snapshot_watch_mode(tmp_path, state_env, fake_diff):
     assert (convo_dir / "conversation.md").exists()
     assert (convo_dir / "conversation.html").exists()
 
-    state_data = json.loads((state_env / "state.json").read_text(encoding="utf-8"))
-    assert "codex" in state_data.get("conversations", {})
+    conn = sqlite3.connect(state_env / "polylogue.db")
+    try:
+        providers = {
+            row[0]
+            for row in conn.execute("SELECT DISTINCT provider FROM conversations").fetchall()
+        }
+    finally:
+        conn.close()
+    assert "codex" in providers
 
     # append another assistant turn to trigger diff on resync
     entries.append(

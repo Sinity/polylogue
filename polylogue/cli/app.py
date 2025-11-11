@@ -64,6 +64,7 @@ from .watch import run_watch_cli
 from .status import run_status_cli, run_stats_cli
 from .doctor import run_doctor_cli
 from .automation_cli import run_automation_cli
+from .migrate import run_migrate_cli
 from .summaries import summarize_import
 from .sync import (
     run_list_cli,
@@ -638,6 +639,12 @@ def _dispatch_automation(args: argparse.Namespace, env: CommandEnv) -> None:
     run_automation_cli(args, env)
 
 
+def _dispatch_migrate(args: argparse.Namespace, env: CommandEnv) -> None:
+    if getattr(args, "migrate_cmd", None) is None:
+        raise SystemExit("migrate requires a sub-command (legacy)")
+    run_migrate_cli(args, env)
+
+
 def _dispatch_search_preview(args: argparse.Namespace, _env: CommandEnv) -> None:
     run_search_preview(args)
 
@@ -664,6 +671,7 @@ def _register_default_commands() -> None:
     _ensure("status", _dispatch_status, "Show cached Drive info and recent runs")
     _ensure("settings", _dispatch_settings, "Show or update default preferences")
     _ensure("automation", _dispatch_automation, "Generate scheduler snippets")
+    _ensure("migrate", _dispatch_migrate, "Migrate legacy cache files into SQLite")
     _ensure("_search-preview", _dispatch_search_preview, "Internal search preview helper")
 
     _REGISTRATION_COMPLETE = True
@@ -798,6 +806,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_status.add_argument("--json", action="store_true", help="Emit machine-readable summary")
     p_status.add_argument("--watch", action="store_true", help="Continuously refresh the status output")
     p_status.add_argument("--interval", type=float, default=5.0, help="Seconds between refresh while watching")
+    p_status.add_argument("--dump", type=str, default=None, help="Write recent runs to a file ('-' for stdout)")
+    p_status.add_argument("--dump-limit", type=int, default=100, help="Number of runs to include when dumping")
+    p_status.add_argument("--runs-limit", type=int, default=200, help="Number of historical runs to include in summaries")
 
     p_settings_cmd = sub.add_parser("settings", help="Show or update Polylogue defaults")
     p_settings_cmd.add_argument("--html", choices=["on", "off"], default=None, help="Enable or disable default HTML previews")
@@ -838,6 +849,14 @@ def build_parser() -> argparse.ArgumentParser:
         p_auto_cron,
         description="HTML mode for generated sync commands: on/off/auto (default auto, inherits target defaults)",
     )
+
+    p_migrate = sub.add_parser("migrate", help="Migrate legacy cache files into SQLite")
+    migrate_sub = p_migrate.add_subparsers(dest="migrate_cmd", required=True)
+    p_migrate_legacy = migrate_sub.add_parser("legacy", help="Import legacy state.json/runs.json")
+    p_migrate_legacy.add_argument("--state-path", type=str, default=None, help="Path to legacy state.json")
+    p_migrate_legacy.add_argument("--runs-path", type=str, default=None, help="Path to legacy runs.json")
+    p_migrate_legacy.add_argument("--dry-run", action="store_true", help="Report actions without modifying the database")
+    p_migrate_legacy.add_argument("--force", action="store_true", help="Replace existing run history when importing")
 
     p_search_preview = sub.add_parser("_search-preview", help=argparse.SUPPRESS)
     p_search_preview.add_argument("--data-file", type=Path, required=True)
@@ -1242,6 +1261,7 @@ def show_help(env: CommandEnv) -> None:
     ui.console.print("  prune             Remove legacy single-file outputs")
     ui.console.print("  doctor            Check local data directories for issues")
     ui.console.print("  status            Show cached Drive info and recent runs")
+    ui.console.print("  migrate legacy    Import legacy state.json/runs.json into SQLite")
     ui.console.print("  settings          Update default HTML/theme preferences")
     ui.console.print("  automation        Generate automation snippets")
     ui.console.print("  --plain           Disable interactive UI for automation")
