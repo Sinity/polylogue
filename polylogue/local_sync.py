@@ -57,6 +57,7 @@ class LocalSyncProvider:
     supports_watch: bool = True
     supports_diff: bool = True
     create_base_dir: bool = False
+    watch_attachments: Tuple[str, ...] = ()
 
 
 class _LocalSessionStage:
@@ -290,6 +291,17 @@ def _discover_export_targets(base_dir: Path) -> List[Path]:
         pass
     return sorted(candidates, key=path_order_key, reverse=True)
 
+def _normalize_export_target(path: Path) -> Optional[Path]:
+    candidate = Path(path).expanduser()
+    suffix = candidate.suffix.lower()
+    if suffix == ".zip":
+        return candidate
+    if candidate.name.lower() == "conversations.json":
+        return candidate.parent
+    if candidate.is_dir() and (candidate / "conversations.json").exists():
+        return candidate
+    return None
+
 
 def _sync_export_bundles(
     bundles: Iterable[Path],
@@ -316,8 +328,10 @@ def _sync_export_bundles(
     tokens_total = 0
     words_total = 0
 
-    if isinstance(bundles, (list, tuple)):
-        iterable: Iterable[Path] = sorted([Path(p) for p in bundles], key=path_order_key)
+    normalized = [_normalize_export_target(Path(p)) for p in bundles]
+    filtered = [p for p in normalized if p is not None]
+    if filtered:
+        iterable: Iterable[Path] = sorted(filtered, key=path_order_key)
     else:
         iterable = sorted([Path(p) for p in bundles], key=path_order_key)
 
@@ -502,6 +516,11 @@ def sync_chatgpt_exports(
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
     targets = sessions or _discover_export_targets(base_dir)
+    if sessions:
+        targets = [_normalize_export_target(Path(p)) for p in sessions if p]
+    targets = [t for t in targets if t]
+    if not targets:
+        targets = _discover_export_targets(base_dir)
     return _sync_export_bundles(
         targets,
         output_dir=output_dir,
@@ -534,6 +553,11 @@ def sync_claude_exports(
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
     targets = sessions or _discover_export_targets(base_dir)
+    if sessions:
+        targets = [_normalize_export_target(Path(p)) for p in sessions if p]
+    targets = [t for t in targets if t]
+    if not targets:
+        targets = _discover_export_targets(base_dir)
     return _sync_export_bundles(
         targets,
         output_dir=output_dir,
@@ -579,10 +603,10 @@ LOCAL_SYNC_PROVIDERS: Dict[str, LocalSyncProvider] = {
         default_base=CHATGPT_EXPORTS_DEFAULT,
         default_output=CONFIG.defaults.output_dirs.import_chatgpt,
         list_sessions=_list_chatgpt_exports,
-        watch_banner="ChatGPT exports cannot be watched",
-        watch_log_title="ChatGPT Export Sync",
-        watch_suffixes=(),
-        supports_watch=False,
+        watch_banner="Watching ChatGPT exports",
+        watch_log_title="ChatGPT Export Watch",
+        watch_suffixes=(".zip", ".json"),
+        supports_watch=True,
         supports_diff=False,
         create_base_dir=True,
     ),
@@ -593,10 +617,10 @@ LOCAL_SYNC_PROVIDERS: Dict[str, LocalSyncProvider] = {
         default_base=CLAUDE_EXPORTS_DEFAULT,
         default_output=CONFIG.defaults.output_dirs.import_claude,
         list_sessions=_list_claude_exports,
-        watch_banner="Claude exports cannot be watched",
-        watch_log_title="Claude Export Sync",
-        watch_suffixes=(),
-        supports_watch=False,
+        watch_banner="Watching Claude exports",
+        watch_log_title="Claude Export Watch",
+        watch_suffixes=(".zip", ".json"),
+        supports_watch=True,
         supports_diff=False,
         create_base_dir=True,
     ),
