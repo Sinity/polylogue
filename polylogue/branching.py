@@ -17,6 +17,8 @@ class MessageRecord:
     chunk: Dict[str, object]
     links: Sequence[Tuple[str, object]] = field(default_factory=list)
     metadata: Dict[str, object] = field(default_factory=dict)
+    branch_hint: Optional[str] = None
+    content_hash: Optional[str] = None
 
 
 @dataclass

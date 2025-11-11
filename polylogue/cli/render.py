@@ -72,6 +72,7 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         html=html_enabled,
         html_theme=html_theme,
         diff=getattr(args, "diff", False),
+        branch_export=getattr(args, "branch_export", "full"),
     )
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
@@ -88,6 +89,7 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
                     "attachments": f.attachments,
                     "stats": f.stats,
                     "html": str(f.html) if f.html else None,
+                    "diff": str(f.diff) if f.diff else None,
                 }
                 for f in result.files
             ],

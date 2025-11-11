@@ -36,6 +36,24 @@ def test_systemd_snippet_includes_paths(tmp_path):
     assert "--out" in snippet and str(tmp_path / "out") in snippet
 
 
+def test_systemd_snippet_emits_status_dump(tmp_path):
+    status_path = tmp_path / "status.json"
+    snippet = systemd_snippet(
+        target_key="codex",
+        interval="20m",
+        working_dir=tmp_path,
+        extra_args=[],
+        boot_delay="30s",
+        status_log=status_path,
+        status_limit=25,
+    )
+    assert "ExecStartPost" in snippet
+    assert "status --dump" in snippet
+    assert str(status_path) in snippet
+    assert "--dump-limit 25" in snippet
+    assert "--dump-only" in snippet
+
+
 def test_cron_snippet_default_schedule(tmp_path):
     log_path = "/tmp/polylogue-test.log"
     snippet = cron_snippet(
@@ -51,6 +69,23 @@ def test_cron_snippet_default_schedule(tmp_path):
     assert log_path in snippet
     assert "--html" in snippet
     assert "--collapse-threshold 20" in snippet
+
+
+def test_cron_snippet_appends_status(tmp_path):
+    status_path = tmp_path / "status-log.json"
+    snippet = cron_snippet(
+        target_key="claude-code",
+        schedule="*/15 * * * *",
+        working_dir=tmp_path,
+        log_path="/tmp/polylogue.log",
+        state_env="$STATE",
+        status_log=status_path,
+        status_limit=10,
+    )
+    assert "status --dump" in snippet
+    assert str(status_path) in snippet
+    assert "--dump-only" in snippet
+    assert "&& (" in snippet
 
 
 def test_describe_targets_roundtrip():
@@ -73,7 +108,7 @@ def test_run_automation_cli_systemd(capsys, tmp_path):
         out=str(tmp_path / "out"),
         extra_arg=["--plain"],
         collapse_threshold=20,
-        html=True,
+        html_mode="on",
     )
     run_automation_cli(args, CommandEnv(ui=DummyUI()))
     output = capsys.readouterr().out
@@ -93,7 +128,7 @@ def test_run_automation_cli_describe(capsys):
         out=None,
         extra_arg=[],
         collapse_threshold=None,
-        html=False,
+        html_mode=None,
         interval=5,
         boot_delay=2,
     )
@@ -101,3 +136,50 @@ def test_run_automation_cli_describe(capsys):
     payload = json.loads(capsys.readouterr().out)
     assert payload["codex"]["command"][:2] == ["sync", "codex"]
     assert "defaults" in payload["codex"]
+
+
+def test_systemd_snippet_html_mode_off(tmp_path):
+    snippet = systemd_snippet(
+        target_key="codex",
+        interval="10m",
+        working_dir=tmp_path,
+        extra_args=[],
+        boot_delay="1m",
+        html="off",
+    )
+    assert "--html off" in snippet
+
+
+def test_systemd_snippet_status_summary(tmp_path):
+    summary_path = tmp_path / "metrics.json"
+    snippet = systemd_snippet(
+        target_key="drive-sync",
+        interval="5m",
+        working_dir=tmp_path,
+        extra_args=[],
+        boot_delay="1m",
+        status_summary=summary_path,
+        status_summary_providers="drive,codex",
+    )
+    assert "status --summary" in snippet
+    assert str(summary_path) in snippet
+    assert "--summary-only" in snippet
+    assert "--providers drive,codex" in snippet
+
+
+def test_cron_snippet_status_summary(tmp_path):
+    summary_path = tmp_path / "summary.json"
+    snippet = cron_snippet(
+        target_key="codex",
+        schedule="*/5 * * * *",
+        working_dir=tmp_path,
+        log_path="/tmp/polylogue.log",
+        extra_args=[],
+        state_env="$STATE",
+        status_summary=summary_path,
+        status_summary_providers="drive",
+    )
+    assert "status --summary" in snippet
+    assert str(summary_path) in snippet
+    assert "--summary-only" in snippet
+    assert "--providers drive" in snippet
