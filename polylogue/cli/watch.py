@@ -29,6 +29,8 @@ WatchDirectoryFn = Callable[..., WatchBatch]
 def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     provider_name = getattr(args, "provider", None)
     provider = get_local_provider(provider_name)
+    if not provider.supports_watch:
+        raise SystemExit(f"{provider.title} does not support watch mode")
     _run_watch_sessions(args, env, provider)
 
 

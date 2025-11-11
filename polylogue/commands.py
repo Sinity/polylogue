@@ -34,8 +34,8 @@ from .options import (
     SearchResult,
 )
 from .config import CONFIG
-from .document_store import DocumentPersistenceResult
-from .render import MarkdownDocument
+from .render import MarkdownDocument, build_markdown_from_chunks
+from .conversation import process_conversation
 from .validation import SchemaError, ensure_gemini_payload
 from .settings import Settings, ensure_settings_defaults
 from .services.conversation_registrar import ConversationRegistrar
@@ -50,12 +50,12 @@ from .util import (
     sanitize_filename,
 )
 from .search import execute_search
-from .pipeline import ChatContext, build_document_from_chunks
+from .pipeline import ChatContext, build_message_records_from_chunks, prepare_render_assets
+from .importers.base import ImportResult
 from .pipeline_runner import Pipeline, PipelineContext
 from .persistence.database import ConversationDatabase
 from .persistence.state import ConversationStateRepository
 from .repository import ConversationRepository
-from .branching import BranchInfo, BranchPlan, MessageRecord
 
 
 PROVIDER_ALIASES = {
@@ -110,15 +110,6 @@ class CommandEnv:
         self.conversations = create_conversation_service(self.registrar)
 
 
-@dataclass
-class PersistOutcome:
-    slug: str
-    output_path: Path
-    html_path: Optional[Path]
-    diff_path: Optional[Path]
-    skipped: bool
-    persist_result: Optional[DocumentPersistenceResult]
-
 class RenderReadStage:
     def run(self, context: PipelineContext) -> None:
         source: Path = context.get("source_path")
@@ -162,50 +153,130 @@ class RenderDocumentStage:
         chat_context: ChatContext = context.get("chat_context")
         slug: str = context.get("slug")
         md_path = (options.output_dir / slug) / "conversation.md"
-        doc = build_document_from_chunks(
+        download_att = bool(getattr(options, "download_attachments", False))
+        per_chunk_links, attachments = prepare_render_assets(
             chunks,
-            chat_context,
-            md_path,
-            collapse_threshold=options.collapse_threshold,
-            download_attachments=options.download_attachments,
-            drive=env.drive if options.download_attachments else None,
-            force=options.force,
-            dry_run=options.dry_run,
+            md_path=md_path,
+            download_attachments=download_att,
+            drive=env.drive if download_att else None,
+            force=getattr(options, "force", False),
+            dry_run=getattr(options, "dry_run", False),
         )
-        context.set("document", doc)
+        context.set("per_chunk_links", per_chunk_links)
+        context.set("attachments", attachments)
         context.set("markdown_path", md_path)
+
+        if options.dry_run:
+            doc = build_markdown_from_chunks(
+                chunks,
+                per_chunk_links,
+                chat_context.title,
+                chat_context.chat_id,
+                chat_context.modified_time,
+                chat_context.created_time,
+                run_settings=chat_context.run_settings,
+                citations=chat_context.citations,
+                source_mime=chat_context.source_mime,
+                collapse_threshold=options.collapse_threshold,
+                attachments=attachments,
+            )
+            context.set("document", doc)
 
 
 class RenderPersistStage:
     def run(self, context: PipelineContext) -> None:
         env: CommandEnv = context.env
         options: RenderOptions = context.options
-        doc: MarkdownDocument = context.get("document")
         chat_context: ChatContext = context.get("chat_context")
         slug: str = context.get("slug")
         md_path: Path = context.get("markdown_path")
         conversation_id: str = context.get("conversation_id")
         provider = context.get("provider", "render")
-        extra_state = context.get("extra_state", {})
+        extra_state = context.get("extra_state", {}) or {}
+        extra_yaml = context.get("extra_yaml", {}) or {}
+        per_chunk_links = context.get("per_chunk_links") or {}
+        attachments = context.get("attachments") or []
+        chunks = context.get("chunks") or []
+        source_path = context.get("source_path")
 
-        outcome = _persist_conversation(
-            env=env,
-            options=options,
-            doc=doc,
-            context=chat_context,
-            output_dir=options.output_dir,
-            slug_hint=slug,
-            conversation_id=conversation_id,
+        message_records = build_message_records_from_chunks(
+            chunks,
             provider=provider,
-            md_path=md_path,
-            extra_state={
-                "sourceFile": str(context.get("source_path")),
-                "sourceMimeType": chat_context.source_mime,
-                **(extra_state if isinstance(extra_state, dict) else {}),
-            },
-            chunks=context.get("chunks"),
+            conversation_id=conversation_id,
+            slug=slug,
+            per_chunk_links=per_chunk_links,
         )
-        context.set("persist_outcome", outcome)
+        if not message_records:
+            context.set("import_result", None)
+            return
+
+        if options.dry_run:
+            doc: Optional[MarkdownDocument] = context.get("document")
+            if doc is None:
+                doc = build_markdown_from_chunks(
+                    chunks,
+                    per_chunk_links,
+                    chat_context.title,
+                    chat_context.chat_id,
+                    chat_context.modified_time,
+                    chat_context.created_time,
+                    run_settings=chat_context.run_settings,
+                    citations=chat_context.citations,
+                    source_mime=chat_context.source_mime,
+                    collapse_threshold=options.collapse_threshold,
+                    attachments=attachments,
+                )
+            import_result = ImportResult(
+                markdown_path=md_path,
+                html_path=None,
+                attachments_dir=md_path.parent / "attachments",
+                document=doc,
+                slug=slug,
+            )
+            context.set("import_result", import_result)
+            return
+
+        diff_tracker = DiffTracker(md_path, bool(getattr(options, "diff", False)))
+        extra_yaml_payload = dict(extra_yaml)
+        if source_path:
+            extra_yaml_payload.setdefault("sourceFile", str(source_path))
+        extra_yaml_payload.setdefault("sourcePlatform", provider)
+
+        extra_state_payload: Dict[str, Any] = dict(extra_state)
+        if source_path:
+            extra_state_payload.setdefault("sourceFile", str(source_path))
+        if chat_context.source_mime:
+            extra_state_payload.setdefault("sourceMimeType", chat_context.source_mime)
+
+        import_result = process_conversation(
+            provider=provider,
+            conversation_id=conversation_id,
+            slug=slug,
+            title=chat_context.title,
+            message_records=message_records,
+            attachments=attachments,
+            canonical_leaf_id=message_records[-1].message_id if message_records else None,
+            collapse_threshold=options.collapse_threshold,
+            html=getattr(options, "html", False),
+            html_theme=getattr(options, "html_theme", "light"),
+            output_dir=options.output_dir,
+            extra_yaml=extra_yaml_payload,
+            extra_state=extra_state_payload,
+            source_file_id=conversation_id,
+            modified_time=chat_context.modified_time,
+            created_time=chat_context.created_time,
+            run_settings=chat_context.run_settings,
+            source_mime=chat_context.source_mime,
+            source_size=None,
+            attachment_policy=None,
+            force=getattr(options, "force", False),
+            branch_mode=getattr(options, "branch_export", "full"),
+            registrar=env.registrar,
+            citations=chat_context.citations,
+        )
+        import_result.diff_path = diff_tracker.finalize(import_result.markdown_path)
+        context.set("import_result", import_result)
+        context.set("document", import_result.document)
 
 
 class DriveDownloadStage:
@@ -394,88 +465,6 @@ def _ensure_drive(env: CommandEnv) -> DriveClient:
     return env.drive
 
 
-def _persist_conversation(
-    *,
-    env: CommandEnv,
-    options,
-    doc: MarkdownDocument,
-    context: ChatContext,
-    output_dir: Path,
-    slug_hint: str,
-    conversation_id: str,
-    provider: str,
-    md_path: Path,
-    extra_state: Optional[Dict[str, Any]] = None,
-    chunks: Optional[List[Dict[str, Any]]] = None,
-) -> PersistOutcome:
-    if not options.dry_run:
-        md_path.parent.mkdir(parents=True, exist_ok=True)
-    diff_tracker = DiffTracker(md_path, bool(getattr(options, "diff", False) and not options.dry_run))
-    if options.dry_run:
-        diff_tracker.cleanup()
-        return PersistOutcome(
-            slug=slug_hint,
-            output_path=md_path,
-            html_path=None,
-            diff_path=None,
-            skipped=False,
-            persist_result=None,
-        )
-
-    persist_result = env.repository.persist(
-        provider=provider,
-        conversation_id=conversation_id,
-        title=context.title,
-        document=doc,
-        output_dir=output_dir,
-        collapse_threshold=options.collapse_threshold,
-        attachments=doc.attachments,
-        updated_at=context.modified_time,
-        created_at=context.created_time,
-        html=getattr(options, "html", False),
-        html_theme=getattr(options, "html_theme", "light"),
-        attachment_policy=None,
-        extra_state=extra_state,
-        slug_hint=slug_hint,
-        id_hint=slug_hint[:8] if slug_hint else None,
-        force=getattr(options, "force", False),
-        registrar=env.registrar,
-    )
-
-    if persist_result.skipped:
-        diff_tracker.cleanup()
-        return PersistOutcome(
-            slug=persist_result.slug,
-            output_path=persist_result.markdown_path,
-            html_path=persist_result.html_path,
-            diff_path=None,
-            skipped=True,
-            persist_result=persist_result,
-        )
-
-    attachment_bytes = sum(att.size_bytes or 0 for att in doc.attachments)
-    if provider and conversation_id and isinstance(chunks, list) and chunks:
-        try:
-            _register_chunks_with_registrar(
-                env.registrar,
-                provider=provider,
-                conversation_id=conversation_id,
-                slug=persist_result.slug,
-                chunks=chunks,
-                attachment_bytes=attachment_bytes,
-            )
-        except Exception:  # pragma: no cover - do not block persistence on indexing
-            pass
-
-    diff_path = diff_tracker.finalize(persist_result.markdown_path)
-    return PersistOutcome(
-        slug=persist_result.slug,
-        output_path=persist_result.markdown_path,
-        html_path=persist_result.html_path,
-        diff_path=diff_path,
-        skipped=False,
-        persist_result=persist_result,
-    )
 
 
 def branches_command(options: BranchExploreOptions) -> BranchExploreResult:
@@ -520,25 +509,28 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
         if ctx.aborted:
             continue
 
-        outcome: PersistOutcome = ctx.get("persist_outcome")
-        doc: MarkdownDocument = ctx.get("document")
+        result: Optional[ImportResult] = ctx.get("import_result")
+        if result is None:
+            continue
 
-        if outcome.skipped:
+        if result.skipped:
             totals_acc.increment("skipped")
             continue
 
-        totals_acc.add_stats(len(doc.attachments), doc.stats)
-        if outcome.diff_path:
+        doc: Optional[MarkdownDocument] = result.document
+        if doc is not None:
+            totals_acc.add_stats(len(doc.attachments), doc.stats)
+        if result.diff_path:
             totals_acc.increment("diffs")
 
         render_files.append(
             RenderFile(
-                output=outcome.output_path,
-                slug=outcome.slug,
-                attachments=len(doc.attachments),
-                stats=doc.stats,
-                html=outcome.html_path,
-                diff=outcome.diff_path,
+                output=result.markdown_path,
+                slug=result.slug,
+                attachments=len(doc.attachments) if doc else 0,
+                stats=doc.stats if doc else {},
+                html=result.html_path,
+                diff=result.diff_path,
             )
         )
 
@@ -650,43 +642,47 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         if ctx.aborted:
             continue
 
-        outcome: PersistOutcome = ctx.get("persist_outcome")
-        doc: MarkdownDocument = ctx.get("document")
+        result: Optional[ImportResult] = ctx.get("import_result")
         chat_context: ChatContext = ctx.get("chat_context")
         file_id = ctx.get("file_id")
 
-        if outcome.skipped:
+        if result is None:
+            continue
+
+        if result.skipped:
             totals_acc.increment("skipped")
             continue
 
-        if not options.dry_run and chat_context.modified_time and outcome.persist_result:
+        if not options.dry_run and chat_context.modified_time:
             mtime = parse_rfc3339_to_epoch(chat_context.modified_time)
             if mtime is not None:
                 try:
-                    os.utime(outcome.persist_result.markdown_path, (mtime, mtime))
+                    os.utime(result.markdown_path, (mtime, mtime))
                 except Exception:
                     pass
-                if outcome.persist_result.html_path:
+                if result.html_path:
                     try:
-                        os.utime(outcome.persist_result.html_path, (mtime, mtime))
+                        os.utime(result.html_path, (mtime, mtime))
                     except Exception:
                         pass
 
+        doc: Optional[MarkdownDocument] = result.document
         items.append(
             SyncItem(
                 id=file_id,
                 name=meta.get("name"),
-                output=outcome.output_path,
-                slug=outcome.slug,
-                attachments=len(doc.attachments),
-                stats=doc.stats,
-                html=outcome.html_path,
-                diff=outcome.diff_path,
+                output=result.markdown_path,
+                slug=result.slug,
+                attachments=len(doc.attachments) if doc else 0,
+                stats=doc.stats if doc else {},
+                html=result.html_path,
+                diff=result.diff_path,
             )
         )
-        if outcome.diff_path:
+        if result.diff_path:
             totals_acc.increment("diffs")
-        totals_acc.add_stats(len(doc.attachments), doc.stats)
+        if doc is not None:
+            totals_acc.add_stats(len(doc.attachments), doc.stats)
 
     pruned_count = 0
     if options.prune:
@@ -788,80 +784,4 @@ def status_command(env: CommandEnv, runs_limit: Optional[int] = 200) -> StatusRe
         run_summary=run_summary,
         provider_summary=provider_summary,
         runs=run_data,
-    )
-def _register_chunks_with_registrar(
-    registrar: ConversationRegistrar,
-    *,
-    provider: Optional[str],
-    conversation_id: Optional[str],
-    slug: str,
-    chunks: List[Dict[str, Any]],
-    attachment_bytes: int,
-) -> None:
-    if not provider or not conversation_id or not chunks:
-        return
-
-    records: List[MessageRecord] = []
-    records_by_id: Dict[str, MessageRecord] = {}
-    seen_ids: set[str] = set()
-
-    for idx, chunk in enumerate(chunks):
-        text = chunk.get("text") or ""
-        role = chunk.get("role") or "model"
-        message_id = chunk.get("messageId") or f"{slug}-msg-{idx:04d}"
-        while message_id in seen_ids:
-            message_id = f"{message_id}-{idx}"
-        seen_ids.add(message_id)
-        parent_id = records[-1].message_id if records else None
-        token_count = int(chunk.get("tokenCount", 0) or 0)
-        word_count = len(text.split()) if text else 0
-        record = MessageRecord(
-            message_id=message_id,
-            parent_id=parent_id,
-            role=role if role in {"user", "model", "tool", "system"} else "model",
-            text=text,
-            token_count=token_count,
-            word_count=word_count,
-            timestamp=chunk.get("timestamp"),
-            attachments=0,
-            chunk=chunk,
-            links=[],
-            metadata={"source": "render"},
-        )
-        records.append(record)
-        records_by_id[message_id] = record
-
-    if not records:
-        return
-
-    message_ids = [rec.message_id for rec in records]
-    canonical_branch = BranchInfo(
-        branch_id="branch-000",
-        parent_branch_id=None,
-        message_ids=message_ids,
-        is_canonical=True,
-        depth=len(message_ids),
-        divergence_index=0,
-    )
-    plan = BranchPlan(branches={canonical_branch.branch_id: canonical_branch}, canonical_branch_id=canonical_branch.branch_id)
-    branch_stats = {
-        canonical_branch.branch_id: {
-            "message_count": len(records),
-            "token_count": sum(rec.token_count for rec in records),
-            "word_count": sum(rec.word_count for rec in records),
-            "first_message_id": records[0].message_id,
-            "last_message_id": records[-1].message_id,
-            "first_timestamp": records[0].timestamp,
-            "last_timestamp": records[-1].timestamp,
-        }
-    }
-
-    registrar.record_branch_plan(
-        provider=provider,
-        conversation_id=conversation_id,
-        slug=slug,
-        plan=plan,
-        branch_stats=branch_stats,
-        records_by_id=records_by_id,
-        attachment_bytes=attachment_bytes,
     )

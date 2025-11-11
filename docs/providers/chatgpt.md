@@ -44,3 +44,13 @@ Because chat imports now travel through the same registrar/pipeline stack as syn
 - Per-turn headers show UTC timestamps with a relative offset from the start of the conversation (for example, `2024-04-30T19:00:46Z (+22s)`), keeping both absolute and contextual timing at a glance.
 - Front matter stats now add `totalWordsApprox`/`inputWordsApprox` alongside the token counts so every “tokens” figure has a matching word estimate.
 - Each import populates `XDG_STATE_HOME/polylogue/polylogue.db` with conversation, branch, and message metadata. The canonical transcript still lives at `<slug>.md`, while a branch-aware directory tree is written alongside it: `<slug>/conversation.md`, `<slug>/conversation.common.md`, and `branches/<branch-id>/{<branch-id>.md, overlay.md}`.
+
+## Local Sync Workflow
+
+For recurring exports, you no longer need to call `polylogue import chatgpt …` manually each time. Treat the bundles like a local provider instead:
+
+1. Save each ZIP (or its extracted folder with `conversations.json`) under `$XDG_DATA_HOME/polylogue/exports/chatgpt` — by default `~/.local/share/polylogue/exports/chatgpt`. The directory is created automatically the first time you run the sync.
+2. Run `polylogue sync chatgpt` to ingest every bundle in that directory, or pick specific bundles interactively when not using `--all`.
+3. Pass `--base-dir /path/to/exports` if you keep the bundles somewhere else, and reuse the familiar flags (`--branch-export`, `--html`, etc.) to keep outputs consistent with the other providers.
+
+Watch mode stays limited to Codex/Claude Code—ChatGPT exports arrive as one-off bundles, so there’s no live directory to monitor. Kick off `polylogue sync chatgpt` whenever the export email arrives and the registrar will keep slugs, stats, and branch metadata perfectly in sync.

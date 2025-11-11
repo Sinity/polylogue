@@ -8,7 +8,11 @@ from typing import List, Optional
 from ..cli_common import filter_chats, sk_select
 from ..commands import CommandEnv, list_command, sync_command
 from ..drive_client import DriveClient
-from ..local_sync import LocalSyncResult, LOCAL_SYNC_PROVIDER_NAMES, get_local_provider
+from ..local_sync import (
+    LocalSyncResult,
+    LOCAL_SYNC_PROVIDER_NAMES,
+    get_local_provider,
+)
 from ..options import ListOptions, SyncOptions
 from ..util import add_run, path_order_key
 from .context import (
@@ -30,7 +34,7 @@ def _log_local_sync(ui, title: str, result: LocalSyncResult, *, provider: str) -
     else:
         console.print(f"[cyan]{title}: no new Markdown files.")
     if result.skipped:
-        console.print(f"[cyan]{title}: skipped {result.skipped} up-to-date session(s).")
+        console.print(f"[cyan]{title}: skipped {result.skipped} up-to-date item(s).")
     if result.pruned:
         console.print(f"[cyan]{title}: pruned {result.pruned} path(s).")
     add_run(
@@ -86,12 +90,9 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     if provider == "drive":
         merged = merge_with_defaults(default_sync_namespace("drive", settings), args)
         _run_sync_drive(merged, env)
-    elif provider == "codex":
-        merged = merge_with_defaults(default_sync_namespace("codex", settings), args)
-        _run_sync_codex(merged, env)
-    elif provider == "claude-code":
-        merged = merge_with_defaults(default_sync_namespace("claude-code", settings), args)
-        _run_sync_claude_code(merged, env)
+    elif provider in LOCAL_SYNC_PROVIDER_NAMES:
+        merged = merge_with_defaults(default_sync_namespace(provider, settings), args)
+        _run_local_sync(provider, merged, env)
     else:
         raise SystemExit(f"Unsupported provider for sync: {provider}")
 
@@ -247,7 +248,9 @@ def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optiona
 def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEnv) -> None:
     provider = get_local_provider(provider_name)
     ui = env.ui
-    base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base
+    if getattr(args, "diff", False) and not provider.supports_diff:
+        raise SystemExit(f"{provider.title} does not support --diff output")
+    base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base.expanduser()
     out_dir = resolve_output_path(args.out, provider.default_output)
     collapse = resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE)
     settings = env.settings
@@ -256,6 +259,9 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
     force = args.force
     prune = args.prune
     diff_enabled = getattr(args, "diff", False)
+
+    if provider.create_base_dir:
+        base_dir.mkdir(parents=True, exist_ok=True)
 
     selected_paths: Optional[List[Path]] = None
     if not args.all and not ui.plain:
@@ -319,7 +325,7 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
         summarize_import(ui, f"{provider.title} Sync", result.written)
         console = ui.console
         if result.skipped:
-            console.print(f"Skipped {result.skipped} up-to-date session(s).")
+            console.print(f"Skipped {result.skipped} up-to-date item(s).")
         if result.pruned:
             console.print(f"Pruned {result.pruned} stale path(s).")
 

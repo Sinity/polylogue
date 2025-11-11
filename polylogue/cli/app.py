@@ -53,7 +53,7 @@ from .context import (
 )
 from ..settings import ensure_settings_defaults, persist_settings, clear_persisted_settings
 from ..config import CONFIG
-from ..local_sync import LOCAL_SYNC_PROVIDER_NAMES
+from ..local_sync import LOCAL_SYNC_PROVIDER_NAMES, WATCHABLE_LOCAL_PROVIDER_NAMES
 from .imports import (
     run_import_cli,
     run_import_chatgpt,
@@ -692,6 +692,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_collapse_option(p_render, help_text="Override collapse threshold")
     p_render.add_argument("--json", action="store_true")
     add_html_option(p_render)
+    add_branch_mode_option(p_render)
     add_diff_option(p_render, help_text="Write delta diff when output already exists")
     p_render.add_argument("--to-clipboard", action="store_true", help="Copy rendered Markdown to the clipboard when a single file is produced")
 
@@ -715,7 +716,12 @@ def build_parser() -> argparse.ArgumentParser:
     add_branch_mode_option(p_sync)
     add_diff_option(p_sync, help_text="Write delta diff alongside updated Markdown")
     p_sync.add_argument("--json", action="store_true", help="Emit machine-readable summary")
-    p_sync.add_argument("--base-dir", type=Path, default=None, help="Override local session directory (codex/claude-code)")
+    p_sync.add_argument(
+        "--base-dir",
+        type=Path,
+        default=None,
+        help="Override local session/export directory",
+    )
     p_sync.add_argument("--all", action="store_true", help="Process all local sessions without prompting")
     p_sync.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME, help="Drive folder name (drive provider)")
     p_sync.add_argument("--folder-id", type=str, default=None, help="Drive folder ID override")
@@ -784,7 +790,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect_stats.add_argument("--until", type=str, default=None, help="Only include files modified on/before this date")
 
     p_watch = sub.add_parser("watch", help="Watch local session stores and sync on changes")
-    p_watch.add_argument("provider", choices=list(LOCAL_SYNC_PROVIDER_NAMES), help="Local provider to watch")
+    p_watch.add_argument("provider", choices=list(WATCHABLE_LOCAL_PROVIDER_NAMES), help="Local provider to watch")
     p_watch.add_argument("--base-dir", type=Path, default=None, help="Override source directory")
     add_out_option(p_watch, default_path=DEFAULT_CODEX_SYNC_OUT, help_text="Override output directory")
     add_collapse_option(p_watch)
@@ -1041,7 +1047,8 @@ def prompt_render(env: CommandEnv) -> None:
 
 def prompt_sync(env: CommandEnv) -> None:
     ui = env.ui
-    provider = ui.choose("Sync which provider?", ["drive", "codex", "claude-code"])
+    provider_choices = ["drive", *LOCAL_SYNC_PROVIDER_NAMES]
+    provider = ui.choose("Sync which provider?", provider_choices)
     if not provider:
         return
 

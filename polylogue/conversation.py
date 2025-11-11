@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .branching import BranchPlan, BranchInfo, MessageRecord, build_branch_plan
 from .importers.base import ImportResult
@@ -90,6 +90,7 @@ def _render_markdown_document(
     extra_yaml: Optional[Dict[str, object]],
     attachments: Optional[List[AttachmentInfo]],
     per_chunk_links: Dict[int, List[Tuple[str, object]]],
+    citations: Optional[List[Any]] = None,
 ) -> MarkdownDocument:
     chunks = [rec.chunk for rec in records]
     return build_markdown_from_chunks(
@@ -100,7 +101,7 @@ def _render_markdown_document(
         modified_time=modified_time,
         created_time=created_time,
         run_settings=run_settings,
-        citations=None,
+        citations=citations,
         source_mime=source_mime,
         source_size=source_size,
         collapse_threshold=collapse_threshold,
@@ -151,6 +152,7 @@ def process_conversation(
     force: bool,
     branch_mode: str = "full",
     registrar: Optional[ConversationRegistrar] = None,
+    citations: Optional[List[Any]] = None,
 ) -> ImportResult:
     if registrar is None:
         raise ValueError("ConversationRegistrar instance required")
@@ -183,6 +185,7 @@ def process_conversation(
         extra_yaml=extra_yaml,
         attachments=attachments,
         per_chunk_links=canonical_links,
+        citations=citations,
     )
 
     persist_result = REPOSITORY.persist(

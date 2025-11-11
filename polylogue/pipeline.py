@@ -12,6 +12,7 @@ from .render import (
     per_chunk_remote_links,
     remote_attachment_info,
 )
+from .branching import MessageRecord
 from .util import sanitize_filename, parse_rfc3339_to_epoch
 
 PerChunkLink = Tuple[str, Union[Path, str]]
@@ -40,17 +41,14 @@ def build_document_from_chunks(
     force: bool,
     dry_run: bool,
 ) -> MarkdownDocument:
-    if download_attachments and drive is not None:
-        per_index_links, attachments = collect_attachments(
-            drive,
-            chunks,
-            md_path,
-            force=force,
-            dry_run=dry_run,
-        )
-    else:
-        per_index_links = cast(PerIndexLinks, per_chunk_remote_links(chunks))
-        attachments = remote_attachment_info(per_index_links)
+    per_index_links, attachments = prepare_render_assets(
+        chunks,
+        md_path=md_path,
+        download_attachments=download_attachments,
+        drive=drive,
+        force=force,
+        dry_run=dry_run,
+    )
 
     return build_markdown_from_chunks(
         chunks,
@@ -65,6 +63,31 @@ def build_document_from_chunks(
         collapse_threshold=collapse_threshold,
         attachments=attachments,
     )
+
+
+def prepare_render_assets(
+    chunks: List[Dict],
+    *,
+    md_path: Path,
+    download_attachments: bool,
+    drive: Optional[DriveClient],
+    force: bool,
+    dry_run: bool,
+) -> Tuple[PerIndexLinks, List[AttachmentInfo]]:
+    if download_attachments:
+        if drive is None:
+            raise ValueError("Drive client required when download_attachments is enabled")
+        return collect_attachments(
+            drive,
+            chunks,
+            md_path,
+            force=force,
+            dry_run=dry_run,
+        )
+
+    per_index_links = cast(PerIndexLinks, per_chunk_remote_links(chunks))
+    attachments = remote_attachment_info(per_index_links)
+    return per_index_links, attachments
 
 
 def collect_attachments(
@@ -121,6 +144,70 @@ def collect_remote_ids(chunk: Dict) -> List[str]:
         seen.add(item)
         unique.append(item)
     return unique
+
+
+def _normalize_chunk_role(role: Optional[str]) -> str:
+    if not role:
+        return "model"
+    role = role.lower()
+    if role in {"user", "model", "assistant", "tool", "system"}:
+        if role == "assistant":
+            return "model"
+        return role
+    if role in {"function", "tool_call"}:
+        return "tool"
+    return "model"
+
+
+def build_message_records_from_chunks(
+    chunks: List[Dict],
+    *,
+    provider: str,
+    conversation_id: Optional[str],
+    slug: str,
+    per_chunk_links: PerIndexLinks,
+) -> List[MessageRecord]:
+    records: List[MessageRecord] = []
+    seen_ids: set[str] = set()
+
+    for idx, chunk in enumerate(chunks):
+        text = chunk.get("text") or ""
+        message_id = (
+            chunk.get("messageId")
+            or chunk.get("id")
+            or f"{slug}-msg-{idx:04d}"
+        )
+        while message_id in seen_ids:
+            message_id = f"{message_id}-{idx}"
+        seen_ids.add(message_id)
+
+        parent_id = chunk.get("parentId") or chunk.get("branchParent")
+        if not parent_id and records:
+            parent_id = records[-1].message_id
+
+        token_count = int(chunk.get("tokenCount", 0) or 0)
+        word_count = len(text.split()) if isinstance(text, str) else 0
+        links = list(per_chunk_links.get(idx, []))
+
+        record = MessageRecord(
+            message_id=message_id,
+            parent_id=parent_id,
+            role=_normalize_chunk_role(chunk.get("role")),
+            text=text if isinstance(text, str) else str(text),
+            token_count=token_count,
+            word_count=word_count,
+            timestamp=chunk.get("timestamp"),
+            attachments=len(links),
+            chunk=chunk,
+            links=links,
+            metadata={
+                "source": provider,
+                "conversation": conversation_id,
+            },
+        )
+        records.append(record)
+
+    return records
 
 
 class _AttachmentCollector:

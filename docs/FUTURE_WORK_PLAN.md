@@ -231,14 +231,14 @@ Environment variables:
    - [ ] Tests covering forward/backward compatibility.
 
 2. **Importer Refactor**
-   - [ ] Parse messages, compute hashes/IDs, branch metadata.  
-   - [ ] Upsert into SQLite tables.  
-   - [ ] Ensure old exports (older timestamps) are skipped gracefully.
+   - [x] Parse messages, compute hashes/IDs, branch metadata.  
+   - [x] Upsert into SQLite tables.  
+   - [x] Ensure old exports (older timestamps) are skipped gracefully.
 
 3. **Markdown Export**
-   - [ ] Implement canonical render, overlays, and full branch copies.  
-   - [ ] CLI flags to choose export mode.  
-   - [ ] Mirror provider-specific directory structures.
+   - [x] Implement canonical render, overlays, and full branch copies.  
+   - [x] CLI flags to choose export mode.  
+   - [x] Mirror provider-specific directory structures.
 
 4. **Local Sync Generalisation**
    - [x] Generic watcher that supports provider-specific parsers.  
