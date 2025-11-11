@@ -8,7 +8,6 @@ import pytest
 from polylogue import util
 from polylogue import commands as cmd_module
 from polylogue import db as db_module
-from polylogue import index_sqlite as index_sqlite_module
 from polylogue import paths as paths_module
 
 class _SimpleEncoding:
@@ -55,7 +54,7 @@ def _configure_state(monkeypatch, root: Path) -> Path:
 
     monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
     monkeypatch.setattr(paths_module, "STATE_HOME", polylogue_state, raising=False)
-    for module in (util, cmd_module, db_module, index_sqlite_module):
+    for module in (util, cmd_module, db_module):
         monkeypatch.setattr(module, "STATE_HOME", polylogue_state, raising=False)
 
     monkeypatch.setattr(db_module, "DB_PATH", db_path, raising=False)
