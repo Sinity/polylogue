@@ -242,7 +242,7 @@ Environment variables:
 
 4. **Local Sync Generalisation**
    - [x] Generic watcher that supports provider-specific parsers.  
-   - [ ] Add ChatGPT/Claude exporters to pipeline.  
+   - [x] Add ChatGPT/Claude exporters to pipeline.  
    - [x] Update CLI (`watch` subcommand).
 
 5. **Observability Update**

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
-from typing import Any, Callable, Iterable, Set, Tuple
+from typing import Any, Callable, Iterable, List, Optional, Set, Tuple
 
 try:  # pragma: no cover - optional dependency
     from watchfiles import watch as _watch_directory
@@ -54,8 +54,11 @@ def _run_watch_sessions(
     console = ui.console
     ui.banner(provider.watch_banner, str(base_dir))
 
-    def sync_once() -> None:
+    def sync_once(changed: Optional[Iterable[Path]] = None) -> None:
         try:
+            session_override = None
+            if changed:
+                session_override = [Path(p) for p in changed]
             result = provider.sync_fn(
                 base_dir=base_dir,
                 output_dir=out_dir,
@@ -65,7 +68,7 @@ def _run_watch_sessions(
                 force=False,
                 prune=False,
                 diff=False,
-                sessions=None,
+                sessions=session_override,
                 branch_mode=getattr(args, "branch_export", "full"),
                 registrar=env.registrar,
             )
@@ -80,14 +83,19 @@ def _run_watch_sessions(
     last_run = time.monotonic()
     try:
         for changes in watch_fn(base_dir, recursive=True):
-            if provider.watch_suffixes and not any(
-                Path(path).suffix in provider.watch_suffixes for _, path in changes
-            ):
+            relevant: List[Path] = []
+            for _, changed_path in changes:
+                path_obj = Path(changed_path)
+                if provider.watch_suffixes:
+                    if path_obj.suffix not in provider.watch_suffixes:
+                        continue
+                relevant.append(path_obj)
+            if provider.watch_suffixes and not relevant:
                 continue
             now = time.monotonic()
             if now - last_run < debounce:
                 continue
-            sync_once()
+            sync_once(relevant)
             last_run = now
     except KeyboardInterrupt:  # pragma: no cover - user interrupt
         console.print(f"[cyan]{provider.watch_log_title} stopped.")
