@@ -37,8 +37,8 @@ polylogue status --providers codex --summary-only --summary - --watch --interval
 
 ## Where the Data Lives
 
-- Raw runs: `$XDG_STATE_HOME/polylogue/runs.json`
-- SQLite metadata (conversations, branches, messages, provider summaries): `$XDG_STATE_HOME/polylogue/polylogue.db`
+- Run history + metadata: `$XDG_STATE_HOME/polylogue/polylogue.db` (use `polylogue status --dump runs.json` or `--dump -` when you need a JSON snapshot)
+- Conversations/branches/messages (same SQLite DB): `$XDG_STATE_HOME/polylogue/polylogue.db`
 - Structured run logs: stderr (`POLYLOGUE_RUN_LOG=0/1` toggles emission)
 
 Use these locations as backup targets or feed them into external monitoring stacks.

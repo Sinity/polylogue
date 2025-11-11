@@ -4,7 +4,7 @@ Polylogue ships with interactive workflows by default, but you can keep local ar
 
 ## Real-Time Watchers
 
-The CLI includes long-running watchers that mirror local Codex and Claude Code session stores as soon as files change:
+The CLI includes long-running watchers that mirror local Codex/Claude Code session stores and the ChatGPT/Claude export directories as soon as new data appears:
 
 ```bash
 # Watch ~/.codex/sessions/ and sync into the standard archive
@@ -12,15 +12,22 @@ python3 polylogue.py watch codex --out ~/polylogue-data/codex
 
 # Watch ~/.claude/projects/ for Claude Code sessions
 python3 polylogue.py watch claude-code --out ~/polylogue-data/claude-code
+
+# Tail $XDG_DATA_HOME/polylogue/exports/chatgpt for new ZIPs or conversations.json
+python3 polylogue.py watch chatgpt --base-dir ~/.local/share/polylogue/exports/chatgpt
+
+# Tail $XDG_DATA_HOME/polylogue/exports/claude for new Claude workspace exports
+python3 polylogue.py watch claude --base-dir ~/.local/share/polylogue/exports/claude
 ```
 
-Watchers run an initial full sync, then rerun whenever `.jsonl` session files change inside the source tree. They reuse your configured collapse thresholds and HTML defaults; pass `--collapse-threshold` or `--html` to override. The `--debounce` flag (default: 2 seconds) throttles rapid bursts of file events so a single editing session doesn’t thrash the pipeline. Every run flows through the same registrar/pipeline stack as one-shot commands, so attachment counts, Drive retries, and diffs show up both in `polylogue status --json` and in the structured `polylogue_run` JSON lines that Polylogue now emits on stderr (set `POLYLOGUE_RUN_LOG=0` to silence those logs when needed).
+Watchers run an initial full sync, then rerun whenever `.jsonl` session files (Codex/Claude Code) or export bundles (ChatGPT/Claude) change inside the source tree. They reuse your configured collapse thresholds and HTML defaults; pass `--collapse-threshold` or `--html` to override. The `--debounce` flag (default: 2 seconds) throttles rapid bursts of file events so a single editing session doesn’t thrash the pipeline. Every run flows through the same registrar/pipeline stack as one-shot commands, so attachment counts, Drive retries, and diffs show up both in `polylogue status --json` and in the structured `polylogue_run` JSON lines that Polylogue now emits on stderr (set `POLYLOGUE_RUN_LOG=0` to silence those logs when needed).
 
 ## Systemd Timer Template
 
 For environments that prefer scheduled jobs, create a systemd service/timer pair. The example below runs the Codex sync every 10 minutes in a user session:
 
 `~/.config/systemd/user/polylogue-sync-codex.service`
+
 ```ini
 [Unit]
 Description=Polylogue Codex sync
@@ -33,6 +40,7 @@ ExecStart=%h/.nix-profile/bin/python3 polylogue.py sync codex --plain --json
 ```
 
 `~/.config/systemd/user/polylogue-sync-codex.timer`
+
 ```ini
 [Unit]
 Description=Polylogue Codex sync timer

@@ -134,4 +134,4 @@ Available automation targets: `codex`, `claude-code`, `drive-sync`, `gemini-rend
 - Code follows PEP 8 with type hints where practical.
 - Run `pytest` for the automated test suite covering importers, sync flows, and HTML transforms.
 - Credentials (`credentials.json`, `token.json`) stay out of version control.
-- `polylogue status --dump runs.json` writes the latest run records to a JSON file (use `-` to emit on stdout). Combine with `--dump-only` to skip the human-readable tables when scripts just need structured data, or set `POLYLOGUE_RUN_LOG=0/1` to control whether per-run JSON logs are emitted on stderr.
+- Run history lives in the SQLite database at `$XDG_STATE_HOME/polylogue/polylogue.db`; use `polylogue status --dump runs.json` (or `--dump -` for stdout) when you need a JSON export, and set `POLYLOGUE_RUN_LOG=0/1` to control whether per-run JSON lines are echoed to stderr.
