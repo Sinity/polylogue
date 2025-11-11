@@ -53,6 +53,7 @@ from .context import (
 )
 from ..settings import ensure_settings_defaults, persist_settings, clear_persisted_settings
 from ..config import CONFIG
+from ..local_sync import LOCAL_SYNC_PROVIDER_NAMES
 from .imports import (
     run_import_cli,
     run_import_chatgpt,
@@ -72,8 +73,6 @@ from .sync import (
     run_sync_cli,
     _collect_session_selection,
     _log_local_sync,
-    _run_sync_claude_code,
-    _run_sync_codex,
     _run_sync_drive,
 )
 from ..util import CODEX_SESSIONS_ROOT, add_run, parse_input_time_to_epoch, write_clipboard_text
@@ -697,7 +696,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--to-clipboard", action="store_true", help="Copy rendered Markdown to the clipboard when a single file is produced")
 
     p_sync = sub.add_parser("sync", help="Synchronize provider archives")
-    p_sync.add_argument("provider", choices=["drive", "codex", "claude-code"], help="Provider to synchronize")
+    p_sync.add_argument(
+        "provider",
+        choices=["drive", *LOCAL_SYNC_PROVIDER_NAMES],
+        help="Provider to synchronize",
+    )
     add_out_option(
         p_sync,
         default_path=DEFAULT_SYNC_OUT,
@@ -781,7 +784,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect_stats.add_argument("--until", type=str, default=None, help="Only include files modified on/before this date")
 
     p_watch = sub.add_parser("watch", help="Watch local session stores and sync on changes")
-    p_watch.add_argument("provider", choices=["codex", "claude-code"], help="Local provider to watch")
+    p_watch.add_argument("provider", choices=list(LOCAL_SYNC_PROVIDER_NAMES), help="Local provider to watch")
     p_watch.add_argument("--base-dir", type=Path, default=None, help="Override source directory")
     add_out_option(p_watch, default_path=DEFAULT_CODEX_SYNC_OUT, help_text="Override output directory")
     add_collapse_option(p_watch)

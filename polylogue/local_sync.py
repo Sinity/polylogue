@@ -4,17 +4,19 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from .cli_common import compute_prune_paths
 from .importers import import_claude_code_session, import_codex_session
 from .importers.base import ImportResult
-from .importers.claude_code import DEFAULT_PROJECT_ROOT as CLAUDE_CODE_DEFAULT
+from .importers.claude_code import (
+    DEFAULT_PROJECT_ROOT as CLAUDE_CODE_DEFAULT,
+    list_claude_code_sessions,
+)
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
 from .util import DiffTracker, path_order_key, sanitize_filename, slugify_title
 from .services.conversation_registrar import ConversationRegistrar, create_default_registrar
-from .persistence.database import ConversationDatabase
-from .archive import Archive
+from .pipeline_runner import Pipeline, PipelineContext
 from .config import CONFIG
 
 
@@ -30,6 +32,32 @@ class LocalSyncResult:
     words: int = 0
     diffs: int = 0
     duration: float = 0.0
+
+
+LocalSyncFn = Callable[..., LocalSyncResult]
+
+
+@dataclass(frozen=True)
+class LocalSyncProvider:
+    name: str
+    title: str
+    sync_fn: LocalSyncFn
+    default_base: Path
+    default_output: Path
+    list_sessions: Callable[[Path], List[Path]]
+    watch_banner: str
+    watch_log_title: str
+    watch_suffixes: Tuple[str, ...] = (".jsonl",)
+
+
+class _LocalSessionStage:
+    def __init__(self, processor: Callable[[Path], Dict[str, object]]):
+        self._processor = processor
+        self.name = "LocalSessionProcess"
+
+    def run(self, context: PipelineContext) -> None:
+        session_path: Path = context.require("session_path")
+        context.set("session_result", self._processor(session_path))
 
 
 def _mtime_ns(path: Path) -> int:
@@ -77,7 +105,6 @@ def _sync_sessions(
     importer_kwargs = importer_kwargs or {}
     importer_kwargs = dict(importer_kwargs)
     importer_kwargs.setdefault("registrar", registrar)
-    importer_kwargs.setdefault("branch_mode", branch_mode)
     attachments_total = 0
     attachment_bytes_total = 0
     tokens_total = 0
@@ -91,12 +118,20 @@ def _sync_sessions(
 
     output_root = output_dir.resolve()
 
-    for session_path in iterable:
+    def _process_single(session_path: Path) -> Dict[str, object]:
+        entry: Dict[str, object] = {
+            "session_path": session_path,
+            "skipped": False,
+            "result": None,
+            "prune_slug": None,
+            "diff": False,
+        }
         if not session_path.is_file():
-            continue
+            entry["skipped"] = True
+            return entry
+
         conversation_id = str(session_path)
         state_entry = registrar.get_state(provider, conversation_id)
-
         state_slug = None
         if isinstance(state_entry, dict):
             raw_slug = state_entry.get("slug")
@@ -109,7 +144,6 @@ def _sync_sessions(
             fallback_slug = sanitize_filename(fallback_title).replace(" ", "-") or fallback_title
 
         slug_hint = state_slug or fallback_slug
-
         md_path = output_dir / slug_hint / "conversation.md"
         if isinstance(state_entry, dict):
             raw_output = state_entry.get("outputPath")
@@ -126,11 +160,12 @@ def _sync_sessions(
         except ValueError:
             pass
 
-        wanted.add(slug_for_prune)
+        entry["prune_slug"] = slug_for_prune
 
         if not force and _is_up_to_date(session_path, md_path):
-            skipped += 1
-            continue
+            entry["skipped"] = True
+            return entry
+
         diff_tracker = DiffTracker(md_path, diff)
         result = import_fn(
             str(session_path),
@@ -139,15 +174,17 @@ def _sync_sessions(
             html=html,
             html_theme=html_theme,
             force=force,
+            branch_mode=branch_mode,
             **importer_kwargs,
         )
         if result.skipped:
             diff_tracker.cleanup()
-            skipped += 1
-            continue
+            entry["skipped"] = True
+            return entry
+
         result.diff_path = diff_tracker.finalize(result.markdown_path)
-        if result.diff_path:
-            diff_total += 1
+        entry["diff"] = bool(result.diff_path)
+
         session_mtime = int(session_path.stat().st_mtime)
         try:
             result.markdown_path.parent.mkdir(parents=True, exist_ok=True)
@@ -159,8 +196,32 @@ def _sync_sessions(
                 os.utime(result.html_path, (session_mtime, session_mtime))
             except OSError:
                 pass
-        if not result.skipped:
-            wanted.add(result.slug)
+
+        entry["result"] = result
+        return entry
+
+    pipeline = Pipeline([_LocalSessionStage(_process_single)])
+
+    for session_path in iterable:
+        ctx = PipelineContext(env=None, options=None, data={"session_path": session_path})
+        pipeline.run(ctx)
+        session_output = ctx.get("session_result", {})
+        prune_slug = session_output.get("prune_slug")
+        if isinstance(prune_slug, str):
+            wanted.add(prune_slug)
+
+        if session_output.get("skipped"):
+            skipped += 1
+            continue
+
+        result = session_output.get("result")
+        if not isinstance(result, ImportResult):
+            continue
+
+        if session_output.get("diff"):
+            diff_total += 1
+
+        wanted.add(result.slug)
         if result.document:
             attachments_total += len(result.document.attachments)
             attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
@@ -270,3 +331,52 @@ def sync_claude_code_sessions(
         registrar=registrar,
         branch_mode=branch_mode,
     )
+
+
+def _list_codex_paths(base_dir: Path) -> List[Path]:
+    return sorted(base_dir.expanduser().rglob("*.jsonl"), key=path_order_key, reverse=True)
+
+
+def _list_claude_code_paths(base_dir: Path) -> List[Path]:
+    entries = list_claude_code_sessions(base_dir)
+    paths: List[Path] = []
+    for entry in entries:
+        raw = entry.get("path")
+        if isinstance(raw, str):
+            paths.append(Path(raw))
+    return paths
+
+
+LOCAL_SYNC_PROVIDERS: Dict[str, LocalSyncProvider] = {
+    "codex": LocalSyncProvider(
+        name="codex",
+        title="Codex",
+        sync_fn=sync_codex_sessions,
+        default_base=CODEX_DEFAULT,
+        default_output=CONFIG.defaults.output_dirs.sync_codex,
+        list_sessions=_list_codex_paths,
+        watch_banner="Watching Codex sessions",
+        watch_log_title="Codex Watch",
+        watch_suffixes=(".jsonl",),
+    ),
+    "claude-code": LocalSyncProvider(
+        name="claude-code",
+        title="Claude Code",
+        sync_fn=sync_claude_code_sessions,
+        default_base=CLAUDE_CODE_DEFAULT,
+        default_output=CONFIG.defaults.output_dirs.sync_claude_code,
+        list_sessions=_list_claude_code_paths,
+        watch_banner="Watching Claude Code sessions",
+        watch_log_title="Claude Code Watch",
+        watch_suffixes=(".jsonl",),
+    ),
+}
+
+LOCAL_SYNC_PROVIDER_NAMES: Tuple[str, ...] = tuple(LOCAL_SYNC_PROVIDERS.keys())
+
+
+def get_local_provider(name: str) -> LocalSyncProvider:
+    try:
+        return LOCAL_SYNC_PROVIDERS[name]
+    except KeyError as exc:  # pragma: no cover - defensive
+        raise ValueError(f"Unknown local provider: {name}") from exc

@@ -8,13 +8,10 @@ from typing import List, Optional
 from ..cli_common import filter_chats, sk_select
 from ..commands import CommandEnv, list_command, sync_command
 from ..drive_client import DriveClient
-from ..importers.claude_code import list_claude_code_sessions
-from ..local_sync import LocalSyncResult, sync_claude_code_sessions, sync_codex_sessions
+from ..local_sync import LocalSyncResult, LOCAL_SYNC_PROVIDER_NAMES, get_local_provider
 from ..options import ListOptions, SyncOptions
-from ..util import CLAUDE_CODE_PROJECT_ROOT, CODEX_SESSIONS_ROOT, add_run, path_order_key
+from ..util import add_run, path_order_key
 from .context import (
-    DEFAULT_CLAUDE_CODE_SYNC_OUT,
-    DEFAULT_CODEX_SYNC_OUT,
     DEFAULT_COLLAPSE,
     DEFAULT_SYNC_OUT,
     default_sync_namespace,
@@ -247,10 +244,11 @@ def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optiona
     return [Path(line.split("\t")[-1]) for line in selection]
 
 
-def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
+def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEnv) -> None:
+    provider = get_local_provider(provider_name)
     ui = env.ui
-    base_dir = Path(args.base_dir).expanduser() if args.base_dir else CODEX_SESSIONS_ROOT
-    out_dir = resolve_output_path(args.out, DEFAULT_CODEX_SYNC_OUT)
+    base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base
+    out_dir = resolve_output_path(args.out, provider.default_output)
     collapse = resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE)
     settings = env.settings
     html_enabled = resolve_html_enabled(args, settings)
@@ -261,15 +259,15 @@ def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
 
     selected_paths: Optional[List[Path]] = None
     if not args.all and not ui.plain:
-        sessions = sorted(base_dir.rglob("*.jsonl"), key=path_order_key, reverse=True)
-        selection = _collect_session_selection(ui, sessions, "Select Codex sessions")
+        sessions = provider.list_sessions(base_dir)
+        selection = _collect_session_selection(ui, sessions, f"Select {provider.title} sessions")
         if selection is None:
             return
         if not selection:
             return
         selected_paths = selection
 
-    result = sync_codex_sessions(
+    result = provider.sync_fn(
         base_dir=base_dir,
         output_dir=out_dir,
         collapse_threshold=collapse,
@@ -303,8 +301,8 @@ def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
                 }
             )
         payload = {
-            "cmd": "sync codex",
-            "provider": "codex",
+            "cmd": f"sync {provider.name}",
+            "provider": provider.name,
             "count": len(result.written),
             "out": str(result.output_dir),
             "skipped": result.skipped,
@@ -318,7 +316,7 @@ def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
         }
         print(json.dumps(payload, indent=2))
     else:
-        summarize_import(ui, "Codex Sync", result.written)
+        summarize_import(ui, f"{provider.title} Sync", result.written)
         console = ui.console
         if result.skipped:
             console.print(f"Skipped {result.skipped} up-to-date session(s).")
@@ -327,104 +325,8 @@ def _run_sync_codex(args: argparse.Namespace, env: CommandEnv) -> None:
 
     add_run(
         {
-            "cmd": "sync codex",
-            "provider": "codex",
-            "count": len(result.written),
-            "out": str(result.output_dir),
-            "attachments": attachments,
-            "attachmentBytes": attachment_bytes,
-            "tokens": tokens,
-            "words": words,
-            "skipped": result.skipped,
-            "pruned": result.pruned,
-            "diffs": result.diffs,
-        }
-    )
-
-
-def _run_sync_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
-    ui = env.ui
-    base_dir = Path(args.base_dir).expanduser() if args.base_dir else CLAUDE_CODE_PROJECT_ROOT
-    out_dir = resolve_output_path(args.out, DEFAULT_CLAUDE_CODE_SYNC_OUT)
-    collapse = resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE)
-    settings = env.settings
-    html_enabled = resolve_html_enabled(args, settings)
-    html_theme = settings.html_theme
-    force = args.force
-    prune = args.prune
-    diff_enabled = getattr(args, "diff", False)
-
-    selected_paths: Optional[List[Path]] = None
-    if not args.all and not ui.plain:
-        session_entries = list_claude_code_sessions(base_dir)
-        sessions = [Path(entry["path"]) for entry in session_entries]
-        selection = _collect_session_selection(ui, sessions, "Select Claude Code sessions")
-        if selection is None:
-            return
-        if not selection:
-            return
-        selected_paths = selection
-
-    result = sync_claude_code_sessions(
-        base_dir=base_dir,
-        output_dir=out_dir,
-        collapse_threshold=collapse,
-        html=html_enabled,
-        html_theme=html_theme,
-        force=force,
-        prune=prune,
-        diff=diff_enabled,
-        sessions=selected_paths,
-        registrar=env.registrar,
-        branch_mode=getattr(args, "branch_export", "full"),
-    )
-
-    attachments = result.attachments
-    attachment_bytes = result.attachment_bytes
-    tokens = result.tokens
-    words = result.words
-
-    if getattr(args, "json", False):
-        files_payload = []
-        for item in result.written:
-            doc = item.document
-            files_payload.append(
-                {
-                    "output": str(item.markdown_path),
-                    "attachments": len(doc.attachments) if doc else 0,
-                    "attachmentBytes": doc.metadata.get("attachmentBytes") if doc and doc.metadata else None,
-                    "stats": doc.stats if doc and doc.stats else {},
-                    "html": str(item.html_path) if item.html_path else None,
-                    "diff": str(item.diff_path) if item.diff_path else None,
-                }
-            )
-        payload = {
-            "cmd": "sync claude-code",
-            "provider": "claude-code",
-            "count": len(result.written),
-            "out": str(result.output_dir),
-            "skipped": result.skipped,
-            "pruned": result.pruned,
-            "attachments": attachments,
-            "attachmentBytes": attachment_bytes,
-            "tokensApprox": tokens,
-            "wordsApprox": words,
-            "diffs": result.diffs,
-            "files": files_payload,
-        }
-        print(json.dumps(payload, indent=2))
-    else:
-        summarize_import(ui, "Claude Code Sync", result.written)
-        console = ui.console
-        if result.skipped:
-            console.print(f"Skipped {result.skipped} up-to-date session(s).")
-        if result.pruned:
-            console.print(f"Pruned {result.pruned} stale path(s).")
-
-    add_run(
-        {
-            "cmd": "sync claude-code",
-            "provider": "claude-code",
+            "cmd": f"sync {provider.name}",
+            "provider": provider.name,
             "count": len(result.written),
             "out": str(result.output_dir),
             "attachments": attachments,
@@ -442,8 +344,7 @@ __all__ = [
     "run_list_cli",
     "run_sync_cli",
     "_run_sync_drive",
-    "_run_sync_codex",
-    "_run_sync_claude_code",
+    "_run_local_sync",
     "_collect_session_selection",
     "_log_local_sync",
 ]

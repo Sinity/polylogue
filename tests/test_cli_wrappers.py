@@ -12,7 +12,7 @@ from polylogue.cli.render import run_render_cli
 from polylogue.cli.app import run_inspect_search
 from polylogue.cli.watch import run_watch_cli
 from polylogue.importers import ImportResult
-from polylogue.local_sync import LocalSyncResult
+from polylogue.local_sync import LocalSyncResult, LocalSyncProvider
 
 
 class RecordingConsole:
@@ -195,8 +195,8 @@ def test_run_inspect_search_displays_summary(monkeypatch, tmp_path):
 def test_run_watch_cli_dispatches_based_on_provider(monkeypatch):
     markers: List[str] = []
 
-    def recorder(*_, **kwargs):
-        markers.append(kwargs.get("provider"))
+    def recorder(_args, _env, provider):
+        markers.append(provider.name)
 
     monkeypatch.setattr("polylogue.cli.watch._run_watch_sessions", recorder)
 
@@ -236,6 +236,18 @@ def test_watch_debounce_skips_fast_repeats(monkeypatch, tmp_path):
         calls.append(1)
         return LocalSyncResult(written=[], skipped=0, pruned=0, output_dir=out_dir)
 
+    provider = LocalSyncProvider(
+        name="codex",
+        title="Codex",
+        sync_fn=fake_sync_fn,
+        default_base=base_dir,
+        default_output=out_dir,
+        list_sessions=lambda base: [base / "first.jsonl", base / "second.jsonl"],
+        watch_banner="Watching Codex sessions",
+        watch_log_title="Codex Watch",
+        watch_suffixes=(".jsonl",),
+    )
+
     env = CommandEnv(ui=RecordingUI())
     args = Namespace(
         provider="codex",
@@ -250,16 +262,7 @@ def test_watch_debounce_skips_fast_repeats(monkeypatch, tmp_path):
         prune=False,
     )
 
-    watch_module._run_watch_sessions(
-        args,
-        env,
-        provider="codex",
-        base_default=base_dir,
-        out_default=out_dir,
-        banner="Watching Codex sessions",
-        log_title="Codex Watch",
-        sync_fn=fake_sync_fn,
-    )
+    watch_module._run_watch_sessions(args, env, provider)
 
     assert len(calls) == 2  # initial sync + first update; second update debounced
 
@@ -299,7 +302,6 @@ def test_run_watch_sessions_once_triggers_sync(monkeypatch, tmp_path):
         return LocalSyncResult(written=[], skipped=0, pruned=0, output_dir=Path(output_dir))
 
     monkeypatch.setattr(watch_module, "_watch_directory", lambda *args, **kwargs: iter(()))
-    monkeypatch.setattr(watch_module, "sync_codex_sessions", fake_sync_codex_sessions)
 
     records: List[dict] = []
     monkeypatch.setattr("polylogue.cli.sync.add_run", lambda data: records.append(data))
@@ -318,16 +320,19 @@ def test_run_watch_sessions_once_triggers_sync(monkeypatch, tmp_path):
         prune=False,
     )
 
-    watch_module._run_watch_sessions(
-        args,
-        CommandEnv(ui=ui),
-        provider="codex",
-        base_default=watch_module.CODEX_SESSIONS_ROOT,
-        out_default=watch_module.DEFAULT_CODEX_SYNC_OUT,
-        banner="Watching Codex sessions",
-        log_title="Codex Watch",
+    provider = LocalSyncProvider(
+        name="codex",
+        title="Codex",
         sync_fn=fake_sync_codex_sessions,
+        default_base=Path(args.base_dir),
+        default_output=Path(args.out),
+        list_sessions=lambda base: [Path(args.base_dir) / "session.jsonl"],
+        watch_banner="Watching Codex sessions",
+        watch_log_title="Codex Watch",
+        watch_suffixes=(".jsonl",),
     )
+
+    watch_module._run_watch_sessions(args, CommandEnv(ui=ui), provider)
 
     assert calls, "expected sync_codex_sessions to be invoked"
     assert ui.banners and ui.banners[0][0] == "Watching Codex sessions"
