@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-try:  # pragma: no cover - optional dependency
+try:
     import frontmatter  # type: ignore
-except ImportError:  # pragma: no cover
-    frontmatter = None
+except ImportError:
+    from ._vendor import frontmatter  # type: ignore
 
 from .render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
 from .services.attachments import AttachmentManager
@@ -46,56 +46,13 @@ class DocumentPersistenceResult:
 
 
 def _parse_front_matter(text: str) -> Tuple[Dict[str, Any], str]:
-    if frontmatter is not None:  # pragma: no branch
-        post = frontmatter.loads(text)
-        return dict(post.metadata), post.content
-    if not text.startswith("---\n"):
-        return {}, text
-    # Minimal YAML parser for key: value pairs.
-    lines = text.splitlines()
-    meta_lines: List[str] = []
-    i = 1
-    while i < len(lines):
-        if lines[i].strip() == "---":
-            i += 1
-            break
-        meta_lines.append(lines[i])
-        i += 1
-    body = "\n".join(lines[i:])
-    metadata: Dict[str, Any] = {}
-    for raw in meta_lines:
-        parts = raw.split(":", 1)
-        if len(parts) != 2:
-            continue
-        key = parts[0].strip()
-        value = parts[1].strip()
-        if value.startswith("\"") and value.endswith("\""):
-            metadata[key] = value[1:-1]
-        elif value.lower() in {"true", "false"}:
-            metadata[key] = value.lower() == "true"
-        else:
-            try:
-                metadata[key] = json.loads(value)
-            except Exception:
-                metadata[key] = value
-    return metadata, body
+    post = frontmatter.loads(text)
+    return dict(post.metadata), post.content
 
 
 def _dump_front_matter(metadata: Dict[str, Any], body: str) -> str:
-    if frontmatter is not None:
-        post = frontmatter.Post(body, **metadata)
-        return frontmatter.dumps(post)
-    header_lines = ["---"]
-    for key, value in metadata.items():
-        if isinstance(value, (dict, list)):
-            encoded = json.dumps(value, ensure_ascii=False)
-        elif isinstance(value, bool):
-            encoded = "true" if value else "false"
-        else:
-            encoded = json.dumps(value)
-        header_lines.append(f"{key}: {encoded}")
-    header_lines.append("---\n")
-    return "\n".join(header_lines) + body
+    post = frontmatter.Post(body, **metadata)
+    return frontmatter.dumps(post)
 
 
 def _metadata_without_content_hash(metadata: Dict[str, Any]) -> Dict[str, Any]:

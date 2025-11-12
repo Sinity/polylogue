@@ -22,13 +22,7 @@ Polylogue ingests chat.openai.com exports (consumer ChatGPT) by walking the prov
 
 ### Branch Export Modes
 
-`polylogue import chatgpt` (and downstream sync/watch flows) accept `--branch-export full|overlay|canonical` so you can control how the on-disk tree looks:
-
-- `full` (default) writes `conversation.md`, `conversation.common.md`, and every branch’s `branches/<branch-id>/{<branch-id>.md, overlay.md}` directory.
-- `overlay` keeps the canonical transcript plus per-branch `overlay.md` files, omitting the full per-branch copies when all you need are the deltas.
-- `canonical` limits the output to `conversation.md` under each slug, skipping the branch tree entirely when you want a flat archive.
-
-Because chat imports now travel through the same registrar/pipeline stack as sync/watch, the `--branch-export` flag behaves consistently everywhere (render, sync drive/codex/claude-code, and watchers).
+`polylogue import chatgpt` (and downstream sync/watch flows) always write the canonical transcript alongside `conversation.common.md` and per-branch directories under `branches/<branch-id>/{<branch-id>.md, overlay.md}` so divergent replies stay organised without extra flags.
 
 ## Attachments
 
@@ -51,7 +45,8 @@ For recurring exports, you no longer need to call `polylogue import chatgpt …`
 
 1. Save each ZIP (or its extracted folder with `conversations.json`) under `$XDG_DATA_HOME/polylogue/exports/chatgpt` — by default `~/.local/share/polylogue/exports/chatgpt`. The directory is created automatically the first time you run the sync.
 2. Run `polylogue sync chatgpt` to ingest every bundle in that directory, or pick specific bundles interactively when not using `--all`.
-3. Pass `--base-dir /path/to/exports` if you keep the bundles somewhere else, and reuse the familiar flags (`--branch-export`, `--html`, etc.) to keep outputs consistent with the other providers.
+   - Pass `--session /path/to/bundle.zip` (repeatable) to bypass the picker and process specific exports directly.
+3. Pass `--base-dir /path/to/exports` if you keep the bundles somewhere else, and reuse the familiar flags (`--html`, etc.) to keep outputs consistent with the other providers.
 4. Prefer `polylogue watch chatgpt --base-dir …` when you want Polylogue to sit idle until a new ZIP or `conversations.json` lands—every change triggers the same pipeline as a manual sync, so state stays current without babysitting.
 
 `polylogue watch chatgpt` simply automates the same sync loop: it watches the export directory for new ZIPs or refreshed `conversations.json` files and runs `polylogue sync chatgpt` on demand, keeping the SQLite registrar and branch metadata updated without manual intervention.

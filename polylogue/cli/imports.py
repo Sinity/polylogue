@@ -18,7 +18,7 @@ from ..importers.claude_ai import list_claude_conversations
 from ..importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
 from ..importers.base import ImportResult
 from ..pipeline_runner import Pipeline, PipelineContext
-from ..util import CODEX_SESSIONS_ROOT
+from ..util import CODEX_SESSIONS_ROOT, format_run_brief, latest_run, path_order_key
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
     DEFAULT_CHATGPT_OUT,
@@ -67,7 +67,8 @@ class ImportSummarizeStage:
         if not results:
             ui.console.print(f"[yellow]{self.title}: no conversations imported.")
             return
-        summarize_import(ui, self.title, results)
+        footer = context.get("summary_footer", [])
+        summarize_import(ui, self.title, results, extra_lines=footer)
 
 
 def _emit_import_json(results: List[ImportResult]) -> None:
@@ -89,6 +90,11 @@ def _emit_import_json(results: List[ImportResult]) -> None:
         ],
     }
     print(json.dumps(payload, indent=2))
+
+
+def _build_summary_footer(provider: str, cmd: str) -> List[str]:
+    note = format_run_brief(latest_run(provider=provider, cmd=cmd))
+    return [f"Previous run: {note}"] if note else []
 
 
 def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -160,6 +166,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
 def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
+    console = ui.console
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else CODEX_SESSIONS_ROOT
     out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -167,6 +174,21 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     settings = env.settings
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
+    session_target = args.session_id
+    if (session_target in {None, "", "pick", "?"}) and not ui.plain:
+        candidates = sorted(base_dir.expanduser().rglob("*.jsonl"), key=path_order_key, reverse=True)
+        if not candidates:
+            console.print("No Codex sessions found.")
+            return
+        lines = [f"{path.stem}\t{path.parent}\t{path}" for path in candidates]
+        selection = sk_select(lines, multi=False, header="Select Codex session")
+        if not selection:
+            console.print("[yellow]Import cancelled; no session selected.")
+            return
+        session_target = selection[0].split("\t")[-1]
+    elif not session_target:
+        console.print("[yellow]Provide a Codex session file or run interactively.")
+        return
 
     pipeline = Pipeline(
         [
@@ -174,23 +196,24 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
             ImportSummarizeStage("Codex Import"),
         ]
     )
+    footer = _build_summary_footer("codex", "import codex")
     ctx = PipelineContext(
         env=env,
         options=args,
         data={
             "import_callable": import_codex_session,
             "import_kwargs": {
-                "session_id": args.session_id,
+                "session_id": session_target,
                 "base_dir": base_dir,
                 "output_dir": out_dir,
                 "collapse_threshold": collapse,
                 "html": html_enabled,
                 "html_theme": html_theme,
                 "force": getattr(args, "force", False),
-                "branch_mode": getattr(args, "branch_export", "full"),
                 "registrar": env.registrar,
             },
             "import_error_message": "Import failed",
+            "summary_footer": footer,
         },
     )
     pipeline.run(ctx)
@@ -248,6 +271,7 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
             ImportSummarizeStage("ChatGPT Import"),
         ]
     )
+    footer = _build_summary_footer("chatgpt", "import chatgpt")
     ctx = PipelineContext(
         env=env,
         options=args,
@@ -261,10 +285,10 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
                 "html_theme": html_theme,
                 "selected_ids": selected_ids,
                 "force": getattr(args, "force", False),
-                "branch_mode": getattr(args, "branch_export", "full"),
                 "registrar": env.registrar,
             },
             "import_error_message": "Import failed",
+            "summary_footer": footer,
         },
     )
     pipeline.run(ctx)
@@ -322,6 +346,7 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
             ImportSummarizeStage("Claude Import"),
         ]
     )
+    footer = _build_summary_footer("claude", "import claude")
     ctx = PipelineContext(
         env=env,
         options=args,
@@ -335,10 +360,10 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
                 "html_theme": html_theme,
                 "selected_ids": selected_ids,
                 "force": getattr(args, "force", False),
-                "branch_mode": getattr(args, "branch_export", "full"),
                 "registrar": env.registrar,
             },
             "import_error_message": "Import failed",
+            "summary_footer": footer,
         },
     )
     pipeline.run(ctx)
@@ -385,6 +410,7 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
             ImportSummarizeStage("Claude Code Import"),
         ]
     )
+    footer = _build_summary_footer("claude-code", "import claude-code")
     ctx = PipelineContext(
         env=env,
         options=args,
@@ -397,11 +423,11 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
                 "html": html_enabled,
                 "html_theme": html_theme,
                 "force": getattr(args, "force", False),
-                "branch_mode": getattr(args, "branch_export", "full"),
                 "registrar": env.registrar,
                 **kwargs,
             },
             "import_error_message": "Import failed",
+            "summary_footer": footer,
         },
     )
     pipeline.run(ctx)
