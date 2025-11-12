@@ -44,15 +44,13 @@ class CompletionEngine:
             cword = max(cword - 1, 0)
         if not args:
             return self._complete_commands()
-        current_index = cword - 1
-        if current_index < 0:
-            current_index = 0
+        current_index = max(cword, 0)
         if current_index >= len(args):
             args = args + [""]
             current_index = len(args) - 1
         current_word = args[current_index]
         command = args[0]
-        if current_index == 0 and (current_word == "" or not current_word.startswith("-")):
+        if current_index == 0 and len(args) == 1 and (current_word == "" or not current_word.startswith("-")):
             return self._complete_commands()
         if command == "render":
             return self._complete_render(current_index)
