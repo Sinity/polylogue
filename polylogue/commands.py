@@ -5,7 +5,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from .archive import Archive
 from .branch_explorer import list_branch_conversations
@@ -101,6 +101,7 @@ class CommandEnv:
     conversations: ConversationService = field(init=False)
 
     def __post_init__(self) -> None:
+        _ensure_ui_contract(self.ui)
         ensure_settings_defaults(self.settings)
         self.registrar = ConversationRegistrar(
             state_repo=self.state_repo,
@@ -788,3 +789,21 @@ def status_command(env: CommandEnv, runs_limit: Optional[int] = 200) -> StatusRe
         provider_summary=provider_summary,
         runs=run_data,
     )
+def _ensure_ui_contract(ui: Any) -> None:
+    if hasattr(ui, "summary") and callable(getattr(ui, "summary")):
+        return
+    console = getattr(ui, "console", None)
+
+    def _fallback_summary(title: str, lines: Iterable[str]) -> None:
+        items = list(lines)
+        header = title or "Summary"
+        if console is not None and hasattr(console, "print"):
+            console.print(header)
+            for line in items:
+                console.print(f"  {line}")
+        else:
+            print(header)
+            for line in items:
+                print(f"  {line}")
+
+    setattr(ui, "summary", _fallback_summary)
