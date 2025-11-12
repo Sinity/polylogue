@@ -37,6 +37,15 @@ def test_help_unknown_command_reports_error():
     assert any("Unknown command" in line for line in ui.console.lines)
 
 
+def test_help_lists_command_descriptions():
+    ui = DummyUI()
+    env = CommandEnv(ui=ui)
+    run_help_cli(argparse.Namespace(), env)
+    joined = "\n".join(ui.console.lines)
+    assert "sync" in joined
+    assert "Synchronize provider archives" in joined
+
+
 def test_env_json(capsys):
     env = CommandEnv(ui=DummyUI())
     run_env_cli(argparse.Namespace(json=True), env)
@@ -51,6 +60,13 @@ def test_completions_emits_script(capsys):
     script = capsys.readouterr().out
     assert "polylogue" in script
     assert "complete -F" in script
+
+
+def test_fish_completions_include_descriptions(capsys):
+    env = CommandEnv(ui=DummyUI())
+    run_completions_cli(argparse.Namespace(shell="fish"), env)
+    script = capsys.readouterr().out
+    assert '-d "Synchronize provider archives"' in script
 
 
 def test_complete_top_level(capsys):
