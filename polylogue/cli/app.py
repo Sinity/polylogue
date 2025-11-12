@@ -87,6 +87,41 @@ def _collect_subparser_map(parser: argparse.ArgumentParser) -> Dict[str, argpars
     return mapping
 
 
+def _command_entries(parser: argparse.ArgumentParser) -> List[Tuple[str, str]]:
+    choices = _collect_subparser_map(parser)
+    entries: List[Tuple[str, str]] = []
+    for name, subparser in choices.items():
+        if name.startswith("_"):
+            continue
+        info = COMMAND_REGISTRY.info(name)
+        description = subparser.description or (info.help_text if info else None) or ""
+        description = " ".join(description.split())
+        entries.append((name, description))
+    return sorted(entries, key=lambda item: item[0])
+
+
+def _print_command_listing(console, plain: bool, entries: List[Tuple[str, str]]) -> None:
+    if not entries:
+        return
+    console.print("\nCommands:")
+    if plain:
+        width = max(len(name) for name, _ in entries) + 2
+        for name, description in entries:
+            if description:
+                console.print(f"  {name.ljust(width)}{description}")
+            else:
+                console.print(f"  {name}")
+        return
+    from rich.table import Table
+
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Command", style="cyan")
+    table.add_column("Description")
+    for name, description in entries:
+        table.add_row(name, description)
+    console.print(table)
+
+
 def _legacy_candidates(root: Path) -> List[Path]:
     legacy: List[Path] = []
     for pattern in ("*.md", "*.html"):
@@ -100,7 +135,8 @@ def _legacy_candidates(root: Path) -> List[Path]:
 def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     parser = build_parser()
     topic = getattr(args, "topic", None)
-    choices = {k: v for k, v in _collect_subparser_map(parser).items() if not k.startswith("_")}
+    entries = _command_entries(parser)
+    choices = {name: sub for name, sub in _collect_subparser_map(parser).items() if not name.startswith("_")}
     console = env.ui.console
     if topic:
         subparser = choices.get(topic)
@@ -113,11 +149,10 @@ def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         subparser.print_help()
         return
     parser.print_help()
-    if choices:
-        console.print("\nCommands: " + ", ".join(sorted(choices)))
+    _print_command_listing(console, getattr(env.ui, "plain", False), entries)
 
 
-def _completion_script(shell: str, commands: List[str]) -> str:
+def _completion_script(shell: str, commands: List[str], descriptions: Optional[Dict[str, str]] = None) -> str:
     joined = " ".join(commands)
     if shell == "bash":
         return textwrap.dedent(
@@ -135,7 +170,15 @@ def _completion_script(shell: str, commands: List[str]) -> str:
             """
         ).strip()
     # fish
-    entries = "\n".join(f"complete -c polylogue -f -a \"{cmd}\"" for cmd in commands)
+    entries: List[str] = []
+    for cmd in commands:
+        desc = (descriptions or {}).get(cmd, "")
+        if desc:
+            desc_literal = desc.replace('"', '\\"')
+            entries.append(f'complete -c polylogue -f -a "{cmd}" -d "{desc_literal}"')
+        else:
+            entries.append(f'complete -c polylogue -f -a "{cmd}"')
+    entries = "\n".join(entries)
     return entries.strip()
 
 
@@ -168,11 +211,13 @@ def _zsh_dynamic_script() -> str:
 
 def run_completions_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     parser = build_parser()
-    commands = sorted(cmd for cmd in _collect_subparser_map(parser) if not cmd.startswith("_"))
+    entries = _command_entries(parser)
+    commands = [name for name, _ in entries]
+    descriptions = {name: desc for name, desc in entries if desc}
     if args.shell == "zsh":
         print(_zsh_dynamic_script())
         return
-    script = _completion_script(args.shell, commands)
+    script = _completion_script(args.shell, commands, descriptions)
     print(script)
 
 
