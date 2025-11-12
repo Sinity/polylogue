@@ -1,10 +1,27 @@
 # CLI Tips
 
-Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetitive workflows. These features are optional and fail gracefully when the environment lacks the required dependencies.
+Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetitive workflows. The Nix/devshell environment ships every required dependency (gum, skim, Rich, pyperclip, etc.), so these helpers are always available unless you deliberately run with `--plain`.
 
 ## Clipboard & Credential Workflows
 
 - **Drive onboarding**: During the first Drive sync, Polylogue checks the system clipboard for an OAuth client JSON. If found (and confirmed), it saves the payload to `$XDG_CONFIG_HOME/polylogue/credentials.json`, avoiding manual copy/paste steps.
 - **Manual credential import**: When no clipboard payload exists, the CLI guides you through selecting a local file or opening Google’s setup guide. Credentials and tokens always land under `$XDG_CONFIG_HOME/polylogue/`.
 - **Copy rendered Markdown**: Pass `--to-clipboard` to render/import commands. When exactly one Markdown file is produced, Polylogue copies it via `pyperclip` and reports success or a warning if clipboard support is unavailable.
-- **Graceful fallbacks**: Missing `pyperclip` or clipboard backends never block imports—they only suppress the convenience prompts.
+- **Clipboard failures**: `pyperclip` ships with the devshell, but if the OS clipboard rejects writes Polylogue simply reports the warning while continuing the import.
+
+## Branch Explorer & Search
+
+- **Branch picker**: `polylogue inspect branches` lists branch-aware conversations, opens a skim picker when `sk` is available, prints the tree, and writes a shareable HTML explorer automatically when forks exist (override with `--html-out`, disable via `--html off`). Inline prompts can queue a branch diff or on-demand HTML write/directory reveal without rerunning the command.
+- **FTS search**: `polylogue inspect search` queries the SQLite `messages_fts` index. Filters include provider, slug, conversation/branch IDs, model, date range (`--since/--until`), and attachment presence. Interactive previews default to skim; add `--no-picker` in CI or scripts, or `--json` when you need machine-readable results.
+
+## Session Settings & Themes
+
+- **Adjust defaults**: Run `polylogue settings --html on|off --theme light|dark` to change the HTML preview preference or theme for the current environment. Use `--reset` to restore config defaults.
+- **Script defaults**: Non-interactive runs respect `polylogue.config`. Update the config file or call `polylogue settings --html on --theme dark` once so cron jobs pick up the same behaviour without extra flags.
+- **Forcing UI**: When CI disables TTY detection, add `--interactive` to any command to re-enable gum/skim prompts even if Polylogue would otherwise fall back to plain output.
+
+## Discoverability & Completions
+
+- **Quick help**: `polylogue help` prints the command overview; append a command name (e.g., `polylogue help sync`) to see detailed flags without digging into the docs.
+- **Environment summary**: `polylogue env` shows the resolved config path, output directories, and state database locations. Pass `--json` when you need the same information for scripts.
+- **Shell completions**: Run `polylogue completions --shell bash|zsh|fish` and source the output. The zsh completions query `polylogue _complete` on demand, so they can suggest known providers, branch slugs, recent Drive IDs, and local session files as you tab through arguments.

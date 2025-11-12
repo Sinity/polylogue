@@ -8,19 +8,20 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 try:  # pragma: no cover - optional dependency
     import frontmatter  # type: ignore
-except Exception:  # pragma: no cover
-    frontmatter = None  # type: ignore
+except ImportError:  # pragma: no cover
+    frontmatter = None
 
 from .render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
+from .services.attachments import AttachmentManager
 from .util import (
     assign_conversation_slug,
     conversation_is_current,
     current_utc_timestamp,
-    get_conversation_state,
+    slugify_title,
     sanitize_filename,
-    update_conversation_state,
 )
 from .index import update_index
+from .services.conversation_registrar import ConversationRegistrar
 
 
 @dataclass
@@ -28,6 +29,7 @@ class ExistingDocument:
     metadata: Dict[str, Any]
     body: str
     body_hash: str
+    content_hash: str
 
 
 @dataclass
@@ -96,6 +98,29 @@ def _dump_front_matter(metadata: Dict[str, Any], body: str) -> str:
     return "\n".join(header_lines) + body
 
 
+def _metadata_without_content_hash(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        serialised = json.loads(json.dumps(metadata, default=str))
+    except Exception:
+        serialised = json.loads(json.dumps({}, default=str))
+    polylogue = serialised.get("polylogue")
+    if isinstance(polylogue, dict):
+        polylogue.pop("contentHash", None)
+        polylogue.pop("lastImported", None)
+        polylogue.pop("dirty", None)
+    return serialised
+
+
+def _compute_content_hash(body: str, metadata: Dict[str, Any]) -> str:
+    payload_metadata = _metadata_without_content_hash(metadata)
+    try:
+        metadata_str = json.dumps(payload_metadata, sort_keys=True, ensure_ascii=False)
+    except Exception:
+        metadata_str = "{}"
+    material = body + "\n" + metadata_str
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
 def read_existing_document(path: Path) -> Optional[ExistingDocument]:
     if not path.exists():
         return None
@@ -105,7 +130,8 @@ def read_existing_document(path: Path) -> Optional[ExistingDocument]:
         return None
     metadata, body = _parse_front_matter(text)
     body_hash = hashlib.sha256(body.encode("utf-8")).hexdigest()
-    return ExistingDocument(metadata=metadata, body=body, body_hash=body_hash)
+    content_hash = _compute_content_hash(body, metadata)
+    return ExistingDocument(metadata=metadata, body=body, body_hash=body_hash, content_hash=content_hash)
 
 
 def _write_markdown(path: Path, metadata: Dict[str, Any], body: str) -> None:
@@ -175,6 +201,19 @@ def _ensure_polylogue_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+def _prune_empty_values(payload: Dict[str, Any]) -> Dict[str, Any]:
+    cleaned: Dict[str, Any] = {}
+    for key, value in payload.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and value == "":
+            continue
+        if isinstance(value, (list, dict)) and not value:
+            continue
+        cleaned[key] = value
+    return cleaned
+
+
 def persist_document(
     *,
     provider: Optional[str],
@@ -193,36 +232,82 @@ def persist_document(
     slug_hint: Optional[str] = None,
     id_hint: Optional[str] = None,
     force: bool = False,
+    registrar: ConversationRegistrar,
 ) -> DocumentPersistenceResult:
+    if registrar is None:
+        raise ValueError("ConversationRegistrar instance required")
     if slug_hint:
         slug = slug_hint
     elif provider and conversation_id:
         slug = assign_conversation_slug(provider, conversation_id, title, id_hint=id_hint)
     else:
-        base = sanitize_filename(slug_hint or title)
+        base = slugify_title(slug_hint or title)
+        if not base:
+            base = sanitize_filename(slug_hint or title)
+            base = base.replace(" ", "-")
         slug = base or "document"
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    markdown_path = output_dir / f"{slug}.md"
-    attachments_dir = output_dir / f"{slug}_attachments"
-    html_path = markdown_path.with_suffix(".html") if html else None
+    conversation_dir = output_dir / slug
+    conversation_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = conversation_dir / "conversation.md"
+    attachments_dir = conversation_dir / "attachments"
+    html_path = conversation_dir / "conversation.html" if html else None
 
     state_entry: Optional[Dict[str, Any]] = None
     if provider and conversation_id:
-        state_entry = get_conversation_state(provider, conversation_id)
+        state_entry = registrar.get_state(provider, conversation_id)
 
     existing = read_existing_document(markdown_path)
     stored_hash = (state_entry or {}).get("contentHash")
-    existing_dirty = False
-    if existing and stored_hash and existing.body_hash != stored_hash:
-        existing_dirty = True
 
     policy = _attachment_policy_with_counts(
         attachment_policy or _default_attachment_policy(),
         attachments,
     )
 
-    content_hash = hashlib.sha256(document.body.encode("utf-8")).hexdigest()
+    metadata = _ensure_polylogue_metadata(document.metadata)
+    polylogue_meta = metadata.get("polylogue", {})
+    polylogue_meta.update(
+        {
+            "title": title,
+            "slug": slug,
+            "collapseThreshold": collapse_threshold,
+            "attachmentPolicy": policy,
+            "updatedAt": updated_at,
+            "createdAt": created_at,
+            "html": html,
+            "lastImported": current_utc_timestamp(),
+            "dirty": False,
+        }
+    )
+    expected_local_paths = AttachmentManager.expected_paths(markdown_path, attachments)
+    if expected_local_paths:
+        polylogue_meta["attachmentsDir"] = str(attachments_dir)
+    else:
+        polylogue_meta.pop("attachmentsDir", None)
+    if html and html_path:
+        polylogue_meta["htmlPath"] = str(html_path)
+    else:
+        polylogue_meta.pop("htmlPath", None)
+    if provider:
+        polylogue_meta["provider"] = provider
+    if conversation_id:
+        polylogue_meta["conversationId"] = conversation_id
+    if extra_state:
+        for key, value in extra_state.items():
+            if value is not None:
+                polylogue_meta[key] = value
+    polylogue_meta = _prune_empty_values(polylogue_meta)
+    metadata["polylogue"] = polylogue_meta
+
+    content_hash = _compute_content_hash(document.body, metadata)
+    polylogue_meta["contentHash"] = content_hash
+    document.metadata = metadata
+
+    existing_dirty = False
+    if existing and stored_hash:
+        existing_dirty = existing.content_hash != stored_hash
 
     if provider and conversation_id and existing_dirty and state_entry and not force:
         remote_same = True
@@ -244,13 +329,14 @@ def persist_document(
                     "updatedAt": updated_at,
                     "createdAt": created_at,
                     "html": html,
-                    "attachmentsDir": polylogue.get("attachmentsDir") or (str(attachments_dir) if attachments else None),
+                    "attachmentsDir": polylogue.get("attachmentsDir") or (str(attachments_dir) if expected_local_paths else None),
                     "htmlPath": polylogue.get("htmlPath"),
                     "contentHash": state_entry.get("contentHash") or content_hash,
                     "localHash": existing.body_hash,
                     "dirty": True,
                 }
             )
+            polylogue = _prune_empty_values(polylogue)
             dirty_meta["polylogue"] = polylogue
             _write_markdown(markdown_path, dirty_meta, existing.body)
             html_state_path = state_entry.get("htmlPath")
@@ -259,22 +345,22 @@ def persist_document(
             attachments_existing_path = (
                 Path(attach_state_path) if isinstance(attach_state_path, str) else None
             )
-            update_conversation_state(
-                provider,
-                conversation_id,
-                slug=slug,
-                title=title,
-                lastUpdated=updated_at,
-                contentHash=state_entry.get("contentHash") or content_hash,
-                collapseThreshold=collapse_threshold,
-                attachmentPolicy=policy,
-                outputPath=str(markdown_path),
-                htmlPath=html_state_path,
-                attachmentsDir=attach_state_path,
-                html=state_entry.get("html", html),
-                dirty=True,
-                localHash=existing.body_hash,
-            )
+            dirty_payload = {
+                "slug": slug,
+                "title": title,
+                "lastUpdated": updated_at,
+                "lastImported": polylogue_meta.get("lastImported"),
+                "contentHash": state_entry.get("contentHash") or content_hash,
+                "collapseThreshold": collapse_threshold,
+                "attachmentPolicy": policy,
+                "outputPath": str(markdown_path),
+                "htmlPath": html_state_path,
+                "attachmentsDir": attach_state_path,
+                "html": state_entry.get("html", html),
+                "dirty": True,
+                "localHash": existing.body_hash,
+            }
+            registrar.mark_dirty(provider, conversation_id, dirty_payload)
             return DocumentPersistenceResult(
                 markdown_path=markdown_path,
                 html_path=html_existing_path,
@@ -299,6 +385,7 @@ def persist_document(
             attachment_policy=policy,
             html=html,
             dirty=existing_dirty,
+            entry=state_entry,
         )
 
     if can_skip:
@@ -313,7 +400,7 @@ def persist_document(
                 attachments_existing = Path(attach_entry)
         if html_existing is None and html:
             html_existing = html_path
-        if attachments_existing is None and attachments:
+        if attachments_existing is None and expected_local_paths and attachments_dir.exists():
             attachments_existing = attachments_dir
         return DocumentPersistenceResult(
             markdown_path=markdown_path,
@@ -327,69 +414,57 @@ def persist_document(
             content_hash=content_hash,
         )
 
-    metadata = _ensure_polylogue_metadata(document.metadata)
-    polylogue_meta = metadata.get("polylogue", {})
-    polylogue_meta.update(
-        {
-            "title": title,
-            "slug": slug,
-            "collapseThreshold": collapse_threshold,
-            "attachmentPolicy": policy,
-            "updatedAt": updated_at,
-            "createdAt": created_at,
-            "html": html,
-            "contentHash": content_hash,
-            "lastImported": current_utc_timestamp(),
-            "attachmentsDir": str(attachments_dir) if attachments else None,
-            "dirty": False,
-        }
-    )
-    if html_path and html:
-        polylogue_meta["htmlPath"] = str(html_path)
-    if provider:
-        polylogue_meta["provider"] = provider
-    if conversation_id:
-        polylogue_meta["conversationId"] = conversation_id
-    if extra_state:
-        for key, value in extra_state.items():
-            if value is not None:
-                polylogue_meta[key] = value
-    metadata["polylogue"] = polylogue_meta
-    document.metadata = metadata
+    rendered_markdown = document.to_markdown()
 
-    markdown_path.write_text(document.to_markdown(), encoding="utf-8")
+    if expected_local_paths:
+        attachments_dir.mkdir(parents=True, exist_ok=True)
+    AttachmentManager.reconcile(attachments_dir, expected_local_paths)
+
+    markdown_path.write_text(rendered_markdown, encoding="utf-8")
 
     if html:
         from .html import write_html
 
-        write_html(document, html_path, html_theme)
+        target_html = html_path or (conversation_dir / "conversation.html")
+        write_html(document, target_html, html_theme)
+        html_path = target_html
     else:
+        html_file = conversation_dir / "conversation.html"
+        if html_file.exists():
+            try:
+                html_file.unlink()
+            except OSError:
+                pass
         html_path = None
 
-    if not attachments:
-        try:
-            attachments_dir.rmdir()
-        except OSError:
-            pass
-
     if provider and conversation_id:
-        state_payload = {
-            "slug": slug,
-            "title": title,
-            "lastUpdated": updated_at,
-            "lastImported": polylogue_meta.get("lastImported"),
-            "contentHash": content_hash,
-            "collapseThreshold": collapse_threshold,
-            "attachmentPolicy": policy,
-            "outputPath": str(markdown_path),
-            "htmlPath": str(html_path) if html_path else None,
-            "attachmentsDir": str(attachments_dir) if attachments else None,
-            "html": html,
-            "dirty": False,
-        }
-        if extra_state:
-            state_payload.update({k: v for k, v in extra_state.items() if v is not None})
-        update_conversation_state(provider, conversation_id, **state_payload)
+        attachments_dir_value = attachments_dir if (expected_local_paths and attachments_dir.exists()) else None
+        stats = document.stats or {}
+        total_tokens = int(stats.get("totalTokensApprox", 0) or 0)
+        total_words = int(stats.get("totalWordsApprox", 0) or 0)
+        attachment_bytes = sum(att.size_bytes or 0 for att in attachments)
+
+        registrar.record_document(
+            provider=provider,
+            conversation_id=conversation_id,
+            slug=slug,
+            title=title,
+            content_hash=content_hash,
+            collapse_threshold=collapse_threshold,
+            attachment_policy=policy,
+            markdown_path=markdown_path,
+            html_path=html_path,
+            html_enabled=html,
+            attachments_dir=attachments_dir_value,
+            updated_at=updated_at,
+            created_at=created_at,
+            last_imported=polylogue_meta.get("lastImported"),
+            attachment_bytes=attachment_bytes,
+            tokens=total_tokens,
+            words=total_words,
+            dirty=False,
+            extra_state=extra_state,
+        )
 
         try:  # pragma: no cover - indexing failures shouldn't abort writes
             update_index(
@@ -406,7 +481,7 @@ def persist_document(
     return DocumentPersistenceResult(
         markdown_path=markdown_path,
         html_path=html_path,
-        attachments_dir=attachments_dir if attachments else None,
+        attachments_dir=attachments_dir if expected_local_paths else None,
         document=document,
         slug=slug,
         skipped=False,

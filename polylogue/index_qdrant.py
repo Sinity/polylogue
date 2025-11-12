@@ -22,20 +22,22 @@ def update_qdrant_index(
     size = int(os.environ.get("POLYLOGUE_QDRANT_VECTOR_SIZE", "1"))
     api_key = os.environ.get("POLYLOGUE_QDRANT_API_KEY")
 
-    try:  # pragma: no cover - optional dependency
-        from qdrant_client import QdrantClient
-        from qdrant_client.http import models as rest
-    except Exception:
-        return
+    from qdrant_client import QdrantClient
+    from qdrant_client.http import models as rest
+    from qdrant_client.http.exceptions import UnexpectedResponse
 
     client = QdrantClient(url=url, api_key=api_key)
     try:
         client.get_collection(collection)
-    except Exception:
-        client.recreate_collection(
-            collection_name=collection,
-            vectors_config=rest.VectorParams(size=size, distance=rest.Distance.COSINE),
-        )
+    except UnexpectedResponse as exc:
+        status = getattr(exc, "status_code", None)
+        if status == 404:
+            client.recreate_collection(
+                collection_name=collection,
+                vectors_config=rest.VectorParams(size=size, distance=rest.Distance.COSINE),
+            )
+        else:
+            raise
 
     metric = float(document.stats.get("totalTokensApprox", 0) or len(document.body))
     vector = [metric] + [0.0] * max(0, size - 1)

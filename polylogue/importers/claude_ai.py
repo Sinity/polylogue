@@ -4,13 +4,21 @@ import json
 import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
-from ..render import AttachmentInfo, build_markdown_from_chunks
-from ..document_store import persist_document
-from ..util import assign_conversation_slug
+from ..render import AttachmentInfo
+from ..util import assign_conversation_slug, sanitize_filename
+from ..conversation import process_conversation
+from ..branching import MessageRecord
+from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .base import ImportResult
-from .utils import estimate_token_count, store_large_text
+from .normalizer import build_message_record
+from .utils import (
+    estimate_token_count,
+    normalise_inline_footnotes,
+    safe_extractall,
+    store_large_text,
+)
 
 
 def _load_bundle(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
@@ -20,7 +28,7 @@ def _load_bundle(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
         raise FileNotFoundError(f"Unsupported Claude export: {path}")
     tmp = TemporaryDirectory(prefix="claude-export-")
     with zipfile.ZipFile(path) as zf:
-        zf.extractall(tmp.name)
+        safe_extractall(zf, Path(tmp.name))
     return Path(tmp.name), tmp
 
 
@@ -32,7 +40,10 @@ def import_claude_export(
     html: bool,
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
+    force: bool = False,
+    registrar: Optional[ConversationRegistrar] = None,
 ) -> List[ImportResult]:
+    registrar = registrar or create_default_registrar()
     root, tmp = _load_bundle(export_path)
     try:
         convo_path = root / "conversations.json"
@@ -57,6 +68,8 @@ def import_claude_export(
                     collapse_threshold=collapse_threshold,
                     html=html,
                     html_theme=html_theme,
+                    force=force,
+                    registrar=registrar,
                 )
             )
         return results
@@ -101,18 +114,24 @@ def _render_claude_conversation(
     collapse_threshold: int,
     html: bool,
     html_theme: str,
+    force: bool,
+    registrar: Optional[ConversationRegistrar],
 ) -> ImportResult:
     title = conv.get("name") or conv.get("title") or "claude-chat"
     conv_id = conv.get("uuid") or conv.get("id") or "claude"
     slug = assign_conversation_slug("claude.ai", conv_id, title, id_hint=(conv_id or "")[:8])
-    markdown_path = output_dir / f"{slug}.md"
-    attachments_dir = markdown_path.parent / f"{slug}_attachments"
+    conversation_dir = output_dir / slug
+    conversation_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = conversation_dir / "conversation.md"
+    attachments_dir = conversation_dir / "attachments"
 
     attachments: List[AttachmentInfo] = []
     file_index = _index_export_files(export_root)
 
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
     chunks: List[Dict] = []
+    message_records: List[MessageRecord] = []
+    seen_message_ids: Set[str] = set()
 
     model_id = conv.get("model") or conv.get("model_id")
 
@@ -128,11 +147,33 @@ def _render_claude_conversation(
             file_index,
         )
         canonical_role = "user" if sender == "human" else "model"
+        message_id = (
+            message.get("uuid")
+            or message.get("id")
+            or message.get("message_id")
+            or message.get("messageId")
+        )
+        parent_id = (
+            message.get("parent_id")
+            or message.get("parentUuid")
+            or message.get("parent_message_id")
+            or message.get("parentMessageId")
+        )
         chunk = {
             "role": canonical_role,
             "text": text_block,
             "tokenCount": estimate_token_count(text_block, model=model_id),
         }
+        if message_id:
+            chunk["messageId"] = message_id
+        if parent_id:
+            chunk["parentId"] = parent_id
+            chunk["branchParent"] = parent_id
+        elif message_records:
+            fallback_parent = message_records[-1].message_id
+            chunk["parentId"] = fallback_parent
+            chunk["branchParent"] = fallback_parent
+            parent_id = fallback_parent
         if timestamp:
             chunk["timestamp"] = timestamp
         per_chunk_links[idx] = links
@@ -150,6 +191,21 @@ def _render_claude_conversation(
             if preview != text_block:
                 chunks[idx]["text"] = preview
 
+        links = list(per_chunk_links.get(idx, []))
+        message_records.append(
+            build_message_record(
+                provider="claude.ai",
+                conversation_id=conv_id,
+                chunk_index=idx,
+                chunk=chunks[idx],
+                raw_metadata=message,
+                attachments=links,
+                tool_calls=_extract_tool_metadata(blocks if isinstance(blocks, list) else []),
+                seen_ids=seen_message_ids,
+                fallback_prefix=slug,
+            )
+        )
+
     extra_yaml = {
         "sourcePlatform": "claude.ai",
         "conversationId": conv_id,
@@ -158,62 +214,34 @@ def _render_claude_conversation(
     if model_id:
         extra_yaml["sourceModel"] = model_id
 
-    document = build_markdown_from_chunks(
-        chunks,
-        per_chunk_links,
-        title=title,
-        source_file_id=conv_id,
-        modified_time=conv.get("updated_at") or conv.get("modified_at"),
-        created_time=conv.get("created_at"),
-        run_settings=None,
-        citations=None,
-        source_mime="application/json",
-        source_size=None,
-        collapse_threshold=collapse_threshold,
-        extra_yaml=extra_yaml,
-        attachments=attachments,
-    )
+    canonical_leaf_id = message_records[-1].message_id if message_records else None
 
-    persist_result = persist_document(
+    return process_conversation(
         provider="claude.ai",
         conversation_id=conv_id,
+        slug=slug,
         title=title,
-        document=document,
-        output_dir=output_dir,
-        collapse_threshold=collapse_threshold,
+        message_records=message_records,
         attachments=attachments,
-        updated_at=conv.get("updated_at") or conv.get("modified_at"),
-        created_at=conv.get("created_at"),
+        canonical_leaf_id=canonical_leaf_id,
+        collapse_threshold=collapse_threshold,
         html=html,
         html_theme=html_theme,
-        attachment_policy=None,
+        output_dir=output_dir,
+        extra_yaml=extra_yaml,
         extra_state={
             "sourceModel": model_id,
             "sourceExportPath": str(export_root),
         },
-        slug_hint=slug,
-        id_hint=(conv_id or "")[:8],
-    )
-
-    if persist_result.skipped:
-        return ImportResult(
-            markdown_path=persist_result.markdown_path,
-            html_path=persist_result.html_path,
-            attachments_dir=persist_result.attachments_dir,
-            document=None,
-            skipped=True,
-            skip_reason=persist_result.skip_reason,
-            dirty=persist_result.dirty,
-            content_hash=persist_result.content_hash,
-        )
-
-    return ImportResult(
-        markdown_path=persist_result.markdown_path,
-        html_path=persist_result.html_path,
-        attachments_dir=persist_result.attachments_dir,
-        document=persist_result.document or document,
-        dirty=persist_result.dirty,
-        content_hash=persist_result.content_hash,
+        source_file_id=conv_id,
+        modified_time=conv.get("updated_at") or conv.get("modified_at"),
+        created_time=conv.get("created_at"),
+        run_settings=None,
+        source_mime="application/json",
+        source_size=None,
+        attachment_policy=None,
+        force=force,
+        registrar=registrar,
     )
 
 
@@ -225,6 +253,35 @@ def _index_export_files(root: Path) -> Dict[str, Path]:
         if path.is_file():
             index[path.name] = path
     return index
+
+
+
+def _extract_tool_metadata(blocks: List[Dict]) -> List[Dict[str, object]]:
+    details: List[Dict[str, object]] = []
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "tool_use":
+            details.append(
+                {
+                    "type": block_type,
+                    "name": block.get("name") or block.get("tool_name"),
+                    "id": block.get("id") or block.get("tool_use_id"),
+                    "input": block.get("input"),
+                    "status": block.get("status"),
+                }
+            )
+        elif block_type == "tool_result":
+            details.append(
+                {
+                    "type": block_type,
+                    "name": block.get("name"),
+                    "id": block.get("id"),
+                    "output": block.get("text") or block.get("result"),
+                }
+            )
+    return details
 
 
 
@@ -249,6 +306,10 @@ def _render_content_blocks(
         elif block_type == "tool_result":
             result_text = block.get("text") or block.get("result") or ""
             fragments.append(f"Tool result\n````\n{result_text}\n````")
+        elif block_type == "thinking":
+            thought = block.get("thinking") or block.get("text") or ""
+            if thought:
+                fragments.append(f"_(internal thought)_\n{thought}")
         elif block_type in {"image", "file"}:
             file_id = block.get("file_id") or block.get("asset_pointer")
             name = block.get("file_name") or file_id
@@ -261,7 +322,7 @@ def _render_content_blocks(
                 else:
                     fragments.append(f"[{name}](attachment://{file_id})")
     text = "\n\n".join([frag for frag in fragments if frag])
-    return text, chunk_links
+    return normalise_inline_footnotes(text), chunk_links
 
 
 def _copy_file(
@@ -281,7 +342,12 @@ def _copy_file(
     if source is None:
         return None
     attachments_dir.mkdir(parents=True, exist_ok=True)
-    target = attachments_dir / name
+    safe_name = sanitize_filename(name)
+    if not safe_name:
+        safe_name = sanitize_filename(file_id or "attachment")
+    if not safe_name:
+        safe_name = "attachment"
+    target = attachments_dir / safe_name
     counter = 1
     while target.exists():
         target = attachments_dir / f"{target.stem}_{counter}{target.suffix}"
