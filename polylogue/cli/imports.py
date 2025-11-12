@@ -18,7 +18,7 @@ from ..importers.claude_ai import list_claude_conversations
 from ..importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
 from ..importers.base import ImportResult
 from ..pipeline_runner import Pipeline, PipelineContext
-from ..util import CODEX_SESSIONS_ROOT
+from ..util import CODEX_SESSIONS_ROOT, path_order_key
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
     DEFAULT_CHATGPT_OUT,
@@ -160,6 +160,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
 def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
+    console = ui.console
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else CODEX_SESSIONS_ROOT
     out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -167,6 +168,21 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     settings = env.settings
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
+    session_target = args.session_id
+    if (session_target in {None, "", "pick", "?"}) and not ui.plain:
+        candidates = sorted(base_dir.expanduser().rglob("*.jsonl"), key=path_order_key, reverse=True)
+        if not candidates:
+            console.print("No Codex sessions found.")
+            return
+        lines = [f"{path.stem}\t{path.parent}\t{path}" for path in candidates]
+        selection = sk_select(lines, multi=False, header="Select Codex session")
+        if not selection:
+            console.print("[yellow]Import cancelled; no session selected.")
+            return
+        session_target = selection[0].split("\t")[-1]
+    elif not session_target:
+        console.print("[yellow]Provide a Codex session file or run interactively.")
+        return
 
     pipeline = Pipeline(
         [
@@ -180,14 +196,13 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
         data={
             "import_callable": import_codex_session,
             "import_kwargs": {
-                "session_id": args.session_id,
+                "session_id": session_target,
                 "base_dir": base_dir,
                 "output_dir": out_dir,
                 "collapse_threshold": collapse,
                 "html": html_enabled,
                 "html_theme": html_theme,
                 "force": getattr(args, "force", False),
-                "branch_mode": getattr(args, "branch_export", "full"),
                 "registrar": env.registrar,
             },
             "import_error_message": "Import failed",
@@ -261,7 +276,6 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
                 "html_theme": html_theme,
                 "selected_ids": selected_ids,
                 "force": getattr(args, "force", False),
-                "branch_mode": getattr(args, "branch_export", "full"),
                 "registrar": env.registrar,
             },
             "import_error_message": "Import failed",
@@ -335,7 +349,6 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
                 "html_theme": html_theme,
                 "selected_ids": selected_ids,
                 "force": getattr(args, "force", False),
-                "branch_mode": getattr(args, "branch_export", "full"),
                 "registrar": env.registrar,
             },
             "import_error_message": "Import failed",
@@ -397,7 +410,6 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
                 "html": html_enabled,
                 "html_theme": html_theme,
                 "force": getattr(args, "force", False),
-                "branch_mode": getattr(args, "branch_export", "full"),
                 "registrar": env.registrar,
                 **kwargs,
             },

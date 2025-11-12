@@ -166,7 +166,6 @@ def import_chatgpt_export(
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
     force: bool = False,
-    branch_mode: str = "full",
     registrar: Optional[ConversationRegistrar] = None,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
@@ -194,7 +193,6 @@ def import_chatgpt_export(
                     html=html,
                     html_theme=html_theme,
                     force=force,
-                    branch_mode=branch_mode,
                     registrar=registrar,
                 )
             )
@@ -240,7 +238,6 @@ def _render_chatgpt_conversation(
     html: bool,
     html_theme: str,
     force: bool,
-    branch_mode: str,
     registrar: Optional[ConversationRegistrar],
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
@@ -376,7 +373,6 @@ def _render_chatgpt_conversation(
         source_size=None,
         attachment_policy=None,
         force=force,
-        branch_mode=branch_mode,
         registrar=registrar,
     )
 

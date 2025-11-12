@@ -25,17 +25,11 @@ Polylogue mirrors `~/.codex` session logs, pairing tool calls with their outputs
 - Ignore encrypted `reasoning` payloads until OpenAI exposes a readable form.
 - When `log/codex-tui.log` contains extended shell output, attach it alongside the Markdown so the full transcript remains accessible.
 
-### Branch Export Modes
+### Branch Layout
 
-Codex imports, syncs, and watchers share a `--branch-export full|overlay|canonical` flag:
+Codex imports, syncs, and watchers always write the full branch tree: the canonical transcript lives at `<slug>/conversation.md`, the shared context at `<slug>/conversation.common.md`, and every fork under `branches/<branch-id>/{<branch-id>.md, overlay.md}`. This keeps divergences visible without extra flags.
 
-- `full` (default) writes the complete branch tree (`conversation.md`, `conversation.common.md`, and `branches/<branch-id>/…`).
-- `overlay` keeps the canonical transcript and overlay-only deltas, trimming the duplicate full-branch copies.
-- `canonical` emits only `conversation.md` for maximal compatibility with legacy flat archives.
-
-Because the flag runs through the shared registrar/pipeline stack, you’ll see the same behaviour whether you import a single session, run `polylogue sync codex`, or rely on `polylogue watch codex`.
-
-## Automation
+## Sync Notes
 
 - `polylogue sync codex` and `polylogue watch codex` traverse `sessions/`, apply the import pipeline, and preserve modification times on generated Markdown/HTML.
 - Repeated runs reuse stored slugs and hashes, skipping untouched sessions while logging summary statistics to `polylogue status`.

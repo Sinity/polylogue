@@ -33,11 +33,11 @@ def _write_render_input(path: Path) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _run_render(tmp_path: Path, state_env, branch_mode: str) -> Path:
+def _run_render(tmp_path: Path, state_env) -> Path:
     _ = state_env  # ensure fixture applies environment paths
     src = tmp_path / "sample.json"
     _write_render_input(src)
-    out_dir = tmp_path / branch_mode
+    out_dir = tmp_path / "render"
     options = RenderOptions(
         inputs=[src],
         output_dir=out_dir,
@@ -48,7 +48,6 @@ def _run_render(tmp_path: Path, state_env, branch_mode: str) -> Path:
         html=False,
         html_theme="light",
         diff=False,
-        branch_export=branch_mode,
     )
     env = CommandEnv(ui=_SilentUI())
     render_command(options, env)
@@ -56,14 +55,7 @@ def _run_render(tmp_path: Path, state_env, branch_mode: str) -> Path:
 
 
 def test_render_branch_full_writes_branch_tree(tmp_path, state_env):
-    conversation_dir = _run_render(tmp_path, state_env, branch_mode="full")
+    conversation_dir = _run_render(tmp_path, state_env)
     branch_dir = conversation_dir / "branches" / "branch-000"
     assert branch_dir.exists()
     assert (branch_dir / "branch-000.md").exists()
-
-
-def test_render_branch_canonical_prunes_tree(tmp_path, state_env):
-    conversation_dir = _run_render(tmp_path, state_env, branch_mode="canonical")
-    assert (conversation_dir / "conversation.md").exists()
-    assert not (conversation_dir / "conversation.common.md").exists()
-    assert not (conversation_dir / "branches").exists()

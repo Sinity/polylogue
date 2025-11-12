@@ -34,7 +34,6 @@ def import_codex_session(
     html: bool = False,
     html_theme: str = "light",
     force: bool = False,
-    branch_mode: str = "full",
     registrar: Optional[ConversationRegistrar] = None,
 ) -> ImportResult:
     registrar = registrar or create_default_registrar()
@@ -325,6 +324,5 @@ def import_codex_session(
             "charThreshold": CHAR_THRESHOLD,
         },
         force=force,
-        branch_mode=branch_mode,
         registrar=registrar,
     )

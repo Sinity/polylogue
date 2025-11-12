@@ -2,16 +2,6 @@
 
 Polylogue records every run, exposes live status summaries, and emits machine-readable data so you can wire the CLI into dashboards or schedulers without scraping interactive output.
 
-## Structured Run Logs
-
-Every command writes a single JSON line to stderr when `POLYLOGUE_RUN_LOG` is unset or `1`:
-
-```json
-{"event":"polylogue_run","cmd":"sync drive","provider":"drive","count":6,"attachments":12,"duration":4.2}
-```
-
-Set `POLYLOGUE_RUN_LOG=0` to silence the log when embedding Polylogue inside other scripts. The same payloads back `polylogue status` so retry counts, attachment totals, and provider metadata stay consistent everywhere.
-
 ## `polylogue status`
 
 `polylogue status` reads the SQLite run history and now supports a richer set of export modes:
@@ -31,14 +21,13 @@ polylogue status --providers drive --summary metrics.json
 polylogue status --providers codex --summary-only --summary - --watch --interval 30
 ```
 
-## Automation Hooks
-
-`polylogue automation` already emits systemd/cron snippets. Add `--status-log /path/to/summary.json --status-limit 40` so every scheduled run writes `polylogue status --dump-only --dump …` after the main command. The new `--summary` options make it simple to append aggregate metrics alongside the raw run history.
+For unattended jobs, call `polylogue status --dump /path/to/runs.json --dump-limit 50` (and optionally `--summary metrics.json`) immediately after your sync/import command so dashboards and alerts can consume fresh JSON without parsing terminal output.
 
 ## Where the Data Lives
 
 - Run history + metadata: `$XDG_STATE_HOME/polylogue/polylogue.db` (use `polylogue status --dump runs.json` or `--dump -` when you need a JSON snapshot)
 - Conversations/branches/messages (same SQLite DB): `$XDG_STATE_HOME/polylogue/polylogue.db`
-- Structured run logs: stderr (`POLYLOGUE_RUN_LOG=0/1` toggles emission)
 
 Use these locations as backup targets or feed them into external monitoring stacks.
+
+Tip: `polylogue env` prints all resolved paths (config, output directories, state DB) in either human-readable or JSON form, making it easy to confirm where data lands before wiring up automation.

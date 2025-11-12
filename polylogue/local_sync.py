@@ -109,7 +109,6 @@ def _sync_sessions(
     import_fn,
     importer_kwargs: Optional[dict] = None,
     registrar: Optional[ConversationRegistrar] = None,
-    branch_mode: str = "full",
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -189,7 +188,6 @@ def _sync_sessions(
             html=html,
             html_theme=html_theme,
             force=force,
-            branch_mode=branch_mode,
             **importer_kwargs,
         )
         if result.skipped:
@@ -315,7 +313,6 @@ def _sync_export_bundles(
     provider: str,
     import_fn: Callable[..., Sequence[ImportResult] | ImportResult | None],
     registrar: Optional[ConversationRegistrar] = None,
-    branch_mode: str = "full",
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -346,7 +343,6 @@ def _sync_export_bundles(
             html_theme=html_theme,
             selected_ids=None,
             force=force,
-            branch_mode=branch_mode,
             registrar=registrar,
         )
         if results_raw is None:
@@ -415,7 +411,6 @@ def sync_codex_sessions(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
-    branch_mode: str = "full",
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -436,7 +431,6 @@ def sync_codex_sessions(
             **kwargs,
         ),
         registrar=registrar,
-        branch_mode=branch_mode,
     )
 
 
@@ -452,7 +446,6 @@ def sync_claude_code_sessions(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
-    branch_mode: str = "full",
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -473,7 +466,6 @@ def sync_claude_code_sessions(
             **kwargs,
         ),
         registrar=registrar,
-        branch_mode=branch_mode,
     )
 
 
@@ -511,7 +503,6 @@ def sync_chatgpt_exports(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
-    branch_mode: str = "full",
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -532,7 +523,6 @@ def sync_chatgpt_exports(
         provider="chatgpt",
         import_fn=import_chatgpt_export,
         registrar=registrar,
-        branch_mode=branch_mode,
     )
 
 
@@ -548,7 +538,6 @@ def sync_claude_exports(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
-    branch_mode: str = "full",
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -569,7 +558,6 @@ def sync_claude_exports(
         provider="claude",
         import_fn=import_claude_export,
         registrar=registrar,
-        branch_mode=branch_mode,
     )
 
 

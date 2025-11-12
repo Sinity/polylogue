@@ -12,7 +12,7 @@ import time
 import tempfile
 import textwrap
 import shlex
-from collections import Counter, OrderedDict
+from collections import Counter
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -23,14 +23,13 @@ from ..commands import (
     search_command,
     status_command,
 )
-from ..automation import REPO_ROOT, TARGETS, cron_snippet, describe_targets, systemd_snippet
 from ..drive_client import DEFAULT_FOLDER_NAME, DriveClient
 from ..importers.claude_code import DEFAULT_PROJECT_ROOT
 from ..options import BranchExploreOptions, SearchHit, SearchOptions, SyncOptions
 from ..ui import create_ui
+from .completion_engine import CompletionEngine, Completion
 from .registry import CommandRegistry
 from .arg_helpers import (
-    add_branch_mode_option,
     add_collapse_option,
     add_diff_option,
     add_dry_run_option,
@@ -52,7 +51,7 @@ from .context import (
     resolve_html_settings,
 )
 from ..settings import ensure_settings_defaults, persist_settings, clear_persisted_settings
-from ..config import CONFIG
+from ..config import CONFIG, CONFIG_PATH
 from ..local_sync import LOCAL_SYNC_PROVIDER_NAMES, WATCHABLE_LOCAL_PROVIDER_NAMES
 from .imports import (
     run_import_cli,
@@ -65,7 +64,6 @@ from .render import copy_import_to_clipboard, run_render_cli
 from .watch import run_watch_cli
 from .status import run_status_cli, run_stats_cli
 from .doctor import run_doctor_cli
-from .automation_cli import run_automation_cli
 from .summaries import summarize_import
 from .sync import (
     run_list_cli,
@@ -79,7 +77,14 @@ from ..branch_explorer import branch_diff, build_branch_html, format_branch_tree
 
 SCRIPT_MODULE = "polylogue.cli"
 COMMAND_REGISTRY = CommandRegistry()
-_MENU_TIPS_SHOWN = False
+
+
+def _collect_subparser_map(parser: argparse.ArgumentParser) -> Dict[str, argparse.ArgumentParser]:
+    mapping: Dict[str, argparse.ArgumentParser] = {}
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            mapping.update(action.choices)
+    return mapping
 
 
 def _legacy_candidates(root: Path) -> List[Path]:
@@ -90,6 +95,130 @@ def _legacy_candidates(root: Path) -> List[Path]:
         if path.exists():
             legacy.append(path)
     return sorted(legacy)
+
+
+def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+    parser = build_parser()
+    topic = getattr(args, "topic", None)
+    choices = {k: v for k, v in _collect_subparser_map(parser).items() if not k.startswith("_")}
+    console = env.ui.console
+    if topic:
+        subparser = choices.get(topic)
+        if subparser is None:
+            console.print(f"[red]Unknown command: {topic}")
+            available = ", ".join(sorted(choices)) or "<none>"
+            console.print(f"Available commands: {available}")
+            return
+        console.print(f"[cyan]polylogue {topic}[/cyan]")
+        subparser.print_help()
+        return
+    parser.print_help()
+    if choices:
+        console.print("\nCommands: " + ", ".join(sorted(choices)))
+
+
+def _completion_script(shell: str, commands: List[str]) -> str:
+    joined = " ".join(commands)
+    if shell == "bash":
+        return textwrap.dedent(
+            f"
+            _polylogue_complete() {{
+                local cur prev
+                COMPREPLY=()
+                cur="${{COMP_WORDS[COMP_CWORD]}}"
+                if [[ $COMP_CWORD -eq 1 ]]; then
+                    COMPREPLY=( $(compgen -W \"{joined}\" -- \"$cur\") )
+                    return
+                fi
+            }}
+            complete -F _polylogue_complete polylogue
+            "
+        ).strip()
+    # fish
+    entries = "\n".join(f"complete -c polylogue -f -a \"{cmd}\"" for cmd in commands)
+    return entries.strip()
+
+
+def _zsh_dynamic_script() -> str:
+    return textwrap.dedent(
+        """
+        #compdef polylogue
+
+        _polylogue_complete() {
+            local -a completions
+            local IFS=$'\n'
+            completions=($(polylogue _complete --shell zsh --cword $CURRENT -- "${words[@]}"))
+            if [[ $? -ne 0 ]]; then
+                return
+            fi
+            if [[ ${#completions[@]} -gt 0 ]]; then
+                local first=${completions[1]}
+                if [[ $first == "__PATH__" || $first == "__PATH__:"* ]]; then
+                    _files
+                    return
+                fi
+            fi
+            _describe 'values' completions
+        }
+
+        compdef _polylogue_complete polylogue
+        """
+    ).strip()
+
+
+def run_completions_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+    parser = build_parser()
+    commands = sorted(cmd for cmd in _collect_subparser_map(parser) if not cmd.startswith("_"))
+    if args.shell == "zsh":
+        print(_zsh_dynamic_script())
+        return
+    script = _completion_script(args.shell, commands)
+    print(script)
+
+
+def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+    defaults = CONFIG.defaults
+    output_dirs = {
+        "render": str(defaults.output_dirs.render),
+        "sync_drive": str(defaults.output_dirs.sync_drive),
+        "sync_codex": str(defaults.output_dirs.sync_codex),
+        "sync_claude_code": str(defaults.output_dirs.sync_claude_code),
+        "import_chatgpt": str(defaults.output_dirs.import_chatgpt),
+        "import_claude": str(defaults.output_dirs.import_claude),
+    }
+    data = {
+        "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
+        "collapseThreshold": defaults.collapse_threshold,
+        "htmlPreviews": defaults.html_previews,
+        "htmlTheme": defaults.html_theme,
+        "outputDirs": output_dirs,
+        "statePath": str(env.conversations.state_path),
+        "runsDb": str(env.database.resolve_path()),
+        "watchProviders": list(WATCHABLE_LOCAL_PROVIDER_NAMES),
+    }
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2))
+        return
+    console = env.ui.console
+    console.print("Configuration path: " + (data["configPath"] or "<default>"))
+    console.print(f"Collapse threshold: {defaults.collapse_threshold}")
+    console.print(f"HTML previews: {'on' if defaults.html_previews else 'off'} (theme: {defaults.html_theme})")
+    console.print("Output directories:")
+    for key, value in output_dirs.items():
+        console.print(f"  {key}: {value}")
+    console.print(f"State DB: {data['statePath']}")
+    console.print(f"Runs DB: {data['runsDb']}")
+        console.print("Watchable providers: " + ", ".join(data["watchProviders"]))
+
+
+def run_complete_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+    engine = CompletionEngine(env, build_parser())
+    completions = engine.complete(args.shell, args.cword, args.words or [])
+    for entry in completions:
+        if entry.description:
+            print(f"{entry.value}:{entry.description}")
+        else:
+            print(entry.value)
 
 
 def run_prune_cli(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -634,13 +763,24 @@ def _dispatch_status(args: argparse.Namespace, env: CommandEnv) -> None:
     run_status_cli(args, env)
 
 
-def _dispatch_automation(args: argparse.Namespace, env: CommandEnv) -> None:
-    run_automation_cli(args, env)
-
-
-
 def _dispatch_search_preview(args: argparse.Namespace, _env: CommandEnv) -> None:
     run_search_preview(args)
+
+
+def _dispatch_complete(args: argparse.Namespace, env: CommandEnv) -> None:
+    run_complete_cli(args, env)
+
+
+def _dispatch_help(args: argparse.Namespace, env: CommandEnv) -> None:
+    run_help_cli(args, env)
+
+
+def _dispatch_env(args: argparse.Namespace, env: CommandEnv) -> None:
+    run_env_cli(args, env)
+
+
+def _dispatch_completions(args: argparse.Namespace, env: CommandEnv) -> None:
+    run_completions_cli(args, env)
 
 
 _REGISTRATION_COMPLETE = False
@@ -664,7 +804,10 @@ def _register_default_commands() -> None:
     _ensure("doctor", _dispatch_doctor, "Check local data directories for common issues")
     _ensure("status", _dispatch_status, "Show cached Drive info and recent runs")
     _ensure("settings", _dispatch_settings, "Show or update default preferences")
-    _ensure("automation", _dispatch_automation, "Generate scheduler snippets")
+    _ensure("help", _dispatch_help, "Show command help")
+    _ensure("env", _dispatch_env, "Show resolved configuration/output paths")
+    _ensure("completions", _dispatch_completions, "Emit shell completion script")
+    _ensure("_complete", _dispatch_complete, "Internal completion helper")
     _ensure("_search-preview", _dispatch_search_preview, "Internal search preview helper")
 
     _REGISTRATION_COMPLETE = True
@@ -674,6 +817,11 @@ def build_parser() -> argparse.ArgumentParser:
     _register_default_commands()
     parser = argparse.ArgumentParser(description="Polylogue CLI")
     parser.add_argument("--plain", action="store_true", help="Disable interactive UI")
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Force interactive UI even when stdout/stderr are not TTYs",
+    )
     sub = parser.add_subparsers(dest="cmd")
 
     p_render = sub.add_parser("render", help="Render local provider JSON logs")
@@ -685,7 +833,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_collapse_option(p_render, help_text="Override collapse threshold")
     p_render.add_argument("--json", action="store_true")
     add_html_option(p_render)
-    add_branch_mode_option(p_render)
     add_diff_option(p_render, help_text="Write delta diff when output already exists")
     p_render.add_argument("--to-clipboard", action="store_true", help="Copy rendered Markdown to the clipboard when a single file is produced")
 
@@ -706,7 +853,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--prune", action="store_true", help="Remove outputs for conversations that vanished upstream")
     add_collapse_option(p_sync)
     add_html_option(p_sync)
-    add_branch_mode_option(p_sync)
     add_diff_option(p_sync, help_text="Write delta diff alongside updated Markdown")
     p_sync.add_argument("--json", action="store_true", help="Emit machine-readable summary")
     p_sync.add_argument(
@@ -742,7 +888,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--out", type=Path, default=None, help="Override output directory")
     add_collapse_option(p_import)
     add_html_option(p_import)
-    add_branch_mode_option(p_import)
     add_force_option(p_import, help_text="Rewrite even if conversations appear up-to-date")
     p_import.add_argument("--all", action="store_true", help="Process every conversation in the export (ChatGPT/Claude)")
     p_import.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Specific conversation ID to import (repeatable)")
@@ -798,10 +943,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch = sub.add_parser("watch", help="Watch local session stores and sync on changes")
     p_watch.add_argument("provider", choices=list(WATCHABLE_LOCAL_PROVIDER_NAMES), help="Local provider to watch")
     p_watch.add_argument("--base-dir", type=Path, default=None, help="Override source directory")
-    add_out_option(p_watch, default_path=DEFAULT_CODEX_SYNC_OUT, help_text="Override output directory")
+    p_watch.add_argument("--out", type=Path, default=None, help="Override output directory")
     add_collapse_option(p_watch)
     add_html_option(p_watch, description="HTML preview mode while watching: on/off/auto (default auto)")
-    add_branch_mode_option(p_watch)
     p_watch.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
     p_watch.add_argument("--once", action="store_true", help="Run a single sync pass and exit")
 
@@ -847,54 +991,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only emit the summary JSON without printing tables",
     )
 
+    p_env = sub.add_parser("env", help="Show resolved configuration and output paths")
+    p_env.add_argument("--json", action="store_true", help="Emit environment info as JSON")
+
+    p_help_cmd = sub.add_parser("help", help="Show help for a specific command")
+    p_help_cmd.add_argument("topic", nargs="?", help="Command name")
+
+    p_completions = sub.add_parser("completions", help="Emit shell completion script")
+    p_completions.add_argument("--shell", choices=["bash", "zsh", "fish"], required=True)
+
+    p_complete = sub.add_parser("_complete", help=argparse.SUPPRESS)
+    p_complete.add_argument("--shell", required=True)
+    p_complete.add_argument("--cword", type=int, required=True)
+    p_complete.add_argument("words", nargs=argparse.REMAINDER)
+
     p_settings_cmd = sub.add_parser("settings", help="Show or update Polylogue defaults")
     p_settings_cmd.add_argument("--html", choices=["on", "off"], default=None, help="Enable or disable default HTML previews")
     p_settings_cmd.add_argument("--theme", choices=["light", "dark"], default=None, help="Set the default HTML theme")
     p_settings_cmd.add_argument("--reset", action="store_true", help="Reset to config defaults")
     p_settings_cmd.add_argument("--json", action="store_true", help="Emit settings as JSON")
-
-    automation_choices = sorted(TARGETS.keys())
-    p_automation = sub.add_parser("automation", help="Generate scheduler snippets")
-    automation_sub = p_automation.add_subparsers(dest="automation_format", required=True)
-
-    p_auto_systemd = automation_sub.add_parser("systemd", help="Emit a systemd service/timer pair")
-    p_auto_systemd.add_argument("--target", choices=automation_choices, required=True)
-    p_auto_systemd.add_argument("--interval", type=str, default="10m", help="Interval passed to OnUnitActiveSec")
-    p_auto_systemd.add_argument("--boot-delay", type=str, default="2m", help="Delay before the first run (OnBootSec)")
-    p_auto_systemd.add_argument("--working-dir", type=Path, default=None, help="Working directory for the service")
-    p_auto_systemd.add_argument("--out", type=Path, default=None, help="Override --out argument for the sync command")
-    p_auto_systemd.add_argument("--extra-arg", action="append", default=[], help="Additional argument to append to the sync command")
-    p_auto_systemd.add_argument("--collapse-threshold", type=int, default=None, help="Override collapse threshold for the sync command")
-    p_auto_systemd.add_argument("--status-log", type=Path, default=None, help="Dump polylogue status output to this path after each run")
-    p_auto_systemd.add_argument("--status-limit", type=int, default=50, help="Number of runs to include when dumping status logs")
-    p_auto_systemd.add_argument("--status-summary", type=Path, default=None, help="Write polylogue status summary JSON after each run")
-    p_auto_systemd.add_argument("--status-summary-providers", type=str, default=None, help="Comma-separated providers for the status summary command")
-    add_html_option(
-        p_auto_systemd,
-        description="HTML mode for generated sync commands: on/off/auto (default auto, inherits target defaults)",
-    )
-
-    p_auto_describe = automation_sub.add_parser("describe", help="Show automation target metadata")
-    p_auto_describe.add_argument("--target", choices=automation_choices, default=None)
-
-    p_auto_cron = automation_sub.add_parser("cron", help="Emit a cron entry")
-    p_auto_cron.add_argument("--target", choices=automation_choices, required=True)
-    p_auto_cron.add_argument("--schedule", type=str, default="*/30 * * * *", help="Cron schedule expression")
-    p_auto_cron.add_argument("--log", type=str, default="$HOME/.cache/polylogue-sync.log", help="Log file path")
-    p_auto_cron.add_argument("--state-home", type=str, default="$HOME/.local/state", help="Value for XDG_STATE_HOME")
-    p_auto_cron.add_argument("--working-dir", type=Path, default=None, help="Working directory for the cron entry")
-    p_auto_cron.add_argument("--out", type=Path, default=None, help="Override --out argument for the sync command")
-    p_auto_cron.add_argument("--extra-arg", action="append", default=[], help="Additional argument to append to the sync command")
-    p_auto_cron.add_argument("--collapse-threshold", type=int, default=None, help="Override collapse threshold for the sync command")
-    p_auto_cron.add_argument("--status-log", type=Path, default=None, help="Dump polylogue status output to this path after each run")
-    p_auto_cron.add_argument("--status-limit", type=int, default=50, help="Number of runs to include when dumping status logs")
-    p_auto_cron.add_argument("--status-summary", type=Path, default=None, help="Write polylogue status summary JSON after each run")
-    p_auto_cron.add_argument("--status-summary-providers", type=str, default=None, help="Comma-separated providers for the status summary command")
-    add_html_option(
-        p_auto_cron,
-        description="HTML mode for generated sync commands: on/off/auto (default auto, inherits target defaults)",
-    )
-
 
     p_search_preview = sub.add_parser("_search-preview", help=argparse.SUPPRESS)
     p_search_preview.add_argument("--data-file", type=Path, required=True)
@@ -926,429 +1041,16 @@ def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
     return [Path(s) for s in selection]
 
 
-def _menu_structure() -> List[tuple[str, List[tuple[str, Callable[[CommandEnv], None], Optional[str]]]]]:
-    return [
-        (
-            "Render & Import",
-            [
-                ("Render Local Logs", prompt_render, "render"),
-                ("Import Provider Export", prompt_import, "import"),
-            ],
-        ),
-        (
-            "Sync & Inspect",
-            [
-                ("Sync Provider Archives", prompt_sync, "sync"),
-                ("Inspect Branches", prompt_inspect_branches, "inspect"),
-                ("Inspect Search", prompt_inspect_search, "inspect"),
-                ("Inspect Stats", prompt_inspect_stats, "inspect"),
-            ],
-        ),
-        (
-            "Maintenance",
-            [
-                ("Prune Legacy Outputs", prompt_prune, "prune"),
-                ("Doctor", prompt_doctor, "doctor"),
-                ("Automation Snippets", prompt_automation, "automation"),
-            ],
-        ),
-    ]
-
-
-def _build_menu_options(env: CommandEnv) -> OrderedDict[str, Optional[Callable[[CommandEnv], None]]]:
-    options: OrderedDict[str, Optional[Callable[[CommandEnv], None]]] = OrderedDict()
-    for group, entries in _menu_structure():
-        for label, handler, command_name in entries:
-            info = COMMAND_REGISTRY.info(command_name) if command_name else None
-            help_text = info.help_text if info and info.help_text else ""
-            display = f"{group} ▸ {label}"
-            if help_text:
-                display = f"{display} — {help_text}"
-            options[display] = handler
-    options["Status ▸ View environment summary — Show cached Drive info and recent runs"] = _show_status_dashboard
-    options["Settings ▸ Adjust defaults"] = settings_menu
-    options["Help ▸ Command overview"] = show_help
-    options["Quit"] = None
-    return options
-
-
-def _show_status_dashboard(env: CommandEnv) -> None:
-    args = argparse.Namespace(json=False, watch=False, interval=5.0)
-    run_status_cli(args, env)
-
-
-def _display_status_snapshot(env: CommandEnv) -> None:
-    status = status_command(env)
-    env_lines = [
-        f"Credentials: {'present' if status.credentials_present else 'missing'}",
-        f"Token: {'present' if status.token_present else 'missing'}",
-        f"Runs recorded: {len(status.recent_runs)}",
-    ]
-    if status.recent_runs:
-        last_run = status.recent_runs[-1]
-        env_lines.append(
-            f"Last run → {last_run.get('cmd')} @ {last_run.get('timestamp') or '-'}"
-        )
-    env.ui.summary("Environment Snapshot", env_lines)
-
-    provider_lines: List[str] = []
-    for provider, stats in list(status.provider_summary.items())[:3]:
-        provider_lines.append(
-            f"{provider}: runs={stats['count']} diffs={stats['diffs']} retries={stats.get('retries', 0)}"
-        )
-    if not provider_lines:
-        provider_lines = ["No provider runs recorded yet."]
-    env.ui.summary("Providers", provider_lines)
-
-    recent_lines = [
-        f"{item.get('cmd')} · count={item.get('count', 0)} @ {item.get('timestamp') or '-'}"
-        for item in status.recent_runs[-3:]
-    ]
-    if recent_lines:
-        env.ui.summary("Recent Runs", recent_lines)
-
-    quick_lines = [
-        "Render Local Logs → Render & Import ▸ Render Local Logs",
-        "Sync Drive → Sync & Inspect ▸ Sync Provider Archives",
-        "Import ChatGPT → Render & Import ▸ Import Provider Export",
-    ]
-    env.ui.summary("Quick Actions", quick_lines)
-
-    pref_lines = [
-        f"HTML previews: {'on' if env.settings.html_previews else 'off'}",
-        f"HTML theme: {env.settings.html_theme}",
-    ]
-    env.ui.summary("Preferences", pref_lines)
-
-
-def interactive_menu(env: CommandEnv) -> None:
-    ui = env.ui
-    global _MENU_TIPS_SHOWN
-    if not ui.plain and not _MENU_TIPS_SHOWN:
-        ui.console.print("[cyan]Use the arrow keys to navigate, press Enter to select, and 'q' to back out of pickers.")
-        _MENU_TIPS_SHOWN = True
-    while True:
-        ui.banner("Polylogue", "Render AI chat logs or sync providers")
-        _display_status_snapshot(env)
-        options = _build_menu_options(env)
-        choice = ui.choose("Select an action", list(options.keys()))
-        if choice is None:
-            return
-        handler = options.get(choice)
-        if handler is None:
-            return
-        handler(env)
-
-
-def prompt_render(env: CommandEnv) -> None:
-    ui = env.ui
-    settings = env.settings
-    default_input = str(Path.cwd())
-    user_input = ui.input("Directory or file to render", default=default_input)
-    if not user_input:
-        return
-    path = Path(user_input).expanduser()
-    if not path.exists():
-        ui.console.print(f"[red]Path not found: {path}")
-        return
-    class Args:
-        pass
-    args = Args()
-    args.input = path
-    args.out = None
-    args.links_only = False
-    args.dry_run = False
-    args.force = False
-    args.collapse_threshold = None
-    args.json = False
-    args.html_mode = "on" if settings.html_previews else "off"
-    run_render_cli(args, env, json_output=False)
-
-
-def prompt_sync(env: CommandEnv) -> None:
-    ui = env.ui
-    provider_choices = ["drive", *LOCAL_SYNC_PROVIDER_NAMES]
-    provider = ui.choose("Sync which provider?", provider_choices)
-    if not provider:
-        return
-
-    args = default_sync_namespace(provider, env.settings)
-    run_sync_cli(args, env)
-
-
-def prompt_import(env: CommandEnv) -> None:
-    ui = env.ui
-    provider = ui.choose("Import which provider?", ["chatgpt", "claude", "codex", "claude-code"])
-    if not provider:
-        return
-
-    sources: List[str] = []
-    base_dir: Optional[Path] = None
-    all_flag = False
-    conversation_ids: List[str] = []
-
-    if provider in {"chatgpt", "claude"}:
-        path_input = ui.input("Export path", default=str(Path.cwd()))
-        if not path_input:
-            return
-        sources.append(path_input)
-        all_flag = ui.confirm("Import all conversations?", default=False) if not ui.plain else False
-    else:
-        session_hint = ui.input("Session identifier (leave blank to pick interactively)", default="")
-        if session_hint:
-            sources.append(session_hint)
-        if provider == "codex":
-            base_dir_input = ui.input("Codex sessions directory", default=str(CODEX_SESSIONS_ROOT))
-            base_dir = Path(base_dir_input) if base_dir_input else None
-        else:
-            base_dir_input = ui.input("Claude Code projects directory", default=str(DEFAULT_PROJECT_ROOT))
-            base_dir = Path(base_dir_input) if base_dir_input else None
-
-    args = default_import_namespace(
-        provider=provider,
-        sources=sources,
-        base_dir=base_dir,
-        all_flag=all_flag,
-        conversation_ids=conversation_ids,
-        settings=env.settings,
-    )
-    run_import_cli(args, env)
-
-
-def prompt_inspect_branches(env: CommandEnv) -> None:
-    ui = env.ui
-    provider = ui.input("Filter provider (optional)", default="")
-    slug = ui.input("Filter slug (optional)", default="")
-    conversation_id = ui.input("Filter conversation ID (optional)", default="")
-    args = argparse.Namespace(
-        provider=provider or None,
-        slug=slug or None,
-        conversation_id=conversation_id or None,
-        min_branches=1,
-        branch=None,
-        diff=False,
-        html_mode="auto",
-        html_out=None,
-        theme=None,
-        no_picker=False,
-    )
-    run_inspect_branches(args, env)
-
-
-def prompt_inspect_search(env: CommandEnv) -> None:
-    ui = env.ui
-    query = ui.input("Search query", default="error OR failure")
-    if not query:
-        return
-    args = argparse.Namespace(
-        query=query,
-        limit=20,
-        provider=None,
-        slug=None,
-        conversation_id=None,
-        branch=None,
-        model=None,
-        since=None,
-        until=None,
-        with_attachments=False,
-        without_attachments=False,
-        no_picker=False,
-        json=False,
-    )
-    run_inspect_search(args, env)
-
-
-def prompt_inspect_stats(env: CommandEnv) -> None:
-    ui = env.ui
-    default_dir = str(CONFIG.defaults.output_dirs.render.parent)
-    directory = ui.input("Directory to summarize", default=default_dir)
-    if not directory:
-        return
-    args = argparse.Namespace(
-        dir=Path(directory),
-        json=False,
-        since=None,
-        until=None,
-    )
-    run_stats_cli(args, env)
-
-
-
-
-
-
-def prompt_prune(env: CommandEnv) -> None:
-    args = argparse.Namespace(dirs=None, dry_run=False)
-    run_prune_cli(args, env)
-
-
-def prompt_doctor(env: CommandEnv) -> None:
-    class Args:
-        pass
-
-    args = Args()
-    args.codex_dir = None
-    args.claude_code_dir = None
-    args.limit = 25
-    args.json = False
-    run_doctor_cli(args, env)
-
-
-def prompt_automation(env: CommandEnv) -> None:
-    ui = env.ui
-    format_label = ui.choose(
-        "Generate which automation snippet?",
-        ["Systemd unit", "Cron entry", "Describe targets"],
-    )
-    if not format_label:
-        return
-
-    format_map = {
-        "Systemd unit": "systemd",
-        "Cron entry": "cron",
-        "Describe targets": "describe",
-    }
-    fmt = format_map[format_label]
-    target_keys = sorted(TARGETS.keys())
-
-    if fmt == "describe":
-        selection = ui.choose("Select automation target", ["All targets"] + target_keys)
-        if selection is None:
-            return
-        target = None if selection == "All targets" else selection
-        args = argparse.Namespace(automation_format="describe", target=target)
-        run_automation_cli(args, env)
-        return
-
-    target = ui.choose("Select automation target", target_keys)
-    if not target:
-        return
-
-    defaults = TARGETS[target].defaults or {}
-    working_dir_default = defaults.get("workingDir") or str(REPO_ROOT)
-    extra_args_default = " ".join(defaults.get("extraArgs", []))
-    collapse_default = defaults.get("collapseThreshold")
-    html_default = defaults.get("html")
-
-    if fmt == "systemd":
-        interval = ui.input("Run interval (OnUnitActiveSec)", default=defaults.get("systemdInterval", "10m")) or "10m"
-        boot_delay = ui.input("Boot delay (OnBootSec)", default="2m") or "2m"
-        working_dir_input = ui.input("Working directory", default=working_dir_default) or working_dir_default
-        extra_args_input = ui.input("Additional CLI arguments (space separated)", default=extra_args_default)
-        collapse_input = ui.input(
-            "Collapse threshold override (optional)",
-            default=str(collapse_default) if collapse_default is not None else "",
-        )
-        html_enabled = ui.confirm(
-            "Enable HTML output?",
-            default=bool(html_default) if html_default is not None else False,
-        )
-        out_input = ui.input("Override --out path (optional)", default=str(defaults.get("outputDir") or ""))
-        args = argparse.Namespace(
-            automation_format="systemd",
-            target=target,
-            interval=interval,
-            boot_delay=boot_delay,
-            working_dir=Path(working_dir_input).expanduser(),
-            out=Path(out_input).expanduser() if out_input else None,
-            extra_arg=shlex.split(extra_args_input) if extra_args_input else [],
-            collapse_threshold=int(collapse_input) if collapse_input else None,
-            html=html_enabled,
-        )
-        run_automation_cli(args, env)
-        return
-
-    schedule = ui.input("Cron schedule", default="*/30 * * * *") or "*/30 * * * *"
-    log_path = ui.input("Log path", default="$HOME/.cache/polylogue-sync.log") or "$HOME/.cache/polylogue-sync.log"
-    state_home = ui.input("XDG_STATE_HOME value", default="$HOME/.local/state") or "$HOME/.local/state"
-    working_dir_input = ui.input("Working directory", default=working_dir_default) or working_dir_default
-    extra_args_input = ui.input("Additional CLI arguments (space separated)", default=extra_args_default)
-    collapse_input = ui.input(
-        "Collapse threshold override (optional)",
-        default=str(collapse_default) if collapse_default is not None else "",
-    )
-    html_enabled = ui.confirm(
-        "Enable HTML output?",
-        default=bool(html_default) if html_default is not None else False,
-    )
-    out_input = ui.input("Override --out path (optional)", default=str(defaults.get("outputDir") or ""))
-    args = argparse.Namespace(
-        automation_format="cron",
-        target=target,
-        schedule=schedule,
-        log=log_path,
-        state_home=state_home,
-        working_dir=Path(working_dir_input).expanduser(),
-        out=Path(out_input).expanduser() if out_input else None,
-        extra_arg=shlex.split(extra_args_input) if extra_args_input else [],
-        collapse_threshold=int(collapse_input) if collapse_input else None,
-        html=html_enabled,
-    )
-    run_automation_cli(args, env)
-
-
-def show_help(env: CommandEnv) -> None:
-    ui = env.ui
-    ui.console.print("Polylogue commands:")
-    ui.console.print("  render            Render local provider JSON files")
-    ui.console.print("  sync <provider>   Sync Drive/Codex/Claude Code archives")
-    ui.console.print("  import <provider> Import provider exports or sessions")
-    ui.console.print("  inspect branches  Explore branch graphs")
-    ui.console.print("  inspect search    Query transcripts via SQLite FTS")
-    ui.console.print("  inspect stats     Summarize Markdown output directories")
-    ui.console.print("  watch <provider>  Watch local session stores and sync on change")
-    ui.console.print("  prune             Remove legacy single-file outputs")
-    ui.console.print("  doctor            Check local data directories for issues")
-    ui.console.print("  status            Show cached Drive info and recent runs")
-    ui.console.print("  settings          Update default HTML/theme preferences")
-    ui.console.print("  automation        Generate automation snippets")
-    ui.console.print("  --plain           Disable interactive UI for automation")
-    ui.console.print("  --json            Emit machine-readable summaries when supported")
-
-
-def settings_menu(env: CommandEnv) -> None:
-    ui = env.ui
-    settings = env.settings
-    while True:
-        toggle_label = f"Toggle HTML previews ({'on' if settings.html_previews else 'off'})"
-        theme_label = f"HTML theme ({settings.html_theme})"
-        choices = [toggle_label, theme_label, "Reset defaults", "Back"]
-        choice = ui.choose("Settings", choices)
-        if choice is None or choice == "Back":
-            return
-        if choice == toggle_label:
-            settings.html_previews = not settings.html_previews
-            state = "enabled" if settings.html_previews else "disabled"
-            ui.console.print(f"HTML previews {state}.")
-            persist_settings(settings)
-        elif choice == theme_label:
-            if ui.plain:
-                ui.console.print("Switch to interactive mode or adjust defaults in your config to change the HTML theme.")
-                continue
-            selection = ui.choose("Select HTML theme", ["light", "dark"])
-            if selection:
-                settings.html_theme = selection
-                ui.console.print(f"HTML theme set to {selection}.")
-                persist_settings(settings)
-        elif choice == "Reset defaults":
-            ensure_settings_defaults(settings)
-            clear_persisted_settings()
-            ui.console.print("Settings reset to defaults.")
-
-
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    ui = create_ui(args.plain)
+    plain_mode = args.plain and not getattr(args, "interactive", False)
+    ui = create_ui(plain_mode)
     env = CommandEnv(ui=ui)
     ensure_settings_defaults(env.settings)
 
     if args.cmd is None:
-        if ui.plain:
-            parser.print_help()
-            return
-        ui.banner("Polylogue", "Render AI chat logs or sync providers")
-        interactive_menu(env)
+        parser.print_help()
         return
 
     _register_default_commands()

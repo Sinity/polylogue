@@ -150,19 +150,15 @@ def process_conversation(
     source_size: Optional[int],
     attachment_policy,
     force: bool,
-    branch_mode: str = "full",
     registrar: Optional[ConversationRegistrar] = None,
     citations: Optional[List[Any]] = None,
 ) -> ImportResult:
     if registrar is None:
         raise ValueError("ConversationRegistrar instance required")
 
-    branch_mode_normalized = (branch_mode or "full").lower()
-    if branch_mode_normalized not in {"full", "overlay", "canonical"}:
-        raise ValueError(f"Unsupported branch export mode: {branch_mode}")
-    write_branch_tree = branch_mode_normalized in {"full", "overlay"}
-    write_full_branch_docs = branch_mode_normalized == "full"
-    write_overlay_docs = branch_mode_normalized in {"full", "overlay"}
+    write_branch_tree = True
+    write_full_branch_docs = True
+    write_overlay_docs = True
 
     records_by_id = {record.message_id: record for record in message_records}
     plan = build_branch_plan(message_records, canonical_leaf_id=canonical_leaf_id)

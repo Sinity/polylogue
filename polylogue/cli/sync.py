@@ -158,7 +158,6 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         html=html_enabled,
         html_theme=html_theme,
         diff=getattr(args, "diff", False),
-        branch_export=getattr(args, "branch_export", "full"),
     )
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
@@ -290,7 +289,6 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
         diff=diff_enabled,
         sessions=selected_paths,
         registrar=env.registrar,
-        branch_mode=getattr(args, "branch_export", "full"),
     )
 
     attachments = result.attachments
