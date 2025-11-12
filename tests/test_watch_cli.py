@@ -3,7 +3,9 @@ from __future__ import annotations
 from argparse import Namespace
 from pathlib import Path
 
-from polylogue.cli.watch import _run_watch_sessions
+import pytest
+
+from polylogue.cli.watch import _run_watch_sessions, run_watch_cli
 from polylogue.commands import CommandEnv
 from polylogue.local_sync import LocalSyncResult
 
@@ -54,7 +56,6 @@ def _watch_args(base_dir: Path, out_dir: Path) -> Namespace:
         out=str(out_dir),
         collapse_threshold=None,
         html_mode="off",
-        branch_export="full",
         debounce=0,
         once=False,
     )
@@ -98,3 +99,11 @@ def test_watch_accepts_bundle_extensions(monkeypatch, tmp_path):
 
     assert len(provider.calls) == 2
     assert provider.calls[1] == [tmp_path / "export.zip"]
+
+
+def test_run_watch_cli_requires_watchfiles(monkeypatch, tmp_path):
+    args = _watch_args(tmp_path, tmp_path / "out")
+    env = CommandEnv(ui=DummyUI())
+    monkeypatch.setattr("polylogue.cli.watch._WATCHFILES_AVAILABLE", False)
+    with pytest.raises(SystemExit):
+        run_watch_cli(args, env)

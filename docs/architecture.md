@@ -5,14 +5,13 @@ Polylogue now follows a modular structure that separates orchestration concerns 
 ## Command Registry
 
 - `polylogue.cli.registry.CommandRegistry` maps CLI verbs to handlers.
-- `polylogue.cli.app` registers commands and uses the registry for dispatch and for the interactive menu.
+- `polylogue.cli.app` registers commands and uses the registry for dispatch.
 - Makes it easy to add new commands or reuse handlers across CLI/parsers/UI.
 
 ## Console Facade & UI
 
 - `polylogue/ui/facade.py` wraps Rich/gum functionality (the devshell ships these by default) and only drops to the plain console when `--plain` is explicitly requested or CI disables the interactive stack.
-- `polylogue.ui.UI` delegates to the facade but now provides interactive prompts even in plain mode (numeric selection, yes/no prompts, etc.).
-- The interactive menu groups actions (“Render & Import”, “Sync & Inspect”, “Maintenance”), shows a status snapshot using `status_command`, and relies on the registry for help text.
+- `polylogue.ui.UI` delegates to the facade but still provides interactive prompts (pickers, yes/no prompts, etc.) when the environment is not `--plain`.
 
 ## Persistence Layer
 
@@ -53,6 +52,10 @@ Polylogue now follows a modular structure that separates orchestration concerns 
 
 - Extend the pipeline stages with richer validation (e.g., schema checks for provider exports) and tighten error reporting.
 - Build end-to-end snapshots for `sync`/`render` flows that assert both Markdown output and metadata side effects (state + SQLite) to guard against regressions.
-- Explore packaging the console menu as a reusable service for the forthcoming TUI revamp (faceted filters, richer status dashboards).
+- Explore richer CLI ergonomics (completions, faceted status dashboards) on top of the existing registry/facade stack. Planned completion work includes:
+  - bringing the dynamic engine to bash/fish so every shell benefits from live suggestions;
+  - expanding suggestions beyond slugs/providers to include filtered Drive chats, recent session files, and constrained flag values discovered from argparse metadata;
+  - caching completions to stay snappy even on large archives;
+  - rethinking annotation formats (e.g., structured JSON) so shells can render descriptions/tooltips cleanly.
 
-This structure makes it easier to add providers, surface richer UI, and build new automation on top of Polylogue without duplicating plumbing code.
+This structure makes it easier to add providers, surface richer UI, and build new tooling on top of Polylogue without duplicating plumbing code.

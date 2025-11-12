@@ -270,7 +270,6 @@ class RenderPersistStage:
             source_size=None,
             attachment_policy=None,
             force=getattr(options, "force", False),
-            branch_mode=getattr(options, "branch_export", "full"),
             registrar=env.registrar,
             citations=chat_context.citations,
         )
@@ -635,6 +634,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     )
 
     items: List[SyncItem] = []
+    wanted_slugs: set[str] = set()
     totals_acc = RunAccumulator()
     for meta in chats:
         ctx = PipelineContext(env=env, options=options, data={"metadata": meta})
@@ -645,6 +645,9 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         result: Optional[ImportResult] = ctx.get("import_result")
         chat_context: ChatContext = ctx.get("chat_context")
         file_id = ctx.get("file_id")
+        slug_value = ctx.get("slug")
+        if isinstance(slug_value, str) and slug_value:
+            wanted_slugs.add(slug_value)
 
         if result is None:
             continue
@@ -686,7 +689,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
 
     pruned_count = 0
     if options.prune:
-        wanted = {item.slug for item in items}
+        wanted = wanted_slugs if wanted_slugs else {item.slug for item in items}
         to_delete = compute_prune_paths(options.output_dir, wanted)
         if options.dry_run:
             env.ui.console.print(f"[yellow][dry-run] Would prune {len(to_delete)} path(s)")
@@ -779,7 +782,7 @@ def status_command(env: CommandEnv, runs_limit: Optional[int] = 200) -> StatusRe
         credentials_present=credentials_present,
         token_present=token_present,
         state_path=env.conversations.state_path,
-        runs_path=env.conversations.state_path,
+        runs_path=env.database.resolve_path(),
         recent_runs=recent_runs,
         run_summary=run_summary,
         provider_summary=provider_summary,
