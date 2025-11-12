@@ -7,9 +7,15 @@ from typing import Any, Callable, Iterable, List, Optional, Set, Tuple
 
 try:  # pragma: no cover - optional dependency
     from watchfiles import watch as _watch_directory
+    _WATCHFILES_AVAILABLE = True
 except ImportError:  # pragma: no cover - used in non-watch environments
+    _WATCHFILES_AVAILABLE = False
+
     def _watch_directory(*_args, **_kwargs):
-        yield from ()
+        raise RuntimeError(
+            "watchfiles is required for `polylogue watch`. "
+            "Ensure the dependency is installed (enter the Nix shell via `nix develop`)."
+        )
 
 from ..commands import CommandEnv
 from ..local_sync import get_local_provider
@@ -27,6 +33,11 @@ WatchDirectoryFn = Callable[..., WatchBatch]
 
 
 def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+    if not _WATCHFILES_AVAILABLE:
+        raise SystemExit(
+            "The `watchfiles` dependency is missing. Run inside the Polylogue dev shell (`nix develop`) "
+            "or install watchfiles to use `polylogue watch`."
+        )
     provider_name = getattr(args, "provider", None)
     provider = get_local_provider(provider_name)
     if not provider.supports_watch:
@@ -69,7 +80,6 @@ def _run_watch_sessions(
                 prune=False,
                 diff=False,
                 sessions=session_override,
-                branch_mode=getattr(args, "branch_export", "full"),
                 registrar=env.registrar,
             )
         except Exception as exc:  # pragma: no cover - defensive

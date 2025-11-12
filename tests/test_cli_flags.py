@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from pathlib import Path
 
 import pytest
 
 from polylogue.cli import CommandEnv, build_parser, run_sync_cli, _resolve_html_settings
+from polylogue.cli.sync import _run_sync_drive, _run_local_sync
+from polylogue.local_sync import LocalSyncResult
 
 
 class DummyConsole:
@@ -87,3 +90,89 @@ def test_sync_parser_supports_selection_flags(tmp_path):
         ["sync", "codex", "--session", str(session_one), "--session", str(session_two)]
     )
     assert local_args.sessions == [session_one, session_two]
+
+
+def test_run_sync_drive_respects_selected_ids(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_sync_command(options, env):  # noqa: ARG001
+        captured["options"] = options
+
+        class Result:
+            count = 0
+            output_dir = tmp_path
+            folder_name = "AI Studio"
+            folder_id = "folder-id"
+            items = []
+            total_stats = {}
+
+        return Result()
+
+    monkeypatch.setattr("polylogue.cli.sync.sync_command", fake_sync_command)
+
+    args = Namespace(
+        links_only=True,
+        chat_ids=["chat-123"],
+        name_filter=None,
+        since=None,
+        until=None,
+        folder_name="AI Studio",
+        folder_id=None,
+        list_only=False,
+        dry_run=False,
+        force=False,
+        prune=False,
+        collapse_threshold=None,
+        out=None,
+        html_mode="off",
+        diff=False,
+        json=False,
+        links=None,
+        all=False,
+    )
+    env = CommandEnv(ui=DummyUI())
+
+    _run_sync_drive(args, env)
+
+    assert captured["options"].selected_ids == ["chat-123"]
+
+
+def test_run_local_sync_passes_sessions(monkeypatch, tmp_path):
+    captured_sessions = {}
+
+    class StubProvider:
+        name = "stub"
+        title = "Stub Provider"
+        default_base = tmp_path
+        default_output = tmp_path / "out"
+        supports_diff = True
+        create_base_dir = False
+        supports_watch = False
+
+        def list_sessions(self, base_dir):  # noqa: ARG002
+            return []
+
+        def sync_fn(self, *, sessions=None, **kwargs):  # noqa: ANN001
+            captured_sessions["sessions"] = sessions
+            return LocalSyncResult(written=[], skipped=0, pruned=0, output_dir=kwargs["output_dir"])
+
+    monkeypatch.setattr("polylogue.cli.sync.get_local_provider", lambda _name: StubProvider())
+
+    args = Namespace(
+        provider="stub",
+        base_dir=str(tmp_path),
+        out=None,
+        collapse_threshold=None,
+        html_mode="off",
+        force=False,
+        prune=False,
+        diff=False,
+        sessions=[tmp_path / "session-a.jsonl", tmp_path / "session-b.jsonl"],
+        all=False,
+        json=False,
+    )
+    env = CommandEnv(ui=DummyUI())
+
+    _run_local_sync("stub", args, env)
+
+    assert captured_sessions["sessions"] == [Path(tmp_path / "session-a.jsonl"), Path(tmp_path / "session-b.jsonl")]
