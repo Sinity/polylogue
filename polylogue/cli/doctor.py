@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+from rich.table import Table
+
 from ..commands import CommandEnv
 from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
 from ..doctor import run_doctor as doctor_run
@@ -34,6 +36,7 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 "path": str(issue.path),
                 "message": issue.message,
                 "severity": issue.severity,
+                "hint": issue.hint,
             }
             for issue in report.issues
         ],
@@ -62,22 +65,28 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         return
 
     if not ui.plain:
-        try:
-            from rich.table import Table
-
-            table = Table(title="Doctor Issues", show_lines=False)
-            table.add_column("Provider")
-            table.add_column("Severity")
-            table.add_column("Path")
-            table.add_column("Message")
-            for issue in report.issues:
-                table.add_row(issue.provider, issue.severity, str(issue.path), issue.message)
-            console.print(table)
-        except Exception:
-            pass
+        table = Table(title="Doctor Issues", show_lines=False)
+        table.add_column("Provider")
+        table.add_column("Severity")
+        table.add_column("Path")
+        table.add_column("Message")
+        table.add_column("Hint")
+        severity_styles = {"error": "bold red", "warning": "yellow", "info": "cyan"}
+        for issue in report.issues:
+            style = severity_styles.get(issue.severity.lower(), "")
+            table.add_row(
+                issue.provider,
+                issue.severity.upper(),
+                str(issue.path),
+                issue.message,
+                issue.hint or "",
+                style=style,
+            )
+        console.print(table)
     lines.append(f"Found {len(report.issues)} issue(s):")
     for issue in report.issues:
-        lines.append(f"- [{issue.severity}] {issue.provider}: {issue.path} — {issue.message}")
+        hint_text = f" Hint: {issue.hint}" if issue.hint else ""
+        lines.append(f"- [{issue.severity}] {issue.provider}: {issue.path} — {issue.message}{hint_text}")
     ui.summary("Doctor", lines)
 
 
