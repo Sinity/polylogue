@@ -7,6 +7,7 @@ from .app import (  # pylint: disable=unused-import
     copy_import_to_clipboard,
     main,
     run_completions_cli,
+    run_dashboards_cli,
     run_complete_cli,
     run_doctor_cli,
     run_env_cli,
@@ -44,6 +45,7 @@ __all__ = [
     "run_stats_cli",
     "run_sync_cli",
     "run_watch_cli",
+    "run_dashboards_cli",
     "summarize_import",
     "_run_sync_drive",
 ]
