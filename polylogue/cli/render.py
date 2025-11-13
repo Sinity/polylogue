@@ -72,7 +72,6 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         html=html_enabled,
         html_theme=html_theme,
         diff=getattr(args, "diff", False),
-        branch_export=getattr(args, "branch_export", "full"),
     )
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)

@@ -23,9 +23,9 @@ Claude Code stores IDE transcripts beneath `~/.claude/projects/`. Polylogue mirr
 
 ### Branch Export Modes
 
-Claude Code sessions respect the same `--branch-export full|overlay|canonical` flag as other providers. The default `full` layout mirrors the IDE’s branching history in `conversation.common.md` and `branches/<branch-id>/` directories. `overlay` trims the per-branch full copies, leaving just the overlays plus the canonical transcript, while `canonical` writes only `conversation.md` for a flatter archive. The flag applies to `polylogue import claude-code`, `polylogue sync claude-code`, and watchers because they share the registrar-backed pipeline.
+Claude Code sessions always mirror the IDE’s branching history: `conversation.md` captures the canonical transcript, `conversation.common.md` stores shared context, and `branches/<branch-id>/{<branch-id>.md, overlay.md}` preserve each fork. Imports, syncs, and watchers share this layout because they run through the same registrar-backed pipeline.
 
-## Automation
+## Sync Notes
 
 - Run `polylogue sync claude-code` for one-shot mirroring or `polylogue watch claude-code` for continuous sync. Both commands honour collapse thresholds, HTML output, pruning, and diff generation.
 - The importer preserves file mtimes and reuses per-conversation slugs so reruns remain idempotent and Git-friendly.

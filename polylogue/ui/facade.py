@@ -7,14 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, List, Optional, Protocol, Sequence
 
-try:  # pragma: no cover - optional rich dependency
-    from rich.console import Console
-    from rich.panel import Panel
-    from rich.text import Text
-except ImportError:  # pragma: no cover - fall back to plain console
-    Console = None
-    Panel = None
-    Text = None
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
 
 
 class ConsoleLike(Protocol):
@@ -23,7 +18,7 @@ class ConsoleLike(Protocol):
 
 
 class PlainConsole:
-    """Minimal Console shim when Rich is unavailable."""
+    """Minimal Console shim for non-interactive mode."""
 
     def __init__(self, *_: object, **__: object) -> None:
         pass
@@ -155,24 +150,20 @@ class PlainConsoleFacade(ConsoleFacade):
 
 @dataclass
 class InteractiveConsoleFacade(ConsoleFacade):
-    """Rich + gum backed facade that can fall back to plain mode."""
+    """Rich + gum backed facade that requires the interactive toolchain."""
 
     def __post_init__(self) -> None:
         missing = [cmd for cmd in ("gum", "sk") if shutil.which(cmd) is None]
-        if Console is None or missing:
-            # Fall back to plain facade when Rich or gum is not available.
-            self.console = PlainConsole()
-            self.plain = True
-            warning = " and ".join(missing) + " command(s)" if missing else "interactive dependencies"
-            self.console.print(f"[plain]Interactive UI unavailable (missing {warning}); using plain output.")
-        else:
-            self.console = Console(no_color=False, force_terminal=True)
+        if missing:
+            missing_cmds = ", ".join(missing)
+            raise RuntimeError(
+                f"Interactive dependencies missing: {missing_cmds}. "
+                "Enter the Polylogue devshell (`nix develop`) or install the required tools."
+            )
+        self.console = Console(no_color=False, force_terminal=True)
 
 
 def create_console_facade(plain: bool) -> ConsoleFacade:
     if plain:
         return PlainConsoleFacade(plain=True)
-    facade = InteractiveConsoleFacade(plain=False)
-    if facade.plain:
-        return PlainConsoleFacade(plain=True)
-    return facade
+    return InteractiveConsoleFacade(plain=False)
