@@ -6,13 +6,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import os
+
 from .archive import Archive
-from .config import CONFIG
+from .config import CONFIG, CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
+from .db import DB_PATH
+from .drive_client import DEFAULT_CREDENTIALS, DEFAULT_TOKEN
 from .paths import STATE_HOME
 from .persistence.database import ConversationDatabase
 from .persistence.state import ConversationStateRepository
 from .util import load_runs
 from .services.conversation_service import ConversationService, create_conversation_service
+from .index_health import verify_qdrant_collection, verify_sqlite_indexes
 
 
 @dataclass
@@ -21,6 +26,7 @@ class DoctorIssue:
     path: Path
     message: str
     severity: str = "error"
+    hint: Optional[str] = None
 
 
 @dataclass
@@ -246,6 +252,66 @@ def prune_database_entries(
     return len(to_delete), issues
 
 
+def _dependency_issues() -> List[DoctorIssue]:
+    issues: List[DoctorIssue] = []
+    required_cmds = ("gum", "sk", "bat", "glow", "delta")
+    for cmd in required_cmds:
+        if shutil.which(cmd) is None:
+            issues.append(
+                DoctorIssue(
+                    "runtime",
+                    Path(cmd),
+                    f"Command '{cmd}' not found in PATH.",
+                    "error",
+                    hint="Enter `nix develop` in the repo to load the required CLI helpers.",
+                )
+            )
+    return issues
+
+
+def _config_issues() -> List[DoctorIssue]:
+    issues: List[DoctorIssue] = []
+    config_target = CONFIG_PATH if CONFIG_PATH else (DEFAULT_PATHS[0] if DEFAULT_PATHS else STATE_HOME)
+    if CONFIG_PATH is None or not CONFIG_PATH.exists():
+        candidates = ", ".join(str(path) for path in DEFAULT_PATHS)
+        hint = f"Copy docs/polylogue.config.sample.jsonc to one of [{candidates}] or set ${CONFIG_ENV}."
+        issues.append(
+            DoctorIssue(
+                "config",
+                Path(config_target),
+                "Polylogue config not found.",
+                "warning",
+                hint=hint,
+            )
+        )
+    return issues
+
+
+def _credential_issues() -> List[DoctorIssue]:
+    issues: List[DoctorIssue] = []
+    if not DEFAULT_CREDENTIALS.exists():
+        issues.append(
+            DoctorIssue(
+                "drive",
+                DEFAULT_CREDENTIALS,
+                "Google Drive credentials missing.",
+                "warning",
+                hint="Run `polylogue sync drive` and follow the OAuth prompt to save credentials.json.",
+            )
+        )
+    if not DEFAULT_TOKEN.exists():
+        issues.append(
+            DoctorIssue(
+                "drive",
+                DEFAULT_TOKEN,
+                "Drive OAuth token missing; next sync will request authorization.",
+                "info",
+                hint="Allow the OAuth consent flow during the next Drive sync.",
+            )
+        )
+    return issues
+
+
 def run_doctor(
     *,
     codex_dir: Path,
@@ -274,6 +340,25 @@ def run_doctor(
         counts["database"] = removed_db
     issues.extend(db_issues)
 
+    issues.extend(_dependency_issues())
+    issues.extend(_config_issues())
+    issues.extend(_credential_issues())
     issues.extend(_drive_failure_issues())
+    try:
+        sqlite_notes = verify_sqlite_indexes(DB_PATH)
+        if sqlite_notes:
+            counts["indexes"] = counts.get("indexes", 0) + len(sqlite_notes)
+            for note in sqlite_notes:
+                issues.append(DoctorIssue("index", DB_PATH, note, "info"))
+    except Exception as exc:
+        issues.append(DoctorIssue("index", DB_PATH, str(exc), "error"))
+    try:
+        qdrant_notes = verify_qdrant_collection()
+        if qdrant_notes:
+            for note in qdrant_notes:
+                issues.append(DoctorIssue("qdrant", Path("qdrant"), note, "info"))
+    except RuntimeError as exc:
+        if os.environ.get("POLYLOGUE_INDEX_BACKEND", "sqlite").strip().lower() == "qdrant":
+            issues.append(DoctorIssue("qdrant", Path("qdrant"), str(exc), "error"))
 
     return DoctorReport(checked=counts, issues=issues)
