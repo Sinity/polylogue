@@ -86,7 +86,14 @@ def require_google():
     ) from GOOGLE_IMPORT_ERROR
 
 
-def _retry(fn, *, retries: int = 3, base_delay: float = 0.5, operation: str = "request"):
+def _retry(
+    fn,
+    *,
+    retries: int = 3,
+    base_delay: float = 0.5,
+    operation: str = "request",
+    notifier=None,
+):
     # Allow env overrides for tuning
     try:
         override = int(os.environ.get("POLYLOGUE_RETRIES", retries))
@@ -110,10 +117,16 @@ def _retry(fn, *, retries: int = 3, base_delay: float = 0.5, operation: str = "r
             return result
         except Exception as e:
             last_err = e
+            delay = base_delay * (2 ** i)
+            if notifier:
+                try:
+                    notifier(operation=operation, attempt=attempts, total=retries, error=e, delay=delay)
+                except Exception:
+                    pass
             if i == retries - 1:
                 _record_drive_completion(operation, attempts, error=e)
                 raise
-            time.sleep(base_delay * (2 ** i))
+            time.sleep(delay)
     if last_err:
         raise last_err
     return None
@@ -179,7 +192,7 @@ def _run_console_flow(flow: InstalledAppFlow, *, verbose: bool) -> Credentials:
     return flow.credentials
 
 
-def _drive_get_json(session: AuthorizedSession, path: str, params: Dict[str, Any]) -> Dict[str, Any]:
+def _drive_get_json(session: AuthorizedSession, path: str, params: Dict[str, Any], *, notifier=None) -> Dict[str, Any]:
     url = f"{DRIVE_BASE}/{path}"
 
     def call():
@@ -190,7 +203,7 @@ def _drive_get_json(session: AuthorizedSession, path: str, params: Dict[str, Any
         finally:
             resp.close()
 
-    return _retry(call, operation="metadata")
+    return _retry(call, operation="metadata", notifier=notifier)
 
 
 def get_drive_service(credentials_path: Path, verbose: bool = False):
@@ -238,7 +251,7 @@ def get_drive_service(credentials_path: Path, verbose: bool = False):
         return None
 
 
-def list_children(session, folder_id: str) -> List[Dict[str, Any]]:
+def list_children(session, folder_id: str, *, notifier=None) -> List[Dict[str, Any]]:
     items: List[Dict[str, Any]] = []
     page_token: Optional[str] = None
     params = {
@@ -251,7 +264,7 @@ def list_children(session, folder_id: str) -> List[Dict[str, Any]]:
             params["pageToken"] = page_token
         elif "pageToken" in params:
             del params["pageToken"]
-        resp = _drive_get_json(session, "files", params)
+        resp = _drive_get_json(session, "files", params, notifier=notifier)
         items.extend(resp.get("files", []))
         page_token = resp.get("nextPageToken")
         if not page_token:
@@ -259,11 +272,11 @@ def list_children(session, folder_id: str) -> List[Dict[str, Any]]:
     return items
 
 
-def find_folder_id(session, folder_name: str) -> Optional[str]:
+def find_folder_id(session, folder_name: str, *, notifier=None) -> Optional[str]:
     cached = get_cached_folder_id(folder_name)
     if cached:
         try:
-            meta = _drive_get_json(session, f"files/{cached}", {"fields": "id"})
+            meta = _drive_get_json(session, f"files/{cached}", {"fields": "id"}, notifier=notifier)
             if meta and meta.get("id"):
                 return cached
         except Exception:
@@ -290,14 +303,20 @@ def find_folder_id(session, folder_name: str) -> Optional[str]:
         return None
 
 
-def get_file_meta(session, file_id: str, fields: str = "id, name, mimeType, modifiedTime, createdTime, size") -> Optional[Dict[str, Any]]:
+def get_file_meta(
+    session,
+    file_id: str,
+    fields: str = "id, name, mimeType, modifiedTime, createdTime, size",
+    *,
+    notifier=None,
+) -> Optional[Dict[str, Any]]:
     try:
-        return _drive_get_json(session, f"files/{file_id}", {"fields": fields})
+        return _drive_get_json(session, f"files/{file_id}", {"fields": fields}, notifier=notifier)
     except DriveApiError:
         return None
 
 
-def download_file(session, file_id: str, *, operation: str = "download") -> Optional[bytes]:
+def download_file(session, file_id: str, *, operation: str = "download", notifier=None) -> Optional[bytes]:
     url = f"{DRIVE_BASE}/files/{file_id}"
 
     def fetch():
@@ -313,13 +332,13 @@ def download_file(session, file_id: str, *, operation: str = "download") -> Opti
             resp.close()
 
     try:
-        return _retry(fetch, operation=operation)
+        return _retry(fetch, operation=operation, notifier=notifier)
     except DriveApiError:
         return None
 
 
-def download_to_path(session, file_id: str, target_path: Path, *, operation: str = "download") -> bool:
-    data = download_file(session, file_id, operation=operation)
+def download_to_path(session, file_id: str, target_path: Path, *, operation: str = "download", notifier=None) -> bool:
+    data = download_file(session, file_id, operation=operation, notifier=notifier)
     if data is None:
         return False
     target_path.parent.mkdir(parents=True, exist_ok=True)

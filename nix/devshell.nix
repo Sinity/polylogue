@@ -42,5 +42,18 @@ pkgs.mkShell {
     export SKIM_DEFAULT_OPTIONS="--ansi"
     export GUM_STYLE_FOREGROUND="#7fdbca"
     export GUM_CONFIRM_PROMPT_BORDER_FOREGROUND="#ff9f1c"
+    if [ -n "$BASH_VERSION" ]; then
+      _polylogue_comp_file="$TMPDIR/polylogue-bash-completions"
+      python3 polylogue.py completions --shell bash >"$_polylogue_comp_file" 2>/dev/null || true
+      [ -f "$_polylogue_comp_file" ] && source "$_polylogue_comp_file"
+    elif [ -n "$ZSH_VERSION" ]; then
+      _polylogue_comp_file="$TMPDIR/polylogue-zsh-completions"
+      python3 polylogue.py completions --shell zsh >"$_polylogue_comp_file" 2>/dev/null || true
+      [ -f "$_polylogue_comp_file" ] && source "$_polylogue_comp_file"
+    elif [ -n "$FISH_VERSION" ]; then
+      _polylogue_comp_file="$TMPDIR/polylogue-fish-completions.fish"
+      python3 polylogue.py completions --shell fish >"$_polylogue_comp_file" 2>/dev/null || true
+      [ -f "$_polylogue_comp_file" ] && source "$_polylogue_comp_file"
+    fi
   '';
 }

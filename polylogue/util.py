@@ -11,18 +11,16 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple, Union
 
+try:
+    import pyperclip
+    from pyperclip import PyperclipException
+except ImportError:
+    from ._vendor import pyperclip  # type: ignore
+    from ._vendor.pyperclip import PyperclipException  # type: ignore
+
 from .db import open_connection, record_run
 from .paths import CACHE_HOME, CONFIG_HOME, DATA_HOME, STATE_HOME
 from .persistence.state import ConversationStateRepository
-
-try:  # pragma: no cover - optional dependency
-    import pyperclip  # type: ignore
-    from pyperclip import PyperclipException  # type: ignore
-except ImportError:  # pragma: no cover - clipboard support optional
-    pyperclip = None
-
-    class PyperclipException(Exception):
-        pass
 
 
 CODEX_SESSIONS_ROOT = Path(
@@ -183,6 +181,53 @@ def load_runs(limit: Optional[int] = None) -> list[dict]:
     return results
 
 
+def latest_run(provider: Optional[str] = None, cmd: Optional[str] = None) -> Optional[dict]:
+    runs = load_runs()
+    for entry in reversed(runs):
+        if provider and entry.get("provider") != provider:
+            continue
+        if cmd and entry.get("cmd") != cmd:
+            continue
+        return entry
+    return None
+
+
+def format_run_brief(entry: Optional[dict]) -> Optional[str]:
+    if not entry:
+        return None
+    timestamp = entry.get("timestamp")
+    parts: list[str] = []
+    if timestamp:
+        try:
+            dt = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            delta = datetime.datetime.now(datetime.timezone.utc) - dt.astimezone(datetime.timezone.utc)
+            if delta.days >= 1:
+                parts.append(f"{delta.days}d ago")
+            elif delta.seconds >= 3600:
+                parts.append(f"{delta.seconds // 3600}h ago")
+            elif delta.seconds >= 60:
+                parts.append(f"{delta.seconds // 60}m ago")
+            else:
+                parts.append("just now")
+        except Exception:
+            parts.append(timestamp)
+    count = entry.get("count")
+    if isinstance(count, int):
+        parts.append(f"{count} item{'s' if count != 1 else ''}")
+    skipped = entry.get("skipped")
+    if isinstance(skipped, int) and skipped:
+        parts.append(f"{skipped} skipped")
+    diffs = entry.get("diffs")
+    if isinstance(diffs, int) and diffs:
+        parts.append(f"{diffs} diffs")
+    duration = entry.get("duration")
+    if isinstance(duration, (int, float)) and duration > 0:
+        parts.append(f"{duration:.1f}s")
+    if not parts:
+        return None
+    return " · ".join(parts)
+
+
 class DiffTracker:
     """Manage pre/post snapshots when diff output is requested."""
 
@@ -336,25 +381,6 @@ def conversation_is_current(
     return True
 
 
-def _run_log_enabled() -> bool:
-    flag = os.environ.get("POLYLOGUE_RUN_LOG")
-    if flag is None:
-        return True
-    return str(flag).strip().lower() not in {"0", "false", "off", "no"}
-
-
-def _emit_structured_run_log(entry: Dict[str, Any]) -> None:
-    if not _run_log_enabled():  # pragma: no cover - optional emission
-        return
-    try:
-        serialized = json.dumps(entry, default=str, ensure_ascii=False)
-    except Exception:
-        serialized = json.dumps({k: str(v) for k, v in entry.items()}, ensure_ascii=False)
-    stream = sys.stderr
-    stream.write(serialized + "\n")
-    stream.flush()
-
-
 def add_run(record: Dict[str, Any]) -> None:
     payload = dict(record)
     timestamp = payload.get("timestamp") or current_utc_timestamp()
@@ -409,30 +435,6 @@ def add_run(record: Dict[str, Any]) -> None:
             metadata=metadata or None,
         )
         conn.commit()
-
-    log_entry = {
-        "event": "polylogue_run",
-        "timestamp": timestamp,
-        "cmd": cmd,
-        "provider": provider,
-        "count": count,
-        "attachments": attachments,
-        "attachment_bytes": attachment_bytes,
-        "tokens": tokens,
-        "skipped": skipped,
-        "pruned": pruned,
-        "diffs": diffs,
-        "duration": float(duration) if isinstance(duration, (int, float)) else None,
-        "out": str(out) if out is not None else None,
-        "retries": metadata.get("driveRetries") or metadata.get("retries") or 0,
-        "failures": metadata.get("driveFailures") or metadata.get("failures") or 0,
-        "last_error": metadata.get("driveLastError") or metadata.get("lastError"),
-        "metadata": metadata or None,
-    }
-    # Remove None values for terser logs
-    log_entry = {key: value for key, value in log_entry.items() if value not in (None, "")}
-    _emit_structured_run_log(log_entry)
-
 
 def write_delta_diff(old_path: Path, new_path: Path, *, suffix: str = ".diff.txt") -> Optional[Path]:
     if not old_path.exists() or not new_path.exists():
@@ -496,10 +498,8 @@ def current_utc_timestamp() -> str:
 
 
 def read_clipboard_text() -> Optional[str]:
-    if pyperclip is None:
-        return None
     try:
-        text = pyperclip.paste()  # type: ignore[attr-defined]
+        text = pyperclip.paste()
     except PyperclipException:  # pragma: no cover - clipboard backend unavailable
         return None
     if not text:
@@ -508,10 +508,8 @@ def read_clipboard_text() -> Optional[str]:
 
 
 def write_clipboard_text(text: str) -> bool:
-    if pyperclip is None:
-        return False
     try:
-        pyperclip.copy(text)  # type: ignore[attr-defined]
+        pyperclip.copy(text)
         return True
     except PyperclipException:  # pragma: no cover - clipboard backend unavailable
         return False

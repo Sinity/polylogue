@@ -45,6 +45,9 @@ def _provider_filter(raw: Optional[str]) -> Optional[Set[str]]:
 
 def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
+    json_lines = bool(getattr(args, "json_lines", False))
+    if json_lines:
+        setattr(args, "json", True)
 
     dump_only = getattr(args, "dump_only", False)
     summary_only = getattr(args, "summary_only", False)
@@ -74,19 +77,21 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 for name, stats in provider_summary.items()
                 if name.lower() in provider_filter
             }
+
+        def _matches(record: dict) -> bool:
+            if not provider_filter:
+                return True
+            provider_value = (record.get("provider") or "").lower()
+            return provider_value in provider_filter or not provider_value
+
+        filtered_recent_runs = [record for record in result.recent_runs if _matches(record)]
+        filtered_runs = [record for record in result.runs if _matches(record)]
         console = ui.console
 
         if dump_only:
             destination = dump_requested or "-"
             limit = max(1, getattr(args, "dump_limit", 100))
-            dump_records = result.runs[-limit:]
-            if provider_filter:
-                dump_records = [
-                    record
-                    for record in dump_records
-                    if (record.get("provider") or "").lower() in provider_filter
-                    or not record.get("provider")
-                ]
+            dump_records = filtered_runs[-limit:]
             _dump_runs(ui, dump_records, destination)
             return
 
@@ -101,17 +106,22 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             if summary_only:
                 return
 
-        if getattr(args, "json", False):
+        json_mode = getattr(args, "json", False)
+        if json_mode:
             payload = {
                 "credentials_present": result.credentials_present,
                 "token_present": result.token_present,
                 "state_path": str(result.state_path),
                 "runs_path": str(result.runs_path),
-                "recent_runs": result.recent_runs,
+                "recent_runs": filtered_recent_runs,
                 "run_summary": run_summary,
                 "provider_summary": provider_summary,
+                "generated_at": datetime.now(timezone.utc).isoformat(),
             }
-            print(json.dumps(payload, indent=2))
+            if json_lines:
+                print(json.dumps(payload, separators=(",", ":")), flush=True)
+            else:
+                print(json.dumps(payload, indent=2))
             return
 
         if ui.plain:
@@ -207,16 +217,10 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 console.print(provider_table)
 
         if dump_requested:
+            destination = dump_requested or "-"
             limit = max(1, getattr(args, "dump_limit", 100))
-            dump_records = result.runs[-limit:]
-            if provider_filter:
-                dump_records = [
-                    record
-                    for record in dump_records
-                    if (record.get("provider") or "").lower() in provider_filter
-                    or not record.get("provider")
-                ]
-            _dump_runs(ui, dump_records, dump_requested)
+            dump_records = filtered_runs[-limit:]
+            _dump_runs(ui, dump_records, destination)
 
     if getattr(args, "watch", False):
         if dump_only:

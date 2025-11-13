@@ -5,11 +5,10 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Iterable, List, Optional, Set, Tuple
 
-try:  # pragma: no cover - optional dependency
+try:
     from watchfiles import watch as _watch_directory
-except ImportError:  # pragma: no cover - used in non-watch environments
-    def _watch_directory(*_args, **_kwargs):
-        yield from ()
+except ImportError:  # pragma: no cover - fallback for environments without watchfiles
+    from .._vendor.watchfiles import watch as _watch_directory
 
 from ..commands import CommandEnv
 from ..local_sync import get_local_provider
@@ -69,8 +68,8 @@ def _run_watch_sessions(
                 prune=False,
                 diff=False,
                 sessions=session_override,
-                branch_mode=getattr(args, "branch_export", "full"),
                 registrar=env.registrar,
+                ui=ui,
             )
         except Exception as exc:  # pragma: no cover - defensive
             console.print(f"[red]{provider.watch_log_title} failed: {exc}")
