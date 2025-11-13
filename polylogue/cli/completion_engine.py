@@ -174,10 +174,30 @@ class CompletionEngine:
         for action in parser._actions:
             if not getattr(action, "option_strings", None):
                 continue
-            help_text = (action.help or "").replace("\n", " ")
+            help_text = self._format_action_help(action)
             for opt in action.option_strings:
                 pairs.append(Completion(opt, help_text))
         return pairs
+
+    def _format_action_help(self, action: argparse.Action) -> str:
+        help_text = (action.help or "").replace("\n", " ").strip()
+        default = getattr(action, "default", None)
+        show_default = default is not argparse.SUPPRESS
+        if isinstance(default, str) and not default:
+            show_default = False
+        if default in {None, False} and not isinstance(default, bool):
+            show_default = False
+        if not show_default:
+            return help_text
+        if isinstance(default, bool):
+            default_text = "on" if default else "off"
+        elif isinstance(default, (list, tuple)):
+            default_text = ", ".join(str(value) for value in default) or "[]"
+        else:
+            default_text = str(default)
+        if help_text:
+            return f"{help_text} (default: {default_text})"
+        return f"(default: {default_text})"
 
     def _resolve_parser_for_command(self, command: str) -> argparse.ArgumentParser | None:
         parser = self.parser

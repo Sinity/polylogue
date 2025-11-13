@@ -156,7 +156,7 @@ class DriveClient:
             return folder_id
         name = folder_name or DEFAULT_FOLDER_NAME
         svc = self.service()
-        resolved = find_folder_id(svc, name)
+        resolved = find_folder_id(svc, name, notifier=self._notify_retry)
         if not resolved:
             raise SystemExit(f"Folder not found: {name}")
         return resolved
@@ -168,7 +168,7 @@ class DriveClient:
     ) -> List[Dict[str, Any]]:
         svc = self.service()
         fid = self.resolve_folder_id(folder_name, folder_id)
-        children = list_children(svc, fid)
+        children = list_children(svc, fid, notifier=self._notify_retry)
         chats = [
             c
             for c in children
@@ -178,15 +178,15 @@ class DriveClient:
 
     def download_chat_bytes(self, file_id: str) -> Optional[bytes]:
         svc = self.service()
-        return download_file(svc, file_id, operation="chat")
+        return download_file(svc, file_id, operation="chat", notifier=self._notify_retry)
 
     def attachment_meta(self, file_id: str) -> Optional[Dict[str, Any]]:
         svc = self.service()
-        return get_file_meta(svc, file_id)
+        return get_file_meta(svc, file_id, notifier=self._notify_retry)
 
     def download_attachment(self, file_id: str, path: Path) -> bool:
         svc = self.service()
-        ok = download_to_path(svc, file_id, path, operation="attachment")
+        ok = download_to_path(svc, file_id, path, operation="attachment", notifier=self._notify_retry)
         if not ok:
             return False
         return True
@@ -202,3 +202,9 @@ class DriveClient:
             os.utime(path, (mtime, mtime))
         except Exception:
             pass
+
+    def _notify_retry(self, *, operation: str, attempt: int, total: int, error: Exception, delay: float) -> None:
+        if self.ui.plain:
+            return
+        message = f"[yellow]Drive {operation} retry {attempt}/{total}: {error} (waiting {delay:.1f}s)"
+        self.ui.console.print(message)

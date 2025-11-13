@@ -7,10 +7,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
-try:  # pragma: no cover - optional dependency
+try:
     import frontmatter
-except ImportError:  # pragma: no cover
-    frontmatter = None
+except ImportError:
+    from ._vendor import frontmatter  # type: ignore
 
 from .util import sanitize_filename
 
@@ -57,14 +57,8 @@ class MarkdownDocument:
     stats: Dict[str, Any]
 
     def to_markdown(self) -> str:
-        if frontmatter is not None:
-            post = frontmatter.Post(self.body, **self.metadata)
-            return frontmatter.dumps(post)
-        header_lines = ["---"]
-        for key, value in self.metadata.items():
-            header_lines.append(f"{key}: {_encode_metadata_value(value)}")
-        header_lines.append("---\n")
-        return "\n".join(header_lines) + self.body
+        post = frontmatter.Post(self.body, **self.metadata)
+        return frontmatter.dumps(post)
 
 
 def _iter_values(obj: Any) -> Iterable[Any]:
