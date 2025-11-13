@@ -13,6 +13,7 @@ import tempfile
 import textwrap
 import shlex
 from collections import Counter
+import os
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -77,6 +78,22 @@ from ..branch_explorer import branch_diff, build_branch_html, format_branch_tree
 
 SCRIPT_MODULE = "polylogue.cli"
 COMMAND_REGISTRY = CommandRegistry()
+_FORCE_PLAIN_VALUES = {"1", "true", "yes", "on"}
+
+
+def _should_use_plain(force_interactive: bool) -> bool:
+    if force_interactive:
+        return False
+    forced = os.environ.get("POLYLOGUE_FORCE_PLAIN")
+    if forced and forced.strip().lower() in _FORCE_PLAIN_VALUES:
+        return True
+    return not (sys.stdout.isatty() and sys.stderr.isatty())
+PARSER_FORMATTER = argparse.ArgumentDefaultsHelpFormatter
+
+
+def _add_command_parser(subparsers: argparse._SubParsersAction, name: str, **kwargs):
+    kwargs.setdefault("formatter_class", PARSER_FORMATTER)
+    return subparsers.add_parser(name, **kwargs)
 
 
 def _collect_subparser_map(parser: argparse.ArgumentParser) -> Dict[str, argparse.ArgumentParser]:
@@ -257,7 +274,7 @@ def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 def run_complete_cli(args: argparse.Namespace, env: Optional[CommandEnv] = None) -> None:
-    env = env or CommandEnv(ui=create_ui(flag_plain=True))
+    env = env or CommandEnv(ui=create_ui(True))
     engine = CompletionEngine(env, build_parser())
     completions = engine.complete(args.shell, args.cword, args.words or [])
     for entry in completions:
@@ -808,7 +825,6 @@ def _dispatch_settings(args: argparse.Namespace, env: CommandEnv) -> None:
 def _dispatch_status(args: argparse.Namespace, env: CommandEnv) -> None:
     run_status_cli(args, env)
 
-
 def _dispatch_search_preview(args: argparse.Namespace, _env: CommandEnv) -> None:
     run_search_preview(args)
 
@@ -861,8 +877,7 @@ def _register_default_commands() -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     _register_default_commands()
-    parser = argparse.ArgumentParser(description="Polylogue CLI")
-    parser.add_argument("--plain", action="store_true", help="Disable interactive UI")
+    parser = argparse.ArgumentParser(description="Polylogue CLI", formatter_class=PARSER_FORMATTER)
     parser.add_argument(
         "--interactive",
         action="store_true",
@@ -870,7 +885,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="cmd")
 
-    p_render = sub.add_parser("render", help="Render local provider JSON logs", description="Render local provider JSON logs")
+    p_render = _add_command_parser(sub, "render", help="Render local provider JSON logs", description="Render local provider JSON logs")
     p_render.add_argument("input", type=Path, help="File or directory with provider JSON logs (e.g., Gemini)")
     add_out_option(p_render, default_path=DEFAULT_RENDER_OUT)
     p_render.add_argument("--links-only", action="store_true", help="Link attachments instead of downloading")
@@ -882,7 +897,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_diff_option(p_render, help_text="Write delta diff when output already exists")
     p_render.add_argument("--to-clipboard", action="store_true", help="Copy rendered Markdown to the clipboard when a single file is produced")
 
-    p_sync = sub.add_parser("sync", help="Synchronize provider archives", description="Synchronize provider archives")
+    p_sync = _add_command_parser(sub, "sync", help="Synchronize provider archives", description="Synchronize provider archives")
     p_sync.add_argument(
         "provider",
         choices=["drive", *LOCAL_SYNC_PROVIDER_NAMES],
@@ -928,7 +943,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--name-filter", type=str, default=None, help="Regex filter for Drive chat names")
     p_sync.add_argument("--list-only", action="store_true", help="List Drive chats without syncing")
 
-    p_import = sub.add_parser("import", help="Import provider exports into the archive", description="Import provider exports into the archive")
+    p_import = _add_command_parser(sub, "import", help="Import provider exports into the archive", description="Import provider exports into the archive")
     p_import.add_argument("provider", choices=["chatgpt", "claude", "claude-code", "codex"], help="Provider export format")
     p_import.add_argument("source", nargs="*", help="Export path or session identifier (depends on provider)")
     p_import.add_argument("--out", type=Path, default=None, help="Override output directory")
@@ -941,10 +956,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--json", action="store_true", help="Emit machine-readable summary")
     p_import.add_argument("--to-clipboard", action="store_true", help="Copy a single imported Markdown file to the clipboard")
 
-    p_inspect = sub.add_parser("inspect", help="Inspect existing archives", description="Inspect existing archives and stats")
+    p_inspect = _add_command_parser(sub, "inspect", help="Inspect existing archives", description="Inspect existing archives and stats")
     inspect_sub = p_inspect.add_subparsers(dest="inspect_cmd", required=True)
 
-    p_inspect_branches = inspect_sub.add_parser("branches", help="Explore branch graphs for conversations", description="Explore branch graphs for conversations")
+    p_inspect_branches = _add_command_parser(inspect_sub, "branches", help="Explore branch graphs for conversations", description="Explore branch graphs for conversations")
     p_inspect_branches.add_argument("--provider", type=str, default=None, help="Filter by provider slug")
     p_inspect_branches.add_argument("--slug", type=str, default=None, help="Filter by conversation slug")
     p_inspect_branches.add_argument("--conversation-id", type=str, default=None, help="Filter by provider conversation id")
@@ -965,7 +980,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect_branches.add_argument("--theme", type=str, default=None, choices=["light", "dark"], help="Override HTML explorer theme")
     p_inspect_branches.add_argument("--no-picker", action="store_true", help="Skip interactive selection even when skim/gum are available")
 
-    p_inspect_search = inspect_sub.add_parser("search", help="Search rendered transcripts", description="Search rendered transcripts")
+    p_inspect_search = _add_command_parser(inspect_sub, "search", help="Search rendered transcripts", description="Search rendered transcripts")
     p_inspect_search.add_argument("query", type=str, help="FTS search query (SQLite syntax)")
     p_inspect_search.add_argument("--limit", type=int, default=20, help="Maximum number of hits to return")
     p_inspect_search.add_argument("--provider", type=str, default=None, help="Filter by provider slug")
@@ -980,13 +995,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect_search.add_argument("--no-picker", action="store_true", help="Skip skim picker preview even when interactive")
     p_inspect_search.add_argument("--json", action="store_true", help="Emit machine-readable search results")
 
-    p_inspect_stats = inspect_sub.add_parser("stats", help="Summarize Markdown output directories", description="Summarize Markdown output directories")
+    p_inspect_stats = _add_command_parser(inspect_sub, "stats", help="Summarize Markdown output directories", description="Summarize Markdown output directories")
     p_inspect_stats.add_argument("--dir", type=Path, default=None, help="Directory containing Markdown exports")
     p_inspect_stats.add_argument("--json", action="store_true", help="Emit machine-readable stats")
     p_inspect_stats.add_argument("--since", type=str, default=None, help="Only include files modified on/after this date (YYYY-MM-DD or ISO)")
     p_inspect_stats.add_argument("--until", type=str, default=None, help="Only include files modified on/before this date")
 
-    p_watch = sub.add_parser("watch", help="Watch local session stores and sync on changes", description="Watch local session stores and sync on changes")
+    p_watch = _add_command_parser(sub, "watch", help="Watch local session stores and sync on changes", description="Watch local session stores and sync on changes")
     p_watch.add_argument("provider", choices=list(WATCHABLE_LOCAL_PROVIDER_NAMES), help="Local provider to watch")
     p_watch.add_argument("--base-dir", type=Path, default=None, help="Override source directory")
     p_watch.add_argument("--out", type=Path, default=None, help="Override output directory")
@@ -995,7 +1010,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
     p_watch.add_argument("--once", action="store_true", help="Run a single sync pass and exit")
 
-    p_prune = sub.add_parser("prune", help="Remove legacy single-file outputs and attachments", description="Remove legacy single-file outputs and attachments")
+    p_prune = _add_command_parser(sub, "prune", help="Remove legacy single-file outputs and attachments", description="Remove legacy single-file outputs and attachments")
     p_prune.add_argument(
         "--dir",
         dest="dirs",
@@ -1005,13 +1020,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_prune.add_argument("--dry-run", action="store_true", help="Print planned actions without deleting files")
 
-    p_doctor = sub.add_parser("doctor", help="Check local data directories for common issues", description="Check local data directories for common issues")
+    p_doctor = _add_command_parser(sub, "doctor", help="Check local data directories for common issues", description="Check local data directories for common issues")
     p_doctor.add_argument("--codex-dir", type=Path, default=None, help="Override Codex sessions directory")
     p_doctor.add_argument("--claude-code-dir", type=Path, default=None, help="Override Claude Code projects directory")
     p_doctor.add_argument("--limit", type=int, default=None, help="Limit number of files inspected per provider")
     p_doctor.add_argument("--json", action="store_true", help="Emit machine-readable report")
 
-    p_status = sub.add_parser("status", help="Show cached Drive info and recent runs", description="Show cached Drive info and recent runs")
+    p_status = _add_command_parser(sub, "status", help="Show cached Drive info and recent runs", description="Show cached Drive info and recent runs")
     p_status.add_argument("--json", action="store_true", help="Emit machine-readable summary")
     p_status.add_argument("--watch", action="store_true", help="Continuously refresh the status output")
     p_status.add_argument("--interval", type=float, default=5.0, help="Seconds between refresh while watching")
@@ -1037,27 +1052,27 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only emit the summary JSON without printing tables",
     )
 
-    p_env = sub.add_parser("env", help="Show resolved configuration and output paths", description="Show resolved configuration and output paths")
+    p_env = _add_command_parser(sub, "env", help="Show resolved configuration and output paths", description="Show resolved configuration and output paths")
     p_env.add_argument("--json", action="store_true", help="Emit environment info as JSON")
 
-    p_help_cmd = sub.add_parser("help", help="Show help for a specific command", description="Show help for a specific command")
+    p_help_cmd = _add_command_parser(sub, "help", help="Show help for a specific command", description="Show help for a specific command")
     p_help_cmd.add_argument("topic", nargs="?", help="Command name")
 
-    p_completions = sub.add_parser("completions", help="Emit shell completion script", description="Emit shell completion script")
+    p_completions = _add_command_parser(sub, "completions", help="Emit shell completion script", description="Emit shell completion script")
     p_completions.add_argument("--shell", choices=["bash", "zsh", "fish"], required=True)
 
-    p_complete = sub.add_parser("_complete", help=argparse.SUPPRESS)
+    p_complete = _add_command_parser(sub, "_complete", help=argparse.SUPPRESS)
     p_complete.add_argument("--shell", required=True)
     p_complete.add_argument("--cword", type=int, required=True)
     p_complete.add_argument("words", nargs=argparse.REMAINDER)
 
-    p_settings_cmd = sub.add_parser("settings", help="Show or update Polylogue defaults", description="Show or update Polylogue defaults")
+    p_settings_cmd = _add_command_parser(sub, "settings", help="Show or update Polylogue defaults", description="Show or update Polylogue defaults")
     p_settings_cmd.add_argument("--html", choices=["on", "off"], default=None, help="Enable or disable default HTML previews")
     p_settings_cmd.add_argument("--theme", choices=["light", "dark"], default=None, help="Set the default HTML theme")
     p_settings_cmd.add_argument("--reset", action="store_true", help="Reset to config defaults")
     p_settings_cmd.add_argument("--json", action="store_true", help="Emit settings as JSON")
 
-    p_search_preview = sub.add_parser("_search-preview", help=argparse.SUPPRESS)
+    p_search_preview = _add_command_parser(sub, "_search-preview", help=argparse.SUPPRESS)
     p_search_preview.add_argument("--data-file", type=Path, required=True)
     p_search_preview.add_argument("--index", type=int, required=True)
 
@@ -1090,7 +1105,8 @@ def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    plain_mode = args.plain and not getattr(args, "interactive", False)
+    interactive = bool(getattr(args, "interactive", False))
+    plain_mode = _should_use_plain(force_interactive=interactive)
     ui = create_ui(plain_mode)
     env = CommandEnv(ui=ui)
     ensure_settings_defaults(env.settings)

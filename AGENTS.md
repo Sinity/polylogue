@@ -14,8 +14,8 @@
 - **Never add graceful-degradation fallbacks.** We run on NixOS and can guarantee every dependency; if a tool is missing it should be treated as a hard failure, not a best-effort path.
 
 ## Automation & Testing
-- Non-interactive paths use `--plain` to disable gum/skim/Rich; combine with `--json` for machine-readable summaries. Add `--interactive` when you intentionally need skim prompts even if stdout/stderr aren’t TTYs.
-- Smoke test with `python3 polylogue.py render data --plain --dry-run` and `python3 polylogue.py sync --plain --dry-run`.
+- Non-interactive paths automatically drop into a plain UI when stdout/stderr aren’t TTYs. Set `POLYLOGUE_FORCE_PLAIN=1` when you need deterministic plain mode in CI, or pass `--interactive` to re-enable gum/skim prompts even without a TTY.
+- Smoke test with `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py render data --dry-run` and `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync --dry-run`.
 - Run `pytest` regularly; new tests should live under `tests/`.
 - Use `polylogue env` (with `--json` when needed) to confirm resolved config/output paths while debugging CI or support issues.
 
