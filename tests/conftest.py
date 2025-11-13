@@ -5,6 +5,10 @@ from pathlib import Path
 
 import pytest
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from polylogue import util
 from polylogue import commands as cmd_module
 from polylogue import db as db_module
@@ -40,11 +44,6 @@ def _build_tiktoken_stub() -> types.ModuleType:
 
 
 sys.modules.setdefault("tiktoken", _build_tiktoken_stub())
-
-ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
 
 def _configure_state(monkeypatch, root: Path) -> Path:
     state_root = root / "state"

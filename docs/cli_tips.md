@@ -1,12 +1,12 @@
 # CLI Tips
 
-Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetitive workflows. The Nix/devshell environment ships every required dependency (gum, skim, Rich, pyperclip, etc.), so these helpers are always available unless you deliberately run with `--plain`.
+Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetitive workflows. The Nix/devshell environment ships every required dependency (gum, skim, Rich, pyperclip, etc.), so these helpers are always available unless stdout/stderr aren’t TTYs (in which case Polylogue automatically switches to a plain UI—export `POLYLOGUE_FORCE_PLAIN=1` to force that behaviour in CI).
 
 ## Clipboard & Credential Workflows
 
 - **Drive onboarding**: During the first Drive sync, Polylogue checks the system clipboard for an OAuth client JSON. If found (and confirmed), it saves the payload to `$XDG_CONFIG_HOME/polylogue/credentials.json`, avoiding manual copy/paste steps.
 - **Manual credential import**: When no clipboard payload exists, the CLI guides you through selecting a local file or opening Google’s setup guide. Credentials and tokens always land under `$XDG_CONFIG_HOME/polylogue/`.
-- **Copy rendered Markdown**: Pass `--to-clipboard` to render/import commands. When exactly one Markdown file is produced, Polylogue copies it via `pyperclip` and reports success or a warning if clipboard support is unavailable.
+- **Copy rendered Markdown**: Pass `--to-clipboard` to render/import commands. When exactly one Markdown file is produced, Polylogue copies it via `pyperclip` and reports success or a warning if the OS clipboard rejects the write.
 - **Clipboard failures**: `pyperclip` ships with the devshell, but if the OS clipboard rejects writes Polylogue simply reports the warning while continuing the import.
 
 ## Branch Explorer & Search
@@ -18,7 +18,7 @@ Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetit
 
 - **Adjust defaults**: Run `polylogue settings --html on|off --theme light|dark` to change the HTML preview preference or theme for the current environment. Use `--reset` to restore config defaults.
 - **Script defaults**: Non-interactive runs respect `polylogue.config`. Update the config file or call `polylogue settings --html on --theme dark` once so cron jobs pick up the same behaviour without extra flags.
-- **Forcing UI**: When CI disables TTY detection, add `--interactive` to any command to re-enable gum/skim prompts even if Polylogue would otherwise fall back to plain output.
+- **Forcing UI**: When CI disables TTY detection, add `--interactive` to any command to re-enable gum/skim prompts even if Polylogue would otherwise fall back to plain output. Conversely, export `POLYLOGUE_FORCE_PLAIN=1` when you need deterministic plain output regardless of the terminal.
 
 ## Discoverability & Completions
 

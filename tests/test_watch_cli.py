@@ -101,9 +101,16 @@ def test_watch_accepts_bundle_extensions(monkeypatch, tmp_path):
     assert provider.calls[1] == [tmp_path / "export.zip"]
 
 
-def test_run_watch_cli_requires_watchfiles(monkeypatch, tmp_path):
+def test_run_watch_cli_surfaces_watch_errors(monkeypatch, tmp_path):
     args = _watch_args(tmp_path, tmp_path / "out")
     env = CommandEnv(ui=DummyUI())
-    monkeypatch.setattr("polylogue.cli.watch._WATCHFILES_AVAILABLE", False)
-    with pytest.raises(SystemExit):
+    provider = RecordingProvider(tmp_path, (".jsonl",))
+
+    def failing_watch(*_args, **_kwargs):
+        raise RuntimeError("watchfiles unavailable")
+
+    monkeypatch.setattr("polylogue.cli.watch.get_local_provider", lambda _name: provider)
+    monkeypatch.setattr("polylogue.cli.watch._watch_directory", failing_watch)
+
+    with pytest.raises(RuntimeError, match="watchfiles unavailable"):
         run_watch_cli(args, env)

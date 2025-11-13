@@ -18,7 +18,7 @@ from ..importers.claude_ai import list_claude_conversations
 from ..importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessions
 from ..importers.base import ImportResult
 from ..pipeline_runner import Pipeline, PipelineContext
-from ..util import CODEX_SESSIONS_ROOT, path_order_key
+from ..util import CODEX_SESSIONS_ROOT, format_run_brief, latest_run, path_order_key
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
     DEFAULT_CHATGPT_OUT,
@@ -67,7 +67,8 @@ class ImportSummarizeStage:
         if not results:
             ui.console.print(f"[yellow]{self.title}: no conversations imported.")
             return
-        summarize_import(ui, self.title, results)
+        footer = context.get("summary_footer", [])
+        summarize_import(ui, self.title, results, extra_lines=footer)
 
 
 def _emit_import_json(results: List[ImportResult]) -> None:
@@ -89,6 +90,11 @@ def _emit_import_json(results: List[ImportResult]) -> None:
         ],
     }
     print(json.dumps(payload, indent=2))
+
+
+def _build_summary_footer(provider: str, cmd: str) -> List[str]:
+    note = format_run_brief(latest_run(provider=provider, cmd=cmd))
+    return [f"Previous run: {note}"] if note else []
 
 
 def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -190,6 +196,7 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
             ImportSummarizeStage("Codex Import"),
         ]
     )
+    footer = _build_summary_footer("codex", "import codex")
     ctx = PipelineContext(
         env=env,
         options=args,
@@ -206,6 +213,7 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
                 "registrar": env.registrar,
             },
             "import_error_message": "Import failed",
+            "summary_footer": footer,
         },
     )
     pipeline.run(ctx)
@@ -263,6 +271,7 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
             ImportSummarizeStage("ChatGPT Import"),
         ]
     )
+    footer = _build_summary_footer("chatgpt", "import chatgpt")
     ctx = PipelineContext(
         env=env,
         options=args,
@@ -279,6 +288,7 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
                 "registrar": env.registrar,
             },
             "import_error_message": "Import failed",
+            "summary_footer": footer,
         },
     )
     pipeline.run(ctx)
@@ -336,6 +346,7 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
             ImportSummarizeStage("Claude Import"),
         ]
     )
+    footer = _build_summary_footer("claude", "import claude")
     ctx = PipelineContext(
         env=env,
         options=args,
@@ -352,6 +363,7 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
                 "registrar": env.registrar,
             },
             "import_error_message": "Import failed",
+            "summary_footer": footer,
         },
     )
     pipeline.run(ctx)
@@ -398,6 +410,7 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
             ImportSummarizeStage("Claude Code Import"),
         ]
     )
+    footer = _build_summary_footer("claude-code", "import claude-code")
     ctx = PipelineContext(
         env=env,
         options=args,
@@ -414,6 +427,7 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
                 **kwargs,
             },
             "import_error_message": "Import failed",
+            "summary_footer": footer,
         },
     )
     pipeline.run(ctx)

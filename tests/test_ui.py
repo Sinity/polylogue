@@ -9,7 +9,6 @@ from polylogue import ui as ui_module
 from polylogue.ui import UI
 
 
-@pytest.mark.skipif(ui_module.Console is None, reason="Rich Console unavailable")
 def test_ui_summary_handles_brackets_without_markup(monkeypatch):
     monkeypatch.setattr(ui_module.shutil, "which", lambda _cmd: "/usr/bin/fake")
 
@@ -32,7 +31,6 @@ def test_ui_summary_handles_brackets_without_markup(monkeypatch):
     assert "Paths: [/tmp/example.json, /tmp/fallback.json]" in output
 
 
-@pytest.mark.skipif(ui_module.Console is None, reason="Rich Console unavailable")
 def test_ui_confirm_uses_default_flag(monkeypatch):
     monkeypatch.setattr(ui_module.shutil, "which", lambda _cmd: "/usr/bin/fake")
 

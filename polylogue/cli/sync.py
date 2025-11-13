@@ -14,7 +14,7 @@ from ..local_sync import (
     get_local_provider,
 )
 from ..options import ListOptions, SyncOptions
-from ..util import add_run, path_order_key
+from ..util import add_run, format_run_brief, latest_run, path_order_key
 from .context import (
     DEFAULT_COLLAPSE,
     DEFAULT_SYNC_OUT,
@@ -27,12 +27,15 @@ from .context import (
 from .summaries import summarize_import
 
 
-def _log_local_sync(ui, title: str, result: LocalSyncResult, *, provider: str) -> None:
+def _log_local_sync(ui, title: str, result: LocalSyncResult, *, provider: str, footer: Optional[List[str]] = None) -> None:
     console = ui.console
     if result.written:
-        summarize_import(ui, title, result.written)
+        summarize_import(ui, title, result.written, extra_lines=footer)
     else:
         console.print(f"[cyan]{title}: no new Markdown files.")
+        if footer:
+            for line in footer:
+                console.print(line)
     if result.skipped:
         console.print(f"[cyan]{title}: skipped {result.skipped} up-to-date item(s).")
     if result.pruned:
@@ -115,6 +118,8 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
 
     download_attachments = not args.links_only
 
+    previous_run_note = format_run_brief(latest_run(provider="drive", cmd="sync drive"))
+
     cli_ids = [item.strip() for item in getattr(args, "chat_ids", []) if item and item.strip()]
     selected_ids: Optional[List[str]] = cli_ids or None
     if selected_ids is None and not ui.plain and not json_mode:
@@ -162,7 +167,12 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
 
-    result = sync_command(options, env)
+    try:
+        result = sync_command(options, env)
+    except Exception as exc:
+        console.print(f"[red]Drive sync failed: {exc}")
+        console.print("[cyan]Run `polylogue doctor` and `polylogue env --json` to verify credentials, tokens, and output directories.")
+        raise
 
     if json_mode:
         payload = {
@@ -187,6 +197,8 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
             ],
             "total_stats": result.total_stats,
         }
+        if previous_run_note:
+            payload["previousRun"] = previous_run_note
         print(json.dumps(payload, indent=2))
         return
 
@@ -219,6 +231,8 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         if getattr(item, "diff", None):
             info += " [+diff]"
         lines.append(info)
+    if previous_run_note:
+        lines.append(f"Previous run: {previous_run_note}")
     console.print("\n".join(lines))
 
 
@@ -250,6 +264,8 @@ def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optiona
 def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEnv) -> None:
     provider = get_local_provider(provider_name)
     ui = env.ui
+    previous_run_note = format_run_brief(latest_run(provider=provider.name, cmd=f"sync {provider.name}"))
+    footer_lines = [f"Previous run: {previous_run_note}"] if previous_run_note else None
     if getattr(args, "diff", False) and not provider.supports_diff:
         raise SystemExit(f"{provider.title} does not support --diff output")
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base.expanduser()
@@ -289,6 +305,7 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
         diff=diff_enabled,
         sessions=selected_paths,
         registrar=env.registrar,
+        ui=env.ui,
     )
 
     attachments = result.attachments
@@ -324,9 +341,11 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
             "diffs": result.diffs,
             "files": files_payload,
         }
+        if previous_run_note:
+            payload["previousRun"] = previous_run_note
         print(json.dumps(payload, indent=2))
     else:
-        summarize_import(ui, f"{provider.title} Sync", result.written)
+        summarize_import(ui, f"{provider.title} Sync", result.written, extra_lines=footer_lines)
         console = ui.console
         if result.skipped:
             console.print(f"Skipped {result.skipped} up-to-date item(s).")

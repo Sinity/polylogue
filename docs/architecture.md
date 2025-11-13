@@ -10,8 +10,13 @@ Polylogue now follows a modular structure that separates orchestration concerns 
 
 ## Console Facade & UI
 
-- `polylogue/ui/facade.py` wraps Rich/gum functionality (the devshell ships these by default) and only drops to the plain console when `--plain` is explicitly requested or CI disables the interactive stack.
-- `polylogue.ui.UI` delegates to the facade but still provides interactive prompts (pickers, yes/no prompts, etc.) when the environment is not `--plain`.
+- `polylogue/ui/facade.py` wraps Rich/gum functionality (the devshell ships these by default) and automatically drops to the plain console whenever stdout/stderr aren’t TTYs (or when `POLYLOGUE_FORCE_PLAIN=1` is set).
+- `polylogue.ui.UI` delegates to the facade but still provides interactive prompts (pickers, yes/no prompts, etc.) whenever the session is interactive (use `--interactive` to force prompts even in headless shells).
+
+## Provider Sessions
+
+- `polylogue/providers/registry.ProviderRegistry` registers instantiated provider SDKs (currently Google Drive) behind a small protocol so commands can fetch consistent sessions without knowing the underlying client implementation.
+- `polylogue.providers.drive.DriveProviderSession` wraps `DriveClient` and ensures retry instrumentation/telemetry stay consistent, while still presenting the familiar Drive API to pipelines and CLI helpers.
 
 ## Persistence Layer
 

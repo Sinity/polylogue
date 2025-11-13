@@ -40,7 +40,8 @@ def _configure_isolated_state(monkeypatch, root: Path) -> None:
 
 def test_cli_inspect_search_runs_without_name_error(monkeypatch, tmp_path, capsys):
     _configure_isolated_state(monkeypatch, tmp_path)
-    monkeypatch.setattr(sys, "argv", ["polylogue", "--plain", "inspect", "search", "missing"])
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    monkeypatch.setattr(sys, "argv", ["polylogue", "inspect", "search", "missing"])
 
     main()
 
@@ -48,7 +49,6 @@ def test_cli_inspect_search_runs_without_name_error(monkeypatch, tmp_path, capsy
     assert "No results found." in captured
 
 
-@pytest.mark.skipif(ui_module.Console is None, reason="Rich Console unavailable")
 def test_doctor_cli_handles_bracket_paths(monkeypatch, tmp_path, capsys):
     _configure_isolated_state(monkeypatch, tmp_path)
 
