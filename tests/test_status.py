@@ -155,9 +155,28 @@ def test_status_summary_only_stdout(state_env, capsys):
     assert list(data["runSummary"].keys()) == ["render"]
 
 
+def test_status_json_lines(state_env, capsys):
+    util.add_run(
+        {
+            "cmd": "render",
+            "provider": "render",
+            "count": 1,
+            "timestamp": "2024-03-02T00:00:00Z",
+        }
+    )
+    env = CommandEnv(ui=DummyUI())
+    args = _status_args(json_lines=True)
+    run_status_cli(args, env)
+    payload = capsys.readouterr().out.strip()
+    assert payload.startswith("{") and payload.endswith("}")
+    data = json.loads(payload)
+    assert "generated_at" in data
+
+
 def _status_args(**overrides):
     defaults = dict(
         json=False,
+        json_lines=False,
         watch=False,
         interval=1.0,
         dump=None,
