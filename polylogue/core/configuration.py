@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from ..paths import CONFIG_HOME, DATA_HOME
+from .config_validation import validate_config_payload
 
 CONFIG_ENV = "POLYLOGUE_CONFIG"
 DEFAULT_CONFIG_LOCATIONS = [
@@ -108,5 +109,7 @@ def _load_defaults(data: Dict[str, Any]) -> Defaults:
 
 def load_configuration() -> AppConfig:
     data, path = _load_config_sources()
+    if data:
+        validate_config_payload(data)
     defaults = _load_defaults(data)
     return AppConfig(defaults=defaults, path=path, raw=data if isinstance(data, dict) else {})
