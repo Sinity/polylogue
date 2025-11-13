@@ -5,7 +5,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from .archive import Archive
 from .branch_explorer import list_branch_conversations
@@ -55,6 +55,7 @@ from .importers.base import ImportResult
 from .pipeline_runner import Pipeline, PipelineContext
 from .persistence.database import ConversationDatabase
 from .persistence.state import ConversationStateRepository
+from .providers import DriveProviderSession, ProviderRegistry
 from .repository import ConversationRepository
 
 
@@ -97,6 +98,8 @@ class CommandEnv:
     state_repo: ConversationStateRepository = field(default_factory=ConversationStateRepository)
     database: ConversationDatabase = field(default_factory=ConversationDatabase)
     archive: Archive = field(default_factory=lambda: Archive(CONFIG))
+    providers: ProviderRegistry = field(default_factory=ProviderRegistry)
+    drive_constructor: Callable[[UI], DriveClient] = field(init=False)
     registrar: ConversationRegistrar = field(init=False)
     conversations: ConversationService = field(init=False)
 
@@ -109,6 +112,7 @@ class CommandEnv:
             archive=self.archive,
         )
         self.conversations = create_conversation_service(self.registrar)
+        self.drive_constructor = DriveClient
 
 
 class RenderReadStage:
@@ -461,7 +465,9 @@ class ProviderSummaryEntry:
 
 def _ensure_drive(env: CommandEnv) -> DriveClient:
     if env.drive is None:
-        env.drive = DriveClient(env.ui)
+        session = DriveProviderSession(env.ui, client_factory=env.drive_constructor)
+        env.providers.register(session)
+        env.drive = session
     return env.drive
 
 
@@ -637,56 +643,62 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     items: List[SyncItem] = []
     wanted_slugs: set[str] = set()
     totals_acc = RunAccumulator()
-    for meta in chats:
-        ctx = PipelineContext(env=env, options=options, data={"metadata": meta})
-        pipeline.run(ctx)
-        if ctx.aborted:
-            continue
+    description = f"Syncing {options.folder_name or 'Drive'} chats"
+    with env.ui.progress(description, total=len(chats)) as tracker:
+        for meta in chats:
+            ctx = PipelineContext(env=env, options=options, data={"metadata": meta})
+            pipeline.run(ctx)
+            if ctx.aborted:
+                tracker.advance()
+                continue
 
-        result: Optional[ImportResult] = ctx.get("import_result")
-        chat_context: ChatContext = ctx.get("chat_context")
-        file_id = ctx.get("file_id")
-        slug_value = ctx.get("slug")
-        if isinstance(slug_value, str) and slug_value:
-            wanted_slugs.add(slug_value)
+            result: Optional[ImportResult] = ctx.get("import_result")
+            chat_context: ChatContext = ctx.get("chat_context")
+            file_id = ctx.get("file_id")
+            slug_value = ctx.get("slug")
+            if isinstance(slug_value, str) and slug_value:
+                wanted_slugs.add(slug_value)
 
-        if result is None:
-            continue
+            if result is None:
+                tracker.advance()
+                continue
 
-        if result.skipped:
-            totals_acc.increment("skipped")
-            continue
+            if result.skipped:
+                totals_acc.increment("skipped")
+                tracker.advance()
+                continue
 
-        if not options.dry_run and chat_context.modified_time:
-            mtime = parse_rfc3339_to_epoch(chat_context.modified_time)
-            if mtime is not None:
-                try:
-                    os.utime(result.markdown_path, (mtime, mtime))
-                except Exception:
-                    pass
-                if result.html_path:
+            if not options.dry_run and chat_context.modified_time:
+                mtime = parse_rfc3339_to_epoch(chat_context.modified_time)
+                if mtime is not None:
                     try:
-                        os.utime(result.html_path, (mtime, mtime))
+                        os.utime(result.markdown_path, (mtime, mtime))
                     except Exception:
                         pass
+                    if result.html_path:
+                        try:
+                            os.utime(result.html_path, (mtime, mtime))
+                        except Exception:
+                            pass
 
-        doc: Optional[MarkdownDocument] = result.document
-        items.append(
-            SyncItem(
-                id=file_id,
-                name=meta.get("name"),
-                output=result.markdown_path,
-                slug=result.slug,
-                attachments=len(doc.attachments) if doc else 0,
-                stats=doc.stats if doc else {},
-                html=result.html_path,
-                diff=result.diff_path,
+            doc: Optional[MarkdownDocument] = result.document
+            items.append(
+                SyncItem(
+                    id=file_id,
+                    name=meta.get("name"),
+                    output=result.markdown_path,
+                    slug=result.slug,
+                    attachments=len(doc.attachments) if doc else 0,
+                    stats=doc.stats if doc else {},
+                    html=result.html_path,
+                    diff=result.diff_path,
+                )
             )
-        )
-        if result.diff_path:
-            totals_acc.increment("diffs")
-        if doc is not None:
-            totals_acc.add_stats(len(doc.attachments), doc.stats)
+            if result.diff_path:
+                totals_acc.increment("diffs")
+            if doc is not None:
+                totals_acc.add_stats(len(doc.attachments), doc.stats)
+            tracker.advance()
 
     pruned_count = 0
     if options.prune:
@@ -790,20 +802,33 @@ def status_command(env: CommandEnv, runs_limit: Optional[int] = 200) -> StatusRe
         runs=run_data,
     )
 def _ensure_ui_contract(ui: Any) -> None:
-    if hasattr(ui, "summary") and callable(getattr(ui, "summary")):
-        return
     console = getattr(ui, "console", None)
 
-    def _fallback_summary(title: str, lines: Iterable[str]) -> None:
-        items = list(lines)
-        header = title or "Summary"
-        if console is not None and hasattr(console, "print"):
-            console.print(header)
-            for line in items:
-                console.print(f"  {line}")
-        else:
-            print(header)
-            for line in items:
-                print(f"  {line}")
+    if not hasattr(ui, "summary") or not callable(getattr(ui, "summary")):
+        def _fallback_summary(title: str, lines: Iterable[str]) -> None:
+            items = list(lines)
+            header = title or "Summary"
+            if console is not None and hasattr(console, "print"):
+                console.print(header)
+                for line in items:
+                    console.print(f"  {line}")
+            else:
+                print(header)
+                for line in items:
+                    print(f"  {line}")
 
-    setattr(ui, "summary", _fallback_summary)
+        setattr(ui, "summary", _fallback_summary)
+
+    if not hasattr(ui, "progress") or not callable(getattr(ui, "progress")):
+        setattr(ui, "progress", lambda *_args, **_kwargs: _FallbackProgress())
+
+
+class _FallbackProgress:
+    def __enter__(self):
+        return self
+
+    def advance(self, *_args, **_kwargs) -> None:
+        return None
+
+    def __exit__(self, *_exc) -> None:
+        return None
