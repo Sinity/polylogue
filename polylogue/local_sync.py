@@ -24,6 +24,7 @@ from .util import DiffTracker, path_order_key, sanitize_filename, slugify_title
 from .services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .pipeline_runner import Pipeline, PipelineContext
 from .config import CONFIG
+from .ui import UI
 
 
 @dataclass
@@ -95,6 +96,17 @@ CHATGPT_EXPORTS_DEFAULT = EXPORTS_ROOT / "chatgpt"
 CLAUDE_EXPORTS_DEFAULT = EXPORTS_ROOT / "claude"
 
 
+class _NoopProgress:
+    def __enter__(self):
+        return self
+
+    def advance(self, *_args, **_kwargs) -> None:
+        return None
+
+    def __exit__(self, *_exc) -> None:
+        return None
+
+
 def _sync_sessions(
     sessions: Iterable[Path],
     *,
@@ -109,6 +121,7 @@ def _sync_sessions(
     import_fn,
     importer_kwargs: Optional[dict] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    ui: Optional[UI] = None,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -126,9 +139,12 @@ def _sync_sessions(
 
     diff_total = 0
     if isinstance(sessions, (list, tuple)):
-        iterable: Iterable[Path] = sorted(sessions, key=path_order_key)
+        iterable: Iterable[Path] = sorted((Path(p) for p in sessions), key=path_order_key)
     else:
-        iterable = sessions
+        iterable = sorted(list(sessions), key=path_order_key)
+
+    session_list = list(iterable)
+    progress_ctx = ui.progress(f"Syncing {provider} sessions", total=len(session_list)) if ui else _NoopProgress()
 
     output_root = output_dir.resolve()
 
@@ -215,32 +231,36 @@ def _sync_sessions(
 
     pipeline = Pipeline([_LocalSessionStage(_process_single)])
 
-    for session_path in iterable:
-        ctx = PipelineContext(env=None, options=None, data={"session_path": session_path})
-        pipeline.run(ctx)
-        session_output = ctx.get("session_result", {})
-        prune_slug = session_output.get("prune_slug")
-        if isinstance(prune_slug, str):
-            wanted.add(prune_slug)
+    with progress_ctx as tracker:
+        for session_path in session_list:
+            ctx = PipelineContext(env=None, options=None, data={"session_path": session_path})
+            pipeline.run(ctx)
+            session_output = ctx.get("session_result", {})
+            prune_slug = session_output.get("prune_slug")
+            if isinstance(prune_slug, str):
+                wanted.add(prune_slug)
 
-        if session_output.get("skipped"):
-            skipped += 1
-            continue
+            if session_output.get("skipped"):
+                skipped += 1
+                tracker.advance()
+                continue
 
-        result = session_output.get("result")
-        if not isinstance(result, ImportResult):
-            continue
+            result = session_output.get("result")
+            if not isinstance(result, ImportResult):
+                tracker.advance()
+                continue
 
-        if session_output.get("diff"):
-            diff_total += 1
+            if session_output.get("diff"):
+                diff_total += 1
 
-        wanted.add(result.slug)
-        if result.document:
-            attachments_total += len(result.document.attachments)
-            attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
-            tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
-            words_total += result.document.stats.get("totalWordsApprox", 0) or 0
-        written.append(result)
+            wanted.add(result.slug)
+            if result.document:
+                attachments_total += len(result.document.attachments)
+                attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
+                tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
+                words_total += result.document.stats.get("totalWordsApprox", 0) or 0
+            written.append(result)
+            tracker.advance()
 
     pruned = 0
     if prune:
@@ -313,6 +333,7 @@ def _sync_export_bundles(
     provider: str,
     import_fn: Callable[..., Sequence[ImportResult] | ImportResult | None],
     registrar: Optional[ConversationRegistrar] = None,
+    ui: Optional[UI] = None,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -332,42 +353,48 @@ def _sync_export_bundles(
     else:
         iterable = sorted([Path(p) for p in bundles], key=path_order_key)
 
-    for export_path in iterable:
-        if not export_path.exists():
-            continue
-        results_raw = import_fn(
-            export_path=export_path,
-            output_dir=output_dir,
-            collapse_threshold=collapse_threshold,
-            html=html,
-            html_theme=html_theme,
-            selected_ids=None,
-            force=force,
-            registrar=registrar,
-        )
-        if results_raw is None:
-            result_list: List[ImportResult] = []
-        elif isinstance(results_raw, ImportResult):
-            result_list = [results_raw]
-        else:
-            result_list = list(results_raw)
+    exports = list(iterable)
+    progress_ctx = ui.progress(f"Processing {provider} exports", total=len(exports)) if ui else _NoopProgress()
 
-        export_wrote = False
-        for result in result_list:
-            if not isinstance(result, ImportResult):
+    with progress_ctx as tracker:
+        for export_path in exports:
+            if not export_path.exists():
+                tracker.advance()
                 continue
-            wanted.add(result.slug)
-            if result.skipped:
-                continue
-            export_wrote = True
-            if result.document:
-                attachments_total += len(result.document.attachments)
-                attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
-                tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
-                words_total += result.document.stats.get("totalWordsApprox", 0) or 0
-            written.append(result)
-        if not export_wrote:
-            skipped_exports += 1
+            results_raw = import_fn(
+                export_path=export_path,
+                output_dir=output_dir,
+                collapse_threshold=collapse_threshold,
+                html=html,
+                html_theme=html_theme,
+                selected_ids=None,
+                force=force,
+                registrar=registrar,
+            )
+            if results_raw is None:
+                result_list: List[ImportResult] = []
+            elif isinstance(results_raw, ImportResult):
+                result_list = [results_raw]
+            else:
+                result_list = list(results_raw)
+
+            export_wrote = False
+            for result in result_list:
+                if not isinstance(result, ImportResult):
+                    continue
+                wanted.add(result.slug)
+                if result.skipped:
+                    continue
+                export_wrote = True
+                if result.document:
+                    attachments_total += len(result.document.attachments)
+                    attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
+                    tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
+                    words_total += result.document.stats.get("totalWordsApprox", 0) or 0
+                written.append(result)
+            if not export_wrote:
+                skipped_exports += 1
+            tracker.advance()
 
     pruned = 0
     if prune:
@@ -411,6 +438,7 @@ def sync_codex_sessions(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    ui: Optional[UI] = None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -431,6 +459,7 @@ def sync_codex_sessions(
             **kwargs,
         ),
         registrar=registrar,
+        ui=ui,
     )
 
 
@@ -446,6 +475,7 @@ def sync_claude_code_sessions(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    ui: Optional[UI] = None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -466,6 +496,7 @@ def sync_claude_code_sessions(
             **kwargs,
         ),
         registrar=registrar,
+        ui=ui,
     )
 
 
@@ -503,6 +534,7 @@ def sync_chatgpt_exports(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    ui: Optional[UI] = None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -523,6 +555,7 @@ def sync_chatgpt_exports(
         provider="chatgpt",
         import_fn=import_chatgpt_export,
         registrar=registrar,
+        ui=ui,
     )
 
 
@@ -538,6 +571,7 @@ def sync_claude_exports(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    ui: Optional[UI] = None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -558,6 +592,7 @@ def sync_claude_exports(
         provider="claude",
         import_fn=import_claude_export,
         registrar=registrar,
+        ui=ui,
     )
 
 
