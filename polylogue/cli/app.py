@@ -61,6 +61,9 @@ from .imports import (
     run_import_claude_code,
     run_import_codex,
 )
+from .dashboards import run_dashboards_cli
+from .runs import run_runs_cli
+from .index_cli import run_index_cli
 from .render import copy_import_to_clipboard, run_render_cli
 from .watch import run_watch_cli
 from .status import run_status_cli, run_stats_cli
@@ -825,6 +828,11 @@ def _dispatch_settings(args: argparse.Namespace, env: CommandEnv) -> None:
 def _dispatch_status(args: argparse.Namespace, env: CommandEnv) -> None:
     run_status_cli(args, env)
 
+
+def _dispatch_dashboards(args: argparse.Namespace, env: CommandEnv) -> None:
+    run_dashboards_cli(args, env)
+
+
 def _dispatch_search_preview(args: argparse.Namespace, _env: CommandEnv) -> None:
     run_search_preview(args)
 
@@ -865,6 +873,9 @@ def _register_default_commands() -> None:
     _ensure("prune", _dispatch_prune, "Remove legacy single-file outputs and attachments")
     _ensure("doctor", _dispatch_doctor, "Check local data directories for common issues")
     _ensure("status", _dispatch_status, "Show cached Drive info and recent runs")
+    _ensure("dashboards", _dispatch_dashboards, "Show provider dashboards")
+    _ensure("runs", lambda args, env: run_runs_cli(args, env), "List recent runs")
+    _ensure("index", lambda args, env: run_index_cli(args, env), "Index maintenance helpers")
     _ensure("settings", _dispatch_settings, "Show or update default preferences")
     _ensure("help", _dispatch_help, "Show command help")
     _ensure("env", _dispatch_env, "Show resolved configuration/output paths")
@@ -1028,6 +1039,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_status = _add_command_parser(sub, "status", help="Show cached Drive info and recent runs", description="Show cached Drive info and recent runs")
     p_status.add_argument("--json", action="store_true", help="Emit machine-readable summary")
+    p_status.add_argument(
+        "--json-lines",
+        action="store_true",
+        help="Stream newline-delimited JSON records (auto-enables --json, useful with --watch)",
+    )
     p_status.add_argument("--watch", action="store_true", help="Continuously refresh the status output")
     p_status.add_argument("--interval", type=float, default=5.0, help="Seconds between refresh while watching")
     p_status.add_argument("--dump", type=str, default=None, help="Write recent runs to a file ('-' for stdout)")
@@ -1051,6 +1067,25 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only emit the summary JSON without printing tables",
     )
+
+    p_dash = _add_command_parser(sub, "dashboards", help="Show provider dashboards", description="Rich dashboard of provider stats and recent runs")
+    p_dash.add_argument("--runs-limit", type=int, default=10, help="Number of recent runs to show")
+    p_dash.add_argument("--json", action="store_true", help="Emit dashboard data as JSON")
+
+    p_runs = _add_command_parser(sub, "runs", help="List recent runs", description="List run history with filters")
+    p_runs.add_argument("--limit", type=int, default=50, help="Number of runs to display")
+    p_runs.add_argument("--providers", type=str, default=None, help="Comma-separated provider filter")
+    p_runs.add_argument("--commands", type=str, default=None, help="Comma-separated command filter")
+    p_runs.add_argument("--since", type=str, default=None, help="Only include runs on/after this timestamp (YYYY-MM-DD or ISO)")
+    p_runs.add_argument("--until", type=str, default=None, help="Only include runs on/before this timestamp")
+    p_runs.add_argument("--json", action="store_true", help="Emit runs as JSON")
+
+    p_index = _add_command_parser(sub, "index", help="Index maintenance helpers", description="Inspect/repair Polylogue indexes")
+    index_sub = p_index.add_subparsers(dest="subcmd", required=True)
+    p_index_check = index_sub.add_parser("check", help="Validate SQLite/Qdrant indexes")
+    p_index_check.add_argument("--repair", action="store_true", help="Attempt to rebuild missing SQLite FTS data")
+    p_index_check.add_argument("--skip-qdrant", action="store_true", help="Skip Qdrant validation even when configured")
+    p_index_check.add_argument("--json", action="store_true", help="Emit validation results as JSON")
 
     p_env = _add_command_parser(sub, "env", help="Show resolved configuration and output paths", description="Show resolved configuration and output paths")
     p_env.add_argument("--json", action="store_true", help="Emit environment info as JSON")
