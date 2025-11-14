@@ -34,5 +34,13 @@ def add_force_option(parser: ArgumentParser, *, help_text: str) -> None:
     parser.add_argument("--force", action="store_true", help=help_text)
 
 
+def add_allow_dirty_option(parser: ArgumentParser) -> None:
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Allow overwriting files with local edits (requires --force)",
+    )
+
+
 def add_dry_run_option(parser: ArgumentParser, *, help_text: str = "Report actions without writing files") -> None:
     parser.add_argument("--dry-run", action="store_true", help=help_text)

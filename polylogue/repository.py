@@ -30,6 +30,7 @@ class ConversationRepository:
         slug_hint: Optional[str] = None,
         id_hint: Optional[str] = None,
         force: bool = False,
+        allow_dirty: bool = False,
         registrar: ConversationRegistrar = None,
     ) -> DocumentPersistenceResult:
         if registrar is None:
@@ -51,5 +52,6 @@ class ConversationRepository:
             slug_hint=slug_hint,
             id_hint=id_hint,
             force=force,
+            allow_dirty=allow_dirty,
             registrar=registrar,
         )

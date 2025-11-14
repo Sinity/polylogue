@@ -281,11 +281,13 @@ def replace_messages(conn, *, provider, conversation_id, branch_id, messages):
 
 ---
 
-### 🔶 MEDIUM ISSUE #2: Force Flag Destroys User Edits
+### ✅ FIXED: Force Flag Destroys User Edits
 
 **Location:** `document_store.py:312`, `util.py:305`
 
-**The Problem:**
+**Status:** Fixed with --allow-dirty flag implementation
+
+**The Problem (Historical):**
 ```python
 # Dirty file detection (GOOD)
 if existing_dirty and not force:

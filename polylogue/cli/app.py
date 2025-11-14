@@ -31,6 +31,7 @@ from ..ui import create_ui
 from .completion_engine import CompletionEngine, Completion
 from .registry import CommandRegistry
 from .arg_helpers import (
+    add_allow_dirty_option,
     add_collapse_option,
     add_diff_option,
     add_dry_run_option,
@@ -903,6 +904,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--links-only", action="store_true", help="Link attachments instead of downloading")
     add_dry_run_option(p_render, help_text="Report actions without writing files")
     add_force_option(p_render, help_text="Overwrite conversations even if they appear up-to-date")
+    add_allow_dirty_option(p_render)
     add_collapse_option(p_render, help_text="Override collapse threshold")
     p_render.add_argument("--json", action="store_true")
     add_html_option(p_render)
@@ -923,6 +925,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--links-only", action="store_true", help="Link attachments instead of downloading (Drive only)")
     add_dry_run_option(p_sync)
     add_force_option(p_sync, help_text="Re-render even if conversations are up-to-date")
+    add_allow_dirty_option(p_sync)
     p_sync.add_argument("--prune", action="store_true", help="Remove outputs for conversations that vanished upstream")
     add_collapse_option(p_sync)
     add_html_option(p_sync)
@@ -962,6 +965,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_collapse_option(p_import)
     add_html_option(p_import)
     add_force_option(p_import, help_text="Rewrite even if conversations appear up-to-date")
+    add_allow_dirty_option(p_import)
     p_import.add_argument("--all", action="store_true", help="Process every conversation in the export (ChatGPT/Claude)")
     p_import.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Specific conversation ID to import (repeatable)")
     p_import.add_argument("--base-dir", type=Path, default=None, help="Override source directory for codex/claude-code sessions")
