@@ -194,6 +194,7 @@ def import_chatgpt_export(
                     html=html,
                     html_theme=html_theme,
                     force=force,
+                    allow_dirty=allow_dirty,
                     registrar=registrar,
                 )
             )
@@ -239,6 +240,7 @@ def _render_chatgpt_conversation(
     html: bool,
     html_theme: str,
     force: bool,
+    allow_dirty: bool,
     registrar: Optional[ConversationRegistrar],
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
