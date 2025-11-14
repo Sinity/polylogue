@@ -166,6 +166,7 @@ def import_chatgpt_export(
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
     force: bool = False,
+    allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
@@ -373,6 +374,7 @@ def _render_chatgpt_conversation(
         source_size=None,
         attachment_policy=None,
         force=force,
+        allow_dirty=allow_dirty,
         registrar=registrar,
     )
 
