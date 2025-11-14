@@ -14,6 +14,7 @@ from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
 from ..util import parse_input_time_to_epoch
 from .context import DEFAULT_OUTPUT_ROOTS, DEFAULT_RENDER_OUT
 
+
 def _dump_runs(ui, records: List[dict], destination: str) -> None:
     payload = json.dumps(records, indent=2)
     if destination == "-":
@@ -337,20 +338,20 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             continue
 
         totals["files"] += 1
-        totals["attachments"] += int(attachment_count)
-        totals["attachmentBytes"] += int(attachment_bytes)
-        totals["tokens"] += int(tokens)
-        totals["words"] += int(words)
+        totals["attachments"] += int(attachment_count) if attachment_count else 0
+        totals["attachmentBytes"] += int(attachment_bytes) if attachment_bytes else 0
+        totals["tokens"] += int(tokens) if tokens else 0
+        totals["words"] += int(words) if words else 0
 
         prov = per_provider.setdefault(
             provider,
             {"files": 0, "attachments": 0, "attachmentBytes": 0, "tokens": 0, "words": 0},
         )
         prov["files"] += 1
-        prov["attachments"] += int(attachment_count)
-        prov["attachmentBytes"] += int(attachment_bytes)
-        prov["tokens"] += int(tokens)
-        prov["words"] += int(words)
+        prov["attachments"] += int(attachment_count) if attachment_count else 0
+        prov["attachmentBytes"] += int(attachment_bytes) if attachment_bytes else 0
+        prov["tokens"] += int(tokens) if tokens else 0
+        prov["words"] += int(words) if words else 0
 
         rows.append(
             {
@@ -402,5 +403,6 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         except Exception:
             pass
     ui.summary("Stats", lines)
+
 
 __all__ = ["run_status_cli", "run_stats_cli"]

@@ -681,6 +681,7 @@ def _run_search_picker(ui, hits: List[SearchHit]) -> Tuple[Optional[SearchHit], 
         with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", suffix=".json") as handle:
             json.dump({"hits": data_payload}, handle)
             tmp_path = Path(handle.name)
+
         def _format(hit: SearchHit, idx: int) -> str:
             snippet = hit.snippet or hit.body
             snippet = snippet.replace("\n", " ")

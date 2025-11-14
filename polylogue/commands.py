@@ -339,6 +339,7 @@ class DriveNormalizeStage:
         )
         context.set("source_path", options.output_dir / name_safe / "conversation.json")
 
+
 @dataclass
 class RunSummaryEntry:
     command: str
@@ -801,6 +802,8 @@ def status_command(env: CommandEnv, runs_limit: Optional[int] = 200) -> StatusRe
         provider_summary=provider_summary,
         runs=run_data,
     )
+
+
 def _ensure_ui_contract(ui: Any) -> None:
     console = getattr(ui, "console", None)
 

@@ -376,6 +376,7 @@ def _render_chatgpt_conversation(
         registrar=registrar,
     )
 
+
 def _normalise_role(role: Optional[str]) -> str:
     if not role:
         return "assistant"
