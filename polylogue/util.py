@@ -9,10 +9,10 @@ import tempfile
 import unicodedata
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 from .db import open_connection, record_run
-from .paths import CACHE_HOME, CONFIG_HOME, DATA_HOME, STATE_HOME
+from .paths import DATA_HOME
 from .persistence.state import ConversationStateRepository
 
 try:  # pragma: no cover - optional dependency
@@ -240,6 +240,7 @@ def get_cached_folder_id(name: str) -> Optional[str]:
 def set_cached_folder_id(name: str, folder_id: str) -> None:
     _set_meta_value(f"drive.folder.{name}", folder_id)
 
+
 def assign_conversation_slug(
     provider: str,
     conversation_id: str,
@@ -390,6 +391,7 @@ def add_run(record: Dict[str, Any]) -> None:
             metadata=metadata or None,
         )
         conn.commit()
+
 
 def write_delta_diff(old_path: Path, new_path: Path, *, suffix: str = ".diff.txt") -> Optional[Path]:
     if not old_path.exists() or not new_path.exists():

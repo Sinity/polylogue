@@ -122,4 +122,3 @@ def summarize_import_results(results: Sequence[ImportResult]) -> OperationSummar
         branches=branch_total,
         extra_counts=extra_counts,
     )
-
