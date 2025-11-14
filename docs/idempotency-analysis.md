@@ -202,11 +202,13 @@ polylogue sync drive --chat-id abc123
 
 ## Part 2: Critical Issues Deep Dive
 
-### 🔴 CRITICAL ISSUE #1: Database Message Replacement Data Loss
+### ✅ FIXED: Database Message Replacement Data Loss
 
 **Location:** `db.py:216-273` - `replace_messages()` function
 
-**The Problem:**
+**Status:** Fixed in commit [current] with SAVEPOINT transaction protection
+
+**The Problem (Historical):**
 ```python
 def replace_messages(conn, *, provider, conversation_id, branch_id, messages):
     # STEP 1: Delete all messages (COMMITTED IMMEDIATELY)
