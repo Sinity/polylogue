@@ -26,6 +26,7 @@ def import_claude_code_session(
     html: bool,
     html_theme: str,
     force: bool = False,
+    allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
 ) -> ImportResult:
     registrar = registrar or create_default_registrar()
@@ -272,6 +273,7 @@ def import_claude_code_session(
         source_size=session_path.stat().st_size,
         attachment_policy=None,
         force=force,
+        allow_dirty=allow_dirty,
         registrar=registrar,
     )
 
