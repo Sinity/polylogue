@@ -39,6 +39,7 @@ def normalise_inline_footnotes(text: str) -> str:
 
     return _ESCAPED_FOOTNOTE_RE.sub(replacer, text)
 
+
 _TOKENIZER_CACHE: Dict[str, Encoding] = {}
 
 

@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Protocol
 
+
 class PipelineStage(Protocol):
     """Stage interface for pipeline execution."""
 

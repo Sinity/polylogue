@@ -309,6 +309,7 @@ def _discover_export_targets(base_dir: Path) -> List[Path]:
         pass
     return sorted(candidates, key=path_order_key, reverse=True)
 
+
 def _normalize_export_target(path: Path) -> Optional[Path]:
     candidate = Path(path).expanduser()
     suffix = candidate.suffix.lower()

@@ -15,6 +15,7 @@ from ..services.conversation_registrar import ConversationRegistrar, create_defa
 
 _DEFAULT_BASE = CODEX_SESSIONS_ROOT
 
+
 def _truncate_with_preview(text: str, attachment_name: str) -> str:
     lines = text.splitlines()
     if len(lines) <= PREVIEW_LINES * 2 + 1:

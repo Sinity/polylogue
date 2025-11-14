@@ -19,8 +19,8 @@ def filter_chats(
         try:
             rx = re.compile(name_filter)
             out = [c for c in out if rx.search(c.get("name", "") or "")]
-        except re.error:
-            pass
+        except re.error as e:
+            raise ValueError(f"Invalid name filter regex '{name_filter}': {e}") from e
     s_epoch = parse_input_time_to_epoch(since)
     u_epoch = parse_input_time_to_epoch(until)
     if s_epoch is not None or u_epoch is not None:

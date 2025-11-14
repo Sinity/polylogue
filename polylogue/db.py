@@ -15,7 +15,8 @@ SCHEMA_VERSION = 2
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
-    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    version_row = conn.execute("PRAGMA user_version").fetchone()
+    current_version = version_row[0] if version_row else 0
     if current_version >= SCHEMA_VERSION:
         return
 
