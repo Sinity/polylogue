@@ -963,6 +963,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_out_option(p_import, default_path=Path("(provider-specific)"), help_text="Override output directory")
     add_collapse_option(p_import)
     add_html_option(p_import)
+    add_dry_run_option(p_import)
     add_force_option(p_import, help_text="Rewrite even if conversations appear up-to-date")
     add_allow_dirty_option(p_import)
     import_selection_group = p_import.add_mutually_exclusive_group()
@@ -1024,6 +1025,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_out_option(p_watch, default_path=Path("(provider-specific)"), help_text="Override output directory")
     add_collapse_option(p_watch)
     add_html_option(p_watch, description="HTML preview mode while watching: on/off/auto (default auto)")
+    add_dry_run_option(p_watch)
     p_watch.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
     p_watch.add_argument("--once", action="store_true", help="Run a single sync pass and exit")
 
