@@ -44,3 +44,31 @@ def add_allow_dirty_option(parser: ArgumentParser) -> None:
 
 def add_dry_run_option(parser: ArgumentParser, *, help_text: str = "Report actions without writing files") -> None:
     parser.add_argument("--dry-run", action="store_true", help=help_text)
+
+
+def resolve_base_dir(value: Path | None, default: Path) -> Path:
+    """Resolve base directory with expanduser, falling back to default.
+
+    Args:
+        value: User-provided path or None
+        default: Default path to use if value is None
+
+    Returns:
+        Resolved path with ~ expanded
+    """
+    return Path(value).expanduser() if value else default
+
+
+def ensure_directory(path: Path, *, create: bool = True) -> Path:
+    """Ensure directory exists, optionally creating it.
+
+    Args:
+        path: Directory path to ensure
+        create: If True, create directory if missing
+
+    Returns:
+        The same path (for chaining)
+    """
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
