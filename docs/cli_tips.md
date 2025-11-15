@@ -11,7 +11,7 @@ Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetit
 
 ## Branch Explorer & Search
 
-- **Branch picker**: `polylogue inspect branches` lists branch-aware conversations, opens a skim picker when `sk` is available, prints the tree, and writes a shareable HTML explorer automatically when forks exist (override with `--html-out`, disable via `--html off`). Inline prompts can queue a branch diff or on-demand HTML write/directory reveal without rerunning the command.
+- **Branch picker**: `polylogue inspect branches` lists branch-aware conversations, opens a skim picker when `sk` is available, prints the tree, and writes a shareable HTML explorer automatically when forks exist (override with `--out`, disable via `--html off`). Inline prompts can queue a branch diff or on-demand HTML write/directory reveal without rerunning the command.
 - **FTS search**: `polylogue inspect search` queries the SQLite `messages_fts` index. Filters include provider, slug, conversation/branch IDs, model, date range (`--since/--until`), and attachment presence. Interactive previews default to skim; add `--no-picker` in CI or scripts, or `--json` when you need machine-readable results.
 
 ## Session Settings & Themes
