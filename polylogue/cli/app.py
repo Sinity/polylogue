@@ -959,7 +959,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_import = _add_command_parser(sub, "import", help="Import provider exports into the archive", description="Import provider exports into the archive")
     p_import.add_argument("provider", choices=["chatgpt", "claude", "claude-code", "codex"], help="Provider export format")
-    p_import.add_argument("source", nargs="*", help="Export path or session identifier (depends on provider)")
+    p_import.add_argument("source", nargs="*", help="Export path or session identifier (depends on provider); use 'pick', '?', or '-' to trigger interactive picker")
     add_out_option(p_import, default_path=Path("(provider-specific)"), help_text="Override output directory")
     add_collapse_option(p_import)
     add_html_option(p_import)
