@@ -176,16 +176,25 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     html_theme = settings.html_theme
     session_target = args.session_id
     if (session_target in {None, "", "pick", "?"}) and not ui.plain:
+        from ..cli_common import choose_single_entry
         candidates = sorted(base_dir.expanduser().rglob("*.jsonl"), key=path_order_key, reverse=True)
         if not candidates:
             console.print("No Codex sessions found.")
             return
-        lines = [f"{path.stem}\t{path.parent}\t{path}" for path in candidates]
-        selection = sk_select(lines, multi=False, header="Select Codex session")
-        if not selection:
+
+        def _format_session(path, idx):
+            return f"{path.stem}\t{path.parent}\t{path}"
+
+        chosen, cancelled = choose_single_entry(
+            ui, candidates, format_line=_format_session, header="Select Codex session", prompt="session>"
+        )
+        if cancelled:
             console.print("[yellow]Import cancelled; no session selected.")
             return
-        session_target = selection[0].split("\t")[-1]
+        if chosen is None:
+            console.print("[yellow]No session selected.")
+            return
+        session_target = str(chosen)
     elif not session_target:
         console.print("[yellow]Provide a Codex session file or run interactively.")
         return
@@ -387,16 +396,25 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     session_id = args.session_id
 
     if session_id in {"pick", "?"} or (session_id == "-" and not ui.plain):
+        from ..cli_common import choose_single_entry
         entries = list_claude_code_sessions(base_dir)
         if not entries:
             console.print("No Claude Code sessions found.")
             return
-        lines = [f"{entry['name']}\t{entry['workspace']}\t{entry['path']}" for entry in entries]
-        selection = sk_select(lines, multi=False, header="Select Claude Code session")
-        if not selection:
+
+        def _format_session(entry, idx):
+            return f"{entry['name']}\t{entry['workspace']}\t{entry['path']}"
+
+        chosen, cancelled = choose_single_entry(
+            ui, entries, format_line=_format_session, header="Select Claude Code session", prompt="session>"
+        )
+        if cancelled:
             console.print("[yellow]Import cancelled; no session selected.")
             return
-        session_id = selection[0].split("\t")[-1]
+        if chosen is None:
+            console.print("[yellow]No session selected.")
+            return
+        session_id = chosen["path"]
 
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
