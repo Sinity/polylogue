@@ -428,7 +428,7 @@ def run_inspect_branches(args: argparse.Namespace, env: CommandEnv) -> None:
 
         html_path = None
         html_enabled, html_explicit = resolve_html_settings(args, settings)
-        html_out = getattr(args, "html_out", None)
+        html_out = getattr(args, "out", None)
         should_auto_html = html_enabled and not html_explicit and html_out is None and conv.branch_count > 1
         force_html = html_out is not None or (html_explicit and html_enabled)
         if force_html or should_auto_html:
@@ -548,7 +548,7 @@ def _prompt_branch_followups(ui, conversation, args, html_path: Optional[Path], 
             if branch_choice:
                 _display_branch_diff_for_id(conversation, branch_choice, ui)
         elif choice.startswith("Write"):
-            target = _resolve_html_output_path(conversation, getattr(args, "html_out", None), False)
+            target = _resolve_html_output_path(conversation, getattr(args, "out", None), False)
             current_html = _generate_branch_html(
                 conversation,
                 target=target,
@@ -573,9 +573,6 @@ def _display_diff(diff_text: str, ui) -> None:
 
 def run_inspect_search(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
-    if args.with_attachments and args.without_attachments:
-        ui.console.print("[red]Error: Conflicting flags. Use either --with-attachments OR --without-attachments, not both.")
-        raise SystemExit(1)
     has_attachments: Optional[bool]
     if args.with_attachments:
         has_attachments = True
@@ -938,20 +935,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="Drive chat/file ID to sync (repeatable)",
     )
-    p_sync.add_argument(
+    sync_selection_group = p_sync.add_mutually_exclusive_group()
+    sync_selection_group.add_argument(
         "--session",
         dest="sessions",
         action="append",
         type=Path,
         help="Local session/export path to sync (repeatable; local providers)",
     )
+    sync_selection_group.add_argument("--all", action="store_true", help="Process all local sessions without prompting")
     p_sync.add_argument(
         "--base-dir",
         type=Path,
         default=None,
         help="Override local session/export directory",
     )
-    p_sync.add_argument("--all", action="store_true", help="Process all local sessions without prompting")
     p_sync.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME, help="Drive folder name (drive provider)")
     p_sync.add_argument("--folder-id", type=str, default=None, help="Drive folder ID override")
     p_sync.add_argument("--since", type=str, default=None, help="Only include Drive chats updated on/after this timestamp")
@@ -967,8 +965,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_html_option(p_import)
     add_force_option(p_import, help_text="Rewrite even if conversations appear up-to-date")
     add_allow_dirty_option(p_import)
-    p_import.add_argument("--all", action="store_true", help="Process every conversation in the export (ChatGPT/Claude)")
-    p_import.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Specific conversation ID to import (repeatable)")
+    import_selection_group = p_import.add_mutually_exclusive_group()
+    import_selection_group.add_argument("--all", action="store_true", help="Process every conversation in the export (ChatGPT/Claude)")
+    import_selection_group.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Specific conversation ID to import (repeatable)")
     p_import.add_argument("--base-dir", type=Path, default=None, help="Override source directory for codex/claude-code sessions")
     p_import.add_argument("--json", action="store_true", help="Emit machine-readable summary")
     p_import.add_argument("--to-clipboard", action="store_true", help="Copy a single imported Markdown file to the clipboard")
@@ -993,7 +992,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MODE",
         help="Branch HTML mode: on/off/auto (default auto)",
     )
-    p_inspect_branches.add_argument("--html-out", type=Path, default=None, help="Write the branch explorer to this path")
+    p_inspect_branches.add_argument("--out", type=Path, default=None, help="Write the branch explorer HTML to this path")
     p_inspect_branches.add_argument("--theme", type=str, default=None, choices=["light", "dark"], help="Override HTML explorer theme")
     p_inspect_branches.add_argument("--no-picker", action="store_true", help="Skip interactive selection even when skim/gum are available")
 
@@ -1007,8 +1006,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect_search.add_argument("--model", type=str, default=None, help="Filter by source model when recorded")
     p_inspect_search.add_argument("--since", type=str, default=None, help="Only include messages on/after this timestamp")
     p_inspect_search.add_argument("--until", type=str, default=None, help="Only include messages on/before this timestamp")
-    p_inspect_search.add_argument("--with-attachments", action="store_true", help="Limit to messages with extracted attachments")
-    p_inspect_search.add_argument("--without-attachments", action="store_true", help="Limit to messages without attachments")
+    attachment_group = p_inspect_search.add_mutually_exclusive_group()
+    attachment_group.add_argument("--with-attachments", action="store_true", help="Limit to messages with extracted attachments")
+    attachment_group.add_argument("--without-attachments", action="store_true", help="Limit to messages without attachments")
     p_inspect_search.add_argument("--no-picker", action="store_true", help="Skip skim picker preview even when interactive")
     p_inspect_search.add_argument("--json", action="store_true", help="Emit machine-readable search results")
 
@@ -1050,12 +1050,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Stream newline-delimited JSON records (auto-enables --json, useful with --watch)",
     )
-    p_status.add_argument("--watch", action="store_true", help="Continuously refresh the status output")
+    status_mode_group = p_status.add_mutually_exclusive_group()
+    status_mode_group.add_argument("--watch", action="store_true", help="Continuously refresh the status output")
+    status_mode_group.add_argument("--dump-only", action="store_true", help="Only perform the dump action without printing summaries")
     p_status.add_argument("--interval", type=float, default=5.0, help="Seconds between refresh while watching")
     p_status.add_argument("--dump", type=str, default=None, help="Write recent runs to a file ('-' for stdout)")
     p_status.add_argument("--dump-limit", type=int, default=100, help="Number of runs to include when dumping")
     p_status.add_argument("--runs-limit", type=int, default=200, help="Number of historical runs to include in summaries")
-    p_status.add_argument("--dump-only", action="store_true", help="Only perform the dump action without printing summaries")
     p_status.add_argument(
         "--providers",
         type=str,

@@ -224,8 +224,6 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             _dump_runs(ui, dump_records, destination)
 
     if getattr(args, "watch", False):
-        if dump_only:
-            raise SystemExit("--dump-only cannot be combined with --watch")
         interval = getattr(args, "interval", 5.0)
         try:
             while True:
