@@ -247,7 +247,8 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     directory = Path(args.dir) if args.dir else DEFAULT_RENDER_OUT
     if not directory.exists():
         console.print(f"[red]Directory not found: {directory}")
-        return
+        console.print(f"Hint: Create it with: mkdir -p {directory}")
+        raise SystemExit(1)
 
     canonical_files = list(directory.rglob("conversation.md"))
     legacy_files = list(directory.glob("*.md"))

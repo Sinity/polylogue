@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from ..cli_common import sk_select
+from ..cli_common import resolve_inputs, sk_select
 from ..commands import CommandEnv, render_command
 from ..drive_client import DriveClient
 from ..importers import ImportResult
@@ -19,29 +19,6 @@ from .context import (
     resolve_html_enabled,
     resolve_output_path,
 )
-
-
-def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
-    if path.is_file():
-        return [path]
-    if not path.exists():
-        return []
-    candidates = [p for p in path.iterdir() if p.is_file() and p.suffix.lower() == ".json"]
-    if not candidates:
-        return []
-    if plain:
-        return candidates
-    lines = [str(p) for p in candidates]
-    selection = sk_select(
-        lines,
-        preview="bat --style=plain {}",
-        bindings=["ctrl-g:execute(glow --style=dark {+})"],
-    )
-    if selection is None:
-        return None
-    if not selection:
-        return []
-    return [Path(s) for s in selection]
 
 
 def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -> None:

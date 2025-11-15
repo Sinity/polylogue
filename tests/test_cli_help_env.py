@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 
+import pytest
+
 from polylogue.cli.app import run_env_cli, run_help_cli, run_completions_cli, run_complete_cli
 from polylogue.cli import CommandEnv
 
@@ -33,7 +35,9 @@ def test_help_topic_outputs_details(capsys):
 def test_help_unknown_command_reports_error():
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    run_help_cli(argparse.Namespace(topic="nope"), env)
+    with pytest.raises(SystemExit) as exc_info:
+        run_help_cli(argparse.Namespace(topic="nope"), env)
+    assert exc_info.value.code == 1
     assert any("Unknown command" in line for line in ui.console.lines)
 
 
