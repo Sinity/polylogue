@@ -174,6 +174,33 @@ def should_download(local_path: Path, remote_modified_time: Optional[str], *, fo
         return True
 
 
+def handle_selection_result(
+    selection: Optional[List],
+    *,
+    console,
+    action: str,
+    item_type: str = "items"
+) -> Optional[List]:
+    """Handle picker selection with standardized messages.
+
+    Args:
+        selection: Result from picker (None if cancelled, [] if empty)
+        console: Console object for printing messages
+        action: Action being performed (e.g., "sync", "import")
+        item_type: Type of items being selected (e.g., "conversations", "files")
+
+    Returns:
+        The selection if valid, None if cancelled/empty
+    """
+    if selection is None:
+        console.print(f"[yellow]{action.title()} cancelled; no {item_type} selected.")
+        return None
+    if not selection:
+        console.print(f"[yellow]No {item_type} selected; nothing to {action}.")
+        return None
+    return selection
+
+
 def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
     """Resolve input JSON files from a path, with interactive picker if needed.
 
