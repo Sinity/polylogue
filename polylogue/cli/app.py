@@ -896,6 +896,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force interactive UI even when stdout/stderr are not TTYs",
     )
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose debug output")
     sub = parser.add_subparsers(dest="cmd")
 
     p_render = _add_command_parser(sub, "render", help="Render local provider JSON logs", description="Render local provider JSON logs")
@@ -1127,6 +1128,10 @@ def main() -> None:
     ui = create_ui(plain_mode)
     env = CommandEnv(ui=ui)
     ensure_settings_defaults(env.settings)
+
+    # Enable verbose output if requested
+    if getattr(args, "verbose", False):
+        ui.console.print("[dim]Verbose mode enabled[/dim]")
 
     if args.cmd is None:
         parser.print_help()
