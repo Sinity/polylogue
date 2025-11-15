@@ -262,6 +262,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
     since_epoch = parse_input_time_to_epoch(getattr(args, "since", None))
     until_epoch = parse_input_time_to_epoch(getattr(args, "until", None))
+    provider_filter = getattr(args, "provider", None)
 
     def _load_metadata(path: Path) -> Dict[str, Any]:
         if frontmatter_mod is not None:
@@ -333,6 +334,9 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             filtered_out += 1
             continue
         if until_epoch is not None and (timestamp is None or timestamp > until_epoch):
+            filtered_out += 1
+            continue
+        if provider_filter is not None and provider.lower() != provider_filter.lower():
             filtered_out += 1
             continue
 
