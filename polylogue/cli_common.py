@@ -172,3 +172,38 @@ def should_download(local_path: Path, remote_modified_time: Optional[str], *, fo
         return int(local_path.stat().st_mtime) != int(mt)
     except Exception:
         return True
+
+
+def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
+    """Resolve input JSON files from a path, with interactive picker if needed.
+
+    Args:
+        path: File or directory path to resolve
+        plain: If True, skip interactive picker
+
+    Returns:
+        List of selected files, None if picker was cancelled, [] if none selected
+
+    Raises:
+        SystemExit: If path doesn't exist
+    """
+    if path.is_file():
+        return [path]
+    if not path.is_dir():
+        raise SystemExit(f"Input path not found: {path}")
+    candidates = [
+        p for p in sorted(path.iterdir()) if p.is_file() and p.suffix.lower() == ".json"
+    ]
+    if len(candidates) <= 1 or plain:
+        return candidates
+    lines = [str(p) for p in candidates]
+    selection = sk_select(
+        lines,
+        preview="bat --style=plain {}",
+        bindings=["ctrl-g:execute(glow --style=dark {+})"],
+    )
+    if selection is None:
+        return None
+    if not selection:
+        return []
+    return [Path(s) for s in selection]

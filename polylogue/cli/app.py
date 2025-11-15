@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from ..cli_common import choose_single_entry, filter_chats, sk_select
+from ..cli_common import choose_single_entry, filter_chats, resolve_inputs, sk_select
 from ..commands import (
     CommandEnv,
     branches_command,
@@ -165,7 +165,7 @@ def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             console.print(f"[red]Unknown command: {topic}")
             available = ", ".join(sorted(choices)) or "<none>"
             console.print(f"Available commands: {available}")
-            return
+            raise SystemExit(1)
         console.print(f"[cyan]polylogue {topic}[/cyan]")
         subparser.print_help()
         return
@@ -574,8 +574,8 @@ def _display_diff(diff_text: str, ui) -> None:
 def run_inspect_search(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     if args.with_attachments and args.without_attachments:
-        ui.console.print("[red]Choose only one of --with-attachments or --without-attachments.")
-        return
+        ui.console.print("[red]Error: Conflicting flags. Use either --with-attachments OR --without-attachments, not both.")
+        raise SystemExit(1)
     has_attachments: Optional[bool]
     if args.with_attachments:
         has_attachments = True
@@ -1117,29 +1117,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_search_preview.add_argument("--index", type=int, required=True)
 
     return parser
-
-
-def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
-    if path.is_file():
-        return [path]
-    if not path.is_dir():
-        raise SystemExit(f"Input path not found: {path}")
-    candidates = [
-        p for p in sorted(path.iterdir()) if p.is_file() and p.suffix.lower() == ".json"
-    ]
-    if len(candidates) <= 1 or plain:
-        return candidates
-    lines = [str(p) for p in candidates]
-    selection = sk_select(
-        lines,
-        preview="bat --style=plain {}",
-        bindings=["ctrl-g:execute(glow --style=dark {+})"],
-    )
-    if selection is None:
-        return None
-    if not selection:
-        return []
-    return [Path(s) for s in selection]
 
 
 def main() -> None:

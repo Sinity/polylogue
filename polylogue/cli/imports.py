@@ -242,8 +242,9 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
         try:
             entries = list_chatgpt_conversations(export_path)
         except Exception as exc:
-            console.print(f"[red]Failed to scan export: {exc}")
-            return
+            console.print(f"[red]Failed to scan ChatGPT export: {exc}")
+            console.print("Hint: Ensure the export file is a valid ChatGPT conversations.json or .zip export")
+            raise SystemExit(1)
         if not entries:
             console.print("No conversations found in export.")
             return
@@ -318,8 +319,9 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
         try:
             entries = list_claude_conversations(export_path)
         except Exception as exc:
-            console.print(f"[red]Failed to scan export: {exc}")
-            return
+            console.print(f"[red]Failed to scan Claude export: {exc}")
+            console.print("Hint: Ensure the export file is a valid Claude conversations.json or .zip export")
+            raise SystemExit(1)
         if not entries:
             console.print("No conversations found in export.")
             return
