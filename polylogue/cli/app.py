@@ -1015,6 +1015,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_inspect_stats = _add_command_parser(inspect_sub, "stats", help="Summarize Markdown output directories", description="Summarize Markdown output directories")
     p_inspect_stats.add_argument("--dir", type=Path, default=None, help="Directory containing Markdown exports")
+    p_inspect_stats.add_argument("--provider", type=str, default=None, help="Filter by provider name")
     p_inspect_stats.add_argument("--json", action="store_true", help="Emit machine-readable stats")
     p_inspect_stats.add_argument("--since", type=str, default=None, help="Only include files modified on/after this date (YYYY-MM-DD or ISO)")
     p_inspect_stats.add_argument("--until", type=str, default=None, help="Only include files modified on/before this date")
