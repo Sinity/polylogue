@@ -943,7 +943,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Local session/export path to sync (repeatable; local providers)",
     )
-    sync_selection_group.add_argument("--all", action="store_true", help="Process all local sessions without prompting")
+    sync_selection_group.add_argument("--all", action="store_true", help="Process all available items without interactive selection")
     p_sync.add_argument(
         "--base-dir",
         type=Path,
@@ -967,7 +967,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_force_option(p_import, help_text="Rewrite even if conversations appear up-to-date")
     add_allow_dirty_option(p_import)
     import_selection_group = p_import.add_mutually_exclusive_group()
-    import_selection_group.add_argument("--all", action="store_true", help="Process every conversation in the export (ChatGPT/Claude)")
+    import_selection_group.add_argument("--all", action="store_true", help="Process all available items without interactive selection")
     import_selection_group.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Specific conversation ID to import (repeatable)")
     p_import.add_argument("--base-dir", type=Path, default=None, help="Override source directory for codex/claude-code sessions")
     p_import.add_argument("--json", action="store_true", help="Emit machine-readable summary")
