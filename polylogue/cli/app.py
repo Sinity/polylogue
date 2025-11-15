@@ -1137,6 +1137,11 @@ def main() -> None:
     if getattr(args, "verbose", False):
         ui.console.print("[dim]Verbose mode enabled[/dim]")
 
+    # Validate --allow-dirty requires --force
+    if getattr(args, "allow_dirty", False) and not getattr(args, "force", False):
+        ui.console.print("[red]Error: --allow-dirty requires --force")
+        raise SystemExit(1)
+
     if args.cmd is None:
         parser.print_help()
         return
