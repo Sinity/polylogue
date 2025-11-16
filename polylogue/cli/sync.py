@@ -250,6 +250,7 @@ def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optiona
 def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEnv) -> None:
     provider = get_local_provider(provider_name)
     ui = env.ui
+    json_mode = getattr(args, "json", False)
     if getattr(args, "diff", False) and not provider.supports_diff:
         raise SystemExit(f"{provider.title} does not support --diff output")
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base.expanduser()
@@ -289,6 +290,7 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
         diff=diff_enabled,
         sessions=selected_paths,
         registrar=env.registrar,
+        ui=ui if not json_mode else None,
     )
 
     attachments = result.attachments

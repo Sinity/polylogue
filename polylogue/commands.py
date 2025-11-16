@@ -638,56 +638,68 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     items: List[SyncItem] = []
     wanted_slugs: set[str] = set()
     totals_acc = RunAccumulator()
-    for meta in chats:
-        ctx = PipelineContext(env=env, options=options, data={"metadata": meta})
-        pipeline.run(ctx)
-        if ctx.aborted:
-            continue
 
-        result: Optional[ImportResult] = ctx.get("import_result")
-        chat_context: ChatContext = ctx.get("chat_context")
-        file_id = ctx.get("file_id")
-        slug_value = ctx.get("slug")
-        if isinstance(slug_value, str) and slug_value:
-            wanted_slugs.add(slug_value)
+    ui = env.ui
+    with ui.progress("Syncing chats", total=len(chats)) as progress:
+        for meta in chats:
+            ctx = PipelineContext(env=env, options=options, data={"metadata": meta})
+            pipeline.run(ctx)
+            if ctx.aborted:
+                if progress:
+                    progress.advance()
+                continue
 
-        if result is None:
-            continue
+            result: Optional[ImportResult] = ctx.get("import_result")
+            chat_context: ChatContext = ctx.get("chat_context")
+            file_id = ctx.get("file_id")
+            slug_value = ctx.get("slug")
+            if isinstance(slug_value, str) and slug_value:
+                wanted_slugs.add(slug_value)
 
-        if result.skipped:
-            totals_acc.increment("skipped")
-            continue
+            if result is None:
+                if progress:
+                    progress.advance()
+                continue
 
-        if not options.dry_run and chat_context.modified_time:
-            mtime = parse_rfc3339_to_epoch(chat_context.modified_time)
-            if mtime is not None:
-                try:
-                    os.utime(result.markdown_path, (mtime, mtime))
-                except Exception:
-                    pass
-                if result.html_path:
+            if result.skipped:
+                totals_acc.increment("skipped")
+                if progress:
+                    progress.advance()
+                continue
+
+            if not options.dry_run and chat_context.modified_time:
+                mtime = parse_rfc3339_to_epoch(chat_context.modified_time)
+                if mtime is not None:
                     try:
-                        os.utime(result.html_path, (mtime, mtime))
+                        os.utime(result.markdown_path, (mtime, mtime))
                     except Exception:
                         pass
+                    if result.html_path:
+                        try:
+                            os.utime(result.html_path, (mtime, mtime))
+                        except Exception:
+                            pass
 
-        doc: Optional[MarkdownDocument] = result.document
-        items.append(
-            SyncItem(
-                id=file_id,
-                name=meta.get("name"),
-                output=result.markdown_path,
-                slug=result.slug,
-                attachments=len(doc.attachments) if doc else 0,
-                stats=doc.stats if doc else {},
-                html=result.html_path,
-                diff=result.diff_path,
+            doc: Optional[MarkdownDocument] = result.document
+            items.append(
+                SyncItem(
+                    id=file_id,
+                    name=meta.get("name"),
+                    output=result.markdown_path,
+                    slug=result.slug,
+                    attachments=len(doc.attachments) if doc else 0,
+                    stats=doc.stats if doc else {},
+                    html=result.html_path,
+                    diff=result.diff_path,
+                )
             )
-        )
-        if result.diff_path:
-            totals_acc.increment("diffs")
-        if doc is not None:
-            totals_acc.add_stats(len(doc.attachments), doc.stats)
+            if result.diff_path:
+                totals_acc.increment("diffs")
+            if doc is not None:
+                totals_acc.add_stats(len(doc.attachments), doc.stats)
+
+            if progress:
+                progress.advance()
 
     pruned_count = 0
     if options.prune:

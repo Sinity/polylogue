@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,11 @@ class DummyUI:
 
     def banner(self, *_args, **_kwargs):  # pragma: no cover
         pass
+
+    @contextmanager
+    def progress(self, *_args, **_kwargs):  # pragma: no cover - unused in tests
+        """Dummy progress context manager that yields None."""
+        yield None
 
 
 def _open_conversation_row(db_path: Path, provider: str, conversation_id: str):

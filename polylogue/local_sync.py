@@ -109,6 +109,7 @@ def _sync_sessions(
     import_fn,
     importer_kwargs: Optional[dict] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    ui=None,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -215,32 +216,47 @@ def _sync_sessions(
 
     pipeline = Pipeline([_LocalSessionStage(_process_single)])
 
-    for session_path in iterable:
-        ctx = PipelineContext(env=None, options=None, data={"session_path": session_path})
-        pipeline.run(ctx)
-        session_output = ctx.get("session_result", {})
-        prune_slug = session_output.get("prune_slug")
-        if isinstance(prune_slug, str):
-            wanted.add(prune_slug)
+    # Convert to list if needed to get total count for progress bar
+    session_list = list(iterable)
 
-        if session_output.get("skipped"):
-            skipped += 1
-            continue
+    # Use a simple dummy context manager if ui is None
+    from contextlib import nullcontext
+    progress_ctx = ui.progress(f"Syncing {provider} sessions", total=len(session_list)) if ui else nullcontext(None)
 
-        result = session_output.get("result")
-        if not isinstance(result, ImportResult):
-            continue
+    with progress_ctx as progress:
+        for session_path in session_list:
+            ctx = PipelineContext(env=None, options=None, data={"session_path": session_path})
+            pipeline.run(ctx)
+            session_output = ctx.get("session_result", {})
+            prune_slug = session_output.get("prune_slug")
+            if isinstance(prune_slug, str):
+                wanted.add(prune_slug)
 
-        if session_output.get("diff"):
-            diff_total += 1
+            if session_output.get("skipped"):
+                skipped += 1
+                if progress:
+                    progress.advance()
+                continue
 
-        wanted.add(result.slug)
-        if result.document:
-            attachments_total += len(result.document.attachments)
-            attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
-            tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
-            words_total += result.document.stats.get("totalWordsApprox", 0) or 0
-        written.append(result)
+            result = session_output.get("result")
+            if not isinstance(result, ImportResult):
+                if progress:
+                    progress.advance()
+                continue
+
+            if session_output.get("diff"):
+                diff_total += 1
+
+            wanted.add(result.slug)
+            if result.document:
+                attachments_total += len(result.document.attachments)
+                attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
+                tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
+                words_total += result.document.stats.get("totalWordsApprox", 0) or 0
+            written.append(result)
+
+            if progress:
+                progress.advance()
 
     pruned = 0
     if prune:
@@ -314,6 +330,7 @@ def _sync_export_bundles(
     provider: str,
     import_fn: Callable[..., Sequence[ImportResult] | ImportResult | None],
     registrar: Optional[ConversationRegistrar] = None,
+    ui=None,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -329,46 +346,55 @@ def _sync_export_bundles(
     normalized = [_normalize_export_target(Path(p)) for p in bundles]
     filtered = [p for p in normalized if p is not None]
     if filtered:
-        iterable: Iterable[Path] = sorted(filtered, key=path_order_key)
+        bundle_list = sorted(filtered, key=path_order_key)
     else:
-        iterable = sorted([Path(p) for p in bundles], key=path_order_key)
+        bundle_list = sorted([Path(p) for p in bundles], key=path_order_key)
 
-    for export_path in iterable:
-        if not export_path.exists():
-            continue
-        results_raw = import_fn(
-            export_path=export_path,
-            output_dir=output_dir,
-            collapse_threshold=collapse_threshold,
-            html=html,
-            html_theme=html_theme,
-            selected_ids=None,
-            force=force,
-            registrar=registrar,
-        )
-        if results_raw is None:
-            result_list: List[ImportResult] = []
-        elif isinstance(results_raw, ImportResult):
-            result_list = [results_raw]
-        else:
-            result_list = list(results_raw)
+    from contextlib import nullcontext
+    progress_ctx = ui.progress(f"Syncing {provider} exports", total=len(bundle_list)) if ui else nullcontext(None)
 
-        export_wrote = False
-        for result in result_list:
-            if not isinstance(result, ImportResult):
+    with progress_ctx as progress:
+        for export_path in bundle_list:
+            if not export_path.exists():
+                if progress:
+                    progress.advance()
                 continue
-            wanted.add(result.slug)
-            if result.skipped:
-                continue
-            export_wrote = True
-            if result.document:
-                attachments_total += len(result.document.attachments)
-                attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
-                tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
-                words_total += result.document.stats.get("totalWordsApprox", 0) or 0
-            written.append(result)
-        if not export_wrote:
-            skipped_exports += 1
+            results_raw = import_fn(
+                export_path=export_path,
+                output_dir=output_dir,
+                collapse_threshold=collapse_threshold,
+                html=html,
+                html_theme=html_theme,
+                selected_ids=None,
+                force=force,
+                registrar=registrar,
+            )
+            if results_raw is None:
+                result_list: List[ImportResult] = []
+            elif isinstance(results_raw, ImportResult):
+                result_list = [results_raw]
+            else:
+                result_list = list(results_raw)
+
+            export_wrote = False
+            for result in result_list:
+                if not isinstance(result, ImportResult):
+                    continue
+                wanted.add(result.slug)
+                if result.skipped:
+                    continue
+                export_wrote = True
+                if result.document:
+                    attachments_total += len(result.document.attachments)
+                    attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
+                    tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
+                    words_total += result.document.stats.get("totalWordsApprox", 0) or 0
+                written.append(result)
+            if not export_wrote:
+                skipped_exports += 1
+
+            if progress:
+                progress.advance()
 
     pruned = 0
     if prune:
@@ -412,6 +438,7 @@ def sync_codex_sessions(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    ui=None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -432,6 +459,7 @@ def sync_codex_sessions(
             **kwargs,
         ),
         registrar=registrar,
+        ui=ui,
     )
 
 
@@ -447,6 +475,7 @@ def sync_claude_code_sessions(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    ui=None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -467,6 +496,7 @@ def sync_claude_code_sessions(
             **kwargs,
         ),
         registrar=registrar,
+        ui=ui,
     )
 
 
@@ -504,6 +534,7 @@ def sync_chatgpt_exports(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    ui=None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -524,6 +555,7 @@ def sync_chatgpt_exports(
         provider="chatgpt",
         import_fn=import_chatgpt_export,
         registrar=registrar,
+        ui=ui,
     )
 
 
@@ -539,6 +571,7 @@ def sync_claude_exports(
     diff: bool = False,
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
+    ui=None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -559,6 +592,7 @@ def sync_claude_exports(
         provider="claude",
         import_fn=import_claude_export,
         registrar=registrar,
+        ui=ui,
     )
 
 
