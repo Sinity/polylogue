@@ -14,6 +14,7 @@ from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
 from ..util import parse_input_time_to_epoch
 from .context import DEFAULT_OUTPUT_ROOTS, DEFAULT_RENDER_OUT
 
+
 def _dump_runs(ui, records: List[dict], destination: str) -> None:
     payload = json.dumps(records, indent=2)
     if destination == "-":
@@ -223,8 +224,6 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             _dump_runs(ui, dump_records, destination)
 
     if getattr(args, "watch", False):
-        if dump_only:
-            raise SystemExit("--dump-only cannot be combined with --watch")
         interval = getattr(args, "interval", 5.0)
         try:
             while True:
@@ -240,13 +239,15 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
 def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     from ..cli_common import sk_select
+    from .arg_helpers import PathPolicy, resolve_path
 
     ui = env.ui
     console = ui.console
-    directory = Path(args.dir) if args.dir else DEFAULT_RENDER_OUT
-    if not directory.exists():
-        console.print(f"[red]Directory not found: {directory}")
-        return
+    json_mode = getattr(args, "json", False)
+    directory_input = Path(args.dir) if args.dir else DEFAULT_RENDER_OUT
+    directory = resolve_path(directory_input, PathPolicy.must_exist(), ui, json_mode=json_mode)
+    if not directory:
+        raise SystemExit(1)
 
     canonical_files = list(directory.rglob("conversation.md"))
     legacy_files = list(directory.glob("*.md"))
@@ -262,6 +263,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
     since_epoch = parse_input_time_to_epoch(getattr(args, "since", None))
     until_epoch = parse_input_time_to_epoch(getattr(args, "until", None))
+    provider_filter = getattr(args, "provider", None)
 
     def _load_metadata(path: Path) -> Dict[str, Any]:
         if frontmatter_mod is not None:
@@ -335,22 +337,25 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         if until_epoch is not None and (timestamp is None or timestamp > until_epoch):
             filtered_out += 1
             continue
+        if provider_filter is not None and provider.lower() != provider_filter.lower():
+            filtered_out += 1
+            continue
 
         totals["files"] += 1
-        totals["attachments"] += int(attachment_count)
-        totals["attachmentBytes"] += int(attachment_bytes)
-        totals["tokens"] += int(tokens)
-        totals["words"] += int(words)
+        totals["attachments"] += int(attachment_count) if attachment_count else 0
+        totals["attachmentBytes"] += int(attachment_bytes) if attachment_bytes else 0
+        totals["tokens"] += int(tokens) if tokens else 0
+        totals["words"] += int(words) if words else 0
 
         prov = per_provider.setdefault(
             provider,
             {"files": 0, "attachments": 0, "attachmentBytes": 0, "tokens": 0, "words": 0},
         )
         prov["files"] += 1
-        prov["attachments"] += int(attachment_count)
-        prov["attachmentBytes"] += int(attachment_bytes)
-        prov["tokens"] += int(tokens)
-        prov["words"] += int(words)
+        prov["attachments"] += int(attachment_count) if attachment_count else 0
+        prov["attachmentBytes"] += int(attachment_bytes) if attachment_bytes else 0
+        prov["tokens"] += int(tokens) if tokens else 0
+        prov["words"] += int(words) if words else 0
 
         rows.append(
             {
@@ -402,5 +407,6 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         except Exception:
             pass
     ui.summary("Stats", lines)
+
 
 __all__ = ["run_status_cli", "run_stats_cli"]

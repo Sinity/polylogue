@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 from typing import List, Optional, Sequence
 
-from ..cli_common import sk_select
+from ..cli_common import resolve_inputs, sk_select
 from ..commands import CommandEnv, render_command
 from ..drive_client import DriveClient
 from ..importers import ImportResult
@@ -21,29 +21,6 @@ from .context import (
 )
 
 
-def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
-    if path.is_file():
-        return [path]
-    if not path.exists():
-        return []
-    candidates = [p for p in path.iterdir() if p.is_file() and p.suffix.lower() == ".json"]
-    if not candidates:
-        return []
-    if plain:
-        return candidates
-    lines = [str(p) for p in candidates]
-    selection = sk_select(
-        lines,
-        preview="bat --style=plain {}",
-        bindings=["ctrl-g:execute(glow --style=dark {+})"],
-    )
-    if selection is None:
-        return None
-    if not selection:
-        return []
-    return [Path(s) for s in selection]
-
-
 def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -> None:
     ui = env.ui
     console = ui.console
@@ -55,11 +32,11 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         console.print("No JSON files to render")
         return
     output = resolve_output_path(args.out, DEFAULT_RENDER_OUT)
-    collapse = resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE)
+    settings = env.settings
+    collapse = resolve_collapse_value(args.collapse_threshold, settings)
     download_attachments = not args.links_only
     if not ui.plain and not args.links_only:
         download_attachments = ui.confirm("Download attachments to local folders?", default=True)
-    settings = env.settings
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     options = RenderOptions(

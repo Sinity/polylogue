@@ -3,7 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Dict, Optional
 
-from .document_store import DocumentPersistenceResult, persist_document
+from .document_store import (
+    DocumentMetadata,
+    DocumentPersistenceResult,
+    PersistenceOptions,
+    persist_document,
+)
 from .services.conversation_registrar import ConversationRegistrar
 from .render import AttachmentInfo, MarkdownDocument
 
@@ -30,26 +35,38 @@ class ConversationRepository:
         slug_hint: Optional[str] = None,
         id_hint: Optional[str] = None,
         force: bool = False,
-        registrar: ConversationRegistrar = None,
+        allow_dirty: bool = False,
+        registrar: Optional[ConversationRegistrar] = None,
     ) -> DocumentPersistenceResult:
         if registrar is None:
             raise ValueError("ConversationRegistrar instance required")
-        return persist_document(
+
+        # Build parameter objects from individual arguments
+        metadata = DocumentMetadata(
             provider=provider,
             conversation_id=conversation_id,
             title=title,
-            document=document,
-            output_dir=output_dir,
-            collapse_threshold=collapse_threshold,
-            attachments=attachments,
             updated_at=updated_at,
             created_at=created_at,
+            slug_hint=slug_hint,
+            id_hint=id_hint,
+            extra_state=extra_state,
+        )
+
+        options = PersistenceOptions(
+            collapse_threshold=collapse_threshold,
             html=html,
             html_theme=html_theme,
             attachment_policy=attachment_policy,
-            extra_state=extra_state,
-            slug_hint=slug_hint,
-            id_hint=id_hint,
             force=force,
+            allow_dirty=allow_dirty,
+        )
+
+        return persist_document(
+            document=document,
+            output_dir=output_dir,
+            attachments=attachments,
             registrar=registrar,
+            metadata=metadata,
+            options=options,
         )

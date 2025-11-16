@@ -339,6 +339,7 @@ class DriveNormalizeStage:
         )
         context.set("source_path", options.output_dir / name_safe / "conversation.json")
 
+
 @dataclass
 class RunSummaryEntry:
     command: str
@@ -490,10 +491,15 @@ def search_command(options: SearchOptions, env: Optional[CommandEnv] = None) -> 
 
 
 def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
+    from .cli.arg_helpers import PathPolicy, resolve_path
+
     ui = env.ui
     output_dir = options.output_dir
     if not options.dry_run:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        resolved = resolve_path(output_dir, PathPolicy.create_ok(), ui)
+        if not resolved:
+            raise SystemExit(1)
+        output_dir = resolved
     start_time = time.perf_counter()
     if options.download_attachments:
         _ensure_drive(env)
@@ -509,36 +515,40 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
 
     render_files: List[RenderFile] = []
     totals_acc = RunAccumulator()
-    for src in options.inputs:
-        ctx = PipelineContext(env=env, options=options, data={"source_path": src})
-        pipeline.run(ctx)
-        if ctx.aborted:
-            continue
 
-        result: Optional[ImportResult] = ctx.get("import_result")
-        if result is None:
-            continue
+    with ui.progress("Rendering files", total=len(options.inputs)) as tracker:
+        for src in options.inputs:
+            ctx = PipelineContext(env=env, options=options, data={"source_path": src})
+            pipeline.run(ctx)
+            tracker.advance()
 
-        if result.skipped:
-            totals_acc.increment("skipped")
-            continue
+            if ctx.aborted:
+                continue
 
-        doc: Optional[MarkdownDocument] = result.document
-        if doc is not None:
-            totals_acc.add_stats(len(doc.attachments), doc.stats)
-        if result.diff_path:
-            totals_acc.increment("diffs")
+            result: Optional[ImportResult] = ctx.get("import_result")
+            if result is None:
+                continue
 
-        render_files.append(
-            RenderFile(
-                output=result.markdown_path,
-                slug=result.slug,
-                attachments=len(doc.attachments) if doc else 0,
-                stats=doc.stats if doc else {},
-                html=result.html_path,
-                diff=result.diff_path,
+            if result.skipped:
+                totals_acc.increment("skipped")
+                continue
+
+            doc: Optional[MarkdownDocument] = result.document
+            if doc is not None:
+                totals_acc.add_stats(len(doc.attachments), doc.stats)
+            if result.diff_path:
+                totals_acc.increment("diffs")
+
+            render_files.append(
+                RenderFile(
+                    output=result.markdown_path,
+                    slug=result.slug,
+                    attachments=len(doc.attachments) if doc else 0,
+                    stats=doc.stats if doc else {},
+                    html=result.html_path,
+                    diff=result.diff_path,
+                )
             )
-        )
 
     duration = time.perf_counter() - start_time
     totals = totals_acc.totals()
@@ -600,6 +610,8 @@ def list_command(options: ListOptions, env: CommandEnv) -> ListResult:
 
 
 def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
+    from .cli.arg_helpers import PathPolicy, resolve_path
+
     drive = _ensure_drive(env)
     folder_id = drive.resolve_folder_id(options.folder_name, options.folder_id)
     chats = drive.list_chats(options.folder_name, folder_id)
@@ -629,7 +641,11 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         )
 
     if not options.dry_run:
-        options.output_dir.mkdir(parents=True, exist_ok=True)
+        ui = env.ui
+        resolved = resolve_path(options.output_dir, PathPolicy.create_ok(), ui)
+        if not resolved:
+            raise SystemExit(1)
+        options.output_dir = resolved
 
     pipeline = Pipeline(
         [
@@ -801,6 +817,8 @@ def status_command(env: CommandEnv, runs_limit: Optional[int] = 200) -> StatusRe
         provider_summary=provider_summary,
         runs=run_data,
     )
+
+
 def _ensure_ui_contract(ui: Any) -> None:
     console = getattr(ui, "console", None)
 

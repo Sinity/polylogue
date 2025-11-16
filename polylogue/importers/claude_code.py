@@ -26,6 +26,7 @@ def import_claude_code_session(
     html: bool,
     html_theme: str,
     force: bool = False,
+    allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
 ) -> ImportResult:
     registrar = registrar or create_default_registrar()
@@ -61,7 +62,7 @@ def import_claude_code_session(
                 fallback = line.strip()
                 if not fallback:
                     continue
-                chunk_text = "Unparsed Claude Code log line\n```\n{}```".format(fallback)
+                chunk_text = f"Unparsed Claude Code log line\n```\n{fallback}```"
                 chunks.append(
                     {
                         "role": "model",
@@ -72,7 +73,7 @@ def import_claude_code_session(
                 chunk_metadata.append({"raw": {"type": "unparsed", "payload": fallback}})
                 continue
             if not isinstance(entry, dict):
-                chunk_text = "Unparsed Claude Code entry\n```\n{}```".format(entry)
+                chunk_text = f"Unparsed Claude Code entry\n```\n{entry}```"
                 chunks.append(
                     {
                         "role": "model",
@@ -272,6 +273,7 @@ def import_claude_code_session(
         source_size=session_path.stat().st_size,
         attachment_policy=None,
         force=force,
+        allow_dirty=allow_dirty,
         registrar=registrar,
     )
 

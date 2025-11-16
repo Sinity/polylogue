@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Iterable, List, Optional, Protocol, Sequence
+from typing import Iterable, List, Optional, Protocol
 
 from rich.console import Console
 from rich.panel import Panel
@@ -107,11 +105,7 @@ class ConsoleFacade:
         if output:
             self.console.print(output, markup=False, highlight=False)
             return
-        renderable = Text(text) if Text is not None else text
-        if Panel is not None:
-            self.console.print(Panel(renderable, title=title))
-        else:
-            self.console.print(f"{title}\n{text}")
+        self.console.print(Panel(Text(text), title=title))
 
     def _interactive_confirm(self, prompt: str, *, default: bool) -> bool:
         cmd: List[str] = ["gum", "confirm", "--prompt", prompt]
