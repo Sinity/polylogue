@@ -103,6 +103,67 @@ def _add_command_parser(subparsers: argparse._SubParsersAction, name: str, **kwa
     kwargs.setdefault("formatter_class", PARSER_FORMATTER)
     return subparsers.add_parser(name, **kwargs)
 
+# Command Examples for --examples flag
+# Each command maps to list of (description, command_line) tuples
+COMMAND_EXAMPLES = {
+    "render": [
+        ("Render a single JSON file", "polylogue render ~/downloads/chat.json"),
+        ("Render with HTML preview", "polylogue render input.json --html on"),
+        ("Preview without writing", "polylogue render data/ --dry-run"),
+    ],
+    "sync": [
+        ("Sync all Drive chats", "polylogue sync drive --all"),
+        ("Sync from specific Drive folder", "polylogue sync drive --folder-name 'Work Chats'"),
+        ("Sync Codex sessions with preview", "polylogue sync codex --dry-run"),
+        ("Sync Claude Code with diff tracking", "polylogue sync claude-code --diff"),
+        ("Sync and prune deleted chats", "polylogue sync drive --all --prune"),
+    ],
+    "import": [
+        ("Import ChatGPT export", "polylogue import chatgpt export.zip --html on"),
+        ("Import with interactive picker", "polylogue import claude-code pick"),
+        ("Import specific conversation", "polylogue import chatgpt export.zip --conversation-id abc123"),
+        ("Import all from Claude export", "polylogue import claude conversations.zip --all"),
+        ("Preview import without writing", "polylogue import codex session.jsonl --dry-run"),
+    ],
+    "inspect": [
+        ("Search for term", "polylogue inspect search 'error handling'"),
+        ("Search with filters", "polylogue inspect search 'API' --provider chatgpt --since 2024-01-01"),
+        ("Browse branch graph", "polylogue inspect branches --provider claude"),
+        ("View stats", "polylogue inspect stats --provider chatgpt"),
+        ("Get stats with time filter", "polylogue inspect stats --since 2024-01-01 --until 2024-12-31"),
+    ],
+    "watch": [
+        ("Watch Codex sessions", "polylogue watch codex"),
+        ("Watch Claude Code with HTML", "polylogue watch claude-code --html on"),
+        ("One-shot watch run", "polylogue watch chatgpt --once"),
+    ],
+    "prune": [
+        ("Preview prune operation", "polylogue prune --dry-run"),
+        ("Prune legacy files", "polylogue prune --dir ~/polylogue-data/chatgpt"),
+    ],
+    "doctor": [
+        ("Check all providers", "polylogue doctor"),
+        ("Check with JSON output", "polylogue doctor --json"),
+        ("Limit files inspected", "polylogue doctor --limit 100"),
+    ],
+    "status": [
+        ("Show status overview", "polylogue status"),
+        ("Watch status continuously", "polylogue status --watch"),
+        ("Export runs to JSON", "polylogue status --dump runs.json"),
+        ("Filter by providers", "polylogue status --providers drive,codex"),
+    ],
+    "env": [
+        ("Show environment paths", "polylogue env"),
+        ("Get environment as JSON", "polylogue env --json"),
+    ],
+    "settings": [
+        ("Show current settings", "polylogue settings"),
+        ("Enable HTML previews", "polylogue settings --html on"),
+        ("Set dark theme", "polylogue settings --theme dark"),
+        ("Reset to defaults", "polylogue settings --reset"),
+    ],
+}
+
 
 def _collect_subparser_map(parser: argparse.ArgumentParser) -> Dict[str, argparse.ArgumentParser]:
     mapping: Dict[str, argparse.ArgumentParser] = {}
@@ -160,9 +221,11 @@ def _legacy_candidates(root: Path) -> List[Path]:
 def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     parser = build_parser()
     topic = getattr(args, "topic", None)
+    show_examples = getattr(args, "examples", False)
     entries = _command_entries(parser)
     choices = {name: sub for name, sub in _collect_subparser_map(parser).items() if not name.startswith("_")}
     console = env.ui.console
+
     if topic:
         subparser = choices.get(topic)
         if subparser is None:
@@ -170,9 +233,37 @@ def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             available = ", ".join(sorted(choices)) or "<none>"
             console.print(f"Available commands: {available}")
             raise SystemExit(1)
+
+        if show_examples:
+            # Show examples for this command
+            examples = COMMAND_EXAMPLES.get(topic, [])
+            if not examples:
+                console.print(f"[yellow]No examples available for '{topic}'")
+                return
+
+            console.print(f"\n[bold cyan]{topic.upper()} EXAMPLES[/bold cyan]\n")
+            for desc, cmd in examples:
+                console.print(f"  [dim]# {desc}[/dim]")
+                console.print(f"  [green]$ {cmd}[/green]\n")
+            return
+
         console.print(f"[cyan]polylogue {topic}[/cyan]")
         subparser.print_help()
         return
+
+    # No topic specified - show general help or all examples
+    if show_examples:
+        console.print("\n[bold cyan]POLYLOGUE USAGE EXAMPLES[/bold cyan]\n")
+        for cmd in sorted(COMMAND_EXAMPLES.keys()):
+            examples = COMMAND_EXAMPLES[cmd]
+            console.print(f"[bold]{cmd}:[/bold]")
+            for desc, cmdline in examples[:2]:  # Show first 2 examples for each command
+                console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
+            if len(examples) > 2:
+                console.print(f"  [dim](run 'polylogue help {cmd} --examples' for more)[/dim]")
+            console.print()
+        return
+
     parser.print_help()
     _print_command_listing(console, getattr(env.ui, "plain", False), entries)
 
@@ -1111,6 +1202,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_help_cmd = _add_command_parser(sub, "help", help="Show help for a specific command", description="Show help for a specific command")
     p_help_cmd.add_argument("topic", nargs="?", help="Command name")
+    p_help_cmd.add_argument("--examples", action="store_true", help="Show usage examples for the command")
 
     p_completions = _add_command_parser(sub, "completions", help="Emit shell completion script", description="Emit shell completion script")
     p_completions.add_argument("--shell", choices=["bash", "zsh", "fish"], required=True)
