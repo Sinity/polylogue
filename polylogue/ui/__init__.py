@@ -1,13 +1,23 @@
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass, field
-from typing import Iterable, List, Optional, Set
+from contextlib import contextmanager
+from typing import Iterable, Iterator, List, Optional, Set
 
 import shutil as _shutil
 import subprocess as _subprocess
 
 from .facade import Console, ConsoleFacade, ConsoleLike, create_console_facade
+
+try:
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
+except ImportError:
+    Progress = None
+    SpinnerColumn = None
+    TextColumn = None
+    BarColumn = None
+    TaskProgressColumn = None
+    TimeRemainingColumn = None
 
 shutil = _shutil
 subprocess = _subprocess
@@ -100,6 +110,56 @@ class UI:
                 return default
             return value or default
         return self._facade.input(prompt, default=default)
+
+    # Progress bars --------------------------------------------------------
+    @contextmanager
+    def progress(self, description: str = "Processing", total: Optional[int] = None) -> Iterator[Optional[object]]:
+        """Create a progress bar context manager.
+
+        In plain mode or when Rich is unavailable, yields None and shows no progress.
+        In interactive mode with Rich available, yields a Progress object with an active task.
+
+        Args:
+            description: Task description to display
+            total: Total number of items (if known)
+
+        Yields:
+            Progress object with active task (or None in plain mode)
+
+        Example:
+            with ui.progress("Syncing chats", total=len(chats)) as progress:
+                if progress:
+                    task = progress.task_id
+                    for item in chats:
+                        # ... process item ...
+                        progress.advance(task)
+        """
+        if self.plain or Progress is None:
+            yield None
+            return
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+            console=self.console,
+        ) as progress:
+            task_id = progress.add_task(description, total=total)
+            # Create a simple wrapper that exposes task_id and advance
+            class ProgressWrapper:
+                def __init__(self, prog, tid):
+                    self._progress = prog
+                    self.task_id = tid
+
+                def advance(self, task_id=None, advance=1):
+                    self._progress.advance(task_id or self.task_id, advance=advance)
+
+                def update(self, task_id=None, **kwargs):
+                    self._progress.update(task_id or self.task_id, **kwargs)
+
+            yield ProgressWrapper(progress, task_id)
 
     # Internal utilities ---------------------------------------------------
     def _warn_plain(self, topic: str) -> None:

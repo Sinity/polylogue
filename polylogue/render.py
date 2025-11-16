@@ -12,8 +12,6 @@ try:  # pragma: no cover - optional dependency
 except ImportError:  # pragma: no cover
     frontmatter = None
 
-from .util import sanitize_filename
-
 
 def _human_size(num: Optional[int]) -> Optional[str]:
     if num is None or num <= 0:
@@ -80,6 +78,7 @@ def _iter_values(obj: Any) -> Iterable[Any]:
 
 def extract_drive_ids(obj: Any) -> List[str]:
     ids: List[str] = []
+
     def visit(o: Any):
         if isinstance(o, dict):
             if "driveDocument" in o and isinstance(o["driveDocument"], dict):
@@ -516,7 +515,7 @@ def build_markdown_from_chunks(
                 header += f" · {resp_ts}"
             parts.append(f"> [!INFO]{fold} {header}\n")
             if thought.strip():
-                parts.append(f"> > [!QUESTION]- Model Thought\n")
+                parts.append("> > [!QUESTION]- Model Thought\n")
                 for ln in thought.splitlines():
                     parts.append(f"> > {ln}\n")
                 parts.append("> \n")

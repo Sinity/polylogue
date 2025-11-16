@@ -335,6 +335,7 @@ class DriveNormalizeStage:
         )
         context.set("source_path", options.output_dir / name_safe / "conversation.json")
 
+
 @dataclass
 class RunSummaryEntry:
     command: str
@@ -484,10 +485,15 @@ def search_command(options: SearchOptions, env: Optional[CommandEnv] = None) -> 
 
 
 def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
+    from .cli.arg_helpers import PathPolicy, resolve_path
+
     ui = env.ui
     output_dir = options.output_dir
     if not options.dry_run:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        resolved = resolve_path(output_dir, PathPolicy.create_ok(), ui)
+        if not resolved:
+            raise SystemExit(1)
+        output_dir = resolved
     start_time = time.perf_counter()
     if options.download_attachments:
         _ensure_drive(env)
@@ -594,6 +600,8 @@ def list_command(options: ListOptions, env: CommandEnv) -> ListResult:
 
 
 def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
+    from .cli.arg_helpers import PathPolicy, resolve_path
+
     drive = _ensure_drive(env)
     folder_id = drive.resolve_folder_id(options.folder_name, options.folder_id)
     chats = drive.list_chats(options.folder_name, folder_id)
@@ -623,7 +631,11 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         )
 
     if not options.dry_run:
-        options.output_dir.mkdir(parents=True, exist_ok=True)
+        ui = env.ui
+        resolved = resolve_path(options.output_dir, PathPolicy.create_ok(), ui)
+        if not resolved:
+            raise SystemExit(1)
+        options.output_dir = resolved
 
     pipeline = Pipeline(
         [
@@ -637,56 +649,68 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     items: List[SyncItem] = []
     wanted_slugs: set[str] = set()
     totals_acc = RunAccumulator()
-    for meta in chats:
-        ctx = PipelineContext(env=env, options=options, data={"metadata": meta})
-        pipeline.run(ctx)
-        if ctx.aborted:
-            continue
 
-        result: Optional[ImportResult] = ctx.get("import_result")
-        chat_context: ChatContext = ctx.get("chat_context")
-        file_id = ctx.get("file_id")
-        slug_value = ctx.get("slug")
-        if isinstance(slug_value, str) and slug_value:
-            wanted_slugs.add(slug_value)
+    ui = env.ui
+    with ui.progress("Syncing chats", total=len(chats)) as progress:
+        for meta in chats:
+            ctx = PipelineContext(env=env, options=options, data={"metadata": meta})
+            pipeline.run(ctx)
+            if ctx.aborted:
+                if progress:
+                    progress.advance()
+                continue
 
-        if result is None:
-            continue
+            result: Optional[ImportResult] = ctx.get("import_result")
+            chat_context: ChatContext = ctx.get("chat_context")
+            file_id = ctx.get("file_id")
+            slug_value = ctx.get("slug")
+            if isinstance(slug_value, str) and slug_value:
+                wanted_slugs.add(slug_value)
 
-        if result.skipped:
-            totals_acc.increment("skipped")
-            continue
+            if result is None:
+                if progress:
+                    progress.advance()
+                continue
 
-        if not options.dry_run and chat_context.modified_time:
-            mtime = parse_rfc3339_to_epoch(chat_context.modified_time)
-            if mtime is not None:
-                try:
-                    os.utime(result.markdown_path, (mtime, mtime))
-                except Exception:
-                    pass
-                if result.html_path:
+            if result.skipped:
+                totals_acc.increment("skipped")
+                if progress:
+                    progress.advance()
+                continue
+
+            if not options.dry_run and chat_context.modified_time:
+                mtime = parse_rfc3339_to_epoch(chat_context.modified_time)
+                if mtime is not None:
                     try:
-                        os.utime(result.html_path, (mtime, mtime))
+                        os.utime(result.markdown_path, (mtime, mtime))
                     except Exception:
                         pass
+                    if result.html_path:
+                        try:
+                            os.utime(result.html_path, (mtime, mtime))
+                        except Exception:
+                            pass
 
-        doc: Optional[MarkdownDocument] = result.document
-        items.append(
-            SyncItem(
-                id=file_id,
-                name=meta.get("name"),
-                output=result.markdown_path,
-                slug=result.slug,
-                attachments=len(doc.attachments) if doc else 0,
-                stats=doc.stats if doc else {},
-                html=result.html_path,
-                diff=result.diff_path,
+            doc: Optional[MarkdownDocument] = result.document
+            items.append(
+                SyncItem(
+                    id=file_id,
+                    name=meta.get("name"),
+                    output=result.markdown_path,
+                    slug=result.slug,
+                    attachments=len(doc.attachments) if doc else 0,
+                    stats=doc.stats if doc else {},
+                    html=result.html_path,
+                    diff=result.diff_path,
+                )
             )
-        )
-        if result.diff_path:
-            totals_acc.increment("diffs")
-        if doc is not None:
-            totals_acc.add_stats(len(doc.attachments), doc.stats)
+            if result.diff_path:
+                totals_acc.increment("diffs")
+            if doc is not None:
+                totals_acc.add_stats(len(doc.attachments), doc.stats)
+
+            if progress:
+                progress.advance()
 
     pruned_count = 0
     if options.prune:
@@ -789,6 +813,8 @@ def status_command(env: CommandEnv, runs_limit: Optional[int] = 200) -> StatusRe
         provider_summary=provider_summary,
         runs=run_data,
     )
+
+
 def _ensure_ui_contract(ui: Any) -> None:
     if hasattr(ui, "summary") and callable(getattr(ui, "summary")):
         return

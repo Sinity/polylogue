@@ -15,6 +15,7 @@ from ..services.conversation_registrar import ConversationRegistrar, create_defa
 
 _DEFAULT_BASE = CODEX_SESSIONS_ROOT
 
+
 def _truncate_with_preview(text: str, attachment_name: str) -> str:
     lines = text.splitlines()
     if len(lines) <= PREVIEW_LINES * 2 + 1:
@@ -34,6 +35,7 @@ def import_codex_session(
     html: bool = False,
     html_theme: str = "light",
     force: bool = False,
+    allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
 ) -> ImportResult:
     registrar = registrar or create_default_registrar()
@@ -324,5 +326,6 @@ def import_codex_session(
             "charThreshold": CHAR_THRESHOLD,
         },
         force=force,
+        allow_dirty=allow_dirty,
         registrar=registrar,
     )

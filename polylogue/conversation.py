@@ -150,6 +150,7 @@ def process_conversation(
     source_size: Optional[int],
     attachment_policy,
     force: bool,
+    allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
     citations: Optional[List[Any]] = None,
 ) -> ImportResult:
@@ -201,6 +202,7 @@ def process_conversation(
         slug_hint=slug,
         id_hint=conversation_id[:8] if conversation_id else None,
         force=force,
+        allow_dirty=allow_dirty,
         registrar=registrar,
     )
 
