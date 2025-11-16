@@ -43,6 +43,7 @@ from .arg_helpers import (
     create_write_parent,
     create_filter_parent,
 )
+from .editor import open_in_editor, get_editor
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
     DEFAULT_CLAUDE_OUT,
@@ -549,6 +550,20 @@ def run_inspect_branches(args: argparse.Namespace, env: CommandEnv) -> None:
 
         html_path = _prompt_branch_followups(ui, conv, args, html_path, settings)
 
+        # Open in editor if --open flag is set
+        if getattr(args, "open", False):
+            # Prefer HTML if available, otherwise open markdown
+            target_path = html_path if html_path else conv.conversation_path
+            if target_path:
+                if open_in_editor(Path(target_path)):
+                    ui.console.print(f"[dim]Opened {target_path} in editor[/dim]")
+                else:
+                    editor = get_editor()
+                    if not editor:
+                        ui.console.print("[yellow]Warning: $EDITOR not set. Cannot open file.")
+                    else:
+                        ui.console.print(f"[yellow]Warning: Could not open {target_path} in editor")
+
 
 def _generate_branch_html(conversation, target: Optional[Path], theme: str, ui, *, auto: bool) -> Optional[Path]:
     if target is None:
@@ -749,6 +764,24 @@ def run_inspect_search(args: argparse.Namespace, env: CommandEnv) -> None:
 
     for hit in selected_hits:
         _render_search_hit(hit, ui)
+
+    # Open in editor if --open flag is set and we have a single result
+    if getattr(args, "open", False) and len(selected_hits) == 1:
+        hit = selected_hits[0]
+        target_path = hit.branch_path or hit.conversation_path
+        if target_path:
+            if open_in_editor(target_path):
+                ui.console.print(f"[dim]Opened {target_path} in editor[/dim]")
+            else:
+                editor = get_editor()
+                if not editor:
+                    ui.console.print("[yellow]Warning: $EDITOR not set. Cannot open file.")
+                else:
+                    ui.console.print(f"[yellow]Warning: Could not open {target_path} in editor")
+        else:
+            ui.console.print("[yellow]Warning: No file path available for selected result")
+    elif getattr(args, "open", False) and len(selected_hits) > 1:
+        ui.console.print("[yellow]Warning: --open requires a single search result. Use --limit 1 or select one result.")
 
 
 def _run_search_picker(ui, hits: List[SearchHit]) -> Tuple[Optional[SearchHit], bool]:
@@ -1091,6 +1124,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect_branches.add_argument("--out", type=Path, default=None, help="Write the branch explorer HTML to this path")
     p_inspect_branches.add_argument("--theme", type=str, default=None, choices=["light", "dark"], help="Override HTML explorer theme")
     p_inspect_branches.add_argument("--no-picker", action="store_true", help="Skip interactive selection even when skim/gum are available")
+    p_inspect_branches.add_argument("--open", action="store_true", help="Open result in $EDITOR after command completes")
 
     p_inspect_search = _add_command_parser(inspect_sub, "search", help="Search rendered transcripts", description="Search rendered transcripts")
     p_inspect_search.add_argument("query", type=str, help="FTS search query (SQLite syntax)")
@@ -1107,6 +1141,7 @@ def build_parser() -> argparse.ArgumentParser:
     attachment_group.add_argument("--without-attachments", action="store_true", help="Limit to messages without attachments")
     p_inspect_search.add_argument("--no-picker", action="store_true", help="Skip skim picker preview even when interactive")
     p_inspect_search.add_argument("--json", action="store_true", help="Emit machine-readable search results")
+    p_inspect_search.add_argument("--open", action="store_true", help="Open result file in $EDITOR after search")
 
     output_parent = create_output_parent()
     filter_parent = create_filter_parent()
