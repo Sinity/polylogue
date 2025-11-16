@@ -72,3 +72,53 @@ def ensure_directory(path: Path, *, create: bool = True) -> Path:
     if create:
         path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+# Parent Parsers for Shared Flags
+# These reduce duplication by grouping common flags that appear across multiple commands
+
+
+def create_output_parent() -> ArgumentParser:
+    """Parent parser for common output flags (--json).
+
+    Use for commands that support machine-readable output.
+    """
+    parser = ArgumentParser(add_help=False)
+    parser.add_argument("--json", action="store_true", help="Emit machine-readable output")
+    return parser
+
+
+def create_render_parent() -> ArgumentParser:
+    """Parent parser for rendering options (--html, --collapse-threshold, --theme).
+
+    Use for commands that generate Markdown/HTML output.
+    """
+    parser = ArgumentParser(add_help=False)
+    add_html_option(parser)
+    add_collapse_option(parser)
+    parser.add_argument("--theme", type=str, choices=["light", "dark"], default=None, help="HTML theme override")
+    return parser
+
+
+def create_write_parent() -> ArgumentParser:
+    """Parent parser for write operation flags (--force, --allow-dirty, --dry-run).
+
+    Use for commands that write/modify files.
+    """
+    parser = ArgumentParser(add_help=False)
+    add_force_option(parser, help_text="Force rewrite even if up-to-date")
+    add_allow_dirty_option(parser)
+    add_dry_run_option(parser)
+    return parser
+
+
+def create_filter_parent() -> ArgumentParser:
+    """Parent parser for common filter flags (--provider, --since, --until).
+
+    Use for commands that filter by provider or time range.
+    """
+    parser = ArgumentParser(add_help=False)
+    parser.add_argument("--provider", type=str, default=None, help="Filter by provider name")
+    parser.add_argument("--since", type=str, default=None, help="Only include items on/after this timestamp")
+    parser.add_argument("--until", type=str, default=None, help="Only include items on/before this timestamp")
+    return parser
