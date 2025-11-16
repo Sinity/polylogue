@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 from argparse import ArgumentParser
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..ui import UI
 
 
 def add_html_option(parser: ArgumentParser, *, description: str = "HTML preview mode: on/off/auto (default auto)") -> None:
@@ -122,3 +127,88 @@ def create_filter_parent() -> ArgumentParser:
     parser.add_argument("--since", type=str, default=None, help="Only include items on/after this timestamp")
     parser.add_argument("--until", type=str, default=None, help="Only include items on/before this timestamp")
     return parser
+
+
+# Path Handling Standardization
+# Provides consistent path validation and creation across all commands
+
+
+@dataclass
+class PathPolicy:
+    """Policy for handling missing paths.
+
+    Standardizes behavior when paths don't exist across all commands.
+    """
+
+    should_exist: bool = True  # Error if path is missing
+    create_if_missing: bool = False  # Auto-create missing paths
+    prompt_create: bool = False  # Ask before creating (interactive mode only)
+
+    @staticmethod
+    def must_exist() -> "PathPolicy":
+        """Path must exist (read operations like stats, inspect)."""
+        return PathPolicy(should_exist=True)
+
+    @staticmethod
+    def create_ok() -> "PathPolicy":
+        """Auto-create if missing (write operations like render, sync)."""
+        return PathPolicy(should_exist=False, create_if_missing=True)
+
+    @staticmethod
+    def prompt_create() -> "PathPolicy":
+        """Ask before creating (interactive operations)."""
+        return PathPolicy(should_exist=False, prompt_create=True)
+
+
+def resolve_path(path: Path, policy: PathPolicy, ui: "UI") -> Optional[Path]:
+    """Resolve path according to policy with consistent error handling.
+
+    Args:
+        path: Path to resolve
+        policy: Policy defining behavior for missing paths
+        ui: UI instance for console output and prompts
+
+    Returns:
+        Resolved path if successful, None if path validation failed
+
+    Examples:
+        # For read operations (stats, inspect)
+        directory = resolve_path(Path(args.dir), PathPolicy.must_exist(), ui)
+        if not directory:
+            raise SystemExit(1)
+
+        # For write operations (render, sync)
+        output_dir = resolve_path(Path(args.out), PathPolicy.create_ok(), ui)
+
+        # For interactive operations
+        target_dir = resolve_path(Path(args.dir), PathPolicy.prompt_create(), ui)
+    """
+    if path.exists():
+        return path
+
+    if policy.should_exist:
+        ui.console.print(f"[red]Error: Path not found: {path}")
+        ui.console.print(f"[dim]Create it with: mkdir -p {path}")
+        return None
+
+    if policy.create_if_missing:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            return path
+        except OSError as exc:
+            ui.console.print(f"[red]Error: Could not create directory: {path}")
+            ui.console.print(f"[dim]Reason: {exc}")
+            return None
+
+    if policy.prompt_create and not ui.plain:
+        if ui.console.confirm(f"Create directory {path}?", default=True):
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                return path
+            except OSError as exc:
+                ui.console.print(f"[red]Error: Could not create directory: {path}")
+                ui.console.print(f"[dim]Reason: {exc}")
+                return None
+        return None
+
+    return path

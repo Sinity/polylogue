@@ -239,13 +239,13 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
 def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     from ..cli_common import sk_select
+    from .arg_helpers import PathPolicy, resolve_path
 
     ui = env.ui
     console = ui.console
-    directory = Path(args.dir) if args.dir else DEFAULT_RENDER_OUT
-    if not directory.exists():
-        console.print(f"[red]Directory not found: {directory}")
-        console.print(f"Hint: Create it with: mkdir -p {directory}")
+    directory_input = Path(args.dir) if args.dir else DEFAULT_RENDER_OUT
+    directory = resolve_path(directory_input, PathPolicy.must_exist(), ui)
+    if not directory:
         raise SystemExit(1)
 
     canonical_files = list(directory.rglob("conversation.md"))
