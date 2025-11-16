@@ -196,6 +196,7 @@ def test_claude_import_force_overwrites_dirty_files(tmp_path):
         html=False,
         html_theme="light",
         force=True,
+        allow_dirty=True,
     )
     assert third and not third[0].skipped
     assert "MANUAL EDIT" not in md_path.read_text(encoding="utf-8")
@@ -313,6 +314,7 @@ def test_claude_code_force_overwrites_dirty_files(tmp_path):
         html=False,
         html_theme="light",
         force=True,
+        allow_dirty=True,
     )
     assert not third.skipped
     assert "LOCAL" not in md_path.read_text(encoding="utf-8")
@@ -484,6 +486,7 @@ def test_chatgpt_force_overwrites_dirty_files(tmp_path):
         html=False,
         html_theme="light",
         force=True,
+        allow_dirty=True,
     )
     assert third and not third[0].skipped
     assert "MANUAL EDIT" not in md_path.read_text(encoding="utf-8")

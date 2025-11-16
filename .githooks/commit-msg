@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Commit message hook to encourage conventional commits format
+# Install with: git config core.hooksPath .githooks
+
+commit_msg_file=$1
+commit_msg=$(cat "$commit_msg_file")
+
+# Skip for merge commits and other special commits
+if [[ "$commit_msg" =~ ^Merge || "$commit_msg" =~ ^Revert ]]; then
+    exit 0
+fi
+
+# Check if message follows conventional commits (loosely)
+# Format: type: description or type(scope): description
+if [[ ! "$commit_msg" =~ ^(feat|fix|docs|style|refactor|test|chore|perf)(\(.+\))?: ]]; then
+    # ANSI color codes
+    YELLOW='\033[1;33m'
+    GREEN='\033[0;32m'
+    NC='\033[0m'
+
+    echo ""
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}ℹ️  Commit message doesn't follow conventional format${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "Your commit:"
+    echo "  $commit_msg"
+    echo ""
+    echo -e "${GREEN}Conventional format:${NC}"
+    echo "  <type>: <description>"
+    echo "  <type>(scope): <description>"
+    echo ""
+    echo -e "${GREEN}Types:${NC} feat, fix, docs, style, refactor, test, chore, perf"
+    echo ""
+    echo -e "${GREEN}Examples:${NC}"
+    echo "  feat: add progress bars to sync operations"
+    echo "  fix: resolve authentication timeout"
+    echo "  test: add coverage for config validation"
+    echo "  docs(readme): update Git workflow section"
+    echo ""
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo "This is just a reminder. The commit will proceed."
+    echo ""
+fi
+
+exit 0

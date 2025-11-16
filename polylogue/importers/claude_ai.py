@@ -41,6 +41,7 @@ def import_claude_export(
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
     force: bool = False,
+    allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
@@ -69,6 +70,7 @@ def import_claude_export(
                     html=html,
                     html_theme=html_theme,
                     force=force,
+                    allow_dirty=allow_dirty,
                     registrar=registrar,
                 )
             )
@@ -115,6 +117,7 @@ def _render_claude_conversation(
     html: bool,
     html_theme: str,
     force: bool,
+    allow_dirty: bool,
     registrar: Optional[ConversationRegistrar],
 ) -> ImportResult:
     title = conv.get("name") or conv.get("title") or "claude-chat"
@@ -241,6 +244,7 @@ def _render_claude_conversation(
         source_size=None,
         attachment_policy=None,
         force=force,
+        allow_dirty=allow_dirty,
         registrar=registrar,
     )
 

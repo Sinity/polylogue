@@ -339,6 +339,7 @@ class DriveNormalizeStage:
         )
         context.set("source_path", options.output_dir / name_safe / "conversation.json")
 
+
 @dataclass
 class RunSummaryEntry:
     command: str
@@ -490,10 +491,15 @@ def search_command(options: SearchOptions, env: Optional[CommandEnv] = None) -> 
 
 
 def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
+    from .cli.arg_helpers import PathPolicy, resolve_path
+
     ui = env.ui
     output_dir = options.output_dir
     if not options.dry_run:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        resolved = resolve_path(output_dir, PathPolicy.create_ok(), ui)
+        if not resolved:
+            raise SystemExit(1)
+        output_dir = resolved
     start_time = time.perf_counter()
     if options.download_attachments:
         _ensure_drive(env)
@@ -600,6 +606,8 @@ def list_command(options: ListOptions, env: CommandEnv) -> ListResult:
 
 
 def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
+    from .cli.arg_helpers import PathPolicy, resolve_path
+
     drive = _ensure_drive(env)
     folder_id = drive.resolve_folder_id(options.folder_name, options.folder_id)
     chats = drive.list_chats(options.folder_name, folder_id)
@@ -629,7 +637,11 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         )
 
     if not options.dry_run:
-        options.output_dir.mkdir(parents=True, exist_ok=True)
+        ui = env.ui
+        resolved = resolve_path(options.output_dir, PathPolicy.create_ok(), ui)
+        if not resolved:
+            raise SystemExit(1)
+        options.output_dir = resolved
 
     pipeline = Pipeline(
         [
@@ -801,6 +813,8 @@ def status_command(env: CommandEnv, runs_limit: Optional[int] = 200) -> StatusRe
         provider_summary=provider_summary,
         runs=run_data,
     )
+
+
 def _ensure_ui_contract(ui: Any) -> None:
     console = getattr(ui, "console", None)
 

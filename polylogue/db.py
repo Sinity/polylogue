@@ -15,7 +15,8 @@ SCHEMA_VERSION = 2
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
-    current_version = conn.execute("PRAGMA user_version").fetchone()[0]
+    version_row = conn.execute("PRAGMA user_version").fetchone()
+    current_version = version_row[0] if version_row else 0
     if current_version >= SCHEMA_VERSION:
         return
 
@@ -220,56 +221,72 @@ def replace_messages(
     branch_id: str,
     messages: Sequence[Dict[str, object]],
 ) -> None:
-    conn.execute(
-        "DELETE FROM messages WHERE provider = ? AND conversation_id = ? AND branch_id = ?",
-        (provider, conversation_id, branch_id),
-    )
-    conn.execute(
-        "DELETE FROM messages_fts WHERE provider = ? AND conversation_id = ? AND branch_id = ?",
-        (provider, conversation_id, branch_id),
-    )
-    if not messages:
-        return
-    conn.executemany(
-        """
-        INSERT INTO messages (
-            provider, conversation_id, branch_id, message_id, parent_id,
-            position, timestamp, role, content_hash, rendered_text,
-            raw_json, token_count, word_count, attachment_count, metadata_json
+    """Replace all messages for a given branch with transaction protection.
+
+    Uses SAVEPOINT to ensure atomicity: if the operation is interrupted after
+    DELETE but before INSERT completes, the transaction is rolled back and no
+    data is lost.
+    """
+    # Use SAVEPOINT for transaction protection to prevent data loss if interrupted
+    conn.execute("SAVEPOINT replace_messages_sp")
+    try:
+        conn.execute(
+            "DELETE FROM messages WHERE provider = ? AND conversation_id = ? AND branch_id = ?",
+            (provider, conversation_id, branch_id),
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        [
-            (
-                provider,
-                conversation_id,
-                branch_id,
-                msg["message_id"],
-                msg.get("parent_id"),
-                msg.get("position"),
-                msg.get("timestamp"),
-                msg.get("role"),
-                msg.get("content_hash"),
-                msg.get("rendered_text"),
-                msg.get("raw_json"),
-                msg.get("token_count", 0),
-                msg.get("word_count", 0),
-                msg.get("attachment_count", 0),
-                json.dumps(msg.get("metadata")) if msg.get("metadata") else None,
+        conn.execute(
+            "DELETE FROM messages_fts WHERE provider = ? AND conversation_id = ? AND branch_id = ?",
+            (provider, conversation_id, branch_id),
+        )
+        if not messages:
+            conn.execute("RELEASE replace_messages_sp")
+            return
+        conn.executemany(
+            """
+            INSERT INTO messages (
+                provider, conversation_id, branch_id, message_id, parent_id,
+                position, timestamp, role, content_hash, rendered_text,
+                raw_json, token_count, word_count, attachment_count, metadata_json
             )
-            for msg in messages
-        ],
-    )
-    conn.execute(
-        """
-        INSERT INTO messages_fts
-            (provider, conversation_id, branch_id, message_id, content)
-        SELECT provider, conversation_id, branch_id, message_id, rendered_text
-          FROM messages
-         WHERE provider = ? AND conversation_id = ? AND branch_id = ?
-        """,
-        (provider, conversation_id, branch_id),
-    )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    provider,
+                    conversation_id,
+                    branch_id,
+                    msg["message_id"],
+                    msg.get("parent_id"),
+                    msg.get("position"),
+                    msg.get("timestamp"),
+                    msg.get("role"),
+                    msg.get("content_hash"),
+                    msg.get("rendered_text"),
+                    msg.get("raw_json"),
+                    msg.get("token_count", 0),
+                    msg.get("word_count", 0),
+                    msg.get("attachment_count", 0),
+                    json.dumps(msg.get("metadata")) if msg.get("metadata") else None,
+                )
+                for msg in messages
+            ],
+        )
+        conn.execute(
+            """
+            INSERT INTO messages_fts
+                (provider, conversation_id, branch_id, message_id, content)
+            SELECT provider, conversation_id, branch_id, message_id, rendered_text
+              FROM messages
+             WHERE provider = ? AND conversation_id = ? AND branch_id = ?
+            """,
+            (provider, conversation_id, branch_id),
+        )
+        # Commit the savepoint on success
+        conn.execute("RELEASE replace_messages_sp")
+    except Exception:
+        # Rollback to savepoint on failure to prevent data loss
+        conn.execute("ROLLBACK TO replace_messages_sp")
+        raise
 
 
 def record_run(

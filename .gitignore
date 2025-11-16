@@ -19,3 +19,4 @@ __pycache__
 # not project code
 data
 sinex_md/
+polylogue.egg-info/
