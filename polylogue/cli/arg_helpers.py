@@ -160,16 +160,22 @@ class PathPolicy:
         return PathPolicy(should_exist=False, prompt_create=True)
 
 
-def resolve_path(path: Path, policy: PathPolicy, ui: "UI") -> Optional[Path]:
+def resolve_path(
+    path: Path, policy: PathPolicy, ui: "UI", *, json_mode: bool = False
+) -> Optional[Path]:
     """Resolve path according to policy with consistent error handling.
 
     Args:
         path: Path to resolve
         policy: Policy defining behavior for missing paths
         ui: UI instance for console output and prompts
+        json_mode: If True, raise JSONModeError instead of printing to console
 
     Returns:
         Resolved path if successful, None if path validation failed
+
+    Raises:
+        JSONModeError: In JSON mode when path validation fails
 
     Examples:
         # For read operations (stats, inspect)
@@ -182,11 +188,23 @@ def resolve_path(path: Path, policy: PathPolicy, ui: "UI") -> Optional[Path]:
 
         # For interactive operations
         target_dir = resolve_path(Path(args.dir), PathPolicy.prompt_create(), ui)
+
+        # In JSON mode
+        directory = resolve_path(Path(args.dir), PathPolicy.must_exist(), ui, json_mode=True)
     """
     if path.exists():
         return path
 
     if policy.should_exist:
+        if json_mode:
+            from .json_output import JSONModeError
+
+            raise JSONModeError(
+                "path_not_found",
+                f"Path not found: {path}",
+                path=str(path),
+                hint=f"Create it with: mkdir -p {path}",
+            )
         ui.console.print(f"[red]Error: Path not found: {path}")
         ui.console.print(f"[dim]Create it with: mkdir -p {path}")
         return None
@@ -196,6 +214,15 @@ def resolve_path(path: Path, policy: PathPolicy, ui: "UI") -> Optional[Path]:
             path.mkdir(parents=True, exist_ok=True)
             return path
         except OSError as exc:
+            if json_mode:
+                from .json_output import JSONModeError
+
+                raise JSONModeError(
+                    "path_create_failed",
+                    f"Could not create directory: {path}",
+                    path=str(path),
+                    reason=str(exc),
+                )
             ui.console.print(f"[red]Error: Could not create directory: {path}")
             ui.console.print(f"[dim]Reason: {exc}")
             return None
@@ -206,6 +233,15 @@ def resolve_path(path: Path, policy: PathPolicy, ui: "UI") -> Optional[Path]:
                 path.mkdir(parents=True, exist_ok=True)
                 return path
             except OSError as exc:
+                if json_mode:
+                    from .json_output import JSONModeError
+
+                    raise JSONModeError(
+                        "path_create_failed",
+                        f"Could not create directory: {path}",
+                        path=str(path),
+                        reason=str(exc),
+                    )
                 ui.console.print(f"[red]Error: Could not create directory: {path}")
                 ui.console.print(f"[dim]Reason: {exc}")
                 return None
