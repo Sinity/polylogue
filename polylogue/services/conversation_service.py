@@ -63,7 +63,6 @@ class ConversationService:
         conversations = state.get("conversations")
         if not isinstance(conversations, dict):
             return iter(())
-        entries: Iterable[Tuple[str, str, Dict[str, object]]] = []
         for provider, convs in conversations.items():
             if not isinstance(convs, dict):
                 continue

@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Iterable, List, Optional, Protocol, Sequence
+from typing import Iterable, List, Optional, Protocol
 
 from rich.console import Console
 from rich.panel import Panel

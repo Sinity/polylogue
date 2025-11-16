@@ -19,8 +19,8 @@ def filter_chats(
         try:
             rx = re.compile(name_filter)
             out = [c for c in out if rx.search(c.get("name", "") or "")]
-        except re.error:
-            pass
+        except re.error as e:
+            raise ValueError(f"Invalid name filter regex '{name_filter}': {e}") from e
     s_epoch = parse_input_time_to_epoch(since)
     u_epoch = parse_input_time_to_epoch(until)
     if s_epoch is not None or u_epoch is not None:
@@ -172,3 +172,65 @@ def should_download(local_path: Path, remote_modified_time: Optional[str], *, fo
         return int(local_path.stat().st_mtime) != int(mt)
     except Exception:
         return True
+
+
+def handle_selection_result(
+    selection: Optional[List],
+    *,
+    console,
+    action: str,
+    item_type: str = "items"
+) -> Optional[List]:
+    """Handle picker selection with standardized messages.
+
+    Args:
+        selection: Result from picker (None if cancelled, [] if empty)
+        console: Console object for printing messages
+        action: Action being performed (e.g., "sync", "import")
+        item_type: Type of items being selected (e.g., "conversations", "files")
+
+    Returns:
+        The selection if valid, None if cancelled/empty
+    """
+    if selection is None:
+        console.print(f"[yellow]{action.title()} cancelled; no {item_type} selected.")
+        return None
+    if not selection:
+        console.print(f"[yellow]No {item_type} selected; nothing to {action}.")
+        return None
+    return selection
+
+
+def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
+    """Resolve input JSON files from a path, with interactive picker if needed.
+
+    Args:
+        path: File or directory path to resolve
+        plain: If True, skip interactive picker
+
+    Returns:
+        List of selected files, None if picker was cancelled, [] if none selected
+
+    Raises:
+        SystemExit: If path doesn't exist
+    """
+    if path.is_file():
+        return [path]
+    if not path.is_dir():
+        raise SystemExit(f"Input path not found: {path}")
+    candidates = [
+        p for p in sorted(path.iterdir()) if p.is_file() and p.suffix.lower() == ".json"
+    ]
+    if len(candidates) <= 1 or plain:
+        return candidates
+    lines = [str(p) for p in candidates]
+    selection = sk_select(
+        lines,
+        preview="bat --style=plain {}",
+        bindings=["ctrl-g:execute(glow --style=dark {+})"],
+    )
+    if selection is None:
+        return None
+    if not selection:
+        return []
+    return [Path(s) for s in selection]

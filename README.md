@@ -30,7 +30,7 @@ Polylogue is a CLI toolkit for archiving AI/LLM conversations—rendering local 
 - **Inspect environment:** `polylogue env` prints the resolved config/output directories plus the state/runs DB paths; pass `--json` when you need to feed the same information into scripts.
 - **Run history:** Every render/sync/import/watch operation records a row in the SQLite database at `$XDG_STATE_HOME/polylogue/polylogue.db`. Use `polylogue runs --limit 20 --providers drive --since 2024-01-01 --json` for ad-hoc inspection (with `--until` to cap the window), or `polylogue status --dump runs.json` (pass `--dump -` for stdout) when you need a raw JSON export.
 - **Branch-aware transcripts:** Canonical Markdown now lives at `<slug>/conversation.md`, with `<slug>/conversation.common.md` capturing shared context and `branches/<branch-id>/{<branch-id>.md, overlay.md}` preserving every alternate path.
-- **Explore branch graphs:** `polylogue inspect branches` renders a skim-driven branch picker, prints the tree view, and auto-writes an HTML explorer when branches diverge (override output with `--html-out`, disable via `--html off`).
+- **Explore branch graphs:** `polylogue inspect branches` renders a skim-driven branch picker, prints the tree view, and auto-writes an HTML explorer when branches diverge (override output with `--out`, disable via `--html off`).
 - **Search transcripts:** `polylogue inspect search` queries the SQLite FTS index with filters for provider, model, date range, and attachment metadata; add `--no-picker` to skip the skim preview or `--json` for CI.
 - **Prune legacy outputs:** `polylogue prune` cleans up flat `<slug>.md` files and `_attachments/` folders left behind by older releases, keeping only the canonical conversation directories.
 - **SQLite/Qdrant indexing:** Every successful write updates `XDG_STATE_HOME/polylogue/polylogue.db` (and, optionally, a Qdrant collection) so downstream tooling can query or sync metadata without reparsing Markdown.
@@ -64,13 +64,13 @@ Every workflow is available directly via the CLI:
 - `python3 polylogue.py sync drive|codex|claude-code|chatgpt|claude [--out DIR] [--links-only] [--dry-run] [--force] [--prune] [--collapse-threshold N] [--html [on|off|auto]] [--diff] [--json]` (note: `--diff` is only valid for drive/codex/claude-code).
   - Drive extras: `--folder-name`, `--folder-id`, `--since`, `--until`, `--name-filter`, `--list-only`
   - Local extras: `--base-dir`, `--all`, `--session PATH` (repeatable) to bypass pickers
-- `python3 polylogue.py import chatgpt|claude|codex|claude-code SOURCE … [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--force] [--all] [--conversation-id ID ...] [--base-dir DIR] [--json]`
-- `python3 polylogue.py inspect branches [--provider NAME] [--slug SLUG] [--conversation-id ID] [--branch BRANCH_ID] [--diff] [--html [on|off|auto]] [--html-out PATH] [--theme light|dark] [--no-picker]`
+- `python3 polylogue.py import chatgpt|claude|codex|claude-code SOURCE … [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--dry-run] [--force] [--allow-dirty] [--all] [--conversation-id ID ...] [--base-dir DIR] [--json]`
+- `python3 polylogue.py inspect branches [--provider NAME] [--slug SLUG] [--conversation-id ID] [--branch BRANCH_ID] [--diff] [--html [on|off|auto]] [--out PATH] [--theme light|dark] [--no-picker]`
 - `python3 polylogue.py inspect search QUERY [--limit N] [--provider NAME] [--slug SLUG] [--conversation-id ID] [--branch BRANCH_ID] [--model MODEL] [--since RFC3339] [--until RFC3339] [--with-attachments|--without-attachments] [--no-picker] [--json]`
-- `python3 polylogue.py inspect stats [--dir DIR] [--since DATE] [--until DATE] [--json]`
+- `python3 polylogue.py inspect stats [--dir DIR] [--provider NAME] [--since DATE] [--until DATE] [--json]`
 - `python3 polylogue.py help [COMMAND]`
 - `python3 polylogue.py env [--json]`
-- `python3 polylogue.py watch codex|claude-code|chatgpt|claude [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--debounce seconds] [--once]`
+- `python3 polylogue.py watch codex|claude-code|chatgpt|claude [--base-dir DIR] [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--dry-run] [--debounce seconds] [--once]`
 - `python3 polylogue.py status [--json] [--json-lines] [--watch] [--interval seconds] [--dump path] [--dump-only]`
 - `python3 polylogue.py dashboards [--runs-limit N] [--json]`
 - `python3 polylogue.py runs [--limit N] [--providers list] [--commands list] [--json]`
@@ -118,8 +118,27 @@ Generate a completion script with `polylogue completions --shell bash|zsh|fish` 
 - Collapsible callouts stay as Markdown blockquotes; open the generated `.html` preview for interactive folding when terminal renderers (e.g., `glow`) don’t support it.
 - Imported providers share the same Markdown pipeline, so chunk counts, token approximations, and attachment sniffing behave consistently across Gemini, ChatGPT, Claude, Claude Code, and Codex sources.
 
+## Contributing
+
+This project uses **merge commits with clean feature branches** to preserve complete history while maintaining readability.
+
+**Quick start:**
+1. Create a feature branch: `git checkout -b feature/my-feature`
+2. Make commits freely while developing (WIP commits are fine)
+3. **Before PR:** Clean commits with `git rebase -i main`
+4. Push and open PR
+
+**See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for detailed Git workflow.**
+
+**Key points:**
+- Use conventional commit format: `feat:`, `fix:`, `test:`, `docs:`, etc.
+- Clean up WIP commits before opening PR
+- Update branch via `git rebase main`, not `git merge main`
+- View history cleanly with `git log --first-parent` (or use `git lg` alias from `.gitconfig`)
+
 ## Development Notes
 - Code follows PEP 8 with type hints where practical.
 - Run `pytest` for the automated test suite covering importers, sync flows, and HTML transforms.
 - Credentials (`credentials.json`, `token.json`) stay out of version control.
 - Run history lives in the SQLite database at `$XDG_STATE_HOME/polylogue/polylogue.db`; use `polylogue status --dump runs.json` (or `--dump -` for stdout) when you need a JSON export.
+- See [AGENTS.md](AGENTS.md) for AI agent development guidelines.

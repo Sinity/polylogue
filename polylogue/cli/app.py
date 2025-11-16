@@ -17,7 +17,7 @@ import os
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from ..cli_common import choose_single_entry, filter_chats, sk_select
+from ..cli_common import choose_single_entry, filter_chats, resolve_inputs, sk_select
 from ..commands import (
     CommandEnv,
     branches_command,
@@ -31,13 +31,19 @@ from ..ui import create_ui
 from .completion_engine import CompletionEngine, Completion
 from .registry import CommandRegistry
 from .arg_helpers import (
+    add_allow_dirty_option,
     add_collapse_option,
     add_diff_option,
     add_dry_run_option,
     add_force_option,
     add_html_option,
     add_out_option,
+    create_output_parent,
+    create_render_parent,
+    create_write_parent,
+    create_filter_parent,
 )
+from .editor import open_in_editor, get_editor
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
     DEFAULT_CLAUDE_OUT,
@@ -98,6 +104,71 @@ def _add_command_parser(subparsers: argparse._SubParsersAction, name: str, **kwa
     kwargs.setdefault("formatter_class", PARSER_FORMATTER)
     return subparsers.add_parser(name, **kwargs)
 
+# Command Examples for --examples flag
+# Each command maps to list of (description, command_line) tuples
+COMMAND_EXAMPLES = {
+    "render": [
+        ("Render a single JSON file", "polylogue render ~/downloads/chat.json"),
+        ("Render with HTML preview", "polylogue render input.json --html on"),
+        ("Preview without writing", "polylogue render data/ --dry-run"),
+    ],
+    "sync": [
+        ("Sync all Drive chats", "polylogue sync drive --all"),
+        ("Sync from specific Drive folder", "polylogue sync drive --folder-name 'Work Chats'"),
+        ("Sync Codex sessions with preview", "polylogue sync codex --dry-run"),
+        ("Sync Claude Code with diff tracking", "polylogue sync claude-code --diff"),
+        ("Sync and prune deleted chats", "polylogue sync drive --all --prune"),
+    ],
+    "import": [
+        ("Import ChatGPT export", "polylogue import chatgpt export.zip --html on"),
+        ("Import with interactive picker", "polylogue import claude-code pick"),
+        ("Import specific conversation", "polylogue import chatgpt export.zip --conversation-id abc123"),
+        ("Import all from Claude export", "polylogue import claude conversations.zip --all"),
+        ("Preview import without writing", "polylogue import codex session.jsonl --dry-run"),
+    ],
+    "inspect": [
+        ("Search for term", "polylogue inspect search 'error handling'"),
+        ("Search with filters", "polylogue inspect search 'API' --provider chatgpt --since 2024-01-01"),
+        ("Browse branch graph", "polylogue inspect branches --provider claude"),
+        ("View stats", "polylogue inspect stats --provider chatgpt"),
+        ("Get stats with time filter", "polylogue inspect stats --since 2024-01-01 --until 2024-12-31"),
+    ],
+    "watch": [
+        ("Watch Codex sessions", "polylogue watch codex"),
+        ("Watch Claude Code with HTML", "polylogue watch claude-code --html on"),
+        ("One-shot watch run", "polylogue watch chatgpt --once"),
+    ],
+    "prune": [
+        ("Preview prune operation", "polylogue prune --dry-run"),
+        ("Prune legacy files", "polylogue prune --dir ~/polylogue-data/chatgpt"),
+    ],
+    "doctor": [
+        ("Check all providers", "polylogue doctor"),
+        ("Check with JSON output", "polylogue doctor --json"),
+        ("Limit files inspected", "polylogue doctor --limit 100"),
+    ],
+    "status": [
+        ("Show status overview", "polylogue status"),
+        ("Watch status continuously", "polylogue status --watch"),
+        ("Export runs to JSON", "polylogue status --dump runs.json"),
+        ("Filter by providers", "polylogue status --providers drive,codex"),
+    ],
+    "env": [
+        ("Show environment paths", "polylogue env"),
+        ("Get environment as JSON", "polylogue env --json"),
+    ],
+    "config": [
+        ("Interactive setup wizard", "polylogue config init"),
+        ("Force re-initialization", "polylogue config init --force"),
+    ],
+    "settings": [
+        ("Show current settings", "polylogue settings"),
+        ("Enable HTML previews", "polylogue settings --html on"),
+        ("Set dark theme", "polylogue settings --theme dark"),
+        ("Reset to defaults", "polylogue settings --reset"),
+    ],
+}
+
 
 def _collect_subparser_map(parser: argparse.ArgumentParser) -> Dict[str, argparse.ArgumentParser]:
     mapping: Dict[str, argparse.ArgumentParser] = {}
@@ -155,19 +226,49 @@ def _legacy_candidates(root: Path) -> List[Path]:
 def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     parser = build_parser()
     topic = getattr(args, "topic", None)
+    show_examples = getattr(args, "examples", False)
     entries = _command_entries(parser)
     choices = {name: sub for name, sub in _collect_subparser_map(parser).items() if not name.startswith("_")}
     console = env.ui.console
+
     if topic:
         subparser = choices.get(topic)
         if subparser is None:
             console.print(f"[red]Unknown command: {topic}")
             available = ", ".join(sorted(choices)) or "<none>"
             console.print(f"Available commands: {available}")
+            raise SystemExit(1)
+
+        if show_examples:
+            # Show examples for this command
+            examples = COMMAND_EXAMPLES.get(topic, [])
+            if not examples:
+                console.print(f"[yellow]No examples available for '{topic}'")
+                return
+
+            console.print(f"\n[bold cyan]{topic.upper()} EXAMPLES[/bold cyan]\n")
+            for desc, cmd in examples:
+                console.print(f"  [dim]# {desc}[/dim]")
+                console.print(f"  [green]$ {cmd}[/green]\n")
             return
+
         console.print(f"[cyan]polylogue {topic}[/cyan]")
         subparser.print_help()
         return
+
+    # No topic specified - show general help or all examples
+    if show_examples:
+        console.print("\n[bold cyan]POLYLOGUE USAGE EXAMPLES[/bold cyan]\n")
+        for cmd in sorted(COMMAND_EXAMPLES.keys()):
+            examples = COMMAND_EXAMPLES[cmd]
+            console.print(f"[bold]{cmd}:[/bold]")
+            for desc, cmdline in examples[:2]:  # Show first 2 examples for each command
+                console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
+            if len(examples) > 2:
+                console.print(f"  [dim](run 'polylogue help {cmd} --examples' for more)[/dim]")
+            console.print()
+        return
+
     parser.print_help()
     _print_command_listing(console, getattr(env.ui, "plain", False), entries)
 
@@ -427,7 +528,7 @@ def run_inspect_branches(args: argparse.Namespace, env: CommandEnv) -> None:
 
         html_path = None
         html_enabled, html_explicit = resolve_html_settings(args, settings)
-        html_out = getattr(args, "html_out", None)
+        html_out = getattr(args, "out", None)
         should_auto_html = html_enabled and not html_explicit and html_out is None and conv.branch_count > 1
         force_html = html_out is not None or (html_explicit and html_enabled)
         if force_html or should_auto_html:
@@ -452,6 +553,20 @@ def run_inspect_branches(args: argparse.Namespace, env: CommandEnv) -> None:
             _display_branch_diff_for_id(conv, branch_id, ui)
 
         html_path = _prompt_branch_followups(ui, conv, args, html_path, settings)
+
+        # Open in editor if --open flag is set
+        if getattr(args, "open", False):
+            # Prefer HTML if available, otherwise open markdown
+            target_path = html_path if html_path else conv.conversation_path
+            if target_path:
+                if open_in_editor(Path(target_path)):
+                    ui.console.print(f"[dim]Opened {target_path} in editor[/dim]")
+                else:
+                    editor = get_editor()
+                    if not editor:
+                        ui.console.print("[yellow]Warning: $EDITOR not set. Cannot open file.")
+                    else:
+                        ui.console.print(f"[yellow]Warning: Could not open {target_path} in editor")
 
 
 def _generate_branch_html(conversation, target: Optional[Path], theme: str, ui, *, auto: bool) -> Optional[Path]:
@@ -547,7 +662,7 @@ def _prompt_branch_followups(ui, conversation, args, html_path: Optional[Path], 
             if branch_choice:
                 _display_branch_diff_for_id(conversation, branch_choice, ui)
         elif choice.startswith("Write"):
-            target = _resolve_html_output_path(conversation, getattr(args, "html_out", None), False)
+            target = _resolve_html_output_path(conversation, getattr(args, "out", None), False)
             current_html = _generate_branch_html(
                 conversation,
                 target=target,
@@ -572,9 +687,6 @@ def _display_diff(diff_text: str, ui) -> None:
 
 def run_inspect_search(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
-    if args.with_attachments and args.without_attachments:
-        ui.console.print("[red]Choose only one of --with-attachments or --without-attachments.")
-        return
     has_attachments: Optional[bool]
     if args.with_attachments:
         has_attachments = True
@@ -657,6 +769,24 @@ def run_inspect_search(args: argparse.Namespace, env: CommandEnv) -> None:
     for hit in selected_hits:
         _render_search_hit(hit, ui)
 
+    # Open in editor if --open flag is set and we have a single result
+    if getattr(args, "open", False) and len(selected_hits) == 1:
+        hit = selected_hits[0]
+        target_path = hit.branch_path or hit.conversation_path
+        if target_path:
+            if open_in_editor(target_path):
+                ui.console.print(f"[dim]Opened {target_path} in editor[/dim]")
+            else:
+                editor = get_editor()
+                if not editor:
+                    ui.console.print("[yellow]Warning: $EDITOR not set. Cannot open file.")
+                else:
+                    ui.console.print(f"[yellow]Warning: Could not open {target_path} in editor")
+        else:
+            ui.console.print("[yellow]Warning: No file path available for selected result")
+    elif getattr(args, "open", False) and len(selected_hits) > 1:
+        ui.console.print("[yellow]Warning: --open requires a single search result. Use --limit 1 or select one result.")
+
 
 def _run_search_picker(ui, hits: List[SearchHit]) -> Tuple[Optional[SearchHit], bool]:
     if not hits:
@@ -681,6 +811,7 @@ def _run_search_picker(ui, hits: List[SearchHit]) -> Tuple[Optional[SearchHit], 
         with tempfile.NamedTemporaryFile("w", delete=False, encoding="utf-8", suffix=".json") as handle:
             json.dump({"hits": data_payload}, handle)
             tmp_path = Path(handle.name)
+
         def _format(hit: SearchHit, idx: int) -> str:
             snippet = hit.snippet or hit.body
             snippet = snippet.replace("\n", " ")
@@ -825,6 +956,15 @@ def _dispatch_settings(args: argparse.Namespace, env: CommandEnv) -> None:
     run_settings_cli(args, env)
 
 
+def _dispatch_config(args: argparse.Namespace, env: CommandEnv) -> None:
+    config_cmd = getattr(args, "config_cmd", None)
+    if config_cmd == "init":
+        from .init import run_init_cli
+        run_init_cli(args, env)
+    else:
+        raise SystemExit("config requires a sub-command (init)")
+
+
 def _dispatch_status(args: argparse.Namespace, env: CommandEnv) -> None:
     run_status_cli(args, env)
 
@@ -876,6 +1016,7 @@ def _register_default_commands() -> None:
     _ensure("dashboards", _dispatch_dashboards, "Show provider dashboards")
     _ensure("runs", lambda args, env: run_runs_cli(args, env), "List recent runs")
     _ensure("index", lambda args, env: run_index_cli(args, env), "Index maintenance helpers")
+    _ensure("config", _dispatch_config, "Configure Polylogue settings")
     _ensure("settings", _dispatch_settings, "Show or update default preferences")
     _ensure("help", _dispatch_help, "Show command help")
     _ensure("env", _dispatch_env, "Show resolved configuration/output paths")
@@ -894,6 +1035,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force interactive UI even when stdout/stderr are not TTYs",
     )
+    parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose debug output")
     sub = parser.add_subparsers(dest="cmd")
 
     p_render = _add_command_parser(sub, "render", help="Render local provider JSON logs", description="Render local provider JSON logs")
@@ -902,6 +1044,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--links-only", action="store_true", help="Link attachments instead of downloading")
     add_dry_run_option(p_render, help_text="Report actions without writing files")
     add_force_option(p_render, help_text="Overwrite conversations even if they appear up-to-date")
+    add_allow_dirty_option(p_render)
     add_collapse_option(p_render, help_text="Override collapse threshold")
     p_render.add_argument("--json", action="store_true")
     add_html_option(p_render)
@@ -922,6 +1065,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--links-only", action="store_true", help="Link attachments instead of downloading (Drive only)")
     add_dry_run_option(p_sync)
     add_force_option(p_sync, help_text="Re-render even if conversations are up-to-date")
+    add_allow_dirty_option(p_sync)
     p_sync.add_argument("--prune", action="store_true", help="Remove outputs for conversations that vanished upstream")
     add_collapse_option(p_sync)
     add_html_option(p_sync)
@@ -933,20 +1077,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         help="Drive chat/file ID to sync (repeatable)",
     )
-    p_sync.add_argument(
+    sync_selection_group = p_sync.add_mutually_exclusive_group()
+    sync_selection_group.add_argument(
         "--session",
         dest="sessions",
         action="append",
         type=Path,
         help="Local session/export path to sync (repeatable; local providers)",
     )
+    sync_selection_group.add_argument("--all", action="store_true", help="Process all available items without interactive selection")
     p_sync.add_argument(
         "--base-dir",
         type=Path,
         default=None,
         help="Override local session/export directory",
     )
-    p_sync.add_argument("--all", action="store_true", help="Process all local sessions without prompting")
     p_sync.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME, help="Drive folder name (drive provider)")
     p_sync.add_argument("--folder-id", type=str, default=None, help="Drive folder ID override")
     p_sync.add_argument("--since", type=str, default=None, help="Only include Drive chats updated on/after this timestamp")
@@ -956,13 +1101,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_import = _add_command_parser(sub, "import", help="Import provider exports into the archive", description="Import provider exports into the archive")
     p_import.add_argument("provider", choices=["chatgpt", "claude", "claude-code", "codex"], help="Provider export format")
-    p_import.add_argument("source", nargs="*", help="Export path or session identifier (depends on provider)")
-    p_import.add_argument("--out", type=Path, default=None, help="Override output directory")
+    p_import.add_argument("source", nargs="*", help="Export path or session identifier (depends on provider); use 'pick', '?', or '-' to trigger interactive picker")
+    add_out_option(p_import, default_path=Path("(provider-specific)"), help_text="Override output directory")
     add_collapse_option(p_import)
     add_html_option(p_import)
+    add_dry_run_option(p_import)
     add_force_option(p_import, help_text="Rewrite even if conversations appear up-to-date")
-    p_import.add_argument("--all", action="store_true", help="Process every conversation in the export (ChatGPT/Claude)")
-    p_import.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Specific conversation ID to import (repeatable)")
+    add_allow_dirty_option(p_import)
+    import_selection_group = p_import.add_mutually_exclusive_group()
+    import_selection_group.add_argument("--all", action="store_true", help="Process all available items without interactive selection")
+    import_selection_group.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Specific conversation ID to import (repeatable)")
     p_import.add_argument("--base-dir", type=Path, default=None, help="Override source directory for codex/claude-code sessions")
     p_import.add_argument("--json", action="store_true", help="Emit machine-readable summary")
     p_import.add_argument("--to-clipboard", action="store_true", help="Copy a single imported Markdown file to the clipboard")
@@ -987,9 +1135,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MODE",
         help="Branch HTML mode: on/off/auto (default auto)",
     )
-    p_inspect_branches.add_argument("--html-out", type=Path, default=None, help="Write the branch explorer to this path")
+    p_inspect_branches.add_argument("--out", type=Path, default=None, help="Write the branch explorer HTML to this path")
     p_inspect_branches.add_argument("--theme", type=str, default=None, choices=["light", "dark"], help="Override HTML explorer theme")
     p_inspect_branches.add_argument("--no-picker", action="store_true", help="Skip interactive selection even when skim/gum are available")
+    p_inspect_branches.add_argument("--open", action="store_true", help="Open result in $EDITOR after command completes")
 
     p_inspect_search = _add_command_parser(inspect_sub, "search", help="Search rendered transcripts", description="Search rendered transcripts")
     p_inspect_search.add_argument("query", type=str, help="FTS search query (SQLite syntax)")
@@ -1001,23 +1150,32 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect_search.add_argument("--model", type=str, default=None, help="Filter by source model when recorded")
     p_inspect_search.add_argument("--since", type=str, default=None, help="Only include messages on/after this timestamp")
     p_inspect_search.add_argument("--until", type=str, default=None, help="Only include messages on/before this timestamp")
-    p_inspect_search.add_argument("--with-attachments", action="store_true", help="Limit to messages with extracted attachments")
-    p_inspect_search.add_argument("--without-attachments", action="store_true", help="Limit to messages without attachments")
+    attachment_group = p_inspect_search.add_mutually_exclusive_group()
+    attachment_group.add_argument("--with-attachments", action="store_true", help="Limit to messages with extracted attachments")
+    attachment_group.add_argument("--without-attachments", action="store_true", help="Limit to messages without attachments")
     p_inspect_search.add_argument("--no-picker", action="store_true", help="Skip skim picker preview even when interactive")
     p_inspect_search.add_argument("--json", action="store_true", help="Emit machine-readable search results")
+    p_inspect_search.add_argument("--open", action="store_true", help="Open result file in $EDITOR after search")
 
-    p_inspect_stats = _add_command_parser(inspect_sub, "stats", help="Summarize Markdown output directories", description="Summarize Markdown output directories")
+    output_parent = create_output_parent()
+    filter_parent = create_filter_parent()
+
+    p_inspect_stats = _add_command_parser(
+        inspect_sub,
+        "stats",
+        parents=[output_parent, filter_parent],
+        help="Summarize Markdown output directories",
+        description="Summarize Markdown output directories"
+    )
     p_inspect_stats.add_argument("--dir", type=Path, default=None, help="Directory containing Markdown exports")
-    p_inspect_stats.add_argument("--json", action="store_true", help="Emit machine-readable stats")
-    p_inspect_stats.add_argument("--since", type=str, default=None, help="Only include files modified on/after this date (YYYY-MM-DD or ISO)")
-    p_inspect_stats.add_argument("--until", type=str, default=None, help="Only include files modified on/before this date")
 
     p_watch = _add_command_parser(sub, "watch", help="Watch local session stores and sync on changes", description="Watch local session stores and sync on changes")
     p_watch.add_argument("provider", choices=list(WATCHABLE_LOCAL_PROVIDER_NAMES), help="Local provider to watch")
     p_watch.add_argument("--base-dir", type=Path, default=None, help="Override source directory")
-    p_watch.add_argument("--out", type=Path, default=None, help="Override output directory")
+    add_out_option(p_watch, default_path=Path("(provider-specific)"), help_text="Override output directory")
     add_collapse_option(p_watch)
     add_html_option(p_watch, description="HTML preview mode while watching: on/off/auto (default auto)")
+    add_dry_run_option(p_watch)
     p_watch.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
     p_watch.add_argument("--once", action="store_true", help="Run a single sync pass and exit")
 
@@ -1044,12 +1202,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Stream newline-delimited JSON records (auto-enables --json, useful with --watch)",
     )
-    p_status.add_argument("--watch", action="store_true", help="Continuously refresh the status output")
+    status_mode_group = p_status.add_mutually_exclusive_group()
+    status_mode_group.add_argument("--watch", action="store_true", help="Continuously refresh the status output")
+    status_mode_group.add_argument("--dump-only", action="store_true", help="Only perform the dump action without printing summaries")
     p_status.add_argument("--interval", type=float, default=5.0, help="Seconds between refresh while watching")
     p_status.add_argument("--dump", type=str, default=None, help="Write recent runs to a file ('-' for stdout)")
     p_status.add_argument("--dump-limit", type=int, default=100, help="Number of runs to include when dumping")
     p_status.add_argument("--runs-limit", type=int, default=200, help="Number of historical runs to include in summaries")
-    p_status.add_argument("--dump-only", action="store_true", help="Only perform the dump action without printing summaries")
     p_status.add_argument(
         "--providers",
         type=str,
@@ -1087,11 +1246,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_index_check.add_argument("--skip-qdrant", action="store_true", help="Skip Qdrant validation even when configured")
     p_index_check.add_argument("--json", action="store_true", help="Emit validation results as JSON")
 
+    p_config = _add_command_parser(sub, "config", help="Configuration commands", description="Configure Polylogue settings")
+    config_sub = p_config.add_subparsers(dest="config_cmd", required=True)
+
+    p_config_init = config_sub.add_parser("init", help="Interactive configuration setup", description="Interactive configuration setup wizard")
+    p_config_init.add_argument("--force", action="store_true", help="Overwrite existing configuration")
+
     p_env = _add_command_parser(sub, "env", help="Show resolved configuration and output paths", description="Show resolved configuration and output paths")
     p_env.add_argument("--json", action="store_true", help="Emit environment info as JSON")
 
     p_help_cmd = _add_command_parser(sub, "help", help="Show help for a specific command", description="Show help for a specific command")
     p_help_cmd.add_argument("topic", nargs="?", help="Command name")
+    p_help_cmd.add_argument("--examples", action="store_true", help="Show usage examples for the command")
 
     p_completions = _add_command_parser(sub, "completions", help="Emit shell completion script", description="Emit shell completion script")
     p_completions.add_argument("--shell", choices=["bash", "zsh", "fish"], required=True)
@@ -1114,29 +1280,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
-    if path.is_file():
-        return [path]
-    if not path.is_dir():
-        raise SystemExit(f"Input path not found: {path}")
-    candidates = [
-        p for p in sorted(path.iterdir()) if p.is_file() and p.suffix.lower() == ".json"
-    ]
-    if len(candidates) <= 1 or plain:
-        return candidates
-    lines = [str(p) for p in candidates]
-    selection = sk_select(
-        lines,
-        preview="bat --style=plain {}",
-        bindings=["ctrl-g:execute(glow --style=dark {+})"],
-    )
-    if selection is None:
-        return None
-    if not selection:
-        return []
-    return [Path(s) for s in selection]
-
-
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -1145,6 +1288,15 @@ def main() -> None:
     ui = create_ui(plain_mode)
     env = CommandEnv(ui=ui)
     ensure_settings_defaults(env.settings)
+
+    # Enable verbose output if requested
+    if getattr(args, "verbose", False):
+        ui.console.print("[dim]Verbose mode enabled[/dim]")
+
+    # Validate --allow-dirty requires --force
+    if getattr(args, "allow_dirty", False) and not getattr(args, "force", False):
+        ui.console.print("[red]Error: --allow-dirty requires --force")
+        raise SystemExit(1)
 
     if args.cmd is None:
         parser.print_help()

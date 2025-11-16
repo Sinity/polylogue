@@ -57,11 +57,11 @@ class CompletionEngine:
         if command == "sync":
             return self._complete_sync(args, current_index, current_word)
         if command == "import":
-            return self._complete_import(args, current_index)
+            return self._complete_import(args, current_index, current_word)
         if command == "inspect":
             return self._complete_inspect(args, current_index, current_word)
         if command == "watch":
-            return self._complete_watch(args, current_index)
+            return self._complete_watch(args, current_index, current_word)
         if command == "status":
             return self._complete_status(current_word)
         if command == "settings":
@@ -99,7 +99,7 @@ class CompletionEngine:
             return self._option_completions("sync")
         return []
 
-    def _complete_import(self, args: Sequence[str], current_index: int) -> List[Completion]:
+    def _complete_import(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
         if current_index == 1:
             return [Completion(name) for name in ("chatgpt", "claude", "codex", "claude-code")]
         prev = args[current_index - 1] if current_index > 0 else ""
@@ -131,7 +131,7 @@ class CompletionEngine:
             return self._option_completions("inspect stats")
         return []
 
-    def _complete_watch(self, args: Sequence[str], current_index: int) -> List[Completion]:
+    def _complete_watch(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
         if current_index == 1:
             return [Completion(name) for name in LOCAL_SYNC_PROVIDER_NAMES]
         prev = args[current_index - 1] if current_index > 0 else ""

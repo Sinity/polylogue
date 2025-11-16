@@ -27,6 +27,7 @@ from .context import (
     DEFAULT_COLLAPSE,
     resolve_html_enabled,
 )
+from .json_output import safe_json_handler
 from .render import copy_import_to_clipboard
 from .summaries import summarize_import
 
@@ -164,6 +165,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         raise SystemExit(f"Unsupported provider for import: {provider}")
 
 
+@safe_json_handler
 def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     console = ui.console
@@ -176,16 +178,25 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     html_theme = settings.html_theme
     session_target = args.session_id
     if (session_target in {None, "", "pick", "?"}) and not ui.plain:
+        from ..cli_common import choose_single_entry
         candidates = sorted(base_dir.expanduser().rglob("*.jsonl"), key=path_order_key, reverse=True)
         if not candidates:
             console.print("No Codex sessions found.")
             return
-        lines = [f"{path.stem}\t{path.parent}\t{path}" for path in candidates]
-        selection = sk_select(lines, multi=False, header="Select Codex session")
-        if not selection:
+
+        def _format_session(path, idx):
+            return f"{path.stem}\t{path.parent}\t{path}"
+
+        chosen, cancelled = choose_single_entry(
+            ui, candidates, format_line=_format_session, header="Select Codex session", prompt="session>"
+        )
+        if cancelled:
             console.print("[yellow]Import cancelled; no session selected.")
             return
-        session_target = selection[0].split("\t")[-1]
+        if chosen is None:
+            console.print("[yellow]No session selected.")
+            return
+        session_target = str(chosen)
     elif not session_target:
         console.print("[yellow]Provide a Codex session file or run interactively.")
         return
@@ -210,6 +221,7 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
                 "html": html_enabled,
                 "html_theme": html_theme,
                 "force": getattr(args, "force", False),
+                "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
             },
             "import_error_message": "Import failed",
@@ -226,10 +238,26 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
         copy_import_to_clipboard(ui, results)
 
 
+@safe_json_handler
 def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
+    from .json_output import JSONModeError
+
     ui = env.ui
     console = ui.console
     export_path = Path(args.export_path)
+
+    # Validate export file exists
+    if not export_path.exists():
+        json_mode = getattr(args, "json", False)
+        if json_mode:
+            raise JSONModeError(
+                "file_not_found", f"Export file not found: {export_path}", path=str(export_path)
+            )
+        else:
+            console.print(f"[red]Error: Export file not found: {export_path}")
+            console.print(f"[dim]Check that the path is correct and the file exists.")
+            raise SystemExit(1)
+
     out_dir = Path(args.out) if args.out else DEFAULT_CHATGPT_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     settings = env.settings
@@ -241,8 +269,18 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
         try:
             entries = list_chatgpt_conversations(export_path)
         except Exception as exc:
-            console.print(f"[red]Failed to scan export: {exc}")
-            return
+            json_mode = getattr(args, "json", False)
+            if json_mode:
+                raise JSONModeError(
+                    "invalid_export",
+                    f"Failed to scan ChatGPT export: {exc}",
+                    path=str(export_path),
+                    hint="Ensure the export file is a valid ChatGPT conversations.json or .zip export",
+                )
+            else:
+                console.print(f"[red]Failed to scan ChatGPT export: {exc}")
+                console.print("Hint: Ensure the export file is a valid ChatGPT conversations.json or .zip export")
+                raise SystemExit(1)
         if not entries:
             console.print("No conversations found in export.")
             return
@@ -285,6 +323,7 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
                 "html_theme": html_theme,
                 "selected_ids": selected_ids,
                 "force": getattr(args, "force", False),
+                "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
             },
             "import_error_message": "Import failed",
@@ -301,10 +340,26 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
         copy_import_to_clipboard(ui, results)
 
 
+@safe_json_handler
 def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
+    from .json_output import JSONModeError
+
     ui = env.ui
     console = ui.console
     export_path = Path(args.export_path)
+
+    # Validate export file exists
+    if not export_path.exists():
+        json_mode = getattr(args, "json", False)
+        if json_mode:
+            raise JSONModeError(
+                "file_not_found", f"Export file not found: {export_path}", path=str(export_path)
+            )
+        else:
+            console.print(f"[red]Error: Export file not found: {export_path}")
+            console.print(f"[dim]Check that the path is correct and the file exists.")
+            raise SystemExit(1)
+
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     settings = env.settings
@@ -316,8 +371,18 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
         try:
             entries = list_claude_conversations(export_path)
         except Exception as exc:
-            console.print(f"[red]Failed to scan export: {exc}")
-            return
+            json_mode = getattr(args, "json", False)
+            if json_mode:
+                raise JSONModeError(
+                    "invalid_export",
+                    f"Failed to scan Claude export: {exc}",
+                    path=str(export_path),
+                    hint="Ensure the export file is a valid Claude conversations.json or .zip export",
+                )
+            else:
+                console.print(f"[red]Failed to scan Claude export: {exc}")
+                console.print("Hint: Ensure the export file is a valid Claude conversations.json or .zip export")
+                raise SystemExit(1)
         if not entries:
             console.print("No conversations found in export.")
             return
@@ -376,6 +441,7 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
         copy_import_to_clipboard(ui, results)
 
 
+@safe_json_handler
 def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     console = ui.console
@@ -383,16 +449,25 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     session_id = args.session_id
 
     if session_id in {"pick", "?"} or (session_id == "-" and not ui.plain):
+        from ..cli_common import choose_single_entry
         entries = list_claude_code_sessions(base_dir)
         if not entries:
             console.print("No Claude Code sessions found.")
             return
-        lines = [f"{entry['name']}\t{entry['workspace']}\t{entry['path']}" for entry in entries]
-        selection = sk_select(lines, multi=False, header="Select Claude Code session")
-        if not selection:
+
+        def _format_session(entry, idx):
+            return f"{entry['name']}\t{entry['workspace']}\t{entry['path']}"
+
+        chosen, cancelled = choose_single_entry(
+            ui, entries, format_line=_format_session, header="Select Claude Code session", prompt="session>"
+        )
+        if cancelled:
             console.print("[yellow]Import cancelled; no session selected.")
             return
-        session_id = selection[0].split("\t")[-1]
+        if chosen is None:
+            console.print("[yellow]No session selected.")
+            return
+        session_id = chosen["path"]
 
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
@@ -423,6 +498,7 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
                 "html": html_enabled,
                 "html_theme": html_theme,
                 "force": getattr(args, "force", False),
+                "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
                 **kwargs,
             },

@@ -70,6 +70,7 @@ def merge_with_defaults(defaults: argparse.Namespace, overrides: argparse.Namesp
         setattr(merged, key, value)
     return merged
 
+
 DEFAULT_COLLAPSE = CONFIG.defaults.collapse_threshold
 DEFAULT_RENDER_OUT = CONFIG.defaults.output_dirs.render
 DEFAULT_SYNC_OUT = CONFIG.defaults.output_dirs.sync_drive
