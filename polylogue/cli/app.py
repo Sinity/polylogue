@@ -157,6 +157,10 @@ COMMAND_EXAMPLES = {
         ("Show environment paths", "polylogue env"),
         ("Get environment as JSON", "polylogue env --json"),
     ],
+    "config": [
+        ("Interactive setup wizard", "polylogue config init"),
+        ("Force re-initialization", "polylogue config init --force"),
+    ],
     "settings": [
         ("Show current settings", "polylogue settings"),
         ("Enable HTML previews", "polylogue settings --html on"),
@@ -952,6 +956,15 @@ def _dispatch_settings(args: argparse.Namespace, env: CommandEnv) -> None:
     run_settings_cli(args, env)
 
 
+def _dispatch_config(args: argparse.Namespace, env: CommandEnv) -> None:
+    config_cmd = getattr(args, "config_cmd", None)
+    if config_cmd == "init":
+        from .init import run_init_cli
+        run_init_cli(args, env)
+    else:
+        raise SystemExit("config requires a sub-command (init)")
+
+
 def _dispatch_status(args: argparse.Namespace, env: CommandEnv) -> None:
     run_status_cli(args, env)
 
@@ -1003,6 +1016,7 @@ def _register_default_commands() -> None:
     _ensure("dashboards", _dispatch_dashboards, "Show provider dashboards")
     _ensure("runs", lambda args, env: run_runs_cli(args, env), "List recent runs")
     _ensure("index", lambda args, env: run_index_cli(args, env), "Index maintenance helpers")
+    _ensure("config", _dispatch_config, "Configure Polylogue settings")
     _ensure("settings", _dispatch_settings, "Show or update default preferences")
     _ensure("help", _dispatch_help, "Show command help")
     _ensure("env", _dispatch_env, "Show resolved configuration/output paths")
@@ -1231,6 +1245,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_index_check.add_argument("--repair", action="store_true", help="Attempt to rebuild missing SQLite FTS data")
     p_index_check.add_argument("--skip-qdrant", action="store_true", help="Skip Qdrant validation even when configured")
     p_index_check.add_argument("--json", action="store_true", help="Emit validation results as JSON")
+
+    p_config = _add_command_parser(sub, "config", help="Configuration commands", description="Configure Polylogue settings")
+    config_sub = p_config.add_subparsers(dest="config_cmd", required=True)
+
+    p_config_init = config_sub.add_parser("init", help="Interactive configuration setup", description="Interactive configuration setup wizard")
+    p_config_init.add_argument("--force", action="store_true", help="Overwrite existing configuration")
 
     p_env = _add_command_parser(sub, "env", help="Show resolved configuration and output paths", description="Show resolved configuration and output paths")
     p_env.add_argument("--json", action="store_true", help="Emit environment info as JSON")
