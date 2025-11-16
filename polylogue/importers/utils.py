@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
+
+import tiktoken
+from tiktoken.core import Encoding
 
 from ..render import AttachmentInfo
 
@@ -9,17 +13,37 @@ PREVIEW_LINES = 5
 LINE_THRESHOLD = 40
 CHAR_THRESHOLD = 4000
 
-try:  # optional dependency for accurate counts
-    import tiktoken  # type: ignore
-except Exception:  # pragma: no cover
-    tiktoken = None  # type: ignore
-
-_TOKENIZER_CACHE: Dict[str, object] = {}
+_ESCAPED_FOOTNOTE_RE = re.compile(r"\\\[([^\]\n]{1,12})\\\]")
 
 
-def _get_tokenizer(model: Optional[str]) -> Optional[object]:
-    if tiktoken is None:
-        return None
+def normalise_inline_footnotes(text: str) -> str:
+    if not text or "\\[" not in text:
+        return text
+    # Exports can double escape the brackets (``\\\[``); collapse those first.
+    text = text.replace("\\\\[", "\\[").replace("\\\\]", "\\]")
+
+    def is_candidate(label: str) -> bool:
+        if not label:
+            return False
+        if re.fullmatch(r"\d+[A-Za-z]?", label):
+            return True
+        if len(label) <= 5 and re.fullmatch(r"[A-Za-z0-9-]+", label):
+            return True
+        return False
+
+    def replacer(match: re.Match[str]) -> str:
+        label = match.group(1)
+        if is_candidate(label):
+            return f"[{label}]"
+        return match.group(0)
+
+    return _ESCAPED_FOOTNOTE_RE.sub(replacer, text)
+
+
+_TOKENIZER_CACHE: Dict[str, Encoding] = {}
+
+
+def _get_tokenizer(model: Optional[str]) -> Encoding:
     key = model or "cl100k_base"
     if key in _TOKENIZER_CACHE:
         return _TOKENIZER_CACHE[key]
@@ -40,8 +64,6 @@ def estimate_token_count(text: str, *, model: Optional[str] = None) -> int:
     if not text:
         return 0
     enc = _get_tokenizer(model)
-    if enc is None:
-        return max(1, len(text.split()))
     try:
         return len(enc.encode(text))  # type: ignore[attr-defined]
     except Exception:
@@ -95,3 +117,32 @@ def store_large_text(
         + tail
     )
     return preview
+
+
+def _is_within_directory(root: Path, candidate: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(root.resolve())
+    except Exception:
+        return False
+    return True
+
+
+def safe_extract(archive, members: Iterable[str], target: Path) -> None:
+    """Extract archive members while preventing path traversal."""
+
+    target = target.resolve()
+    for member in members:
+        if not member:
+            continue
+        destination = target / member
+        parent = destination.parent
+        if not _is_within_directory(target, parent):
+            raise ValueError(f"Blocked unsafe archive entry: {member}")
+        parent.mkdir(parents=True, exist_ok=True)
+        archive.extract(member, target)
+
+
+def safe_extractall(archive, target: Path) -> None:
+    """Safely extract the entire archive to ``target``."""
+
+    safe_extract(archive, archive.namelist(), target)
