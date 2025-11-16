@@ -28,3 +28,74 @@
 - Never commit the files created in `$XDG_CONFIG_HOME/polylogue/` (credentials, tokens).
 - The CLI guides users through supplying an OAuth client; ensure documentation reflects the XDG storage path.
 - Drive access errors should surface clear, actionable prompts.
+
+## Git Workflow (Important!)
+
+This project uses **merge commits with clean feature branches**. Before creating a PR:
+
+### 1. Clean Your Commits
+
+```bash
+# Interactive rebase to squash/fixup messy commits
+git rebase -i main
+
+# Turn this:
+#   - feat: add feature X
+#   - WIP trying something
+#   - fix typo
+#   - oops
+# Into this:
+#   - feat: add feature X
+#   - test: add tests for feature X
+```
+
+### 2. Use Conventional Commits
+
+Format: `type: description`
+
+**Types:** `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`
+
+**Examples:**
+```
+feat: add progress bars to sync operations
+fix: resolve JSONModeError in import commands
+test: add coverage for config validation
+docs: update README with new --json-lines flag
+```
+
+### 3. Include Co-Authored-By Trailer
+
+All AI-generated commits should include attribution:
+
+```
+feat: implement new feature
+
+Detailed description of what was done.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+```
+
+### 4. Update Branch With Rebase, Not Merge
+
+```bash
+# ✅ Correct - rebase on main
+git fetch origin
+git rebase origin/main
+
+# ❌ Wrong - creates merge commits in feature branch
+git merge main
+```
+
+### 5. Viewing History
+
+```bash
+# Clean view (daily use)
+git log --first-parent --oneline  # or: git lg
+
+# Full view (investigation)
+git log --graph --all --oneline   # or: git lga
+```
+
+See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for detailed Git workflow.
