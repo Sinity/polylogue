@@ -118,8 +118,27 @@ Generate a completion script with `polylogue completions --shell bash|zsh|fish` 
 - Collapsible callouts stay as Markdown blockquotes; open the generated `.html` preview for interactive folding when terminal renderers (e.g., `glow`) don’t support it.
 - Imported providers share the same Markdown pipeline, so chunk counts, token approximations, and attachment sniffing behave consistently across Gemini, ChatGPT, Claude, Claude Code, and Codex sources.
 
+## Contributing
+
+This project uses **merge commits with clean feature branches** to preserve complete history while maintaining readability.
+
+**Quick start:**
+1. Create a feature branch: `git checkout -b feature/my-feature`
+2. Make commits freely while developing (WIP commits are fine)
+3. **Before PR:** Clean commits with `git rebase -i main`
+4. Push and open PR
+
+**See [CONTRIBUTING.md](.github/CONTRIBUTING.md) for detailed Git workflow.**
+
+**Key points:**
+- Use conventional commit format: `feat:`, `fix:`, `test:`, `docs:`, etc.
+- Clean up WIP commits before opening PR
+- Update branch via `git rebase main`, not `git merge main`
+- View history cleanly with `git log --first-parent` (or use `git lg` alias from `.gitconfig`)
+
 ## Development Notes
 - Code follows PEP 8 with type hints where practical.
 - Run `pytest` for the automated test suite covering importers, sync flows, and HTML transforms.
 - Credentials (`credentials.json`, `token.json`) stay out of version control.
 - Run history lives in the SQLite database at `$XDG_STATE_HOME/polylogue/polylogue.db`; use `polylogue status --dump runs.json` (or `--dump -` for stdout) when you need a JSON export.
+- See [AGENTS.md](AGENTS.md) for AI agent development guidelines.
