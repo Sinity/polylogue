@@ -243,8 +243,9 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
     ui = env.ui
     console = ui.console
+    json_mode = getattr(args, "json", False)
     directory_input = Path(args.dir) if args.dir else DEFAULT_RENDER_OUT
-    directory = resolve_path(directory_input, PathPolicy.must_exist(), ui)
+    directory = resolve_path(directory_input, PathPolicy.must_exist(), ui, json_mode=json_mode)
     if not directory:
         raise SystemExit(1)
 

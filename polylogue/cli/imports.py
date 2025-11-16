@@ -237,9 +237,24 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
+    from .json_output import JSONModeError
+
     ui = env.ui
     console = ui.console
     export_path = Path(args.export_path)
+
+    # Validate export file exists
+    if not export_path.exists():
+        json_mode = getattr(args, "json", False)
+        if json_mode:
+            raise JSONModeError(
+                "file_not_found", f"Export file not found: {export_path}", path=str(export_path)
+            )
+        else:
+            console.print(f"[red]Error: Export file not found: {export_path}")
+            console.print(f"[dim]Check that the path is correct and the file exists.")
+            raise SystemExit(1)
+
     out_dir = Path(args.out) if args.out else DEFAULT_CHATGPT_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     settings = env.settings
@@ -251,9 +266,18 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
         try:
             entries = list_chatgpt_conversations(export_path)
         except Exception as exc:
-            console.print(f"[red]Failed to scan ChatGPT export: {exc}")
-            console.print("Hint: Ensure the export file is a valid ChatGPT conversations.json or .zip export")
-            raise SystemExit(1)
+            json_mode = getattr(args, "json", False)
+            if json_mode:
+                raise JSONModeError(
+                    "invalid_export",
+                    f"Failed to scan ChatGPT export: {exc}",
+                    path=str(export_path),
+                    hint="Ensure the export file is a valid ChatGPT conversations.json or .zip export",
+                )
+            else:
+                console.print(f"[red]Failed to scan ChatGPT export: {exc}")
+                console.print("Hint: Ensure the export file is a valid ChatGPT conversations.json or .zip export")
+                raise SystemExit(1)
         if not entries:
             console.print("No conversations found in export.")
             return
@@ -314,9 +338,24 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
+    from .json_output import JSONModeError
+
     ui = env.ui
     console = ui.console
     export_path = Path(args.export_path)
+
+    # Validate export file exists
+    if not export_path.exists():
+        json_mode = getattr(args, "json", False)
+        if json_mode:
+            raise JSONModeError(
+                "file_not_found", f"Export file not found: {export_path}", path=str(export_path)
+            )
+        else:
+            console.print(f"[red]Error: Export file not found: {export_path}")
+            console.print(f"[dim]Check that the path is correct and the file exists.")
+            raise SystemExit(1)
+
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_OUT
     collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     settings = env.settings
@@ -328,9 +367,18 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
         try:
             entries = list_claude_conversations(export_path)
         except Exception as exc:
-            console.print(f"[red]Failed to scan Claude export: {exc}")
-            console.print("Hint: Ensure the export file is a valid Claude conversations.json or .zip export")
-            raise SystemExit(1)
+            json_mode = getattr(args, "json", False)
+            if json_mode:
+                raise JSONModeError(
+                    "invalid_export",
+                    f"Failed to scan Claude export: {exc}",
+                    path=str(export_path),
+                    hint="Ensure the export file is a valid Claude conversations.json or .zip export",
+                )
+            else:
+                console.print(f"[red]Failed to scan Claude export: {exc}")
+                console.print("Hint: Ensure the export file is a valid Claude conversations.json or .zip export")
+                raise SystemExit(1)
         if not entries:
             console.print("No conversations found in export.")
             return
