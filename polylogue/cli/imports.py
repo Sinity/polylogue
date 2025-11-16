@@ -27,6 +27,7 @@ from .context import (
     DEFAULT_COLLAPSE,
     resolve_html_enabled,
 )
+from .json_output import safe_json_handler
 from .render import copy_import_to_clipboard
 from .summaries import summarize_import
 
@@ -164,6 +165,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         raise SystemExit(f"Unsupported provider for import: {provider}")
 
 
+@safe_json_handler
 def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     console = ui.console
@@ -236,6 +238,7 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
         copy_import_to_clipboard(ui, results)
 
 
+@safe_json_handler
 def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
     from .json_output import JSONModeError
 
@@ -337,6 +340,7 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
         copy_import_to_clipboard(ui, results)
 
 
+@safe_json_handler
 def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
     from .json_output import JSONModeError
 
@@ -437,6 +441,7 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
         copy_import_to_clipboard(ui, results)
 
 
+@safe_json_handler
 def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     console = ui.console
