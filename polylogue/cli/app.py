@@ -137,6 +137,10 @@ COMMAND_EXAMPLES = {
         ("Show environment paths", "polylogue env"),
         ("Get environment as JSON", "polylogue env --json"),
     ],
+    "config": [
+        ("Interactive setup wizard", "polylogue config init"),
+        ("Force re-initialization", "polylogue config init --force"),
+    ],
     "settings": [
         ("Show current settings", "polylogue settings"),
         ("Enable HTML previews", "polylogue settings --html on"),
@@ -932,6 +936,15 @@ def _dispatch_settings(args: argparse.Namespace, env: CommandEnv) -> None:
     run_settings_cli(args, env)
 
 
+def _dispatch_config(args: argparse.Namespace, env: CommandEnv) -> None:
+    config_cmd = getattr(args, "config_cmd", None)
+    if config_cmd == "init":
+        from .init import run_init_cli
+        run_init_cli(args, env)
+    else:
+        raise SystemExit("config requires a sub-command (init)")
+
+
 def _dispatch_status(args: argparse.Namespace, env: CommandEnv) -> None:
     run_status_cli(args, env)
 
@@ -976,6 +989,7 @@ def _register_default_commands() -> None:
     _ensure("prune", _dispatch_prune, "Remove legacy single-file outputs and attachments")
     _ensure("doctor", _dispatch_doctor, "Check local data directories for common issues")
     _ensure("status", _dispatch_status, "Show cached Drive info and recent runs")
+    _ensure("config", _dispatch_config, "Configure Polylogue settings")
     _ensure("settings", _dispatch_settings, "Show or update default preferences")
     _ensure("help", _dispatch_help, "Show command help")
     _ensure("env", _dispatch_env, "Show resolved configuration/output paths")
@@ -1180,6 +1194,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only emit the summary JSON without printing tables",
     )
+
+    p_config = sub.add_parser("config", help="Configuration commands", description="Configure Polylogue settings")
+    config_sub = p_config.add_subparsers(dest="config_cmd", required=True)
+
+    p_config_init = config_sub.add_parser("init", help="Interactive configuration setup", description="Interactive configuration setup wizard")
+    p_config_init.add_argument("--force", action="store_true", help="Overwrite existing configuration")
 
     p_env = sub.add_parser("env", help="Show resolved configuration and output paths", description="Show resolved configuration and output paths")
     p_env.add_argument("--json", action="store_true", help="Emit environment info as JSON")
