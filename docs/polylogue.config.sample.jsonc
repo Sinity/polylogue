@@ -1,0 +1,16 @@
+{
+  // Copy this file to ~/.polylogueconfig or $XDG_CONFIG_HOME/polylogue/config.json and adjust as needed.
+  "defaults": {
+    "collapse_threshold": 30,
+    "html_previews": true,
+    "html_theme": "dark",
+    "output_dirs": {
+      "render": "~/polylogue-data/render",
+      "sync_drive": "~/polylogue-data/sync-drive",
+      "sync_codex": "~/polylogue-data/codex",
+      "sync_claude_code": "~/polylogue-data/claude-code",
+      "import_chatgpt": "~/polylogue-data/chatgpt",
+      "import_claude": "~/polylogue-data/claude"
+    }
+  }
+}

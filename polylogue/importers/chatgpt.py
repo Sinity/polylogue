@@ -177,7 +177,10 @@ def import_chatgpt_export(
             raise FileNotFoundError("conversations.json missing in export")
         conversations = json.loads(convo_path.read_text(encoding="utf-8"))
         if not isinstance(conversations, list):
-            raise ValueError("Unexpected ChatGPT export format")
+            raise ValueError(
+                "Unexpected ChatGPT export format: conversations.json must contain a list. "
+                "Make sure you're using a valid ChatGPT export from the official export feature."
+            )
 
         output_dir.mkdir(parents=True, exist_ok=True)
         results: List[ImportResult] = []
@@ -212,7 +215,10 @@ def list_chatgpt_conversations(export_path: Path) -> List[Dict[str, Optional[str
             raise FileNotFoundError("conversations.json missing in export")
         conversations = json.loads(convo_path.read_text(encoding="utf-8"))
         if not isinstance(conversations, list):
-            raise ValueError("Unexpected ChatGPT export format")
+            raise ValueError(
+                "Unexpected ChatGPT export format: ZIP archive must contain a valid conversations.json file. "
+                "Make sure you're using an official ChatGPT export."
+            )
         results: List[Dict[str, Optional[str]]] = []
         for conv in conversations:
             results.append(
