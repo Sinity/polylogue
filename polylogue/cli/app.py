@@ -25,8 +25,7 @@ from ..commands import (
     status_command,
 )
 from ..drive_client import DEFAULT_FOLDER_NAME, DriveClient
-from ..importers.claude_code import DEFAULT_PROJECT_ROOT
-from ..options import BranchExploreOptions, SearchHit, SearchOptions, SyncOptions
+from ..options import BranchExploreOptions, SearchHit, SearchOptions
 from ..ui import create_ui
 from .completion_engine import CompletionEngine, Completion
 from .registry import CommandRegistry
@@ -43,14 +42,8 @@ from .arg_helpers import (
 )
 from .editor import open_in_editor, get_editor
 from .context import (
-    DEFAULT_CLAUDE_CODE_SYNC_OUT,
-    DEFAULT_CLAUDE_OUT,
-    DEFAULT_CODEX_SYNC_OUT,
-    DEFAULT_COLLAPSE,
     DEFAULT_OUTPUT_ROOTS,
-    DEFAULT_RENDER_OUT,
     DEFAULT_SYNC_OUT,
-    DEFAULT_CHATGPT_OUT,
     default_import_namespace,
     default_sync_namespace,
     resolve_html_settings,
