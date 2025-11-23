@@ -239,38 +239,52 @@ def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             console.print(f"Available commands: {available}")
             raise SystemExit(1)
 
-        if show_examples:
-            # Show examples for this command
-            examples = COMMAND_EXAMPLES.get(topic, [])
-            if not examples:
-                console.print(f"[yellow]No examples available for '{topic}'")
-                return
-
-            console.print(f"\n[bold cyan]{topic.upper()} EXAMPLES[/bold cyan]\n")
-            for desc, cmd in examples:
-                console.print(f"  [dim]# {desc}[/dim]")
-                console.print(f"  [green]$ {cmd}[/green]\n")
-            return
-
         console.print(f"[cyan]polylogue {topic}[/cyan]")
         subparser.print_help()
+
+        # Show examples inline for this command
+        examples = COMMAND_EXAMPLES.get(topic, [])
+        if examples:
+            console.print(f"\n[bold cyan]EXAMPLES[/bold cyan]\n")
+            # Show first 3 examples by default, all with --examples flag
+            display_examples = examples if show_examples else examples[:3]
+            for desc, cmd in display_examples:
+                console.print(f"  [dim]# {desc}[/dim]")
+                console.print(f"  [green]$ {cmd}[/green]\n")
+
+            if not show_examples and len(examples) > 3:
+                console.print(f"  [dim]# Run 'polylogue help {topic} --examples' to see {len(examples) - 3} more example(s)[/dim]")
         return
 
-    # No topic specified - show general help or all examples
-    if show_examples:
-        console.print("\n[bold cyan]POLYLOGUE USAGE EXAMPLES[/bold cyan]\n")
+    # No topic specified - show general help with examples
+    parser.print_help()
+    _print_command_listing(console, getattr(env.ui, "plain", False), entries)
+
+    # Show examples inline (optionally extended with --examples flag)
+    if not show_examples:
+        # Show abbreviated examples for key commands
+        console.print("\n[bold cyan]QUICK EXAMPLES[/bold cyan]")
+        console.print("[dim]Run 'polylogue help <command> --examples' for more examples per command.[/dim]\n")
+
+        key_commands = ["render", "sync", "import", "inspect", "watch"]
+        for cmd in key_commands:
+            if cmd not in COMMAND_EXAMPLES:
+                continue
+            examples = COMMAND_EXAMPLES[cmd]
+            if not examples:
+                continue
+            # Show just the first example for each key command
+            desc, cmdline = examples[0]
+            console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
+    else:
+        # Show full examples when --examples is specified
+        console.print("\n[bold cyan]USAGE EXAMPLES[/bold cyan]\n")
         for cmd in sorted(COMMAND_EXAMPLES.keys()):
             examples = COMMAND_EXAMPLES[cmd]
             console.print(f"[bold]{cmd}:[/bold]")
-            for desc, cmdline in examples[:2]:  # Show first 2 examples for each command
+            for desc, cmdline in examples:
                 console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
-            if len(examples) > 2:
-                console.print(f"  [dim](run 'polylogue help {cmd} --examples' for more)[/dim]")
             console.print()
-        return
-
-    parser.print_help()
-    _print_command_listing(console, getattr(env.ui, "plain", False), entries)
 
 
 def _completion_script(shell: str, commands: List[str], descriptions: Optional[Dict[str, str]] = None) -> str:
