@@ -11,16 +11,14 @@ def run_maintain_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     from .app import run_prune_cli, run_doctor_cli
     from .index_cli import run_index_cli
 
-    maintain_cmd = getattr(args, "maintain_cmd", None)
+    maintain_cmd = args.maintain_cmd  # required=True enforced by argparse
 
     if maintain_cmd == "prune":
         run_prune_cli(args, env)
     elif maintain_cmd == "doctor":
         run_doctor_cli(args, env)
-    elif maintain_cmd == "index":
+    else:  # index
         run_index_cli(args, env)
-    else:
-        raise SystemExit("maintain requires a subcommand: prune, doctor, index")
 
 
 __all__ = ["run_maintain_cli"]
