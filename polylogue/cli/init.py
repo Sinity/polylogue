@@ -8,6 +8,7 @@ from typing import Optional
 
 from ..settings import Settings, persist_settings, SETTINGS_PATH
 from ..commands import CommandEnv
+from ..drive_client import DriveClient
 
 
 def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -17,6 +18,8 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     - Output directory setup
     - HTML preview preferences
     - Theme selection
+    - Collapse threshold configuration
+    - Google Drive credentials setup (optional)
     - Directory creation
 
     Args:
@@ -79,8 +82,48 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         theme = "dark"
         console.print("  Using default: dark")
 
+    # Step 4: Collapse threshold
+    console.print(f"\n[bold]Collapse Threshold[/bold]")
+    console.print("How many lines before long outputs are collapsed?")
+
+    if not ui.plain:
+        collapse_input = ui.input("  [25]: ", default="25")
+        try:
+            collapse_threshold = int(collapse_input) if collapse_input else 25
+        except ValueError:
+            collapse_threshold = 25
+            console.print("  [yellow]Invalid number, using default: 25")
+    else:
+        collapse_threshold = 25
+        console.print("  Using default: 25")
+
+    # Step 5: Drive credentials (optional)
+    drive_setup = False
+    console.print(f"\n[bold]Google Drive Integration[/bold]")
+    console.print("Set up Drive credentials now for syncing conversations from Google Drive?")
+    console.print("[dim](You can skip this and set up later if needed)[/dim]")
+
+    if not ui.plain:
+        drive_setup = ui.confirm("  Set up Drive credentials?", default=False)
+    else:
+        console.print("  Skipping in plain mode (run 'polylogue sync drive' later to set up)")
+
+    if drive_setup:
+        try:
+            drive_client = DriveClient(ui)
+            drive_client.ensure_credentials()
+            console.print("[green]✓ Drive credentials configured")
+        except (SystemExit, KeyboardInterrupt):
+            console.print("[yellow]Drive setup skipped")
+        except Exception as e:
+            console.print(f"[yellow]Drive setup failed: {e}")
+
     # Save settings
-    settings = Settings(html_previews=html_enabled, html_theme=theme)
+    settings = Settings(
+        html_previews=html_enabled,
+        html_theme=theme,
+        collapse_threshold=collapse_threshold
+    )
     persist_settings(settings)
 
     # Create output directory
@@ -97,9 +140,15 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     console.print(f"  Output directory: [cyan]{output_dir}[/cyan]")
     console.print(f"  HTML previews: [cyan]{'enabled' if html_enabled else 'disabled'}[/cyan]")
     console.print(f"  Theme: [cyan]{theme}[/cyan]")
+    console.print(f"  Collapse threshold: [cyan]{collapse_threshold}[/cyan]")
+    if drive_setup:
+        console.print(f"  Drive credentials: [cyan]configured[/cyan]")
 
     console.print(f"\n[bold]Next steps:[/bold]")
-    console.print("  [green]polylogue help --examples[/green]     # See usage examples")
-    console.print("  [green]polylogue import chatgpt FILE[/green] # Import ChatGPT export")
-    console.print("  [green]polylogue sync codex[/green]          # Sync Codex sessions")
+    console.print("  [green]polylogue help[/green]                 # See commands and examples")
+    console.print("  [green]polylogue search 'query'[/green]       # Search transcripts")
+    console.print("  [green]polylogue import chatgpt FILE[/green]  # Import ChatGPT export")
+    console.print("  [green]polylogue sync codex[/green]           # Sync Codex sessions")
+    if drive_setup:
+        console.print("  [green]polylogue sync drive[/green]           # Sync from Google Drive")
     console.print()
