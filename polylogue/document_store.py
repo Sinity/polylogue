@@ -192,8 +192,7 @@ def persist_document(
     allow_dirty: bool = False,
     registrar: ConversationRegistrar,
 ) -> DocumentPersistenceResult:
-    if registrar is None:
-        raise ValueError("ConversationRegistrar instance required")
+    # registrar is a required parameter (not Optional), so no None check needed
     if slug_hint:
         slug = slug_hint
     elif provider and conversation_id:

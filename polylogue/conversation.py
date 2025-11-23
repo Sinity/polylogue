@@ -64,8 +64,9 @@ def _adjust_links_for_base(
         for name, link in links:
             if isinstance(link, Path):
                 try:
-                    rel = link if link.is_absolute() else link
-                    if not rel.is_absolute():
+                    if link.is_absolute():
+                        rel = link
+                    else:
                         rel = Path(os.path.relpath((markdown_dir / link).resolve(), base_path.resolve()))
                     adjusted_links.append((name, rel))
                 except Exception:
