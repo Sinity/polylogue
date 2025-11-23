@@ -44,8 +44,8 @@ def _run_watch_sessions(
     base_dir.mkdir(parents=True, exist_ok=True)
     out_dir = resolve_output_path(args.out, provider.default_output)
     out_dir.mkdir(parents=True, exist_ok=True)
-    collapse = resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE)
     settings = env.settings
+    collapse = resolve_collapse_value(args.collapse_threshold, settings)
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     debounce = max(0.5, args.debounce)
