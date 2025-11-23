@@ -2,9 +2,36 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+
+
+@dataclass
+class DocumentMetadata:
+    """Metadata for document persistence operations."""
+
+    provider: Optional[str] = None
+    conversation_id: Optional[str] = None
+    title: str = ""
+    updated_at: Optional[str] = None
+    created_at: Optional[str] = None
+    slug_hint: Optional[str] = None
+    id_hint: Optional[str] = None
+    extra_state: Optional[Dict[str, Any]] = field(default_factory=lambda: None)
+
+
+@dataclass
+class PersistenceOptions:
+    """Options controlling document persistence behavior."""
+
+    collapse_threshold: int = 25
+    html: bool = False
+    html_theme: Optional[str] = None
+    attachment_policy: Optional[Dict[str, Any]] = field(default_factory=lambda: None)
+    force: bool = False
+    allow_dirty: bool = False
+
 
 try:
     import frontmatter  # type: ignore
