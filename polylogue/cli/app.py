@@ -1001,26 +1001,42 @@ def _register_default_commands() -> None:
     if _REGISTRATION_COMPLETE:
         return
 
-    def _ensure(name: str, handler: Callable[[argparse.Namespace, CommandEnv], None], help_text: str) -> None:
+    def _ensure(
+        name: str,
+        handler: Callable[[argparse.Namespace, CommandEnv], None],
+        help_text: str,
+        aliases: Optional[List[str]] = None
+    ) -> None:
         if COMMAND_REGISTRY.resolve(name) is None:
-            COMMAND_REGISTRY.register(name, handler, help_text=help_text)
+            COMMAND_REGISTRY.register(name, handler, help_text=help_text, aliases=aliases or [])
 
-    _ensure("render", _dispatch_render, "Render local provider JSON logs")
-    _ensure("sync", _dispatch_sync, "Synchronize provider archives")
-    _ensure("import", _dispatch_import, "Import provider exports into the archive")
-    _ensure("inspect", _dispatch_inspect, "Inspect existing archives and stats")
-    _ensure("watch", _dispatch_watch, "Watch local session stores and sync on changes")
-    _ensure("prune", _dispatch_prune, "Remove legacy single-file outputs and attachments")
-    _ensure("doctor", _dispatch_doctor, "Check local data directories for common issues")
-    _ensure("status", _dispatch_status, "Show cached Drive info and recent runs")
-    _ensure("dashboards", _dispatch_dashboards, "Show provider dashboards")
-    _ensure("runs", lambda args, env: run_runs_cli(args, env), "List recent runs")
+    # Core workflow commands with ergonomic aliases
+    _ensure("render", _dispatch_render, "Render local provider JSON logs", ["r"])
+    _ensure("sync", _dispatch_sync, "Synchronize provider archives", ["s"])
+    _ensure("import", _dispatch_import, "Import provider exports into the archive", ["i", "imp"])
+    _ensure("watch", _dispatch_watch, "Watch local session stores and sync on changes", ["w"])
+
+    # Inspection & analysis
+    _ensure("inspect", _dispatch_inspect, "Inspect existing archives and stats", ["x"])
+
+    # Management & diagnostics
+    _ensure("prune", _dispatch_prune, "Remove legacy single-file outputs and attachments", ["clean"])
+    _ensure("doctor", _dispatch_doctor, "Check local data directories for common issues", ["check", "validate"])
+    _ensure("status", _dispatch_status, "Show cached Drive info and recent runs", ["st"])
+    _ensure("dashboards", _dispatch_dashboards, "Show provider dashboards", ["dash", "d"])
+    _ensure("runs", lambda args, env: run_runs_cli(args, env), "List recent runs", ["history", "h"])
+
+    # Configuration
     _ensure("index", lambda args, env: run_index_cli(args, env), "Index maintenance helpers")
-    _ensure("config", _dispatch_config, "Configure Polylogue settings")
+    _ensure("config", _dispatch_config, "Configure Polylogue settings", ["cfg"])
     _ensure("settings", _dispatch_settings, "Show or update default preferences")
-    _ensure("help", _dispatch_help, "Show command help")
-    _ensure("env", _dispatch_env, "Show resolved configuration/output paths")
+
+    # Support
+    _ensure("help", _dispatch_help, "Show command help", ["?"])
+    _ensure("env", _dispatch_env, "Show resolved configuration/output paths", ["e"])
     _ensure("completions", _dispatch_completions, "Emit shell completion script")
+
+    # Internal (no aliases needed)
     _ensure("_complete", _dispatch_complete, "Internal completion helper")
     _ensure("_search-preview", _dispatch_search_preview, "Internal search preview helper")
 
