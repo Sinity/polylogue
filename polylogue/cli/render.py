@@ -32,11 +32,11 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         console.print("No JSON files to render")
         return
     output = resolve_output_path(args.out, DEFAULT_RENDER_OUT)
-    collapse = resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE)
+    settings = env.settings
+    collapse = resolve_collapse_value(args.collapse_threshold, settings)
     download_attachments = not args.links_only
     if not ui.plain and not args.links_only:
         download_attachments = ui.confirm("Download attachments to local folders?", default=True)
-    settings = env.settings
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     options = RenderOptions(
