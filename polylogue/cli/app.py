@@ -1015,11 +1015,6 @@ def _register_default_commands() -> None:
 def build_parser() -> argparse.ArgumentParser:
     _register_default_commands()
     parser = argparse.ArgumentParser(description="Polylogue CLI", formatter_class=PARSER_FORMATTER)
-    parser.add_argument(
-        "--interactive",
-        action="store_true",
-        help="Force interactive UI even when stdout/stderr are not TTYs",
-    )
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose debug output")
     sub = parser.add_subparsers(dest="cmd")
 
@@ -1250,8 +1245,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
-    interactive = bool(getattr(args, "interactive", False))
-    plain_mode = _should_use_plain(force_interactive=interactive)
+    plain_mode = _should_use_plain(force_interactive=False)
     ui = create_ui(plain_mode)
     env = CommandEnv(ui=ui)
     ensure_settings_defaults(env.settings)
