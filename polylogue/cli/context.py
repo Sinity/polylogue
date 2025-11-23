@@ -122,7 +122,19 @@ def resolve_output_path(path_value: Optional[str], fallback: Path) -> Path:
     return fallback
 
 
-def resolve_collapse_value(value: Optional[int], default: int) -> int:
+def resolve_collapse_value(value: Optional[int], settings: Optional[Settings] = None) -> int:
+    """Resolve collapse threshold from args, settings, then CONFIG.
+
+    Priority order:
+    1. Explicit command-line argument
+    2. User settings (from 'polylogue settings --collapse-threshold')
+    3. CONFIG defaults
+    """
     if isinstance(value, int) and value > 0:
         return value
-    return default
+
+    active = _resolve_settings(settings)
+    if active.collapse_threshold is not None and active.collapse_threshold > 0:
+        return active.collapse_threshold
+
+    return DEFAULT_COLLAPSE

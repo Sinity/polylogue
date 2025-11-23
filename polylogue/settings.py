@@ -13,6 +13,7 @@ from .paths import CONFIG_HOME
 class Settings:
     html_previews: bool = False
     html_theme: str = "light"
+    collapse_threshold: Optional[int] = None
 
 
 SETTINGS = Settings()
@@ -23,6 +24,7 @@ def reset_settings(settings: Optional[Settings] = None) -> Settings:
     target = settings or SETTINGS
     target.html_previews = False
     target.html_theme = "light"
+    target.collapse_threshold = None
     return target
 
 
@@ -37,7 +39,10 @@ def _load_settings_file(path: Path) -> Optional[Settings]:
     theme = data.get("html_theme") or data.get("theme") or "light"
     if theme not in {"light", "dark"}:
         theme = "light"
-    return Settings(html_previews=html, html_theme=theme)
+    collapse = data.get("collapse_threshold")
+    if collapse is not None:
+        collapse = int(collapse) if isinstance(collapse, (int, float, str)) and int(collapse) > 0 else None
+    return Settings(html_previews=html, html_theme=theme, collapse_threshold=collapse)
 
 
 def load_persisted_settings() -> Optional[Settings]:
@@ -46,7 +51,12 @@ def load_persisted_settings() -> Optional[Settings]:
 
 def persist_settings(settings: Settings) -> None:
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"html_previews": settings.html_previews, "html_theme": settings.html_theme}
+    payload = {
+        "html_previews": settings.html_previews,
+        "html_theme": settings.html_theme,
+    }
+    if settings.collapse_threshold is not None:
+        payload["collapse_threshold"] = settings.collapse_threshold
     SETTINGS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
@@ -61,8 +71,11 @@ def ensure_settings_defaults(settings: Optional[Settings] = None) -> Settings:
     target = settings or SETTINGS
     target.html_previews = CONFIG.defaults.html_previews
     target.html_theme = CONFIG.defaults.html_theme
+    target.collapse_threshold = CONFIG.defaults.collapse_threshold
     stored = load_persisted_settings()
     if stored:
         target.html_previews = stored.html_previews
         target.html_theme = stored.html_theme
+        if stored.collapse_threshold is not None:
+            target.collapse_threshold = stored.collapse_threshold
     return target
