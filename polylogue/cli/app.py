@@ -1330,6 +1330,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_settings_cmd = _add_command_parser(sub, "settings", help="Show or update Polylogue defaults", description="Show or update Polylogue defaults")
     p_settings_cmd.add_argument("--html", choices=["on", "off"], default=None, help="Enable or disable default HTML previews")
     p_settings_cmd.add_argument("--theme", choices=["light", "dark"], default=None, help="Set the default HTML theme")
+    p_settings_cmd.add_argument("--collapse-threshold", type=int, default=None, help="Set the default collapse threshold for long outputs")
     p_settings_cmd.add_argument("--reset", action="store_true", help="Reset to config defaults")
     p_settings_cmd.add_argument("--json", action="store_true", help="Emit settings as JSON")
 

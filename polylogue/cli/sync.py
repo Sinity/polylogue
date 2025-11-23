@@ -151,7 +151,7 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         folder_name=args.folder_name,
         folder_id=args.folder_id,
         output_dir=resolve_output_path(args.out, DEFAULT_SYNC_OUT),
-        collapse_threshold=resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE),
+        collapse_threshold=resolve_collapse_value(args.collapse_threshold, settings),
         download_attachments=download_attachments,
         dry_run=args.dry_run,
         force=args.force,
@@ -270,8 +270,8 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
         raise SystemExit(f"{provider.title} does not support --diff output")
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base.expanduser()
     out_dir = resolve_output_path(args.out, provider.default_output)
-    collapse = resolve_collapse_value(args.collapse_threshold, DEFAULT_COLLAPSE)
     settings = env.settings
+    collapse = resolve_collapse_value(args.collapse_threshold, settings)
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     force = args.force
