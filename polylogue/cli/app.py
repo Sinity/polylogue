@@ -409,31 +409,31 @@ def run_prune_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     total_candidates = 0
     total_removed = 0
 
+    # Collect all legacy paths first
+    all_legacy: List[Tuple[Path, Path]] = []  # (root, legacy_path)
     for root in unique_roots:
         if not root.exists():
             continue
         legacy = _legacy_candidates(root)
-        if not legacy:
-            continue
-        total_candidates += len(legacy)
-        if dry_run:
-            ui.console.print(f"[yellow][dry-run] Would prune {len(legacy)} path(s) in {root}")
-            for path in legacy:
-                ui.console.print(f"  rm {'-r ' if path.is_dir() else ''}{path}")
-            continue
-        removed_here = 0
         for path in legacy:
-            try:
-                if path.is_dir():
-                    shutil.rmtree(path)
-                else:
-                    path.unlink()
-                removed_here += 1
-            except Exception as exc:
-                ui.console.print(f"[red]Failed to remove {path}: {exc}")
-        if removed_here:
-            ui.console.print(f"[green]Pruned {removed_here} legacy path(s) in {root}")
-            total_removed += removed_here
+            all_legacy.append((root, path))
+        total_candidates += len(legacy)
+
+    if dry_run:
+        for root, path in all_legacy:
+            ui.console.print(f"[yellow][dry-run] Would prune: {path}")
+    else:
+        with ui.progress("Pruning legacy files", total=len(all_legacy)) as tracker:
+            for root, path in all_legacy:
+                try:
+                    if path.is_dir():
+                        shutil.rmtree(path)
+                    else:
+                        path.unlink()
+                    total_removed += 1
+                except Exception as exc:
+                    ui.console.print(f"[red]Failed to remove {path}: {exc}")
+                tracker.advance()
 
     summary_lines = [
         f"Roots scanned: {len(unique_roots)}",
