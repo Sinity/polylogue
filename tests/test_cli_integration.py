@@ -38,10 +38,11 @@ def _configure_isolated_state(monkeypatch, root: Path) -> None:
     monkeypatch.setattr(paths_module, "CACHE_HOME", cache_home, raising=False)
 
 
-def test_cli_inspect_search_runs_without_name_error(monkeypatch, tmp_path, capsys):
+def test_cli_search_runs_without_name_error(monkeypatch, tmp_path, capsys):
+    """Test search command handles missing results gracefully (updated from inspect search)."""
     _configure_isolated_state(monkeypatch, tmp_path)
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-    monkeypatch.setattr(sys, "argv", ["polylogue", "inspect", "search", "missing"])
+    monkeypatch.setattr(sys, "argv", ["polylogue", "search", "missing"])
 
     main()
 

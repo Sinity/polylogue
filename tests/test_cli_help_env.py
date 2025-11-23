@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from polylogue.cli.app import run_env_cli, run_help_cli, run_completions_cli, run_complete_cli
+from polylogue.cli.app import run_help_cli, run_completions_cli, run_complete_cli, _run_config_show
 from polylogue.cli import CommandEnv
 
 
@@ -51,10 +51,11 @@ def test_help_lists_command_descriptions():
 
 
 def test_env_json(capsys):
+    """Test config show --json (renamed from env --json)."""
     env = CommandEnv(ui=DummyUI())
-    run_env_cli(argparse.Namespace(json=True), env)
+    _run_config_show(argparse.Namespace(json=True), env)
     parsed = json.loads(capsys.readouterr().out)
-    assert "outputDirs" in parsed
+    assert "output_dirs" in parsed
     assert "statePath" in parsed
 
 
@@ -74,10 +75,14 @@ def test_fish_completions_include_descriptions(capsys):
 
 
 def test_complete_top_level(capsys):
+    """Test top-level command completion (should include new consolidated commands)."""
     env = CommandEnv(ui=DummyUI())
     run_complete_cli(argparse.Namespace(shell="zsh", cword=1, words=["polylogue", ""]))
     lines = capsys.readouterr().out.strip().splitlines()
-    assert any(line.startswith("render") for line in lines)
+    # Check for new consolidated commands
+    assert any(line.startswith("browse") for line in lines)
+    assert any(line.startswith("maintain") for line in lines)
+    assert any(line.startswith("config") for line in lines)
 
 
 def test_complete_sync_provider(capsys):
