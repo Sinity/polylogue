@@ -102,6 +102,8 @@ COMMAND_EXAMPLES = {
         ("Sync Codex sessions with preview", "polylogue sync codex --dry-run"),
         ("Sync Claude Code with diff tracking", "polylogue sync claude-code --diff"),
         ("Sync and prune deleted chats", "polylogue sync drive --all --prune"),
+        ("Watch Codex and auto-sync", "polylogue sync codex --watch"),
+        ("Watch Claude Code with HTML", "polylogue sync claude-code --watch --html on"),
     ],
     "import": [
         ("Import ChatGPT export", "polylogue import chatgpt export.zip --html on"),
@@ -123,13 +125,7 @@ COMMAND_EXAMPLES = {
         ("Get stats with time filter", "polylogue browse stats --since 2024-01-01 --until 2024-12-31"),
         ("Show status overview", "polylogue browse status"),
         ("Watch status continuously", "polylogue browse status --watch"),
-        ("Show provider dashboards", "polylogue browse dashboards"),
         ("List recent runs", "polylogue browse runs --limit 20"),
-    ],
-    "watch": [
-        ("Watch Codex sessions", "polylogue watch codex"),
-        ("Watch Claude Code with HTML", "polylogue watch claude-code --html on"),
-        ("One-shot watch run", "polylogue watch chatgpt --once"),
     ],
     "maintain": [
         ("Preview prune operation", "polylogue maintain prune --dry-run"),
@@ -857,7 +853,15 @@ def run_search_preview(args: argparse.Namespace) -> None:
 
 
 def _dispatch_sync(args: argparse.Namespace, env: CommandEnv) -> None:
-    run_sync_cli(args, env)
+    if getattr(args, "watch", False):
+        # Validate provider supports watch mode
+        from ..local_sync import get_local_provider
+        provider = get_local_provider(args.provider)
+        if not provider.supports_watch:
+            raise SystemExit(f"{provider.title} does not support watch mode (use --watch with codex, claude-code, or chatgpt)")
+        run_watch_cli(args, env)
+    else:
+        run_sync_cli(args, env)
 
 
 def _dispatch_import(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -867,10 +871,6 @@ def _dispatch_import(args: argparse.Namespace, env: CommandEnv) -> None:
 def _dispatch_search(args: argparse.Namespace, env: CommandEnv) -> None:
     """Search rendered transcripts."""
     run_inspect_search(args, env)
-
-
-def _dispatch_watch(args: argparse.Namespace, env: CommandEnv) -> None:
-    run_watch_cli(args, env)
 
 
 def _dispatch_config(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -990,11 +990,10 @@ def _register_default_commands() -> None:
     # Core workflow commands (data ingestion & exploration)
     _ensure("search", _dispatch_search, "Search rendered transcripts", ["find", "f"])
     _ensure("import", _dispatch_import, "Import provider exports", ["i"])
-    _ensure("sync", _dispatch_sync, "Sync provider archives", ["s"])
-    _ensure("watch", _dispatch_watch, "Watch and auto-sync", ["w"])
+    _ensure("sync", _dispatch_sync, "Sync provider archives (use --watch for continuous mode)", ["s"])
 
     # Exploration
-    _ensure("browse", _dispatch_browse, "Browse data (branches/stats/status/dashboards/runs)", ["b"])
+    _ensure("browse", _dispatch_browse, "Browse data (branches/stats/status/runs)", ["b"])
 
     # Maintenance
     _ensure("maintain", _dispatch_maintain, "System maintenance (prune/doctor/index)", ["m"])
@@ -1072,6 +1071,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--until", type=str, default=None, help="Only include Drive chats updated on/before this timestamp")
     p_sync.add_argument("--name-filter", type=str, default=None, help="Regex filter for Drive chat names")
     p_sync.add_argument("--list-only", action="store_true", help="List Drive chats without syncing")
+    # Watch mode flags (local providers only)
+    p_sync.add_argument("--watch", action="store_true", help="Watch for changes and sync continuously (local providers only)")
+    p_sync.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs in watch mode (default: 2.0)")
+    p_sync.add_argument("--once", action="store_true", help="In watch mode, run a single sync pass and exit")
 
     # Core workflow: import
     p_import = _add_command_parser(sub, "import", help="Import provider exports", description="Import provider exports")
@@ -1159,10 +1162,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Only emit the summary JSON without printing tables",
     )
 
-    p_browse_dashboards = _add_command_parser(browse_sub, "dashboards", help="Show provider dashboards", description="Rich dashboard of provider stats and recent runs")
-    p_browse_dashboards.add_argument("--runs-limit", type=int, default=10, help="Number of recent runs to show")
-    p_browse_dashboards.add_argument("--json", action="store_true", help="Emit dashboard data as JSON")
-
     p_browse_runs = _add_command_parser(browse_sub, "runs", help="List recent runs", description="List run history with filters")
     p_browse_runs.add_argument("--limit", type=int, default=50, help="Number of runs to display")
     p_browse_runs.add_argument("--providers", type=str, default=None, help="Comma-separated provider filter")
@@ -1170,16 +1169,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_browse_runs.add_argument("--since", type=str, default=None, help="Only include runs on/after this timestamp (YYYY-MM-DD or ISO)")
     p_browse_runs.add_argument("--until", type=str, default=None, help="Only include runs on/before this timestamp")
     p_browse_runs.add_argument("--json", action="store_true", help="Emit runs as JSON")
-
-    p_watch = _add_command_parser(sub, "watch", help="Watch local session stores and sync on changes", description="Watch local session stores and sync on changes")
-    p_watch.add_argument("provider", choices=list(WATCHABLE_LOCAL_PROVIDER_NAMES), help="Local provider to watch")
-    p_watch.add_argument("--base-dir", type=Path, default=None, help="Override source directory")
-    add_out_option(p_watch, default_path=Path("(provider-specific)"), help_text="Override output directory")
-    add_collapse_option(p_watch)
-    add_html_option(p_watch, description="HTML preview mode while watching: on/off/auto (default auto)")
-    add_dry_run_option(p_watch)
-    p_watch.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
-    p_watch.add_argument("--once", action="store_true", help="Run a single sync pass and exit")
 
     p_search = _add_command_parser(sub, "search", help="Search rendered transcripts", description="Search rendered transcripts")
     p_search.add_argument("query", type=str, help="FTS search query (SQLite syntax)")
