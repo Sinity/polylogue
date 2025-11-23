@@ -126,6 +126,13 @@ COMMAND_EXAMPLES = {
         ("Import all from Claude export", "polylogue import claude conversations.zip --all"),
         ("Preview import without writing", "polylogue import codex session.jsonl --dry-run"),
     ],
+    "search": [
+        ("Search for term", "polylogue search 'error handling'"),
+        ("Search with filters", "polylogue search 'API' --provider chatgpt --since 2024-01-01"),
+        ("Search with limit", "polylogue search 'authentication' --limit 10"),
+        ("Search and open in editor", "polylogue search 'TODO' --limit 1 --open"),
+        ("Search with attachment filter", "polylogue search 'diagram' --with-attachments"),
+    ],
     "inspect": [
         ("Search for term", "polylogue inspect search 'error handling'"),
         ("Search with filters", "polylogue inspect search 'API' --provider chatgpt --since 2024-01-01"),
@@ -266,7 +273,7 @@ def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         console.print("\n[bold cyan]QUICK EXAMPLES[/bold cyan]")
         console.print("[dim]Run 'polylogue help <command> --examples' for more examples per command.[/dim]\n")
 
-        key_commands = ["render", "sync", "import", "inspect", "watch"]
+        key_commands = ["render", "sync", "import", "search", "watch"]
         for cmd in key_commands:
             if cmd not in COMMAND_EXAMPLES:
                 continue
@@ -952,6 +959,11 @@ def _dispatch_inspect(args: argparse.Namespace, env: CommandEnv) -> None:
         raise SystemExit("inspect requires a sub-command (branches, search, stats)")
 
 
+def _dispatch_search(args: argparse.Namespace, env: CommandEnv) -> None:
+    """Top-level search dispatcher (same as inspect.search)."""
+    run_inspect_search(args, env)
+
+
 def _dispatch_watch(args: argparse.Namespace, env: CommandEnv) -> None:
     run_watch_cli(args, env)
 
@@ -1029,6 +1041,7 @@ def _register_default_commands() -> None:
     _ensure("sync", _dispatch_sync, "Synchronize provider archives", ["s"])
     _ensure("import", _dispatch_import, "Import provider exports into the archive", ["i", "imp"])
     _ensure("watch", _dispatch_watch, "Watch local session stores and sync on changes", ["w"])
+    _ensure("search", _dispatch_search, "Search rendered transcripts", ["find", "f"])
 
     # Inspection & analysis
     _ensure("inspect", _dispatch_inspect, "Inspect existing archives and stats", ["x"])
@@ -1208,6 +1221,23 @@ def build_parser() -> argparse.ArgumentParser:
     add_dry_run_option(p_watch)
     p_watch.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
     p_watch.add_argument("--once", action="store_true", help="Run a single sync pass and exit")
+
+    p_search = _add_command_parser(sub, "search", help="Search rendered transcripts", description="Search rendered transcripts (also available as 'inspect search')")
+    p_search.add_argument("query", type=str, help="FTS search query (SQLite syntax)")
+    p_search.add_argument("--limit", type=int, default=20, help="Maximum number of hits to return")
+    p_search.add_argument("--provider", type=str, default=None, help="Filter by provider slug")
+    p_search.add_argument("--slug", type=str, default=None, help="Filter by conversation slug")
+    p_search.add_argument("--conversation-id", type=str, default=None, help="Filter by provider conversation id")
+    p_search.add_argument("--branch", type=str, default=None, help="Restrict to a single branch ID")
+    p_search.add_argument("--model", type=str, default=None, help="Filter by source model when recorded")
+    p_search.add_argument("--since", type=str, default=None, help="Only include messages on/after this timestamp")
+    p_search.add_argument("--until", type=str, default=None, help="Only include messages on/before this timestamp")
+    search_attachment_group = p_search.add_mutually_exclusive_group()
+    search_attachment_group.add_argument("--with-attachments", action="store_true", help="Limit to messages with extracted attachments")
+    search_attachment_group.add_argument("--without-attachments", action="store_true", help="Limit to messages without attachments")
+    p_search.add_argument("--no-picker", action="store_true", help="Skip skim picker preview even when interactive")
+    p_search.add_argument("--json", action="store_true", help="Emit machine-readable search results")
+    p_search.add_argument("--open", action="store_true", help="Open result file in $EDITOR after search")
 
     p_prune = _add_command_parser(sub, "prune", help="Remove legacy single-file outputs and attachments", description="Remove legacy single-file outputs and attachments")
     p_prune.add_argument(
