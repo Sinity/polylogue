@@ -134,8 +134,6 @@ COMMAND_EXAMPLES = {
         ("Search with attachment filter", "polylogue search 'diagram' --with-attachments"),
     ],
     "inspect": [
-        ("Search for term", "polylogue inspect search 'error handling'"),
-        ("Search with filters", "polylogue inspect search 'API' --provider chatgpt --since 2024-01-01"),
         ("Browse branch graph", "polylogue inspect branches --provider claude"),
         ("View stats", "polylogue inspect stats --provider chatgpt"),
         ("Get stats with time filter", "polylogue inspect stats --since 2024-01-01 --until 2024-12-31"),
@@ -233,7 +231,6 @@ def _legacy_candidates(root: Path) -> List[Path]:
 def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     parser = build_parser()
     topic = getattr(args, "topic", None)
-    show_examples = getattr(args, "examples", False)
     entries = _command_entries(parser)
     choices = {name: sub for name, sub in _collect_subparser_map(parser).items() if not name.startswith("_")}
     console = env.ui.console
@@ -249,49 +246,32 @@ def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         console.print(f"[cyan]polylogue {topic}[/cyan]")
         subparser.print_help()
 
-        # Show examples inline for this command
+        # Show all examples for this command
         examples = COMMAND_EXAMPLES.get(topic, [])
         if examples:
             console.print(f"\n[bold cyan]EXAMPLES[/bold cyan]\n")
-            # Show first 3 examples by default, all with --examples flag
-            display_examples = examples if show_examples else examples[:3]
-            for desc, cmd in display_examples:
+            for desc, cmd in examples:
                 console.print(f"  [dim]# {desc}[/dim]")
                 console.print(f"  [green]$ {cmd}[/green]\n")
-
-            if not show_examples and len(examples) > 3:
-                console.print(f"  [dim]# Run 'polylogue help {topic} --examples' to see {len(examples) - 3} more example(s)[/dim]")
         return
 
-    # No topic specified - show general help with examples
+    # No topic specified - show general help with quick examples
     parser.print_help()
     _print_command_listing(console, getattr(env.ui, "plain", False), entries)
 
-    # Show examples inline (optionally extended with --examples flag)
-    if not show_examples:
-        # Show abbreviated examples for key commands
-        console.print("\n[bold cyan]QUICK EXAMPLES[/bold cyan]")
-        console.print("[dim]Run 'polylogue help <command> --examples' for more examples per command.[/dim]\n")
+    console.print("\n[bold cyan]QUICK EXAMPLES[/bold cyan]")
+    console.print("[dim]Run 'polylogue help <command>' for full examples and details.[/dim]\n")
 
-        key_commands = ["render", "sync", "import", "search", "watch"]
-        for cmd in key_commands:
-            if cmd not in COMMAND_EXAMPLES:
-                continue
-            examples = COMMAND_EXAMPLES[cmd]
-            if not examples:
-                continue
-            # Show just the first example for each key command
-            desc, cmdline = examples[0]
-            console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
-    else:
-        # Show full examples when --examples is specified
-        console.print("\n[bold cyan]USAGE EXAMPLES[/bold cyan]\n")
-        for cmd in sorted(COMMAND_EXAMPLES.keys()):
-            examples = COMMAND_EXAMPLES[cmd]
-            console.print(f"[bold]{cmd}:[/bold]")
-            for desc, cmdline in examples:
-                console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
-            console.print()
+    key_commands = ["render", "sync", "import", "search", "watch"]
+    for cmd in key_commands:
+        if cmd not in COMMAND_EXAMPLES:
+            continue
+        examples = COMMAND_EXAMPLES[cmd]
+        if not examples:
+            continue
+        # Show first example for each key command
+        desc, cmdline = examples[0]
+        console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
 
 
 def _completion_script(shell: str, commands: List[str], descriptions: Optional[Dict[str, str]] = None) -> str:
@@ -951,16 +931,14 @@ def _dispatch_inspect(args: argparse.Namespace, env: CommandEnv) -> None:
     inspect_cmd = getattr(args, "inspect_cmd", None)
     if inspect_cmd == "branches":
         run_inspect_branches(args, env)
-    elif inspect_cmd == "search":
-        run_inspect_search(args, env)
     elif inspect_cmd == "stats":
         run_stats_cli(args, env)
     else:
-        raise SystemExit("inspect requires a sub-command (branches, search, stats)")
+        raise SystemExit("inspect requires a sub-command (branches, stats)")
 
 
 def _dispatch_search(args: argparse.Namespace, env: CommandEnv) -> None:
-    """Top-level search dispatcher (same as inspect.search)."""
+    """Search rendered transcripts."""
     run_inspect_search(args, env)
 
 
@@ -1183,23 +1161,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect_branches.add_argument("--no-picker", action="store_true", help="Skip interactive selection even when skim/gum are available")
     p_inspect_branches.add_argument("--open", action="store_true", help="Open result in $EDITOR after command completes")
 
-    p_inspect_search = _add_command_parser(inspect_sub, "search", help="Search rendered transcripts", description="Search rendered transcripts")
-    p_inspect_search.add_argument("query", type=str, help="FTS search query (SQLite syntax)")
-    p_inspect_search.add_argument("--limit", type=int, default=20, help="Maximum number of hits to return")
-    p_inspect_search.add_argument("--provider", type=str, default=None, help="Filter by provider slug")
-    p_inspect_search.add_argument("--slug", type=str, default=None, help="Filter by conversation slug")
-    p_inspect_search.add_argument("--conversation-id", type=str, default=None, help="Filter by provider conversation id")
-    p_inspect_search.add_argument("--branch", type=str, default=None, help="Restrict to a single branch ID")
-    p_inspect_search.add_argument("--model", type=str, default=None, help="Filter by source model when recorded")
-    p_inspect_search.add_argument("--since", type=str, default=None, help="Only include messages on/after this timestamp")
-    p_inspect_search.add_argument("--until", type=str, default=None, help="Only include messages on/before this timestamp")
-    attachment_group = p_inspect_search.add_mutually_exclusive_group()
-    attachment_group.add_argument("--with-attachments", action="store_true", help="Limit to messages with extracted attachments")
-    attachment_group.add_argument("--without-attachments", action="store_true", help="Limit to messages without attachments")
-    p_inspect_search.add_argument("--no-picker", action="store_true", help="Skip skim picker preview even when interactive")
-    p_inspect_search.add_argument("--json", action="store_true", help="Emit machine-readable search results")
-    p_inspect_search.add_argument("--open", action="store_true", help="Open result file in $EDITOR after search")
-
     output_parent = create_output_parent()
     filter_parent = create_filter_parent()
 
@@ -1222,7 +1183,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs")
     p_watch.add_argument("--once", action="store_true", help="Run a single sync pass and exit")
 
-    p_search = _add_command_parser(sub, "search", help="Search rendered transcripts", description="Search rendered transcripts (also available as 'inspect search')")
+    p_search = _add_command_parser(sub, "search", help="Search rendered transcripts", description="Search rendered transcripts")
     p_search.add_argument("query", type=str, help="FTS search query (SQLite syntax)")
     p_search.add_argument("--limit", type=int, default=20, help="Maximum number of hits to return")
     p_search.add_argument("--provider", type=str, default=None, help="Filter by provider slug")
@@ -1317,7 +1278,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_help_cmd = _add_command_parser(sub, "help", help="Show help for a specific command", description="Show help for a specific command")
     p_help_cmd.add_argument("topic", nargs="?", help="Command name")
-    p_help_cmd.add_argument("--examples", action="store_true", help="Show usage examples for the command")
 
     p_completions = _add_command_parser(sub, "completions", help="Emit shell completion script", description="Emit shell completion script")
     p_completions.add_argument("--shell", choices=["bash", "zsh", "fish"], required=True)
