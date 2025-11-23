@@ -30,7 +30,6 @@ from ..ui import create_ui
 from .completion_engine import CompletionEngine, Completion
 from .registry import CommandRegistry
 from .arg_helpers import (
-    add_allow_dirty_option,
     add_collapse_option,
     add_diff_option,
     add_dry_run_option,
@@ -58,7 +57,6 @@ from .imports import (
     run_import_claude_code,
     run_import_codex,
 )
-from .dashboards import run_dashboards_cli
 from .runs import run_runs_cli
 from .index_cli import run_index_cli
 from .watch import run_watch_cli
@@ -1015,6 +1013,7 @@ def _register_default_commands() -> None:
 def build_parser() -> argparse.ArgumentParser:
     _register_default_commands()
     parser = argparse.ArgumentParser(description="Polylogue CLI", formatter_class=PARSER_FORMATTER)
+    parser.add_argument("--version", action="version", version="polylogue 0.1.0")
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose debug output")
     sub = parser.add_subparsers(dest="cmd")
 
@@ -1033,7 +1032,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--links-only", action="store_true", help="Link attachments instead of downloading (Drive only)")
     add_dry_run_option(p_sync)
     add_force_option(p_sync, help_text="Re-render even if conversations are up-to-date")
-    add_allow_dirty_option(p_sync)
     p_sync.add_argument("--prune", action="store_true", help="Remove outputs for conversations that vanished upstream")
     add_collapse_option(p_sync)
     add_html_option(p_sync)
@@ -1080,7 +1078,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_html_option(p_import)
     add_dry_run_option(p_import)
     add_force_option(p_import, help_text="Rewrite even if conversations appear up-to-date")
-    add_allow_dirty_option(p_import)
     import_selection_group = p_import.add_mutually_exclusive_group()
     import_selection_group.add_argument("--all", action="store_true", help="Process all available items without interactive selection")
     import_selection_group.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Specific conversation ID to import (repeatable)")
@@ -1253,11 +1250,6 @@ def main() -> None:
     # Enable verbose output if requested
     if getattr(args, "verbose", False):
         ui.console.print("[dim]Verbose mode enabled[/dim]")
-
-    # Validate --allow-dirty requires --force
-    if getattr(args, "allow_dirty", False) and not getattr(args, "force", False):
-        ui.console.print("[red]Error: --allow-dirty requires --force")
-        raise SystemExit(1)
 
     if args.cmd is None:
         parser.print_help()
