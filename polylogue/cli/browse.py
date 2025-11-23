@@ -15,7 +15,7 @@ def run_browse_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         run_runs_cli,
     )
 
-    browse_cmd = getattr(args, "browse_cmd", None)
+    browse_cmd = args.browse_cmd  # required=True enforced by argparse
 
     if browse_cmd == "branches":
         run_inspect_branches(args, env)
@@ -23,10 +23,8 @@ def run_browse_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         run_stats_cli(args, env)
     elif browse_cmd == "status":
         run_status_cli(args, env)
-    elif browse_cmd == "runs":
+    else:  # runs
         run_runs_cli(args, env)
-    else:
-        raise SystemExit("browse requires a subcommand: branches, stats, status, runs")
 
 
 __all__ = ["run_browse_cli"]
