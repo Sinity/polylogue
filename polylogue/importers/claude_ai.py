@@ -53,7 +53,10 @@ def import_claude_export(
         payload = json.loads(convo_path.read_text(encoding="utf-8"))
         conversations = payload.get("conversations") if isinstance(payload, dict) else payload
         if not isinstance(conversations, list):
-            raise ValueError("Unexpected Claude export format")
+            raise ValueError(
+                "Unexpected Claude export format: expected 'conversations' to be a list. "
+                "Make sure you're using a valid Claude.ai export file (JSON format)."
+            )
 
         output_dir.mkdir(parents=True, exist_ok=True)
         results: List[ImportResult] = []
@@ -89,7 +92,10 @@ def list_claude_conversations(export_path: Path) -> List[Dict[str, Optional[str]
         payload = json.loads(convo_path.read_text(encoding="utf-8"))
         conversations = payload.get("conversations") if isinstance(payload, dict) else payload
         if not isinstance(conversations, list):
-            raise ValueError("Unexpected Claude export format")
+            raise ValueError(
+                "Unexpected Claude export format: ZIP archive must contain a valid conversations.json file. "
+                "Make sure you're using an official Claude.ai export."
+            )
         info: List[Dict[str, Optional[str]]] = []
         for conv in conversations:
             info.append(
