@@ -52,6 +52,8 @@ class CompletionEngine:
         command = args[0]
         if current_index == 0 and len(args) == 1 and (current_word == "" or not current_word.startswith("-")):
             return self._complete_commands()
+        if command == "search":
+            return self._complete_search(args, current_index, current_word)
         if command == "sync":
             return self._complete_sync(args, current_index, current_word)
         if command == "import":
@@ -88,6 +90,22 @@ class CompletionEngine:
             return self._option_completions("sync")
         return []
 
+    def _complete_search(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
+        prev = args[current_index - 1] if current_index > 0 else ""
+        if prev == "--provider":
+            return self._provider_completions()
+        if prev == "--slug":
+            return self._slug_completions()
+        if prev == "--conversation-id":
+            return self._conversation_id_completions()
+        if prev == "--branch":
+            return self._branch_completions()
+        if prev == "--model":
+            return self._model_completions()
+        if current_word.startswith("--"):
+            return self._option_completions("search")
+        return []
+
     def _complete_import(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
         if current_index == 1:
             return [Completion(name) for name in ("chatgpt", "claude", "codex", "claude-code")]
@@ -110,6 +128,12 @@ class CompletionEngine:
                 return self._slug_completions()
             if prev == "--conversation-id":
                 return self._conversation_id_completions()
+            if prev == "--provider":
+                return self._provider_completions()
+            if prev == "--branch":
+                return self._branch_completions()
+            if prev in {"--out", "--theme"}:
+                return [Completion("__PATH__")] if prev == "--out" else [Completion("light"), Completion("dark")]
             if current_word.startswith("--"):
                 return self._option_completions("browse branches")
         if subcmd == "stats":
@@ -118,14 +142,15 @@ class CompletionEngine:
             if current_word.startswith("--"):
                 return self._option_completions("browse stats")
         if subcmd == "status":
-            if current_word.startswith("--providers"):
-                providers = sorted({provider for provider, *_ in self.env.conversations.iter_state()})
-                return [Completion(p) for p in providers if p]
-            if current_word.startswith("--dump") or current_word.startswith("--summary"):
+            if prev == "--providers":
+                return self._provider_completions()
+            if prev in {"--dump", "--summary"}:
                 return [Completion("__PATH__")]
             if current_word.startswith("--"):
                 return self._option_completions("browse status")
         if subcmd == "runs":
+            if prev == "--providers":
+                return self._provider_completions()
             if current_word.startswith("--"):
                 return self._option_completions("browse runs")
         return []
@@ -228,6 +253,10 @@ class CompletionEngine:
                 return parser
         return parser
 
+    def _provider_completions(self) -> List[Completion]:
+        providers = sorted({provider for provider, *_ in self.env.conversations.iter_state()})
+        return [Completion(p) for p in providers if p]
+
     def _slug_completions(self) -> List[Completion]:
         seen = set()
         entries: List[Completion] = []
@@ -236,6 +265,29 @@ class CompletionEngine:
             if slug and slug not in seen:
                 entries.append(Completion(slug))
                 seen.add(slug)
+        entries.sort(key=lambda c: c.value)
+        return entries
+
+    def _branch_completions(self) -> List[Completion]:
+        seen = set()
+        entries: List[Completion] = []
+        for _, _, payload in self.env.conversations.iter_state():
+            branches = payload.get("branches", {})
+            for branch_id in branches.keys():
+                if branch_id and branch_id not in seen:
+                    entries.append(Completion(branch_id))
+                    seen.add(branch_id)
+        entries.sort(key=lambda c: c.value)
+        return entries
+
+    def _model_completions(self) -> List[Completion]:
+        seen = set()
+        entries: List[Completion] = []
+        for _, _, payload in self.env.conversations.iter_state():
+            model = payload.get("model") or payload.get("metadata", {}).get("model")
+            if model and model not in seen:
+                entries.append(Completion(model))
+                seen.add(model)
         entries.sort(key=lambda c: c.value)
         return entries
 
