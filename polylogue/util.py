@@ -1,6 +1,7 @@
 import datetime
 import difflib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -9,7 +10,9 @@ import tempfile
 import unicodedata
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
+
+logger = logging.getLogger(__name__)
 
 try:
     import pyperclip
@@ -19,7 +22,7 @@ except ImportError:
     from ._vendor.pyperclip import PyperclipException  # type: ignore
 
 from .db import open_connection, record_run
-from .paths import CACHE_HOME, CONFIG_HOME, DATA_HOME, STATE_HOME
+from .paths import DATA_HOME
 from .persistence.state import ConversationStateRepository
 
 
@@ -92,7 +95,8 @@ def parse_input_time_to_epoch(s: Optional[Union[str, float, int, datetime.date, 
     if isinstance(s, (int, float)):
         try:
             return float(s)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to convert to float: '%s': %s", s, exc)
             return None
     if isinstance(s, datetime.datetime):
         dt = s
@@ -111,7 +115,8 @@ def parse_input_time_to_epoch(s: Optional[Union[str, float, int, datetime.date, 
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         return datetime.datetime.fromisoformat(s).timestamp()
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to parse datetime string '%s': %s", s, exc)
         return None
 
 
@@ -285,6 +290,7 @@ def get_cached_folder_id(name: str) -> Optional[str]:
 def set_cached_folder_id(name: str, folder_id: str) -> None:
     _set_meta_value(f"drive.folder.{name}", folder_id)
 
+
 def assign_conversation_slug(
     provider: str,
     conversation_id: str,
@@ -435,6 +441,7 @@ def add_run(record: Dict[str, Any]) -> None:
             metadata=metadata or None,
         )
         conn.commit()
+
 
 def write_delta_diff(old_path: Path, new_path: Path, *, suffix: str = ".diff.txt") -> Optional[Path]:
     if not old_path.exists() or not new_path.exists():

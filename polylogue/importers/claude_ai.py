@@ -41,6 +41,7 @@ def import_claude_export(
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
     force: bool = False,
+    allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
@@ -52,7 +53,10 @@ def import_claude_export(
         payload = json.loads(convo_path.read_text(encoding="utf-8"))
         conversations = payload.get("conversations") if isinstance(payload, dict) else payload
         if not isinstance(conversations, list):
-            raise ValueError("Unexpected Claude export format")
+            raise ValueError(
+                "Unexpected Claude export format: expected 'conversations' to be a list. "
+                "Make sure you're using a valid Claude.ai export file (JSON format)."
+            )
 
         output_dir.mkdir(parents=True, exist_ok=True)
         results: List[ImportResult] = []
@@ -69,6 +73,7 @@ def import_claude_export(
                     html=html,
                     html_theme=html_theme,
                     force=force,
+                    allow_dirty=allow_dirty,
                     registrar=registrar,
                 )
             )
@@ -87,7 +92,10 @@ def list_claude_conversations(export_path: Path) -> List[Dict[str, Optional[str]
         payload = json.loads(convo_path.read_text(encoding="utf-8"))
         conversations = payload.get("conversations") if isinstance(payload, dict) else payload
         if not isinstance(conversations, list):
-            raise ValueError("Unexpected Claude export format")
+            raise ValueError(
+                "Unexpected Claude export format: ZIP archive must contain a valid conversations.json file. "
+                "Make sure you're using an official Claude.ai export."
+            )
         info: List[Dict[str, Optional[str]]] = []
         for conv in conversations:
             info.append(
@@ -115,6 +123,7 @@ def _render_claude_conversation(
     html: bool,
     html_theme: str,
     force: bool,
+    allow_dirty: bool,
     registrar: Optional[ConversationRegistrar],
 ) -> ImportResult:
     title = conv.get("name") or conv.get("title") or "claude-chat"
@@ -241,6 +250,7 @@ def _render_claude_conversation(
         source_size=None,
         attachment_policy=None,
         force=force,
+        allow_dirty=allow_dirty,
         registrar=registrar,
     )
 
