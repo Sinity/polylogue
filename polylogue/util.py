@@ -1,6 +1,7 @@
 import datetime
 import difflib
 import json
+import logging
 import os
 import re
 import subprocess
@@ -10,6 +11,8 @@ import unicodedata
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
+
+logger = logging.getLogger(__name__)
 
 try:
     import pyperclip
@@ -92,7 +95,8 @@ def parse_input_time_to_epoch(s: Optional[Union[str, float, int, datetime.date, 
     if isinstance(s, (int, float)):
         try:
             return float(s)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Failed to convert to float: '%s': %s", s, exc)
             return None
     if isinstance(s, datetime.datetime):
         dt = s
@@ -111,7 +115,8 @@ def parse_input_time_to_epoch(s: Optional[Union[str, float, int, datetime.date, 
         if s.endswith("Z"):
             s = s[:-1] + "+00:00"
         return datetime.datetime.fromisoformat(s).timestamp()
-    except Exception:
+    except Exception as exc:
+        logger.debug("Failed to parse datetime string '%s': %s", s, exc)
         return None
 
 

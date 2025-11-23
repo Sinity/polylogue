@@ -89,7 +89,10 @@ def sk_select(
             check=True,
         )
     except FileNotFoundError as exc:
-        raise RuntimeError("Required command 'sk' is not available in PATH.") from exc
+        raise RuntimeError(
+            "Required command 'sk' (skim fuzzy finder) is not available in PATH. "
+            "Install it with: cargo install skim, or use --json mode for non-interactive operation."
+        ) from exc
     except subprocess.CalledProcessError:
         return None
 
