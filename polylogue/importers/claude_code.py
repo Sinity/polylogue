@@ -62,7 +62,7 @@ def import_claude_code_session(
                 fallback = line.strip()
                 if not fallback:
                     continue
-                chunk_text = "Unparsed Claude Code log line\n```\n{}```".format(fallback)
+                chunk_text = f"Unparsed Claude Code log line\n```\n{fallback}```"
                 chunks.append(
                     {
                         "role": "model",
@@ -73,7 +73,7 @@ def import_claude_code_session(
                 chunk_metadata.append({"raw": {"type": "unparsed", "payload": fallback}})
                 continue
             if not isinstance(entry, dict):
-                chunk_text = "Unparsed Claude Code entry\n```\n{}```".format(entry)
+                chunk_text = f"Unparsed Claude Code entry\n```\n{entry}```"
                 chunks.append(
                     {
                         "role": "model",

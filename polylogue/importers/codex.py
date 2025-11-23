@@ -98,7 +98,7 @@ def import_codex_session(
                 fallback = raw.strip()
                 if not fallback:
                     continue
-                chunk_text = "Unparsed Codex log line\n```\n{}```".format(fallback)
+                chunk_text = f"Unparsed Codex log line\n```\n{fallback}```"
                 chunks.append(
                     {
                         "role": "model",

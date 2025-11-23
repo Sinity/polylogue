@@ -228,7 +228,7 @@ def resolve_path(
             return None
 
     if policy.prompt_create and not ui.plain:
-        if ui.console.confirm(f"Create directory {path}?", default=True):
+        if ui.confirm(f"Create directory {path}?", default=True):
             try:
                 path.mkdir(parents=True, exist_ok=True)
                 return path
