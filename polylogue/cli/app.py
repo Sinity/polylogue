@@ -107,11 +107,6 @@ def _add_command_parser(subparsers: argparse._SubParsersAction, name: str, **kwa
 # Command Examples for --examples flag
 # Each command maps to list of (description, command_line) tuples
 COMMAND_EXAMPLES = {
-    "render": [
-        ("Render a single JSON file", "polylogue render ~/downloads/chat.json"),
-        ("Render with HTML preview", "polylogue render input.json --html on"),
-        ("Preview without writing", "polylogue render data/ --dry-run"),
-    ],
     "sync": [
         ("Sync all Drive chats", "polylogue sync drive --all"),
         ("Sync from specific Drive folder", "polylogue sync drive --folder-name 'Work Chats'"),
@@ -133,44 +128,36 @@ COMMAND_EXAMPLES = {
         ("Search and open in editor", "polylogue search 'TODO' --limit 1 --open"),
         ("Search with attachment filter", "polylogue search 'diagram' --with-attachments"),
     ],
-    "inspect": [
-        ("Browse branch graph", "polylogue inspect branches --provider claude"),
-        ("View stats", "polylogue inspect stats --provider chatgpt"),
-        ("Get stats with time filter", "polylogue inspect stats --since 2024-01-01 --until 2024-12-31"),
+    "browse": [
+        ("Browse branch graph", "polylogue browse branches --provider claude"),
+        ("View stats", "polylogue browse stats --provider chatgpt"),
+        ("Get stats with time filter", "polylogue browse stats --since 2024-01-01 --until 2024-12-31"),
+        ("Show status overview", "polylogue browse status"),
+        ("Watch status continuously", "polylogue browse status --watch"),
+        ("Show provider dashboards", "polylogue browse dashboards"),
+        ("List recent runs", "polylogue browse runs --limit 20"),
     ],
     "watch": [
         ("Watch Codex sessions", "polylogue watch codex"),
         ("Watch Claude Code with HTML", "polylogue watch claude-code --html on"),
         ("One-shot watch run", "polylogue watch chatgpt --once"),
     ],
-    "prune": [
-        ("Preview prune operation", "polylogue prune --dry-run"),
-        ("Prune legacy files", "polylogue prune --dir ~/polylogue-data/chatgpt"),
-    ],
-    "doctor": [
-        ("Check all providers", "polylogue doctor"),
-        ("Check with JSON output", "polylogue doctor --json"),
-        ("Limit files inspected", "polylogue doctor --limit 100"),
-    ],
-    "status": [
-        ("Show status overview", "polylogue status"),
-        ("Watch status continuously", "polylogue status --watch"),
-        ("Export runs to JSON", "polylogue status --dump runs.json"),
-        ("Filter by providers", "polylogue status --providers drive,codex"),
-    ],
-    "env": [
-        ("Show environment paths", "polylogue env"),
-        ("Get environment as JSON", "polylogue env --json"),
+    "maintain": [
+        ("Preview prune operation", "polylogue maintain prune --dry-run"),
+        ("Prune legacy files", "polylogue maintain prune --dir ~/polylogue-data/chatgpt"),
+        ("Check all providers", "polylogue maintain doctor"),
+        ("Check with JSON output", "polylogue maintain doctor --json"),
+        ("Validate indexes", "polylogue maintain index check"),
+        ("Repair indexes", "polylogue maintain index check --repair"),
     ],
     "config": [
         ("Interactive setup wizard", "polylogue config init"),
         ("Force re-initialization", "polylogue config init --force"),
-    ],
-    "settings": [
-        ("Show current settings", "polylogue settings"),
-        ("Enable HTML previews", "polylogue settings --html on"),
-        ("Set dark theme", "polylogue settings --theme dark"),
-        ("Reset to defaults", "polylogue settings --reset"),
+        ("Show current configuration", "polylogue config show"),
+        ("Get configuration as JSON", "polylogue config show --json"),
+        ("Enable HTML previews", "polylogue config set --html on"),
+        ("Set dark theme", "polylogue config set --theme dark"),
+        ("Reset to defaults", "polylogue config set --reset"),
     ],
 }
 
@@ -1119,20 +1106,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verbose", "-v", action="store_true", help="Enable verbose debug output")
     sub = parser.add_subparsers(dest="cmd")
 
-    p_render = _add_command_parser(sub, "render", help="Render local provider JSON logs", description="Render local provider JSON logs")
-    p_render.add_argument("input", type=Path, help="File or directory with provider JSON logs (e.g., Gemini)")
-    add_out_option(p_render, default_path=DEFAULT_RENDER_OUT)
-    p_render.add_argument("--links-only", action="store_true", help="Link attachments instead of downloading")
-    add_dry_run_option(p_render, help_text="Report actions without writing files")
-    add_force_option(p_render, help_text="Overwrite conversations even if they appear up-to-date")
-    add_allow_dirty_option(p_render)
-    add_collapse_option(p_render, help_text="Override collapse threshold")
-    p_render.add_argument("--json", action="store_true")
-    add_html_option(p_render)
-    add_diff_option(p_render, help_text="Write delta diff when output already exists")
-    p_render.add_argument("--to-clipboard", action="store_true", help="Copy rendered Markdown to the clipboard when a single file is produced")
-
-    p_sync = _add_command_parser(sub, "sync", help="Synchronize provider archives", description="Synchronize provider archives")
+    # Core workflow: sync
+    p_sync = _add_command_parser(sub, "sync", help="Sync provider archives", description="Sync provider archives")
     p_sync.add_argument(
         "provider",
         choices=["drive", *LOCAL_SYNC_PROVIDER_NAMES],
@@ -1180,7 +1155,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_sync.add_argument("--name-filter", type=str, default=None, help="Regex filter for Drive chat names")
     p_sync.add_argument("--list-only", action="store_true", help="List Drive chats without syncing")
 
-    p_import = _add_command_parser(sub, "import", help="Import provider exports into the archive", description="Import provider exports into the archive")
+    # Core workflow: import
+    p_import = _add_command_parser(sub, "import", help="Import provider exports", description="Import provider exports")
     p_import.add_argument("provider", choices=["chatgpt", "claude", "claude-code", "codex"], help="Provider export format")
     p_import.add_argument("source", nargs="*", help="Export path or session identifier (depends on provider); use 'pick', '?', or '-' to trigger interactive picker")
     add_out_option(p_import, default_path=Path("(provider-specific)"), help_text="Override output directory")
@@ -1196,17 +1172,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--json", action="store_true", help="Emit machine-readable summary")
     p_import.add_argument("--to-clipboard", action="store_true", help="Copy a single imported Markdown file to the clipboard")
 
-    p_inspect = _add_command_parser(sub, "inspect", help="Inspect existing archives", description="Inspect existing archives and stats")
-    inspect_sub = p_inspect.add_subparsers(dest="inspect_cmd", required=True)
+    p_browse = _add_command_parser(sub, "browse", help="Browse data (branches/stats/status/dashboards/runs)", description="Explore rendered data and system status")
+    browse_sub = p_browse.add_subparsers(dest="browse_cmd", required=True)
 
-    p_inspect_branches = _add_command_parser(inspect_sub, "branches", help="Explore branch graphs for conversations", description="Explore branch graphs for conversations")
-    p_inspect_branches.add_argument("--provider", type=str, default=None, help="Filter by provider slug")
-    p_inspect_branches.add_argument("--slug", type=str, default=None, help="Filter by conversation slug")
-    p_inspect_branches.add_argument("--conversation-id", type=str, default=None, help="Filter by provider conversation id")
-    p_inspect_branches.add_argument("--min-branches", type=int, default=1, help="Only include conversations with at least this many branches")
-    p_inspect_branches.add_argument("--branch", type=str, default=None, help="Branch ID to inspect or diff against the canonical path")
-    p_inspect_branches.add_argument("--diff", action="store_true", help="Display a unified diff between a branch and canonical transcript")
-    p_inspect_branches.add_argument(
+    p_browse_branches = _add_command_parser(browse_sub, "branches", help="Explore branch graphs for conversations", description="Explore branch graphs for conversations")
+    p_browse_branches.add_argument("--provider", type=str, default=None, help="Filter by provider slug")
+    p_browse_branches.add_argument("--slug", type=str, default=None, help="Filter by conversation slug")
+    p_browse_branches.add_argument("--conversation-id", type=str, default=None, help="Filter by provider conversation id")
+    p_browse_branches.add_argument("--min-branches", type=int, default=1, help="Only include conversations with at least this many branches")
+    p_browse_branches.add_argument("--branch", type=str, default=None, help="Branch ID to inspect or diff against the canonical path")
+    p_browse_branches.add_argument("--diff", action="store_true", help="Display a unified diff between a branch and canonical transcript")
+    p_browse_branches.add_argument(
         "--html",
         dest="html_mode",
         nargs="?",
@@ -1216,22 +1192,66 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MODE",
         help="Branch HTML mode: on/off/auto (default auto)",
     )
-    p_inspect_branches.add_argument("--out", type=Path, default=None, help="Write the branch explorer HTML to this path")
-    p_inspect_branches.add_argument("--theme", type=str, default=None, choices=["light", "dark"], help="Override HTML explorer theme")
-    p_inspect_branches.add_argument("--no-picker", action="store_true", help="Skip interactive selection even when skim/gum are available")
-    p_inspect_branches.add_argument("--open", action="store_true", help="Open result in $EDITOR after command completes")
+    p_browse_branches.add_argument("--out", type=Path, default=None, help="Write the branch explorer HTML to this path")
+    p_browse_branches.add_argument("--theme", type=str, default=None, choices=["light", "dark"], help="Override HTML explorer theme")
+    p_browse_branches.add_argument("--no-picker", action="store_true", help="Skip interactive selection even when skim/gum are available")
+    p_browse_branches.add_argument("--open", action="store_true", help="Open result in $EDITOR after command completes")
 
     output_parent = create_output_parent()
     filter_parent = create_filter_parent()
 
-    p_inspect_stats = _add_command_parser(
-        inspect_sub,
+    p_browse_stats = _add_command_parser(
+        browse_sub,
         "stats",
         parents=[output_parent, filter_parent],
         help="Summarize Markdown output directories",
         description="Summarize Markdown output directories"
     )
-    p_inspect_stats.add_argument("--dir", type=Path, default=None, help="Directory containing Markdown exports")
+    p_browse_stats.add_argument("--dir", type=Path, default=None, help="Directory containing Markdown exports")
+
+    p_browse_status = _add_command_parser(browse_sub, "status", help="Show cached Drive info and recent runs", description="Show cached Drive info and recent runs")
+    p_browse_status.add_argument("--json", action="store_true", help="Emit machine-readable summary")
+    p_browse_status.add_argument(
+        "--json-lines",
+        action="store_true",
+        help="Stream newline-delimited JSON records (auto-enables --json, useful with --watch)",
+    )
+    status_mode_group = p_browse_status.add_mutually_exclusive_group()
+    status_mode_group.add_argument("--watch", action="store_true", help="Continuously refresh the status output")
+    status_mode_group.add_argument("--dump-only", action="store_true", help="Only perform the dump action without printing summaries")
+    p_browse_status.add_argument("--interval", type=float, default=5.0, help="Seconds between refresh while watching")
+    p_browse_status.add_argument("--dump", type=str, default=None, help="Write recent runs to a file ('-' for stdout)")
+    p_browse_status.add_argument("--dump-limit", type=int, default=100, help="Number of runs to include when dumping")
+    p_browse_status.add_argument("--runs-limit", type=int, default=200, help="Number of historical runs to include in summaries")
+    p_browse_status.add_argument(
+        "--providers",
+        type=str,
+        default=None,
+        help="Comma-separated provider filter (limits summaries, dumps, and JSON output)",
+    )
+    p_browse_status.add_argument(
+        "--summary",
+        type=str,
+        default=None,
+        help="Write aggregated provider/run summary JSON to a file ('-' for stdout)",
+    )
+    p_browse_status.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="Only emit the summary JSON without printing tables",
+    )
+
+    p_browse_dashboards = _add_command_parser(browse_sub, "dashboards", help="Show provider dashboards", description="Rich dashboard of provider stats and recent runs")
+    p_browse_dashboards.add_argument("--runs-limit", type=int, default=10, help="Number of recent runs to show")
+    p_browse_dashboards.add_argument("--json", action="store_true", help="Emit dashboard data as JSON")
+
+    p_browse_runs = _add_command_parser(browse_sub, "runs", help="List recent runs", description="List run history with filters")
+    p_browse_runs.add_argument("--limit", type=int, default=50, help="Number of runs to display")
+    p_browse_runs.add_argument("--providers", type=str, default=None, help="Comma-separated provider filter")
+    p_browse_runs.add_argument("--commands", type=str, default=None, help="Comma-separated command filter")
+    p_browse_runs.add_argument("--since", type=str, default=None, help="Only include runs on/after this timestamp (YYYY-MM-DD or ISO)")
+    p_browse_runs.add_argument("--until", type=str, default=None, help="Only include runs on/before this timestamp")
+    p_browse_runs.add_argument("--json", action="store_true", help="Emit runs as JSON")
 
     p_watch = _add_command_parser(sub, "watch", help="Watch local session stores and sync on changes", description="Watch local session stores and sync on changes")
     p_watch.add_argument("provider", choices=list(WATCHABLE_LOCAL_PROVIDER_NAMES), help="Local provider to watch")
@@ -1260,81 +1280,47 @@ def build_parser() -> argparse.ArgumentParser:
     p_search.add_argument("--json", action="store_true", help="Emit machine-readable search results")
     p_search.add_argument("--open", action="store_true", help="Open result file in $EDITOR after search")
 
-    p_prune = _add_command_parser(sub, "prune", help="Remove legacy single-file outputs and attachments", description="Remove legacy single-file outputs and attachments")
-    p_prune.add_argument(
+    p_maintain = _add_command_parser(sub, "maintain", help="System maintenance (prune/doctor/index)", description="System maintenance and diagnostics")
+    maintain_sub = p_maintain.add_subparsers(dest="maintain_cmd", required=True)
+
+    p_maintain_prune = _add_command_parser(maintain_sub, "prune", help="Remove legacy single-file outputs and attachments", description="Remove legacy single-file outputs and attachments")
+    p_maintain_prune.add_argument(
         "--dir",
         dest="dirs",
         action="append",
         type=Path,
         help="Root directory to prune (repeatable). Defaults to all configured output directories.",
     )
-    p_prune.add_argument("--dry-run", action="store_true", help="Print planned actions without deleting files")
+    p_maintain_prune.add_argument("--dry-run", action="store_true", help="Print planned actions without deleting files")
 
-    p_doctor = _add_command_parser(sub, "doctor", help="Check local data directories for common issues", description="Check local data directories for common issues")
-    p_doctor.add_argument("--codex-dir", type=Path, default=None, help="Override Codex sessions directory")
-    p_doctor.add_argument("--claude-code-dir", type=Path, default=None, help="Override Claude Code projects directory")
-    p_doctor.add_argument("--limit", type=int, default=None, help="Limit number of files inspected per provider")
-    p_doctor.add_argument("--json", action="store_true", help="Emit machine-readable report")
+    p_maintain_doctor = _add_command_parser(maintain_sub, "doctor", help="Check local data directories for common issues", description="Check local data directories for common issues")
+    p_maintain_doctor.add_argument("--codex-dir", type=Path, default=None, help="Override Codex sessions directory")
+    p_maintain_doctor.add_argument("--claude-code-dir", type=Path, default=None, help="Override Claude Code projects directory")
+    p_maintain_doctor.add_argument("--limit", type=int, default=None, help="Limit number of files inspected per provider")
+    p_maintain_doctor.add_argument("--json", action="store_true", help="Emit machine-readable report")
 
-    p_status = _add_command_parser(sub, "status", help="Show cached Drive info and recent runs", description="Show cached Drive info and recent runs")
-    p_status.add_argument("--json", action="store_true", help="Emit machine-readable summary")
-    p_status.add_argument(
-        "--json-lines",
-        action="store_true",
-        help="Stream newline-delimited JSON records (auto-enables --json, useful with --watch)",
-    )
-    status_mode_group = p_status.add_mutually_exclusive_group()
-    status_mode_group.add_argument("--watch", action="store_true", help="Continuously refresh the status output")
-    status_mode_group.add_argument("--dump-only", action="store_true", help="Only perform the dump action without printing summaries")
-    p_status.add_argument("--interval", type=float, default=5.0, help="Seconds between refresh while watching")
-    p_status.add_argument("--dump", type=str, default=None, help="Write recent runs to a file ('-' for stdout)")
-    p_status.add_argument("--dump-limit", type=int, default=100, help="Number of runs to include when dumping")
-    p_status.add_argument("--runs-limit", type=int, default=200, help="Number of historical runs to include in summaries")
-    p_status.add_argument(
-        "--providers",
-        type=str,
-        default=None,
-        help="Comma-separated provider filter (limits summaries, dumps, and JSON output)",
-    )
-    p_status.add_argument(
-        "--summary",
-        type=str,
-        default=None,
-        help="Write aggregated provider/run summary JSON to a file ('-' for stdout)",
-    )
-    p_status.add_argument(
-        "--summary-only",
-        action="store_true",
-        help="Only emit the summary JSON without printing tables",
-    )
-
-    p_dash = _add_command_parser(sub, "dashboards", help="Show provider dashboards", description="Rich dashboard of provider stats and recent runs")
-    p_dash.add_argument("--runs-limit", type=int, default=10, help="Number of recent runs to show")
-    p_dash.add_argument("--json", action="store_true", help="Emit dashboard data as JSON")
-
-    p_runs = _add_command_parser(sub, "runs", help="List recent runs", description="List run history with filters")
-    p_runs.add_argument("--limit", type=int, default=50, help="Number of runs to display")
-    p_runs.add_argument("--providers", type=str, default=None, help="Comma-separated provider filter")
-    p_runs.add_argument("--commands", type=str, default=None, help="Comma-separated command filter")
-    p_runs.add_argument("--since", type=str, default=None, help="Only include runs on/after this timestamp (YYYY-MM-DD or ISO)")
-    p_runs.add_argument("--until", type=str, default=None, help="Only include runs on/before this timestamp")
-    p_runs.add_argument("--json", action="store_true", help="Emit runs as JSON")
-
-    p_index = _add_command_parser(sub, "index", help="Index maintenance helpers", description="Inspect/repair Polylogue indexes")
-    index_sub = p_index.add_subparsers(dest="subcmd", required=True)
+    p_maintain_index = _add_command_parser(maintain_sub, "index", help="Index maintenance helpers", description="Inspect/repair Polylogue indexes")
+    index_sub = p_maintain_index.add_subparsers(dest="subcmd", required=True)
     p_index_check = index_sub.add_parser("check", help="Validate SQLite/Qdrant indexes")
     p_index_check.add_argument("--repair", action="store_true", help="Attempt to rebuild missing SQLite FTS data")
     p_index_check.add_argument("--skip-qdrant", action="store_true", help="Skip Qdrant validation even when configured")
     p_index_check.add_argument("--json", action="store_true", help="Emit validation results as JSON")
 
-    p_config = _add_command_parser(sub, "config", help="Configuration commands", description="Configure Polylogue settings")
+    p_config = _add_command_parser(sub, "config", help="Configuration (init/set/show)", description="Configure Polylogue settings")
     config_sub = p_config.add_subparsers(dest="config_cmd", required=True)
 
     p_config_init = config_sub.add_parser("init", help="Interactive configuration setup", description="Interactive configuration setup wizard")
     p_config_init.add_argument("--force", action="store_true", help="Overwrite existing configuration")
 
-    p_env = _add_command_parser(sub, "env", help="Show resolved configuration and output paths", description="Show resolved configuration and output paths")
-    p_env.add_argument("--json", action="store_true", help="Emit environment info as JSON")
+    p_config_set = config_sub.add_parser("set", help="Update settings", description="Show or update Polylogue defaults")
+    p_config_set.add_argument("--html", choices=["on", "off"], default=None, help="Enable or disable default HTML previews")
+    p_config_set.add_argument("--theme", choices=["light", "dark"], default=None, help="Set the default HTML theme")
+    p_config_set.add_argument("--collapse-threshold", type=int, default=None, help="Set the default collapse threshold for long outputs")
+    p_config_set.add_argument("--reset", action="store_true", help="Reset to config defaults")
+    p_config_set.add_argument("--json", action="store_true", help="Emit settings as JSON")
+
+    p_config_show = config_sub.add_parser("show", help="Show configuration", description="Show resolved configuration and output paths")
+    p_config_show.add_argument("--json", action="store_true", help="Emit environment info as JSON")
 
     p_help_cmd = _add_command_parser(sub, "help", help="Show help for a specific command", description="Show help for a specific command")
     p_help_cmd.add_argument("topic", nargs="?", help="Command name")
@@ -1346,13 +1332,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_complete.add_argument("--shell", required=True)
     p_complete.add_argument("--cword", type=int, required=True)
     p_complete.add_argument("words", nargs=argparse.REMAINDER)
-
-    p_settings_cmd = _add_command_parser(sub, "settings", help="Show or update Polylogue defaults", description="Show or update Polylogue defaults")
-    p_settings_cmd.add_argument("--html", choices=["on", "off"], default=None, help="Enable or disable default HTML previews")
-    p_settings_cmd.add_argument("--theme", choices=["light", "dark"], default=None, help="Set the default HTML theme")
-    p_settings_cmd.add_argument("--collapse-threshold", type=int, default=None, help="Set the default collapse threshold for long outputs")
-    p_settings_cmd.add_argument("--reset", action="store_true", help="Reset to config defaults")
-    p_settings_cmd.add_argument("--json", action="store_true", help="Emit settings as JSON")
 
     p_search_preview = _add_command_parser(sub, "_search-preview", help=argparse.SUPPRESS)
     p_search_preview.add_argument("--data-file", type=Path, required=True)
