@@ -6,7 +6,6 @@ from .app import (  # pylint: disable=unused-import
     build_parser,
     main,
     run_completions_cli,
-    run_dashboards_cli,
     run_complete_cli,
     run_help_cli,
     run_import_cli,
@@ -37,10 +36,6 @@ __all__ = [
     "run_stats_cli",
     "run_sync_cli",
     "run_watch_cli",
-    "run_dashboards_cli",
     "summarize_import",
     "_run_sync_drive",
 ]
-
-# Backwards compatibility for older imports
-_resolve_html_settings = resolve_html_settings
