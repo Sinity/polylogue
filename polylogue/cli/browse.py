@@ -12,7 +12,6 @@ def run_browse_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         run_inspect_branches,
         run_stats_cli,
         run_status_cli,
-        run_dashboards_cli,
         run_runs_cli,
     )
 
@@ -24,12 +23,10 @@ def run_browse_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         run_stats_cli(args, env)
     elif browse_cmd == "status":
         run_status_cli(args, env)
-    elif browse_cmd == "dashboards":
-        run_dashboards_cli(args, env)
     elif browse_cmd == "runs":
         run_runs_cli(args, env)
     else:
-        raise SystemExit("browse requires a subcommand: branches, stats, status, dashboards, runs")
+        raise SystemExit("browse requires a subcommand: branches, stats, status, runs")
 
 
 __all__ = ["run_browse_cli"]
