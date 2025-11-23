@@ -897,17 +897,15 @@ def _dispatch_search(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 def _dispatch_config(args: argparse.Namespace, env: CommandEnv) -> None:
-    config_cmd = getattr(args, "config_cmd", None)
+    config_cmd = args.config_cmd  # required=True enforced by argparse
     if config_cmd == "init":
         from .init import run_init_cli
         run_init_cli(args, env)
     elif config_cmd == "set":
         from .settings_cli import run_settings_cli
         run_settings_cli(args, env)
-    elif config_cmd == "show":
+    else:  # show
         _run_config_show(args, env)
-    else:
-        raise SystemExit("config requires a subcommand: init, set, show")
 
 
 def _run_config_show(args: argparse.Namespace, env: CommandEnv) -> None:
