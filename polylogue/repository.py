@@ -31,7 +31,7 @@ class ConversationRepository:
         id_hint: Optional[str] = None,
         force: bool = False,
         allow_dirty: bool = False,
-        registrar: ConversationRegistrar = None,
+        registrar: Optional[ConversationRegistrar] = None,
     ) -> DocumentPersistenceResult:
         if registrar is None:
             raise ValueError("ConversationRegistrar instance required")
