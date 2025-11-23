@@ -38,7 +38,10 @@ class QdrantBackend:
         try:
             from .index_qdrant import update_qdrant_index
         except ImportError as exc:  # pragma: no cover
-            raise RuntimeError("POLYLOGUE_INDEX_BACKEND=qdrant requires the 'qdrant-client' package.") from exc
+            raise RuntimeError(
+                "POLYLOGUE_INDEX_BACKEND=qdrant requires the 'qdrant-client' package. "
+                "Install it with: pip install qdrant-client"
+            ) from exc
         self._update = update_qdrant_index
 
     def update(

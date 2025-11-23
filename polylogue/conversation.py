@@ -12,9 +12,6 @@ from .repository import ConversationRepository
 from .services.conversation_registrar import ConversationRegistrar
 
 
-REPOSITORY = ConversationRepository()
-
-
 def _compute_branch_stats(
     plan: BranchPlan,
     records_by_id: Dict[str, MessageRecord],
@@ -64,8 +61,9 @@ def _adjust_links_for_base(
         for name, link in links:
             if isinstance(link, Path):
                 try:
-                    rel = link if link.is_absolute() else link
-                    if not rel.is_absolute():
+                    if link.is_absolute():
+                        rel = link
+                    else:
                         rel = Path(os.path.relpath((markdown_dir / link).resolve(), base_path.resolve()))
                     adjusted_links.append((name, rel))
                 except Exception:
@@ -150,11 +148,16 @@ def process_conversation(
     source_size: Optional[int],
     attachment_policy,
     force: bool,
+    allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
+    repository: Optional[ConversationRepository] = None,
     citations: Optional[List[Any]] = None,
 ) -> ImportResult:
     if registrar is None:
         raise ValueError("ConversationRegistrar instance required")
+
+    if repository is None:
+        repository = ConversationRepository()
 
     write_branch_tree = True
     write_full_branch_docs = True
@@ -184,7 +187,7 @@ def process_conversation(
         citations=citations,
     )
 
-    persist_result = REPOSITORY.persist(
+    persist_result = repository.persist(
         provider=provider,
         conversation_id=conversation_id,
         title=title,
@@ -201,6 +204,7 @@ def process_conversation(
         slug_hint=slug,
         id_hint=conversation_id[:8] if conversation_id else None,
         force=force,
+        allow_dirty=allow_dirty,
         registrar=registrar,
     )
 

@@ -43,25 +43,25 @@ def _validate_timestamp(value: Any, label: str, path: str) -> None:
     if value is None:
         return
     if not isinstance(value, str) or not value.strip():
-        _raise(label, f"{path} must be an ISO timestamp string")
+        _raise(label, f"{path} must be an ISO timestamp string, got {type(value).__name__}")
 
 
 def _validate_attachment_entry(entry: Mapping[str, Any], label: str, path: str) -> None:
     if not isinstance(entry, Mapping):
-        _raise(label, f"{path} entries must be objects")
+        _raise(label, f"{path} entries must be objects, got {type(entry).__name__}")
     doc_id = entry.get("id") or entry.get("driveId") or entry.get("fileId")
     if not isinstance(doc_id, str) or not doc_id.strip():
-        _raise(label, f"{path} entries require an id/driveId/fileId")
+        _raise(label, f"{path} entries require an id/driveId/fileId (string), got {type(doc_id).__name__}")
     name = entry.get("name") or entry.get("filename")
     if name is not None and not isinstance(name, str):
-        _raise(label, f"{path} entry names must be strings")
+        _raise(label, f"{path} entry names must be strings, got {type(name).__name__}")
 
 
 def _validate_attachment_list(entries: Any, label: str, path: str) -> None:
     if entries is None:
         return
     if not isinstance(entries, Sequence):
-        _raise(label, f"{path} must be a list")
+        _raise(label, f"{path} must be a list, got {type(entries).__name__}")
     for idx, entry in enumerate(entries):
         _validate_attachment_entry(entry, label, f"{path}[{idx}]")
 

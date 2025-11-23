@@ -176,3 +176,19 @@ def test_run_local_sync_passes_sessions(monkeypatch, tmp_path):
     _run_local_sync("stub", args, env)
 
     assert captured_sessions["sessions"] == [Path(tmp_path / "session-a.jsonl"), Path(tmp_path / "session-b.jsonl")]
+
+
+def test_allow_dirty_requires_force(monkeypatch, capsys):
+    """Verify --allow-dirty without --force raises error."""
+    import sys
+    from polylogue.cli.app import main
+
+    # Simulate command line args
+    monkeypatch.setattr(sys, "argv", ["polylogue", "render", "input.json", "--allow-dirty"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert "--allow-dirty requires --force" in captured.out

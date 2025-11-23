@@ -76,7 +76,10 @@ def prepare_render_assets(
 ) -> Tuple[PerIndexLinks, List[AttachmentInfo]]:
     if download_attachments:
         if drive is None:
-            raise ValueError("Drive client required when download_attachments is enabled")
+            raise ValueError(
+                "Drive client required when download_attachments is enabled. "
+                "Initialize a DriveClient and pass it to the function, or set download_attachments=False."
+            )
         return collect_attachments(
             drive,
             chunks,
