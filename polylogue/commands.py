@@ -515,36 +515,40 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
 
     render_files: List[RenderFile] = []
     totals_acc = RunAccumulator()
-    for src in options.inputs:
-        ctx = PipelineContext(env=env, options=options, data={"source_path": src})
-        pipeline.run(ctx)
-        if ctx.aborted:
-            continue
 
-        result: Optional[ImportResult] = ctx.get("import_result")
-        if result is None:
-            continue
+    with ui.progress("Rendering files", total=len(options.inputs)) as tracker:
+        for src in options.inputs:
+            ctx = PipelineContext(env=env, options=options, data={"source_path": src})
+            pipeline.run(ctx)
+            tracker.advance()
 
-        if result.skipped:
-            totals_acc.increment("skipped")
-            continue
+            if ctx.aborted:
+                continue
 
-        doc: Optional[MarkdownDocument] = result.document
-        if doc is not None:
-            totals_acc.add_stats(len(doc.attachments), doc.stats)
-        if result.diff_path:
-            totals_acc.increment("diffs")
+            result: Optional[ImportResult] = ctx.get("import_result")
+            if result is None:
+                continue
 
-        render_files.append(
-            RenderFile(
-                output=result.markdown_path,
-                slug=result.slug,
-                attachments=len(doc.attachments) if doc else 0,
-                stats=doc.stats if doc else {},
-                html=result.html_path,
-                diff=result.diff_path,
+            if result.skipped:
+                totals_acc.increment("skipped")
+                continue
+
+            doc: Optional[MarkdownDocument] = result.document
+            if doc is not None:
+                totals_acc.add_stats(len(doc.attachments), doc.stats)
+            if result.diff_path:
+                totals_acc.increment("diffs")
+
+            render_files.append(
+                RenderFile(
+                    output=result.markdown_path,
+                    slug=result.slug,
+                    attachments=len(doc.attachments) if doc else 0,
+                    stats=doc.stats if doc else {},
+                    html=result.html_path,
+                    diff=result.diff_path,
+                )
             )
-        )
 
     duration = time.perf_counter() - start_time
     totals = totals_acc.totals()
