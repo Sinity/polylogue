@@ -2,25 +2,8 @@
 
 let
   py = pkgs.python3;
-  pyPkgs = pkgs.python3Packages;
-  pythonEnv = py.withPackages (ps: (
-    with ps; [
-      google-auth-oauthlib
-      requests
-      pathvalidate
-      aiohttp
-      aiofiles
-      rich
-      pydantic
-      python-frontmatter
-      jinja2
-      markdown-it-py
-      pyperclip
-      watchfiles
-      tiktoken
-      "qdrant-client"
-    ]
-  ) ++ extraPythonPackages);
+  deps = import ./python-deps.nix { inherit pkgs; };
+  pythonEnv = py.withPackages (ps: deps.commonDeps ++ extraPythonPackages);
 in
 pkgs.mkShell {
   buildInputs =

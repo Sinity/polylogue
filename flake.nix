@@ -21,97 +21,81 @@
         });
       };
 
-    in
-    eachDefaultSystem (system:
-      let
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [ re2Overlay ];
-        };
+      perSystem = eachDefaultSystem (system:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ re2Overlay ];
+          };
 
-        pyPkgs = pkgs.python3Packages;
+          pyPkgs = pkgs.python3Packages;
+          deps = import ./nix/python-deps.nix { inherit pkgs; };
 
-        baseDeps = with pyPkgs; [
-          google-auth-oauthlib
-          requests
-          pathvalidate
-          aiohttp
-          aiofiles
-          rich
-          pydantic
-          python-frontmatter
-          jinja2
-          markdown-it-py
-          pyperclip
-          watchfiles
-          tiktoken
-          qdrant-client
-        ];
+          cliDeps = with pkgs; [ gum skim delta git ];
+          cliBinPath = pkgs.lib.makeBinPath cliDeps;
 
-        cliDeps = with pkgs; [ gum skim delta git ];
-        cliBinPath = pkgs.lib.makeBinPath cliDeps;
-
-        polylogueApp = pyPkgs.buildPythonApplication {
-          pname = "polylogue";
-          version = "0.1.0";
-          pyproject = true;
-          src = self;
-          propagatedBuildInputs = baseDeps;
-          nativeBuildInputs =
-            (with pyPkgs; [ setuptools wheel ])
-            ++ cliDeps
-            ++ [ pkgs.makeWrapper ];
-          nativeCheckInputs = (with pyPkgs; [ pytest ]) ++ cliDeps;
-          checkPhase = ''
-            export HOME=$TMPDIR
-            export XDG_STATE_HOME=$TMPDIR
-            export XDG_CACHE_HOME=$TMPDIR
-            pytest
-          '';
-          postInstall = ''
-            wrapProgram $out/bin/polylogue \
-              --prefix PATH : ${cliBinPath}
-          '';
-        };
-
-        defaultDevShell = import ./nix/devshell.nix {
-          inherit pkgs;
-          extraPythonPackages = with pyPkgs; [
-            pytest
-            pytest-cov
-            coverage
-            mypy
-            types-requests
-          ];
-        };
-
-        cliApp = {
-          type = "app";
-          program = "${polylogueApp}/bin/polylogue";
-        };
-      in {
-        packages = {
-          polylogue = polylogueApp;
-          default = polylogueApp;
-        };
-
-        apps = {
-          polylogue = cliApp;
-          default = cliApp;
-        };
-
-        devShells = {
-          default = defaultDevShell;
-          ci = pkgs.mkShell {
-            buildInputs = [ polylogueApp pkgs.git pkgs.which ];
-            shellHook = ''
-              export PATH=${polylogueApp}/bin:''${PATH}
-              echo "Using packaged polylogue at ${polylogueApp}/bin/polylogue"
+          polylogueApp = pyPkgs.buildPythonApplication {
+            pname = "polylogue";
+            version = "0.1.0";
+            pyproject = true;
+            src = self;
+            propagatedBuildInputs = deps.commonDeps;
+            nativeBuildInputs =
+              (with pyPkgs; [ setuptools wheel ])
+              ++ cliDeps
+              ++ [ pkgs.makeWrapper ];
+            nativeCheckInputs = deps.devDeps ++ cliDeps;
+            checkPhase = ''
+              export HOME=$TMPDIR
+              export XDG_STATE_HOME=$TMPDIR
+              export XDG_CACHE_HOME=$TMPDIR
+              pytest
+            '';
+            postInstall = ''
+              wrapProgram $out/bin/polylogue \
+                --prefix PATH : ${cliBinPath}
             '';
           };
-        };
 
-        checks.default = polylogueApp;
-      }
-    );
+          defaultDevShell = import ./nix/devshell.nix {
+            inherit pkgs;
+            extraPythonPackages = deps.devDeps;
+          };
+
+          cliApp = {
+            type = "app";
+            program = "${polylogueApp}/bin/polylogue";
+          };
+        in {
+          packages = {
+            polylogue = polylogueApp;
+            default = polylogueApp;
+          };
+
+          apps = {
+            polylogue = cliApp;
+            default = cliApp;
+          };
+
+          devShells = {
+            default = defaultDevShell;
+            ci = pkgs.mkShell {
+              buildInputs = [ polylogueApp pkgs.git pkgs.which ];
+              shellHook = ''
+                export PATH=${polylogueApp}/bin:''${PATH}
+                echo "Using packaged polylogue at ${polylogueApp}/bin/polylogue"
+              '';
+            };
+          };
+
+          checks.default = polylogueApp;
+        }
+      );
+    in
+    perSystem // {
+      nixosModules = {
+        polylogue = import ./nix/modules/polylogue.nix { self = self; };
+        default = self.nixosModules.polylogue;
+      };
+    };
 }

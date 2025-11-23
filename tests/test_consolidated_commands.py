@@ -114,10 +114,6 @@ def test_parser_browse_has_all_subcommands():
     assert args.browse_cmd == "status"
     assert args.json is True
 
-    # Test dashboards
-    args = parser.parse_args(["browse", "dashboards"])
-    assert args.browse_cmd == "dashboards"
-
     # Test runs
     args = parser.parse_args(["browse", "runs", "--limit", "20"])
     assert args.browse_cmd == "runs"
@@ -256,22 +252,6 @@ def test_browse_dispatcher_handles_status(monkeypatch, tmp_path):
         providers=None,
         summary=None,
         summary_only=False,
-    )
-
-    # Should not raise
-    run_browse_cli(args, env)
-
-
-def test_browse_dispatcher_handles_dashboards(monkeypatch, tmp_path):
-    """Verify browse dispatcher correctly routes to dashboards."""
-    _configure_isolated_state(monkeypatch, tmp_path)
-
-    ui = DummyUI()
-    env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
-        browse_cmd="dashboards",
-        runs_limit=10,
-        json=False,
     )
 
     # Should not raise
