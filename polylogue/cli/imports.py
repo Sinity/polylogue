@@ -25,6 +25,7 @@ from .context import (
     DEFAULT_CLAUDE_OUT,
     DEFAULT_CODEX_SYNC_OUT,
     DEFAULT_COLLAPSE,
+    resolve_collapse_value,
     resolve_html_enabled,
 )
 from .json_output import safe_json_handler
@@ -172,8 +173,8 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else CODEX_SESSIONS_ROOT
     out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
-    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     settings = env.settings
+    collapse = resolve_collapse_value(args.collapse_threshold, settings)
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     session_target = args.session_id
@@ -259,8 +260,8 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
             raise SystemExit(1)
 
     out_dir = Path(args.out) if args.out else DEFAULT_CHATGPT_OUT
-    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     settings = env.settings
+    collapse = resolve_collapse_value(args.collapse_threshold, settings)
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     selected_ids = args.conversation_ids[:] if args.conversation_ids else None
@@ -361,8 +362,8 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
             raise SystemExit(1)
 
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_OUT
-    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     settings = env.settings
+    collapse = resolve_collapse_value(args.collapse_threshold, settings)
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     selected_ids = args.conversation_ids[:] if args.conversation_ids else None
@@ -470,8 +471,8 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
         session_id = chosen["path"]
 
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
-    collapse = args.collapse_threshold or DEFAULT_COLLAPSE
     settings = env.settings
+    collapse = resolve_collapse_value(args.collapse_threshold, settings)
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
 
