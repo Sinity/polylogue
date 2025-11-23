@@ -29,7 +29,7 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     # Check if config already exists
     if SETTINGS_PATH.exists() and not getattr(args, "force", False):
         if not ui.plain:
-            if not ui.console.confirm(
+            if not ui.confirm(
                 f"Configuration already exists at {SETTINGS_PATH}. Overwrite?",
                 default=False
             ):
@@ -49,7 +49,7 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     console.print(f"Where should rendered conversations be saved?")
 
     if not ui.plain:
-        output_dir_input = ui.console.input(
+        output_dir_input = ui.input(
             f"  [{default_dir}]: ",
             default=str(default_dir)
         )
@@ -63,7 +63,7 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     console.print("Generate interactive HTML files alongside Markdown?")
 
     if not ui.plain:
-        html_enabled = ui.console.confirm("  Enable HTML previews?", default=True)
+        html_enabled = ui.confirm("  Enable HTML previews?", default=True)
     else:
         html_enabled = True
         console.print("  Using default: Yes")
@@ -72,7 +72,7 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     console.print(f"\n[bold]HTML Theme[/bold]")
     if not ui.plain:
         theme_options = ["light", "dark"]
-        theme = ui.console.choose("  Choose theme:", theme_options)
+        theme = ui.choose("  Choose theme:", theme_options)
         if not theme:
             theme = "dark"
     else:
