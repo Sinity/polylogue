@@ -1,0 +1,77 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "polylogue"
+version = "0.1.0"
+description = "Polylogue CLI for AI chat archives"
+readme = "README.md"
+authors = [{ name = "Polylogue Maintainers" }]
+requires-python = ">=3.10"
+dependencies = [
+  "google-auth-oauthlib",
+  "requests",
+  "pathvalidate",
+  "aiohttp",
+  "aiofiles",
+  "rich",
+  "pydantic",
+  "python-frontmatter",
+  "jinja2",
+  "markdown-it-py",
+  "pyperclip",
+  "watchfiles",
+  "tiktoken",
+  "qdrant-client",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-cov>=4",
+  "coverage[toml]>=7.6",
+  "mypy>=1.11",
+  "types-requests",
+]
+
+[project.scripts]
+polylogue = "polylogue.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["polylogue", "polylogue.*"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["polylogue"]
+branch = true
+
+[tool.coverage.report]
+skip_empty = true
+show_missing = true
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_any_generics = false
+disallow_incomplete_defs = false
+disallow_untyped_defs = false
+plugins = []
+exclude = ["tests/"]
+files = [
+  "polylogue/pipeline.py",
+  "polylogue/results.py",
+  "polylogue/repository.py",
+  "polylogue/cli/render.py",
+  "polylogue/cli/sync.py",
+  "polylogue/cli/imports.py",
+  "polylogue/cli/status.py",
+  "polylogue/cli/watch.py",
+]
+ignore_missing_imports = true

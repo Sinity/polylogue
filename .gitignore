@@ -1,0 +1,22 @@
+# Local OAuth tokens and credentials
+token.json
+credentials.json
+
+# Synced attachment folders
+*_attachments/
+*_attachment/
+
+# Common OS cruft
+.DS_Store
+Thumbs.db
+
+# Local dev environment
+.direnv/
+
+# Python
+__pycache__
+
+# not project code
+data
+sinex_md/
+polylogue.egg-info/
