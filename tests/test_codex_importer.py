@@ -1,7 +1,19 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from polylogue.importers.codex import import_codex_session
+@pytest.fixture(autouse=True)
+def _isolate_state(monkeypatch, tmp_path):
+    state_dir = tmp_path / "xdg-state"
+    cache_dir = tmp_path / "xdg-cache"
+    home_dir = tmp_path / "home"
+    for path in (state_dir, cache_dir, home_dir):
+        path.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))
+    monkeypatch.setenv("HOME", str(home_dir))
 
 
 def _write_session(tmp_path: Path, name: str, entries: list[dict]) -> Path:
@@ -69,6 +81,7 @@ def test_import_codex_session_extracts_tool_attachment(tmp_path):
     assert stats["chunkCount"] >= 2
     assert stats["modelTurns"] >= 0
     assert stats["userTurns"] >= 1
+    assert stats["totalWordsApprox"] >= 1
 
     # ensure attachment metadata references the saved file
     links = [info for info in result.document.attachments]
@@ -99,4 +112,33 @@ def test_import_codex_session_removes_empty_attachment_dir(tmp_path):
     )
 
     assert result.attachments_dir is None
-    assert not (out_dir / "simple_attachments").exists()
+    assert not (result.markdown_path.parent / "attachments").exists()
+
+
+def test_import_codex_session_normalises_footnotes(tmp_path):
+    entries = [
+        {"type": "session_meta", "payload": {"session_id": "foot"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "\\[9\\] Footnote"}],
+            },
+        },
+    ]
+    path = _write_session(tmp_path, "session-foot", entries)
+    out_dir = tmp_path / "out_foot"
+
+    result = import_codex_session(
+        "session-foot",
+        base_dir=tmp_path / "sessions",
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+    )
+
+    assert result.markdown_path.exists()
+    text = result.markdown_path.read_text(encoding="utf-8")
+    assert "[9] Footnote" in text
+    assert "\\[9\\]" not in text

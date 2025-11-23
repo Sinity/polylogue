@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 import json
+import re
+import urllib.parse
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from ..render import AttachmentInfo, build_markdown_from_chunks
-from ..document_store import persist_document
-from ..util import assign_conversation_slug
+from ..render import AttachmentInfo
+from ..util import assign_conversation_slug, sanitize_filename
+from ..conversation import process_conversation
+from ..branching import MessageRecord
+from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .base import ImportResult
-from .utils import estimate_token_count, store_large_text
+from .normalizer import build_message_record
+from .utils import (
+    estimate_token_count,
+    normalise_inline_footnotes,
+    safe_extractall,
+    store_large_text,
+)
 
 
 def _load_export(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
@@ -21,7 +30,7 @@ def _load_export(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
         raise FileNotFoundError(f"Unsupported ChatGPT export: {path}")
     tmp = TemporaryDirectory(prefix="chatgpt-export-")
     with zipfile.ZipFile(path) as zf:
-        zf.extractall(tmp.name)
+        safe_extractall(zf, Path(tmp.name))
     return Path(tmp.name), tmp
 
 
@@ -74,6 +83,36 @@ def _render_parts(parts: Iterable) -> str:
     return "\n\n".join([frag for frag in fragments if frag])
 
 
+def _extract_tool_calls(content: Dict[str, Any]) -> List[Dict[str, Any]]:
+    parts = content.get("parts") if isinstance(content, dict) else None
+    if not isinstance(parts, list):
+        return []
+    calls: List[Dict[str, Any]] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        content_type = part.get("content_type") or part.get("type")
+        if content_type in {"tool_calls", "tool_call"}:
+            payload = part.get("input") or part.get("arguments")
+            call = {
+                "type": content_type,
+                "name": part.get("name") or part.get("id") or "tool",
+            }
+            if part.get("id"):
+                call["id"] = part["id"]
+            if payload is not None:
+                call["arguments"] = payload
+            calls.append(call)
+        elif content_type in {"tool_result", "tool_results"}:
+            call_result = {
+                "type": content_type,
+                "id": part.get("id"),
+                "output": part.get("text") or part.get("output"),
+            }
+            calls.append(call_result)
+    return calls
+
+
 def _format_table(rows: List, header: Iterable) -> str:
     def fmt_row(row: Iterable) -> List[str]:
         result: List[str] = []
@@ -110,6 +149,8 @@ def _gather_messages(conv: Dict) -> List[Dict]:
                 "content": msg.get("content"),
                 "metadata": msg.get("metadata") or {},
                 "create_time": created,
+                "node_id": node.get("id"),
+                "parent": node.get("parent"),
             }
         )
     messages.sort(key=lambda m: (m.get("create_time") or 0, m.get("id") or ""))
@@ -124,7 +165,11 @@ def import_chatgpt_export(
     html: bool,
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
+    force: bool = False,
+    allow_dirty: bool = False,
+    registrar: Optional[ConversationRegistrar] = None,
 ) -> List[ImportResult]:
+    registrar = registrar or create_default_registrar()
     base_path, tmp = _load_export(export_path)
     try:
         convo_path = base_path / "conversations.json"
@@ -132,7 +177,10 @@ def import_chatgpt_export(
             raise FileNotFoundError("conversations.json missing in export")
         conversations = json.loads(convo_path.read_text(encoding="utf-8"))
         if not isinstance(conversations, list):
-            raise ValueError("Unexpected ChatGPT export format")
+            raise ValueError(
+                "Unexpected ChatGPT export format: conversations.json must contain a list. "
+                "Make sure you're using a valid ChatGPT export from the official export feature."
+            )
 
         output_dir.mkdir(parents=True, exist_ok=True)
         results: List[ImportResult] = []
@@ -148,6 +196,9 @@ def import_chatgpt_export(
                     collapse_threshold=collapse_threshold,
                     html=html,
                     html_theme=html_theme,
+                    force=force,
+                    allow_dirty=allow_dirty,
+                    registrar=registrar,
                 )
             )
         return results
@@ -164,7 +215,10 @@ def list_chatgpt_conversations(export_path: Path) -> List[Dict[str, Optional[str
             raise FileNotFoundError("conversations.json missing in export")
         conversations = json.loads(convo_path.read_text(encoding="utf-8"))
         if not isinstance(conversations, list):
-            raise ValueError("Unexpected ChatGPT export format")
+            raise ValueError(
+                "Unexpected ChatGPT export format: ZIP archive must contain a valid conversations.json file. "
+                "Make sure you're using an official ChatGPT export."
+            )
         results: List[Dict[str, Optional[str]]] = []
         for conv in conversations:
             results.append(
@@ -191,16 +245,24 @@ def _render_chatgpt_conversation(
     collapse_threshold: int,
     html: bool,
     html_theme: str,
+    force: bool,
+    allow_dirty: bool,
+    registrar: Optional[ConversationRegistrar],
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
     conv_id = conv.get("id") or conv.get("conversation_id") or "chat"
     slug = assign_conversation_slug("chatgpt", conv_id, title, id_hint=(conv_id or "")[:8])
-    markdown_path = output_dir / f"{slug}.md"
-    attachments_dir = markdown_path.parent / f"{slug}_attachments"
+    conversation_dir = output_dir / slug
+    conversation_dir.mkdir(parents=True, exist_ok=True)
+    markdown_path = conversation_dir / "conversation.md"
+    attachments_dir = conversation_dir / "attachments"
 
     chunks: List[Dict] = []
     attachments: List[AttachmentInfo] = []
+    attachment_lookup: Dict[str, AttachmentInfo] = {}
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
+    message_records: List[MessageRecord] = []
+    seen_message_ids: Set[str] = set()
 
     files_dir = export_root / "files"
     file_index = _build_file_index(files_dir)
@@ -217,6 +279,7 @@ def _render_chatgpt_conversation(
         role = msg.get("author") or "assistant"
         content = msg.get("content") or {}
         text_block = _extract_text(role, content)
+        text_block = normalise_inline_footnotes(text_block)
         metadata = msg.get("metadata") or {}
         canonical_role = _normalise_role(role)
         chunk = {
@@ -224,12 +287,25 @@ def _render_chatgpt_conversation(
             "text": text_block,
             "tokenCount": estimate_token_count(text_block, model=model_slug),
         }
+        message_id = msg.get("id") or msg.get("node_id")
+        parent_id = msg.get("parent")
+        if message_id:
+            chunk["messageId"] = message_id
+            chunk["nodeId"] = msg.get("node_id") or message_id
+        if parent_id:
+            chunk["parentId"] = parent_id
+            chunk["branchParent"] = parent_id
+        elif message_records:
+            fallback_parent = message_records[-1].message_id
+            chunk["parentId"] = fallback_parent
+            chunk["branchParent"] = fallback_parent
+            parent_id = fallback_parent
         if msg.get("create_time"):
             chunk["timestamp"] = msg["create_time"]
         chunks.append(chunk)
         attachment_refs = metadata.get("attachments") or []
         for ref in attachment_refs:
-            _copy_attachment(
+            info = _copy_attachment(
                 ref,
                 file_index,
                 attachments_dir,
@@ -238,9 +314,16 @@ def _render_chatgpt_conversation(
                 per_chunk_links,
                 idx,
             )
-        if text_block:
+            if info is not None:
+                file_id = ref.get("id") or ref.get("file_id")
+                if file_id:
+                    attachment_lookup[file_id] = info
+        chunks[idx]["text"] = _inject_citations(chunks[idx]["text"], metadata, attachment_lookup)
+        current_text = chunks[idx]["text"]
+        if current_text:
+            current_text = normalise_inline_footnotes(current_text)
             preview = store_large_text(
-                text_block,
+                current_text,
                 chunk_index=idx,
                 attachments_dir=attachments_dir,
                 markdown_dir=markdown_path.parent,
@@ -248,8 +331,23 @@ def _render_chatgpt_conversation(
                 per_chunk_links=per_chunk_links,
                 prefix="chatgpt",
             )
-            if preview != text_block:
+            if preview != current_text:
                 chunks[idx]["text"] = preview
+
+        links = list(per_chunk_links.get(idx, []))
+        message_records.append(
+            build_message_record(
+                provider="chatgpt",
+                conversation_id=conv_id,
+                chunk_index=idx,
+                chunk=chunks[idx],
+                raw_metadata=metadata,
+                attachments=links,
+                tool_calls=_extract_tool_calls(content if isinstance(content, dict) else {}),
+                seen_ids=seen_message_ids,
+                fallback_prefix=slug,
+            )
+        )
 
     conversation_id = conv.get("id") or conv.get("conversation_id")
     extra_yaml = {
@@ -259,63 +357,35 @@ def _render_chatgpt_conversation(
         "sourceExportPath": str(export_root),
     }
 
-    document = build_markdown_from_chunks(
-        chunks,
-        per_chunk_links,
-        title=title,
-        source_file_id=conversation_id,
-        modified_time=conv.get("update_time") or conv.get("modified_time"),
-        created_time=conv.get("create_time"),
-        run_settings=None,
-        citations=None,
-        source_mime="application/json",
-        source_size=None,
-        collapse_threshold=collapse_threshold,
-        extra_yaml=extra_yaml,
-        attachments=attachments,
-    )
-
-    persist_result = persist_document(
+    return process_conversation(
         provider="chatgpt",
         conversation_id=conversation_id,
+        slug=slug,
         title=title,
-        document=document,
-        output_dir=output_dir,
-        collapse_threshold=collapse_threshold,
+        message_records=message_records,
         attachments=attachments,
-        updated_at=conv.get("update_time") or conv.get("modified_time"),
-        created_at=conv.get("create_time"),
+        canonical_leaf_id=conv.get("current_node"),
+        collapse_threshold=collapse_threshold,
         html=html,
         html_theme=html_theme,
-        attachment_policy=None,
+        output_dir=output_dir,
+        extra_yaml=extra_yaml,
         extra_state={
             "sourceModel": model_slug,
             "sourceExportPath": str(export_root),
         },
-        slug_hint=slug,
-        id_hint=(conv_id or "")[:8],
+        source_file_id=conversation_id,
+        modified_time=conv.get("update_time") or conv.get("modified_time"),
+        created_time=conv.get("create_time"),
+        run_settings=None,
+        source_mime="application/json",
+        source_size=None,
+        attachment_policy=None,
+        force=force,
+        allow_dirty=allow_dirty,
+        registrar=registrar,
     )
 
-    if persist_result.skipped:
-        return ImportResult(
-            markdown_path=persist_result.markdown_path,
-            html_path=persist_result.html_path,
-            attachments_dir=persist_result.attachments_dir,
-            document=None,
-            skipped=True,
-            skip_reason=persist_result.skip_reason,
-            dirty=persist_result.dirty,
-            content_hash=persist_result.content_hash,
-        )
-
-    return ImportResult(
-        markdown_path=persist_result.markdown_path,
-        html_path=persist_result.html_path,
-        attachments_dir=persist_result.attachments_dir,
-        document=persist_result.document or document,
-        dirty=persist_result.dirty,
-        content_hash=persist_result.content_hash,
-    )
 
 def _normalise_role(role: Optional[str]) -> str:
     if not role:
@@ -361,31 +431,37 @@ def _copy_attachment(
     attachments: List[AttachmentInfo],
     per_chunk_links: Dict[int, List[Tuple[str, Path]]],
     chunk_idx: int,
-) -> None:
+) -> Optional[AttachmentInfo]:
     file_id = ref.get("id") or ref.get("file_id")
-    name = ref.get("name") or ref.get("filename") or file_id
-    if not name:
-        return
+    raw_name = ref.get("name") or ref.get("filename") or file_id
+    if not raw_name:
+        return None
+    safe_name = sanitize_filename(raw_name)
+    if not safe_name:
+        safe_name = sanitize_filename(file_id or "attachment")
+    if not safe_name:
+        safe_name = "attachment"
     src = None
     if file_id and file_id in file_index:
         src = file_index[file_id]
-    elif name in file_index:
-        src = file_index[name]
+    elif raw_name in file_index:
+        src = file_index[raw_name]
     if src is None:
-        attachments.append(
-            AttachmentInfo(
-                name=name,
-                link=ref.get("url") or f"attachment://{name}",
-                local_path=None,
-                size_bytes=ref.get("size"),
-                remote=True,
-            )
+        info = AttachmentInfo(
+            name=raw_name,
+            link=ref.get("url") or f"attachment://{raw_name}",
+            local_path=None,
+            size_bytes=ref.get("size"),
+            remote=True,
         )
-        per_chunk_links.setdefault(chunk_idx, []).append((name, ref.get("url") or f"attachment://{name}"))
-        return
+        attachments.append(info)
+        per_chunk_links.setdefault(chunk_idx, []).append(
+            (raw_name, ref.get("url") or f"attachment://{raw_name}")
+        )
+        return info
 
     attachments_dir.mkdir(parents=True, exist_ok=True)
-    target = attachments_dir / name
+    target = attachments_dir / safe_name
     counter = 1
     while target.exists():
         target = attachments_dir / f"{target.stem}_{counter}{target.suffix}"
@@ -395,13 +471,143 @@ def _copy_attachment(
         rel = target.relative_to(markdown_root)
     except ValueError:
         rel = target
-    attachments.append(
-        AttachmentInfo(
-            name=target.name,
-            link=str(rel),
-            local_path=rel,
-            size_bytes=target.stat().st_size,
-            remote=False,
-        )
+    info = AttachmentInfo(
+        name=target.name,
+        link=str(rel),
+        local_path=rel,
+        size_bytes=target.stat().st_size,
+        remote=False,
     )
+    attachments.append(info)
     per_chunk_links.setdefault(chunk_idx, []).append((target.name, rel))
+    return info
+
+
+_CITE_TOKEN_RE = re.compile(r"\uE200(?P<tag>[^\uE200\uE201]+)((?:\uE202[^\uE200\uE201]+)*)\uE201")
+
+
+def _inject_citations(text: str, metadata: Dict[str, Any], attachments_by_id: Dict[str, AttachmentInfo]) -> str:
+    if not text:
+        return text
+    citations = metadata.get("citations") or []
+    ref_map = {
+        ref.get("matched_text"): ref
+        for ref in metadata.get("content_references") or []
+        if isinstance(ref, dict) and ref.get("matched_text")
+    }
+    if not citations and not ref_map:
+        return text
+
+    labels: Dict[Tuple[str, Optional[str]], str] = {}
+    footnotes: Dict[str, str] = {}
+    counter = 1
+    cite_index = 0
+    total_cites = len(citations)
+
+    def ensure_label(key: Tuple[str, Optional[str]], description_provider) -> str:
+        nonlocal counter
+        label = labels.get(key)
+        if label is None:
+            label = f"cite{counter}"
+            counter += 1
+            description = description_provider()
+            if description:
+                footnotes[label] = description
+            labels[key] = label
+        return label
+
+    def replacer(match: re.Match[str]) -> str:
+        nonlocal cite_index
+        if cite_index < total_cites:
+            citation = citations[cite_index]
+            cite_index += 1
+            key = ("citation",) + _citation_key(citation)
+            label = ensure_label(key, lambda: _format_citation_description(citation, attachments_by_id))
+            return f"[^{label}]"
+
+        ref = ref_map.get(match.group(0))
+        if ref:
+            ref_key = ("reference", ref.get("matched_text"))
+            label = ensure_label(ref_key, lambda: _format_reference_description(ref, attachments_by_id))
+            return f"[^{label}]"
+        return ""
+
+    rendered = _CITE_TOKEN_RE.sub(replacer, text)
+    if not footnotes:
+        return rendered
+    footnote_lines = [f"[^{label}]: {desc}" for label, desc in footnotes.items()]
+    return rendered.rstrip() + "\n\n" + "\n".join(footnote_lines)
+
+
+def _citation_key(citation: Dict[str, Any]) -> Tuple[str, Optional[str]]:
+    meta = citation.get("metadata") or {}
+    ctype = meta.get("type") or "unknown"
+    if ctype == "file":
+        return (ctype, meta.get("id") or meta.get("name"))
+    if ctype == "webpage":
+        return (ctype, meta.get("url"))
+    if ctype == "image_inline":
+        links = meta.get("asset_pointer_links") or []
+        return (ctype, links[0] if links else meta.get("clicked_from_url"))
+    return (ctype, None)
+
+
+def _format_citation_description(citation: Dict[str, Any], attachments_by_id: Dict[str, AttachmentInfo]) -> str:
+    meta = citation.get("metadata") or {}
+    ctype = meta.get("type")
+    if ctype == "file":
+        file_id = meta.get("id")
+        info = attachments_by_id.get(file_id)
+        name = meta.get("name") or (info.name if info else file_id) or "attachment"
+        if info:
+            if info.local_path:
+                target = urllib.parse.quote(info.local_path.as_posix())
+            else:
+                target = info.link
+            return f"[{name}]({target})"
+        link = meta.get("url") or f"attachment://{name}"
+        return f"[{name}]({link})"
+    if ctype == "webpage":
+        title = meta.get("title") or meta.get("url") or "Source"
+        url = meta.get("url")
+        return f"[{title}]({url})" if url else title
+    if ctype == "image_inline":
+        title = meta.get("clicked_from_title") or "Image reference"
+        url = meta.get("clicked_from_url")
+        if not url:
+            links = meta.get("asset_pointer_links") or []
+            url = links[0] if links else None
+        return f"{title} — {url}" if url else title
+    text = meta.get("text")
+    if text:
+        return text
+    name = meta.get("name")
+    if name:
+        return name
+    return "Citation"
+
+
+def _format_reference_description(reference: Dict[str, Any], attachments_by_id: Dict[str, AttachmentInfo]) -> str:
+    alt = reference.get("alt")
+    if isinstance(alt, str):
+        alt = alt.strip()
+        if alt.startswith("(") and alt.endswith(")"):
+            alt = alt[1:-1].strip()
+        if alt:
+            return alt
+    urls = reference.get("safe_urls") or []
+    if urls:
+        title = reference.get("title") or reference.get("matched_text") or "Reference"
+        return f"[{title}]({urls[0]})"
+    refs = reference.get("refs") or []
+    if refs:
+        ref_id = refs[0]
+        if isinstance(ref_id, dict):
+            ref_id = ref_id.get("ref_type") or ref_id.get("id") or "internal"
+        if isinstance(ref_id, str) and ref_id.startswith("hidden"):
+            return "Live market quote (tool result)"
+        return f"Internal reference {ref_id}"
+    matched = reference.get("matched_text")
+    if matched:
+        return f"Reference {matched.strip()}"
+    return "Reference"
