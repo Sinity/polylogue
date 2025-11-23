@@ -965,12 +965,80 @@ def _dispatch_config(args: argparse.Namespace, env: CommandEnv) -> None:
     if config_cmd == "init":
         from .init import run_init_cli
         run_init_cli(args, env)
+    elif config_cmd == "set":
+        from .settings_cli import run_settings_cli
+        run_settings_cli(args, env)
+    elif config_cmd == "show":
+        _run_config_show(args, env)
     else:
-        raise SystemExit("config requires a sub-command (init)")
+        raise SystemExit("config requires a subcommand: init, set, show")
 
 
-def _dispatch_status(args: argparse.Namespace, env: CommandEnv) -> None:
-    run_status_cli(args, env)
+def _run_config_show(args: argparse.Namespace, env: CommandEnv) -> None:
+    """Show current configuration (combines env + settings)."""
+    import json
+    from ..settings import SETTINGS_PATH
+    from ..config import CONFIG_PATH
+
+    ui = env.ui
+    settings = env.settings
+    defaults = CONFIG.defaults
+
+    if getattr(args, "json", False):
+        payload = {
+            "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
+            "settingsPath": str(SETTINGS_PATH),
+            "html_previews": settings.html_previews,
+            "html_theme": settings.html_theme,
+            "collapse_threshold": settings.collapse_threshold,
+            "output_dirs": {
+                "render": str(defaults.output_dirs.render),
+                "sync_drive": str(defaults.output_dirs.sync_drive),
+                "sync_codex": str(defaults.output_dirs.sync_codex),
+                "sync_claude_code": str(defaults.output_dirs.sync_claude_code),
+                "import_chatgpt": str(defaults.output_dirs.import_chatgpt),
+                "import_claude": str(defaults.output_dirs.import_claude),
+            },
+            "statePath": str(env.conversations.state_path),
+            "runsDb": str(env.database.resolve_path()),
+        }
+        print(json.dumps(payload, indent=2))
+        return
+
+    summary_lines = [
+        f"Config: {CONFIG_PATH or '(default)'}",
+        f"Settings: {SETTINGS_PATH}",
+        "",
+        f"HTML previews: {'on' if settings.html_previews else 'off'}",
+        f"HTML theme: {settings.html_theme}",
+    ]
+    if settings.collapse_threshold is not None:
+        summary_lines.append(f"Collapse threshold: {settings.collapse_threshold}")
+
+    summary_lines.extend([
+        "",
+        "Output directories:",
+        f"  render: {defaults.output_dirs.render}",
+        f"  sync/drive: {defaults.output_dirs.sync_drive}",
+        f"  sync/codex: {defaults.output_dirs.sync_codex}",
+        f"  sync/claude-code: {defaults.output_dirs.sync_claude_code}",
+        f"  import/chatgpt: {defaults.output_dirs.import_chatgpt}",
+        f"  import/claude: {defaults.output_dirs.import_claude}",
+        "",
+        f"State DB: {env.conversations.state_path}",
+        f"Runs DB: {env.database.resolve_path()}",
+    ])
+    ui.summary("Configuration", summary_lines)
+
+
+def _dispatch_browse(args: argparse.Namespace, env: CommandEnv) -> None:
+    from .browse import run_browse_cli
+    run_browse_cli(args, env)
+
+
+def _dispatch_maintain(args: argparse.Namespace, env: CommandEnv) -> None:
+    from .maintain import run_maintain_cli
+    run_maintain_cli(args, env)
 
 
 def _dispatch_dashboards(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -1014,31 +1082,23 @@ def _register_default_commands() -> None:
         if COMMAND_REGISTRY.resolve(name) is None:
             COMMAND_REGISTRY.register(name, handler, help_text=help_text, aliases=aliases or [])
 
-    # Core workflow commands with ergonomic aliases
-    _ensure("render", _dispatch_render, "Render local provider JSON logs", ["r"])
-    _ensure("sync", _dispatch_sync, "Synchronize provider archives", ["s"])
-    _ensure("import", _dispatch_import, "Import provider exports into the archive", ["i", "imp"])
-    _ensure("watch", _dispatch_watch, "Watch local session stores and sync on changes", ["w"])
+    # Core workflow commands (data ingestion & exploration)
     _ensure("search", _dispatch_search, "Search rendered transcripts", ["find", "f"])
+    _ensure("import", _dispatch_import, "Import provider exports", ["i"])
+    _ensure("sync", _dispatch_sync, "Sync provider archives", ["s"])
+    _ensure("watch", _dispatch_watch, "Watch and auto-sync", ["w"])
 
-    # Inspection & analysis
-    _ensure("inspect", _dispatch_inspect, "Inspect existing archives and stats", ["x"])
+    # Exploration
+    _ensure("browse", _dispatch_browse, "Browse data (branches/stats/status/dashboards/runs)", ["b"])
 
-    # Management & diagnostics
-    _ensure("prune", _dispatch_prune, "Remove legacy single-file outputs and attachments", ["clean"])
-    _ensure("doctor", _dispatch_doctor, "Check local data directories for common issues", ["check", "validate"])
-    _ensure("status", _dispatch_status, "Show cached Drive info and recent runs", ["st"])
-    _ensure("dashboards", _dispatch_dashboards, "Show provider dashboards", ["dash", "d"])
-    _ensure("runs", lambda args, env: run_runs_cli(args, env), "List recent runs", ["history", "h"])
+    # Maintenance
+    _ensure("maintain", _dispatch_maintain, "System maintenance (prune/doctor/index)", ["m"])
 
     # Configuration
-    _ensure("index", lambda args, env: run_index_cli(args, env), "Index maintenance helpers")
-    _ensure("config", _dispatch_config, "Configure Polylogue settings", ["cfg"])
-    _ensure("settings", _dispatch_settings, "Show or update default preferences")
+    _ensure("config", _dispatch_config, "Configuration (init/set/show)", ["cfg"])
 
-    # Support
+    # Meta
     _ensure("help", _dispatch_help, "Show command help", ["?"])
-    _ensure("env", _dispatch_env, "Show resolved configuration/output paths", ["e"])
     _ensure("completions", _dispatch_completions, "Emit shell completion script")
 
     # Internal (no aliases needed)
