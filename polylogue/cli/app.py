@@ -1110,7 +1110,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_import.add_argument("--json", action="store_true", help="Emit machine-readable summary")
     p_import.add_argument("--to-clipboard", action="store_true", help="Copy a single imported Markdown file to the clipboard")
 
-    p_browse = _add_command_parser(sub, "browse", help="Browse data (branches/stats/status/dashboards/runs)", description="Explore rendered data and system status")
+    p_browse = _add_command_parser(sub, "browse", help="Browse data (branches/stats/status/runs)", description="Explore rendered data and system status")
     browse_sub = p_browse.add_subparsers(dest="browse_cmd", required=True)
 
     p_browse_branches = _add_command_parser(browse_sub, "branches", help="Explore branch graphs for conversations", description="Explore branch graphs for conversations")
