@@ -244,34 +244,59 @@ def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
 
 
+def _bash_dynamic_script() -> str:
+    return textwrap.dedent(
+        """
+        _polylogue_complete() {
+            local IFS=$'\\n'
+            local completions
+            completions=$(polylogue _complete --shell bash --cword $COMP_CWORD -- "${COMP_WORDS[@]}" 2>/dev/null)
+            if [[ $? -ne 0 ]]; then
+                return
+            fi
+            local first=$(echo "$completions" | head -1)
+            if [[ $first == "__PATH__" ]]; then
+                COMPREPLY=( $(compgen -f -- "${COMP_WORDS[COMP_CWORD]}") )
+                return
+            fi
+            COMPREPLY=( $(compgen -W "$completions" -- "${COMP_WORDS[COMP_CWORD]}") )
+        }
+        complete -F _polylogue_complete polylogue
+        """
+    ).strip()
+
+
+def _fish_dynamic_script() -> str:
+    return textwrap.dedent(
+        """
+        function __polylogue_complete
+            set -l cmd (commandline -opc)
+            set -l cword (count $cmd)
+            polylogue _complete --shell fish --cword $cword -- $cmd 2>/dev/null | while read -l line
+                if string match -q "__PATH__*" -- $line
+                    __fish_complete_path
+                    continue
+                end
+                if string match -q "*:*" -- $line
+                    set -l parts (string split -m 1 ":" -- $line)
+                    echo $parts[1]\\t$parts[2]
+                else
+                    echo $line
+                end
+            end
+        end
+        complete -c polylogue -f -a "(__polylogue_complete)"
+        """
+    ).strip()
+
+
 def _completion_script(shell: str, commands: List[str], descriptions: Optional[Dict[str, str]] = None) -> str:
+    # Deprecated fallback for bash/fish - all shells now use dynamic completions
     joined = " ".join(commands)
     if shell == "bash":
-        return textwrap.dedent(
-            f"""
-            _polylogue_complete() {{
-                local cur prev
-                COMPREPLY=()
-                cur="${{COMP_WORDS[COMP_CWORD]}}"
-                if [[ $COMP_CWORD -eq 1 ]]; then
-                    COMPREPLY=( $(compgen -W \"{joined}\" -- \"$cur\") )
-                    return
-                fi
-            }}
-            complete -F _polylogue_complete polylogue
-            """
-        ).strip()
+        return _bash_dynamic_script()
     # fish
-    entries: List[str] = []
-    for cmd in commands:
-        desc = (descriptions or {}).get(cmd, "")
-        if desc:
-            desc_literal = desc.replace('"', '\\"')
-            entries.append(f'complete -c polylogue -f -a "{cmd}" -d "{desc_literal}"')
-        else:
-            entries.append(f'complete -c polylogue -f -a "{cmd}"')
-    entries = "\n".join(entries)
-    return entries.strip()
+    return _fish_dynamic_script()
 
 
 def _zsh_dynamic_script() -> str:
