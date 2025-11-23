@@ -39,8 +39,6 @@ from .arg_helpers import (
     add_html_option,
     add_out_option,
     create_output_parent,
-    create_render_parent,
-    create_write_parent,
     create_filter_parent,
 )
 from .editor import open_in_editor, get_editor
@@ -70,10 +68,8 @@ from .imports import (
 from .dashboards import run_dashboards_cli
 from .runs import run_runs_cli
 from .index_cli import run_index_cli
-from .render import copy_import_to_clipboard, run_render_cli
 from .watch import run_watch_cli
 from .status import run_status_cli, run_stats_cli
-from .doctor import run_doctor_cli
 from .summaries import summarize_import
 from .sync import (
     run_list_cli,
@@ -328,41 +324,6 @@ def run_completions_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         return
     script = _completion_script(args.shell, commands, descriptions)
     print(script)
-
-
-def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
-    defaults = CONFIG.defaults
-    output_dirs = {
-        "render": str(defaults.output_dirs.render),
-        "sync_drive": str(defaults.output_dirs.sync_drive),
-        "sync_codex": str(defaults.output_dirs.sync_codex),
-        "sync_claude_code": str(defaults.output_dirs.sync_claude_code),
-        "import_chatgpt": str(defaults.output_dirs.import_chatgpt),
-        "import_claude": str(defaults.output_dirs.import_claude),
-    }
-    data = {
-        "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
-        "collapseThreshold": defaults.collapse_threshold,
-        "htmlPreviews": defaults.html_previews,
-        "htmlTheme": defaults.html_theme,
-        "outputDirs": output_dirs,
-        "statePath": str(env.conversations.state_path),
-        "runsDb": str(env.database.resolve_path()),
-        "watchProviders": list(WATCHABLE_LOCAL_PROVIDER_NAMES),
-    }
-    if getattr(args, "json", False):
-        print(json.dumps(data, indent=2))
-        return
-    console = env.ui.console
-    console.print("Configuration path: " + (data["configPath"] or "<default>"))
-    console.print(f"Collapse threshold: {defaults.collapse_threshold}")
-    console.print(f"HTML previews: {'on' if defaults.html_previews else 'off'} (theme: {defaults.html_theme})")
-    console.print("Output directories:")
-    for key, value in output_dirs.items():
-        console.print(f"  {key}: {value}")
-    console.print(f"State DB: {data['statePath']}")
-    console.print(f"Runs DB: {data['runsDb']}")
-    console.print("Watchable providers: " + ", ".join(data["watchProviders"]))
 
 
 def run_complete_cli(args: argparse.Namespace, env: Optional[CommandEnv] = None) -> None:
@@ -902,26 +863,12 @@ def run_search_preview(args: argparse.Namespace) -> None:
     print("\n".join(str(part) for part in parts))
 
 
-def _dispatch_render(args: argparse.Namespace, env: CommandEnv) -> None:
-    run_render_cli(args, env, json_output=getattr(args, "json", False))
-
-
 def _dispatch_sync(args: argparse.Namespace, env: CommandEnv) -> None:
     run_sync_cli(args, env)
 
 
 def _dispatch_import(args: argparse.Namespace, env: CommandEnv) -> None:
     run_import_cli(args, env)
-
-
-def _dispatch_inspect(args: argparse.Namespace, env: CommandEnv) -> None:
-    inspect_cmd = getattr(args, "inspect_cmd", None)
-    if inspect_cmd == "branches":
-        run_inspect_branches(args, env)
-    elif inspect_cmd == "stats":
-        run_stats_cli(args, env)
-    else:
-        raise SystemExit("inspect requires a sub-command (branches, stats)")
 
 
 def _dispatch_search(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -931,20 +878,6 @@ def _dispatch_search(args: argparse.Namespace, env: CommandEnv) -> None:
 
 def _dispatch_watch(args: argparse.Namespace, env: CommandEnv) -> None:
     run_watch_cli(args, env)
-
-
-def _dispatch_prune(args: argparse.Namespace, env: CommandEnv) -> None:
-    run_prune_cli(args, env)
-
-
-def _dispatch_doctor(args: argparse.Namespace, env: CommandEnv) -> None:
-    run_doctor_cli(args, env)
-
-
-def _dispatch_settings(args: argparse.Namespace, env: CommandEnv) -> None:
-    from .settings_cli import run_settings_cli
-
-    run_settings_cli(args, env)
 
 
 def _dispatch_config(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -1028,10 +961,6 @@ def _dispatch_maintain(args: argparse.Namespace, env: CommandEnv) -> None:
     run_maintain_cli(args, env)
 
 
-def _dispatch_dashboards(args: argparse.Namespace, env: CommandEnv) -> None:
-    run_dashboards_cli(args, env)
-
-
 def _dispatch_search_preview(args: argparse.Namespace, _env: CommandEnv) -> None:
     run_search_preview(args)
 
@@ -1042,10 +971,6 @@ def _dispatch_complete(args: argparse.Namespace, env: CommandEnv) -> None:
 
 def _dispatch_help(args: argparse.Namespace, env: CommandEnv) -> None:
     run_help_cli(args, env)
-
-
-def _dispatch_env(args: argparse.Namespace, env: CommandEnv) -> None:
-    run_env_cli(args, env)
 
 
 def _dispatch_completions(args: argparse.Namespace, env: CommandEnv) -> None:
