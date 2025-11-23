@@ -200,26 +200,32 @@ def _prune_empty_values(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 def persist_document(
     *,
-    provider: Optional[str],
-    conversation_id: Optional[str],
-    title: str,
     document: MarkdownDocument,
     output_dir: Path,
-    collapse_threshold: int,
     attachments: List[AttachmentInfo],
-    updated_at: Optional[str],
-    created_at: Optional[str],
-    html: bool,
-    html_theme: Optional[str],
-    attachment_policy: Optional[Dict[str, Any]] = None,
-    extra_state: Optional[Dict[str, Any]] = None,
-    slug_hint: Optional[str] = None,
-    id_hint: Optional[str] = None,
-    force: bool = False,
-    allow_dirty: bool = False,
     registrar: ConversationRegistrar,
+    metadata: DocumentMetadata,
+    options: PersistenceOptions,
 ) -> DocumentPersistenceResult:
     # registrar is a required parameter (not Optional), so no None check needed
+    # Extract metadata fields for readability
+    provider = metadata.provider
+    conversation_id = metadata.conversation_id
+    title = metadata.title
+    updated_at = metadata.updated_at
+    created_at = metadata.created_at
+    slug_hint = metadata.slug_hint
+    id_hint = metadata.id_hint
+    extra_state = metadata.extra_state
+
+    # Extract options fields
+    collapse_threshold = options.collapse_threshold
+    html = options.html
+    html_theme = options.html_theme
+    attachment_policy = options.attachment_policy
+    force = options.force
+    allow_dirty = options.allow_dirty
+
     if slug_hint:
         slug = slug_hint
     elif provider and conversation_id:
@@ -250,8 +256,8 @@ def persist_document(
         attachments,
     )
 
-    metadata = _ensure_polylogue_metadata(document.metadata)
-    polylogue_meta = metadata.get("polylogue", {})
+    doc_metadata = _ensure_polylogue_metadata(document.metadata)
+    polylogue_meta = doc_metadata.get("polylogue", {})
     polylogue_meta.update(
         {
             "title": title,
@@ -283,11 +289,11 @@ def persist_document(
             if value is not None:
                 polylogue_meta[key] = value
     polylogue_meta = _prune_empty_values(polylogue_meta)
-    metadata["polylogue"] = polylogue_meta
+    doc_metadata["polylogue"] = polylogue_meta
 
-    content_hash = _compute_content_hash(document.body, metadata)
+    content_hash = _compute_content_hash(document.body, doc_metadata)
     polylogue_meta["contentHash"] = content_hash
-    document.metadata = metadata
+    document.metadata = doc_metadata
 
     existing_dirty = False
     if existing and stored_hash:
@@ -308,8 +314,8 @@ def persist_document(
             if state_entry.get("contentHash") and state_entry["contentHash"] != content_hash:
                 remote_same = False
             if remote_same and existing:
-                dirty_meta = _ensure_polylogue_metadata(existing.metadata)
-                polylogue = dirty_meta.get("polylogue", {})
+                dirty_doc_metadata = _ensure_polylogue_metadata(existing.metadata)
+                polylogue = dirty_doc_metadata.get("polylogue", {})
                 polylogue.update(
                     {
                         "title": polylogue.get("title") or title,
