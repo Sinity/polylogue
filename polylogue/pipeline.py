@@ -102,6 +102,7 @@ def collect_attachments(
     dry_run: bool,
 ) -> Tuple[PerIndexLinks, List[AttachmentInfo]]:
     collector = _AttachmentCollector(md_path.parent, dry_run=dry_run)
+    failures: List[str] = []
     for idx, chunk in enumerate(chunks):
         ids = collect_remote_ids(chunk)
         if not ids:
@@ -128,9 +129,13 @@ def collect_attachments(
                 if needs_download:
                     ok = drive.download_attachment(att_id, local_path)
                     if not ok:
+                        failures.append(att_id)
                         continue
                 drive.touch_mtime(local_path, meta_att.get("modifiedTime"))
             collector.add_local(idx, fname, att_id, local_path)
+    if failures and not dry_run:
+        missing = ", ".join(failures)
+        raise RuntimeError(f"Failed to download attachments: {missing}")
     return collector.per_index_links, collector.attachments
 
 

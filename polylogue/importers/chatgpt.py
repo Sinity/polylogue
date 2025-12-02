@@ -8,6 +8,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+import ijson
+
 from ..render import AttachmentInfo
 from ..util import assign_conversation_slug, sanitize_filename
 from ..conversation import process_conversation
@@ -175,32 +177,34 @@ def import_chatgpt_export(
         convo_path = base_path / "conversations.json"
         if not convo_path.exists():
             raise FileNotFoundError("conversations.json missing in export")
-        conversations = json.loads(convo_path.read_text(encoding="utf-8"))
-        if not isinstance(conversations, list):
-            raise ValueError(
-                "Unexpected ChatGPT export format: conversations.json must contain a list. "
-                "Make sure you're using a valid ChatGPT export from the official export feature."
-            )
-
         output_dir.mkdir(parents=True, exist_ok=True)
         results: List[ImportResult] = []
-        for conv in conversations:
-            conv_id = conv.get("id") or conv.get("conversation_id")
-            if selected_ids and conv_id not in selected_ids:
-                continue
-            results.append(
-                _render_chatgpt_conversation(
-                    conv,
-                    base_path,
-                    output_dir,
-                    collapse_threshold=collapse_threshold,
-                    html=html,
-                    html_theme=html_theme,
-                    force=force,
-                    allow_dirty=allow_dirty,
-                    registrar=registrar,
-                )
-            )
+        with convo_path.open("rb") as fh:
+            try:
+                for conv in ijson.items(fh, "item"):
+                    if not isinstance(conv, dict):
+                        raise ValueError
+                    conv_id = conv.get("id") or conv.get("conversation_id")
+                    if selected_ids and conv_id not in selected_ids:
+                        continue
+                    results.append(
+                        _render_chatgpt_conversation(
+                            conv,
+                            base_path,
+                            output_dir,
+                            collapse_threshold=collapse_threshold,
+                            html=html,
+                            html_theme=html_theme,
+                            force=force,
+                            allow_dirty=allow_dirty,
+                            registrar=registrar,
+                        )
+                    )
+            except Exception as exc:
+                raise ValueError(
+                    "Unexpected ChatGPT export format: conversations.json must contain a list. "
+                    "Make sure you're using a valid ChatGPT export from the official export feature."
+                ) from exc
         return results
     finally:
         if tmp is not None:
@@ -213,22 +217,25 @@ def list_chatgpt_conversations(export_path: Path) -> List[Dict[str, Optional[str
         convo_path = base_path / "conversations.json"
         if not convo_path.exists():
             raise FileNotFoundError("conversations.json missing in export")
-        conversations = json.loads(convo_path.read_text(encoding="utf-8"))
-        if not isinstance(conversations, list):
-            raise ValueError(
-                "Unexpected ChatGPT export format: ZIP archive must contain a valid conversations.json file. "
-                "Make sure you're using an official ChatGPT export."
-            )
         results: List[Dict[str, Optional[str]]] = []
-        for conv in conversations:
-            results.append(
-                {
-                    "id": conv.get("id") or conv.get("conversation_id"),
-                    "title": conv.get("title"),
-                    "update_time": conv.get("update_time"),
-                    "create_time": conv.get("create_time"),
-                }
-            )
+        with convo_path.open("rb") as fh:
+            try:
+                for conv in ijson.items(fh, "item"):
+                    if not isinstance(conv, dict):
+                        raise ValueError
+                    results.append(
+                        {
+                            "id": conv.get("id") or conv.get("conversation_id"),
+                            "title": conv.get("title"),
+                            "update_time": conv.get("update_time"),
+                            "create_time": conv.get("create_time"),
+                        }
+                    )
+            except Exception as exc:
+                raise ValueError(
+                    "Unexpected ChatGPT export format: ZIP archive must contain a valid conversations.json file. "
+                    "Make sure you're using an official ChatGPT export."
+                ) from exc
         return results
     finally:
         if tmp is not None:

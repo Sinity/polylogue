@@ -14,12 +14,8 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
-try:
-    import pyperclip
-    from pyperclip import PyperclipException
-except ImportError:
-    from ._vendor import pyperclip  # type: ignore
-    from ._vendor.pyperclip import PyperclipException  # type: ignore
+import pyperclip
+from pyperclip import PyperclipException
 
 from .db import open_connection, record_run
 from .paths import DATA_HOME
@@ -179,8 +175,9 @@ def load_runs(limit: Optional[int] = None) -> list[dict]:
         if metadata:
             try:
                 payload.update(json.loads(metadata))
-            except Exception:
-                pass
+            except json.JSONDecodeError as exc:
+                logger.warning("Failed to decode run metadata JSON (id=%s): %s", row["id"], exc)
+                payload["metadata_error"] = "invalid_json"
         results.append(payload)
     results.reverse()  # restore chronological order
     return results

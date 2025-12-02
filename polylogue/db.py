@@ -3,12 +3,15 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+import threading
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from .paths import STATE_HOME
 
 DB_PATH = STATE_HOME / "polylogue.db"
+
+_LOCAL = threading.local()
 
 SCHEMA_VERSION = 2
 
@@ -75,12 +78,15 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (provider, conversation_id, branch_id) REFERENCES branches(provider, conversation_id, branch_id) ON DELETE CASCADE
         );
 
+        -- Accelerates branch playback ordering
         CREATE INDEX IF NOT EXISTS idx_messages_branch_order
             ON messages(provider, conversation_id, branch_id, position);
 
+        -- Speeds lookup by message_id across branches
         CREATE INDEX IF NOT EXISTS idx_messages_conversation_message
             ON messages(provider, conversation_id, message_id);
 
+        -- Speeds branch listing per conversation
         CREATE INDEX IF NOT EXISTS idx_branches_conversation
             ON branches(provider, conversation_id);
 
@@ -122,17 +128,47 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _get_state() -> dict:
+    state = getattr(_LOCAL, "state", None)
+    if state is None:
+        state = {"conn": None, "path": None, "depth": 0}
+        _LOCAL.state = state
+    return state
+
+
 @contextmanager
 def open_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
     target_path = Path(db_path) if db_path is not None else DB_PATH
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(target_path)
-    conn.row_factory = sqlite3.Row
-    _apply_schema(conn)
+    state = _get_state()
+    if state["conn"] is not None and state["path"] != target_path:
+        raise RuntimeError(f"Existing connection opened for {state['path']}, cannot open {target_path}")
+
+    created_here = False
+    if state["conn"] is None:
+        conn = sqlite3.connect(target_path)
+        conn.row_factory = sqlite3.Row
+        _apply_schema(conn)
+        conn.execute("PRAGMA journal_mode=WAL;")
+        state["conn"] = conn
+        state["path"] = target_path
+        created_here = True
+    state["depth"] += 1
     try:
-        yield conn
+        yield state["conn"]
     finally:
-        conn.close()
+        state["depth"] -= 1
+        if state["depth"] <= 0:
+            if created_here:
+                try:
+                    state["conn"].commit()
+                finally:
+                    try:
+                        state["conn"].close()
+                    finally:
+                        state["conn"] = None
+                        state["path"] = None
+                        state["depth"] = 0
 
 
 def upsert_conversation(

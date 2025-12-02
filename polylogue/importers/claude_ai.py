@@ -6,6 +6,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Dict, List, Optional, Set, Tuple
 
+import ijson
+
 from ..render import AttachmentInfo
 from ..util import assign_conversation_slug, sanitize_filename
 from ..conversation import process_conversation
@@ -32,6 +34,29 @@ def _load_bundle(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
     return Path(tmp.name), tmp
 
 
+def _iter_conversations(convo_path: Path):
+    """Stream conversations from Claude export supporting list or {'conversations': [...]}."""
+    with convo_path.open("rb") as fh:
+        found = False
+        try:
+            for conv in ijson.items(fh, "conversations.item"):
+                found = True
+                yield conv
+        except Exception:
+            found = False
+        if found:
+            return
+
+    with convo_path.open("rb") as fh:
+        try:
+            for conv in ijson.items(fh, "item"):
+                yield conv
+        except Exception as exc:
+            raise ValueError(
+                "Unexpected Claude export format: conversations.json must be a list or an object with a 'conversations' list."
+            ) from exc
+
+
 def import_claude_export(
     export_path: Path,
     *,
@@ -50,17 +75,14 @@ def import_claude_export(
         convo_path = root / "conversations.json"
         if not convo_path.exists():
             raise FileNotFoundError("conversations.json missing in Claude export")
-        payload = json.loads(convo_path.read_text(encoding="utf-8"))
-        conversations = payload.get("conversations") if isinstance(payload, dict) else payload
-        if not isinstance(conversations, list):
-            raise ValueError(
-                "Unexpected Claude export format: expected 'conversations' to be a list. "
-                "Make sure you're using a valid Claude.ai export file (JSON format)."
-            )
-
         output_dir.mkdir(parents=True, exist_ok=True)
         results: List[ImportResult] = []
-        for conv in conversations:
+        for conv in _iter_conversations(convo_path):
+            if not isinstance(conv, dict):
+                raise ValueError(
+                    "Unexpected Claude export format: expected conversations to be objects. "
+                    "Make sure you're using a valid Claude.ai export file (JSON format)."
+                )
             conv_id = conv.get("uuid") or conv.get("id")
             if selected_ids and conv_id not in selected_ids:
                 continue
@@ -89,15 +111,13 @@ def list_claude_conversations(export_path: Path) -> List[Dict[str, Optional[str]
         convo_path = root / "conversations.json"
         if not convo_path.exists():
             raise FileNotFoundError("conversations.json missing in Claude export")
-        payload = json.loads(convo_path.read_text(encoding="utf-8"))
-        conversations = payload.get("conversations") if isinstance(payload, dict) else payload
-        if not isinstance(conversations, list):
-            raise ValueError(
-                "Unexpected Claude export format: ZIP archive must contain a valid conversations.json file. "
-                "Make sure you're using an official Claude.ai export."
-            )
         info: List[Dict[str, Optional[str]]] = []
-        for conv in conversations:
+        for conv in _iter_conversations(convo_path):
+            if not isinstance(conv, dict):
+                raise ValueError(
+                    "Unexpected Claude export format: ZIP archive must contain a valid conversations.json file. "
+                    "Make sure you're using an official Claude.ai export."
+                )
             info.append(
                 {
                     "id": conv.get("uuid") or conv.get("id"),

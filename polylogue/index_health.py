@@ -51,7 +51,9 @@ def verify_qdrant_collection() -> List[str]:
     try:
         from qdrant_client import QdrantClient  # type: ignore
     except ImportError as exc:  # pragma: no cover
-        raise RuntimeError("qdrant-client package is required for POLYLOGUE_INDEX_BACKEND=qdrant") from exc
+        raise RuntimeError(
+            "qdrant-client package is required for POLYLOGUE_INDEX_BACKEND=qdrant. Install with: pip install 'polylogue[vector]'"
+        ) from exc
 
     url = os.environ.get("POLYLOGUE_QDRANT_URL")
     api_key = os.environ.get("POLYLOGUE_QDRANT_API_KEY")

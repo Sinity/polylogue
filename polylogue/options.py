@@ -118,6 +118,7 @@ class BranchExploreOptions:
     slug: Optional[str]
     conversation_id: Optional[str]
     min_branches: int
+    canonical_branch: Optional[str] = None
 
 
 @dataclass
