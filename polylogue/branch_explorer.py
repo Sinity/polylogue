@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
 
+from jinja2 import Environment, BaseLoader, select_autoescape
+
 from .db import open_connection
 from .util import colorize
 from .persistence.state import ConversationStateRepository
@@ -113,30 +115,73 @@ def _load_branch_overview(
     current_branch: Optional[str],
     last_updated: Optional[str],
     conversation_path: Optional[Path],
+    db_path: Optional[Path] = None,
 ) -> BranchConversationSummary:
-    with open_connection() as conn:
+    with open_connection(db_path) as conn:
         rows = conn.execute(
             """
             SELECT
-                branch_id,
-                parent_branch_id,
-                is_current,
-                label,
-                depth,
-                metadata_json,
-                (
-                    SELECT COALESCE(SUM(attachment_count), 0)
-                    FROM messages
-                    WHERE provider = branches.provider
-                      AND conversation_id = branches.conversation_id
-                      AND branch_id = branches.branch_id
-                ) AS attachment_count
-            FROM branches
-            WHERE provider = ? AND conversation_id = ?
-            ORDER BY is_current DESC, branch_id
+                b.branch_id,
+                b.parent_branch_id,
+                b.is_current,
+                b.label,
+                b.depth,
+                b.metadata_json,
+                COALESCE(m.attachment_count, 0) AS attachment_count
+            FROM branches AS b
+            LEFT JOIN (
+                SELECT provider, conversation_id, branch_id, SUM(attachment_count) AS attachment_count
+                  FROM messages
+                 WHERE provider = ? AND conversation_id = ?
+                 GROUP BY provider, conversation_id, branch_id
+            ) AS m
+              ON b.provider = m.provider
+             AND b.conversation_id = m.conversation_id
+             AND b.branch_id = m.branch_id
+            WHERE b.provider = ? AND b.conversation_id = ?
+            ORDER BY b.is_current DESC, b.branch_id
             """,
-            (provider, conversation_id),
+            (provider, conversation_id, provider, conversation_id),
         ).fetchall()
+
+        divergence_roles: Dict[str, Tuple[Optional[str], Optional[str]]] = {}
+        if rows:
+            branch_ids = [row["branch_id"] for row in rows]
+            placeholders = ",".join("?" for _ in branch_ids)
+            divergence_map: Dict[str, int] = {}
+            for row in rows:
+                metadata_json = row["metadata_json"]
+                metadata = json.loads(metadata_json) if metadata_json else {}
+                divergence_map[row["branch_id"]] = int(metadata.get("divergence_index") or 0)
+            if branch_ids:
+                sql = f"""
+                    SELECT branch_id, role, rendered_text
+                      FROM messages
+                     WHERE provider = ?
+                       AND conversation_id = ?
+                       AND branch_id IN ({placeholders})
+                     ORDER BY branch_id, position
+                """
+                cursor = conn.execute(sql, [provider, conversation_id, *branch_ids])
+                # Build a minimal cache for the divergence message per branch
+                current_branch = None
+                position_counter = -1
+                for row_msg in cursor:
+                    branch_id = row_msg["branch_id"]
+                    if branch_id != current_branch:
+                        current_branch = branch_id
+                        position_counter = 0
+                    else:
+                        position_counter += 1
+                    target_idx = divergence_map.get(branch_id, 0)
+                    if position_counter == target_idx:
+                        divergence_roles[branch_id] = (
+                            row_msg["role"],
+                            row_msg["rendered_text"] or "",
+                        )
+                # Ensure all branches have a key even if missing messages
+                for bid in branch_ids:
+                    divergence_roles.setdefault(bid, (None, None))
 
         if not rows:
             return BranchConversationSummary(
@@ -160,13 +205,7 @@ def _load_branch_overview(
             metadata_json = row["metadata_json"]
             metadata = json.loads(metadata_json) if metadata_json else {}
             divergence_index = int(metadata.get("divergence_index") or 0)
-            role, snippet = _fetch_divergence_message(
-                conn,
-                provider=provider,
-                conversation_id=conversation_id,
-                branch_id=branch_id,
-                divergence_index=divergence_index,
-            )
+            role, snippet = divergence_roles.get(branch_id, (None, None))
             branch_path, overlay_path = _branch_paths(conversation_path, branch_id)
             nodes[branch_id] = BranchNodeSummary(
                 branch_id=branch_id,
@@ -379,8 +418,132 @@ def branch_diff(conversation: BranchConversationSummary, branch_id: str) -> Opti
     return "\n".join(diff_lines)
 
 
+_BRANCH_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Branch graph · {{ title }}</title>
+    <style>
+      :root {
+        color-scheme: {{ 'dark' if theme == 'dark' else 'light' }};
+      }
+      body {
+        background: {{ palette.bg }};
+        color: {{ palette.fg }};
+        font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+        margin: 2rem auto;
+        max-width: 960px;
+        line-height: 1.6;
+      }
+      h1 {
+        font-size: 2rem;
+        margin-bottom: 0.5rem;
+      }
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.75rem;
+        color: {{ palette.muted }};
+        font-size: 0.95rem;
+        margin-bottom: 1.5rem;
+      }
+      .branch-card {
+        border: 1px solid {{ palette.border }};
+        border-radius: 0.75rem;
+        padding: 1rem 1.25rem;
+        margin: 1rem 0;
+        background: {{ palette.alternate_bg }};
+      }
+      .branch-card.canonical {
+        background: {{ palette.canonical_bg }};
+      }
+      .branch-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        gap: 1rem;
+      }
+      .branch-header h3 {
+        margin: 0;
+      }
+      .badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+      }
+      .badge {
+        background: {{ palette.border }};
+        color: {{ palette.fg }};
+        border-radius: 999px;
+        padding: 0.15rem 0.75rem;
+        font-size: 0.75rem;
+        font-weight: 600;
+      }
+      .badge.canonical {
+        background: {{ palette.accent }};
+        color: #fff;
+      }
+      .divergence {
+        margin-top: 0.75rem;
+        font-size: 0.95rem;
+      }
+      .links {
+        margin-top: 0.75rem;
+        font-size: 0.9rem;
+      }
+      .links a {
+        color: {{ palette.accent }};
+      }
+      ul {
+        list-style: none;
+        padding-left: 1.5rem;
+      }
+      ul > li {
+        position: relative;
+      }
+      ul > li::before {
+        content: "";
+        position: absolute;
+        left: -1rem;
+        top: 0;
+        bottom: 0;
+        width: 1px;
+        background: {{ palette.border }};
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Branch graph · {{ title }}</h1>
+    <div class="meta">
+      {% for item in conversation_meta %}
+      <span>{{ item }}</span>
+      {% endfor %}
+    </div>
+    {{ render_node(canonical_node) }}
+    <ul>
+      {% for child in children %}
+        {{ render_child(child) }}
+      {% endfor %}
+    </ul>
+  </body>
+</html>
+"""
+
+
+def _branch_template() -> Environment:
+    env = Environment(
+        loader=BaseLoader(),
+        autoescape=select_autoescape(enabled_extensions=("html",)),
+    )
+    env.filters["href"] = lambda path: quote(path.as_posix(), safe="/:") if path else None
+    env.filters["badge_list"] = lambda badges: "".join(badges)
+    env.filters["safe"] = lambda x: x
+    return env
+
+
 def build_branch_html(conversation: BranchConversationSummary, *, theme: str = "light") -> str:
-    palette = {
+    palettes = {
         "light": {
             "bg": "#ffffff",
             "fg": "#1f2933",
@@ -399,201 +562,85 @@ def build_branch_html(conversation: BranchConversationSummary, *, theme: str = "
             "canonical_bg": "#065f461a",
             "alternate_bg": "#1e3a8a1f",
         },
-    }.get(theme, palette_default := {
-        "bg": "#ffffff",
-        "fg": "#1f2933",
-        "accent": "#2563eb",
-        "muted": "#6b7280",
-        "border": "#d1d5db",
-        "canonical_bg": "#d1fae5",
-        "alternate_bg": "#dbeafe",
-    })
+    }
+    palette = palettes.get(theme, palettes["light"])
 
-    def _escape(text: Optional[str]) -> str:
-        return html.escape(text or "")
-
-    def _href(path: Optional[Path]) -> Optional[str]:
-        if not path:
-            return None
-        as_posix = path.as_posix()
-        return quote(as_posix, safe="/:")
-
-    def render_node(node: BranchNodeSummary) -> str:
-        badges: List[str] = []
-        if node.is_canonical:
-            badges.append("<span class=\"badge canonical\">canonical</span>")
-        else:
-            badges.append(
-                f"<span class=\"badge\">parent: {_escape(node.parent_branch_id) or '&#8212;'}</span>"
-            )
-        badges.append(f"<span class=\"badge\">messages: {_escape(str(node.message_count))}</span>")
-        if node.token_count:
-            badges.append(f"<span class=\"badge\">tokens: {_escape(str(node.token_count))}</span>")
-        if node.attachment_count:
-            badges.append(
-                f"<span class=\"badge\">attachments: {_escape(str(node.attachment_count))}</span>"
-            )
-        divergence_html = ""
-        if node.divergence_index and not node.is_canonical:
-            delta = node.divergence_index + 1
-            role = _escape(node.divergence_role)
-            snippet = _escape(node.divergence_snippet)
-            divergence_html = (
-                f"<div class=\"divergence\"><strong>delta message #{delta}</strong> {role}: {snippet}</div>"
-            )
-        links: List[str] = []
-        branch_href = _href(node.branch_path)
-        if branch_href:
-            links.append(f"<a href=\"{branch_href}\">branch markdown</a>")
-        overlay_href = _href(node.overlay_path)
-        if overlay_href:
-            links.append(f"<a href=\"{overlay_href}\">overlay</a>")
-        link_html = ""
-        if links:
-            link_html = " • ".join(links)
-            link_html = f"<div class=\"links\">{link_html}</div>"
-        child_html = ""
-        children = conversation.ordered_children(node.branch_id)
-        if children:
-            child_html = "<ul>" + "".join(render_child(child) for child in children) + "</ul>"
-        return f"""
-        <div class="branch-card {'canonical' if node.is_canonical else 'alternate'}">
-          <div class="branch-header">
-            <h3>{_escape(node.branch_id)}</h3>
-            <div class="badges">{''.join(badges)}</div>
-          </div>
-          {divergence_html}
-          {link_html}
-          {child_html}
-        </div>
-        """
-
-    def render_child(node: BranchNodeSummary) -> str:
-        return f"<li>{render_node(node)}</li>"
+    env = _branch_template()
+    template = env.from_string(_BRANCH_TEMPLATE)
 
     canonical_id = conversation.canonical_branch_id or conversation.current_branch
     if canonical_id not in conversation.nodes:
         canonical_id = next(iter(conversation.nodes))
     canonical_node = conversation.nodes[canonical_id]
-    child_list = "".join(render_child(child) for child in conversation.ordered_children(canonical_id))
+    children = conversation.ordered_children(canonical_id)
 
-    title = _escape(conversation.title or conversation.slug)
-    provider = _escape(conversation.provider)
-    last_updated = _escape(conversation.last_updated or "unknown")
-    conversation_meta = []
-    conversation_meta.append(f"<span><strong>Provider:</strong> {provider}</span>")
-    conversation_meta.append(f"<span><strong>Slug:</strong> {_escape(conversation.slug)}</span>")
-    conversation_meta.append(
-        f"<span><strong>Conversation ID:</strong> {_escape(conversation.conversation_id)}</span>"
-    )
-    conversation_meta.append(f"<span><strong>Last updated:</strong> {last_updated}</span>")
-    if conversation.conversation_path:
-        conversation_meta.append(
-            f"<span><strong>Canonical file:</strong> {_escape(str(conversation.conversation_path))}</span>"
+    def render_node(node: BranchNodeSummary) -> str:
+        badges: List[str] = []
+        if node.is_canonical:
+            badges.append('<span class="badge canonical">canonical</span>')
+        else:
+            parent_label = html.escape(node.parent_branch_id or "—")
+            badges.append(f'<span class="badge">parent: {parent_label}</span>')
+        badges.append(f'<span class="badge">messages: {html.escape(str(node.message_count))}</span>')
+        if node.token_count:
+            badges.append(f'<span class="badge">tokens: {html.escape(str(node.token_count))}</span>')
+        if node.attachment_count:
+            badges.append(
+                f'<span class="badge">attachments: {html.escape(str(node.attachment_count))}</span>'
+            )
+        divergence_html = ""
+        if node.divergence_index and not node.is_canonical:
+            delta = node.divergence_index + 1
+            role = html.escape(node.divergence_role or "")
+            snippet = html.escape(node.divergence_snippet or "")
+            divergence_html = f'<div class="divergence"><strong>delta message #{delta}</strong> {role}: {snippet}</div>'
+        links: List[str] = []
+        if node.branch_path:
+            links.append(f'<a href="{quote(node.branch_path.as_posix(), safe="/:")}">branch markdown</a>')
+        if node.overlay_path:
+            links.append(f'<a href="{quote(node.overlay_path.as_posix(), safe="/:")}">overlay</a>')
+        link_html = ""
+        if links:
+            link_html = f'<div class="links">{" • ".join(links)}</div>'
+        child_html = ""
+        sub_children = conversation.ordered_children(node.branch_id)
+        if sub_children:
+            rendered = "".join(render_child(child) for child in sub_children)
+            child_html = f"<ul>{rendered}</ul>"
+        card_class = "branch-card canonical" if node.is_canonical else "branch-card alternate"
+        return (
+            f'<div class="{card_class}">'
+            f'<div class="branch-header"><h3>{html.escape(node.branch_id)}</h3><div class="badges">{"".join(badges)}</div></div>'
+            f"{divergence_html}"
+            f"{link_html}"
+            f"{child_html}"
+            f"</div>"
         )
 
-    return textwrap.dedent(
-        f"""\
-        <!DOCTYPE html>
-        <html lang="en">
-          <head>
-            <meta charset="utf-8" />
-            <title>Branch graph · {title}</title>
-            <style>
-              :root {{
-                color-scheme: {'dark' if theme == 'dark' else 'light'};
-              }}
-              body {{
-                background: {palette['bg']};
-                color: {palette['fg']};
-                font-family: "Inter", "Segoe UI", system-ui, sans-serif;
-                margin: 2rem auto;
-                max-width: 960px;
-                line-height: 1.6;
-              }}
-              h1 {{
-                font-size: 2rem;
-                margin-bottom: 0.5rem;
-              }}
-              .meta {{
-                display: flex;
-                flex-wrap: wrap;
-                gap: 0.75rem;
-                color: {palette['muted']};
-                font-size: 0.95rem;
-                margin-bottom: 1.5rem;
-              }}
-              .branch-card {{
-                border: 1px solid {palette['border']};
-                border-radius: 0.75rem;
-                padding: 1rem 1.25rem;
-                margin: 1rem 0;
-                background: {palette['alternate_bg']};
-              }}
-              .branch-card.canonical {{
-                background: {palette['canonical_bg']};
-              }}
-              .branch-header {{
-                display: flex;
-                justify-content: space-between;
-                align-items: baseline;
-                gap: 1rem;
-              }}
-              .branch-header h3 {{
-                margin: 0;
-              }}
-              .badges {{
-                display: flex;
-                flex-wrap: wrap;
-                gap: 0.5rem;
-              }}
-              .badge {{
-                background: {palette['border']};
-                color: {palette['fg']};
-                border-radius: 999px;
-                padding: 0.15rem 0.75rem;
-                font-size: 0.75rem;
-                font-weight: 600;
-              }}
-              .badge.canonical {{
-                background: {palette['accent']};
-                color: #fff;
-              }}
-              .divergence {{
-                margin-top: 0.75rem;
-                font-size: 0.95rem;
-              }}
-              .links {{
-                margin-top: 0.75rem;
-                font-size: 0.9rem;
-              }}
-              .links a {{
-                color: {palette['accent']};
-              }}
-              ul {{
-                list-style: none;
-                padding-left: 1.5rem;
-              }}
-              ul > li {{
-                position: relative;
-              }}
-              ul > li::before {{
-                content: "";
-                position: absolute;
-                left: -1rem;
-                top: 0;
-                bottom: 0;
-                width: 1px;
-                background: {palette['border']};
-              }}
-            </style>
-          </head>
-          <body>
-            <h1>Branch graph · {title}</h1>
-            <div class="meta">{''.join(conversation_meta)}</div>
-            {render_node(canonical_node)}
-            <ul>{child_list}</ul>
-          </body>
-        </html>
-        """
+    def render_child(node: BranchNodeSummary) -> str:
+        return f"<li>{render_node(node)}</li>"
+
+    conversation_meta: List[str] = []
+    conversation_meta.append(f"<strong>Provider:</strong> {html.escape(conversation.provider)}")
+    conversation_meta.append(f"<strong>Slug:</strong> {html.escape(conversation.slug)}")
+    conversation_meta.append(
+        f"<strong>Conversation ID:</strong> {html.escape(conversation.conversation_id)}"
+    )
+    conversation_meta.append(
+        f"<strong>Last updated:</strong> {html.escape(conversation.last_updated or 'unknown')}"
+    )
+    if conversation.conversation_path:
+        conversation_meta.append(
+            f"<strong>Canonical file:</strong> {html.escape(str(conversation.conversation_path))}"
+        )
+
+    return template.render(
+        title=conversation.title or conversation.slug,
+        palette=palette,
+        theme=theme,
+        conversation_meta=conversation_meta,
+        canonical_node=canonical_node,
+        children=children,
+        render_node=render_node,
+        render_child=render_child,
     )
