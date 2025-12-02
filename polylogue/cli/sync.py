@@ -97,7 +97,8 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         merged = merge_with_defaults(default_sync_namespace(provider, settings), args)
         _run_local_sync(provider, merged, env)
     else:
-        raise SystemExit(f"Unsupported provider for sync: {provider}")
+        env.ui.console.print(f"[red]Unsupported provider for sync: {provider}")
+        raise SystemExit(1)
 
 
 def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -267,7 +268,8 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
     previous_run_note = format_run_brief(latest_run(provider=provider.name, cmd=f"sync {provider.name}"))
     footer_lines = [f"Previous run: {previous_run_note}"] if previous_run_note else None
     if getattr(args, "diff", False) and not provider.supports_diff:
-        raise SystemExit(f"{provider.title} does not support --diff output")
+        ui.console.print(f"[red]{provider.title} does not support --diff output")
+        raise SystemExit(1)
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base.expanduser()
     out_dir = resolve_output_path(args.out, provider.default_output)
     settings = env.settings
