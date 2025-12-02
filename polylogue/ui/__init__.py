@@ -52,6 +52,22 @@ class UI:
     def console(self, value: ConsoleLike) -> None:
         self._facade.console = value
 
+    def progress(self, description: str, total: int):
+        """Provide a progress context manager in interactive mode; noop in plain."""
+        if self.plain:
+            return _PlainProgress()
+        columns = (
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        )
+        progress = Progress(*columns, transient=True, console=self._facade.console)
+        task_id = progress.add_task(description, total=total or 0)
+        return _RichProgressWrapper(progress, task_id)
+
     # Presentation helpers -------------------------------------------------
     def banner(self, title: str, subtitle: Optional[str] = None) -> None:
         self._facade.banner(title, subtitle)
@@ -106,7 +122,17 @@ class UI:
     def progress(self, description: str, total: Optional[int] = None):
         if self.plain:
             return _NullProgressTracker()
-        return _RichProgressTracker(self.console, description, total)
+        columns = (
+            SpinnerColumn(),
+            TextColumn("{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}" if total is not None else "{task.completed}"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        )
+        progress = Progress(*columns, console=self.console if isinstance(self.console, Console) else None, transient=True)
+        task_id: TaskID = progress.add_task(description, total=total)
+        return _RichProgressTracker(progress, task_id)
 
     # Internal utilities ---------------------------------------------------
     def _warn_plain(self, topic: str) -> None:
@@ -135,34 +161,18 @@ class _NullProgressTracker:
 
 
 class _RichProgressTracker:
-    def __init__(self, console: ConsoleLike, description: str, total: Optional[int]) -> None:
-        self._console = console
-        self._description = description
-        self._total = total
-        self._progress = Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("{task.completed}/{task.total}" if total is not None else "{task.completed}"),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-            console=console if isinstance(console, Console) else None,
-            transient=True,
-        )
-        self._task_id: Optional[TaskID] = None
+    def __init__(self, progress: Progress, task_id: TaskID) -> None:
+        self._progress = progress
+        self._task_id = task_id
 
     def __enter__(self):
         self._progress.__enter__()
-        self._task_id = self._progress.add_task(self._description, total=self._total)
         return self
 
     def advance(self, advance: float = 1.0) -> None:
-        if self._task_id is not None:
-            self._progress.advance(self._task_id, advance)
+        self._progress.advance(self._task_id, advance)
 
     def update(self, *, total: Optional[int] = None, description: Optional[str] = None) -> None:
-        if self._task_id is None:
-            return
         kwargs = {}
         if total is not None:
             kwargs["total"] = total

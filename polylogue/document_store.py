@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import frontmatter
+
 
 @dataclass
 class DocumentMetadata:
@@ -31,12 +33,6 @@ class PersistenceOptions:
     attachment_policy: Optional[Dict[str, Any]] = field(default_factory=lambda: None)
     force: bool = False
     allow_dirty: bool = False
-
-
-try:
-    import frontmatter  # type: ignore
-except ImportError:
-    from ._vendor import frontmatter  # type: ignore
 
 from .render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
 from .services.attachments import AttachmentManager

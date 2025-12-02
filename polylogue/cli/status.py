@@ -247,6 +247,8 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     directory_input = Path(args.dir) if args.dir else DEFAULT_RENDER_OUT
     directory = resolve_path(directory_input, PathPolicy.must_exist(), ui, json_mode=json_mode)
     if not directory:
+        if not json_mode:
+            ui.console.print("[red]Stats directory is required")
         raise SystemExit(1)
 
     canonical_files = list(directory.rglob("conversation.md"))

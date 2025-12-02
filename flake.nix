@@ -31,7 +31,7 @@
 
         pyPkgs = pkgs.python3Packages;
 
-        baseDeps = with pyPkgs; [
+        commonDeps = with pyPkgs; [
           google-auth-oauthlib
           requests
           pathvalidate
@@ -46,6 +46,7 @@
           watchfiles
           tiktoken
           qdrant-client
+          ijson
         ];
 
         cliDeps = with pkgs; [ gum skim delta git ];
@@ -56,7 +57,7 @@
           version = "0.1.0";
           pyproject = true;
           src = self;
-          propagatedBuildInputs = baseDeps;
+          propagatedBuildInputs = commonDeps;
           nativeBuildInputs =
             (with pyPkgs; [ setuptools wheel ])
             ++ cliDeps

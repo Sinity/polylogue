@@ -7,10 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
-try:
-    import frontmatter
-except ImportError:
-    from ._vendor import frontmatter  # type: ignore
+import frontmatter
 
 
 def _human_size(num: Optional[int]) -> Optional[str]:

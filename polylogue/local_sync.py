@@ -264,14 +264,16 @@ def _sync_sessions(
 
     pruned = 0
     if prune:
+        trash_dir = output_dir / ".trash"
+        trash_dir.mkdir(parents=True, exist_ok=True)
         for path in compute_prune_paths(output_dir, wanted):
             try:
-                if path.is_dir():
-                    import shutil
+                target_name = f"{path.name}.{int(time.time())}"
+                trash_path = trash_dir / target_name
+                path.rename(trash_path)
+                import shutil
 
-                    shutil.rmtree(path)
-                else:
-                    path.unlink()
+                shutil.rmtree(trash_path)
                 pruned += 1
             except OSError:
                 continue
@@ -399,14 +401,16 @@ def _sync_export_bundles(
 
     pruned = 0
     if prune:
+        trash_dir = output_dir / ".trash"
+        trash_dir.mkdir(parents=True, exist_ok=True)
         for path in compute_prune_paths(output_dir, wanted):
             try:
-                if path.is_dir():
-                    import shutil
+                target_name = f"{path.name}.{int(time.time())}"
+                trash_path = trash_dir / target_name
+                path.rename(trash_path)
+                import shutil
 
-                    shutil.rmtree(path)
-                else:
-                    path.unlink()
+                shutil.rmtree(trash_path)
                 pruned += 1
             except OSError:
                 continue

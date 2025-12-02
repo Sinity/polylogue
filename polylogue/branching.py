@@ -86,6 +86,7 @@ def build_branch_plan(
     messages: Iterable[MessageRecord],
     *,
     canonical_leaf_id: Optional[str] = None,
+    canonical_branch_hint: Optional[str] = None,
 ) -> BranchPlan:
     node_map: Dict[str, MessageRecord] = {}
     child_map: Dict[str, List[str]] = {}
@@ -136,7 +137,10 @@ def build_branch_plan(
         return (len(path), last or "")  # length first, then timestamp ordering
 
     canonical_path: List[str]
-    if canonical_leaf_id:
+    if canonical_branch_hint:
+        canonical_candidates = [p for p in all_paths if canonical_branch_hint in p]
+        canonical_path = canonical_candidates[0] if canonical_candidates else max(all_paths, key=path_score)
+    elif canonical_leaf_id:
         canonical_candidates = [p for p in all_paths if canonical_leaf_id in p]
         canonical_path = canonical_candidates[0] if canonical_candidates else max(all_paths, key=path_score)
     else:

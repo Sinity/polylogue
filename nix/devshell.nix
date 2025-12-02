@@ -3,24 +3,25 @@
 let
   py = pkgs.python3;
   pyPkgs = pkgs.python3Packages;
-  pythonEnv = py.withPackages (ps: (
-    with ps; [
-      google-auth-oauthlib
-      requests
-      pathvalidate
-      aiohttp
-      aiofiles
-      rich
-      pydantic
-      python-frontmatter
-      jinja2
-      markdown-it-py
-      pyperclip
-      watchfiles
-      tiktoken
-      "qdrant-client"
-    ]
-  ) ++ extraPythonPackages);
+  commonDeps = with pyPkgs; [
+    google-auth-oauthlib
+    requests
+    pathvalidate
+    aiohttp
+    aiofiles
+    rich
+    pydantic
+    python-frontmatter
+    jinja2
+    markdown-it-py
+    pyperclip
+    watchfiles
+    tiktoken
+    ijson
+    qdrant-client
+  ];
+
+  pythonEnv = py.withPackages (ps: commonDeps ++ extraPythonPackages);
 in
 pkgs.mkShell {
   buildInputs =

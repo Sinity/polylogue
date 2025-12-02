@@ -40,7 +40,7 @@ class QdrantBackend:
         except ImportError as exc:  # pragma: no cover
             raise RuntimeError(
                 "POLYLOGUE_INDEX_BACKEND=qdrant requires the 'qdrant-client' package. "
-                "Install it with: pip install qdrant-client"
+                "Install it with: pip install 'polylogue[vector]'"
             ) from exc
         self._update = update_qdrant_index
 
