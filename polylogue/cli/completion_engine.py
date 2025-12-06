@@ -52,35 +52,26 @@ class CompletionEngine:
         command = args[0]
         if current_index == 0 and len(args) == 1 and (current_word == "" or not current_word.startswith("-")):
             return self._complete_commands()
-        if command == "render":
-            return self._complete_render(current_index)
+        if command == "search":
+            return self._complete_search(args, current_index, current_word)
         if command == "sync":
             return self._complete_sync(args, current_index, current_word)
         if command == "import":
             return self._complete_import(args, current_index, current_word)
-        if command == "inspect":
-            return self._complete_inspect(args, current_index, current_word)
-        if command == "watch":
-            return self._complete_watch(args, current_index, current_word)
-        if command == "status":
-            return self._complete_status(current_word)
-        if command == "settings":
-            return self._complete_settings(current_word)
+        if command == "browse":
+            return self._complete_browse(args, current_index, current_word)
+        if command == "maintain":
+            return self._complete_maintain(args, current_index, current_word)
+        if command == "config":
+            return self._complete_config(args, current_index, current_word)
         if command == "help":
             return self._complete_commands()
-        if command == "env":
-            return self._complete_env()
         if command == "completions":
             return self._complete_completions()
         return []
 
     def _complete_commands(self) -> List[Completion]:
         return [Completion(value=name, description=desc) for name, desc in _top_level_commands()]
-
-    def _complete_render(self, current_index: int) -> List[Completion]:
-        if current_index == 1:
-            return [Completion("__PATH__")]
-        return []
 
     def _complete_sync(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
         if current_index == 1 and (not current_word or not current_word.startswith("-")):
@@ -99,6 +90,22 @@ class CompletionEngine:
             return self._option_completions("sync")
         return []
 
+    def _complete_search(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
+        prev = args[current_index - 1] if current_index > 0 else ""
+        if prev == "--provider":
+            return self._provider_completions()
+        if prev == "--slug":
+            return self._slug_completions()
+        if prev == "--conversation-id":
+            return self._conversation_id_completions()
+        if prev == "--branch":
+            return self._branch_completions()
+        if prev == "--model":
+            return self._model_completions()
+        if current_word.startswith("--"):
+            return self._option_completions("search")
+        return []
+
     def _complete_import(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
         if current_index == 1:
             return [Completion(name) for name in ("chatgpt", "claude", "codex", "claude-code")]
@@ -111,9 +118,9 @@ class CompletionEngine:
             return self._option_completions("import")
         return []
 
-    def _complete_inspect(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
+    def _complete_browse(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
         if current_index == 1:
-            return [Completion(value) for value in ("branches", "search", "stats")]
+            return [Completion(value) for value in ("branches", "stats", "status", "runs")]
         subcmd = args[1] if len(args) > 1 else None
         prev = args[current_index - 1] if current_index > 0 else ""
         if subcmd == "branches":
@@ -121,47 +128,70 @@ class CompletionEngine:
                 return self._slug_completions()
             if prev == "--conversation-id":
                 return self._conversation_id_completions()
+            if prev == "--provider":
+                return self._provider_completions()
+            if prev == "--branch":
+                return self._branch_completions()
+            if prev in {"--out", "--theme"}:
+                return [Completion("__PATH__")] if prev == "--out" else [Completion("light"), Completion("dark")]
             if current_word.startswith("--"):
-                return self._option_completions("inspect branches")
-        if subcmd == "search" and current_word.startswith("--"):
-            return self._option_completions("inspect search")
-        if subcmd == "stats" and prev == "--dir":
-            return [Completion("__PATH__")]
-        if subcmd == "stats" and current_word.startswith("--"):
-            return self._option_completions("inspect stats")
+                return self._option_completions("browse branches")
+        if subcmd == "stats":
+            if prev == "--dir":
+                return [Completion("__PATH__")]
+            if current_word.startswith("--"):
+                return self._option_completions("browse stats")
+        if subcmd == "status":
+            if prev == "--providers":
+                return self._provider_completions()
+            if prev in {"--dump", "--summary"}:
+                return [Completion("__PATH__")]
+            if current_word.startswith("--"):
+                return self._option_completions("browse status")
+        if subcmd == "runs":
+            if prev == "--providers":
+                return self._provider_completions()
+            if current_word.startswith("--"):
+                return self._option_completions("browse runs")
         return []
 
-    def _complete_watch(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
+    def _complete_maintain(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
         if current_index == 1:
-            return [Completion(name) for name in LOCAL_SYNC_PROVIDER_NAMES]
+            return [Completion(value) for value in ("prune", "doctor", "index")]
+        subcmd = args[1] if len(args) > 1 else None
         prev = args[current_index - 1] if current_index > 0 else ""
-        if prev in {"--base-dir", "--out"}:
-            return [Completion("__PATH__")]
-        if current_word.startswith("--"):
-            return self._option_completions("watch")
+        if subcmd == "prune":
+            if prev == "--dir":
+                return [Completion("__PATH__")]
+            if current_word.startswith("--"):
+                return self._option_completions("maintain prune")
+        if subcmd == "doctor" and current_word.startswith("--"):
+            return self._option_completions("maintain doctor")
+        if subcmd == "index":
+            if prev == "--dir":
+                return [Completion("__PATH__")]
+            if current_word.startswith("--"):
+                return self._option_completions("maintain index")
         return []
 
-    def _complete_status(self, current_word: str) -> List[Completion]:
-        if current_word.startswith("--providers"):
-            providers = sorted({provider for provider, *_ in self.env.conversations.iter_state()})
-            return [Completion(p) for p in providers if p]
-        if current_word.startswith("--dump") or current_word.startswith("--summary"):
-            return [Completion("__PATH__")]
-        if current_word.startswith("--"):
-            return self._option_completions("status")
+    def _complete_config(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
+        if current_index == 1:
+            return [Completion(value) for value in ("init", "set", "show")]
+        subcmd = args[1] if len(args) > 1 else None
+        prev = args[current_index - 1] if current_index > 0 else ""
+        if subcmd == "init" and current_word.startswith("--"):
+            return self._option_completions("config init")
+        if subcmd == "set":
+            if prev == "--theme":
+                return [Completion("light"), Completion("dark")]
+            if prev == "--html":
+                return [Completion("on"), Completion("off")]
+            if current_word.startswith("--"):
+                return self._option_completions("config set")
+        if subcmd == "show":
+            if current_word.startswith("--"):
+                return self._option_completions("config show")
         return []
-
-    def _complete_settings(self, current_word: str) -> List[Completion]:
-        if current_word.startswith("--theme"):
-            return [Completion("light"), Completion("dark")]
-        if current_word.startswith("--html"):
-            return [Completion("on"), Completion("off")]
-        if current_word.startswith("--"):
-            return self._option_completions("settings")
-        return []
-
-    def _complete_env(self) -> List[Completion]:
-        return [Completion("--json", "Emit JSON output")]
 
     def _complete_completions(self) -> List[Completion]:
         return [Completion("--shell", "Target shell (bash/zsh/fish)")]
@@ -223,6 +253,10 @@ class CompletionEngine:
                 return parser
         return parser
 
+    def _provider_completions(self) -> List[Completion]:
+        providers = sorted({provider for provider, *_ in self.env.conversations.iter_state()})
+        return [Completion(p) for p in providers if p]
+
     def _slug_completions(self) -> List[Completion]:
         seen = set()
         entries: List[Completion] = []
@@ -231,6 +265,29 @@ class CompletionEngine:
             if slug and slug not in seen:
                 entries.append(Completion(slug))
                 seen.add(slug)
+        entries.sort(key=lambda c: c.value)
+        return entries
+
+    def _branch_completions(self) -> List[Completion]:
+        seen = set()
+        entries: List[Completion] = []
+        for _, _, payload in self.env.conversations.iter_state():
+            branches = payload.get("branches", {})
+            for branch_id in branches.keys():
+                if branch_id and branch_id not in seen:
+                    entries.append(Completion(branch_id))
+                    seen.add(branch_id)
+        entries.sort(key=lambda c: c.value)
+        return entries
+
+    def _model_completions(self) -> List[Completion]:
+        seen = set()
+        entries: List[Completion] = []
+        for _, _, payload in self.env.conversations.iter_state():
+            model = payload.get("model") or payload.get("metadata", {}).get("model")
+            if model and model not in seen:
+                entries.append(Completion(model))
+                seen.add(model)
         entries.sort(key=lambda c: c.value)
         return entries
 

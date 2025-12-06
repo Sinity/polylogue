@@ -90,6 +90,7 @@ def create_output_parent() -> ArgumentParser:
     """
     parser = ArgumentParser(add_help=False)
     parser.add_argument("--json", action="store_true", help="Emit machine-readable output")
+    parser.add_argument("--json-lines", action="store_true", help="Emit JSONL output when supported")
     return parser
 
 

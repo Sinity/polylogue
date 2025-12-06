@@ -8,10 +8,11 @@ from ..commands import CommandEnv
 
 def run_maintain_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     """Dispatch to appropriate maintenance subcommand."""
-    from .app import run_prune_cli, run_doctor_cli
+    from .app import run_prune_cli
+    from .doctor import run_doctor_cli
     from .index_cli import run_index_cli
 
-    maintain_cmd = getattr(args, "maintain_cmd", None)
+    maintain_cmd = args.maintain_cmd  # required=True enforced by argparse
 
     if maintain_cmd == "prune":
         run_prune_cli(args, env)
@@ -20,7 +21,7 @@ def run_maintain_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     elif maintain_cmd == "index":
         run_index_cli(args, env)
     else:
-        raise SystemExit("maintain requires a subcommand: prune, doctor, index")
+        raise SystemExit(f"Unknown maintain sub-command: {maintain_cmd}")
 
 
 __all__ = ["run_maintain_cli"]

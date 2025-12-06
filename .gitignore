@@ -15,6 +15,10 @@ Thumbs.db
 
 # Python
 __pycache__
+.pytest_cache/
+
+# Local tool state
+.claude/
 
 # not project code
 data
