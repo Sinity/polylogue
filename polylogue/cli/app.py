@@ -900,6 +900,17 @@ def _dispatch_sync(args: argparse.Namespace, env: CommandEnv) -> None:
             raise SystemExit(f"{provider.title} does not support watch mode (use --watch with codex, claude-code, or chatgpt)")
         run_watch_cli(args, env)
     else:
+        if args.provider == "drive":
+            from ..drive_client import DEFAULT_CREDENTIALS
+            cred_path = DEFAULT_CREDENTIALS
+            if env.config.drive and env.config.drive.credentials_path:
+                cred_path = env.config.drive.credentials_path
+            if not cred_path.exists():
+                raise SystemExit(f"Drive sync requires credentials.json at {cred_path} (set drive.credentials_path in config).")
+        if args.provider in {"chatgpt", "claude"}:
+            exports_root = env.config.exports.chatgpt if args.provider == "chatgpt" else env.config.exports.claude
+            if not exports_root.exists():
+                raise SystemExit(f"{args.provider} exports directory not found: {exports_root} (set exports.{args.provider} in config).")
         run_sync_cli(args, env)
 
 
@@ -955,6 +966,10 @@ def _run_config_show(args: argparse.Namespace, env: CommandEnv) -> None:
                 "sync_claude_code": str(defaults.output_dirs.sync_claude_code),
                 "import_chatgpt": str(defaults.output_dirs.import_chatgpt),
                 "import_claude": str(defaults.output_dirs.import_claude),
+            },
+            "exports": {
+                "chatgpt": str(env.config.exports.chatgpt),
+                "claude": str(env.config.exports.claude),
             },
             "statePath": str(env.conversations.state_path),
             "runsDb": str(env.database.resolve_path()),
