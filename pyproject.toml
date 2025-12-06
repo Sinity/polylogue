@@ -22,6 +22,7 @@ dependencies = [
   "markdown-it-py",
   "pyperclip",
   "watchfiles",
+  "ijson",
   "tiktoken",
   "qdrant-client",
 ]

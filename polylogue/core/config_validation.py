@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 
 class OutputDirsModel(BaseModel):
@@ -14,8 +14,7 @@ class OutputDirsModel(BaseModel):
     import_chatgpt: Optional[str] = None
     import_claude: Optional[str] = None
 
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 
     def expand(self) -> Dict[str, Path]:
         data: Dict[str, Path] = {}
@@ -30,15 +29,13 @@ class DefaultsModel(BaseModel):
     html_theme: Optional[str] = None
     output_dirs: Optional[OutputDirsModel] = None
 
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 
 
 class ConfigModel(BaseModel):
     defaults: Optional[DefaultsModel] = None
 
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 
     @model_validator(mode="after")
     def ensure_theme(cls, values: "ConfigModel") -> "ConfigModel":
