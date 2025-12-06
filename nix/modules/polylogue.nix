@@ -328,7 +328,7 @@ in {
       apiKey = mkOption {
         type = types.nullOr types.str;
         default = null;
-        description = "Qdrant API key (POLYLOGUE_QDRANT_API_KEY).";
+        description = "Qdrant API key (POLYLOGUE_QDRANT_API_KEY); leave null for localhost without auth.";
       };
       collection = mkOption {
         type = types.nullOr types.str;
