@@ -24,6 +24,7 @@ dependencies = [
   "watchfiles",
   "ijson",
   "tiktoken",
+  "qdrant-client",
 ]
 
 [project.optional-dependencies]
@@ -33,10 +34,6 @@ dev = [
   "coverage[toml]>=7.6",
   "mypy>=1.11",
   "types-requests",
-  "ijson",
-]
-vector = [
-  "qdrant-client",
 ]
 
 [project.scripts]
@@ -49,9 +46,6 @@ include = ["polylogue", "polylogue.*"]
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
-filterwarnings = [
-  "ignore:.*PydanticDeprecatedSince20:DeprecationWarning",
-]
 
 [tool.coverage.run]
 source = ["polylogue"]
