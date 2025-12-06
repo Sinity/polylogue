@@ -47,6 +47,6 @@ For recurring exports, you no longer need to call `polylogue import chatgpt …`
 2. Run `polylogue sync chatgpt` to ingest every bundle in that directory, or pick specific bundles interactively when not using `--all`.
    - Pass `--session /path/to/bundle.zip` (repeatable) to bypass the picker and process specific exports directly.
 3. Pass `--base-dir /path/to/exports` if you keep the bundles somewhere else, and reuse the familiar flags (`--html`, etc.) to keep outputs consistent with the other providers.
-4. Prefer `polylogue watch chatgpt --base-dir …` when you want Polylogue to sit idle until a new ZIP or `conversations.json` lands—every change triggers the same pipeline as a manual sync, so state stays current without babysitting.
+4. Prefer `polylogue sync chatgpt --watch --base-dir …` when you want Polylogue to sit idle until a new ZIP or `conversations.json` lands—every change triggers the same pipeline as a manual sync, so state stays current without babysitting.
 
-`polylogue watch chatgpt` simply automates the same sync loop: it watches the export directory for new ZIPs or refreshed `conversations.json` files and runs `polylogue sync chatgpt` on demand, keeping the SQLite registrar and branch metadata updated without manual intervention.
+`polylogue sync chatgpt --watch` simply automates the same sync loop: it watches the export directory for new ZIPs or refreshed `conversations.json` files and runs `polylogue sync chatgpt` on demand, keeping the SQLite registrar and branch metadata updated without manual intervention.

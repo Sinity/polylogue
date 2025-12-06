@@ -172,7 +172,7 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         result = sync_command(options, env)
     except Exception as exc:
         console.print(f"[red]Drive sync failed: {exc}")
-        console.print("[cyan]Run `polylogue doctor` and `polylogue env --json` to verify credentials, tokens, and output directories.")
+        console.print("[cyan]Run `polylogue doctor` and `polylogue config show --json` to verify credentials, tokens, and output directories.")
         raise
 
     if json_mode:
