@@ -39,6 +39,16 @@
       "html": false
     }
   },
+  "claude-sync": {
+    "name": "polylogue-sync-claude",
+    "description": "Polylogue Claude export sync",
+    "command": ["sync", "claude", "--json"],
+    "defaults": {
+      "collapseThreshold": 18,
+      "extraArgs": [],
+      "html": false
+    }
+  },
   "chatgpt-sync": {
     "name": "polylogue-sync-chatgpt",
     "description": "Polylogue ChatGPT sync",
