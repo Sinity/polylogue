@@ -114,14 +114,8 @@ let
       args = if resolvedOut != null && !(lib.elem "--out" argsWithHtml)
         then argsWithHtml ++ ["--out" (toString resolvedOut)]
         else argsWithHtml;
-      envVars = cfg.environment // targetCfg.environment // {
-        XDG_CONFIG_HOME = toString cfg.configHome;
-        XDG_DATA_HOME = toString cfg.dataHome;
-        XDG_STATE_HOME = toString cfg.stateDir;
-        POLYLOGUE_FORCE_PLAIN = "1";
-      } // optionalAttrs cfg.configFile.enable {
-        POLYLOGUE_CONFIG = toString configFilePath;
-      };
+      envVars = baseEnv // targetCfg.environment
+        // optionalAttrs cfg.configFile.enable { POLYLOGUE_CONFIG = toString configFilePath; };
       execStart = lib.escapeShellArgs (["${cfg.package}/bin/polylogue"] ++ args);
       preStart = lib.concatStringsSep "\n" (lib.unique (
         ["mkdir -p ${workingDir}" "mkdir -p ${toString cfg.stateDir}"]
@@ -190,6 +184,44 @@ let
     defaults = defaultsJsonLines // {
       output_dirs = lib.mapAttrs (_: toString) mergedOutputDirs;
     };
+    drive = filterAttrs (_: v: v != null) {
+      credentials_path = cfg.drive.credentialsPath;
+      token_path = cfg.drive.tokenPath;
+    };
+    index = {
+      backend = indexBackend;
+      qdrant = filterAttrs (_: v: v != null) {
+        url = cfg.qdrant.url;
+        api_key = cfg.qdrant.apiKey;
+        collection = cfg.qdrant.collection;
+        vector_size = cfg.qdrant.vectorSize;
+      };
+    };
+    exports = {
+      chatgpt = toString cfg.exports.chatgpt;
+      claude = toString cfg.exports.claude;
+    };
+  };
+
+  indexBackend = if cfg.qdrant.enable then "qdrant" else cfg.indexBackend;
+  qdrantEnv = if indexBackend == "qdrant" then filterAttrs (_: v: v != null) {
+    POLYLOGUE_INDEX_BACKEND = indexBackend;
+    POLYLOGUE_QDRANT_URL = cfg.qdrant.url;
+    POLYLOGUE_QDRANT_API_KEY = cfg.qdrant.apiKey;
+    POLYLOGUE_QDRANT_COLLECTION = cfg.qdrant.collection;
+    POLYLOGUE_QDRANT_VECTOR_SIZE = if cfg.qdrant.vectorSize != null then toString cfg.qdrant.vectorSize else null;
+  } else {
+    POLYLOGUE_INDEX_BACKEND = indexBackend;
+  };
+  driveEnv = filterAttrs (_: v: v != null) {
+    POLYLOGUE_DRIVE_CREDENTIALS = cfg.drive.credentialsPath;
+    POLYLOGUE_TOKEN_PATH = cfg.drive.tokenPath;
+  };
+  baseEnv = cfg.environment // driveEnv // qdrantEnv // {
+    XDG_CONFIG_HOME = toString cfg.configHome;
+    XDG_DATA_HOME = toString cfg.dataHome;
+    XDG_STATE_HOME = toString cfg.stateDir;
+    POLYLOGUE_FORCE_PLAIN = "1";
   };
 
 in {
@@ -263,6 +295,66 @@ in {
       description = "Directory that will be exported as XDG_STATE_HOME (runs DB, tokens).";
     };
 
+    indexBackend = mkOption {
+      type = types.enum [ "sqlite" "qdrant" "none" ];
+      default = "sqlite";
+      description = "Index backend to advertise; set to qdrant to send vectors to Qdrant.";
+    };
+
+    qdrant = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable Qdrant indexing (forces POLYLOGUE_INDEX_BACKEND=qdrant).";
+      };
+      url = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Qdrant URL (POLYLOGUE_QDRANT_URL).";
+      };
+      apiKey = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Qdrant API key (POLYLOGUE_QDRANT_API_KEY); leave null for localhost without auth.";
+      };
+      collection = mkOption {
+        type = types.nullOr types.str;
+        default = "polylogue";
+        description = "Qdrant collection name (POLYLOGUE_QDRANT_COLLECTION).";
+      };
+      vectorSize = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        description = "Qdrant vector size override (POLYLOGUE_QDRANT_VECTOR_SIZE).";
+      };
+    };
+
+    drive = {
+      credentialsPath = mkOption {
+        type = types.nullOr types.path;
+        default = cfg.configHome + "/credentials.json";
+        description = "Path to Google OAuth credentials.json (POLYLOGUE_DRIVE_CREDENTIALS).";
+      };
+      tokenPath = mkOption {
+        type = types.nullOr types.path;
+        default = cfg.stateDir + "/token.json";
+        description = "Path for Drive token.json (POLYLOGUE_TOKEN_PATH).";
+      };
+    };
+
+    exports = {
+      chatgpt = mkOption {
+        type = types.path;
+        default = cfg.dataHome + "/exports/chatgpt";
+        description = "ChatGPT exports root (zip or extracted conversations.json).";
+      };
+      claude = mkOption {
+        type = types.path;
+        default = cfg.dataHome + "/exports/claude";
+        description = "Claude exports root (zip or extracted conversations.json).";
+      };
+    };
+
     environment = mkOption {
       type = types.attrsOf types.str;
       default = {};
@@ -300,6 +392,18 @@ in {
 ${configJson}
 EOF
           '';
+        })
+        (mkIf (cfg.qdrant.enable && cfg.qdrant.url == null) {
+          warnings = [ "services.polylogue.qdrant.enable=true but qdrant.url is not set." ];
+        })
+        (mkIf (activeTargets ? "drive-sync" && cfg.drive.credentialsPath == null) {
+          warnings = [ "services.polylogue.targets.drive-sync.enable=true but drive.credentialsPath is not set." ];
+        })
+        (mkIf (activeTargets ? "chatgpt-sync" && cfg.exports.chatgpt == null) {
+          warnings = [ "services.polylogue.targets.chatgpt-sync.enable=true but exports.chatgpt is not set." ];
+        })
+        (mkIf (activeTargets ? "claude-sync" && cfg.exports.claude == null) {
+          warnings = [ "services.polylogue.targets.claude-sync.enable=true but exports.claude is not set." ];
         })
       ]
     )

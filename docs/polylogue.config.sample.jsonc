@@ -12,5 +12,28 @@
       "import_chatgpt": "~/polylogue-data/chatgpt",
       "import_claude": "~/polylogue-data/claude"
     }
+  },
+  "drive": {
+    // Optional: override where credentials.json and token.json live
+    "credentials_path": "~/.config/polylogue/credentials.json",
+    "token_path": "~/.local/state/polylogue/token.json",
+    // Optional: tune retries/backoff (integers; defaults are fine for most)
+    "retries": 3,
+    "retry_base": 0.5
+  },
+  "index": {
+    // backend: "sqlite" (default), "qdrant", or "none"
+    "backend": "sqlite",
+    "qdrant": {
+      "url": "http://localhost:6333",
+      "api_key": null,
+      "collection": "polylogue",
+      "vector_size": null
+    }
+  },
+  "exports": {
+    // Locations for chatgpt/claude exports (zip or extracted conversations.json)
+    "chatgpt": "~/polylogue-data/exports/chatgpt",
+    "claude": "~/polylogue-data/exports/claude"
   }
 }
