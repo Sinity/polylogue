@@ -184,6 +184,23 @@ let
     defaults = defaultsJsonLines // {
       output_dirs = lib.mapAttrs (_: toString) mergedOutputDirs;
     };
+    drive = filterAttrs (_: v: v != null) {
+      credentials_path = cfg.drive.credentialsPath;
+      token_path = cfg.drive.tokenPath;
+    };
+    index = {
+      backend = indexBackend;
+      qdrant = filterAttrs (_: v: v != null) {
+        url = cfg.qdrant.url;
+        api_key = cfg.qdrant.apiKey;
+        collection = cfg.qdrant.collection;
+        vector_size = cfg.qdrant.vectorSize;
+      };
+    };
+    exports = {
+      chatgpt = toString cfg.exports.chatgpt;
+      claude = toString cfg.exports.claude;
+    };
   };
 
   indexBackend = if cfg.qdrant.enable then "qdrant" else cfg.indexBackend;
@@ -196,7 +213,11 @@ let
   } else {
     POLYLOGUE_INDEX_BACKEND = indexBackend;
   };
-  baseEnv = cfg.environment // qdrantEnv // {
+  driveEnv = filterAttrs (_: v: v != null) {
+    POLYLOGUE_DRIVE_CREDENTIALS = cfg.drive.credentialsPath;
+    POLYLOGUE_TOKEN_PATH = cfg.drive.tokenPath;
+  };
+  baseEnv = cfg.environment // driveEnv // qdrantEnv // {
     XDG_CONFIG_HOME = toString cfg.configHome;
     XDG_DATA_HOME = toString cfg.dataHome;
     XDG_STATE_HOME = toString cfg.stateDir;
@@ -308,6 +329,32 @@ in {
       };
     };
 
+    drive = {
+      credentialsPath = mkOption {
+        type = types.nullOr types.path;
+        default = cfg.configHome + "/credentials.json";
+        description = "Path to Google OAuth credentials.json (POLYLOGUE_DRIVE_CREDENTIALS).";
+      };
+      tokenPath = mkOption {
+        type = types.nullOr types.path;
+        default = cfg.stateDir + "/token.json";
+        description = "Path for Drive token.json (POLYLOGUE_TOKEN_PATH).";
+      };
+    };
+
+    exports = {
+      chatgpt = mkOption {
+        type = types.path;
+        default = cfg.dataHome + "/exports/chatgpt";
+        description = "ChatGPT exports root (zip or extracted conversations.json).";
+      };
+      claude = mkOption {
+        type = types.path;
+        default = cfg.dataHome + "/exports/claude";
+        description = "Claude exports root (zip or extracted conversations.json).";
+      };
+    };
+
     environment = mkOption {
       type = types.attrsOf types.str;
       default = {};
@@ -345,6 +392,18 @@ in {
 ${configJson}
 EOF
           '';
+        })
+        (mkIf (cfg.qdrant.enable && cfg.qdrant.url == null) {
+          warnings = [ "services.polylogue.qdrant.enable=true but qdrant.url is not set." ];
+        })
+        (mkIf (activeTargets ? "drive-sync" && cfg.drive.credentialsPath == null) {
+          warnings = [ "services.polylogue.targets.drive-sync.enable=true but drive.credentialsPath is not set." ];
+        })
+        (mkIf (activeTargets ? "chatgpt-sync" && cfg.exports.chatgpt == null) {
+          warnings = [ "services.polylogue.targets.chatgpt-sync.enable=true but exports.chatgpt is not set." ];
+        })
+        (mkIf (activeTargets ? "claude-sync" && cfg.exports.claude == null) {
+          warnings = [ "services.polylogue.targets.claude-sync.enable=true but exports.claude is not set." ];
         })
       ]
     )
