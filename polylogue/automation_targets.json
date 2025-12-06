@@ -39,10 +39,10 @@
       "html": false
     }
   },
-  "chatgpt-import": {
-    "name": "polylogue-import-chatgpt",
-    "description": "Polylogue ChatGPT import",
-    "command": ["import", "chatgpt", "--json"],
+  "chatgpt-sync": {
+    "name": "polylogue-sync-chatgpt",
+    "description": "Polylogue ChatGPT sync",
+    "command": ["sync", "chatgpt", "--json"],
     "defaults": {
       "collapseThreshold": 18,
       "extraArgs": [],
