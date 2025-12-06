@@ -39,10 +39,20 @@
       "html": false
     }
   },
-  "chatgpt-import": {
-    "name": "polylogue-import-chatgpt",
-    "description": "Polylogue ChatGPT import",
-    "command": ["import", "chatgpt", "--json"],
+  "claude-sync": {
+    "name": "polylogue-sync-claude",
+    "description": "Polylogue Claude export sync",
+    "command": ["sync", "claude", "--json"],
+    "defaults": {
+      "collapseThreshold": 18,
+      "extraArgs": [],
+      "html": false
+    }
+  },
+  "chatgpt-sync": {
+    "name": "polylogue-sync-chatgpt",
+    "description": "Polylogue ChatGPT sync",
+    "command": ["sync", "chatgpt", "--json"],
     "defaults": {
       "collapseThreshold": 18,
       "extraArgs": [],

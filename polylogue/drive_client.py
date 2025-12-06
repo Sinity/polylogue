@@ -49,7 +49,7 @@ class DriveClient:
         if self.ui.plain:
             raise SystemExit(
                 f"Missing credentials.json. Set ${DRIVE_CREDENTIAL_ENV} or download a Google OAuth client secret "
-                "and place it next to polylogue.py."
+                f"and place it at {cred_path}."
             )
         return self._prompt_for_credentials()
 
