@@ -1,0 +1,52 @@
+{
+  "codex": {
+    "name": "polylogue-sync-codex",
+    "description": "Polylogue Codex sync",
+    "command": ["sync", "codex", "--json"],
+    "defaults": {
+      "collapseThreshold": 24,
+      "extraArgs": [],
+      "html": false
+    }
+  },
+  "claude-code": {
+    "name": "polylogue-sync-claude-code",
+    "description": "Polylogue Claude Code sync",
+    "command": ["sync", "claude-code", "--json"],
+    "defaults": {
+      "collapseThreshold": 20,
+      "extraArgs": [],
+      "html": false
+    }
+  },
+  "drive-sync": {
+    "name": "polylogue-sync-drive",
+    "description": "Polylogue Drive folder sync",
+    "command": ["sync", "drive", "--json"],
+    "defaults": {
+      "collapseThreshold": 16,
+      "extraArgs": ["--folder-name", "AI Studio"],
+      "html": false
+    }
+  },
+  "gemini-render": {
+    "name": "polylogue-render-gemini",
+    "description": "Polylogue Gemini render",
+    "command": ["render", "--json"],
+    "defaults": {
+      "collapseThreshold": 16,
+      "extraArgs": [],
+      "html": false
+    }
+  },
+  "chatgpt-import": {
+    "name": "polylogue-import-chatgpt",
+    "description": "Polylogue ChatGPT import",
+    "command": ["import", "chatgpt", "--json"],
+    "defaults": {
+      "collapseThreshold": 18,
+      "extraArgs": [],
+      "html": false
+    }
+  }
+}
