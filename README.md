@@ -4,6 +4,10 @@ Polylogue is a CLI toolkit for archiving AI/LLM conversations—rendering local 
 
 ## Quick Start
 
+- `direnv allow` (or `nix develop`) to enter the dev shell with gum/skim/rich installed.
+- Run `python3 polylogue.py --help` to see commands; try `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync codex --dry-run` as a smoke test.
+- Copy `docs/polylogue.config.sample.jsonc` to `$XDG_CONFIG_HOME/polylogue/config.json` to set output dirs and HTML defaults.
+
 ## Quality Gates
 - `pytest` is expected to stay green; add tests for new behaviours whenever possible.
 - Newly generated Markdown is spot-checked with `polylogue browse stats --dir …` and quick greps (timestamps, footnotes, attachment counts) before shipping.

@@ -29,24 +29,7 @@
           };
 
           pyPkgs = pkgs.python3Packages;
-
-          commonDeps = with pyPkgs; [
-            google-auth-oauthlib
-            requests
-            pathvalidate
-            aiohttp
-            aiofiles
-            rich
-            pydantic
-            python-frontmatter
-            jinja2
-            markdown-it-py
-            pyperclip
-            watchfiles
-            tiktoken
-            qdrant-client
-            ijson
-          ];
+          deps = import ./nix/python-deps.nix { inherit pkgs; };
 
           cliDeps = with pkgs; [ gum skim delta git ];
           cliBinPath = pkgs.lib.makeBinPath cliDeps;
@@ -56,12 +39,12 @@
             version = "0.1.0";
             pyproject = true;
             src = self;
-            propagatedBuildInputs = commonDeps;
+            propagatedBuildInputs = deps.commonDeps;
             nativeBuildInputs =
               (with pyPkgs; [ setuptools wheel ])
               ++ cliDeps
               ++ [ pkgs.makeWrapper ];
-            nativeCheckInputs = (with pyPkgs; [ pytest ]) ++ cliDeps;
+            nativeCheckInputs = deps.devDeps ++ cliDeps;
             checkPhase = ''
               export HOME=$TMPDIR
               export XDG_STATE_HOME=$TMPDIR
@@ -76,13 +59,7 @@
 
           defaultDevShell = import ./nix/devshell.nix {
             inherit pkgs;
-            extraPythonPackages = with pyPkgs; [
-              pytest
-              pytest-cov
-              coverage
-              mypy
-              types-requests
-            ];
+            extraPythonPackages = deps.devDeps;
           };
 
           cliApp = {
