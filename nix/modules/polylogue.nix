@@ -156,7 +156,6 @@ let
       in
         t.outputDir or defaults.outputDir or null
     ) cfg.targets)
-    ++ lib.optional (cfg.drive.tokenPath != null) cfg.drive.tokenPath
   );
 
   tmpfilesRules = lib.map (dir:
@@ -188,12 +187,6 @@ let
   };
 
   indexBackend = if cfg.qdrant.enable then "qdrant" else cfg.indexBackend;
-  driveEnv = filterAttrs (_: v: v != null) {
-    POLYLOGUE_DRIVE_CREDENTIALS = cfg.drive.credentialsPath;
-    POLYLOGUE_TOKEN_PATH = cfg.drive.tokenPath;
-    POLYLOGUE_RETRIES = if cfg.drive.retries != null then toString cfg.drive.retries else null;
-    POLYLOGUE_RETRY_BASE = if cfg.drive.retryBase != null then toString cfg.drive.retryBase else null;
-  };
   qdrantEnv = if indexBackend == "qdrant" then filterAttrs (_: v: v != null) {
     POLYLOGUE_INDEX_BACKEND = indexBackend;
     POLYLOGUE_QDRANT_URL = cfg.qdrant.url;
@@ -203,11 +196,7 @@ let
   } else {
     POLYLOGUE_INDEX_BACKEND = indexBackend;
   };
-  sessionEnv = filterAttrs (_: v: v != null) {
-    POLYLOGUE_CODEX_SESSIONS = cfg.sessionRoots.codexSessions;
-    POLYLOGUE_CLAUDE_CODE_PROJECTS = cfg.sessionRoots.claudeCodeProjects;
-  };
-  baseEnv = cfg.environment // driveEnv // qdrantEnv // sessionEnv // {
+  baseEnv = cfg.environment // qdrantEnv // {
     XDG_CONFIG_HOME = toString cfg.configHome;
     XDG_DATA_HOME = toString cfg.dataHome;
     XDG_STATE_HOME = toString cfg.stateDir;
@@ -291,29 +280,6 @@ in {
       description = "Index backend to advertise; set to qdrant to send vectors to Qdrant.";
     };
 
-    drive = {
-      credentialsPath = mkOption {
-        type = types.nullOr types.path;
-        default = null;
-        description = "Path to Google OAuth credentials.json (POLYLOGUE_DRIVE_CREDENTIALS).";
-      };
-      tokenPath = mkOption {
-        type = types.nullOr types.path;
-        default = null;
-        description = "Path for Drive token.json (POLYLOGUE_TOKEN_PATH).";
-      };
-      retries = mkOption {
-        type = types.nullOr types.int;
-        default = null;
-        description = "Retry attempts for Drive requests (POLYLOGUE_RETRIES).";
-      };
-      retryBase = mkOption {
-        type = types.nullOr types.number;
-        default = null;
-        description = "Base delay for Drive retries in seconds (POLYLOGUE_RETRY_BASE).";
-      };
-    };
-
     qdrant = {
       enable = mkOption {
         type = types.bool;
@@ -339,19 +305,6 @@ in {
         type = types.nullOr types.int;
         default = null;
         description = "Qdrant vector size override (POLYLOGUE_QDRANT_VECTOR_SIZE).";
-      };
-    };
-
-    sessionRoots = {
-      codexSessions = mkOption {
-        type = types.nullOr types.path;
-        default = null;
-        description = "Override POLYLOGUE_CODEX_SESSIONS path for local Codex sessions.";
-      };
-      claudeCodeProjects = mkOption {
-        type = types.nullOr types.path;
-        default = null;
-        description = "Override POLYLOGUE_CLAUDE_CODE_PROJECTS path for Claude Code projects.";
       };
     };
 
