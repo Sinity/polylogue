@@ -31,16 +31,20 @@ def _resolve_path(env_var: str, home_default: Path, xdg_default: Path) -> Path:
     return xdg_default
 
 
+DEFAULT_CODEX_HOME = Path.home() / ".codex" / "sessions"
+DEFAULT_CLAUDE_CODE_HOME = Path.home() / ".claude" / "projects"
+
+
 CODEX_SESSIONS_ROOT = _resolve_path(
     "POLYLOGUE_CODEX_SESSIONS",
-    Path.home() / ".codex" / "sessions",
+    DEFAULT_CODEX_HOME,
     DATA_HOME / "codex" / "sessions",
 )
 
 
 CLAUDE_CODE_PROJECT_ROOT = _resolve_path(
     "POLYLOGUE_CLAUDE_CODE_PROJECTS",
-    Path.home() / ".claude" / "projects",
+    DEFAULT_CLAUDE_CODE_HOME,
     DATA_HOME / "claude" / "projects",
 )
 
