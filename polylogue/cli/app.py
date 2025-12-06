@@ -971,6 +971,21 @@ def _run_config_show(args: argparse.Namespace, env: CommandEnv) -> None:
                 "chatgpt": str(env.config.exports.chatgpt),
                 "claude": str(env.config.exports.claude),
             },
+            "drive": {
+                "credentials_path": str(env.config.drive.credentials_path) if env.config.drive and env.config.drive.credentials_path else None,
+                "token_path": str(env.config.drive.token_path) if env.config.drive and env.config.drive.token_path else None,
+                "retries": env.config.drive.retries if env.config.drive else None,
+                "retry_base": env.config.drive.retry_base if env.config.drive else None,
+            },
+            "index": {
+                "backend": env.config.index.backend if env.config.index else "sqlite",
+                "qdrant": {
+                    "url": env.config.index.qdrant_url if env.config.index else None,
+                    "api_key": env.config.index.qdrant_api_key if env.config.index else None,
+                    "collection": env.config.index.qdrant_collection if env.config.index else None,
+                    "vector_size": env.config.index.qdrant_vector_size if env.config.index else None,
+                },
+            },
             "statePath": str(env.conversations.state_path),
             "runsDb": str(env.database.resolve_path()),
         }
