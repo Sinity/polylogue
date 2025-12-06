@@ -216,14 +216,14 @@ in {
 
     configHome = mkOption {
       type = types.path;
-      default = "/etc/polylogue";
+      default = "/var/lib/polylogue/config";
       description = "Directory exported as XDG_CONFIG_HOME for services.";
     };
 
     dataHome = mkOption {
       type = types.path;
       default = "/var/lib/polylogue";
-      description = "Directory exported as XDG_DATA_HOME for services.";
+      description = "Directory exported as XDG_DATA_HOME for services and output roots.";
     };
 
     configFile = {
@@ -260,7 +260,7 @@ in {
     stateDir = mkOption {
       type = types.path;
       default = "/var/lib/polylogue/state";
-      description = "Directory that will be exported as XDG_STATE_HOME.";
+      description = "Directory that will be exported as XDG_STATE_HOME (runs DB, tokens).";
     };
 
     environment = mkOption {
