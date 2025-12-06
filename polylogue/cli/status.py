@@ -245,11 +245,24 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     console = ui.console
     json_mode = getattr(args, "json", False)
     directory_input = Path(args.dir) if args.dir else DEFAULT_RENDER_OUT
+    if not directory_input.exists():
+        if json_mode:
+            empty_payload = {
+                "directory": str(directory_input),
+                "totals": {"files": 0, "attachments": 0, "attachmentBytes": 0, "tokens": 0, "words": 0},
+                "providers": {},
+                "filteredOut": 0,
+            }
+            print(json.dumps(empty_payload))
+        else:
+            ui.summary("Stats", ["No Markdown files found (stats directory missing)."])
+        return
     directory = resolve_path(directory_input, PathPolicy.must_exist(), ui, json_mode=json_mode)
     if not directory:
-        if not json_mode:
-            ui.console.print("[red]Stats directory is required")
-        raise SystemExit(1)
+        if json_mode:
+            raise SystemExit(1)
+        ui.summary("Stats", ["No Markdown files found (stats directory missing)."])
+        return
 
     canonical_files = list(directory.rglob("conversation.md"))
     legacy_files = list(directory.glob("*.md"))

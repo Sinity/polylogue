@@ -23,8 +23,10 @@ def run_browse_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         run_stats_cli(args, env)
     elif browse_cmd == "status":
         run_status_cli(args, env)
-    else:  # runs
+    elif browse_cmd == "runs":
         run_runs_cli(args, env)
+    else:
+        raise SystemExit(f"Unknown browse sub-command: {browse_cmd}")
 
 
 __all__ = ["run_browse_cli"]

@@ -39,6 +39,6 @@ To keep recurring Claude exports in lockstep with the rest of your archive:
 2. Run `polylogue sync claude` to import the new bundles. Without `--all`, the CLI offers an interactive picker so you can cherry-pick which exports to process.
    - Use `--session /path/to/export.zip` (repeatable) when you want to target specific bundles without touching the picker.
 3. Use `--base-dir` to point at another directory, and reuse familiar options like `--html` and `--prune` to control the output layout.
-4. Launch `polylogue watch claude` to monitor the export directory continuously; every new ZIP or refreshed `conversations.json` automatically kicks off the same pipeline as a manual sync.
+4. Launch `polylogue sync claude --watch` to monitor the export directory continuously; every new ZIP or refreshed `conversations.json` automatically kicks off the same pipeline as a manual sync.
 
-Whether you sync on demand or rely on `polylogue watch claude`, the registrar keeps slugs, token stats, and branch metadata perfectly aligned with the latest export.
+Whether you sync on demand or rely on `polylogue sync claude --watch`, the registrar keeps slugs, token stats, and branch metadata perfectly aligned with the latest export.
