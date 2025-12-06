@@ -40,7 +40,7 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 return
         else:
             console.print(f"[yellow]Configuration exists at {SETTINGS_PATH}")
-            console.print("[yellow]Use --force to overwrite, or run 'polylogue settings' to modify.")
+            console.print("[yellow]Use --force to overwrite, or run 'polylogue config set' to modify.")
             return
 
     console.print("\n[bold cyan]Welcome to Polylogue![/bold cyan]")

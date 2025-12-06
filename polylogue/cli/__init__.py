@@ -19,6 +19,9 @@ from .app import (  # pylint: disable=unused-import
     _run_sync_drive,
 )
 
+# Legacy compatibility alias; prefer resolve_html_settings.
+_resolve_html_settings = resolve_html_settings
+
 __all__ = [
     "CommandEnv",
     "build_parser",
@@ -38,4 +41,5 @@ __all__ = [
     "run_watch_cli",
     "summarize_import",
     "_run_sync_drive",
+    "_resolve_html_settings",
 ]
