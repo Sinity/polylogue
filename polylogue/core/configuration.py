@@ -8,12 +8,15 @@ from typing import Any, Dict, Optional, Tuple
 
 from ..paths import CONFIG_HOME, DATA_HOME
 from .config_validation import validate_config_payload
+from ..util import DEFAULT_CODEX_HOME, DEFAULT_CLAUDE_CODE_HOME
 
 CONFIG_ENV = "POLYLOGUE_CONFIG"
 DEFAULT_CONFIG_LOCATIONS = [
     CONFIG_HOME / "config.json",
     Path.home() / ".polylogueconfig",
 ]
+DEFAULT_EXPORTS_CHATGPT = DATA_HOME / "exports" / "chatgpt"
+DEFAULT_EXPORTS_CLAUDE = DATA_HOME / "exports" / "claude"
 
 
 @dataclass
@@ -49,8 +52,34 @@ class Defaults:
 @dataclass
 class AppConfig:
     defaults: Defaults = field(default_factory=Defaults)
+    drive: Optional["DriveConfig"] = None
+    index: Optional["IndexConfig"] = None
+    exports: Optional["ExportsConfig"] = None
     path: Optional[Path] = None
     raw: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class DriveConfig:
+    credentials_path: Optional[Path] = None
+    token_path: Optional[Path] = None
+    retries: Optional[int] = None
+    retry_base: Optional[float] = None
+
+
+@dataclass
+class IndexConfig:
+    backend: str = "sqlite"
+    qdrant_url: Optional[str] = None
+    qdrant_api_key: Optional[str] = None
+    qdrant_collection: str = "polylogue"
+    qdrant_vector_size: Optional[int] = None
+
+
+@dataclass
+class ExportsConfig:
+    chatgpt: Path
+    claude: Path
 
 
 def _load_config_sources() -> Tuple[Dict[str, Any], Optional[Path]]:
@@ -107,9 +136,71 @@ def _load_defaults(data: Dict[str, Any]) -> Defaults:
     return defaults
 
 
+def _load_drive(data: Dict[str, Any]) -> Optional[DriveConfig]:
+    drive_raw = data.get("drive") if isinstance(data, dict) else None
+    if not isinstance(drive_raw, dict):
+        return None
+    cfg = DriveConfig()
+    if drive_raw.get("credentials_path"):
+        cfg.credentials_path = Path(drive_raw["credentials_path"]).expanduser()
+    if drive_raw.get("token_path"):
+        cfg.token_path = Path(drive_raw["token_path"]).expanduser()
+    retries = drive_raw.get("retries")
+    if isinstance(retries, int) and retries >= 1:
+        cfg.retries = retries
+    retry_base = drive_raw.get("retry_base")
+    if isinstance(retry_base, (int, float)) and retry_base >= 0:
+        cfg.retry_base = float(retry_base)
+    return cfg
+
+
+def _load_index(data: Dict[str, Any]) -> IndexConfig:
+    index_raw = data.get("index") if isinstance(data, dict) else None
+    cfg = IndexConfig()
+    if not isinstance(index_raw, dict):
+        return cfg
+    backend = index_raw.get("backend")
+    if isinstance(backend, str) and backend.strip():
+        cfg.backend = backend.strip().lower()
+    qdrant_raw = index_raw.get("qdrant")
+    if isinstance(qdrant_raw, dict):
+        if qdrant_raw.get("url"):
+            cfg.qdrant_url = str(qdrant_raw["url"]).strip()
+        if qdrant_raw.get("api_key"):
+            cfg.qdrant_api_key = str(qdrant_raw["api_key"]).strip()
+        if qdrant_raw.get("collection"):
+            cfg.qdrant_collection = str(qdrant_raw["collection"]).strip()
+        vector_size = qdrant_raw.get("vector_size")
+        if isinstance(vector_size, int) and vector_size >= 1:
+            cfg.qdrant_vector_size = vector_size
+    return cfg
+
+
+def _load_exports(data: Dict[str, Any]) -> ExportsConfig:
+    exports_raw = data.get("exports") if isinstance(data, dict) else None
+    chatgpt = DEFAULT_EXPORTS_CHATGPT
+    claude = DEFAULT_EXPORTS_CLAUDE
+    if isinstance(exports_raw, dict):
+        if exports_raw.get("chatgpt"):
+            chatgpt = Path(exports_raw["chatgpt"]).expanduser()
+        if exports_raw.get("claude"):
+            claude = Path(exports_raw["claude"]).expanduser()
+    return ExportsConfig(chatgpt=chatgpt, claude=claude)
+
+
 def load_configuration() -> AppConfig:
     data, path = _load_config_sources()
     if data:
         validate_config_payload(data)
     defaults = _load_defaults(data)
-    return AppConfig(defaults=defaults, path=path, raw=data if isinstance(data, dict) else {})
+    drive = _load_drive(data)
+    index = _load_index(data)
+    exports = _load_exports(data)
+    return AppConfig(
+        defaults=defaults,
+        drive=drive,
+        index=index,
+        exports=exports,
+        path=path,
+        raw=data if isinstance(data, dict) else {},
+    )
