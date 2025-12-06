@@ -15,9 +15,9 @@
 
 ## Automation & Testing
 - Non-interactive paths automatically drop into a plain UI when stdout/stderr aren’t TTYs. Set `POLYLOGUE_FORCE_PLAIN=1` when you need deterministic plain mode in CI, or pass `--interactive` to re-enable gum/skim prompts even without a TTY.
-- Smoke test with `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py render data --dry-run` and `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync --dry-run`.
+- Smoke test with `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync codex --dry-run` and `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync claude-code --dry-run`.
 - Run `pytest` regularly; new tests should live under `tests/`.
-- Use `polylogue env` (with `--json` when needed) to confirm resolved config/output paths while debugging CI or support issues.
+- Use `polylogue config show --json` to confirm resolved config/output paths while debugging CI or support issues.
 
 ## Style & Naming
 - Python code follows PEP 8, 4-space indentation, snake_case identifiers.

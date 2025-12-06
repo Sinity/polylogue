@@ -27,7 +27,7 @@ Claude Code sessions always mirror the IDE’s branching history: `conversation.
 
 ## Sync Notes
 
-- Run `polylogue sync claude-code` for one-shot mirroring or `polylogue watch claude-code` for continuous sync. Both commands honour collapse thresholds, HTML output, pruning, and diff generation.
+- Run `polylogue sync claude-code` for one-shot mirroring or `polylogue sync claude-code --watch` for continuous sync. Both paths honour collapse thresholds, HTML output, pruning, and diff generation.
 - The importer preserves file mtimes and reuses per-conversation slugs so reruns remain idempotent and Git-friendly.
 - Use the `--force` flag when you need to overwrite locally edited transcripts; otherwise manual tweaks stay intact and the session is marked dirty.
 - Inline markers such as `\[1]` are normalised to `[1]` so footnotes or numbered references read cleanly in the rendered Markdown.

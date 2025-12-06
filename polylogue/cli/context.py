@@ -127,7 +127,7 @@ def resolve_collapse_value(value: Optional[int], settings: Optional[Settings] = 
 
     Priority order:
     1. Explicit command-line argument
-    2. User settings (from 'polylogue settings --collapse-threshold')
+    2. User settings (from 'polylogue config set --collapse-threshold')
     3. CONFIG defaults
     """
     if isinstance(value, int) and value > 0:
