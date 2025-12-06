@@ -1,9 +1,10 @@
 { self }:
 { config, lib, pkgs, ... }:
 let
-  inherit (lib) mkEnableOption mkOption mkIf mkMerge optionalAttrs types attrNames;
+  inherit (lib) mkEnableOption mkOption mkIf mkMerge optionalAttrs types attrNames dirOf filterAttrs mapAttrsToList;
 
   cfg = config.services.polylogue;
+  configFilePath = if cfg.configFile.path != null then cfg.configFile.path else cfg.configHome + "/config.json";
   targetData = builtins.fromJSON (builtins.readFile ../../polylogue/automation_targets.json);
 
   packagesForSystem = lib.attrByPath [pkgs.system] (self.packages or {}) {};
@@ -95,11 +96,15 @@ let
       defaultHtml = lib.attrByPath ["html"] false defaults;
       defaultOut = lib.attrByPath ["outputDir"] null defaults;
       defaultWorking = lib.attrByPath ["workingDir"] null defaults;
-      workingDir = toString (targetCfg.workingDir or defaultWorking or cfg.workingDir);
+      workingDir = toString (
+        if targetCfg.workingDir != null then targetCfg.workingDir
+        else if defaultWorking != null then defaultWorking
+        else cfg.workingDir
+      );
       baseArgs = meta.command ++ defaultExtra ++ targetCfg.extraArgs;
       collapseValue = targetCfg.collapseThreshold or defaultCollapse;
       argsWithCollapse = if collapseValue != null && !(lib.elem "--collapse-threshold" baseArgs)
-        then baseArgs ++ ["--collapse-threshold", toString collapseValue]
+        then baseArgs ++ ["--collapse-threshold" (toString collapseValue)]
         else baseArgs;
       htmlFlag = if targetCfg.html then true else defaultHtml;
       argsWithHtml = if htmlFlag && !(lib.elem "--html" argsWithCollapse)
@@ -107,11 +112,15 @@ let
         else argsWithCollapse;
       resolvedOut = targetCfg.outputDir or defaultOut;
       args = if resolvedOut != null && !(lib.elem "--out" argsWithHtml)
-        then argsWithHtml ++ ["--out", toString resolvedOut]
+        then argsWithHtml ++ ["--out" (toString resolvedOut)]
         else argsWithHtml;
       envVars = cfg.environment // targetCfg.environment // {
+        XDG_CONFIG_HOME = toString cfg.configHome;
+        XDG_DATA_HOME = toString cfg.dataHome;
         XDG_STATE_HOME = toString cfg.stateDir;
         POLYLOGUE_FORCE_PLAIN = "1";
+      } // optionalAttrs cfg.configFile.enable {
+        POLYLOGUE_CONFIG = toString configFilePath;
       };
       execStart = lib.escapeShellArgs (["${cfg.package}/bin/polylogue"] ++ args);
       preStart = lib.concatStringsSep "\n" (lib.unique (
@@ -144,8 +153,9 @@ let
     };
 
   tmpfileDirs = lib.unique (
-    [ cfg.workingDir cfg.stateDir ]
-    ++ (lib.mapAttrsToList (n: t:
+    [ cfg.workingDir cfg.stateDir cfg.configHome ]
+    ++ (mapAttrsToList (_: path: path) mergedOutputDirs)
+    ++ (mapAttrsToList (n: t:
       let
         meta = targetData.${n};
         defaults = meta.defaults or {};
@@ -158,6 +168,29 @@ let
     let owner = cfg.user or "root"; in
     "d ${toString dir} 0755 ${owner} ${owner} - -"
   ) (lib.filter (dir: dir != null) tmpfileDirs);
+
+  markdownRoot = cfg.dataHome + "/archive/markdown";
+  defaultOutputDirs = {
+    render = markdownRoot + "/gemini-render";
+    sync_drive = markdownRoot + "/gemini-sync";
+    sync_codex = markdownRoot + "/codex";
+    sync_claude_code = markdownRoot + "/claude-code";
+    import_chatgpt = markdownRoot + "/chatgpt";
+    import_claude = markdownRoot + "/claude";
+  };
+
+  mergedOutputDirs = defaultOutputDirs // (filterAttrs (_: v: v != null) cfg.configFile.settings.outputDirs);
+  defaultsJsonLines = filterAttrs (_: v: v != null) {
+    collapse_threshold = cfg.configFile.settings.collapseThreshold;
+    html_previews = cfg.configFile.settings.htmlPreviews;
+    html_theme = cfg.configFile.settings.htmlTheme;
+  };
+
+  configJson = builtins.toJSON {
+    defaults = defaultsJsonLines // {
+      output_dirs = lib.mapAttrs (_: toString) mergedOutputDirs;
+    };
+  };
 
 in {
   options.services.polylogue = {
@@ -179,6 +212,49 @@ in {
       type = types.path;
       default = "/var/lib/polylogue";
       description = "Default working directory for automation jobs.";
+    };
+
+    configHome = mkOption {
+      type = types.path;
+      default = "/etc/polylogue";
+      description = "Directory exported as XDG_CONFIG_HOME for services.";
+    };
+
+    dataHome = mkOption {
+      type = types.path;
+      default = "/var/lib/polylogue";
+      description = "Directory exported as XDG_DATA_HOME for services.";
+    };
+
+    configFile = {
+      enable = mkEnableOption "Write a polylogue config.json for services" // { default = true; };
+      path = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = "Location of the generated polylogue config.json (also exported via POLYLOGUE_CONFIG). Defaults to ${config.services.polylogue.configHome}/config.json.";
+      };
+      settings = {
+        collapseThreshold = mkOption {
+          type = types.nullOr types.int;
+          default = null;
+          description = "defaults.collapse_threshold value; null uses application default.";
+        };
+        htmlPreviews = mkOption {
+          type = types.nullOr types.bool;
+          default = null;
+          description = "defaults.html_previews value; null uses application default.";
+        };
+        htmlTheme = mkOption {
+          type = types.nullOr (types.enum [ "light" "dark" ]);
+          default = null;
+          description = "defaults.html_theme value; null uses application default.";
+        };
+        outputDirs = mkOption {
+          type = types.attrsOf (types.nullOr types.path);
+          default = {};
+          description = "Optional overrides for defaults.output_dirs (render/sync_drive/sync_codex/sync_claude_code/import_chatgpt/import_claude).";
+        };
+      };
     };
 
     stateDir = mkOption {
@@ -217,6 +293,14 @@ in {
       [
         mkMerge (lib.mapAttrsToList mkServiceFor activeTargets)
         { systemd.tmpfiles.rules = tmpfilesRules; }
+        (mkIf cfg.configFile.enable {
+          system.activationScripts.polylogue-config = lib.stringAfter [ "etc" ] ''
+            install -d -m 0755 ${dirOf configFilePath}
+            cat > ${configFilePath} <<'EOF'
+${configJson}
+EOF
+          '';
+        })
       ]
     )
   );
