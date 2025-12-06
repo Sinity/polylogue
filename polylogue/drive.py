@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from .util import colorize, get_cached_folder_id, set_cached_folder_id
 
 try:
-    import requests
+import requests
     from google.auth.transport.requests import AuthorizedSession, Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -94,17 +94,6 @@ def _retry(
     operation: str = "request",
     notifier=None,
 ):
-    # Allow env overrides for tuning
-    try:
-        override = int(os.environ.get("POLYLOGUE_RETRIES", retries))
-        if override >= 0:
-            retries = override
-    except Exception:
-        pass
-    try:
-        base_delay = float(os.environ.get("POLYLOGUE_RETRY_BASE", base_delay))
-    except Exception:
-        pass
     base_delay = max(0.0, base_delay)
     retries = max(1, retries)
     last_err = None
