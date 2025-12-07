@@ -8,15 +8,13 @@ from typing import Any, Dict, Optional, Tuple
 
 from ..paths import CONFIG_HOME, DATA_HOME
 from .config_validation import validate_config_payload
-from ..util import DEFAULT_CODEX_HOME, DEFAULT_CLAUDE_CODE_HOME
 
 CONFIG_ENV = "POLYLOGUE_CONFIG"
 DEFAULT_CONFIG_LOCATIONS = [
     CONFIG_HOME / "config.json",
-    Path.home() / ".polylogueconfig",
 ]
-DEFAULT_EXPORTS_CHATGPT = DATA_HOME / "exports" / "chatgpt"
-DEFAULT_EXPORTS_CLAUDE = DATA_HOME / "exports" / "claude"
+DEFAULT_INPUT_ROOT = DATA_HOME / "inbox"
+DEFAULT_OUTPUT_ROOT = DATA_HOME / "archive"
 
 
 @dataclass
@@ -30,41 +28,32 @@ class OutputPaths:
 
     @classmethod
     def default(cls) -> "OutputPaths":
-        markdown_root = DATA_HOME / "archive" / "markdown"
+        output_root = DEFAULT_OUTPUT_ROOT
         return cls(
-            render=markdown_root / "gemini-render",
-            sync_drive=markdown_root / "gemini-sync",
-            sync_codex=markdown_root / "codex",
-            sync_claude_code=markdown_root / "claude-code",
-            import_chatgpt=markdown_root / "chatgpt",
-            import_claude=markdown_root / "claude",
+            render=output_root / "render",
+            sync_drive=output_root / "gemini",
+            sync_codex=output_root / "codex",
+            sync_claude_code=output_root / "claude-code",
+            import_chatgpt=output_root / "chatgpt",
+            import_claude=output_root / "claude",
         )
 
 
 @dataclass
 class Defaults:
     collapse_threshold: int = 25
-    html_previews: bool = False
-    html_theme: str = "light"
+    html_previews: bool = True
+    html_theme: str = "dark"
     output_dirs: OutputPaths = field(default_factory=OutputPaths.default)
 
 
 @dataclass
 class AppConfig:
     defaults: Defaults = field(default_factory=Defaults)
-    drive: Optional["DriveConfig"] = None
     index: Optional["IndexConfig"] = None
     exports: Optional["ExportsConfig"] = None
     path: Optional[Path] = None
     raw: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class DriveConfig:
-    credentials_path: Optional[Path] = None
-    token_path: Optional[Path] = None
-    retries: Optional[int] = None
-    retry_base: Optional[float] = None
 
 
 @dataclass
@@ -99,59 +88,50 @@ def _load_config_sources() -> Tuple[Dict[str, Any], Optional[Path]]:
     return {}, None
 
 
-def _load_defaults(data: Dict[str, Any]) -> Defaults:
-    defaults_raw = data.get("defaults") if isinstance(data, dict) else None
-    defaults = Defaults()
-    if not isinstance(defaults_raw, dict):
+def _load_paths(data: Dict[str, Any]) -> Tuple[Path, Path]:
+    paths_raw = data.get("paths") if isinstance(data, dict) else None
+    input_root = DEFAULT_INPUT_ROOT
+    output_root = DEFAULT_OUTPUT_ROOT
+    if isinstance(paths_raw, dict):
+        raw_input = paths_raw.get("input_root")
+        if isinstance(raw_input, str) and raw_input.strip():
+            input_root = Path(raw_input).expanduser()
+        raw_output = paths_raw.get("output_root")
+        if isinstance(raw_output, str) and raw_output.strip():
+            output_root = Path(raw_output).expanduser()
+    return input_root, output_root
+
+
+def _load_defaults(data: Dict[str, Any], *, output_root: Path) -> Defaults:
+    ui_raw = None
+    if isinstance(data, dict):
+        ui_raw = data.get("ui") or data.get("defaults")
+    defaults = Defaults(
+        output_dirs=OutputPaths(
+            render=output_root / "render",
+            sync_drive=output_root / "gemini",
+            sync_codex=output_root / "codex",
+            sync_claude_code=output_root / "claude-code",
+            import_chatgpt=output_root / "chatgpt",
+            import_claude=output_root / "claude",
+        )
+    )
+    if not isinstance(ui_raw, dict):
         return defaults
 
-    collapse = defaults_raw.get("collapse_threshold")
+    collapse = ui_raw.get("collapse_threshold")
     if isinstance(collapse, (int, float)) and collapse > 0:
         defaults.collapse_threshold = int(collapse)
 
-    html_previews = defaults_raw.get("html_previews")
-    if isinstance(html_previews, bool):
-        defaults.html_previews = html_previews
+    html_enabled = ui_raw.get("html")
+    if isinstance(html_enabled, bool):
+        defaults.html_previews = html_enabled
 
-    html_theme = defaults_raw.get("html_theme")
+    html_theme = ui_raw.get("theme")
     if isinstance(html_theme, str) and html_theme.strip():
         defaults.html_theme = html_theme.strip()
 
-    out_dirs_cfg = defaults_raw.get("output_dirs")
-    if isinstance(out_dirs_cfg, dict):
-        paths = defaults.output_dirs
-        if out_dirs_cfg.get("render"):
-            paths.render = Path(out_dirs_cfg["render"]).expanduser()
-        if out_dirs_cfg.get("sync_drive"):
-            paths.sync_drive = Path(out_dirs_cfg["sync_drive"]).expanduser()
-        if out_dirs_cfg.get("sync_codex"):
-            paths.sync_codex = Path(out_dirs_cfg["sync_codex"]).expanduser()
-        if out_dirs_cfg.get("sync_claude_code"):
-            paths.sync_claude_code = Path(out_dirs_cfg["sync_claude_code"]).expanduser()
-        if out_dirs_cfg.get("import_chatgpt"):
-            paths.import_chatgpt = Path(out_dirs_cfg["import_chatgpt"]).expanduser()
-        if out_dirs_cfg.get("import_claude"):
-            paths.import_claude = Path(out_dirs_cfg["import_claude"]).expanduser()
-
     return defaults
-
-
-def _load_drive(data: Dict[str, Any]) -> Optional[DriveConfig]:
-    drive_raw = data.get("drive") if isinstance(data, dict) else None
-    if not isinstance(drive_raw, dict):
-        return None
-    cfg = DriveConfig()
-    if drive_raw.get("credentials_path"):
-        cfg.credentials_path = Path(drive_raw["credentials_path"]).expanduser()
-    if drive_raw.get("token_path"):
-        cfg.token_path = Path(drive_raw["token_path"]).expanduser()
-    retries = drive_raw.get("retries")
-    if isinstance(retries, int) and retries >= 1:
-        cfg.retries = retries
-    retry_base = drive_raw.get("retry_base")
-    if isinstance(retry_base, (int, float)) and retry_base >= 0:
-        cfg.retry_base = float(retry_base)
-    return cfg
 
 
 def _load_index(data: Dict[str, Any]) -> IndexConfig:
@@ -176,29 +156,20 @@ def _load_index(data: Dict[str, Any]) -> IndexConfig:
     return cfg
 
 
-def _load_exports(data: Dict[str, Any]) -> ExportsConfig:
-    exports_raw = data.get("exports") if isinstance(data, dict) else None
-    chatgpt = DEFAULT_EXPORTS_CHATGPT
-    claude = DEFAULT_EXPORTS_CLAUDE
-    if isinstance(exports_raw, dict):
-        if exports_raw.get("chatgpt"):
-            chatgpt = Path(exports_raw["chatgpt"]).expanduser()
-        if exports_raw.get("claude"):
-            claude = Path(exports_raw["claude"]).expanduser()
-    return ExportsConfig(chatgpt=chatgpt, claude=claude)
+def _load_exports(input_root: Path) -> ExportsConfig:
+    return ExportsConfig(chatgpt=input_root, claude=input_root)
 
 
 def load_configuration() -> AppConfig:
     data, path = _load_config_sources()
     if data:
         validate_config_payload(data)
-    defaults = _load_defaults(data)
-    drive = _load_drive(data)
+    input_root, output_root = _load_paths(data)
+    defaults = _load_defaults(data, output_root=output_root)
     index = _load_index(data)
-    exports = _load_exports(data)
+    exports = _load_exports(input_root)
     return AppConfig(
         defaults=defaults,
-        drive=drive,
         index=index,
         exports=exports,
         path=path,

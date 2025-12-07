@@ -33,7 +33,7 @@ from .options import (
     SearchOptions,
     SearchResult,
 )
-from .config import CONFIG
+from .config import CONFIG, Config
 from .render import MarkdownDocument, build_markdown_from_chunks
 from .conversation import process_conversation
 from .validation import SchemaError, ensure_gemini_payload
@@ -93,11 +93,13 @@ def _provider_from_cmd(cmd: str) -> str:
 class CommandEnv:
     ui: UI
     drive: Optional[DriveClient] = None
+    config: Config = field(default_factory=lambda: CONFIG)
     repository: ConversationRepository = field(default_factory=ConversationRepository)
     settings: Settings = field(default_factory=Settings)
     state_repo: ConversationStateRepository = field(default_factory=ConversationStateRepository)
     database: ConversationDatabase = field(default_factory=ConversationDatabase)
     archive: Archive = field(default_factory=lambda: Archive(CONFIG))
+    config = field(default_factory=lambda: CONFIG)
     providers: ProviderRegistry = field(default_factory=ProviderRegistry)
     drive_constructor: Callable[[UI], DriveClient] = field(init=False)
     registrar: ConversationRegistrar = field(init=False)

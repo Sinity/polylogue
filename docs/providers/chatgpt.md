@@ -43,7 +43,7 @@ Polylogue ingests chat.openai.com exports (consumer ChatGPT) by walking the prov
 
 For recurring exports, you no longer need to call `polylogue import chatgpt …` manually each time. Treat the bundles like a local provider instead:
 
-1. Save each ZIP (or its extracted folder with `conversations.json`) under `$XDG_DATA_HOME/polylogue/exports/chatgpt` — by default `~/.local/share/polylogue/exports/chatgpt`. The directory is created automatically the first time you run the sync.
+1. Save each ZIP (or its extracted folder with `conversations.json`) under the inbox at `$XDG_DATA_HOME/polylogue/inbox/chatgpt` — by default `~/.local/share/polylogue/inbox/chatgpt`. The directory is created automatically the first time you run the sync.
 2. Run `polylogue sync chatgpt` to ingest every bundle in that directory, or pick specific bundles interactively when not using `--all`.
    - Pass `--session /path/to/bundle.zip` (repeatable) to bypass the picker and process specific exports directly.
 3. Pass `--base-dir /path/to/exports` if you keep the bundles somewhere else, and reuse the familiar flags (`--html`, etc.) to keep outputs consistent with the other providers.
