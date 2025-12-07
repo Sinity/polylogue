@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import polylogue.drive as drive_module
-from polylogue.drive_client import DRIVE_CREDENTIAL_ENV, DriveClient
+from polylogue.drive_client import DriveClient
 from polylogue.drive import _run_console_flow, get_drive_service, snapshot_drive_metrics
 
 
@@ -23,14 +23,6 @@ class DummyUI:
         pass
 
 
-@pytest.fixture
-def temp_credentials(tmp_path, monkeypatch):
-    cred_path = tmp_path / "env-creds.json"
-    cred_path.write_text(json.dumps({"installed": {"client_id": "demo"}}), encoding="utf-8")
-    monkeypatch.setenv(DRIVE_CREDENTIAL_ENV, str(cred_path))
-    return cred_path
-
-
 @pytest.fixture(autouse=True)
 def _reset_drive_metrics():
     snapshot_drive_metrics(reset=True)
@@ -43,9 +35,10 @@ def _fast_sleep(monkeypatch):
     monkeypatch.setattr("polylogue.drive.time.sleep", lambda _t: None)
 
 
-def test_drive_client_uses_env_credentials(temp_credentials, tmp_path, monkeypatch):
+def test_drive_client_uses_existing_credentials(tmp_path, monkeypatch):
     client = DriveClient(DummyUI())
     target_path = tmp_path / "stored.json"
+    target_path.write_text(json.dumps({"installed": {"client_id": "demo"}}), encoding="utf-8")
     monkeypatch.setattr(client, "_credentials_path", target_path, raising=False)
 
     resolved = client.ensure_credentials()
@@ -115,12 +108,11 @@ def test_get_drive_service_with_cached_token(monkeypatch, tmp_path):
         def from_authorized_user_file(path, scopes):  # noqa: ARG002
             return DummyCreds()
 
-    token_path = tmp_path / "token.json"
-    token_path.write_text(json.dumps({"token": "abc"}), encoding="utf-8")
     cred_path = tmp_path / "client.json"
     cred_path.write_text("{}", encoding="utf-8")
+    token_path = cred_path.parent / "token.json"
+    token_path.write_text(json.dumps({"token": "abc"}), encoding="utf-8")
 
-    monkeypatch.setenv("POLYLOGUE_TOKEN_PATH", str(token_path))
     monkeypatch.setattr(drive, "HAS_GOOGLE", True)
     monkeypatch.setattr(drive, "Credentials", DummyCredentials)
     monkeypatch.setattr(drive, "_authorized_session", lambda creds: ("session", creds))

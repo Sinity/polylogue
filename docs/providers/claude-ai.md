@@ -35,7 +35,7 @@ Claude imports always emit the canonical transcript plus the branch tree: `<slug
 
 To keep recurring Claude exports in lockstep with the rest of your archive:
 
-1. Stash every bundle (ZIP or extracted directory with `conversations.json`) under `$XDG_DATA_HOME/polylogue/exports/claude` — typically `~/.local/share/polylogue/exports/claude`.
+1. Stash every bundle (ZIP or extracted directory with `conversations.json`) under the inbox at `$XDG_DATA_HOME/polylogue/inbox/claude` — typically `~/.local/share/polylogue/inbox/claude`.
 2. Run `polylogue sync claude` to import the new bundles. Without `--all`, the CLI offers an interactive picker so you can cherry-pick which exports to process.
    - Use `--session /path/to/export.zip` (repeatable) when you want to target specific bundles without touching the picker.
 3. Use `--base-dir` to point at another directory, and reuse familiar options like `--html` and `--prune` to control the output layout.

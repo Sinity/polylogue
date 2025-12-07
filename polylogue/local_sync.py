@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import time
+import json
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -91,9 +93,9 @@ def _is_up_to_date(source: Path, target: Path) -> bool:
     return True
 
 
-EXPORTS_ROOT = DATA_HOME / "exports"
-CHATGPT_EXPORTS_DEFAULT = EXPORTS_ROOT / "chatgpt"
-CLAUDE_EXPORTS_DEFAULT = EXPORTS_ROOT / "claude"
+INBOX_ROOT = DATA_HOME / "inbox"
+CHATGPT_EXPORTS_DEFAULT = CONFIG.exports.chatgpt
+CLAUDE_EXPORTS_DEFAULT = CONFIG.exports.claude
 
 
 class _NoopProgress:
@@ -294,10 +296,61 @@ def _sync_sessions(
     )
 
 
-def _discover_export_targets(base_dir: Path) -> List[Path]:
+def _detect_export_provider(path: Path) -> Optional[str]:
+    conv_path: Optional[Path] = None
+    suffix = path.suffix.lower()
+    if path.is_dir():
+        candidate = path / "conversations.json"
+        if candidate.exists():
+            conv_path = candidate
+    elif path.is_file() and path.name.lower() == "conversations.json":
+        conv_path = path
+    elif path.is_file() and suffix == ".zip" and zipfile.is_zipfile(path):
+        try:
+            with zipfile.ZipFile(path) as zf:
+                if "conversations.json" in zf.namelist():
+                    with zf.open("conversations.json") as fh:
+                        data = json.loads(fh.read().decode("utf-8"))
+                        return _classify_conversations_json(data)
+        except Exception:
+            return None
+
+    if conv_path and conv_path.exists():
+        try:
+            data = json.loads(conv_path.read_text(encoding="utf-8"))
+            return _classify_conversations_json(data)
+        except Exception:
+            return None
+
+    # Fallback: hint from filename
+    name = path.name.lower()
+    if "chatgpt" in name:
+        return "chatgpt"
+    if "claude" in name:
+        return "claude"
+    return None
+
+
+def _classify_conversations_json(data: object) -> Optional[str]:
+    if isinstance(data, dict):
+        conversations = data.get("conversations") if isinstance(data.get("conversations"), list) else None
+        if conversations:
+            data = conversations
+    if isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict):
+            if "mapping" in first:
+                return "chatgpt"
+            # Claude exports typically lack mapping and include simple message lists
+            return "claude"
+    return None
+
+
+def _discover_export_targets(base_dir: Path, *, provider: Optional[str] = None) -> List[Path]:
     base = base_dir.expanduser()
     if not base.exists():
         return []
+    provider_hint = base.name.lower() if provider else None
     candidates: set[Path] = set()
     try:
         for zip_path in base.rglob("*.zip"):
@@ -309,7 +362,19 @@ def _discover_export_targets(base_dir: Path) -> List[Path]:
             candidates.add(conv_file.parent)
     except OSError:
         pass
-    return sorted(candidates, key=path_order_key, reverse=True)
+    results: List[Path] = []
+    for cand in sorted(candidates, key=path_order_key, reverse=True):
+        detected = _detect_export_provider(cand)
+        if provider:
+            if detected and detected != provider:
+                continue
+            if detected is None:
+                hint = provider_hint or ""
+                path_str = str(cand).lower()
+                if provider not in hint and provider not in path_str:
+                    continue
+        results.append(cand)
+    return results
 
 
 def _normalize_export_target(path: Path) -> Optional[Path]:
@@ -543,12 +608,12 @@ def sync_chatgpt_exports(
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
-    targets = sessions or _discover_export_targets(base_dir)
+    targets = sessions or _discover_export_targets(base_dir, provider="chatgpt")
     if sessions:
         targets = [_normalize_export_target(Path(p)) for p in sessions if p]
     targets = [t for t in targets if t]
     if not targets:
-        targets = _discover_export_targets(base_dir)
+        targets = _discover_export_targets(base_dir, provider="chatgpt")
     return _sync_export_bundles(
         targets,
         output_dir=output_dir,
@@ -580,12 +645,12 @@ def sync_claude_exports(
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
-    targets = sessions or _discover_export_targets(base_dir)
+    targets = sessions or _discover_export_targets(base_dir, provider="claude")
     if sessions:
         targets = [_normalize_export_target(Path(p)) for p in sessions if p]
     targets = [t for t in targets if t]
     if not targets:
-        targets = _discover_export_targets(base_dir)
+        targets = _discover_export_targets(base_dir, provider="claude")
     return _sync_export_bundles(
         targets,
         output_dir=output_dir,

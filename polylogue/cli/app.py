@@ -956,40 +956,36 @@ def _run_config_show(args: argparse.Namespace, env: CommandEnv) -> None:
         payload = {
             "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
             "settingsPath": str(SETTINGS_PATH),
-            "html_previews": settings.html_previews,
-            "html_theme": settings.html_theme,
-            "collapse_threshold": settings.collapse_threshold,
-            "output_dirs": {
+            "ui": {
+                "html_previews": settings.html_previews,
+                "html_theme": settings.html_theme,
+                "collapse_threshold": settings.collapse_threshold,
+            },
+            "outputs": {
                 "render": str(defaults.output_dirs.render),
-                "sync_drive": str(defaults.output_dirs.sync_drive),
-                "sync_codex": str(defaults.output_dirs.sync_codex),
-                "sync_claude_code": str(defaults.output_dirs.sync_claude_code),
-                "import_chatgpt": str(defaults.output_dirs.import_chatgpt),
-                "import_claude": str(defaults.output_dirs.import_claude),
+                "gemini": str(defaults.output_dirs.sync_drive),
+                "codex": str(defaults.output_dirs.sync_codex),
+                "claude_code": str(defaults.output_dirs.sync_claude_code),
+                "chatgpt": str(defaults.output_dirs.import_chatgpt),
+                "claude": str(defaults.output_dirs.import_claude),
             },
-            "exports": {
-                "chatgpt": str(env.config.exports.chatgpt),
-                "claude": str(env.config.exports.claude),
-            },
-            "drive": {
-                "credentials_path": str(env.config.drive.credentials_path) if env.config.drive and env.config.drive.credentials_path else None,
-                "token_path": str(env.config.drive.token_path) if env.config.drive and env.config.drive.token_path else None,
-                "retries": env.config.drive.retries if env.config.drive else None,
-                "retry_base": env.config.drive.retry_base if env.config.drive else None,
+            "inputs": {
+                "chatgpt": str(CONFIG.exports.chatgpt),
+                "claude": str(CONFIG.exports.claude),
             },
             "index": {
-                "backend": env.config.index.backend if env.config.index else "sqlite",
+                "backend": CONFIG.index.backend if CONFIG.index else "sqlite",
                 "qdrant": {
-                    "url": env.config.index.qdrant_url if env.config.index else None,
-                    "api_key": env.config.index.qdrant_api_key if env.config.index else None,
-                    "collection": env.config.index.qdrant_collection if env.config.index else None,
-                    "vector_size": env.config.index.qdrant_vector_size if env.config.index else None,
+                    "url": CONFIG.index.qdrant_url if CONFIG.index else None,
+                    "api_key": CONFIG.index.qdrant_api_key if CONFIG.index else None,
+                    "collection": CONFIG.index.qdrant_collection if CONFIG.index else None,
+                    "vector_size": CONFIG.index.qdrant_vector_size if CONFIG.index else None,
                 },
             },
             "statePath": str(env.conversations.state_path),
             "runsDb": str(env.database.resolve_path()),
         }
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload))
         return
 
     summary_lines = [
@@ -1006,11 +1002,11 @@ def _run_config_show(args: argparse.Namespace, env: CommandEnv) -> None:
         "",
         "Output directories:",
         f"  render: {defaults.output_dirs.render}",
-        f"  sync/drive: {defaults.output_dirs.sync_drive}",
-        f"  sync/codex: {defaults.output_dirs.sync_codex}",
-        f"  sync/claude-code: {defaults.output_dirs.sync_claude_code}",
-        f"  import/chatgpt: {defaults.output_dirs.import_chatgpt}",
-        f"  import/claude: {defaults.output_dirs.import_claude}",
+        f"  gemini: {defaults.output_dirs.sync_drive}",
+        f"  codex: {defaults.output_dirs.sync_codex}",
+        f"  claude-code: {defaults.output_dirs.sync_claude_code}",
+        f"  chatgpt: {defaults.output_dirs.import_chatgpt}",
+        f"  claude: {defaults.output_dirs.import_claude}",
         "",
         f"State DB: {env.conversations.state_path}",
         f"Runs DB: {env.database.resolve_path()}",
