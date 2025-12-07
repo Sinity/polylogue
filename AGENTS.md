@@ -7,11 +7,17 @@
 - Provider walkthroughs and sample workflows live under `docs/` (see `docs/providers/`).
 
 ## Development Workflow
-- Use `nix develop` to enter the environment with all required tools.
+- Enter the dev environment with `direnv allow` (preferred) or `nix develop`; the shell wires PATH, PYTHONPATH, gum/skim/bat/glow, and completions.
+- Tests: `nix develop -c pytest -q` (uses in-tree PYTHONPATH). CI parity: `nix flake check` builds + runs the packaged test suite.
+- Package/build: `nix build .#polylogue` (produces the wrapped CLI with gum/skim in PATH).
+- Quick smoke: `nix develop -c POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync codex --dry-run`.
 - Run `python3 polylogue.py --help` (or a specific subcommand) directly; every workflow is exposed via the CLI with skim/gum prompts only when needed.
 - The first Drive action requests a Google OAuth client JSON and stores credentials/tokens under `$XDG_CONFIG_HOME/polylogue/`.
 - Assume dependencies are always present: do **not** add graceful-degradation branches for missing CLI tools or libraries. Our NixOS devshell supplies gum, skim, rich, etc., so code should hard-require them.
 - **Never add graceful-degradation fallbacks.** We run on NixOS and can guarantee every dependency; if a tool is missing it should be treated as a hard failure, not a best-effort path.
+
+## Configuration & Auth
+- Drive credentials: set `POLYLOGUE_CREDENTIAL_PATH` to point at an OAuth client JSON to bypass prompts; tokens live beside it (`token.json`). Defaults resolve under `$XDG_CONFIG_HOME/polylogue/`.
 
 ## Automation & Testing
 - Non-interactive paths automatically drop into a plain UI when stdout/stderr aren’t TTYs. Set `POLYLOGUE_FORCE_PLAIN=1` when you need deterministic plain mode in CI, or pass `--interactive` to re-enable gum/skim prompts even without a TTY.
