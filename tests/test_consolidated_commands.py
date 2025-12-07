@@ -367,7 +367,7 @@ def test_config_dispatcher_handles_show(monkeypatch, tmp_path, capsys):
     output = capsys.readouterr().out
     parsed = json.loads(output)
     assert "settingsPath" in parsed
-    assert "output_dirs" in parsed
+    assert "outputs" in parsed
 
 
 # ===== Integration Tests =====
@@ -423,7 +423,7 @@ def test_config_show_json_integration(monkeypatch, tmp_path, capsys):
     output = capsys.readouterr().out
     parsed = json.loads(output)
     assert "settingsPath" in parsed
-    assert "output_dirs" in parsed
+    assert "outputs" in parsed
 
 
 # ===== Backwards Compatibility Rejection Tests =====

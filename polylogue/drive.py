@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from .util import colorize, get_cached_folder_id, set_cached_folder_id
 
 try:
-import requests
+    import requests
     from google.auth.transport.requests import AuthorizedSession, Request
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -198,8 +198,7 @@ def _drive_get_json(session: AuthorizedSession, path: str, params: Dict[str, Any
 def get_drive_service(credentials_path: Path, verbose: bool = False):
     require_google()
     creds = None
-    token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
-    token_path = Path(token_env) if token_env else (credentials_path.parent / TOKEN_FILE)
+    token_path = credentials_path.parent / TOKEN_FILE
     if token_path.exists():
         try:
             creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
