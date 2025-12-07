@@ -18,13 +18,11 @@ from .drive import (
 from .paths import CONFIG_HOME
 from .util import parse_rfc3339_to_epoch, read_clipboard_text
 from .ui import UI
-
 GDRIVE_INSTRUCTIONS = "https://developers.google.com/drive/api/quickstart/python"
 CONFIG_DIR = CONFIG_HOME
 DEFAULT_CREDENTIALS = CONFIG_DIR / "credentials.json"
 DEFAULT_TOKEN = CONFIG_DIR / "token.json"
 DEFAULT_FOLDER_NAME = "AI Studio"
-DRIVE_CREDENTIAL_ENV = "POLYLOGUE_DRIVE_CREDENTIALS"
 
 
 class DriveClient:
@@ -43,26 +41,11 @@ class DriveClient:
         cred_path = self._credentials_path
         if cred_path.exists():
             return cred_path
-        env_copy = self._copy_credentials_from_env()
-        if env_copy:
-            return env_copy
         if self.ui.plain:
             raise SystemExit(
-                f"Missing credentials.json. Set ${DRIVE_CREDENTIAL_ENV} or download a Google OAuth client secret "
-                f"and place it at {cred_path}."
+                f"Missing credentials.json. Download a Google OAuth client secret and place it at {cred_path}."
             )
         return self._prompt_for_credentials()
-
-    def _copy_credentials_from_env(self) -> Optional[Path]:
-        env_credential = os.environ.get(DRIVE_CREDENTIAL_ENV)
-        if not env_credential:
-            return None
-        src = Path(env_credential).expanduser()
-        if not src.exists():
-            raise SystemExit(
-                f"Credential path from ${DRIVE_CREDENTIAL_ENV} not found: {src}"
-            )
-        return self._copy_credentials_from_path(src)
 
     def _copy_credentials_from_path(self, src: Path) -> Path:
         cred_path = self._credentials_path

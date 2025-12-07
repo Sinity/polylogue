@@ -6,7 +6,7 @@ Polylogue is a CLI toolkit for archiving AI/LLM conversations—rendering local 
 
 - `direnv allow` (or `nix develop`) to enter the dev shell with gum/skim/rich installed.
 - Run `python3 polylogue.py --help` to see commands; try `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync codex --dry-run` as a smoke test.
-- Copy `docs/polylogue.config.sample.jsonc` to `$XDG_CONFIG_HOME/polylogue/config.json` to set output dirs and HTML defaults.
+- Copy `docs/polylogue.config.sample.jsonc` to `$XDG_CONFIG_HOME/polylogue/config.json` to set inbox/output roots and HTML defaults.
 
 ## Quality Gates
 - `pytest` is expected to stay green; add tests for new behaviours whenever possible.
@@ -22,10 +22,10 @@ Polylogue is a CLI toolkit for archiving AI/LLM conversations—rendering local 
 
 ## What You Can Do
 - **Import provider exports:** `polylogue import chatgpt|claude|codex|claude-code …` normalises exports into Markdown/HTML, reusing provider metadata and letting you cherry-pick conversations interactively when desired. Add `--to-clipboard` when a single Markdown output should land on the system clipboard.
-- **Sync provider archives:** `polylogue sync drive|codex|claude-code|chatgpt|claude` unifies Drive pulls, local IDE sessions, and export bundles with consistent flags for collapse thresholds, HTML, pruning, diffs, and JSON output—now with Rich progress bars so you can see throughput as chats and sessions stream in. Defaults from `polylogue.config` keep outputs in locations such as `~/polylogue-data/sync-drive`, `~/polylogue-data/codex`, `~/polylogue-data/claude-code`, `~/polylogue-data/chatgpt`, and `~/polyologue-data/claude`. Drive runs accept explicit chat IDs via `--chat-id file-id --chat-id other-id`, while local providers can point at specific sessions via `--session path/to/session.jsonl` or skip pickers entirely with `--all`. ChatGPT/Claude exports are treated like local providers: drop ZIPs (or extracted directories containing `conversations.json`) under `$XDG_DATA_HOME/polylogue/exports/{chatgpt,claude} (configurable via exports.* in config.json)` and rerun `polylogue sync chatgpt` / `polylogue sync claude` as each export arrives.
+- **Sync provider archives:** `polylogue sync drive|codex|claude-code|chatgpt|claude` unifies Drive pulls, local IDE sessions, and export bundles with consistent flags for collapse thresholds, HTML, pruning, diffs, and JSON output—now with Rich progress bars so you can see throughput as chats and sessions stream in. Defaults from `polylogue.config` keep outputs under `~/.local/share/polylogue/archive/{gemini,codex,claude-code,chatgpt,claude}`. Drive runs accept explicit chat IDs via `--chat-id file-id --chat-id other-id`, while local providers can point at specific sessions via `--session path/to/session.jsonl` or skip pickers entirely with `--all`. ChatGPT/Claude exports are treated like local providers: drop ZIPs (or extracted directories containing `conversations.json`) anywhere under the inbox (`~/.local/share/polylogue/inbox` by default; provider detection is automatic) and rerun `polylogue sync chatgpt` / `polylogue sync claude` as each export arrives.
 - **Search transcripts:** `polylogue search` queries the SQLite FTS index with rich filters for provider, model, date range, and attachment metadata.
 - **Browse archives:** `polylogue browse branches` renders branch trees (and auto-writes HTML explorers), and `polylogue browse stats` summarises tokens/attachments per provider.
-- **Watch local sessions in real time:** `polylogue sync codex --watch` and `polylogue sync claude-code --watch` keep IDE logs mirrored automatically, and `polylogue sync chatgpt --watch` / `polylogue sync claude --watch` tail the `$XDG_DATA_HOME/polylogue/exports/{chatgpt,claude} (configurable via exports.* in config.json)` directories so every new ZIP or freshly extracted `conversations.json` triggers an incremental sync. Adjust debounce, HTML, and pruning per watcher, or run a single pass with `--once` when you just want to sweep directories without staying attached.
+- **Watch local sessions in real time:** `polylogue sync codex --watch` and `polylogue sync claude-code --watch` keep IDE logs mirrored automatically, and `polylogue sync chatgpt --watch` / `polylogue sync claude --watch` tail the inbox (`~/.local/share/polylogue/inbox` by default) so every new ZIP or freshly extracted `conversations.json` triggers an incremental sync. Adjust debounce, HTML, and pruning per watcher, or run a single pass with `--once` when you just want to sweep directories without staying attached.
 - **Doctor & Stats:** `polylogue maintain doctor` sanity-checks source directories, verifies SQLite/Qdrant indexes, and surfaces Drive retry/failure rates from recent runs; `polylogue maintain index check --repair` reruns index validation/repairs in isolation; `polylogue browse stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters). `polylogue browse status` renders a Rich overview of provider health and the latest runs for at-a-glance monitoring.
 - **Settings:** `polylogue config set --html on --theme dark --collapse-threshold 25` updates the default render/sync preferences so scripted runs inherit the same HTML behaviour without extra flags.
 - **View recent runs:** The status dashboard shows the last operations, including attachment MiB, diff counts, and Drive retry/failure stats per command.
@@ -101,17 +101,16 @@ Generate a completion script with `polylogue completions --shell bash|zsh|fish` 
 - This repository is a self-contained flake: add `inputs.polylogue.url = "github:yourname/polylogue";` (or your fork) to another flake and reference the packaged CLI as `inputs.polylogue.packages.${system}.polylogue` or `inputs.polylogue.apps.${system}.polylogue`.
 
 ## Configuration
-- Polylogue reads configuration from `$POLYLOGUE_CONFIG`, `$XDG_CONFIG_HOME/polylogue/config.json`, or (legacy) `~/.polylogueconfig`, and validates the contents at startup so typos (bad themes, non-numeric thresholds, mis-typed output paths) fail fast with actionable messages.
-- Copy `docs/polylogue.config.sample.jsonc` to `$XDG_CONFIG_HOME/polylogue/config.json` to customise collapse thresholds, HTML defaults, and per-provider output directories.
+- Polylogue reads configuration from `$POLYLOGUE_CONFIG` or `$XDG_CONFIG_HOME/polylogue/config.json`, and validates the contents at startup so typos (bad themes, non-numeric thresholds, mis-typed paths) fail fast with actionable messages.
+- Copy `docs/polylogue.config.sample.jsonc` to `$XDG_CONFIG_HOME/polylogue/config.json` to set the inbox/output roots plus UI defaults.
 - Run metadata and run history live in `$XDG_STATE_HOME/polylogue/polylogue.db` (SQLite); `polylogue browse status --dump` provides machine-readable exports for dashboards or scripts, and `polylogue config show --json` prints the resolved config/output paths for quick inspection.
 - `polylogue doctor` reports the discovered paths when no config is detected.
-- Drive behaviour can be tuned with environment variables such as `$POLYLOGUE_RETRIES`, `$POLYLOGUE_RETRY_BASE`, `$POLYLOGUE_AUTH_MODE`, and `$POLYLOGUE_TOKEN_PATH`.
 - Indexing backends are controlled via `$POLYLOGUE_INDEX_BACKEND` (`sqlite`, `qdrant`, or `none`) alongside optional Qdrant knobs (`POLYLOGUE_QDRANT_URL`, `POLYLOGUE_QDRANT_API_KEY`, `POLYLOGUE_QDRANT_COLLECTION`).
 
 ## Credentials & Tokens
 1. Create an OAuth client for a “Desktop app” in the Google Cloud Console (we link you directly from the prompt).
 2. When prompted, point Polylogue at the downloaded JSON; it copies the file to `$XDG_CONFIG_HOME/polylogue/credentials.json` (created on demand) before launching the OAuth flow.
-3. Tokens are written to `$XDG_CONFIG_HOME/polylogue/token.json` and refreshed automatically. Override locations with `$POLYLOGUE_TOKEN_PATH` if necessary.
+3. Tokens are written to `$XDG_CONFIG_HOME/polylogue/token.json` and refreshed automatically.
 
 ## Formatting
 - Markdown keeps attachments in per-chat `attachments/` folders when downloads are enabled.
