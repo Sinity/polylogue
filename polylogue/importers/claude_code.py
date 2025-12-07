@@ -23,11 +23,13 @@ def import_claude_code_session(
     base_dir: Path = DEFAULT_PROJECT_ROOT,
     output_dir: Path,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool,
     html_theme: str,
     force: bool = False,
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
+    attachment_ocr: bool = False,
 ) -> ImportResult:
     registrar = registrar or create_default_registrar()
     base_dir = base_dir.expanduser()
@@ -260,6 +262,7 @@ def import_claude_code_session(
         attachments=attachments,
         canonical_leaf_id=canonical_leaf_id,
         collapse_threshold=collapse_threshold,
+        collapse_thresholds=collapse_thresholds,
         html=html,
         html_theme=html_theme,
         output_dir=output_dir,
@@ -274,6 +277,7 @@ def import_claude_code_session(
         attachment_policy=None,
         force=force,
         allow_dirty=allow_dirty,
+        attachment_ocr=attachment_ocr,
         registrar=registrar,
     )
 

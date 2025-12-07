@@ -32,11 +32,13 @@ def import_codex_session(
     base_dir: Path = _DEFAULT_BASE,
     output_dir: Path,
     collapse_threshold: int = 24,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool = False,
     html_theme: str = "light",
     force: bool = False,
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
+    attachment_ocr: bool = False,
 ) -> ImportResult:
     registrar = registrar or create_default_registrar()
     base_dir = base_dir.expanduser()
@@ -307,6 +309,7 @@ def import_codex_session(
         attachments=attachments,
         canonical_leaf_id=message_records[-1].message_id if message_records else None,
         collapse_threshold=collapse_threshold,
+        collapse_thresholds=collapse_thresholds,
         html=html,
         html_theme=html_theme,
         output_dir=output_dir,
@@ -327,5 +330,6 @@ def import_codex_session(
         },
         force=force,
         allow_dirty=allow_dirty,
+        attachment_ocr=attachment_ocr,
         registrar=registrar,
     )

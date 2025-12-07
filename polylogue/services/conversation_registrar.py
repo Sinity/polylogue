@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 from ..archive import Archive
 from ..branching import BranchPlan, MessageRecord
 from ..config import CONFIG
-from ..db import open_connection, replace_branches, replace_messages, upsert_conversation
+from ..db import open_connection, replace_attachments, replace_branches, replace_messages, upsert_conversation
 from ..persistence.database import ConversationDatabase
 from ..persistence.state import ConversationStateRepository
 
@@ -195,6 +195,9 @@ class ConversationRegistrar:
                     content_hash = record.content_hash
                     if not content_hash and record.text:
                         content_hash = hashlib.sha256(record.text.encode("utf-8")).hexdigest()
+                    attachment_names = ",".join(
+                        sorted({name for name, _ in record.links})
+                    ) if record.links else None
                     messages.append(
                         {
                             "message_id": record.message_id,
@@ -205,6 +208,7 @@ class ConversationRegistrar:
                             "token_count": record.token_count,
                             "word_count": record.word_count,
                             "attachment_count": record.attachments,
+                            "attachment_names": attachment_names,
                             "rendered_text": record.text,
                             "content_hash": content_hash,
                             "raw_json": json.dumps(record.chunk, ensure_ascii=False),
@@ -218,6 +222,24 @@ class ConversationRegistrar:
                     branch_id=branch_id,
                     messages=messages,
                 )
+            conn.commit()
+
+    def record_attachments(
+        self,
+        *,
+        provider: str,
+        conversation_id: str,
+        attachments: List[Dict[str, object]],
+    ) -> None:
+        if not provider or not conversation_id:
+            return
+        with open_connection(self.database.resolve_path()) as conn:
+            replace_attachments(
+                conn,
+                provider=provider,
+                conversation_id=conversation_id,
+                attachments=attachments,
+            )
             conn.commit()
 
 

@@ -164,12 +164,14 @@ def import_chatgpt_export(
     *,
     output_dir: Path,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool,
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
     force: bool = False,
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
+    attachment_ocr: bool = False,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
     base_path, tmp = _load_export(export_path)
@@ -188,16 +190,18 @@ def import_chatgpt_export(
                     if selected_ids and conv_id not in selected_ids:
                         continue
                     results.append(
-                        _render_chatgpt_conversation(
-                            conv,
-                            base_path,
-                            output_dir,
-                            collapse_threshold=collapse_threshold,
-                            html=html,
-                            html_theme=html_theme,
-                            force=force,
+                            _render_chatgpt_conversation(
+                                conv,
+                                base_path,
+                                output_dir,
+                                collapse_threshold=collapse_threshold,
+                                collapse_thresholds=collapse_thresholds,
+                                html=html,
+                                html_theme=html_theme,
+                                force=force,
                             allow_dirty=allow_dirty,
                             registrar=registrar,
+                            attachment_ocr=attachment_ocr,
                         )
                     )
             except Exception as exc:
@@ -250,11 +254,13 @@ def _render_chatgpt_conversation(
     output_dir: Path,
     *,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool,
     html_theme: str,
     force: bool,
     allow_dirty: bool,
     registrar: Optional[ConversationRegistrar],
+    attachment_ocr: bool = False,
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
     conv_id = conv.get("id") or conv.get("conversation_id") or "chat"
@@ -364,6 +370,8 @@ def _render_chatgpt_conversation(
         "sourceExportPath": str(export_root),
     }
 
+    thresholds = collapse_thresholds or {"message": collapse_threshold, "tool": collapse_threshold}
+
     return process_conversation(
         provider="chatgpt",
         conversation_id=conversation_id,
@@ -373,6 +381,7 @@ def _render_chatgpt_conversation(
         attachments=attachments,
         canonical_leaf_id=conv.get("current_node"),
         collapse_threshold=collapse_threshold,
+        collapse_thresholds=thresholds,
         html=html,
         html_theme=html_theme,
         output_dir=output_dir,
@@ -390,6 +399,7 @@ def _render_chatgpt_conversation(
         attachment_policy=None,
         force=force,
         allow_dirty=allow_dirty,
+        attachment_ocr=attachment_ocr,
         registrar=registrar,
     )
 
