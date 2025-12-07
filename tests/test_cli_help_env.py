@@ -55,7 +55,7 @@ def test_env_json(capsys):
     env = CommandEnv(ui=DummyUI())
     _run_config_show(argparse.Namespace(json=True), env)
     parsed = json.loads(capsys.readouterr().out)
-    assert "output_dirs" in parsed
+    assert "outputs" in parsed
     assert "statePath" in parsed
 
 

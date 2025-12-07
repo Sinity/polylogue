@@ -900,6 +900,17 @@ def _dispatch_sync(args: argparse.Namespace, env: CommandEnv) -> None:
             raise SystemExit(f"{provider.title} does not support watch mode (use --watch with codex, claude-code, or chatgpt)")
         run_watch_cli(args, env)
     else:
+        if args.provider == "drive":
+            from ..drive_client import DEFAULT_CREDENTIALS
+            cred_path = DEFAULT_CREDENTIALS
+            if env.config.drive and env.config.drive.credentials_path:
+                cred_path = env.config.drive.credentials_path
+            if not cred_path.exists():
+                raise SystemExit(f"Drive sync requires credentials.json at {cred_path} (set drive.credentials_path in config).")
+        if args.provider in {"chatgpt", "claude"}:
+            exports_root = env.config.exports.chatgpt if args.provider == "chatgpt" else env.config.exports.claude
+            if not exports_root.exists():
+                raise SystemExit(f"{args.provider} exports directory not found: {exports_root} (set exports.{args.provider} in config).")
         run_sync_cli(args, env)
 
 
@@ -945,21 +956,36 @@ def _run_config_show(args: argparse.Namespace, env: CommandEnv) -> None:
         payload = {
             "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
             "settingsPath": str(SETTINGS_PATH),
-            "html_previews": settings.html_previews,
-            "html_theme": settings.html_theme,
-            "collapse_threshold": settings.collapse_threshold,
-            "output_dirs": {
+            "ui": {
+                "html_previews": settings.html_previews,
+                "html_theme": settings.html_theme,
+                "collapse_threshold": settings.collapse_threshold,
+            },
+            "outputs": {
                 "render": str(defaults.output_dirs.render),
-                "sync_drive": str(defaults.output_dirs.sync_drive),
-                "sync_codex": str(defaults.output_dirs.sync_codex),
-                "sync_claude_code": str(defaults.output_dirs.sync_claude_code),
-                "import_chatgpt": str(defaults.output_dirs.import_chatgpt),
-                "import_claude": str(defaults.output_dirs.import_claude),
+                "gemini": str(defaults.output_dirs.sync_drive),
+                "codex": str(defaults.output_dirs.sync_codex),
+                "claude_code": str(defaults.output_dirs.sync_claude_code),
+                "chatgpt": str(defaults.output_dirs.import_chatgpt),
+                "claude": str(defaults.output_dirs.import_claude),
+            },
+            "inputs": {
+                "chatgpt": str(CONFIG.exports.chatgpt),
+                "claude": str(CONFIG.exports.claude),
+            },
+            "index": {
+                "backend": CONFIG.index.backend if CONFIG.index else "sqlite",
+                "qdrant": {
+                    "url": CONFIG.index.qdrant_url if CONFIG.index else None,
+                    "api_key": CONFIG.index.qdrant_api_key if CONFIG.index else None,
+                    "collection": CONFIG.index.qdrant_collection if CONFIG.index else None,
+                    "vector_size": CONFIG.index.qdrant_vector_size if CONFIG.index else None,
+                },
             },
             "statePath": str(env.conversations.state_path),
             "runsDb": str(env.database.resolve_path()),
         }
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload))
         return
 
     summary_lines = [
@@ -976,11 +1002,11 @@ def _run_config_show(args: argparse.Namespace, env: CommandEnv) -> None:
         "",
         "Output directories:",
         f"  render: {defaults.output_dirs.render}",
-        f"  sync/drive: {defaults.output_dirs.sync_drive}",
-        f"  sync/codex: {defaults.output_dirs.sync_codex}",
-        f"  sync/claude-code: {defaults.output_dirs.sync_claude_code}",
-        f"  import/chatgpt: {defaults.output_dirs.import_chatgpt}",
-        f"  import/claude: {defaults.output_dirs.import_claude}",
+        f"  gemini: {defaults.output_dirs.sync_drive}",
+        f"  codex: {defaults.output_dirs.sync_codex}",
+        f"  claude-code: {defaults.output_dirs.sync_claude_code}",
+        f"  chatgpt: {defaults.output_dirs.import_chatgpt}",
+        f"  claude: {defaults.output_dirs.import_claude}",
         "",
         f"State DB: {env.conversations.state_path}",
         f"Runs DB: {env.database.resolve_path()}",

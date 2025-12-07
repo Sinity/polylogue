@@ -94,17 +94,6 @@ def _retry(
     operation: str = "request",
     notifier=None,
 ):
-    # Allow env overrides for tuning
-    try:
-        override = int(os.environ.get("POLYLOGUE_RETRIES", retries))
-        if override >= 0:
-            retries = override
-    except Exception:
-        pass
-    try:
-        base_delay = float(os.environ.get("POLYLOGUE_RETRY_BASE", base_delay))
-    except Exception:
-        pass
     base_delay = max(0.0, base_delay)
     retries = max(1, retries)
     last_err = None
@@ -209,8 +198,7 @@ def _drive_get_json(session: AuthorizedSession, path: str, params: Dict[str, Any
 def get_drive_service(credentials_path: Path, verbose: bool = False):
     require_google()
     creds = None
-    token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
-    token_path = Path(token_env) if token_env else (credentials_path.parent / TOKEN_FILE)
+    token_path = credentials_path.parent / TOKEN_FILE
     if token_path.exists():
         try:
             creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
