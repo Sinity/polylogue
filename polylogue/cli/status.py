@@ -4,8 +4,10 @@ import time
 from datetime import datetime, timezone
 
 import argparse
+import csv
 import importlib
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, cast
 
@@ -15,7 +17,7 @@ from ..util import parse_input_time_to_epoch
 from .context import DEFAULT_OUTPUT_ROOTS, DEFAULT_RENDER_OUT
 
 
-def _dump_runs(ui, records: List[dict], destination: str) -> None:
+def _dump_runs(ui, records: List[dict], destination: str, *, quiet: bool = False) -> None:
     payload = json.dumps(records, indent=2)
     if destination == "-":
         print(payload)
@@ -23,10 +25,11 @@ def _dump_runs(ui, records: List[dict], destination: str) -> None:
     path = Path(destination).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(payload, encoding="utf-8")
-    ui.console.print(f"[green]Wrote {len(records)} run(s) to {path}")
+    if not quiet:
+        ui.console.print(f"[green]Wrote {len(records)} run(s) to {path}")
 
 
-def _dump_summary(ui, payload: Dict[str, Any], destination: str) -> None:
+def _dump_summary(ui, payload: Dict[str, Any], destination: str, *, quiet: bool = False) -> None:
     body = json.dumps(payload, indent=2)
     if destination == "-":
         print(body)
@@ -34,7 +37,8 @@ def _dump_summary(ui, payload: Dict[str, Any], destination: str) -> None:
     path = Path(destination).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body, encoding="utf-8")
-    ui.console.print(f"[green]Wrote status summary to {path}")
+    if not quiet:
+        ui.console.print(f"[green]Wrote status summary to {path}")
 
 
 def _provider_filter(raw: Optional[str]) -> Optional[Set[str]]:
@@ -47,12 +51,17 @@ def _provider_filter(raw: Optional[str]) -> Optional[Set[str]]:
 def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     ui = env.ui
     json_lines = bool(getattr(args, "json_lines", False))
+    json_mode = bool(getattr(args, "json", False) or json_lines)
+    json_verbose = bool(getattr(args, "json_verbose", False))
+    quiet_json = json_mode and not json_verbose
     if json_lines:
         setattr(args, "json", True)
+        setattr(args, "quiet", True)
 
     dump_only = getattr(args, "dump_only", False)
     summary_only = getattr(args, "summary_only", False)
     provider_filter = _provider_filter(getattr(args, "providers", None))
+    quiet = bool(getattr(args, "quiet", False))
 
     if summary_only and not getattr(args, "summary", None):
         setattr(args, "summary", "-")
@@ -64,7 +73,8 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         effective_limit = runs_limit
         if dump_limit is not None:
             effective_limit = max(effective_limit, dump_limit)
-        result = status_command(env, runs_limit=effective_limit)
+        limit_arg = None if provider_filter else effective_limit
+        result = status_command(env, runs_limit=limit_arg, provider_filter=provider_filter)
         run_summary = result.run_summary
         provider_summary = result.provider_summary
         if provider_filter:
@@ -93,7 +103,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             destination = dump_requested or "-"
             limit = max(1, getattr(args, "dump_limit", 100))
             dump_records = filtered_runs[-limit:]
-            _dump_runs(ui, dump_records, destination)
+            _dump_runs(ui, dump_records, destination, quiet=quiet_json)
             return
 
         summary_requested = getattr(args, "summary", None)
@@ -103,15 +113,17 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 "runSummary": run_summary,
                 "providerSummary": provider_summary,
             }
-            _dump_summary(ui, summary_payload, summary_requested)
+            _dump_summary(ui, summary_payload, summary_requested, quiet=quiet_json)
             if summary_only:
                 return
-
-        json_mode = getattr(args, "json", False)
         if json_mode:
             payload = {
                 "credentials_present": result.credentials_present,
                 "token_present": result.token_present,
+                "credential_path": str(result.credential_path),
+                "token_path": str(result.token_path),
+                "credential_env": result.credential_env,
+                "token_env": result.token_env,
                 "state_path": str(result.state_path),
                 "runs_path": str(result.runs_path),
                 "recent_runs": filtered_recent_runs,
@@ -127,11 +139,13 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
         if ui.plain:
             console.print("Environment:")
-            console.print(f"  credentials.json: {'present' if result.credentials_present else 'missing'}")
-            console.print(f"  token.json: {'present' if result.token_present else 'missing'}")
+            console.print(f"  credentials.json: {'present' if result.credentials_present else 'missing'} ({result.credential_path})")
+            console.print(f"  token.json: {'present' if result.token_present else 'missing'} ({result.token_path})")
+            if result.credential_env or result.token_env:
+                console.print(f"  env overrides: cred={result.credential_env or '-'} token={result.token_env or '-'}")
             console.print(f"  state db: {result.state_path}")
             console.print(f"  runs log: {result.runs_path}")
-            if run_summary:
+            if run_summary and not quiet:
                 console.print("Run summary:")
                 for cmd, stats in run_summary.items():
                     console.print(
@@ -143,7 +157,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                         )
                     if stats.get("last_error"):
                         console.print(f"    last_error={stats['last_error']}")
-            if provider_summary:
+            if provider_summary and not quiet:
                 console.print("Provider summary:")
                 for provider, stats in provider_summary.items():
                     console.print(
@@ -161,8 +175,11 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             table = Table(title="Environment", show_lines=False)
             table.add_column("Item")
             table.add_column("Value")
-            table.add_row("credentials.json", "present" if result.credentials_present else "missing")
-            table.add_row("token.json", "present" if result.token_present else "missing")
+            table.add_row("credentials.json", f"{'present' if result.credentials_present else 'missing'} → {result.credential_path}")
+            table.add_row("token.json", f"{'present' if result.token_present else 'missing'} → {result.token_path}")
+            if result.credential_env or result.token_env:
+                env_hint = f"cred={result.credential_env or '-'} token={result.token_env or '-'}"
+                table.add_row("env overrides", env_hint)
             table.add_row("state db", str(result.state_path))
             table.add_row("runs log", str(result.runs_path))
             console.print(table)
@@ -221,7 +238,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             destination = dump_requested or "-"
             limit = max(1, getattr(args, "dump_limit", 100))
             dump_records = filtered_runs[-limit:]
-            _dump_runs(ui, dump_records, destination)
+            _dump_runs(ui, dump_records, destination, quiet=quiet_json)
 
     if getattr(args, "watch", False):
         interval = getattr(args, "interval", 5.0)
@@ -243,51 +260,113 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
     ui = env.ui
     console = ui.console
-    json_mode = getattr(args, "json", False)
-    directory_input = Path(args.dir) if args.dir else DEFAULT_RENDER_OUT
-    if not directory_input.exists():
-        if json_mode:
-            empty_payload = {
-                "directory": str(directory_input),
-                "totals": {"files": 0, "attachments": 0, "attachmentBytes": 0, "tokens": 0, "words": 0},
-                "providers": {},
-                "filteredOut": 0,
-            }
-            print(json.dumps(empty_payload))
-        else:
-            ui.summary("Stats", ["No Markdown files found (stats directory missing)."])
-        return
-    directory = resolve_path(directory_input, PathPolicy.must_exist(), ui, json_mode=json_mode)
-    if not directory:
-        if json_mode:
-            raise SystemExit(1)
-        ui.summary("Stats", ["No Markdown files found (stats directory missing)."])
-        return
+    json_lines = bool(getattr(args, "json_lines", False))
+    csv_destination = getattr(args, "csv", None)
+    json_mode = bool(getattr(args, "json", False) or json_lines)
+    json_verbose = bool(getattr(args, "json_verbose", False))
+    quiet_json = json_mode and not json_verbose
+    sort_key = getattr(args, "sort", "tokens") or "tokens"
+    limit = max(0, getattr(args, "limit", 0))
+    empty_payload = {
+        "directory": None,
+        "directories": [],
+        "totals": {"files": 0, "attachments": 0, "attachmentBytes": 0, "tokens": 0, "words": 0},
+        "providers": {},
+        "filteredOut": 0,
+        "warnings": [],
+    }
+    warnings: List[str] = []
 
-    canonical_files = list(directory.rglob("conversation.md"))
-    legacy_files = list(directory.glob("*.md"))
+    def _fail(message: str, *, directory: Optional[Path] = None, directories: Optional[List[Path]] = None) -> None:
+        payload = dict(empty_payload)
+        payload["directory"] = str(directory) if directory else None
+        if directories is not None:
+            payload["directories"] = [str(item) for item in directories]
+        if warnings:
+            payload["warnings"] = warnings
+        if json_mode:
+            encoded = json.dumps(payload, separators=(",", ":")) if json_lines else json.dumps(payload, indent=2)
+            print(encoded)
+        else:
+            ui.summary("Stats", [message])
+        raise SystemExit(1)
+    directory = None
+    roots: List[Path] = []
+    if args.dir:
+        directory_input = Path(args.dir)
+        if not directory_input.exists():
+            return _fail("No Markdown files found (stats directory missing).", directory=directory_input, directories=[directory_input])
+        directory = resolve_path(directory_input, PathPolicy.must_exist(), ui, json_mode=json_mode)
+        if not directory:
+            return _fail("No Markdown files found (stats directory missing).", directory=directory_input, directories=[directory_input])
+        roots = [directory]
+    else:
+        roots = [path for path in DEFAULT_OUTPUT_ROOTS if path.exists()]
+        if not roots:
+            return _fail("No Markdown files found across configured output roots.")
+
+    canonical_files: List[Path] = []
+    legacy_files: List[Path] = []
+    for root in roots:
+        canonical_files.extend(root.rglob("conversation.md"))
+        if not getattr(args, "ignore_legacy", False):
+            legacy_files.extend(root.glob("*.md"))
     md_files = sorted(set(legacy_files + canonical_files))
     if not md_files:
-        ui.summary("Stats", ["No Markdown files found."])
-        return
+        return _fail("No Markdown files found.", directories=roots, directory=directory)
 
     try:
         frontmatter_mod = importlib.import_module("frontmatter")
     except Exception:  # pragma: no cover
         frontmatter_mod = None
 
+    def warn(message: str) -> None:
+        warnings.append(message)
+        if quiet_json:
+            return
+        console.print(f"[yellow]{message}")
+
     since_epoch = parse_input_time_to_epoch(getattr(args, "since", None))
     until_epoch = parse_input_time_to_epoch(getattr(args, "until", None))
     provider_filter = getattr(args, "provider", None)
 
+    minimal_fallback = False
+
     def _load_metadata(path: Path) -> Dict[str, Any]:
+        nonlocal minimal_fallback
         if frontmatter_mod is not None:
             try:
                 post = cast(Any, frontmatter_mod).load(path)
                 return dict(post.metadata)
             except Exception:
-                pass
-        # Minimal front matter parser.
+                warn(f"[yellow]frontmatter parse failed for {path}, falling back to minimal parser.")
+        else:
+            minimal_fallback = True
+        # Minimal front matter parser using a permissive YAML load when available.
+        try:
+            import yaml  # type: ignore
+
+            text = path.read_text(encoding="utf-8")
+            if text.startswith("---"):
+                # Extract front matter block
+                lines = text.splitlines()
+                fm_lines = []
+                for line in lines[1:]:
+                    if line.strip() == "---":
+                        break
+                    fm_lines.append(line)
+                if fm_lines:
+                    try:
+                        parsed = yaml.safe_load("\n".join(fm_lines))
+                        if isinstance(parsed, dict):
+                            minimal_fallback = True
+                            return parsed
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        # Minimal key:value parser as last resort.
         try:
             text = path.read_text(encoding="utf-8")
         except Exception:
@@ -303,6 +382,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 continue
             key, value = line.split(":", 1)
             meta[key.strip()] = value.strip().strip('"')
+        minimal_fallback = True
         return meta
 
     totals: Dict[str, Any] = {
@@ -375,32 +455,85 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         rows.append(
             {
                 "file": path.name,
+                "path": str(path),
                 "provider": provider,
                 "attachments": int(attachment_count),
                 "attachmentBytes": int(attachment_bytes),
                 "tokens": int(tokens),
                 "words": int(words),
+                "timestamp": int(timestamp) if timestamp is not None else None,
             }
         )
+
+    sorters = {
+        "tokens": lambda row: row.get("tokens", 0),
+        "attachments": lambda row: row.get("attachments", 0),
+        "attachment-bytes": lambda row: row.get("attachmentBytes", 0),
+        "words": lambda row: row.get("words", 0),
+        "recent": lambda row: row.get("timestamp") or 0,
+    }
+    sorter = sorters.get(sort_key, sorters["tokens"])
+    sorted_rows = sorted(rows, key=sorter, reverse=True)
+    display_rows = sorted_rows[:limit] if limit else sorted_rows
+
+    if minimal_fallback:
+        warn("frontmatter metadata unavailable; used a minimal parser. Nested keys may be missing.")
+
+    if json_lines:
+        for row in display_rows:
+            print(json.dumps(row, separators=(",", ":")))
+        if warnings and quiet_json:
+            print("\n".join(warnings), file=sys.stderr)
+        return
 
     if getattr(args, "json", False):
         payload = {
             "cmd": "stats",
-            "directory": str(directory),
+            "directory": str(directory) if directory else None,
+            "directories": [str(root) for root in roots],
             "totals": totals,
-            "providers": per_provider,
-            "files": rows,
+            "providers": {k: per_provider[k] for k in sorted(per_provider)},
+            "files": display_rows,
+            "sort": sort_key,
+            "limit": limit or None,
             "filteredOut": filtered_out,
+            "warnings": warnings,
         }
         print(json.dumps(payload, indent=2))
         return
 
+    if csv_destination:
+        fieldnames = ["provider", "file", "path", "attachments", "attachmentBytes", "tokens", "words", "timestamp"]
+        target = Path(csv_destination).expanduser()
+        handle = sys.stdout if str(target) == "-" else None
+        if handle is None:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with target.open("w", newline="", encoding="utf-8") as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(display_rows)
+            console.print(f"[green]Wrote {len(display_rows)} row(s) to {target}")
+        else:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(display_rows)
+
     lines = [
-        f"Directory: {directory}",
+        "Directories:",
+        *(f"  {root}" for root in roots),
         f"Files: {totals['files']} Attachments: {totals['attachments']} (~{totals['attachmentBytes'] / (1024 * 1024):.2f} MiB) Tokens≈ {totals['tokens']} (~{totals['words']} words)",
     ]
     if filtered_out:
         lines.append(f"Filtered out {filtered_out} file(s) outside date range.")
+    if display_rows:
+        pretty_sort = sort_key.replace("-", " ")
+        lines.append(f"Top by {pretty_sort} (limit {len(display_rows)}):")
+        for row in display_rows:
+            lines.append(
+                f"  {row['provider']}:{row['file']} attachments={row['attachments']} (~{row['attachmentBytes'] / (1024 * 1024):.2f} MiB) tokens={row['tokens']} words={row['words']}"
+            )
+    if warnings:
+        lines.extend(warnings)
     if not ui.plain:
         try:
             from rich.table import Table

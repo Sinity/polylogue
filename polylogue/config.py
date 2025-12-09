@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -21,8 +22,11 @@ from .paths import CONFIG_HOME, DATA_HOME
 IndexConfig = CoreIndexConfig
 ExportsConfig = CoreExportsConfig
 
-DEFAULT_CREDENTIALS = CONFIG_HOME / "credentials.json"
-DEFAULT_TOKEN = CONFIG_HOME / "token.json"
+_ENV_CREDENTIAL_PATH = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+_ENV_TOKEN_PATH = os.environ.get("POLYLOGUE_TOKEN_PATH")
+
+DEFAULT_CREDENTIALS = Path(_ENV_CREDENTIAL_PATH).expanduser() if _ENV_CREDENTIAL_PATH else CONFIG_HOME / "credentials.json"
+DEFAULT_TOKEN = Path(_ENV_TOKEN_PATH).expanduser() if _ENV_TOKEN_PATH else CONFIG_HOME / "token.json"
 
 
 @dataclass
@@ -57,6 +61,7 @@ class Defaults:
     html_previews: bool = True
     html_theme: str = "dark"
     output_dirs: OutputDirs = field(default_factory=OutputDirs)
+    roots: dict[str, OutputDirs] = field(default_factory=dict)
 
     @property
     def render(self) -> Path:
@@ -94,6 +99,49 @@ class Config:
 CONFIG_PATH: Optional[Path] = None
 
 
+def persist_config(
+    *,
+    input_root: Path,
+    output_root: Path,
+    collapse_threshold: int,
+    html_previews: bool,
+    html_theme: str,
+    index: Optional[IndexConfig] = None,
+    path: Optional[Path] = None,
+) -> Path:
+    """Write a config.json that mirrors the sample schema.
+
+    Existing index settings are preserved via the supplied IndexConfig to avoid
+    silently dropping Qdrant settings when re-initializing.
+    """
+    target = path or CONFIG_HOME / "config.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    index_cfg = index or IndexConfig()
+    payload = {
+        "paths": {
+            "input_root": str(input_root.expanduser()),
+            "output_root": str(output_root.expanduser()),
+        },
+        "ui": {
+            "collapse_threshold": collapse_threshold,
+            "html": bool(html_previews),
+            "theme": html_theme,
+        },
+        "index": {
+            "backend": index_cfg.backend,
+            "qdrant": {
+                "url": index_cfg.qdrant_url,
+                "api_key": index_cfg.qdrant_api_key,
+                "collection": index_cfg.qdrant_collection,
+                "vector_size": index_cfg.qdrant_vector_size,
+            },
+        },
+    }
+    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return target
+
+
 def _convert_output_dirs(paths: CoreOutputPaths) -> OutputDirs:
     return OutputDirs(
         render=paths.render,
@@ -106,11 +154,15 @@ def _convert_output_dirs(paths: CoreOutputPaths) -> OutputDirs:
 
 
 def _convert_defaults(core: CoreDefaults) -> Defaults:
+    roots: dict[str, OutputDirs] = {}
+    for label, paths in getattr(core, "roots", {}).items():
+        roots[label] = _convert_output_dirs(paths)
     return Defaults(
         collapse_threshold=core.collapse_threshold,
         html_previews=core.html_previews,
         html_theme=core.html_theme,
         output_dirs=_convert_output_dirs(core.output_dirs),
+        roots=roots,
     )
 
 

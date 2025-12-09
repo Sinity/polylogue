@@ -16,6 +16,7 @@ class RenderOptions:
     html: bool = False
     html_theme: str = "light"
     diff: bool = False
+    attachment_ocr: bool = False
 
 
 @dataclass
@@ -35,6 +36,8 @@ class SyncOptions:
     html: bool = False
     html_theme: str = "light"
     diff: bool = False
+    prefetched_chats: Optional[List[Dict[str, Any]]] = None
+    attachment_ocr: bool = False
 
 
 @dataclass
@@ -104,6 +107,10 @@ class ListResult:
 class StatusResult:
     credentials_present: bool
     token_present: bool
+    credential_path: Path
+    token_path: Path
+    credential_env: Optional[str]
+    token_env: Optional[str]
     state_path: Path
     runs_path: Path
     recent_runs: List[dict]
@@ -138,6 +145,8 @@ class SearchOptions:
     since: Optional[str]
     until: Optional[str]
     has_attachments: Optional[bool]
+    in_attachments: bool = False
+    attachment_name: Optional[str] = None
 
 
 @dataclass
@@ -157,6 +166,13 @@ class SearchHit:
     conversation_path: Optional[Path]
     branch_path: Optional[Path]
     model: Optional[str]
+    kind: str = "message"
+    attachment_name: Optional[str] = None
+    attachment_path: Optional[Path] = None
+    attachment_bytes: Optional[int] = None
+    attachment_mime: Optional[str] = None
+    attachment_text_bytes: Optional[int] = None
+    ocr_used: bool = False
 
 
 @dataclass

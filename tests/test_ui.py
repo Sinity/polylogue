@@ -52,6 +52,7 @@ def test_ui_confirm_uses_default_flag(monkeypatch):
 
 
 def test_ui_confirm_plain_mode(monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     responses = iter(["y", ""])
     monkeypatch.setattr("builtins.input", lambda _: next(responses))
     view = UI(plain=True)
@@ -60,6 +61,7 @@ def test_ui_confirm_plain_mode(monkeypatch):
 
 
 def test_ui_choose_plain_mode(monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     responses = iter(["3"])
     monkeypatch.setattr("builtins.input", lambda _: next(responses))
     view = UI(plain=True)
@@ -68,7 +70,38 @@ def test_ui_choose_plain_mode(monkeypatch):
 
 
 def test_ui_choose_plain_mode_default(monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _: "")
     view = UI(plain=True)
     choice = view.choose("Select option", ["alpha", "beta"])
-    assert choice == "alpha"
+    assert choice is None
+
+
+def test_ui_plain_non_tty_skips_prompts(monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("input should not be called")))
+
+    view = UI(plain=True)
+
+    with pytest.raises(SystemExit):
+        view.confirm("Proceed?", default=False)
+    with pytest.raises(SystemExit):
+        view.choose("Select", ["a", "b"])
+    with pytest.raises(SystemExit):
+        view.input("Enter", default="x")
+
+
+def test_ui_missing_dependencies_raise(monkeypatch):
+    calls = []
+
+    def fake_which(cmd):
+        calls.append(cmd)
+        return None
+
+    monkeypatch.setattr(ui_module.shutil, "which", fake_which)
+
+    with pytest.raises(SystemExit) as excinfo:
+        UI(plain=False)
+
+    assert "Interactive dependencies missing" in str(excinfo.value)
+    assert {"gum", "sk", "bat", "glow", "delta"}.issubset(set(calls))
