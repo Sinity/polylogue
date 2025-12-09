@@ -79,6 +79,7 @@ from .sync import (
     _run_sync_drive,
 )
 from .open_helper import run_open_cli
+from .env_cli import run_env_cli
 from ..util import CODEX_SESSIONS_ROOT, add_run, parse_input_time_to_epoch, write_clipboard_text
 from ..branch_explorer import branch_diff, build_branch_html, format_branch_tree
 
@@ -1450,6 +1451,10 @@ def _dispatch_completions(args: argparse.Namespace, env: CommandEnv) -> None:
     run_completions_cli(args, env)
 
 
+def _dispatch_env(args: argparse.Namespace, env: CommandEnv) -> None:
+    run_env_cli(args, env)
+
+
 def _dispatch_prefs(args: argparse.Namespace, env: CommandEnv) -> None:
     run_prefs_cli(args, env)
 
@@ -1493,6 +1498,7 @@ def _register_default_commands() -> None:
     # Configuration
     _ensure("config", _dispatch_config, "Configuration (init/set/show)", ["cfg"])
     _ensure("attachments", _dispatch_attachments, "Attachment utilities (stats/extract)")
+    _ensure("env", _dispatch_env, "Check environment configuration")
 
     # Meta
     _ensure("help", _dispatch_help, "Show command help", ["?"])
@@ -1893,6 +1899,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_complete.add_argument("--shell", required=True)
     p_complete.add_argument("--cword", type=int, required=True)
     p_complete.add_argument("words", nargs=argparse.REMAINDER)
+
+    p_env = _add_command_parser(sub, "env", help="Check environment and config paths", description="Validate Polylogue environment and configuration")
+    p_env.add_argument("--json", action="store_true", help="Emit machine-readable output")
 
     p_search_preview = _add_command_parser(sub, "_search-preview", help=argparse.SUPPRESS)
     p_search_preview.add_argument("--data-file", type=Path, required=True)
