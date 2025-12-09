@@ -175,13 +175,11 @@ def test_parser_rejects_old_settings_command():
         parser.parse_args(["settings", "--html", "on"])
 
 
-def test_parser_rejects_old_env_command():
-    """Verify old env command is not recognized."""
+def test_parser_accepts_env_command():
+    """Verify env command is available as a top-level alias."""
     parser = build_parser()
-
-    # env is no longer a top-level command
-    with pytest.raises(SystemExit):
-        parser.parse_args(["env"])
+    args = parser.parse_args(["env"])
+    assert args.cmd == "env"
 
 
 # ===== Dispatcher Tests =====
@@ -457,15 +455,13 @@ def test_status_command_runs(monkeypatch, tmp_path):
     main()
 
 
-def test_old_env_command_fails(monkeypatch, tmp_path):
-    """Verify old 'env' command is rejected."""
+def test_env_command_runs(monkeypatch, tmp_path):
+    """Verify 'env' command is accepted and runs."""
     _configure_isolated_state(monkeypatch, tmp_path)
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
     monkeypatch.setattr(sys, "argv", ["polylogue", "env"])
 
-    with pytest.raises(SystemExit) as exc_info:
-        main()
-    assert exc_info.value.code == 2  # argparse error
+    main()
 
 
 def test_old_settings_command_fails(monkeypatch, tmp_path):
