@@ -1,12 +1,14 @@
 # Repository Guidelines
 
 ## Project Structure & Modules
+
 - `polylogue.py`: CLI entrypoint for rendering AI chat exports and syncing provider archives.
 - `polylogue/`: implementation modules (commands, importers, rendering, UI utilities).
-- `nix/devshell.nix`: dev shell defining Python deps plus gum, skim, rich, bat, glow, etc.
+- `nix/devshell.nix`: dev shell defining Python deps plus gum, skim, rich, bat, glow, etc..
 - Provider walkthroughs and sample workflows live under `docs/` (see `docs/providers/`).
 
 ## Development Workflow
+
 - Enter the dev environment with `direnv allow` (preferred) or `nix develop`; the shell wires PATH, PYTHONPATH, gum/skim/bat/glow, and completions.
 - Tests: `nix develop -c pytest -q` (uses in-tree PYTHONPATH). CI parity: `nix flake check` builds + runs the packaged test suite.
 - Package/build: `nix build .#polylogue` (produces the wrapped CLI with gum/skim in PATH).
@@ -17,20 +19,24 @@
 - **Never add graceful-degradation fallbacks.** We run on NixOS and can guarantee every dependency; if a tool is missing it should be treated as a hard failure, not a best-effort path.
 
 ## Configuration & Auth
-- Drive credentials: set `POLYLOGUE_CREDENTIAL_PATH` to point at an OAuth client JSON to bypass prompts; tokens live beside it (`token.json`). Defaults resolve under `$XDG_CONFIG_HOME/polylogue/`.
+
+- Drive credentials: set `POLYLOGUE_CREDENTIAL_PATH` to point at an OAuth client JSON to bypass prompts; use `POLYLOGUE_TOKEN_PATH` if you need the token somewhere else. Defaults resolve under `$XDG_CONFIG_HOME/polylogue/`, and the CLI will honor these paths directly.
 
 ## Automation & Testing
-- Non-interactive paths automatically drop into a plain UI when stdout/stderr aren’t TTYs. Set `POLYLOGUE_FORCE_PLAIN=1` when you need deterministic plain mode in CI, or pass `--interactive` to re-enable gum/skim prompts even without a TTY.
+
+- Non-interactive paths automatically drop into a plain UI when stdout/stderr aren’t TTYs. Set `POLYLOGUE_FORCE_PLAIN=1` when you need deterministic plain mode in CI, use `--plain` to force it, or pass `--interactive` to re-enable gum/skim prompts even without a TTY.
 - Smoke test with `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync codex --dry-run` and `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync claude-code --dry-run`.
 - Run `pytest` regularly; new tests should live under `tests/`.
 - Use `polylogue config show --json` to confirm resolved config/output paths while debugging CI or support issues.
 
 ## Style & Naming
+
 - Python code follows PEP 8, 4-space indentation, snake_case identifiers.
 - CLI flags are kebab-case (e.g., `--links-only`, `--dry-run`).
 - Keep inline comments concise and purposeful.
 
 ## Credentials & Security
+
 - Never commit the files created in `$XDG_CONFIG_HOME/polylogue/` (credentials, tokens).
 - The CLI guides users through supplying an OAuth client; ensure documentation reflects the XDG storage path.
 - Drive access errors should surface clear, actionable prompts.
@@ -81,6 +87,7 @@ git rebase --autosquash main  # Auto-squashes fixups (non-interactive)
 ```
 
 **For human reviewers only:**
+
 ```bash
 git rebase -i main  # Opens editor - NOT usable by agents
 ```
@@ -92,6 +99,7 @@ Format: `type: description`
 **Types:** `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `perf`
 
 **Examples:**
+
 ```
 feat: add progress bars to sync operations
 fix: resolve JSONModeError in import commands
