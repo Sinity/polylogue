@@ -24,6 +24,18 @@ def add_html_option(parser: ArgumentParser, *, description: str = "HTML preview 
 
 def add_collapse_option(parser: ArgumentParser, *, help_text: str = "Override collapse threshold") -> None:
     parser.add_argument("--collapse-threshold", type=int, default=None, help=help_text)
+    parser.add_argument(
+        "--collapse-threshold-message",
+        type=int,
+        default=None,
+        help="Collapse threshold for chat messages (overrides --collapse-threshold when set)",
+    )
+    parser.add_argument(
+        "--collapse-threshold-tool",
+        type=int,
+        default=None,
+        help="Collapse threshold for tool/function outputs (overrides --collapse-threshold when set)",
+    )
 
 
 def add_out_option(parser: ArgumentParser, *, default_path: Path, help_text: str | None = None) -> None:

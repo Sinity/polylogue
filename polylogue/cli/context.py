@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from ..config import CONFIG
 from ..settings import SETTINGS, Settings, ensure_settings_defaults
@@ -140,3 +140,20 @@ def resolve_collapse_value(value: Optional[int], settings: Optional[Settings] = 
         return active.collapse_threshold
 
     return DEFAULT_COLLAPSE
+
+
+def resolve_collapse_thresholds(args: argparse.Namespace, settings: Optional[Settings] = None) -> Dict[str, int]:
+    """Return per-type collapse thresholds with sensible fallbacks."""
+
+    def _clean(val: Optional[int]) -> Optional[int]:
+        if isinstance(val, int) and val >= 0:
+            return val
+        return None
+
+    base = resolve_collapse_value(getattr(args, "collapse_threshold", None), settings)
+    msg = _clean(getattr(args, "collapse_threshold_message", None))
+    tool = _clean(getattr(args, "collapse_threshold_tool", None))
+    return {
+        "message": msg if msg is not None else base,
+        "tool": tool if tool is not None else base,
+    }
