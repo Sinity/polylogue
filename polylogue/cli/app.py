@@ -1478,7 +1478,6 @@ def _register_default_commands() -> None:
     _ensure("import", _dispatch_import, "Import provider exports", ["i"])
     _ensure("sync", _dispatch_sync, "Synchronize provider archives (use --watch for continuous mode)", ["s"])
     _ensure("status", _dispatch_status, "Show cached Drive info and recent runs")
-
     # Exploration
     _ensure("browse", _dispatch_browse, "Browse data (branches/stats/status/runs)", ["b"])
 
