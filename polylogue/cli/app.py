@@ -885,11 +885,15 @@ def run_inspect_search(args: argparse.Namespace, env: CommandEnv) -> None:
         if json_lines:
             for row in rows:
                 payload = {k: row.get(k) for k in export_fields} if export_fields else row
+                payload.setdefault("schemaVersion", SCHEMA_VERSION)
+                payload.setdefault("polylogueVersion", CLI_VERSION)
                 print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
             return
         payload = {
             "query": options.query,
             "count": len(hits),
+            "schemaVersion": SCHEMA_VERSION,
+            "polylogueVersion": CLI_VERSION,
             "hits": [
                 {k: row.get(k) for k in export_fields} if export_fields else row
                 for row in rows
