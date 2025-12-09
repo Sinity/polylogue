@@ -62,6 +62,7 @@ def import_claude_export(
     *,
     output_dir: Path,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool,
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
@@ -93,6 +94,7 @@ def import_claude_export(
                     root,
                     output_dir,
                     collapse_threshold=collapse_threshold,
+                    collapse_thresholds=collapse_thresholds,
                     html=html,
                     html_theme=html_theme,
                     force=force,
@@ -142,6 +144,7 @@ def _render_claude_conversation(
     output_dir: Path,
     *,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool,
     html_theme: str,
     force: bool,
@@ -247,6 +250,7 @@ def _render_claude_conversation(
         extra_yaml["sourceModel"] = model_id
 
     canonical_leaf_id = message_records[-1].message_id if message_records else None
+    thresholds = collapse_thresholds or {"message": collapse_threshold, "tool": collapse_threshold}
 
     return process_conversation(
         provider="claude.ai",
@@ -257,6 +261,7 @@ def _render_claude_conversation(
         attachments=attachments,
         canonical_leaf_id=canonical_leaf_id,
         collapse_threshold=collapse_threshold,
+        collapse_thresholds=thresholds,
         html=html,
         html_theme=html_theme,
         output_dir=output_dir,
