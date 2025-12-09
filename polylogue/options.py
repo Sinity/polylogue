@@ -13,6 +13,7 @@ class RenderOptions:
     download_attachments: bool
     dry_run: bool
     force: bool
+    collapse_thresholds: Optional[Dict[str, int]] = None
     html: bool = False
     html_theme: str = "light"
     diff: bool = False
@@ -32,6 +33,7 @@ class SyncOptions:
     since: Optional[str]
     until: Optional[str]
     name_filter: Optional[str]
+    collapse_thresholds: Optional[Dict[str, int]] = None
     selected_ids: Optional[List[str]] = None
     html: bool = False
     html_theme: str = "light"

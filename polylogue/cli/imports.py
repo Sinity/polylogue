@@ -25,6 +25,7 @@ from .context import (
     DEFAULT_CLAUDE_OUT,
     DEFAULT_CODEX_SYNC_OUT,
     DEFAULT_COLLAPSE,
+    resolve_collapse_thresholds,
     resolve_collapse_value,
     resolve_html_enabled,
 )
@@ -126,6 +127,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     provider = getattr(args, "provider", None)
     sources = args.source or []
     _apply_import_prefs(args, env)
+    collapse_thresholds = resolve_collapse_thresholds(args, env.settings)
 
     def _ensure_path() -> Path:
         if not sources:
@@ -138,6 +140,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             export_path=export_path,
             out=args.out,
             collapse_threshold=args.collapse_threshold,
+            collapse_thresholds=collapse_thresholds,
             html_mode=args.html_mode,
             force=args.force,
             conversation_ids=args.conversation_ids or [],
@@ -153,6 +156,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             export_path=export_path,
             out=args.out,
             collapse_threshold=args.collapse_threshold,
+            collapse_thresholds=collapse_thresholds,
             html_mode=args.html_mode,
             force=args.force,
             conversation_ids=args.conversation_ids or [],
@@ -169,6 +173,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             base_dir=args.base_dir,
             out=args.out,
             collapse_threshold=args.collapse_threshold,
+            collapse_thresholds=collapse_thresholds,
             html_mode=args.html_mode,
             force=args.force,
             json=args.json,
@@ -183,6 +188,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             base_dir=args.base_dir,
             out=args.out,
             collapse_threshold=args.collapse_threshold,
+            collapse_thresholds=collapse_thresholds,
             html_mode=args.html_mode,
             force=args.force,
             json=args.json,
@@ -202,7 +208,8 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
     out_dir.mkdir(parents=True, exist_ok=True)
     settings = env.settings
-    collapse = resolve_collapse_value(args.collapse_threshold, settings)
+    collapse_thresholds = getattr(args, "collapse_thresholds", None) or resolve_collapse_thresholds(args, settings)
+    collapse = collapse_thresholds["message"]
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     session_target = args.session_id
@@ -247,6 +254,7 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
                 "base_dir": base_dir,
                 "output_dir": out_dir,
                 "collapse_threshold": collapse,
+                "collapse_thresholds": collapse_thresholds,
                 "html": html_enabled,
                 "html_theme": html_theme,
                 "force": getattr(args, "force", False),
@@ -293,7 +301,8 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
 
     out_dir = Path(args.out) if args.out else DEFAULT_CHATGPT_OUT
     settings = env.settings
-    collapse = resolve_collapse_value(args.collapse_threshold, settings)
+    collapse_thresholds = getattr(args, "collapse_thresholds", None) or resolve_collapse_thresholds(args, settings)
+    collapse = collapse_thresholds["message"]
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     selected_ids = args.conversation_ids[:] if args.conversation_ids else None
@@ -353,6 +362,7 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
                 "export_path": export_path,
                 "output_dir": out_dir,
                 "collapse_threshold": collapse,
+                "collapse_thresholds": collapse_thresholds,
                 "html": html_enabled,
                 "html_theme": html_theme,
                 "selected_ids": selected_ids,
@@ -401,7 +411,8 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
 
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_OUT
     settings = env.settings
-    collapse = resolve_collapse_value(args.collapse_threshold, settings)
+    collapse_thresholds = getattr(args, "collapse_thresholds", None) or resolve_collapse_thresholds(args, settings)
+    collapse = collapse_thresholds["message"]
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     selected_ids = args.conversation_ids[:] if args.conversation_ids else None
@@ -461,6 +472,7 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
                 "export_path": export_path,
                 "output_dir": out_dir,
                 "collapse_threshold": collapse,
+                "collapse_thresholds": collapse_thresholds,
                 "html": html_enabled,
                 "html_theme": html_theme,
                 "selected_ids": selected_ids,
@@ -506,17 +518,18 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
         chosen, cancelled = choose_single_entry(
             ui, entries, format_line=_format_session, header="Select Claude Code session", prompt="session>"
         )
-        if cancelled:
-            console.print("[yellow]Import cancelled; no session selected.")
-            return
-        if chosen is None:
-            console.print("[yellow]No session selected.")
-            return
-        session_id = chosen["path"]
+    if cancelled:
+        console.print("[yellow]Import cancelled; no session selected.")
+        return
+    if chosen is None:
+        console.print("[yellow]No session selected.")
+        return
+    session_id = chosen["path"]
 
     out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
     settings = env.settings
-    collapse = resolve_collapse_value(args.collapse_threshold, settings)
+    collapse_thresholds = getattr(args, "collapse_thresholds", None) or resolve_collapse_thresholds(args, settings)
+    collapse = collapse_thresholds["message"]
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
 
@@ -540,6 +553,7 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
                 "session_id": session_id,
                 "output_dir": out_dir,
                 "collapse_threshold": collapse,
+                "collapse_thresholds": collapse_thresholds,
                 "html": html_enabled,
                 "html_theme": html_theme,
                 "force": getattr(args, "force", False),

@@ -19,7 +19,7 @@ from .context import (
     DEFAULT_COLLAPSE,
     DEFAULT_SYNC_OUT,
     default_sync_namespace,
-    resolve_collapse_value,
+    resolve_collapse_thresholds,
     resolve_html_enabled,
     resolve_output_path,
     merge_with_defaults,
@@ -187,6 +187,7 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
             selected_ids = [line.split("\t")[-1] for line in selection]
 
     settings = env.settings
+    collapse_thresholds = resolve_collapse_thresholds(args, settings)
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     prefetched = filtered
@@ -197,7 +198,8 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         folder_name=args.folder_name,
         folder_id=folder_id,
         output_dir=resolve_output_path(args.out, DEFAULT_SYNC_OUT),
-        collapse_threshold=resolve_collapse_value(args.collapse_threshold, settings),
+        collapse_threshold=collapse_thresholds["message"],
+        collapse_thresholds=collapse_thresholds,
         download_attachments=download_attachments,
         dry_run=args.dry_run,
         force=args.force,
@@ -323,7 +325,8 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base.expanduser()
     out_dir = resolve_output_path(args.out, provider.default_output)
     settings = env.settings
-    collapse = resolve_collapse_value(args.collapse_threshold, settings)
+    collapse_thresholds = resolve_collapse_thresholds(args, settings)
+    collapse = collapse_thresholds["message"]
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     force = args.force
@@ -351,6 +354,7 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
             base_dir=base_dir,
             output_dir=out_dir,
             collapse_threshold=collapse,
+            collapse_thresholds=collapse_thresholds,
             html=html_enabled,
             html_theme=html_theme,
             force=force,

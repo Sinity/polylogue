@@ -15,6 +15,7 @@ from ..util import write_clipboard_text
 from .context import (
     DEFAULT_COLLAPSE,
     DEFAULT_RENDER_OUT,
+    resolve_collapse_thresholds,
     resolve_collapse_value,
     resolve_html_enabled,
     resolve_output_path,
@@ -35,7 +36,8 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         return
     output = resolve_output_path(args.out, DEFAULT_RENDER_OUT)
     settings = env.settings
-    collapse = resolve_collapse_value(args.collapse_threshold, settings)
+    collapse_thresholds = resolve_collapse_thresholds(args, settings)
+    collapse = collapse_thresholds["message"]
     def _truthy(val: str) -> bool:
         return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
@@ -52,6 +54,7 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         inputs=inputs,
         output_dir=output,
         collapse_threshold=collapse,
+        collapse_thresholds=collapse_thresholds,
         download_attachments=download_attachments,
         dry_run=args.dry_run,
         force=args.force,

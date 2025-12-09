@@ -184,6 +184,7 @@ class RenderDocumentStage:
                 citations=chat_context.citations,
                 source_mime=chat_context.source_mime,
                 collapse_threshold=options.collapse_threshold,
+                collapse_thresholds=getattr(options, "collapse_thresholds", None),
                 attachments=attachments,
             )
             context.set("document", doc)
@@ -230,6 +231,7 @@ class RenderPersistStage:
                     citations=chat_context.citations,
                     source_mime=chat_context.source_mime,
                     collapse_threshold=options.collapse_threshold,
+                    collapse_thresholds=getattr(options, "collapse_thresholds", None),
                     attachments=attachments,
                 )
             import_result = ImportResult(
@@ -263,6 +265,7 @@ class RenderPersistStage:
             attachments=attachments,
             canonical_leaf_id=message_records[-1].message_id if message_records else None,
             collapse_threshold=options.collapse_threshold,
+            collapse_thresholds=getattr(options, "collapse_thresholds", None),
             html=getattr(options, "html", False),
             html_theme=getattr(options, "html_theme", "light"),
             output_dir=options.output_dir,

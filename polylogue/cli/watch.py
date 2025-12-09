@@ -14,12 +14,7 @@ except ImportError:  # pragma: no cover - fallback for environments without watc
 
 from ..commands import CommandEnv
 from ..local_sync import get_local_provider
-from .context import (
-    DEFAULT_COLLAPSE,
-    resolve_collapse_value,
-    resolve_html_enabled,
-    resolve_output_path,
-)
+from .context import resolve_collapse_thresholds, resolve_html_enabled, resolve_output_path
 from .sync import _log_local_sync
 
 WatchChange = Tuple[Any, str]
@@ -72,7 +67,8 @@ def _run_watch_sessions(
         except Exception as exc:
             ui.console.print(f"[yellow]Snapshot failed: {exc}")
     settings = env.settings
-    collapse = resolve_collapse_value(args.collapse_threshold, settings)
+    collapse_thresholds = resolve_collapse_thresholds(args, settings)
+    collapse = collapse_thresholds["message"]
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     debounce = max(0.5, args.debounce)
@@ -96,6 +92,7 @@ def _run_watch_sessions(
                 base_dir=base_dir,
                 output_dir=out_dir,
                 collapse_threshold=collapse,
+                collapse_thresholds=collapse_thresholds,
                 html=html_enabled,
                 html_theme=html_theme,
                 force=force,
