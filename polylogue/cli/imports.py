@@ -33,6 +33,21 @@ from .render import copy_import_to_clipboard
 from .summaries import summarize_import
 
 
+def _truthy(val: str) -> bool:
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_import_prefs(args: argparse.Namespace, env: CommandEnv) -> None:
+    prefs = getattr(env, "prefs", {}) or {}
+    import_prefs = prefs.get("import", {}) if isinstance(prefs, dict) else {}
+    if not import_prefs:
+        return
+    if "--html" in import_prefs and getattr(args, "html_mode", "auto") == "auto":
+        args.html_mode = "on" if _truthy(import_prefs["--html"]) else "off"
+    if "--attachment-ocr" in import_prefs and _truthy(import_prefs["--attachment-ocr"]):
+        setattr(args, "attachment_ocr", True)
+
+
 class ImportExecuteStage:
     def run(self, context: PipelineContext) -> None:
         env: CommandEnv = context.env
@@ -94,6 +109,14 @@ def _emit_import_json(results: List[ImportResult]) -> None:
     print(json.dumps(payload, indent=2))
 
 
+def _emit_print_paths(results: List[ImportResult], ui) -> None:
+    ui.console.print("Written paths:")
+    for res in results:
+        ui.console.print(f"  {res.markdown_path}")
+        if res.html_path:
+            ui.console.print(f"  {res.html_path}")
+
+
 def _build_summary_footer(provider: str, cmd: str) -> List[str]:
     note = format_run_brief(latest_run(provider=provider, cmd=cmd))
     return [f"Previous run: {note}"] if note else []
@@ -102,6 +125,7 @@ def _build_summary_footer(provider: str, cmd: str) -> List[str]:
 def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     provider = getattr(args, "provider", None)
     sources = args.source or []
+    _apply_import_prefs(args, env)
 
     def _ensure_path() -> Path:
         if not sources:
@@ -120,6 +144,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             all=args.all,
             json=args.json,
             to_clipboard=args.to_clipboard,
+            attachment_ocr=args.attachment_ocr,
         )
         run_import_chatgpt(ns, env)
     elif provider == "claude":
@@ -134,6 +159,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             all=args.all,
             json=args.json,
             to_clipboard=args.to_clipboard,
+            attachment_ocr=args.attachment_ocr,
         )
         run_import_claude(ns, env)
     elif provider == "claude-code":
@@ -147,6 +173,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             force=args.force,
             json=args.json,
             to_clipboard=args.to_clipboard,
+            attachment_ocr=args.attachment_ocr,
         )
         run_import_claude_code(ns, env)
     elif provider == "codex":
@@ -160,6 +187,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             force=args.force,
             json=args.json,
             to_clipboard=args.to_clipboard,
+            attachment_ocr=args.attachment_ocr,
         )
         run_import_codex(ns, env)
     else:
@@ -224,6 +252,7 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
                 "force": getattr(args, "force", False),
                 "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
+                "attachment_ocr": getattr(args, "attachment_ocr", False),
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
@@ -235,6 +264,9 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
     results: List[ImportResult] = ctx.get("import_results", [])
     if getattr(args, "json", False):
         _emit_import_json(results)
+        return
+    if getattr(args, "print_paths", False):
+        _emit_print_paths(results, env.ui)
     if getattr(args, "to_clipboard", False):
         copy_import_to_clipboard(ui, results)
 
@@ -293,6 +325,7 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
             lines,
             preview=None,
             header="Select conversations to import",
+            plain=ui.plain,
         )
         if selection is None:
             console.print("[yellow]Import cancelled; no conversations selected.")
@@ -326,9 +359,11 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
                 "force": getattr(args, "force", False),
                 "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
+                "attachment_ocr": getattr(args, "attachment_ocr", False),
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
+            "print_paths": getattr(args, "print_paths", False),
         },
     )
     pipeline.run(ctx)
@@ -337,6 +372,9 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
     results: List[ImportResult] = ctx.get("import_results", [])
     if getattr(args, "json", False):
         _emit_import_json(results)
+        return
+    if ctx.get("print_paths"):
+        _emit_print_paths(results, env.ui)
     if getattr(args, "to_clipboard", False):
         copy_import_to_clipboard(ui, results)
 
@@ -395,6 +433,7 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
             lines,
             preview=None,
             header="Select conversations to import",
+            plain=ui.plain,
         )
         if selection is None:
             console.print("[yellow]Import cancelled; no conversations selected.")
@@ -427,9 +466,11 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
                 "selected_ids": selected_ids,
                 "force": getattr(args, "force", False),
                 "registrar": env.registrar,
+                "attachment_ocr": getattr(args, "attachment_ocr", False),
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
+            "print_paths": getattr(args, "print_paths", False),
         },
     )
     pipeline.run(ctx)
@@ -438,6 +479,9 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
     results: List[ImportResult] = ctx.get("import_results", [])
     if getattr(args, "json", False):
         _emit_import_json(results)
+        return
+    if ctx.get("print_paths"):
+        _emit_print_paths(results, env.ui)
     if getattr(args, "to_clipboard", False):
         copy_import_to_clipboard(ui, results)
 
@@ -501,10 +545,12 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
                 "force": getattr(args, "force", False),
                 "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
+                "attachment_ocr": getattr(args, "attachment_ocr", False),
                 **kwargs,
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
+            "print_paths": getattr(args, "print_paths", False),
         },
     )
     pipeline.run(ctx)
@@ -513,6 +559,9 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
     results: List[ImportResult] = ctx.get("import_results", [])
     if getattr(args, "json", False):
         _emit_import_json(results)
+        return
+    if ctx.get("print_paths"):
+        _emit_print_paths(results, env.ui)
     if getattr(args, "to_clipboard", False):
         copy_import_to_clipboard(ui, results)
 

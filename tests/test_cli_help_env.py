@@ -32,6 +32,14 @@ def test_help_topic_outputs_details(capsys):
     assert "Synchronize provider archives" in out
 
 
+def test_help_examples_flag(capsys):
+    env = CommandEnv(ui=DummyUI())
+    run_help_cli(argparse.Namespace(topic=None, examples=True), env)
+    joined = "\n".join(env.ui.console.lines)
+    assert "EXAMPLES" in joined
+    assert "render" in joined
+
+
 def test_help_unknown_command_reports_error():
     ui = DummyUI()
     env = CommandEnv(ui=ui)
@@ -57,6 +65,8 @@ def test_env_json(capsys):
     parsed = json.loads(capsys.readouterr().out)
     assert "outputs" in parsed
     assert "statePath" in parsed
+    assert "auth" in parsed
+    assert "credentialPath" in parsed["auth"]
 
 
 def test_completions_emits_script(capsys):

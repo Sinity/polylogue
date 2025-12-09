@@ -2,14 +2,21 @@ from __future__ import annotations
 
 import os
 import shutil
+import hashlib
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .branching import BranchPlan, BranchInfo, MessageRecord, build_branch_plan
 from .importers.base import ImportResult
 from .render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
 from .repository import ConversationRepository
 from .services.conversation_registrar import ConversationRegistrar
+from .services.attachment_text import (
+    AttachmentText,
+    MAX_BYTES_DEFAULT,
+    MAX_CHARS_DEFAULT,
+    extract_attachment_text,
+)
 
 
 def _compute_branch_stats(
@@ -42,6 +49,20 @@ def _compute_branch_stats(
     return stats
 
 
+def _branch_map_snippet(branch_dir: Path, branch_ids: List[str]) -> Optional[str]:
+    if not branch_ids:
+        return None
+    lines: List[str] = []
+    for branch_id in sorted(branch_ids):
+        branch_file = f"./branches/{branch_id}/{branch_id}.md"
+        overlay_file = f"./branches/{branch_id}/overlay.md"
+        line = f"- [{branch_id}]({branch_file}) (overlay: [overlay.md]({overlay_file}))"
+        lines.append(line)
+    if not lines:
+        return None
+    return "## Branch map\n\n" + "\n".join(lines) + "\n"
+
+
 def _links_mapping(records: List[MessageRecord]) -> Dict[int, List[Tuple[str, object]]]:
     mapping: Dict[int, List[Tuple[str, object]]] = {}
     for idx, record in enumerate(records):
@@ -72,6 +93,103 @@ def _adjust_links_for_base(
                 adjusted_links.append((name, link))
         adjusted[idx] = adjusted_links
     return adjusted
+
+
+def _hash_file(path: Path) -> Optional[str]:
+    try:
+        h = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def _attachment_rows(
+    *,
+    attachments: List[AttachmentInfo],
+    plan: BranchPlan,
+    records_by_id: Dict[str, MessageRecord],
+    conversation_dir: Path,
+    attachment_ocr: bool,
+    max_bytes: int = MAX_BYTES_DEFAULT,
+    max_chars: int = MAX_CHARS_DEFAULT,
+) -> List[Dict[str, object]]:
+    if not attachments:
+        return []
+
+    info_by_key: Dict[Tuple[str, str], AttachmentInfo] = {}
+    info_by_name: Dict[str, AttachmentInfo] = {}
+    for info in attachments:
+        if info.remote or info.local_path is None:
+            continue
+        key = (info.name, str(info.link))
+        info_by_key[key] = info
+        info_by_name.setdefault(info.name, info)
+
+    rows: List[Dict[str, object]] = []
+    seen: Set[Tuple[str, str, str]] = set()
+
+    for branch_id, info in plan.branches.items():
+        for message_id in info.message_ids:
+            record = records_by_id.get(message_id)
+            if record is None or not record.links:
+                continue
+            for name, link in record.links:
+                key = (name, str(link))
+                att = info_by_key.get(key) or info_by_name.get(name)
+                if att is None or att.local_path is None:
+                    continue
+                dedup_key = (branch_id, message_id, name)
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+
+                attachment_path = (conversation_dir / att.local_path).resolve()
+                if not attachment_path.exists():
+                    continue
+
+                try:
+                    text = extract_attachment_text(
+                        attachment_path,
+                        ocr=attachment_ocr,
+                        max_bytes=max_bytes,
+                        max_chars=max_chars,
+                    )
+                except Exception:
+                    text = AttachmentText(
+                        text=None,
+                        mime=None,
+                        truncated=False,
+                        ocr_used=False,
+                        size_bytes=attachment_path.stat().st_size if attachment_path.exists() else 0,
+                    )
+
+                size_bytes = att.size_bytes
+                if size_bytes is None:
+                    try:
+                        size_bytes = attachment_path.stat().st_size
+                    except OSError:
+                        size_bytes = None
+
+                rows.append(
+                    {
+                        "branch_id": branch_id,
+                        "message_id": message_id,
+                        "attachment_name": name,
+                        "attachment_path": str(attachment_path),
+                        "size_bytes": size_bytes,
+                        "content_hash": _hash_file(attachment_path),
+                        "mime_type": text.mime,
+                        "text_content": text.text,
+                        "text_bytes": len(text.text) if text.text else 0,
+                        "truncated": text.truncated,
+                        "ocr_used": text.ocr_used,
+                    }
+                )
+
+    return rows
 
 
 def _render_markdown_document(
@@ -149,6 +267,7 @@ def process_conversation(
     attachment_policy,
     force: bool,
     allow_dirty: bool = False,
+    attachment_ocr: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
     repository: Optional[ConversationRepository] = None,
     citations: Optional[List[Any]] = None,
@@ -187,6 +306,10 @@ def process_conversation(
         citations=citations,
     )
 
+    branch_map = _branch_map_snippet(output_dir / slug / "branches", plan.branch_ids)
+    if branch_map and "Branch map" not in canonical_document.body:
+        canonical_document.body = branch_map + "\n" + canonical_document.body
+
     persist_result = repository.persist(
         provider=provider,
         conversation_id=conversation_id,
@@ -208,9 +331,9 @@ def process_conversation(
         registrar=registrar,
     )
 
+    conversation_dir: Path = persist_result.markdown_path.parent
     branch_directories: List[Path] = []
     if not persist_result.skipped and persist_result.markdown_path:
-        conversation_dir = persist_result.markdown_path.parent
         branches_dir = conversation_dir / "branches"
         attachments_dir = persist_result.attachments_dir
 
@@ -339,6 +462,18 @@ def process_conversation(
         branch_stats=branch_stats,
         records_by_id=records_by_id,
         attachment_bytes=attachment_bytes,
+    )
+    attachment_rows = _attachment_rows(
+        attachments=attachments,
+        plan=plan,
+        records_by_id=records_by_id,
+        conversation_dir=conversation_dir,
+        attachment_ocr=attachment_ocr,
+    )
+    registrar.record_attachments(
+        provider=provider,
+        conversation_id=conversation_id,
+        attachments=attachment_rows,
     )
 
     return ImportResult(

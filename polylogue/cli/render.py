@@ -24,6 +24,8 @@ from .context import (
 def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -> None:
     ui = env.ui
     console = ui.console
+    prefs = getattr(env, "prefs", {}) if hasattr(env, "prefs") else {}
+    render_prefs = prefs.get("render", {}) if isinstance(prefs, dict) else {}
     inputs = resolve_inputs(args.input, ui.plain)
     if inputs is None:
         console.print("[yellow]Render cancelled.")
@@ -34,10 +36,17 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
     output = resolve_output_path(args.out, DEFAULT_RENDER_OUT)
     settings = env.settings
     collapse = resolve_collapse_value(args.collapse_threshold, settings)
+    def _truthy(val: str) -> bool:
+        return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
     download_attachments = not args.links_only
+    if not args.links_only and "--links-only" in render_prefs:
+        download_attachments = not _truthy(render_prefs["--links-only"])
     if not ui.plain and not args.links_only:
-        download_attachments = ui.confirm("Download attachments to local folders?", default=True)
+        download_attachments = ui.confirm("Download attachments to local folders?", default=download_attachments)
     html_enabled = resolve_html_enabled(args, settings)
+    if render_prefs.get("--html") is not None and args.html_mode == "auto":
+        html_enabled = render_prefs.get("--html") == "on"
     html_theme = settings.html_theme
     options = RenderOptions(
         inputs=inputs,
@@ -49,7 +58,13 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         html=html_enabled,
         html_theme=html_theme,
         diff=getattr(args, "diff", False),
+        attachment_ocr=getattr(args, "attachment_ocr", False) or _truthy(render_prefs.get("--attachment-ocr", "false")) if render_prefs else getattr(args, "attachment_ocr", False),
     )
+    if getattr(args, "max_disk", None):
+        projected = len(inputs) * 5 * 1024 * 1024  # rough 5MiB per file heuristic
+        from ..util import preflight_disk_requirement
+
+        preflight_disk_requirement(projected_bytes=projected, limit_gib=args.max_disk, ui=ui)
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
     result = render_command(options, env)
@@ -74,6 +89,10 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         print(json.dumps(payload, indent=2))
         return
     lines = [f"Rendered {result.count} file(s) → {result.output_dir}"]
+    if getattr(args, "print_paths", False):
+        lines.append("Written paths:")
+        for f in result.files:
+            lines.append(f"  {f.output}")
     attachments_total = result.total_stats.get("attachments", 0)
     if attachments_total:
         lines.append(f"Attachments: {attachments_total}")

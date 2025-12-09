@@ -12,7 +12,12 @@ from polylogue.local_sync import LocalSyncResult
 
 class DummyConsole:
     def print(self, *_args, **_kwargs):
-        pass
+        # Capture output for assertions
+        line = " ".join(str(arg) for arg in _args)
+        self.lines.append(line)
+
+    def __init__(self):
+        self.lines: list[str] = []
 
 
 class DummyUI:
@@ -38,9 +43,11 @@ class RecordingProvider:
         self.watch_suffixes = watch_suffixes
         self.supports_watch = True
         self.calls: list[list[Path] | None] = []
+        self.call_kwargs: list[dict] = []
 
     def sync_fn(self, *, sessions=None, **kwargs):  # noqa: ANN001
         self.calls.append(list(sessions) if sessions else None)
+        self.call_kwargs.append(kwargs)
         return LocalSyncResult(
             written=[],
             skipped=0,
@@ -58,7 +65,22 @@ def _watch_args(base_dir: Path, out_dir: Path) -> Namespace:
         html_mode="off",
         debounce=0,
         once=False,
+        force=False,
+        prune=False,
+        diff=False,
     )
+
+
+def test_watch_requires_existing_base_dir(tmp_path):
+    missing = tmp_path / "missing"
+    provider = RecordingProvider(missing, (".jsonl",))
+    args = _watch_args(missing, provider.default_output)
+    env = CommandEnv(ui=DummyUI())
+
+    with pytest.raises(SystemExit):
+        _run_watch_sessions(args, env, provider)
+
+    assert not missing.exists()
 
 
 def test_watch_filters_suffixes(monkeypatch, tmp_path):
@@ -74,6 +96,7 @@ def test_watch_filters_suffixes(monkeypatch, tmp_path):
 
     monkeypatch.setattr("polylogue.cli.watch._watch_directory", fake_watch_directory)
     monkeypatch.setattr("polylogue.cli.watch.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("polylogue.cli.watch.time.sleep", lambda _t: None)
 
     _run_watch_sessions(args, env, provider)
 
@@ -114,3 +137,44 @@ def test_run_watch_cli_surfaces_watch_errors(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="watchfiles unavailable"):
         run_watch_cli(args, env)
+
+
+def test_watch_passes_flags(monkeypatch, tmp_path):
+    provider = RecordingProvider(tmp_path, (".jsonl",))
+    provider.supports_diff = True  # explicitly allow diff
+    args = _watch_args(tmp_path, provider.default_output)
+    args.once = True
+    args.force = True
+    args.prune = True
+    args.diff = True
+    env = CommandEnv(ui=DummyUI())
+
+    _run_watch_sessions(args, env, provider)
+
+    assert len(provider.calls) == 1
+    # The provider records the sessions list; ensure it saw the initial call.
+    assert provider.calls[0] is None
+    assert provider.call_kwargs[0]["force"] is True
+    assert provider.call_kwargs[0]["prune"] is True
+    assert provider.call_kwargs[0]["diff"] is True
+
+
+def test_watch_logs_skipped_events(monkeypatch, tmp_path, capsys):
+    provider = RecordingProvider(tmp_path, (".jsonl",))
+    args = _watch_args(tmp_path, provider.default_output)
+    env = CommandEnv(ui=DummyUI())
+
+    def fake_watch_directory(_base, recursive=True):  # noqa: ARG001
+        yield {(1, str(tmp_path / "early.jsonl"))}
+        yield {(1, str(tmp_path / "debounced.jsonl"))}
+        yield {(1, str(tmp_path / "late.jsonl"))}
+
+    ticks = iter([0.0, 0.5, 0.6, 2.0])
+
+    monkeypatch.setattr("polylogue.cli.watch._watch_directory", fake_watch_directory)
+    monkeypatch.setattr("polylogue.cli.watch.time.monotonic", lambda: next(ticks))
+
+    _run_watch_sessions(args, env, provider)
+
+    joined = "\n".join(env.ui.console.lines)
+    assert "Skipped" in joined

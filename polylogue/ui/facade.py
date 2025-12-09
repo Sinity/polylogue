@@ -147,7 +147,7 @@ class InteractiveConsoleFacade(ConsoleFacade):
     """Rich + gum backed facade that requires the interactive toolchain."""
 
     def __post_init__(self) -> None:
-        missing = [cmd for cmd in ("gum", "sk") if shutil.which(cmd) is None]
+        missing = [cmd for cmd in ("gum", "sk", "bat", "glow", "delta") if shutil.which(cmd) is None]
         if missing:
             missing_cmds = ", ".join(missing)
             raise RuntimeError(

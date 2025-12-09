@@ -5,9 +5,12 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.cli import CommandEnv, build_parser, run_sync_cli, _resolve_html_settings
+from polylogue.cli import CommandEnv, build_parser, run_sync_cli, _resolve_html_settings, _should_use_plain
 from polylogue.cli.sync import _run_sync_drive, _run_local_sync
+from polylogue.cli.context import resolve_collapse_value
 from polylogue.local_sync import LocalSyncResult
+from polylogue.settings import Settings
+from polylogue.cli.app import _dispatch_sync
 
 
 class DummyConsole:
@@ -92,6 +95,19 @@ def test_sync_parser_supports_selection_flags(tmp_path):
     assert local_args.sessions == [session_one, session_two]
 
 
+def test_print_paths_flags_present():
+    parser = build_parser()
+
+    render_args = parser.parse_args(["render", "input.json", "--print-paths"])
+    assert getattr(render_args, "print_paths", False) is True
+
+    sync_args = parser.parse_args(["sync", "drive", "--print-paths"])
+    assert getattr(sync_args, "print_paths", False) is True
+
+    import_args = parser.parse_args(["import", "chatgpt", "export.zip", "--print-paths"])
+    assert getattr(import_args, "print_paths", False) is True
+
+
 def test_run_sync_drive_respects_selected_ids(monkeypatch, tmp_path):
     captured = {}
 
@@ -109,6 +125,18 @@ def test_run_sync_drive_respects_selected_ids(monkeypatch, tmp_path):
         return Result()
 
     monkeypatch.setattr("polylogue.cli.sync.sync_command", fake_sync_command)
+
+    class StubDrive:
+        def __init__(self):
+            self.calls = []
+
+        def resolve_folder_id(self, folder_name, folder_id):  # noqa: ARG002
+            self.calls.append("resolve")
+            return "folder-id"
+
+        def list_chats(self, folder_name, folder_id):  # noqa: ARG002
+            self.calls.append("list")
+            return [{"id": "chat-123", "name": "Test Chat"}]
 
     args = Namespace(
         links_only=True,
@@ -131,10 +159,12 @@ def test_run_sync_drive_respects_selected_ids(monkeypatch, tmp_path):
         all=False,
     )
     env = CommandEnv(ui=DummyUI())
+    env.drive = StubDrive()
 
     _run_sync_drive(args, env)
 
     assert captured["options"].selected_ids == ["chat-123"]
+    assert captured["options"].prefetched_chats == [{"id": "chat-123", "name": "Test Chat"}]
 
 
 def test_run_local_sync_passes_sessions(monkeypatch, tmp_path):
@@ -192,3 +222,35 @@ def test_allow_dirty_requires_force(monkeypatch, capsys):
     assert exc_info.value.code == 1
     captured = capsys.readouterr()
     assert "--allow-dirty requires --force" in captured.out
+
+
+def test_drive_watch_is_rejected():
+    env = CommandEnv(ui=DummyUI())
+    args = Namespace(provider="drive", watch=True)
+
+    with pytest.raises(SystemExit):
+        _dispatch_sync(args, env)
+
+
+def test_resolve_collapse_value_accepts_zero():
+    settings = Settings(html_previews=False, html_theme="light", collapse_threshold=0, preferred_providers=[])
+
+    assert resolve_collapse_value(0, settings) == 0
+    assert resolve_collapse_value(None, settings) == 0
+
+
+def test_should_use_plain_flags_override(monkeypatch):
+    import sys
+
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
+    assert _should_use_plain(Namespace(interactive=False, plain=False)) is False
+
+    assert _should_use_plain(Namespace(interactive=False, plain=True)) is True
+
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
+    assert _should_use_plain(Namespace(interactive=True, plain=False)) is False
+
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    assert _should_use_plain(Namespace(interactive=False, plain=False)) is True

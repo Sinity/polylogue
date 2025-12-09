@@ -14,7 +14,6 @@ def _resolve_settings(settings: Optional[Settings]) -> Settings:
 
 
 def default_sync_namespace(provider: str, settings: Optional[Settings] = None) -> argparse.Namespace:
-    active = _resolve_settings(settings)
     return argparse.Namespace(
         provider=provider,
         out=None,
@@ -23,7 +22,7 @@ def default_sync_namespace(provider: str, settings: Optional[Settings] = None) -
         force=False,
         prune=False,
         collapse_threshold=None,
-        html_mode=default_html_mode(active),
+        html_mode="auto",
         diff=False,
         json=False,
         chat_ids=None,
@@ -36,6 +35,7 @@ def default_sync_namespace(provider: str, settings: Optional[Settings] = None) -
         until=None,
         name_filter=None,
         list_only=False,
+        root=None,
     )
 
 
@@ -48,13 +48,12 @@ def default_import_namespace(
     conversation_ids: list[str],
     settings: Optional[Settings] = None,
 ) -> argparse.Namespace:
-    active = _resolve_settings(settings)
     return argparse.Namespace(
         provider=provider,
         source=sources,
         out=None,
         collapse_threshold=None,
-        html_mode=default_html_mode(active),
+        html_mode="auto",
         force=False,
         all=all_flag,
         conversation_ids=conversation_ids,
@@ -97,8 +96,8 @@ ensure_settings_defaults()
 
 
 def default_html_mode(settings: Optional[Settings] = None) -> str:
-    active = _resolve_settings(settings)
-    return "on" if active.html_previews else "off"
+    # Preserve the documented "auto" default so settings/env can drive the fallback.
+    return "auto"
 
 
 def resolve_html_settings(args: argparse.Namespace, settings: Optional[Settings] = None) -> Tuple[bool, bool]:
@@ -129,12 +128,15 @@ def resolve_collapse_value(value: Optional[int], settings: Optional[Settings] = 
     1. Explicit command-line argument
     2. User settings (from 'polylogue config set --collapse-threshold')
     3. CONFIG defaults
+
+    Passing 0 disables collapsing entirely.
     """
-    if isinstance(value, int) and value > 0:
-        return value
+    if isinstance(value, int):
+        if value >= 0:
+            return value
 
     active = _resolve_settings(settings)
-    if active.collapse_threshold is not None and active.collapse_threshold > 0:
+    if active.collapse_threshold is not None and active.collapse_threshold >= 0:
         return active.collapse_threshold
 
     return DEFAULT_COLLAPSE
