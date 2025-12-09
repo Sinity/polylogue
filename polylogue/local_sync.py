@@ -4,6 +4,7 @@ import os
 import time
 import json
 import zipfile
+import fnmatch
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -115,6 +116,7 @@ def _sync_sessions(
     output_dir: Path,
     collapse_threshold: int,
     collapse_thresholds: Optional[Dict[str, int]] = None,
+    base_dir: Optional[Path] = None,
     html: bool,
     html_theme: str,
     force: bool,
@@ -143,10 +145,24 @@ def _sync_sessions(
     words_total = 0
 
     diff_total = 0
+    session_list: List[Path]
     if isinstance(sessions, (list, tuple)):
-        iterable: Iterable[Path] = sorted((Path(p) for p in sessions), key=path_order_key)
+        session_list = [Path(p) for p in sessions]
     else:
-        iterable = sorted(list(sessions), key=path_order_key)
+        session_list = [Path(p) for p in sessions]
+    ignore_patterns: List[str] = []
+    if base_dir:
+        ignore_patterns = _load_ignore_patterns(base_dir.expanduser())
+    filtered_sessions: List[Path] = []
+    ignored = 0
+    for path in sorted(session_list, key=path_order_key):
+        if base_dir and _is_ignored(path, base_dir.expanduser(), ignore_patterns):
+            ignored += 1
+            continue
+        filtered_sessions.append(path)
+    if ignored and ui:
+        ui.console.print(f"[yellow]Skipped {ignored} session(s) via .polylogueignore")
+    iterable: Iterable[Path] = filtered_sessions
 
     session_list = list(iterable)
     progress_ctx = ui.progress(f"Syncing {provider} sessions", total=len(session_list)) if ui else _NoopProgress()
@@ -355,6 +371,7 @@ def _discover_export_targets(base_dir: Path, *, provider: Optional[str] = None) 
     if not base.exists():
         return []
     provider_hint = base.name.lower() if provider else None
+    ignore_patterns = _load_ignore_patterns(base)
     candidates: set[Path] = set()
     try:
         for zip_path in base.rglob("*.zip"):
@@ -377,8 +394,38 @@ def _discover_export_targets(base_dir: Path, *, provider: Optional[str] = None) 
                 path_str = str(cand).lower()
                 if provider not in hint and provider not in path_str:
                     continue
+        if _is_ignored(cand, base, ignore_patterns):
+            continue
         results.append(cand)
     return results
+
+
+def _load_ignore_patterns(base_dir: Path) -> List[str]:
+    path = base_dir / ".polylogueignore"
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    patterns: List[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        patterns.append(stripped)
+    return patterns
+
+
+def _is_ignored(path: Path, base_dir: Path, patterns: Sequence[str]) -> bool:
+    if not patterns:
+        return False
+    try:
+        rel = path.relative_to(base_dir)
+        candidate = rel.as_posix()
+    except ValueError:
+        candidate = path.name
+    return any(fnmatch.fnmatch(candidate, pat) for pat in patterns)
 
 
 def _normalize_export_target(path: Path) -> Optional[Path]:
@@ -401,6 +448,7 @@ def _sync_export_bundles(
     output_dir: Path,
     collapse_threshold: int,
     collapse_thresholds: Optional[Dict[str, int]] = None,
+    base_dir: Optional[Path] = None,
     html: bool,
     html_theme: str,
     force: bool,
@@ -429,7 +477,13 @@ def _sync_export_bundles(
     else:
         iterable = sorted([Path(p) for p in bundles], key=path_order_key)
 
-    exports = list(iterable)
+    ignore_patterns: List[str] = []
+    if base_dir:
+        ignore_patterns = _load_ignore_patterns(base_dir.expanduser())
+
+    exports = [
+        path for path in iterable if not (base_dir and _is_ignored(path, base_dir.expanduser(), ignore_patterns))
+    ]
     progress_ctx = ui.progress(f"Processing {provider} exports", total=len(exports)) if ui else _NoopProgress()
 
     with progress_ctx as tracker:
@@ -530,6 +584,7 @@ def sync_codex_sessions(
         output_dir=output_dir,
         collapse_threshold=collapse_threshold,
         collapse_thresholds=collapse_thresholds,
+        base_dir=base_dir,
         html=html,
         html_theme=html_theme,
         force=force,
@@ -571,6 +626,7 @@ def sync_claude_code_sessions(
         output_dir=output_dir,
         collapse_threshold=collapse_threshold,
         collapse_thresholds=collapse_thresholds,
+        base_dir=base_dir,
         html=html,
         html_theme=html_theme,
         force=force,
@@ -649,6 +705,7 @@ def sync_chatgpt_exports(
         output_dir=output_dir,
         collapse_threshold=collapse_threshold,
         collapse_thresholds=collapse_thresholds,
+        base_dir=base_dir,
         html=html,
         html_theme=html_theme,
         force=force,
@@ -700,6 +757,7 @@ def sync_claude_exports(
         output_dir=output_dir,
         collapse_threshold=collapse_threshold,
         collapse_thresholds=collapse_thresholds,
+        base_dir=base_dir,
         html=html,
         html_theme=html_theme,
         force=force,
