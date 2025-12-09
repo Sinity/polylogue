@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+import shutil
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
@@ -416,6 +417,8 @@ def add_run(record: Dict[str, Any]) -> None:
     out = payload.get("out")
     provider = payload.get("provider")
     branch_id = payload.get("branch_id")
+    profile_io = bool(payload.get("profile_io"))
+    profile_sql = bool(payload.get("profile_sql"))
     metadata = {
         key: value
         for key, value in payload.items()
@@ -434,6 +437,8 @@ def add_run(record: Dict[str, Any]) -> None:
             "out",
             "provider",
             "branch_id",
+            "profile_io",
+            "profile_sql",
         }
     }
     with open_connection(None) as conn:
@@ -455,6 +460,29 @@ def add_run(record: Dict[str, Any]) -> None:
             metadata=metadata or None,
         )
         conn.commit()
+
+
+def preflight_disk_requirement(
+    *,
+    projected_bytes: int,
+    limit_gib: Optional[float],
+    ui=None,
+) -> None:
+    if limit_gib is None:
+        return
+    try:
+        stat = shutil.disk_usage(Path.cwd())
+        free_bytes = stat.free
+    except Exception:
+        free_bytes = None
+    threshold_bytes = int(limit_gib * (1024 ** 3))
+    if projected_bytes > threshold_bytes:
+        raise SystemExit(f"Projected disk use {projected_bytes / (1024 ** 3):.2f} GiB exceeds --max-disk {limit_gib} GiB")
+    if free_bytes is not None and projected_bytes > free_bytes:
+        msg = f"Projected disk use {projected_bytes / (1024 ** 3):.2f} GiB exceeds free space {free_bytes / (1024 ** 3):.2f} GiB"
+        if ui and hasattr(ui, "console"):
+            ui.console.print(f"[red]{msg}")
+        raise SystemExit(msg)
 
 
 def write_delta_diff(old_path: Path, new_path: Path, *, suffix: str = ".diff.txt") -> Optional[Path]:

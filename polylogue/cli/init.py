@@ -9,6 +9,7 @@ from typing import Optional
 from ..settings import Settings, persist_settings, SETTINGS_PATH
 from ..commands import CommandEnv
 from ..drive_client import DriveClient
+from ..config import CONFIG, persist_config, IndexConfig
 
 
 def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -46,20 +47,30 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     console.print("\n[bold cyan]Welcome to Polylogue![/bold cyan]")
     console.print("Let's set up your configuration.\n")
 
-    # Step 1: Output directory
-    default_dir = Path.home() / "polylogue-data"
+    # Step 1: Roots
+    default_output_root = CONFIG.defaults.output_dirs.render.parent
+    default_input_root = CONFIG.exports.chatgpt
     console.print(f"[bold]Output Directory[/bold]")
-    console.print(f"Where should rendered conversations be saved?")
+    console.print(f"Where should rendered conversations be saved (root for all providers)?")
 
     if not ui.plain:
         output_dir_input = ui.input(
-            f"  [{default_dir}]: ",
-            default=str(default_dir)
+            f"  [{default_output_root}]: ",
+            default=str(default_output_root)
         )
         output_dir = Path(output_dir_input).expanduser()
     else:
-        output_dir = default_dir
-        console.print(f"  Using default: {default_dir}")
+        output_dir = default_output_root
+        console.print(f"  Using default: {default_output_root}")
+
+    console.print(f"\n[bold]Inbox Directory[/bold]")
+    console.print("Where should incoming exports/sessions be read from (ChatGPT/Claude ZIPs, etc.)?")
+    if not ui.plain:
+        input_dir_input = ui.input(f"  [{default_input_root}]: ", default=str(default_input_root))
+        input_root = Path(input_dir_input).expanduser()
+    else:
+        input_root = default_input_root
+        console.print(f"  Using default inbox: {input_root}")
 
     # Step 2: HTML previews
     console.print(f"\n[bold]HTML Previews[/bold]")
@@ -97,7 +108,38 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         collapse_threshold = 25
         console.print("  Using default: 25")
 
-    # Step 5: Drive credentials (optional)
+    # Step 5: Index backend
+    console.print(f"\n[bold]Index Backend[/bold]")
+    console.print("Choose index backend (sqlite is default; qdrant enables vector search).")
+    backend = "sqlite"
+    qdrant_url: Optional[str] = CONFIG.index.qdrant_url if CONFIG.index else None
+    qdrant_key: Optional[str] = CONFIG.index.qdrant_api_key if CONFIG.index else None
+    qdrant_collection: Optional[str] = CONFIG.index.qdrant_collection if CONFIG.index else None
+    qdrant_vector: Optional[int] = CONFIG.index.qdrant_vector_size if CONFIG.index else None
+    if not ui.plain:
+        backend_choice = ui.choose("  Backend (sqlite/qdrant/none)", ["sqlite", "qdrant", "none"])
+        backend = backend_choice or "sqlite"
+        if backend == "qdrant":
+            qdrant_url = ui.input("  Qdrant URL", default=qdrant_url or "http://localhost:6333")
+            qdrant_key = ui.input("  Qdrant API key (blank for none)", default=qdrant_key or "")
+            qdrant_collection = ui.input("  Qdrant collection", default=qdrant_collection or "polylogue")
+            vector_raw = ui.input("  Vector size", default=str(qdrant_vector or 1536))
+            try:
+                qdrant_vector = int(vector_raw)
+            except Exception:
+                qdrant_vector = 1536
+    else:
+        console.print("  Using default backend: sqlite")
+
+    index_cfg = IndexConfig(
+        backend=backend,
+        qdrant_url=qdrant_url,
+        qdrant_api_key=qdrant_key,
+        qdrant_collection=qdrant_collection,
+        qdrant_vector_size=qdrant_vector,
+    )
+
+    # Step 6: Drive credentials (optional)
     drive_setup = False
     console.print(f"\n[bold]Google Drive Integration[/bold]")
     console.print("Set up Drive credentials now for syncing conversations from Google Drive?")
@@ -126,6 +168,16 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     )
     persist_settings(settings)
 
+    # Persist config.json so subsequent runs honor the chosen roots and UI defaults.
+    config_path = persist_config(
+        input_root=input_root,
+        output_root=output_dir,
+        collapse_threshold=collapse_threshold,
+        html_previews=html_enabled,
+        html_theme=theme,
+        index=index_cfg,
+    )
+
     # Create output directory
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -135,12 +187,15 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         console.print(f"[yellow]You may need to create it manually.")
 
     # Summary
-    console.print(f"\n[bold green]✓ Configuration saved to {SETTINGS_PATH}[/bold green]\n")
+    console.print(f"\n[bold green]✓ Settings saved to {SETTINGS_PATH}[/bold green]")
+    console.print(f"[bold green]✓ Config saved to {config_path}[/bold green]\n")
     console.print("[bold]Your settings:[/bold]")
     console.print(f"  Output directory: [cyan]{output_dir}[/cyan]")
+    console.print(f"  Inbox directory: [cyan]{input_root}[/cyan]")
     console.print(f"  HTML previews: [cyan]{'enabled' if html_enabled else 'disabled'}[/cyan]")
     console.print(f"  Theme: [cyan]{theme}[/cyan]")
     console.print(f"  Collapse threshold: [cyan]{collapse_threshold}[/cyan]")
+    console.print(f"  Index backend: [cyan]{backend}[/cyan]")
     if drive_setup:
         console.print(f"  Drive credentials: [cyan]configured[/cyan]")
 

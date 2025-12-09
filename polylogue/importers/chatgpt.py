@@ -170,6 +170,7 @@ def import_chatgpt_export(
     force: bool = False,
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
+    attachment_ocr: bool = False,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
     base_path, tmp = _load_export(export_path)
@@ -198,6 +199,7 @@ def import_chatgpt_export(
                             force=force,
                             allow_dirty=allow_dirty,
                             registrar=registrar,
+                            attachment_ocr=attachment_ocr,
                         )
                     )
             except Exception as exc:
@@ -255,6 +257,7 @@ def _render_chatgpt_conversation(
     force: bool,
     allow_dirty: bool,
     registrar: Optional[ConversationRegistrar],
+    attachment_ocr: bool = False,
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
     conv_id = conv.get("id") or conv.get("conversation_id") or "chat"
@@ -390,6 +393,7 @@ def _render_chatgpt_conversation(
         attachment_policy=None,
         force=force,
         allow_dirty=allow_dirty,
+        attachment_ocr=attachment_ocr,
         registrar=registrar,
     )
 

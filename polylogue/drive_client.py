@@ -21,7 +21,8 @@ from .ui import UI
 GDRIVE_INSTRUCTIONS = "https://developers.google.com/drive/api/quickstart/python"
 CONFIG_DIR = CONFIG_HOME
 DEFAULT_CREDENTIALS = CONFIG_DIR / "credentials.json"
-DEFAULT_TOKEN = CONFIG_DIR / "token.json"
+_ENV_TOKEN_PATH = os.environ.get("POLYLOGUE_TOKEN_PATH")
+DEFAULT_TOKEN = Path(_ENV_TOKEN_PATH).expanduser() if _ENV_TOKEN_PATH else CONFIG_DIR / "token.json"
 DEFAULT_FOLDER_NAME = "AI Studio"
 
 
@@ -30,12 +31,19 @@ class DriveClient:
 
     def __init__(self, ui: UI):
         self.ui = ui
-        self._credentials_path: Path = DEFAULT_CREDENTIALS
+        env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+        self._credentials_path: Path = Path(env_path).expanduser() if env_path else DEFAULT_CREDENTIALS
+        token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
+        self._token_path: Path = Path(token_env).expanduser() if token_env else DEFAULT_TOKEN
         self._service = None
 
     @property
     def credentials_path(self) -> Path:
         return self._credentials_path
+
+    @property
+    def token_path(self) -> Path:
+        return self._token_path
 
     def ensure_credentials(self) -> Path:
         cred_path = self._credentials_path
@@ -43,7 +51,8 @@ class DriveClient:
             return cred_path
         if self.ui.plain:
             raise SystemExit(
-                f"Missing credentials.json. Download a Google OAuth client secret and place it at {cred_path}."
+                "Missing credentials.json. Download a Google OAuth client secret and place it at "
+                f"{cred_path} or set POLYLOGUE_CREDENTIAL_PATH/POLYLOGUE_TOKEN_PATH to point at your files."
             )
         return self._prompt_for_credentials()
 
@@ -121,7 +130,7 @@ class DriveClient:
         if self._service is None:
             cred_path = self.ensure_credentials()
             try:
-                svc = get_drive_service(cred_path, verbose=not self.ui.plain)
+                svc = get_drive_service(cred_path, token_path=self._token_path, verbose=not self.ui.plain)
             except RuntimeError as exc:
                 message = str(exc)
                 if self.ui.plain:

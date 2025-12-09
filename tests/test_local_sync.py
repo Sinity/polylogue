@@ -1,4 +1,5 @@
 import json
+import pytest
 from pathlib import Path
 
 from polylogue.importers.base import ImportResult
@@ -232,3 +233,33 @@ def test_sync_claude_exports_counts_skipped(monkeypatch, tmp_path):
 
     assert not result.written
     assert result.skipped == 1
+
+
+def test_sync_chatgpt_exports_rejects_invalid_sessions(tmp_path):
+    bad_path = tmp_path / "missing.zip"
+    with pytest.raises(ValueError, match="Invalid ChatGPT export path"):
+        sync_chatgpt_exports(
+            base_dir=tmp_path / "chatgpt",
+            output_dir=tmp_path / "out",
+            collapse_threshold=10,
+            html=False,
+            html_theme="light",
+            force=False,
+            prune=False,
+            sessions=[bad_path],
+        )
+
+
+def test_sync_claude_exports_rejects_invalid_sessions(tmp_path):
+    bad_path = tmp_path / "missing.zip"
+    with pytest.raises(ValueError, match="Invalid Claude export path"):
+        sync_claude_exports(
+            base_dir=tmp_path / "claude",
+            output_dir=tmp_path / "out",
+            collapse_threshold=10,
+            html=False,
+            html_theme="light",
+            force=False,
+            prune=False,
+            sessions=[bad_path],
+        )

@@ -7,6 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import sys
 
 from .util import colorize, get_cached_folder_id, set_cached_folder_id
 
@@ -164,6 +165,8 @@ def _run_console_flow(flow: InstalledAppFlow, *, verbose: bool) -> Credentials:
         f"  {auth_url}\n"
     )
     print(colorize(prompt, "magenta") if verbose else prompt)
+    if not sys.stdin.isatty():
+        raise RuntimeError("Authorization requires an interactive terminal; rerun with a TTY.")
 
     try:
         code = input(
@@ -195,10 +198,10 @@ def _drive_get_json(session: AuthorizedSession, path: str, params: Dict[str, Any
     return _retry(call, operation="metadata", notifier=notifier)
 
 
-def get_drive_service(credentials_path: Path, verbose: bool = False):
+def get_drive_service(credentials_path: Path, token_path: Optional[Path] = None, verbose: bool = False):
     require_google()
     creds = None
-    token_path = credentials_path.parent / TOKEN_FILE
+    token_path = token_path or credentials_path.parent / TOKEN_FILE
     if token_path.exists():
         try:
             creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)

@@ -25,6 +25,7 @@ dependencies = [
   "ijson",
   "tiktoken",
   "qdrant-client",
+  "pypdf",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +35,10 @@ dev = [
   "coverage[toml]>=7.6",
   "mypy>=1.11",
   "types-requests",
+]
+ocr = [
+  "pillow",
+  "pytesseract",
 ]
 
 [project.scripts]

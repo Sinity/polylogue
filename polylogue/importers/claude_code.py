@@ -28,6 +28,7 @@ def import_claude_code_session(
     force: bool = False,
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
+    attachment_ocr: bool = False,
 ) -> ImportResult:
     registrar = registrar or create_default_registrar()
     base_dir = base_dir.expanduser()
@@ -274,6 +275,7 @@ def import_claude_code_session(
         attachment_policy=None,
         force=force,
         allow_dirty=allow_dirty,
+        attachment_ocr=attachment_ocr,
         registrar=registrar,
     )
 

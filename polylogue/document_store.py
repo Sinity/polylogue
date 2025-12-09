@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import frontmatter
+from .version import POLYLOGUE_VERSION, SCHEMA_VERSION
 
 
 @dataclass
@@ -297,6 +298,8 @@ def persist_document(
             "html": html,
             "lastImported": current_utc_timestamp(),
             "dirty": False,
+            "polylogueVersion": POLYLOGUE_VERSION,
+            "schemaVersion": SCHEMA_VERSION,
         }
     )
     expected_local_paths = AttachmentManager.expected_paths(markdown_path, attachments)
@@ -326,6 +329,20 @@ def persist_document(
     existing_dirty = False
     if existing and stored_hash:
         existing_dirty = existing.content_hash != stored_hash
+
+    # Skip rewrite when content hash matches and not forcing/overwriting
+    if existing and existing.content_hash == content_hash and not force and not allow_dirty:
+        return DocumentPersistenceResult(
+            markdown_path=markdown_path,
+            html_path=html_path if html else None,
+            attachments_dir=attachments_dir if expected_local_paths else None,
+            document=document,
+            slug=slug,
+            skipped=True,
+            skip_reason="up-to-date",
+            dirty=existing_dirty,
+            content_hash=content_hash,
+        )
 
     # Protect user edits: if file is dirty and we're not explicitly allowing overwrite
     if provider and conversation_id and existing_dirty and state_entry:

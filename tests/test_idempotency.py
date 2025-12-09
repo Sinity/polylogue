@@ -25,7 +25,7 @@ class TestDatabaseIdempotency:
         conn = sqlite3.connect(str(db_path))
 
         # Create schema
-        conn.execute("CREATE TABLE messages (provider TEXT, conversation_id TEXT, branch_id TEXT, message_id TEXT, parent_id TEXT, position INT, timestamp TEXT, role TEXT, content_hash TEXT, rendered_text TEXT, raw_json TEXT, token_count INT, word_count INT, attachment_count INT, metadata_json TEXT)")
+        conn.execute("CREATE TABLE messages (provider TEXT, conversation_id TEXT, branch_id TEXT, message_id TEXT, parent_id TEXT, position INT, timestamp TEXT, role TEXT, content_hash TEXT, rendered_text TEXT, raw_json TEXT, token_count INT, word_count INT, attachment_count INT, attachment_names TEXT, metadata_json TEXT)")
         conn.execute("CREATE TABLE messages_fts (provider TEXT, conversation_id TEXT, branch_id TEXT, message_id TEXT, content TEXT)")
 
         # Insert initial messages
@@ -87,7 +87,7 @@ class TestDatabaseIdempotency:
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(str(db_path))
         
-        conn.execute("CREATE TABLE messages (provider TEXT, conversation_id TEXT, branch_id TEXT, message_id TEXT, parent_id TEXT, position INT, timestamp TEXT, role TEXT, content_hash TEXT, rendered_text TEXT, raw_json TEXT, token_count INT, word_count INT, attachment_count INT, metadata_json TEXT)")
+        conn.execute("CREATE TABLE messages (provider TEXT, conversation_id TEXT, branch_id TEXT, message_id TEXT, parent_id TEXT, position INT, timestamp TEXT, role TEXT, content_hash TEXT, rendered_text TEXT, raw_json TEXT, token_count INT, word_count INT, attachment_count INT, attachment_names TEXT, metadata_json TEXT)")
         conn.execute("CREATE TABLE messages_fts (provider TEXT, conversation_id TEXT, branch_id TEXT, message_id TEXT, content TEXT)")
         
         initial_messages = [{"message_id": "msg1", "rendered_text": "Hello"}]
