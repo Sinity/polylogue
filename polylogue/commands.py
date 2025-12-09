@@ -5,7 +5,7 @@ import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
 from .archive import Archive
 from .branch_explorer import list_branch_conversations
@@ -99,7 +99,6 @@ class CommandEnv:
     state_repo: ConversationStateRepository = field(default_factory=ConversationStateRepository)
     database: ConversationDatabase = field(default_factory=ConversationDatabase)
     archive: Archive = field(default_factory=lambda: Archive(CONFIG))
-    config = field(default_factory=lambda: CONFIG)
     providers: ProviderRegistry = field(default_factory=ProviderRegistry)
     drive_constructor: Callable[[UI], DriveClient] = field(init=False)
     registrar: ConversationRegistrar = field(init=False)
@@ -277,6 +276,7 @@ class RenderPersistStage:
             source_size=None,
             attachment_policy=None,
             force=getattr(options, "force", False),
+            attachment_ocr=getattr(options, "attachment_ocr", False),
             registrar=env.registrar,
             citations=chat_context.citations,
         )
@@ -615,9 +615,10 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     from .cli.arg_helpers import PathPolicy, resolve_path
 
     drive = _ensure_drive(env)
-    folder_id = drive.resolve_folder_id(options.folder_name, options.folder_id)
-    chats = drive.list_chats(options.folder_name, folder_id)
-    chats = filter_chats(chats, options.name_filter, options.since, options.until)
+    folder_id = options.folder_id or drive.resolve_folder_id(options.folder_name, options.folder_id)
+    chats = options.prefetched_chats if options.prefetched_chats is not None else drive.list_chats(options.folder_name, folder_id)
+    if options.prefetched_chats is None:
+        chats = filter_chats(chats, options.name_filter, options.since, options.until)
 
     start_time = time.perf_counter()
 
@@ -782,11 +783,34 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     )
 
 
-def status_command(env: CommandEnv, runs_limit: Optional[int] = 200) -> StatusResult:
-    credentials_present = DEFAULT_CREDENTIALS.exists()
-    token_present = DEFAULT_TOKEN.exists()
+def status_command(env: CommandEnv, runs_limit: Optional[int] = 200, provider_filter: Optional[Set[str]] = None) -> StatusResult:
+    drive_cfg = getattr(env, "config", None).drive if hasattr(env, "config") else None
+    credentials_path = drive_cfg.credentials_path if drive_cfg else DEFAULT_CREDENTIALS
+    token_path = drive_cfg.token_path if drive_cfg else DEFAULT_TOKEN
+    credentials_present = credentials_path.exists()
+    token_present = token_path.exists()
+    credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+    token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
     limit = runs_limit if runs_limit and runs_limit > 0 else None
+
+    # When filtering by provider, load all runs so provider-specific history is not
+    # accidentally truncated before filtering.
+    if provider_filter:
+        limit = None
+
     run_data = load_runs(limit=limit)
+
+    def _matches_provider(entry: dict) -> bool:
+        if not provider_filter:
+            return True
+        provider_value = (entry.get("provider") or _provider_from_cmd(entry.get("cmd") or "") or "").lower()
+        return provider_value in provider_filter
+
+    if provider_filter:
+        run_data = [entry for entry in run_data if _matches_provider(entry)]
+
+    if runs_limit and runs_limit > 0:
+        run_data = run_data[-runs_limit:]
     recent_runs: List[dict] = run_data[-10:]
     run_summary_entries: Dict[str, RunSummaryEntry] = {}
     for entry in run_data:
@@ -807,11 +831,15 @@ def status_command(env: CommandEnv, runs_limit: Optional[int] = 200) -> StatusRe
         entry = provider_summary_entries.setdefault(provider, ProviderSummaryEntry(provider=provider))
         entry.merge(summary)
 
-    run_summary = {cmd: summary.as_dict() for cmd, summary in run_summary_entries.items()}
-    provider_summary = {provider: entry.as_dict() for provider, entry in provider_summary_entries.items()}
+    run_summary = {cmd: run_summary_entries[cmd].as_dict() for cmd in sorted(run_summary_entries)}
+    provider_summary = {provider: provider_summary_entries[provider].as_dict() for provider in sorted(provider_summary_entries)}
     return StatusResult(
         credentials_present=credentials_present,
         token_present=token_present,
+        credential_path=credentials_path,
+        token_path=token_path,
+        credential_env=credential_env,
+        token_env=token_env,
         state_path=env.conversations.state_path,
         runs_path=env.database.resolve_path(),
         recent_runs=recent_runs,

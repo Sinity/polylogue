@@ -124,6 +124,7 @@ def _sync_sessions(
     importer_kwargs: Optional[dict] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
+    attachment_ocr: bool = False,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -134,6 +135,7 @@ def _sync_sessions(
     importer_kwargs = importer_kwargs or {}
     importer_kwargs = dict(importer_kwargs)
     importer_kwargs.setdefault("registrar", registrar)
+    importer_kwargs.setdefault("attachment_ocr", attachment_ocr)
     attachments_total = 0
     attachment_bytes_total = 0
     tokens_total = 0
@@ -379,6 +381,8 @@ def _discover_export_targets(base_dir: Path, *, provider: Optional[str] = None) 
 
 def _normalize_export_target(path: Path) -> Optional[Path]:
     candidate = Path(path).expanduser()
+    if not candidate.exists():
+        return None
     suffix = candidate.suffix.lower()
     if suffix == ".zip":
         return candidate
@@ -402,6 +406,7 @@ def _sync_export_bundles(
     import_fn: Callable[..., Sequence[ImportResult] | ImportResult | None],
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
+    attachment_ocr: bool = False,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -438,6 +443,7 @@ def _sync_export_bundles(
                 selected_ids=None,
                 force=force,
                 registrar=registrar,
+                attachment_ocr=attachment_ocr,
             )
             if results_raw is None:
                 result_list: List[ImportResult] = []
@@ -509,6 +515,7 @@ def sync_codex_sessions(
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
+    attachment_ocr: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -530,6 +537,7 @@ def sync_codex_sessions(
         ),
         registrar=registrar,
         ui=ui,
+        attachment_ocr=attachment_ocr,
     )
 
 
@@ -546,6 +554,7 @@ def sync_claude_code_sessions(
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
+    attachment_ocr: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -567,6 +576,7 @@ def sync_claude_code_sessions(
         ),
         registrar=registrar,
         ui=ui,
+        attachment_ocr=attachment_ocr,
     )
 
 
@@ -605,14 +615,25 @@ def sync_chatgpt_exports(
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
+    attachment_ocr: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
-    targets = sessions or _discover_export_targets(base_dir, provider="chatgpt")
-    if sessions:
-        targets = [_normalize_export_target(Path(p)) for p in sessions if p]
-    targets = [t for t in targets if t]
-    if not targets:
+    invalid_inputs: List[Path] = []
+    targets: List[Path] = []
+    if sessions is not None:
+        for raw in sessions:
+            normalized = _normalize_export_target(Path(raw))
+            if normalized is None:
+                invalid_inputs.append(Path(raw))
+            else:
+                targets.append(normalized)
+        if invalid_inputs:
+            bad_list = ", ".join(str(p) for p in invalid_inputs)
+            raise ValueError(f"Invalid ChatGPT export path(s): {bad_list}")
+        if not targets:
+            raise ValueError("No valid ChatGPT exports found for the provided --session paths")
+    else:
         targets = _discover_export_targets(base_dir, provider="chatgpt")
     return _sync_export_bundles(
         targets,
@@ -626,6 +647,7 @@ def sync_chatgpt_exports(
         import_fn=import_chatgpt_export,
         registrar=registrar,
         ui=ui,
+        attachment_ocr=attachment_ocr,
     )
 
 
@@ -642,14 +664,25 @@ def sync_claude_exports(
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
+    attachment_ocr: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
-    targets = sessions or _discover_export_targets(base_dir, provider="claude")
-    if sessions:
-        targets = [_normalize_export_target(Path(p)) for p in sessions if p]
-    targets = [t for t in targets if t]
-    if not targets:
+    invalid_inputs: List[Path] = []
+    targets: List[Path] = []
+    if sessions is not None:
+        for raw in sessions:
+            normalized = _normalize_export_target(Path(raw))
+            if normalized is None:
+                invalid_inputs.append(Path(raw))
+            else:
+                targets.append(normalized)
+        if invalid_inputs:
+            bad_list = ", ".join(str(p) for p in invalid_inputs)
+            raise ValueError(f"Invalid Claude export path(s): {bad_list}")
+        if not targets:
+            raise ValueError("No valid Claude exports found for the provided --session paths")
+    else:
         targets = _discover_export_targets(base_dir, provider="claude")
     return _sync_export_bundles(
         targets,
@@ -663,6 +696,7 @@ def sync_claude_exports(
         import_fn=import_claude_export,
         registrar=registrar,
         ui=ui,
+        attachment_ocr=attachment_ocr,
     )
 
 

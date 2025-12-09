@@ -47,6 +47,20 @@ def test_drive_client_uses_existing_credentials(tmp_path, monkeypatch):
     assert json.loads(target_path.read_text(encoding="utf-8")) == {"installed": {"client_id": "demo"}}
 
 
+def test_drive_client_respects_env_path(tmp_path, monkeypatch):
+    target_path = tmp_path / "env-creds" / "credentials.json"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(json.dumps({"installed": {"client_id": "env-demo"}}), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_CREDENTIAL_PATH", str(target_path))
+    monkeypatch.setenv("POLYLOGUE_TOKEN_PATH", str(tmp_path / "env-creds" / "token.json"))
+
+    client = DriveClient(DummyUI())
+
+    assert client.credentials_path == target_path
+    assert client.ensure_credentials() == target_path
+    assert client.token_path == tmp_path / "env-creds" / "token.json"
+
+
 def test_run_console_flow_assigns_redirect(monkeypatch):
     class DummySession:
         def __init__(self):
@@ -73,6 +87,7 @@ def test_run_console_flow_assigns_redirect(monkeypatch):
 
     monkeypatch.setattr("builtins.input", lambda _prompt="": "code-123")
     monkeypatch.setattr("polylogue.drive.colorize", lambda text, _color: text)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
 
     flow = DummyFlow()
     creds = _run_console_flow(flow, verbose=False)
@@ -93,6 +108,19 @@ def test_get_drive_service_missing_credentials(monkeypatch, tmp_path, capsys):
     assert session is None
     captured = capsys.readouterr().out
     assert "Missing credentials" in captured
+
+
+def test_plain_mode_credentials_error_mentions_env(monkeypatch, tmp_path):
+    client = DriveClient(DummyUI())
+    target_path = tmp_path / "creds" / "credentials.json"
+    monkeypatch.setattr(client, "_credentials_path", target_path, raising=False)
+
+    with pytest.raises(SystemExit) as excinfo:
+        client.ensure_credentials()
+
+    message = str(excinfo.value)
+    assert "POLYLOGUE_CREDENTIAL_PATH" in message
+    assert str(target_path) in message
 
 
 def test_get_drive_service_with_cached_token(monkeypatch, tmp_path):
