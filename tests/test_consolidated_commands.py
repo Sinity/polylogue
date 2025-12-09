@@ -159,13 +159,11 @@ def test_parser_rejects_old_prune_command():
         parser.parse_args(["prune", "--dry-run"])
 
 
-def test_parser_rejects_old_status_command():
-    """Verify old status command is not recognized."""
+def test_parser_accepts_status_alias():
+    """Verify status remains available as a top-level alias."""
     parser = build_parser()
-
-    # status is no longer a top-level command
-    with pytest.raises(SystemExit):
-        parser.parse_args(["status"])
+    args = parser.parse_args(["status"])
+    assert args.cmd == "status"
 
 
 def test_parser_rejects_old_settings_command():
@@ -450,15 +448,13 @@ def test_old_prune_command_fails(monkeypatch, tmp_path):
     assert exc_info.value.code == 2  # argparse error
 
 
-def test_old_status_command_fails(monkeypatch, tmp_path):
-    """Verify old 'status' command is rejected."""
+def test_status_command_runs(monkeypatch, tmp_path):
+    """Verify 'status' command is accepted and runs."""
     _configure_isolated_state(monkeypatch, tmp_path)
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-    monkeypatch.setattr(sys, "argv", ["polylogue", "status"])
+    monkeypatch.setattr(sys, "argv", ["polylogue", "status", "--summary", "-", "--summary-only"])
 
-    with pytest.raises(SystemExit) as exc_info:
-        main()
-    assert exc_info.value.code == 2  # argparse error
+    main()
 
 
 def test_old_env_command_fails(monkeypatch, tmp_path):
