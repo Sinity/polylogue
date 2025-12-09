@@ -36,6 +36,7 @@ def build_document_from_chunks(
     md_path: Path,
     *,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     download_attachments: bool,
     drive: Optional[DriveClient],
     force: bool,
@@ -61,6 +62,7 @@ def build_document_from_chunks(
         citations=context.citations,
         source_mime=context.source_mime,
         collapse_threshold=collapse_threshold,
+        collapse_thresholds=collapse_thresholds,
         attachments=attachments,
     )
 
