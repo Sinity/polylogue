@@ -13,25 +13,25 @@ DB_PATH = STATE_HOME / "polylogue.db"
 
 _LOCAL = threading.local()
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except sqlite3.Error:
+        return False
+    return any(row[1] == column for row in rows)
 
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
     version_row = conn.execute("PRAGMA user_version").fetchone()
     current_version = version_row[0] if version_row else 0
-    if current_version >= SCHEMA_VERSION:
-        return
 
+    # Base tables (created idempotently to avoid destructive upgrades)
     conn.executescript(
         """
-        DROP TABLE IF EXISTS messages_fts;
-        DROP TABLE IF EXISTS messages;
-        DROP TABLE IF EXISTS branches;
-        DROP TABLE IF EXISTS conversations;
-        DROP TABLE IF EXISTS runs;
-        DROP TABLE IF EXISTS state_meta;
-
         CREATE TABLE IF NOT EXISTS conversations (
             provider TEXT NOT NULL,
             conversation_id TEXT NOT NULL,
@@ -73,22 +73,11 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             token_count INTEGER DEFAULT 0,
             word_count INTEGER DEFAULT 0,
             attachment_count INTEGER DEFAULT 0,
+            attachment_names TEXT,
             metadata_json TEXT,
             PRIMARY KEY (provider, conversation_id, branch_id, position),
             FOREIGN KEY (provider, conversation_id, branch_id) REFERENCES branches(provider, conversation_id, branch_id) ON DELETE CASCADE
         );
-
-        -- Accelerates branch playback ordering
-        CREATE INDEX IF NOT EXISTS idx_messages_branch_order
-            ON messages(provider, conversation_id, branch_id, position);
-
-        -- Speeds lookup by message_id across branches
-        CREATE INDEX IF NOT EXISTS idx_messages_conversation_message
-            ON messages(provider, conversation_id, message_id);
-
-        -- Speeds branch listing per conversation
-        CREATE INDEX IF NOT EXISTS idx_branches_conversation
-            ON branches(provider, conversation_id);
 
         CREATE TABLE IF NOT EXISTS runs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,6 +107,61 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             conversation_id,
             branch_id,
             message_id,
+            content,
+            tokenize='unicode61'
+        );
+        """
+    )
+
+    # Ensure newer columns exist when upgrading from v2
+    if not _column_exists(conn, "messages", "attachment_names"):
+        conn.execute("ALTER TABLE messages ADD COLUMN attachment_names TEXT")
+
+    # Idempotent indexes
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_branch_order ON messages(provider, conversation_id, branch_id, position)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_conversation_message ON messages(provider, conversation_id, message_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_branches_conversation ON branches(provider, conversation_id)"
+    )
+
+    # Attachments indexing (added in schema v3)
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS attachments (
+            provider TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            branch_id TEXT,
+            message_id TEXT,
+            attachment_name TEXT NOT NULL,
+            attachment_path TEXT,
+            size_bytes INTEGER,
+            content_hash TEXT,
+            mime_type TEXT,
+            text_content TEXT,
+            text_bytes INTEGER,
+            truncated INTEGER DEFAULT 0,
+            ocr_used INTEGER DEFAULT 0,
+            PRIMARY KEY (provider, conversation_id, branch_id, message_id, attachment_name),
+            FOREIGN KEY (provider, conversation_id) REFERENCES conversations(provider, conversation_id) ON DELETE CASCADE,
+            FOREIGN KEY (provider, conversation_id, branch_id) REFERENCES branches(provider, conversation_id, branch_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_attachments_conversation
+            ON attachments(provider, conversation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_attachments_name
+            ON attachments(attachment_name);
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS attachments_fts USING fts5(
+            provider,
+            conversation_id,
+            branch_id,
+            message_id,
+            attachment_name,
             content,
             tokenize='unicode61'
         );
@@ -282,9 +326,10 @@ def replace_messages(
             INSERT INTO messages (
                 provider, conversation_id, branch_id, message_id, parent_id,
                 position, timestamp, role, content_hash, rendered_text,
-                raw_json, token_count, word_count, attachment_count, metadata_json
+                raw_json, token_count, word_count, attachment_count,
+                attachment_names, metadata_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -302,6 +347,7 @@ def replace_messages(
                     msg.get("token_count", 0),
                     msg.get("word_count", 0),
                     msg.get("attachment_count", 0),
+                    msg.get("attachment_names"),
                     json.dumps(msg.get("metadata")) if msg.get("metadata") else None,
                 )
                 for msg in messages
@@ -322,6 +368,71 @@ def replace_messages(
     except Exception:
         # Rollback to savepoint on failure to prevent data loss
         conn.execute("ROLLBACK TO replace_messages_sp")
+        raise
+
+
+def replace_attachments(
+    conn: sqlite3.Connection,
+    *,
+    provider: str,
+    conversation_id: str,
+    attachments: Sequence[Dict[str, object]],
+) -> None:
+    """Replace all attachments for a conversation with transaction protection."""
+
+    conn.execute("SAVEPOINT replace_attachments_sp")
+    try:
+        conn.execute(
+            "DELETE FROM attachments WHERE provider = ? AND conversation_id = ?",
+            (provider, conversation_id),
+        )
+        conn.execute(
+            "DELETE FROM attachments_fts WHERE provider = ? AND conversation_id = ?",
+            (provider, conversation_id),
+        )
+        if attachments:
+            conn.executemany(
+                """
+                INSERT INTO attachments (
+                    provider, conversation_id, branch_id, message_id,
+                    attachment_name, attachment_path, size_bytes,
+                    content_hash, mime_type, text_content, text_bytes,
+                    truncated, ocr_used
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        provider,
+                        conversation_id,
+                        att.get("branch_id"),
+                        att.get("message_id"),
+                        att.get("attachment_name"),
+                        att.get("attachment_path"),
+                        att.get("size_bytes"),
+                        att.get("content_hash"),
+                        att.get("mime_type"),
+                        att.get("text_content"),
+                        att.get("text_bytes"),
+                        int(bool(att.get("truncated", False))),
+                        int(bool(att.get("ocr_used", False))),
+                    )
+                    for att in attachments
+                ],
+            )
+            conn.execute(
+                """
+                INSERT INTO attachments_fts
+                    (provider, conversation_id, branch_id, message_id, attachment_name, content)
+                SELECT provider, conversation_id, branch_id, message_id, attachment_name, COALESCE(text_content, '')
+                  FROM attachments
+                 WHERE provider = ? AND conversation_id = ?
+                """,
+                (provider, conversation_id),
+            )
+        conn.execute("RELEASE replace_attachments_sp")
+    except Exception:
+        conn.execute("ROLLBACK TO replace_attachments_sp")
         raise
 
 

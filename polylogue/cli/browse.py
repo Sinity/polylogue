@@ -20,7 +20,10 @@ def run_browse_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     if browse_cmd == "branches":
         run_inspect_branches(args, env)
     elif browse_cmd == "stats":
-        run_stats_cli(args, env)
+        try:
+            run_stats_cli(args, env)
+        except SystemExit:
+            return
     elif browse_cmd == "status":
         run_status_cli(args, env)
     elif browse_cmd == "runs":
