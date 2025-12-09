@@ -10,6 +10,7 @@ from ..commands import CommandEnv, render_command
 from ..drive_client import DriveClient
 from ..importers import ImportResult
 from ..options import RenderOptions
+from ..version import POLYLOGUE_VERSION, SCHEMA_VERSION
 from ..ui import UI
 from ..util import write_clipboard_text
 from .context import (
@@ -74,6 +75,8 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
     if json_output:
         payload = {
             "cmd": "render",
+            "schemaVersion": SCHEMA_VERSION,
+            "polylogueVersion": POLYLOGUE_VERSION,
             "count": result.count,
             "out": str(result.output_dir),
             "files": [
