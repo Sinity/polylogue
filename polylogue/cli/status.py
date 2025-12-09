@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, cast
 
 from ..commands import CommandEnv, status_command
+from ..version import POLYLOGUE_VERSION, SCHEMA_VERSION
 from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
 from ..util import parse_input_time_to_epoch
 from .context import DEFAULT_OUTPUT_ROOTS, DEFAULT_RENDER_OUT
@@ -110,6 +111,8 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         if summary_requested:
             summary_payload = {
                 "generatedAt": datetime.now(timezone.utc).isoformat(),
+                "schemaVersion": SCHEMA_VERSION,
+                "polylogueVersion": POLYLOGUE_VERSION,
                 "runSummary": run_summary,
                 "providerSummary": provider_summary,
             }
@@ -118,6 +121,8 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 return
         if json_mode:
             payload = {
+                "schemaVersion": SCHEMA_VERSION,
+                "polylogueVersion": POLYLOGUE_VERSION,
                 "credentials_present": result.credentials_present,
                 "token_present": result.token_present,
                 "credential_path": str(result.credential_path),
