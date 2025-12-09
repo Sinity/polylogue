@@ -36,6 +36,7 @@ class LocalSyncResult:
     skipped: int
     pruned: int
     output_dir: Path
+    ignored: int = 0
     attachments: int = 0
     attachment_bytes: int = 0
     tokens: int = 0
@@ -307,6 +308,7 @@ def _sync_sessions(
         skipped=skipped,
         pruned=pruned,
         output_dir=output_dir,
+        ignored=ignored,
         attachments=attachments_total,
         attachment_bytes=attachment_bytes_total,
         tokens=tokens_total,
