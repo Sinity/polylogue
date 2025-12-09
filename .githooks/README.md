@@ -17,6 +17,7 @@ git config core.hooksPath .githooks
 Validates commit message format and reminds you to use conventional commits.
 
 **Checks:**
+
 - Conventional commit format: `type: description`
 - Valid types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `perf`
 
@@ -27,14 +28,17 @@ Validates commit message format and reminds you to use conventional commits.
 Checks for messy commits before pushing to remote.
 
 **Checks for problematic commits:**
+
 - WIP commits
 - "oops", "typo", "debug" messages
 - Temporary/test commits
 
 **Also checks:**
+
 - Non-conventional commit format
 
 **Behavior:**
+
 - Warns about messy commits
 - Prompts to confirm push
 - Can cancel push to clean up commits first
@@ -77,6 +81,7 @@ chmod +x .githooks/*
 ## Why These Hooks?
 
 This project uses **merge commits with discipline**:
+
 - We preserve branch structure with merge commits
 - But we require clean commits before merging
 - These hooks help catch messy commits early

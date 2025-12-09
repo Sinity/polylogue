@@ -10,6 +10,7 @@ Polylogue records every run, exposes live status summaries, and emits machine-re
 - `--dump runs.json --dump-limit 50` writes the last N raw run records to a file (use `-` for stdout).
 - `--summary metrics.json` emits aggregate run/provider summaries as JSON so dashboards never have to parse tables. Combine with `--summary-only` for a purely machine-readable output.
 - `--watch --interval 10` refreshes the status tables (and any requested dump/summary) on a cadence—ideal for terminal dashboards.
+- Credential visibility: `browse status --json` and `config show --json` include the credential/token paths plus any env overrides (`POLYLOGUE_CREDENTIAL_PATH`, `POLYLOGUE_TOKEN_PATH`), making it easy to confirm which files headless jobs will use.
 
 Examples:
 
