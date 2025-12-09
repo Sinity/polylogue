@@ -67,6 +67,8 @@ def _log_local_sync(ui, title: str, result: LocalSyncResult, *, provider: str, f
         console.print(f"[cyan]{title}: skipped {result.skipped} up-to-date item(s).")
     if result.pruned:
         console.print(f"[cyan]{title}: pruned {result.pruned} path(s).")
+    if getattr(result, "ignored", 0):
+        console.print(f"[yellow]{title}: skipped {result.ignored} path(s) via .polylogueignore.")
     add_run(
         {
             "cmd": title.lower().replace(" ", "-"),
