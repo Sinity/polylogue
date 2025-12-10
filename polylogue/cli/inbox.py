@@ -57,6 +57,7 @@ def run_inbox_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     entries: List[Dict[str, object]] = []
     quarantined: List[str] = []
     missing_roots = 0
+    totals = {"pending": 0, "quarantined": 0}
 
     for provider, root in roots:
         if not root.exists():
@@ -85,6 +86,7 @@ def run_inbox_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 status = "quarantined"
                 target_path = dest
                 quarantined.append(str(dest))
+                totals["quarantined"] += 1
             entries.append(
                 {
                     "provider": entry_provider,
@@ -95,6 +97,8 @@ def run_inbox_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                     "status": status,
                 }
             )
+            if status == "pending":
+                totals["pending"] += 1
 
     if getattr(args, "json", False):
         payload = stamp_payload(
@@ -102,6 +106,7 @@ def run_inbox_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 "entries": entries,
                 "quarantined": quarantined,
                 "missingRoots": missing_roots,
+                "totals": totals,
             }
         )
         print(json.dumps(payload, indent=2))
@@ -123,6 +128,8 @@ def run_inbox_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         lines.append(f"Quarantined: {len(quarantined)} item(s)")
     if not entries and not quarantined:
         lines.append("No inbox items found.")
+    else:
+        lines.append(f"Pending total: {totals['pending']}")
     ui.summary("Inbox", lines)
 
 

@@ -33,4 +33,5 @@ def test_inbox_cli_lists_and_quarantines(tmp_path: Path, capsys) -> None:
     providers = {entry["provider"] for entry in output.get("entries", [])}
     assert "chatgpt" in providers
     assert output.get("quarantined"), "expected bad.zip to be quarantined"
+    assert output.get("totals", {}).get("pending", 0) >= 1
     assert (inbox / "quarantine" / "bad.zip").exists()
