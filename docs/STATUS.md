@@ -71,4 +71,21 @@ The plan.md file is a **living roadmap** for future improvements and should be p
 
 **Completed from report.md:** 7 major architectural improvements (100% of implementable recommendations)
 **Status:** Production-ready, builds successfully, 81% test pass rate
-**Next Steps:** Work through plan.md items based on user priorities
+
+## 🚀 Next Phase: Core Architecture Pivot
+
+**Now starting:** The two major architectural shifts from report.md that we agreed to implement:
+
+### 1. Database as Source of Truth
+
+- **Current:** Dual-write (filesystem + database)
+- **Target:** Database-first, markdown as view
+- **Plan:** See [DB_PIVOT_PLAN.md](DB_PIVOT_PLAN.md)
+- **Benefits:** Single source of truth, regenerable views, true "forever archive"
+
+### 2. Async I/O
+
+- **Current:** Synchronous requests for Drive API
+- **Target:** Async httpx with parallel downloads
+- **Plan:** See [DB_PIVOT_PLAN.md](DB_PIVOT_PLAN.md)
+- **Benefits:** 10x+ speedup for batch operations, better resource usage
