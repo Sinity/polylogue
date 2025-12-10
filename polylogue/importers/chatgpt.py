@@ -172,8 +172,19 @@ def import_chatgpt_export(
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
+    db_only: bool = False,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
+
+    # Check configuration for DB-first mode if not explicitly set
+    if not db_only:
+        try:
+            from ..core.configuration import load_configuration
+            config = load_configuration()
+            db_only = config.features.db_first
+        except Exception:
+            # If config loading fails, default to dual-write mode
+            db_only = False
     base_path, tmp = _load_export(export_path)
     try:
         convo_path = base_path / "conversations.json"
@@ -202,6 +213,7 @@ def import_chatgpt_export(
                             allow_dirty=allow_dirty,
                             registrar=registrar,
                             attachment_ocr=attachment_ocr,
+                            db_only=db_only,
                         )
                     )
             except Exception as exc:
@@ -261,6 +273,7 @@ def _render_chatgpt_conversation(
     allow_dirty: bool,
     registrar: Optional[ConversationRegistrar],
     attachment_ocr: bool = False,
+    db_only: bool = False,
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
     conv_id = conv.get("id") or conv.get("conversation_id") or "chat"
@@ -401,6 +414,7 @@ def _render_chatgpt_conversation(
         allow_dirty=allow_dirty,
         attachment_ocr=attachment_ocr,
         registrar=registrar,
+        db_only=db_only,
     )
 
 

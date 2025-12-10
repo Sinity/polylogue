@@ -274,6 +274,7 @@ def process_conversation(
     registrar: Optional[ConversationRegistrar] = None,
     repository: Optional[ConversationRepository] = None,
     citations: Optional[List[Any]] = None,
+    db_only: bool = False,
 ) -> ImportResult:
     if registrar is None:
         raise ValueError("ConversationRegistrar instance required")
@@ -314,6 +315,61 @@ def process_conversation(
     if branch_map and "Branch map" not in canonical_document.body:
         canonical_document.body = branch_map + "\n" + canonical_document.body
 
+    # When in DB-only mode, skip file writes and only do database writes
+    if db_only:
+        # Write only to database via registrar
+        registrar.record_branch_plan(
+            provider=provider,
+            conversation_id=conversation_id,
+            slug=slug,
+            plan=plan,
+            branch_stats=branch_stats,
+            records_by_id=records_by_id,
+            attachment_bytes=attachment_bytes,
+        )
+
+        # Create minimal attachment rows (no file access needed for DB-only)
+        attachment_rows = []
+        for att in attachments:
+            if att.local_path:
+                attachment_rows.append({
+                    "branch_id": plan.canonical_branch_id,
+                    "message_id": None,  # Could be extracted from message_records if needed
+                    "attachment_name": att.name,
+                    "attachment_path": str(att.local_path) if att.local_path else None,
+                    "size_bytes": att.size_bytes,
+                    "content_hash": None,  # Could compute if needed
+                    "mime_type": None,
+                    "text_content": None,
+                    "text_bytes": None,
+                    "truncated": False,
+                    "ocr_used": False,
+                })
+
+        registrar.record_attachments(
+            provider=provider,
+            conversation_id=conversation_id,
+            attachments=attachment_rows,
+        )
+
+        # Return minimal result indicating DB-only write
+        return ImportResult(
+            markdown_path=output_dir / slug / "conversation.md",  # Path that would be created
+            html_path=None,
+            attachments_dir=output_dir / slug / "attachments" if attachments else None,
+            document=canonical_document,
+            slug=slug,
+            diff_path=None,
+            skipped=False,
+            skip_reason="db-only",
+            dirty=False,
+            content_hash=None,
+            branch_count=len(plan.branches),
+            canonical_branch_id=plan.canonical_branch_id,
+            branch_directories=None,
+        )
+
+    # Normal flow: persist files and write to database
     persist_result = repository.persist(
         provider=provider,
         conversation_id=conversation_id,
