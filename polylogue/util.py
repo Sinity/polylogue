@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+import shutil
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
@@ -22,14 +23,31 @@ from .paths import DATA_HOME
 from .persistence.state import ConversationStateRepository
 
 
-CODEX_SESSIONS_ROOT = Path(
-    os.environ.get("POLYLOGUE_CODEX_SESSIONS", str(DATA_HOME / "codex" / "sessions"))
-).expanduser()
+def _resolve_path(env_var: str, home_default: Path, xdg_default: Path) -> Path:
+    env_value = os.environ.get(env_var)
+    if env_value:
+        return Path(env_value).expanduser()
+    if home_default.exists():
+        return home_default
+    return xdg_default
 
 
-CLAUDE_CODE_PROJECT_ROOT = Path(
-    os.environ.get("POLYLOGUE_CLAUDE_CODE_PROJECTS", str(DATA_HOME / "claude" / "projects"))
-).expanduser()
+DEFAULT_CODEX_HOME = Path.home() / ".codex" / "sessions"
+DEFAULT_CLAUDE_CODE_HOME = Path.home() / ".claude" / "projects"
+
+
+CODEX_SESSIONS_ROOT = _resolve_path(
+    "POLYLOGUE_CODEX_SESSIONS",
+    DEFAULT_CODEX_HOME,
+    DATA_HOME / "codex" / "sessions",
+)
+
+
+CLAUDE_CODE_PROJECT_ROOT = _resolve_path(
+    "POLYLOGUE_CLAUDE_CODE_PROJECTS",
+    DEFAULT_CLAUDE_CODE_HOME,
+    DATA_HOME / "claude" / "projects",
+)
 
 
 def colorize(text: str, color: str) -> str:
@@ -399,6 +417,8 @@ def add_run(record: Dict[str, Any]) -> None:
     out = payload.get("out")
     provider = payload.get("provider")
     branch_id = payload.get("branch_id")
+    profile_io = bool(payload.get("profile_io"))
+    profile_sql = bool(payload.get("profile_sql"))
     metadata = {
         key: value
         for key, value in payload.items()
@@ -417,6 +437,8 @@ def add_run(record: Dict[str, Any]) -> None:
             "out",
             "provider",
             "branch_id",
+            "profile_io",
+            "profile_sql",
         }
     }
     with open_connection(None) as conn:
@@ -438,6 +460,29 @@ def add_run(record: Dict[str, Any]) -> None:
             metadata=metadata or None,
         )
         conn.commit()
+
+
+def preflight_disk_requirement(
+    *,
+    projected_bytes: int,
+    limit_gib: Optional[float],
+    ui=None,
+) -> None:
+    if limit_gib is None:
+        return
+    try:
+        stat = shutil.disk_usage(Path.cwd())
+        free_bytes = stat.free
+    except Exception:
+        free_bytes = None
+    threshold_bytes = int(limit_gib * (1024 ** 3))
+    if projected_bytes > threshold_bytes:
+        raise SystemExit(f"Projected disk use {projected_bytes / (1024 ** 3):.2f} GiB exceeds --max-disk {limit_gib} GiB")
+    if free_bytes is not None and projected_bytes > free_bytes:
+        msg = f"Projected disk use {projected_bytes / (1024 ** 3):.2f} GiB exceeds free space {free_bytes / (1024 ** 3):.2f} GiB"
+        if ui and hasattr(ui, "console"):
+            ui.console.print(f"[red]{msg}")
+        raise SystemExit(msg)
 
 
 def write_delta_diff(old_path: Path, new_path: Path, *, suffix: str = ".diff.txt") -> Optional[Path]:

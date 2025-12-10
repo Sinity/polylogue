@@ -1,10 +1,12 @@
 # CLI Tips
 
 Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetitive workflows. The Nix/devshell environment ships every required dependency (gum, skim, Rich, pyperclip, etc.), so these helpers are always available unless stdout/stderr aren’t TTYs (in which case Polylogue automatically switches to a plain UI—export `POLYLOGUE_FORCE_PLAIN=1` to force that behaviour in CI).
+Plain/non-TTY runs never auto-prompt; if a prompt would be required (e.g., Drive auth, picker selection) the command exits with a warning so cron jobs don’t hang—pass explicit flags like `--all`/IDs or run with `--interactive` on a TTY when you do want prompts.
 
 ## Clipboard & Credential Workflows
 
 - **Drive onboarding**: During the first Drive sync, Polylogue checks the system clipboard for an OAuth client JSON. If found (and confirmed), it saves the payload to `$XDG_CONFIG_HOME/polylogue/credentials.json`, avoiding manual copy/paste steps.
+- **Auth path visibility**: `polylogue config show --json` and `polylogue browse status --json` include credential/token paths plus env overrides (`POLYLOGUE_CREDENTIAL_PATH`/`POLYLOGUE_TOKEN_PATH`), so you can validate which files headless jobs will read. Drive OAuth requires a TTY; non-interactive shells fail fast instead of hanging on input.
 - **Manual credential import**: When no clipboard payload exists, the CLI guides you through selecting a local file or opening Google’s setup guide. Credentials and tokens always land under `$XDG_CONFIG_HOME/polylogue/`.
 - **Copy rendered Markdown**: Pass `--to-clipboard` to render/import commands. When exactly one Markdown file is produced, Polylogue copies it via `pyperclip` and reports success or a warning if the OS clipboard rejects the write.
 - **Clipboard failures**: `pyperclip` ships with the devshell, but if the OS clipboard rejects writes Polylogue simply reports the warning while continuing the import.

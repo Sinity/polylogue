@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from pathlib import Path
 
 from polylogue.commands import CommandEnv, status_command
 from polylogue.cli import build_parser
@@ -134,6 +135,21 @@ def test_status_provider_filter_and_summary(state_env, tmp_path, capsys):
     assert list(summary_data["runSummary"].keys()) == ["sync drive"]
 
 
+def test_status_provider_filter_respects_runs_limit(state_env, capsys):
+    # Add multiple providers; ensure provider filter still returns data when runs_limit is small.
+    util.add_run({"cmd": "sync drive", "provider": "drive", "count": 1, "timestamp": "2024-03-01T00:00:00Z"})
+    util.add_run({"cmd": "render", "provider": "render", "count": 1, "timestamp": "2024-03-02T00:00:00Z"})
+
+    env = CommandEnv(ui=DummyUI())
+    args = _status_args(json=True, providers="drive", runs_limit=1)
+
+    run_status_cli(args, env)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert list(payload["provider_summary"].keys()) == ["drive"]
+    assert payload["recent_runs"]
+
+
 def test_status_summary_only_stdout(state_env, capsys):
     util.add_run(
         {
@@ -171,6 +187,21 @@ def test_status_json_lines(state_env, capsys):
     assert payload.startswith("{") and payload.endswith("}")
     data = json.loads(payload)
     assert "generated_at" in data
+
+
+def test_status_respects_custom_drive_paths(tmp_path):
+    creds = tmp_path / "creds.json"
+    token = tmp_path / "token.json"
+    creds.write_text("{}", encoding="utf-8")
+    token.write_text("{}", encoding="utf-8")
+
+    env = CommandEnv(ui=DummyUI())
+    env.config.drive.credentials_path = creds
+    env.config.drive.token_path = token
+
+    result = status_command(env)
+    assert result.credentials_present is True
+    assert result.token_present is True
 
 
 def _status_args(**overrides):

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import frontmatter
+from .version import POLYLOGUE_VERSION, SCHEMA_VERSION
 
 
 def _human_size(num: Optional[int]) -> Optional[str]:
@@ -30,6 +31,28 @@ def _encode_metadata_value(value: Any) -> str:
         return "null"
     text = str(value).replace("\n", " ")
     return f'"{text}"'
+
+def _collapse_threshold_for_chunk(
+    chunk: Dict[str, Any],
+    default: int,
+    overrides: Optional[Dict[str, int]],
+) -> int:
+    if not overrides:
+        return default
+    kind = "message"
+    if isinstance(chunk, dict):
+        role = str(chunk.get("role") or "").lower()
+        tool_keys = (
+            "toolResult",
+            "toolResults",
+            "toolCall",
+            "toolCalls",
+            "functionCall",
+            "arguments",
+        )
+        if role == "tool" or any(chunk.get(key) for key in tool_keys):
+            kind = "tool"
+    return overrides.get(kind, default)
 
 
 DRIVE_LINK_RE = re.compile(r"https://drive\.google\.com/file/d/([A-Za-z0-9_-]+)")
@@ -337,13 +360,20 @@ def build_markdown_from_chunks(
     source_mime: Optional[str] = None,
     source_size: Optional[int] = None,
     collapse_threshold: int = 10,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     extra_yaml: Optional[Dict[str, Any]] = None,
     attachments: Optional[List[AttachmentInfo]] = None,
 ) -> MarkdownDocument:
     # Drop empty chunks before computing stats or rendering so counts match output.
     chunks, per_chunk_links = _prepare_chunks_for_render(chunks, per_chunk_links)
 
-    metadata: Dict[str, Any] = {"title": title}
+    metadata: Dict[str, Any] = {
+        "title": title,
+        "schemaVersion": SCHEMA_VERSION,
+        "polylogueVersion": POLYLOGUE_VERSION,
+    }
+    if collapse_thresholds:
+        metadata["collapseThresholds"] = collapse_thresholds
     if source_file_id:
         metadata["sourceId"] = source_file_id
     if modified_time:
@@ -446,6 +476,7 @@ def build_markdown_from_chunks(
     i = 0
     while i < len(chunks):
         c = chunks[i]
+        parts.append(f"<a id=\"msg-{i}\"></a>\n")
         role = c.get("role", "model")
         is_thought = bool(c.get("isThought", False))
         if role == "user":
@@ -484,11 +515,13 @@ def build_markdown_from_chunks(
             if not thought and isinstance(c.get("content"), list):
                 thought = _render_content_parts(c.get("content"))
             resp_chunk = chunks[i + 1]
+            parts.append(f"<a id=\"msg-{i + 1}\"></a>\n")
             response = resp_chunk.get("text", "") or ""
             if not response and isinstance(resp_chunk.get("content"), list):
                 response = _render_content_parts(resp_chunk.get("content"))
             resp_chunk = chunks[i + 1]
-            fold = "-" if (collapse_threshold > 0 and len(response.splitlines()) > collapse_threshold) else "+"
+            resp_threshold = _collapse_threshold_for_chunk(resp_chunk, collapse_threshold, collapse_thresholds)
+            fold = "-" if (resp_threshold > 0 and len(response.splitlines()) > resp_threshold) else "+"
             header = "Model"
             fr = resp_chunk.get("finishReason")
             if fr:
@@ -527,7 +560,8 @@ def build_markdown_from_chunks(
             txt = c.get("text", "") or ""
             if not txt and isinstance(c.get("content"), list):
                 txt = _render_content_parts(c.get("content"))
-            fold = "-" if (collapse_threshold > 0 and len(txt.splitlines()) > collapse_threshold) else "+"
+            msg_threshold = _collapse_threshold_for_chunk(c, collapse_threshold, collapse_thresholds)
+            fold = "-" if (msg_threshold > 0 and len(txt.splitlines()) > msg_threshold) else "+"
             header = "Model"
             fr = c.get("finishReason")
             if fr:

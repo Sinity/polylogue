@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Iterable, List, Optional, Set
+import sys
 
 import shutil as _shutil
 import subprocess as _subprocess
@@ -52,22 +53,6 @@ class UI:
     def console(self, value: ConsoleLike) -> None:
         self._facade.console = value
 
-    def progress(self, description: str, total: int):
-        """Provide a progress context manager in interactive mode; noop in plain."""
-        if self.plain:
-            return _PlainProgress()
-        columns = (
-            SpinnerColumn(),
-            TextColumn("{task.description}"),
-            BarColumn(),
-            TextColumn("{task.completed}/{task.total}"),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-        )
-        progress = Progress(*columns, transient=True, console=self._facade.console)
-        task_id = progress.add_task(description, total=total or 0)
-        return _RichProgressWrapper(progress, task_id)
-
     # Presentation helpers -------------------------------------------------
     def banner(self, title: str, subtitle: Optional[str] = None) -> None:
         self._facade.banner(title, subtitle)
@@ -78,6 +63,8 @@ class UI:
     # Prompting ------------------------------------------------------------
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
         if self.plain:
+            if not sys.stdin.isatty():
+                self._abort_plain_prompt("confirmation prompts")
             try:
                 response = input(f"{prompt} [{'Y/n' if default else 'y/N'}]: ").strip()
             except EOFError:
@@ -91,15 +78,17 @@ class UI:
         if not options:
             return None
         if self.plain:
+            if not sys.stdin.isatty():
+                self._abort_plain_prompt("menu selections")
             for idx, option in enumerate(options, start=1):
                 self.console.print(f"{idx}. {option}")
             while True:
                 try:
                     response = input(f"{prompt} [1-{len(options)}]: ").strip()
                 except EOFError:
-                    return options[0]
+                    return None
                 if not response:
-                    return options[0]
+                    return None
                 if response.isdigit():
                     value = int(response)
                     if 1 <= value <= len(options):
@@ -110,6 +99,8 @@ class UI:
 
     def input(self, prompt: str, *, default: Optional[str] = None) -> Optional[str]:
         if self.plain:
+            if not sys.stdin.isatty():
+                self._abort_plain_prompt("text input")
             suffix = f" [{default}]" if default else ""
             try:
                 value = input(f"{prompt}{suffix}: ").strip()
@@ -139,7 +130,11 @@ class UI:
         if topic in self._plain_warnings:
             return
         self._plain_warnings.add(topic)
-        self.console.print(f"[yellow]Plain mode cannot prompt for {topic}; using defaults.")
+        self.console.print(f"[yellow]Plain mode cannot prompt for {topic}; rerun with --interactive or pass explicit flags.")
+
+    def _abort_plain_prompt(self, topic: str) -> None:
+        self._warn_plain(topic)
+        raise SystemExit(1)
 
 
 def create_ui(plain: bool) -> UI:
