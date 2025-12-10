@@ -18,6 +18,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from ..version import POLYLOGUE_VERSION, SCHEMA_VERSION
+from ..schema import stamp_payload
 
 from ..cli_common import choose_single_entry, filter_chats, resolve_inputs, sk_select
 from ..commands import (
@@ -31,6 +32,7 @@ from ..options import BranchExploreOptions, SearchHit, SearchOptions
 from ..ui import create_ui
 from .completion_engine import CompletionEngine, Completion
 from .registry import CommandRegistry
+from .inbox import run_inbox_cli
 from .arg_helpers import (
     add_collapse_option,
     add_diff_option,
@@ -896,21 +898,19 @@ def run_inspect_search(args: argparse.Namespace, env: CommandEnv) -> None:
         rows = [_row(hit) for hit in hits]
         if json_lines:
             for row in rows:
-                payload = {k: row.get(k) for k in export_fields} if export_fields else row
-                payload.setdefault("schemaVersion", SCHEMA_VERSION)
-                payload.setdefault("polylogueVersion", CLI_VERSION)
+                payload = stamp_payload({k: row.get(k) for k in export_fields} if export_fields else row)
                 print(json.dumps(payload, separators=(",", ":"), ensure_ascii=False))
             return
-        payload = {
-            "query": options.query,
-            "count": len(hits),
-            "schemaVersion": SCHEMA_VERSION,
-            "polylogueVersion": CLI_VERSION,
-            "hits": [
-                {k: row.get(k) for k in export_fields} if export_fields else row
-                for row in rows
-            ],
-        }
+        payload = stamp_payload(
+            {
+                "query": options.query,
+                "count": len(hits),
+                "hits": [
+                    {k: row.get(k) for k in export_fields} if export_fields else row
+                    for row in rows
+                ],
+            }
+        )
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return
 
@@ -1783,6 +1783,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_browse_runs.add_argument("--since", type=str, default=None, help="Only include runs on/after this timestamp (YYYY-MM-DD or ISO)")
     p_browse_runs.add_argument("--until", type=str, default=None, help="Only include runs on/before this timestamp")
     p_browse_runs.add_argument("--json", action="store_true", help="Emit runs as JSON")
+
+    p_browse_inbox = _add_command_parser(
+        browse_sub,
+        "inbox",
+        help="List pending inbox exports and quarantine malformed items",
+        description="List pending inbox exports and quarantine malformed items",
+    )
+    p_browse_inbox.add_argument("--providers", type=str, default="chatgpt,claude", help="Comma-separated provider filter (default: chatgpt,claude)")
+    p_browse_inbox.add_argument("--dir", type=Path, default=None, help="Override inbox root for a generic scan")
+    p_browse_inbox.add_argument("--quarantine", action="store_true", help="Move unknown/malformed inbox items into a quarantine folder")
+    p_browse_inbox.add_argument("--quarantine-dir", type=Path, default=None, help="Target directory for quarantined items (default: <inbox>/quarantine)")
+    p_browse_inbox.add_argument("--json", action="store_true", help="Emit machine-readable inbox status")
 
     p_search = _add_command_parser(
         sub,
