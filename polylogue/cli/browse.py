@@ -13,6 +13,7 @@ def run_browse_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         run_stats_cli,
         run_status_cli,
         run_runs_cli,
+        run_inbox_cli,
     )
 
     browse_cmd = args.browse_cmd  # required=True enforced by argparse
@@ -28,6 +29,8 @@ def run_browse_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         run_status_cli(args, env)
     elif browse_cmd == "runs":
         run_runs_cli(args, env)
+    elif browse_cmd == "inbox":
+        run_inbox_cli(args, env)
     else:
         raise SystemExit(f"Unknown browse sub-command: {browse_cmd}")
 
