@@ -40,21 +40,14 @@ def _run_watch_sessions(
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base
     if getattr(args, "offline", False):
         ui.console.print("[yellow]Offline mode enabled; network-dependent steps will be skipped.")
-    if args.base_dir and not base_dir.exists():
-        if getattr(args, "once", False):
+    base_exists = base_dir.exists()
+    if not base_exists:
+        if getattr(provider, "create_base_dir", False):
             base_dir.mkdir(parents=True, exist_ok=True)
         else:
-            ui.console.print(f"[red]Base directory does not exist: {base_dir} (provide an existing path or omit --base-dir)")
+            hint = "(pass --base-dir to use a different location)" if not args.base_dir else ""
+            ui.console.print(f"[red]Base directory does not exist: {base_dir} {hint}")
             raise SystemExit(1)
-    if getattr(provider, "create_base_dir", False) and not args.base_dir:
-        base_dir.mkdir(parents=True, exist_ok=True)
-    else:
-        if not base_dir.exists():
-            if args.base_dir is None:
-                base_dir.mkdir(parents=True, exist_ok=True)
-            else:
-                ui.console.print(f"[red]Base directory does not exist: {base_dir}")
-                raise SystemExit(1)
     out_dir = resolve_output_path(args.out, provider.default_output)
     out_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir: Optional[Path] = None
