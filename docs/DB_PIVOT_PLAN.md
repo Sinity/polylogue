@@ -11,6 +11,7 @@ JSON/ZIP → Parser → [Markdown Files + SQLite] (parallel writes)
 ```
 
 **Problems:**
+
 - State drift: Filesystem and DB can get out of sync
 - No single source of truth
 - Can't regenerate markdown with different templates
@@ -28,6 +29,7 @@ JSON/ZIP → raw_imports → Parser → messages/conversations → Renderer → 
 ```
 
 **Benefits:**
+
 - Single source of truth
 - Regenerate markdown anytime with new templates
 - Reprocess historical data without re-importing
@@ -41,11 +43,13 @@ JSON/ZIP → raw_imports → Parser → messages/conversations → Renderer → 
 **Status:** raw_imports table exists, but we need conversations/messages tables
 
 **What exists:**
+
 - ✅ `raw_imports` table (tier 1 - the sarcophagus)
 - ✅ Hash-based deduplication
 - ✅ Parse status tracking
 
 **What's needed:**
+
 - [ ] `conversations` table (tier 2 - structured data)
 - [ ] `messages` table (tier 2 - structured data)
 - [ ] `attachments` table (tier 2 - asset tracking)
@@ -109,6 +113,7 @@ CREATE INDEX idx_attachments_hash ON attachments(hash);
 **Target:** Importers write ONLY to database
 
 **Files to modify:**
+
 - `polylogue/importers/chatgpt.py`
 - `polylogue/importers/claude_ai.py`
 - `polylogue/importers/claude_code.py`
@@ -116,6 +121,7 @@ CREATE INDEX idx_attachments_hash ON attachments(hash);
 - `polylogue/drive.py`
 
 **Changes:**
+
 ```python
 # OLD (dual-write):
 def import_conversation(data):
@@ -218,6 +224,7 @@ class DatabaseRenderer:
 
 **Old behavior:** Read JSON file, parse, write markdown
 **New behavior:**
+
 1. Check if already in DB → skip
 2. If not in DB → import first (via importer)
 3. Render from DB
@@ -227,7 +234,7 @@ def run_render_cli(args, env):
     """Render command - now DB-first."""
 
     input_path = args.input
-    output_dir = args.out
+    output_dir = args.out￼
 
     # 1. Import to database if needed
     if input_path.is_file():
@@ -254,57 +261,17 @@ def run_render_cli(args, env):
     env.ui.console.print(f"[green]Rendered {len(paths)} conversations")
 ```
 
-### Phase 5: Migration Path
-
-**For existing users with filesystem data:**
-
-```python
-# polylogue/cli/migrate.py
-
-def migrate_filesystem_to_db(
-    markdown_dir: Path,
-    db_path: Path,
-) -> None:
-    """Migrate existing markdown files to database.
-
-    Reads frontmatter and content, reconstructs messages,
-    stores in database.
-    """
-
-    for conv_dir in markdown_dir.glob("*/"):
-        md_file = conv_dir / "conversation.md"
-        if not md_file.exists():
-            continue
-
-        # Parse markdown
-        frontmatter, content = parse_markdown_file(md_file)
-        messages = extract_messages_from_markdown(content)
-
-        # Insert into DB
-        conversation_id = insert_conversation(
-            conn,
-            provider=frontmatter.get("provider"),
-            conversation_id=frontmatter.get("id"),
-            slug=conv_dir.name,
-            title=frontmatter.get("title"),
-            metadata_json=json.dumps(frontmatter),
-        )
-
-        for msg in messages:
-            insert_message(conn, conversation_id, msg)
-
-        print(f"✓ Migrated {conv_dir.name}")
-```
-
 ## Async I/O Implementation
 
 ### Phase 1: Replace requests with httpx
 
 **Files to modify:**
+
 - `polylogue/drive.py`
 - `polylogue/drive_client.py`
 
 **Changes:**
+
 ```python
 # OLD:
 import requests
@@ -378,15 +345,16 @@ async with aiofiles.open(path, 'wb') as f:
 ## Success Criteria
 
 ### Database as Source of Truth
+
 - [ ] All importers write ONLY to database
 - [ ] Markdown files generated from database
 - [ ] Can delete all markdown and regenerate from DB
 - [ ] `polylogue render` reads from DB, not files
-- [ ] Migration tool for existing users
 - [ ] Schema includes all necessary data
 - [ ] Attachments stored in database
 
 ### Async I/O
+
 - [ ] httpx replaces requests
 - [ ] Parallel downloads implemented
 - [ ] Configurable concurrency limits
@@ -396,38 +364,42 @@ async with aiofiles.open(path, 'wb') as f:
 
 ## Implementation Order
 
-1. **Week 1: Database Schema**
+1. **Phase 1: Database Schema**
    - Design and create conversations/messages/attachments tables
-   - Add migration script for schema updates
+   - Add schema migration (v4 → v5)
+   - Add helper functions for tier 2 tables
    - Test with sample data
 
-2. **Week 2: Database Renderer**
+2. **Phase 2: Database Renderer**
    - Implement DatabaseRenderer class
    - Test rendering from existing DB data
    - Verify output matches current format
 
-3. **Week 3: Modify Importers**
+3. **Phase 3: Modify Importers**
    - Update one importer (chatgpt) to DB-only
    - Test end-to-end import → render flow
-   - Rollout to other importers
+   - Rollout to other importers (claude_ai, claude_code, codex)
 
-4. **Week 4: Async I/O**
+4. **Phase 4: Update Commands**
+   - Update render command to use DatabaseRenderer
+   - Update render --force to regenerate from DB
+   - Comprehensive testing
+
+5. **Phase 5: Async I/O**
    - Replace requests with httpx
    - Implement parallel downloads
    - Add progress tracking
-
-5. **Week 5: Migration & Testing**
-   - Create filesystem → DB migration tool
-   - Comprehensive testing
    - Update documentation
 
 ## Rollback Strategy
 
 **During transition:**
+
 - Keep old code paths available behind feature flag
 - `POLYLOGUE_DB_FIRST=1` enables new behavior
 - Can revert to filesystem-first if issues arise
 
 **After migration:**
+
 - Remove old dual-write code
 - Make DB-first the only path

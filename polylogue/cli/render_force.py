@@ -6,6 +6,7 @@ from typing import Optional
 
 from ..db import open_connection
 from ..persistence.database import ConversationDatabase
+from ..renderers.db_renderer import DatabaseRenderer
 from ..commands import CommandEnv
 
 
@@ -74,6 +75,27 @@ def run_render_force(
 
     console.print(f"Found {len(rows)} conversation(s) to regenerate")
 
+    # Determine output directory
+    if output_dir is None:
+        from ..config import CONFIG
+        if provider:
+            # Use provider-specific output directory
+            provider_dirs = {
+                "chatgpt": CONFIG.defaults.output_dirs.get("import_chatgpt"),
+                "claude": CONFIG.defaults.output_dirs.get("import_claude"),
+                "codex": CONFIG.defaults.output_dirs.get("sync_codex"),
+                "claude_code": CONFIG.defaults.output_dirs.get("sync_claude_code"),
+            }
+            output_dir = Path(provider_dirs.get(provider, CONFIG.defaults.output_dirs.get("render")))
+        else:
+            output_dir = Path(CONFIG.defaults.output_dirs.get("render"))
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create renderer
+    renderer = DatabaseRenderer(db_path=db.resolve_path())
+
     regenerated = 0
     failed = 0
 
@@ -87,42 +109,14 @@ def run_render_force(
         console.print(f"  Title: {title}")
 
         try:
-            # Get messages for this conversation
-            with open_connection(db.resolve_path()) as conn:
-                # Get canonical branch
-                branch_query = """
-                    SELECT branch_id
-                    FROM branches
-                    WHERE provider = ? AND conversation_id = ? AND is_current = 1
-                    LIMIT 1
-                """
-                branch_row = conn.execute(branch_query, (conv_provider, conv_id)).fetchone()
+            # Render conversation from database
+            markdown_path = renderer.render_conversation(
+                provider=conv_provider,
+                conversation_id=conv_id,
+                output_dir=output_dir,
+            )
 
-                if not branch_row:
-                    console.print("  [yellow]![/yellow] No canonical branch found")
-                    failed += 1
-                    continue
-
-                branch_id = branch_row["branch_id"]
-
-                # Get messages for this branch
-                msg_query = """
-                    SELECT message_id, role, rendered_text, timestamp
-                    FROM messages
-                    WHERE provider = ? AND conversation_id = ? AND branch_id = ?
-                    ORDER BY position
-                """
-                messages = conn.execute(msg_query, (conv_provider, conv_id, branch_id)).fetchall()
-
-            if not messages:
-                console.print("  [yellow]![/yellow] No messages found")
-                failed += 1
-                continue
-
-            # TODO: Actually regenerate the markdown file here
-            # For now, just report what would be done
-            console.print(f"  [green]✓[/green] Would regenerate from {len(messages)} messages")
-            console.print(f"  [cyan]Note:[/cyan] Full regeneration requires render pipeline integration")
+            console.print(f"  [green]✓[/green] Regenerated: {markdown_path}")
             regenerated += 1
 
         except Exception as e:
@@ -131,13 +125,10 @@ def run_render_force(
 
     # Summary
     console.print(f"\n[bold]Summary:[/bold]")
-    console.print(f"  Would regenerate: {regenerated}")
+    console.print(f"  Regenerated: {regenerated}")
     console.print(f"  Failed: {failed}")
 
     if regenerated > 0:
-        console.print(
-            f"\n[yellow]Note:[/yellow] Full markdown regeneration requires integration "
-            "with the render pipeline. The database contains all necessary data."
-        )
+        console.print(f"\n[green]Success![/green] Markdown files regenerated from database to: {output_dir}")
 
     return 0 if failed == 0 else 1
