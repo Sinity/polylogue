@@ -107,6 +107,7 @@ def _run_watch_sessions(
     start_ts = time.monotonic()
     last_run = start_ts
     skipped_events: List[Path] = []
+    skipped_total = 0
     stall_seconds = getattr(args, "stall_seconds", 60.0)
     last_progress = start_ts
     try:
@@ -123,6 +124,7 @@ def _run_watch_sessions(
             now = time.monotonic()
             if now - last_run < debounce:
                 skipped_events.extend(relevant)
+                skipped_total += len(relevant)
                 continue
             elapsed = now - last_progress
             if stall_seconds and elapsed > stall_seconds:
@@ -147,6 +149,8 @@ def _run_watch_sessions(
                 skipped_events.clear()
     except KeyboardInterrupt:  # pragma: no cover - user interrupt
         console.print(f"[cyan]{provider.watch_log_title} stopped.")
+    if skipped_total:
+        console.print(f"[dim]Total skipped during debounce: {skipped_total}")
 
 
 __all__ = ["run_watch_cli"]
