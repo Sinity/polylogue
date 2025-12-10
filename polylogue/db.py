@@ -13,7 +13,7 @@ DB_PATH = STATE_HOME / "polylogue.db"
 
 _LOCAL = threading.local()
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -67,13 +67,17 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             position INTEGER NOT NULL,
             timestamp TEXT,
             role TEXT,
+            model TEXT,
             content_hash TEXT,
+            content_text TEXT,
+            content_json TEXT,
             rendered_text TEXT,
             raw_json TEXT,
             token_count INTEGER DEFAULT 0,
             word_count INTEGER DEFAULT 0,
             attachment_count INTEGER DEFAULT 0,
             attachment_names TEXT,
+            is_leaf INTEGER DEFAULT 0,
             metadata_json TEXT,
             PRIMARY KEY (provider, conversation_id, branch_id, position),
             FOREIGN KEY (provider, conversation_id, branch_id) REFERENCES branches(provider, conversation_id, branch_id) ON DELETE CASCADE
@@ -182,6 +186,97 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             content,
             tokenize='unicode61'
         );
+        """
+    )
+
+    # Schema v5: Assets table with SHA-256 keys and message_assets junction table
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS assets (
+            id TEXT PRIMARY KEY,
+            mime_type TEXT,
+            size_bytes INTEGER,
+            data BLOB,
+            local_path TEXT,
+            created_at INTEGER DEFAULT (unixepoch())
+        );
+
+        CREATE TABLE IF NOT EXISTS message_assets (
+            provider TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            branch_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            asset_id TEXT NOT NULL,
+            filename TEXT,
+            PRIMARY KEY (provider, conversation_id, branch_id, message_id, asset_id),
+            FOREIGN KEY (provider, conversation_id, branch_id, message_id)
+                REFERENCES messages(provider, conversation_id, branch_id, message_id)
+                ON DELETE CASCADE,
+            FOREIGN KEY (asset_id) REFERENCES assets(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_assets_size ON assets(size_bytes);
+        CREATE INDEX IF NOT EXISTS idx_message_assets_message
+            ON message_assets(provider, conversation_id, branch_id, message_id);
+        CREATE INDEX IF NOT EXISTS idx_message_assets_asset ON message_assets(asset_id);
+        """
+    )
+
+    # Schema v5: FTS5 triggers for automatic sync
+    conn.executescript(
+        """
+        CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
+            INSERT INTO messages_fts(provider, conversation_id, branch_id, message_id, content)
+            VALUES (new.provider, new.conversation_id, new.branch_id, new.message_id,
+                    COALESCE(new.content_text, '') || ' ' || COALESCE(new.rendered_text, ''));
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
+            DELETE FROM messages_fts
+            WHERE provider = old.provider
+              AND conversation_id = old.conversation_id
+              AND branch_id = old.branch_id
+              AND message_id = old.message_id;
+            INSERT INTO messages_fts(provider, conversation_id, branch_id, message_id, content)
+            VALUES (new.provider, new.conversation_id, new.branch_id, new.message_id,
+                    COALESCE(new.content_text, '') || ' ' || COALESCE(new.rendered_text, ''));
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
+            DELETE FROM messages_fts
+            WHERE provider = old.provider
+              AND conversation_id = old.conversation_id
+              AND branch_id = old.branch_id
+              AND message_id = old.message_id;
+        END;
+        """
+    )
+
+    # Schema v5: Materialized view for canonical paths
+    conn.executescript(
+        """
+        CREATE VIEW IF NOT EXISTS view_canonical_transcript AS
+        WITH RECURSIVE chat_tree(
+            provider, conversation_id, branch_id, message_id, parent_id,
+            position, content_text, role, timestamp, depth
+        ) AS (
+            -- Start from root (position 0)
+            SELECT
+                provider, conversation_id, branch_id, message_id, parent_id,
+                position, content_text, role, timestamp, 0 as depth
+            FROM messages
+            WHERE position = 0
+            UNION ALL
+            -- Traverse down the tree
+            SELECT
+                m.provider, m.conversation_id, m.branch_id, m.message_id, m.parent_id,
+                m.position, m.content_text, m.role, m.timestamp, ct.depth + 1
+            FROM messages m
+            JOIN chat_tree ct ON m.parent_id = ct.message_id
+                AND m.provider = ct.provider
+                AND m.conversation_id = ct.conversation_id
+        )
+        SELECT * FROM chat_tree ORDER BY provider, conversation_id, position;
         """
     )
 
@@ -342,11 +437,11 @@ def replace_messages(
             """
             INSERT INTO messages (
                 provider, conversation_id, branch_id, message_id, parent_id,
-                position, timestamp, role, content_hash, rendered_text,
-                raw_json, token_count, word_count, attachment_count,
-                attachment_names, metadata_json
+                position, timestamp, role, model, content_hash, content_text,
+                content_json, rendered_text, raw_json, token_count, word_count,
+                attachment_count, attachment_names, is_leaf, metadata_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -358,13 +453,17 @@ def replace_messages(
                     msg.get("position"),
                     msg.get("timestamp"),
                     msg.get("role"),
+                    msg.get("model"),
                     msg.get("content_hash"),
+                    msg.get("content_text"),
+                    msg.get("content_json"),
                     msg.get("rendered_text"),
                     msg.get("raw_json"),
                     msg.get("token_count", 0),
                     msg.get("word_count", 0),
                     msg.get("attachment_count", 0),
                     msg.get("attachment_names"),
+                    msg.get("is_leaf", 0),
                     json.dumps(msg.get("metadata")) if msg.get("metadata") else None,
                 )
                 for msg in messages
