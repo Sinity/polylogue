@@ -106,20 +106,6 @@ class PathsConfig(BaseSettings):
     )
 
 
-class FeatureFlagsConfig(BaseSettings):
-    """Feature flags for experimental features."""
-
-    db_first: bool = Field(
-        default=False,
-        description="Enable database-first mode (imports write only to DB, markdown generated separately)",
-    )
-
-    model_config = SettingsConfigDict(
-        env_prefix="POLYLOGUE_",
-        env_nested_delimiter="__",
-    )
-
-
 class AppConfig(BaseSettings):
     """Main application configuration with Pydantic Settings.
 
@@ -134,7 +120,6 @@ class AppConfig(BaseSettings):
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     index: IndexConfig = Field(default_factory=IndexConfig)
     exports: ExportsConfig = Field(default_factory=ExportsConfig)
-    features: FeatureFlagsConfig = Field(default_factory=FeatureFlagsConfig)
 
     # Additional config for compatibility
     raw: Dict[str, Any] = Field(default_factory=dict)
@@ -215,7 +200,6 @@ class AppConfig(BaseSettings):
 # Type aliases for backward compatibility
 Defaults = DefaultsConfig
 OutputPaths = OutputPathsConfig
-FeatureFlags = FeatureFlagsConfig
 
 
 # Convenience function for backward compatibility
