@@ -251,6 +251,25 @@ HTML_TEMPLATE = """
           searchInput.focus();
         }
       });
+
+      // Add copy-link buttons for message anchors (msg-N)
+      const msgAnchors = content.querySelectorAll('a[id^="msg-"]');
+      msgAnchors.forEach(anchor => {
+        const id = anchor.getAttribute('id');
+        if (!id) return;
+        const btn = document.createElement('a');
+        btn.href = `#${id}`;
+        btn.textContent = '🔗';
+        btn.className = 'anchor-btn';
+        btn.title = 'Copy link to message';
+        btn.addEventListener('click', evt => {
+          evt.preventDefault();
+          const url = `${window.location.origin}${window.location.pathname}#${id}`;
+          navigator.clipboard?.writeText(url).catch(() => {});
+          window.location.hash = id;
+        });
+        anchor.insertAdjacentElement('afterend', btn);
+      });
     </script>
   </body>
 </html>
