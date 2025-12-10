@@ -124,17 +124,29 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 "schemaVersion": SCHEMA_VERSION,
                 "polylogueVersion": POLYLOGUE_VERSION,
                 "credentials_present": result.credentials_present,
+                "credentialsPresent": result.credentials_present,
                 "token_present": result.token_present,
+                "tokenPresent": result.token_present,
                 "credential_path": str(result.credential_path),
+                "credentialPath": str(result.credential_path),
                 "token_path": str(result.token_path),
+                "tokenPath": str(result.token_path),
                 "credential_env": result.credential_env,
+                "credentialEnv": result.credential_env,
                 "token_env": result.token_env,
+                "tokenEnv": result.token_env,
                 "state_path": str(result.state_path),
+                "statePath": str(result.state_path),
                 "runs_path": str(result.runs_path),
+                "runsPath": str(result.runs_path),
                 "recent_runs": filtered_recent_runs,
+                "recentRuns": filtered_recent_runs,
                 "run_summary": run_summary,
+                "runSummary": run_summary,
                 "provider_summary": provider_summary,
+                "providerSummary": provider_summary,
                 "generated_at": datetime.now(timezone.utc).isoformat(),
+                "generatedAt": datetime.now(timezone.utc).isoformat(),
             }
             if json_lines:
                 print(json.dumps(payload, separators=(",", ":")), flush=True)
@@ -502,6 +514,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             "sort": sort_key,
             "limit": limit or None,
             "filteredOut": filtered_out,
+            "filtered_out": filtered_out,
             "warnings": warnings,
         }
         print(json.dumps(payload, indent=2))
