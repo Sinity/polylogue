@@ -42,7 +42,8 @@ def _run_watch_sessions(
         ui.console.print("[yellow]Offline mode enabled; network-dependent steps will be skipped.")
     base_exists = base_dir.exists()
     if not base_exists:
-        if getattr(provider, "create_base_dir", False):
+        may_create = getattr(provider, "create_base_dir", False) or getattr(args, "once", False) or args.base_dir is None
+        if may_create:
             base_dir.mkdir(parents=True, exist_ok=True)
         else:
             hint = "(pass --base-dir to use a different location)" if not args.base_dir else ""
