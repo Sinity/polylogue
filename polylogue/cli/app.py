@@ -1808,6 +1808,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_browse_runs.add_argument("--since", type=str, default=None, help="Only include runs on/after this timestamp (YYYY-MM-DD or ISO)")
     p_browse_runs.add_argument("--until", type=str, default=None, help="Only include runs on/before this timestamp")
     p_browse_runs.add_argument("--json", action="store_true", help="Emit runs as JSON")
+    p_browse_runs.add_argument("--json-verbose", action="store_true", help="Print logs alongside --json output")
 
     p_browse_inbox = _add_command_parser(
         browse_sub,

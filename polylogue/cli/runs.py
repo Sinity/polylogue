@@ -8,6 +8,7 @@ from typing import List, Optional
 from rich.table import Table
 
 from ..commands import CommandEnv
+from ..schema import stamp_payload
 from ..util import load_runs, parse_input_time_to_epoch
 
 
@@ -26,7 +27,8 @@ def run_runs_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         runs = [run for run in runs if _timestamp_in_range(run.get("timestamp"), since_epoch, until_epoch)]
 
     if getattr(args, "json", False):
-        print(json.dumps(runs, indent=2))
+        payload = stamp_payload({"runs": runs}) if not getattr(args, "json_verbose", False) else stamp_payload({"runs": runs, "count": len(runs)})
+        print(json.dumps(payload, indent=2))
         return
 
     if env.ui.plain:
