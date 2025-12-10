@@ -56,6 +56,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     json_mode = bool(getattr(args, "json", False) or json_lines)
     json_verbose = bool(getattr(args, "json_verbose", False))
     quiet_json = json_mode and not json_verbose
+    show_inbox = bool(getattr(args, "inbox", False))
     if json_lines:
         setattr(args, "json", True)
         setattr(args, "quiet", True)
@@ -64,6 +65,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     summary_only = getattr(args, "summary_only", False)
     provider_filter = _provider_filter(getattr(args, "providers", None))
     quiet = bool(getattr(args, "quiet", False))
+    top_n = max(0, getattr(args, "top", 0))
 
     if summary_only and not getattr(args, "summary", None):
         setattr(args, "summary", "-")
@@ -99,6 +101,21 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
         filtered_recent_runs = [record for record in result.recent_runs if _matches(record)]
         filtered_runs = [record for record in result.runs if _matches(record)]
+        top_runs: List[dict] = []
+        if top_n:
+            top_runs = sorted(filtered_runs, key=lambda r: (r.get("attachments", 0), r.get("tokens", 0)), reverse=True)[:top_n]
+
+        inbox_summary = None
+        if show_inbox:
+            try:
+                from ..local_sync import _discover_export_targets
+
+                inbox_summary = {}
+                for label, root in (("chatgpt", env.config.exports.chatgpt), ("claude", env.config.exports.claude)):
+                    targets = _discover_export_targets(root, provider=label)
+                    inbox_summary[label] = {"pending": len(targets), "root": str(root)}
+            except Exception:
+                inbox_summary = None
         console = ui.console
 
         if dump_only:
@@ -115,6 +132,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                     "generatedAt": datetime.now(timezone.utc).isoformat(),
                     "runSummary": run_summary,
                     "providerSummary": provider_summary,
+                    "topRuns": top_runs,
                 }
             )
             _dump_summary(ui, summary_payload, summary_requested, quiet=quiet_json)
@@ -135,6 +153,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                     "run_summary": run_summary,
                     "provider_summary": provider_summary,
                     "generated_at": datetime.now(timezone.utc).isoformat(),
+                    "top_runs": top_runs,
                 }
             )
             if json_lines:
@@ -239,6 +258,30 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                         (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
                     )
                 console.print(provider_table)
+            if inbox_summary:
+                inbox_table = Table(title="Inbox Coverage", show_lines=False)
+                inbox_table.add_column("Provider")
+                inbox_table.add_column("Pending", justify="right")
+                inbox_table.add_column("Root")
+                for prov, stats in inbox_summary.items():
+                    inbox_table.add_row(prov, str(stats.get("pending", 0)), str(stats.get("root", "-")))
+                console.print(inbox_table)
+            if top_runs:
+                top_table = Table(title=f"Top Runs (attachments/tokens) [limit {len(top_runs)}]", show_lines=False)
+                top_table.add_column("Timestamp")
+                top_table.add_column("Provider")
+                top_table.add_column("Attachments", justify="right")
+                top_table.add_column("Tokens", justify="right")
+                top_table.add_column("Command")
+                for row in top_runs:
+                    top_table.add_row(
+                        str(row.get("timestamp", "-")),
+                        str(row.get("provider", "-")),
+                        str(row.get("attachments", 0)),
+                        str(row.get("tokens", 0)),
+                        str(row.get("cmd", "-")),
+                    )
+                console.print(top_table)
 
         if dump_requested:
             destination = dump_requested or "-"

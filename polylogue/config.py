@@ -107,6 +107,7 @@ def persist_config(
     html_previews: bool,
     html_theme: str,
     index: Optional[IndexConfig] = None,
+    roots: Optional[Dict[str, Path]] = None,
     path: Optional[Path] = None,
 ) -> Path:
     """Write a config.json that mirrors the sample schema.
@@ -138,6 +139,19 @@ def persist_config(
             },
         },
     }
+    if roots:
+        mapped: Dict[str, Dict[str, str]] = {}
+        for label, base in roots.items():
+            root_path = Path(base).expanduser()
+            mapped[label] = {
+                "render": str(root_path / "render"),
+                "sync_drive": str(root_path / "gemini"),
+                "sync_codex": str(root_path / "codex"),
+                "sync_claude_code": str(root_path / "claude-code"),
+                "import_chatgpt": str(root_path / "chatgpt"),
+                "import_claude": str(root_path / "claude"),
+            }
+        payload["paths"]["roots"] = mapped
     target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return target
 
