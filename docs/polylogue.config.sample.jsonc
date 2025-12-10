@@ -1,16 +1,23 @@
 {
-  // Copy this file to ~/.polylogueconfig or $XDG_CONFIG_HOME/polylogue/config.json and adjust as needed.
-  "defaults": {
-    "collapse_threshold": 30,
-    "html_previews": true,
-    "html_theme": "dark",
-    "output_dirs": {
-      "render": "~/polylogue-data/render",
-      "sync_drive": "~/polylogue-data/sync-drive",
-      "sync_codex": "~/polylogue-data/codex",
-      "sync_claude_code": "~/polylogue-data/claude-code",
-      "import_chatgpt": "~/polylogue-data/chatgpt",
-      "import_claude": "~/polylogue-data/claude"
+  // Copy this file to $XDG_CONFIG_HOME/polylogue/config.json and adjust as needed.
+  // Paths: single input inbox + single output root; provider subdirs are fixed.
+  "paths": {
+    "input_root": "~/.local/share/polylogue/inbox",
+    "output_root": "~/.local/share/polylogue/archive"
+  },
+  "ui": {
+    "collapse_threshold": 25,
+    "html": true,
+    "theme": "dark"
+  },
+  "index": {
+    // backend: "sqlite" (default), "qdrant", or "none"
+    "backend": "sqlite",
+    "qdrant": {
+      "url": "http://localhost:6333",
+      "api_key": null,
+      "collection": "polylogue",
+      "vector_size": null
     }
   }
 }

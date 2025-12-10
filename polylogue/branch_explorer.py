@@ -568,6 +568,53 @@ def build_branch_html(conversation: BranchConversationSummary, *, theme: str = "
     env = _branch_template()
     template = env.from_string(_BRANCH_TEMPLATE)
 
+    if not conversation.nodes:
+        title = conversation.title or conversation.slug or conversation.conversation_id or "conversation"
+        escaped_title = html.escape(title)
+        return textwrap.dedent(
+            f"""
+            <!DOCTYPE html>
+            <html lang=\"en\">
+              <head>
+                <meta charset=\"utf-8\" />
+                <title>Branches · {escaped_title}</title>
+                <style>
+                  body {{
+                    font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                    background: {palette['bg']};
+                    color: {palette['fg']};
+                    margin: 0;
+                    padding: 2rem;
+                  }}
+                  .card {{
+                    border: 1px solid {palette['border']};
+                    border-radius: 12px;
+                    padding: 1.5rem;
+                    background: {palette['canonical_bg']};
+                    max-width: 720px;
+                    margin: 0 auto;
+                    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.04);
+                  }}
+                  h1 {{
+                    margin: 0 0 0.5rem;
+                    font-size: 1.5rem;
+                  }}
+                  p {{
+                    margin: 0;
+                    color: {palette['muted']};
+                  }}
+                </style>
+              </head>
+              <body>
+                <div class=\"card\">
+                  <h1>No branch data</h1>
+                  <p>There are no branch records for {escaped_title}.</p>
+                </div>
+              </body>
+            </html>
+            """
+        ).strip()
+
     canonical_id = conversation.canonical_branch_id or conversation.current_branch
     if canonical_id not in conversation.nodes:
         canonical_id = next(iter(conversation.nodes))
@@ -608,10 +655,15 @@ def build_branch_html(conversation: BranchConversationSummary, *, theme: str = "
             rendered = "".join(render_child(child) for child in sub_children)
             child_html = f"<ul>{rendered}</ul>"
         card_class = "branch-card canonical" if node.is_canonical else "branch-card alternate"
+        snippet_block = ""
+        if node.divergence_snippet:
+            short = _short_snippet(node.divergence_snippet, limit=120)
+            snippet_block = f'<div class="snippet">{html.escape(short)}</div>'
         return (
             f'<div class="{card_class}">'
             f'<div class="branch-header"><h3>{html.escape(node.branch_id)}</h3><div class="badges">{"".join(badges)}</div></div>'
             f"{divergence_html}"
+            f"{snippet_block}"
             f"{link_html}"
             f"{child_html}"
             f"</div>"

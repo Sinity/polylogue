@@ -10,6 +10,7 @@ from rich.table import Table
 from ..commands import CommandEnv
 from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
 from ..doctor import run_doctor as doctor_run
+from ..schema import stamp_payload
 from ..util import CLAUDE_CODE_PROJECT_ROOT, CODEX_SESSIONS_ROOT
 
 
@@ -44,16 +45,27 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         "configEnv": CONFIG_ENV,
         "configCandidates": [str(p) for p in DEFAULT_PATHS],
         "configSample": str(sample_config),
+        "credentialPath": str(report.credential_path),
+        "tokenPath": str(report.token_path),
+        "credentialEnv": report.credential_env,
+        "tokenEnv": report.token_env,
+        "credentialsPresent": report.credentials_present,
+        "tokenPresent": report.token_present,
     }
 
     if getattr(args, "json", False):
-        print(json.dumps(config_hint, indent=2))
+        payload = stamp_payload(config_hint)
+        print(json.dumps(payload, indent=2))
         return
 
     lines = [
         f"Codex sessions checked: {report.checked.get('codex', 0)}",
         f"Claude Code sessions checked: {report.checked.get('claude-code', 0)}",
+        f"Credentials: {'present' if report.credentials_present else 'missing'} ({report.credential_path})",
+        f"Token: {'present' if report.token_present else 'missing'} ({report.token_path})",
     ]
+    if report.credential_env or report.token_env:
+        lines.append(f"Env overrides: cred={report.credential_env or '-'} token={report.token_env or '-'}")
     if CONFIG_PATH is None:
         candidates = ", ".join(str(p) for p in DEFAULT_PATHS)
         lines.append(

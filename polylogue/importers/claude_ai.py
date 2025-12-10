@@ -62,12 +62,14 @@ def import_claude_export(
     *,
     output_dir: Path,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool,
     html_theme: str,
     selected_ids: Optional[List[str]] = None,
     force: bool = False,
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
+    attachment_ocr: bool = False,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
     root, tmp = _load_bundle(export_path)
@@ -92,11 +94,13 @@ def import_claude_export(
                     root,
                     output_dir,
                     collapse_threshold=collapse_threshold,
+                    collapse_thresholds=collapse_thresholds,
                     html=html,
                     html_theme=html_theme,
                     force=force,
                     allow_dirty=allow_dirty,
                     registrar=registrar,
+                    attachment_ocr=attachment_ocr,
                 )
             )
         return results
@@ -140,11 +144,13 @@ def _render_claude_conversation(
     output_dir: Path,
     *,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool,
     html_theme: str,
     force: bool,
     allow_dirty: bool,
     registrar: Optional[ConversationRegistrar],
+    attachment_ocr: bool = False,
 ) -> ImportResult:
     title = conv.get("name") or conv.get("title") or "claude-chat"
     conv_id = conv.get("uuid") or conv.get("id") or "claude"
@@ -244,6 +250,7 @@ def _render_claude_conversation(
         extra_yaml["sourceModel"] = model_id
 
     canonical_leaf_id = message_records[-1].message_id if message_records else None
+    thresholds = collapse_thresholds or {"message": collapse_threshold, "tool": collapse_threshold}
 
     return process_conversation(
         provider="claude.ai",
@@ -254,6 +261,7 @@ def _render_claude_conversation(
         attachments=attachments,
         canonical_leaf_id=canonical_leaf_id,
         collapse_threshold=collapse_threshold,
+        collapse_thresholds=thresholds,
         html=html,
         html_theme=html_theme,
         output_dir=output_dir,
@@ -271,6 +279,7 @@ def _render_claude_conversation(
         attachment_policy=None,
         force=force,
         allow_dirty=allow_dirty,
+        attachment_ocr=attachment_ocr,
         registrar=registrar,
     )
 

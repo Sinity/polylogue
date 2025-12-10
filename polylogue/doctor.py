@@ -33,6 +33,12 @@ class DoctorIssue:
 class DoctorReport:
     checked: Dict[str, int]
     issues: List[DoctorIssue]
+    credential_path: Path = DEFAULT_CREDENTIALS
+    token_path: Path = DEFAULT_TOKEN
+    credential_env: Optional[str] = None
+    token_env: Optional[str] = None
+    credentials_present: bool = False
+    token_present: bool = False
 
 
 def _check_jsonl(path: Path, max_lines: int = 3) -> Optional[str]:
@@ -320,6 +326,10 @@ def run_doctor(
     service: Optional[ConversationService] = None,
     archive: Optional[Archive] = None,
 ) -> DoctorReport:
+    credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+    token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
+    credential_path = DEFAULT_CREDENTIALS
+    token_path = DEFAULT_TOKEN
     codex_report = inspect_codex(codex_dir, limit)
     claude_report = inspect_claude_code(claude_code_dir, limit)
     issues = codex_report.issues + claude_report.issues
@@ -361,4 +371,13 @@ def run_doctor(
         if os.environ.get("POLYLOGUE_INDEX_BACKEND", "sqlite").strip().lower() == "qdrant":
             issues.append(DoctorIssue("qdrant", Path("qdrant"), str(exc), "error"))
 
-    return DoctorReport(checked=counts, issues=issues)
+    return DoctorReport(
+        checked=counts,
+        issues=issues,
+        credential_path=credential_path,
+        token_path=token_path,
+        credential_env=credential_env,
+        token_env=token_env,
+        credentials_present=credential_path.exists(),
+        token_present=token_path.exists(),
+    )

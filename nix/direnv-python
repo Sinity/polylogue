@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Run Python with the direnv-managed environment for this workspace.
+if ! command -v direnv >/dev/null 2>&1; then
+  echo "direnv is required to run Python in this workspace" >&2
+  exit 1
+fi
+
+exec direnv exec . python "$@"

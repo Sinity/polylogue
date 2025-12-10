@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -11,36 +12,56 @@ from .core.configuration import (
     AppConfig as CoreAppConfig,
     Defaults as CoreDefaults,
     OutputPaths as CoreOutputPaths,
+    IndexConfig as CoreIndexConfig,
+    ExportsConfig as CoreExportsConfig,
     load_configuration,
 )
 from .paths import CONFIG_HOME, DATA_HOME
 
+# Public aliases for config dataclasses used outside the core configuration module.
+IndexConfig = CoreIndexConfig
+ExportsConfig = CoreExportsConfig
+
+_ENV_CREDENTIAL_PATH = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+_ENV_TOKEN_PATH = os.environ.get("POLYLOGUE_TOKEN_PATH")
+
+DEFAULT_CREDENTIALS = Path(_ENV_CREDENTIAL_PATH).expanduser() if _ENV_CREDENTIAL_PATH else CONFIG_HOME / "credentials.json"
+DEFAULT_TOKEN = Path(_ENV_TOKEN_PATH).expanduser() if _ENV_TOKEN_PATH else CONFIG_HOME / "token.json"
+
+
+@dataclass
+class DriveConfig:
+    credentials_path: Path = DEFAULT_CREDENTIALS
+    token_path: Path = DEFAULT_TOKEN
+    retries: int = 3
+    retry_base: float = 0.5
+
 CONFIG_DIR = CONFIG_HOME
 DEFAULT_PATHS = list(DEFAULT_CONFIG_LOCATIONS)
 
-DEFAULT_ARCHIVE_ROOT = Path(
-    os.environ.get("POLYLOGUE_ARCHIVE_ROOT", str(DATA_HOME / "archive"))
-).expanduser()
-ARCHIVE_ROOT = DEFAULT_ARCHIVE_ROOT
-MARKDOWN_ROOT = ARCHIVE_ROOT / "markdown"
+DEFAULT_INPUT_ROOT = DATA_HOME / "inbox"
+DEFAULT_OUTPUT_ROOT = DATA_HOME / "archive"
+DEFAULT_EXPORTS_CHATGPT = DEFAULT_INPUT_ROOT
+DEFAULT_EXPORTS_CLAUDE = DEFAULT_INPUT_ROOT
 
 
 @dataclass
 class OutputDirs:
-    render: Path = MARKDOWN_ROOT / "gemini-render"
-    sync_drive: Path = MARKDOWN_ROOT / "gemini-sync"
-    sync_codex: Path = MARKDOWN_ROOT / "codex"
-    sync_claude_code: Path = MARKDOWN_ROOT / "claude-code"
-    import_chatgpt: Path = MARKDOWN_ROOT / "chatgpt"
-    import_claude: Path = MARKDOWN_ROOT / "claude"
+    render: Path = DEFAULT_OUTPUT_ROOT / "render"
+    sync_drive: Path = DEFAULT_OUTPUT_ROOT / "gemini"
+    sync_codex: Path = DEFAULT_OUTPUT_ROOT / "codex"
+    sync_claude_code: Path = DEFAULT_OUTPUT_ROOT / "claude-code"
+    import_chatgpt: Path = DEFAULT_OUTPUT_ROOT / "chatgpt"
+    import_claude: Path = DEFAULT_OUTPUT_ROOT / "claude"
 
 
 @dataclass
 class Defaults:
     collapse_threshold: int = 25
-    html_previews: bool = False
-    html_theme: str = "light"
+    html_previews: bool = True
+    html_theme: str = "dark"
     output_dirs: OutputDirs = field(default_factory=OutputDirs)
+    roots: dict[str, OutputDirs] = field(default_factory=dict)
 
     @property
     def render(self) -> Path:
@@ -70,9 +91,69 @@ class Defaults:
 @dataclass
 class Config:
     defaults: Defaults = field(default_factory=Defaults)
+    index: Optional[IndexConfig] = None
+    exports: ExportsConfig = field(default_factory=lambda: ExportsConfig(chatgpt=DEFAULT_EXPORTS_CHATGPT, claude=DEFAULT_EXPORTS_CLAUDE))
+    drive: DriveConfig = field(default_factory=DriveConfig)
 
 
 CONFIG_PATH: Optional[Path] = None
+
+
+def persist_config(
+    *,
+    input_root: Path,
+    output_root: Path,
+    collapse_threshold: int,
+    html_previews: bool,
+    html_theme: str,
+    index: Optional[IndexConfig] = None,
+    roots: Optional[Dict[str, Path]] = None,
+    path: Optional[Path] = None,
+) -> Path:
+    """Write a config.json that mirrors the sample schema.
+
+    Existing index settings are preserved via the supplied IndexConfig to avoid
+    silently dropping Qdrant settings when re-initializing.
+    """
+    target = path or CONFIG_HOME / "config.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    index_cfg = index or IndexConfig()
+    payload = {
+        "paths": {
+            "input_root": str(input_root.expanduser()),
+            "output_root": str(output_root.expanduser()),
+        },
+        "ui": {
+            "collapse_threshold": collapse_threshold,
+            "html": bool(html_previews),
+            "theme": html_theme,
+        },
+        "index": {
+            "backend": index_cfg.backend,
+            "qdrant": {
+                "url": index_cfg.qdrant_url,
+                "api_key": index_cfg.qdrant_api_key,
+                "collection": index_cfg.qdrant_collection,
+                "vector_size": index_cfg.qdrant_vector_size,
+            },
+        },
+    }
+    if roots:
+        mapped: Dict[str, Dict[str, str]] = {}
+        for label, base in roots.items():
+            root_path = Path(base).expanduser()
+            mapped[label] = {
+                "render": str(root_path / "render"),
+                "sync_drive": str(root_path / "gemini"),
+                "sync_codex": str(root_path / "codex"),
+                "sync_claude_code": str(root_path / "claude-code"),
+                "import_chatgpt": str(root_path / "chatgpt"),
+                "import_claude": str(root_path / "claude"),
+            }
+        payload["paths"]["roots"] = mapped
+    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return target
 
 
 def _convert_output_dirs(paths: CoreOutputPaths) -> OutputDirs:
@@ -87,19 +168,49 @@ def _convert_output_dirs(paths: CoreOutputPaths) -> OutputDirs:
 
 
 def _convert_defaults(core: CoreDefaults) -> Defaults:
+    roots: dict[str, OutputDirs] = {}
+    for label, paths in getattr(core, "roots", {}).items():
+        roots[label] = _convert_output_dirs(paths)
     return Defaults(
         collapse_threshold=core.collapse_threshold,
         html_previews=core.html_previews,
         html_theme=core.html_theme,
         output_dirs=_convert_output_dirs(core.output_dirs),
+        roots=roots,
     )
+
+
+def _convert_index(core: Optional[CoreIndexConfig]) -> Optional[IndexConfig]:
+    if not core:
+        return None
+    from .core.configuration import IndexConfig as CoreIndex
+    if isinstance(core, IndexConfig):
+        return core
+    if isinstance(core, CoreIndex):
+        return IndexConfig(
+            backend=core.backend,
+            qdrant_url=core.qdrant_url,
+            qdrant_api_key=core.qdrant_api_key,
+            qdrant_collection=core.qdrant_collection,
+            qdrant_vector_size=core.qdrant_vector_size,
+        )
+    return None
+
+
+def _convert_exports(core: CoreExportsConfig) -> ExportsConfig:
+    return ExportsConfig(chatgpt=core.chatgpt, claude=core.claude)
 
 
 def load_config() -> Config:
     global CONFIG_PATH
     app_config: CoreAppConfig = load_configuration()
     CONFIG_PATH = app_config.path
-    return Config(defaults=_convert_defaults(app_config.defaults))
+    return Config(
+        defaults=_convert_defaults(app_config.defaults),
+        index=_convert_index(app_config.index),
+        exports=_convert_exports(app_config.exports),
+        drive=DriveConfig(),
+    )
 
 
 CONFIG = load_config()
