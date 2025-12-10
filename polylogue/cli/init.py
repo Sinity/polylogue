@@ -142,6 +142,17 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         qdrant_vector_size=qdrant_vector,
     )
 
+    # Optional labeled roots
+    labeled_roots: dict[str, Path] = {}
+    if not ui.plain:
+        while ui.confirm("Add a labeled archive root (e.g., work/personal)?", default=False):
+            label = ui.input("  Label (e.g., work)", default=f"root{len(labeled_roots)+1}") or f"root{len(labeled_roots)+1}"
+            root_input = ui.input("  Root path", default=str(output_dir))
+            if root_input:
+                labeled_roots[label] = Path(root_input).expanduser()
+            if not ui.confirm("Add another root?", default=False):
+                break
+
     # Step 6: Drive credentials (optional)
     drive_setup = False
     console.print(f"\n[bold]Google Drive Integration[/bold]")
@@ -179,6 +190,7 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         html_previews=html_enabled,
         html_theme=theme,
         index=index_cfg,
+        roots=labeled_roots or None,
     )
 
     # Create output directory
