@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 from ..commands import CommandEnv
+from ..schema import stamp_payload
 
 
 def run_maintain_cli(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -47,7 +48,7 @@ def run_maintain_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
         shutil.copytree(src, dest, dirs_exist_ok=True)
         if json_mode:
-            payload = {"from": str(src), "to": str(dest), "bytes": total_bytes}
+            payload = stamp_payload({"from": str(src), "to": str(dest), "bytes": total_bytes})
             import json
 
             print(json.dumps(payload, indent=2))
