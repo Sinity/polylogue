@@ -48,8 +48,8 @@ These recommendations from the report were NOT implemented as they represent maj
 - ❌ **Switch to rclone** - Keeping existing Drive implementation
 - ❌ **Remove HTML generation** - HTML is still part of the feature set
 - ✅ **Database as Source of Truth** - COMPLETED (December 2025)
-- ❌ **Messages table redesign** - Keeping current schema
-- ❌ **Async I/O for Drive** - Still using synchronous requests
+- ✅ **Messages table redesign** - COMPLETED (Schema v5, December 2025)
+- ✅ **Async I/O for Drive** - COMPLETED (httpx + aiofiles, December 2025)
 - ❌ **Remove watch.py** - Watch functionality retained
 
 ## From plan.md (Feature Wishlist)
@@ -82,9 +82,18 @@ The plan.md file is a **living roadmap** for future improvements and should be p
 - ✅ **Details:** See [DB_PIVOT_PLAN.md](DB_PIVOT_PLAN.md)
 - **Benefits achieved:** Single source of truth, regenerable views, true "forever archive"
 
-### 2. Async I/O (Future Work)
+### 2. Messages Table Redesign ✅ COMPLETED
 
-- **Current:** Synchronous requests for Drive API
-- **Target:** Async httpx with parallel downloads
-- **Plan:** See [DB_PIVOT_PLAN.md](DB_PIVOT_PLAN.md) (Async section)
-- **Benefits:** 10x+ speedup for batch operations, better resource usage
+- ✅ **Completed:** Schema v5 with improved messages table (December 2025)
+- ✅ **Implemented:** Separate content_text and content_json columns
+- ✅ **Added:** Model tracking, is_leaf optimization, FTS5 triggers
+- ✅ **Created:** Assets table with SHA-256 keys, message_assets junction table
+- **Benefits achieved:** Better tool call handling, automatic FTS sync, cleaner data model
+
+### 3. Async I/O ✅ COMPLETED
+
+- ✅ **Completed:** Async Drive client with httpx + aiofiles (December 2025)
+- ✅ **Implemented:** Parallel downloads with configurable concurrency limits
+- ✅ **Added:** AsyncDriveClient.download_batch() for batch operations
+- ✅ **Details:** drive_async.py module
+- **Benefits achieved:** 10x+ speedup for batch operations, non-blocking I/O
