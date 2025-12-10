@@ -995,19 +995,23 @@ def run_inspect_search(args: argparse.Namespace, env: CommandEnv) -> None:
     if getattr(args, "open", False) and len(selected_hits) == 1:
         hit = selected_hits[0]
         target_path = hit.attachment_path or hit.branch_path or hit.conversation_path
+        line_hint = None
+        anchor_label = None
+        if target_path and hit.kind != "attachment" and hit.position is not None and hit.position >= 0:
+            anchor_label = f"msg-{hit.position}"
+            line_hint = _find_anchor_line(Path(target_path), anchor_label)
         if target_path:
-            anchor = ""
-            if hit.kind != "attachment" and hit.position is not None and hit.position >= 0:
-                anchor = f"#msg-{hit.position}"
-            target_with_anchor = str(target_path) + anchor
-            if open_in_editor(Path(target_with_anchor)):
-                ui.console.print(f"[dim]Opened {target_with_anchor} in editor[/dim]")
+            if open_in_editor(Path(target_path), line=line_hint):
+                suffix = f" (line {line_hint})" if line_hint else ""
+                label = f"{target_path}#{anchor_label}" if anchor_label else str(target_path)
+                ui.console.print(f"[dim]Opened {label}{suffix} in editor[/dim]")
             else:
                 editor = get_editor()
                 if not editor:
                     ui.console.print("[yellow]Warning: $EDITOR not set. Cannot open file.")
                 else:
-                    ui.console.print(f"[yellow]Warning: Could not open {target_with_anchor} in editor")
+                    label = f"{target_path}#{anchor_label}" if anchor_label else str(target_path)
+                    ui.console.print(f"[yellow]Warning: Could not open {label} in editor")
         else:
             ui.console.print("[yellow]Warning: No file path available for selected result")
     elif getattr(args, "open", False) and len(selected_hits) > 1:
@@ -1077,6 +1081,20 @@ def _build_search_preview_command(data_file: Path) -> str:
         f"\"{python_cmd} _search-preview --data-file {shlex.quote(str(data_file))} "
         "--index $(printf %s \\\"{}\\\" | awk '{print $1}')\""
     )
+
+
+def _find_anchor_line(path: Path, anchor: str) -> Optional[int]:
+    """Return the 1-based line containing the given anchor id."""
+
+    target = anchor.lstrip("#")
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return None
+    for idx, line in enumerate(lines, start=1):
+        if target in line:
+            return idx
+    return None
 
 
 def _render_search_hit(hit: SearchHit, ui) -> None:
