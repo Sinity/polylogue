@@ -72,6 +72,9 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         input_root = default_input_root
         console.print(f"  Using default inbox: {input_root}")
 
+    console.print(f"\n[bold]Index/Qdrant Settings[/bold]")
+    console.print("Configure Qdrant URL/API key/collection (leave blank to keep defaults).")
+
     # Step 2: HTML previews
     console.print(f"\n[bold]HTML Previews[/bold]")
     console.print("Generate interactive HTML files alongside Markdown?")
