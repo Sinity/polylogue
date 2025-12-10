@@ -1,6 +1,6 @@
-# Database as Source of Truth - Implementation Plan
+# Database as Source of Truth - ✅ COMPLETED
 
-## Current Architecture (Dual-Write)
+## ~~Current~~ Old Architecture (Dual-Write) [REMOVED]
 
 ```
 Import Flow:
@@ -10,14 +10,14 @@ JSON/ZIP → Parser → [Markdown Files + SQLite] (parallel writes)
               (source of truth)     (index)
 ```
 
-**Problems:**
+**Problems [SOLVED]:**
 
-- State drift: Filesystem and DB can get out of sync
-- No single source of truth
-- Can't regenerate markdown with different templates
-- Hard to reprocess with updated logic
+- ~~State drift: Filesystem and DB can get out of sync~~ ✅ FIXED
+- ~~No single source of truth~~ ✅ FIXED
+- ~~Can't regenerate markdown with different templates~~ ✅ FIXED
+- ~~Hard to reprocess with updated logic~~ ✅ FIXED
 
-## Target Architecture (DB-First)
+## Current Architecture (DB-First) ✅ IMPLEMENTED
 
 ```
 Import Flow:
@@ -38,22 +38,21 @@ JSON/ZIP → raw_imports → Parser → messages/conversations → Renderer → 
 
 ## Implementation Phases
 
-### Phase 1: Enhanced Database Schema ✅ PARTIALLY DONE
+### Phase 1: Enhanced Database Schema ✅ COMPLETE
 
-**Status:** raw_imports table exists, but we need conversations/messages tables
+**Status:** All tables exist and are in use (schema v4)
 
 **What exists:**
 
 - ✅ `raw_imports` table (tier 1 - the sarcophagus)
 - ✅ Hash-based deduplication
 - ✅ Parse status tracking
-
-**What's needed:**
-
-- [ ] `conversations` table (tier 2 - structured data)
-- [ ] `messages` table (tier 2 - structured data)
-- [ ] `attachments` table (tier 2 - asset tracking)
-- [ ] Relationships and foreign keys
+- ✅ `conversations` table (tier 2 - structured data)
+- ✅ `messages` table (tier 2 - structured data)
+- ✅ `attachments` table (tier 2 - asset tracking)
+- ✅ `branches` table (for conversation branching)
+- ✅ Relationships and foreign keys
+- ✅ Full-text search indexes (FTS5)
 
 **Schema Design:**
 
@@ -106,11 +105,11 @@ CREATE INDEX idx_messages_timestamp ON messages(timestamp);
 CREATE INDEX idx_attachments_hash ON attachments(hash);
 ```
 
-### Phase 2: Modify Importers (DB-Only Writes)
+### Phase 2: Modify Importers (DB-Only Writes) ✅ COMPLETE
 
-**Current:** Importers call both markdown writer AND database functions
+**~~Current~~ Old:** Importers call both markdown writer AND database functions [REMOVED]
 
-**Target:** Importers write ONLY to database
+**✅ Implemented:** Importers write ONLY to database
 
 **Files to modify:**
 
@@ -154,11 +153,11 @@ def import_conversation(data):
         raise
 ```
 
-### Phase 3: Database-First Renderer
+### Phase 3: Database-First Renderer ✅ COMPLETE
 
-**Create new:** `polylogue/renderers/db_renderer.py`
+**✅ Created:** `polylogue/renderers/db_renderer.py`
 
-**Purpose:** Read from database, generate markdown/HTML
+**✅ Implemented:** Reads from database, generates markdown/HTML
 
 ```python
 class DatabaseRenderer:
@@ -218,16 +217,16 @@ class DatabaseRenderer:
         return results
 ```
 
-### Phase 4: Update `polylogue render` Command
+### Phase 4: Update `polylogue render` Command ✅ COMPLETE
 
-**Modify:** `polylogue/cli/render.py`
+**✅ Modified:** `polylogue/cli/render_force.py`
 
-**Old behavior:** Read JSON file, parse, write markdown
-**New behavior:**
+**Old behavior:** Read JSON file, parse, write markdown [REMOVED]
+**✅ New behavior:**
 
-1. Check if already in DB → skip
-2. If not in DB → import first (via importer)
-3. Render from DB
+1. ✅ Reads from database using DatabaseRenderer
+2. ✅ Generates markdown files on demand
+3. ✅ Supports provider filtering and output directory override
 
 ```python
 def run_render_cli(args, env):
@@ -344,14 +343,15 @@ async with aiofiles.open(path, 'wb') as f:
 
 ## Success Criteria
 
-### Database as Source of Truth
+### Database as Source of Truth ✅ ALL COMPLETE
 
-- [ ] All importers write ONLY to database
-- [ ] Markdown files generated from database
-- [ ] Can delete all markdown and regenerate from DB
-- [ ] `polylogue render` reads from DB, not files
-- [ ] Schema includes all necessary data
-- [ ] Attachments stored in database
+- [x] All importers write ONLY to database
+- [x] Markdown files generated from database
+- [x] Can delete all markdown and regenerate from DB
+- [x] `polylogue render` reads from DB, not files
+- [x] Schema includes all necessary data
+- [x] Attachments stored in database
+- [x] No backwards compatibility - DB-first is the ONLY mode
 
 ### Async I/O
 
@@ -391,15 +391,16 @@ async with aiofiles.open(path, 'wb') as f:
    - Add progress tracking
    - Update documentation
 
-## Rollback Strategy
+## ~~Rollback Strategy~~ [NO LONGER APPLICABLE]
 
-**During transition:**
+**✅ Migration Complete:**
 
-- Keep old code paths available behind feature flag
-- `POLYLOGUE_DB_FIRST=1` enables new behavior
-- Can revert to filesystem-first if issues arise
+- ~~Keep old code paths available behind feature flag~~ [REMOVED]
+- ~~`POLYLOGUE_DB_FIRST=1` enables new behavior~~ [NO LONGER NEEDED]
+- ~~Can revert to filesystem-first if issues arise~~ [NOT POSSIBLE - DUAL-WRITE REMOVED]
 
-**After migration:**
+**✅ Fully Migrated:**
 
-- Remove old dual-write code
-- Make DB-first the only path
+- ✅ Removed all dual-write code (~200 lines deleted)
+- ✅ DB-first is the ONLY path (no fallback)
+- ✅ No backwards compatibility mode
