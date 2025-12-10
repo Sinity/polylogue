@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 
 from ..commands import CommandEnv
-from ..config import OutputDirs
+from ..config import OutputDirs, is_config_declarative
 from ..settings import (
     SETTINGS_PATH,
     clear_persisted_settings,
@@ -26,6 +26,14 @@ def _settings_snapshot(settings) -> dict:
 
 
 def run_settings_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+    immutable, reason, cfg_path = is_config_declarative()
+    if immutable:
+        env.ui.console.print(
+            f"[red]Configuration is managed declaratively ({cfg_path}): {reason}. "
+            "Edit your Nix/flake module instead of using 'config set'."
+        )
+        raise SystemExit(1)
+
     settings = env.settings
     config_obj = env.config
     html_mode = getattr(args, "html", None)

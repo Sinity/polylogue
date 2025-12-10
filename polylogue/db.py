@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
+import sys
 from contextlib import contextmanager
-import threading
 from pathlib import Path
+import threading
 from typing import Dict, Iterable, List, Optional, Sequence
 
 from .paths import STATE_HOME
@@ -13,163 +15,253 @@ DB_PATH = STATE_HOME / "polylogue.db"
 
 _LOCAL = threading.local()
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 
-def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    try:
-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    except sqlite3.Error:
-        return False
-    return any(row[1] == column for row in rows)
+def _apply_schema_fallback(conn: sqlite3.Connection) -> None:
+    """Apply schema directly when Alembic is not available.
 
-
-def _apply_schema(conn: sqlite3.Connection) -> None:
+    This creates the current schema (Schema v5 + conversation-aware raw storage).
+    For production use, install Alembic for proper migrations.
+    """
     conn.execute("PRAGMA foreign_keys = ON")
-    version_row = conn.execute("PRAGMA user_version").fetchone()
-    current_version = version_row[0] if version_row else 0
 
-    # Base tables (created idempotently to avoid destructive upgrades)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS conversations (
-            provider TEXT NOT NULL,
-            conversation_id TEXT NOT NULL,
-            slug TEXT NOT NULL,
-            title TEXT,
-            current_branch TEXT,
-            root_message_id TEXT,
-            last_updated TEXT,
-            content_hash TEXT,
-            metadata_json TEXT,
-            PRIMARY KEY (provider, conversation_id)
-        );
+    # Create all tables with current schema
+    schema_sql = """
+    CREATE TABLE IF NOT EXISTS conversations (
+        provider TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        title TEXT,
+        current_branch TEXT,
+        root_message_id TEXT,
+        last_updated TEXT,
+        content_hash TEXT,
+        metadata_json TEXT,
+        PRIMARY KEY (provider, conversation_id)
+    );
 
-        CREATE TABLE IF NOT EXISTS branches (
-            provider TEXT NOT NULL,
-            conversation_id TEXT NOT NULL,
-            branch_id TEXT NOT NULL,
-            parent_branch_id TEXT,
-            label TEXT,
-            depth INTEGER DEFAULT 0,
-            is_current INTEGER DEFAULT 0,
-            metadata_json TEXT,
-            PRIMARY KEY (provider, conversation_id, branch_id),
-            FOREIGN KEY (provider, conversation_id) REFERENCES conversations(provider, conversation_id) ON DELETE CASCADE
-        );
+    CREATE TABLE IF NOT EXISTS branches (
+        provider TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        parent_branch_id TEXT,
+        label TEXT,
+        depth INTEGER DEFAULT 0,
+        is_current INTEGER DEFAULT 0,
+        metadata_json TEXT,
+        PRIMARY KEY (provider, conversation_id, branch_id),
+        FOREIGN KEY (provider, conversation_id)
+            REFERENCES conversations(provider, conversation_id) ON DELETE CASCADE
+    );
 
-        CREATE TABLE IF NOT EXISTS messages (
-            provider TEXT NOT NULL,
-            conversation_id TEXT NOT NULL,
-            branch_id TEXT NOT NULL,
-            message_id TEXT NOT NULL,
-            parent_id TEXT,
-            position INTEGER NOT NULL,
-            timestamp TEXT,
-            role TEXT,
-            content_hash TEXT,
-            rendered_text TEXT,
-            raw_json TEXT,
-            token_count INTEGER DEFAULT 0,
-            word_count INTEGER DEFAULT 0,
-            attachment_count INTEGER DEFAULT 0,
-            attachment_names TEXT,
-            metadata_json TEXT,
-            PRIMARY KEY (provider, conversation_id, branch_id, position),
-            FOREIGN KEY (provider, conversation_id, branch_id) REFERENCES branches(provider, conversation_id, branch_id) ON DELETE CASCADE
-        );
+    CREATE TABLE IF NOT EXISTS messages (
+        provider TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        parent_id TEXT,
+        position INTEGER NOT NULL,
+        timestamp TEXT,
+        role TEXT,
+        model TEXT,
+        content_hash TEXT,
+        content_text TEXT,
+        content_json TEXT,
+        rendered_text TEXT,
+        raw_json TEXT,
+        token_count INTEGER DEFAULT 0,
+        word_count INTEGER DEFAULT 0,
+        attachment_count INTEGER DEFAULT 0,
+        attachment_names TEXT,
+        is_leaf INTEGER DEFAULT 0,
+        metadata_json TEXT,
+        PRIMARY KEY (provider, conversation_id, branch_id, position),
+        FOREIGN KEY (provider, conversation_id, branch_id)
+            REFERENCES branches(provider, conversation_id, branch_id) ON DELETE CASCADE
+    );
 
-        CREATE TABLE IF NOT EXISTS runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp TEXT NOT NULL,
-            cmd TEXT NOT NULL,
-            count INTEGER DEFAULT 0,
-            attachments INTEGER DEFAULT 0,
-            attachment_bytes INTEGER DEFAULT 0,
-            tokens INTEGER DEFAULT 0,
-            skipped INTEGER DEFAULT 0,
-            pruned INTEGER DEFAULT 0,
-            diffs INTEGER DEFAULT 0,
-            duration REAL,
-            out TEXT,
-            provider TEXT,
-            branch_id TEXT,
-            metadata_json TEXT
-        );
+    CREATE TABLE IF NOT EXISTS runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        cmd TEXT NOT NULL,
+        count INTEGER DEFAULT 0,
+        attachments INTEGER DEFAULT 0,
+        attachment_bytes INTEGER DEFAULT 0,
+        tokens INTEGER DEFAULT 0,
+        skipped INTEGER DEFAULT 0,
+        pruned INTEGER DEFAULT 0,
+        diffs INTEGER DEFAULT 0,
+        duration REAL,
+        out TEXT,
+        provider TEXT,
+        branch_id TEXT,
+        metadata_json TEXT
+    );
 
-        CREATE TABLE IF NOT EXISTS state_meta (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        );
+    CREATE TABLE IF NOT EXISTS state_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    );
 
-        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-            provider,
-            conversation_id,
-            branch_id,
-            message_id,
-            content,
-            tokenize='unicode61'
-        );
-        """
-    )
+    CREATE TABLE IF NOT EXISTS assets (
+        provider TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        asset_id TEXT NOT NULL,
+        asset_type TEXT NOT NULL,
+        local_path TEXT,
+        size_bytes INTEGER,
+        mime_type TEXT,
+        metadata_json TEXT,
+        PRIMARY KEY (provider, conversation_id, branch_id, position, asset_id),
+        FOREIGN KEY (provider, conversation_id, branch_id, position)
+            REFERENCES messages(provider, conversation_id, branch_id, position) ON DELETE CASCADE
+    );
 
-    # Ensure newer columns exist when upgrading from v2
-    if not _column_exists(conn, "messages", "attachment_names"):
-        conn.execute("ALTER TABLE messages ADD COLUMN attachment_names TEXT")
+    CREATE TABLE IF NOT EXISTS raw_imports (
+        provider TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        hash TEXT NOT NULL,
+        imported_at INTEGER DEFAULT (unixepoch()),
+        imported_at_ns INTEGER DEFAULT (unixepoch() * 1000000000),
+        source_path TEXT,
+        blob BLOB,
+        parser_version TEXT,
+        parse_status TEXT DEFAULT 'pending',
+        error_message TEXT,
+        metadata_json TEXT,
+        PRIMARY KEY (provider, conversation_id, version)
+    );
 
-    # Idempotent indexes
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_messages_branch_order ON messages(provider, conversation_id, branch_id, position)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_messages_conversation_message ON messages(provider, conversation_id, message_id)"
-    )
-    conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_branches_conversation ON branches(provider, conversation_id)"
-    )
+    CREATE TABLE IF NOT EXISTS attachments (
+        provider TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        branch_id TEXT,
+        message_id TEXT,
+        attachment_name TEXT NOT NULL,
+        attachment_path TEXT,
+        size_bytes INTEGER,
+        content_hash TEXT,
+        mime_type TEXT,
+        text_content TEXT,
+        text_bytes INTEGER,
+        truncated INTEGER DEFAULT 0,
+        ocr_used INTEGER DEFAULT 0,
+        PRIMARY KEY (provider, conversation_id, branch_id, message_id, attachment_name),
+        FOREIGN KEY (provider, conversation_id)
+            REFERENCES conversations(provider, conversation_id) ON DELETE CASCADE,
+        FOREIGN KEY (provider, conversation_id, branch_id)
+            REFERENCES branches(provider, conversation_id, branch_id) ON DELETE CASCADE
+    );
 
-    # Attachments indexing (added in schema v3)
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS attachments (
-            provider TEXT NOT NULL,
-            conversation_id TEXT NOT NULL,
-            branch_id TEXT,
-            message_id TEXT,
-            attachment_name TEXT NOT NULL,
-            attachment_path TEXT,
-            size_bytes INTEGER,
-            content_hash TEXT,
-            mime_type TEXT,
-            text_content TEXT,
-            text_bytes INTEGER,
-            truncated INTEGER DEFAULT 0,
-            ocr_used INTEGER DEFAULT 0,
-            PRIMARY KEY (provider, conversation_id, branch_id, message_id, attachment_name),
-            FOREIGN KEY (provider, conversation_id) REFERENCES conversations(provider, conversation_id) ON DELETE CASCADE,
-            FOREIGN KEY (provider, conversation_id, branch_id) REFERENCES branches(provider, conversation_id, branch_id) ON DELETE CASCADE
-        );
+    CREATE INDEX IF NOT EXISTS idx_raw_imports_hash ON raw_imports(hash);
+    CREATE INDEX IF NOT EXISTS idx_raw_imports_status ON raw_imports(parse_status);
+    CREATE INDEX IF NOT EXISTS idx_messages_branch_order ON messages(provider, conversation_id, branch_id, position);
+    CREATE INDEX IF NOT EXISTS idx_messages_conversation_message ON messages(provider, conversation_id, message_id);
+    CREATE INDEX IF NOT EXISTS idx_branches_conversation ON branches(provider, conversation_id);
+    CREATE INDEX IF NOT EXISTS idx_assets_message ON assets(provider, conversation_id, branch_id, position);
 
-        CREATE INDEX IF NOT EXISTS idx_attachments_conversation
-            ON attachments(provider, conversation_id);
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+        provider,
+        conversation_id,
+        branch_id,
+        message_id,
+        content,
+        tokenize='porter unicode61'
+    );
 
-        CREATE INDEX IF NOT EXISTS idx_attachments_name
-            ON attachments(attachment_name);
+    CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages
+    BEGIN
+        INSERT INTO messages_fts(provider, conversation_id, branch_id, message_id, content)
+        VALUES (NEW.provider, NEW.conversation_id, NEW.branch_id, NEW.message_id, NEW.content_text);
+    END;
 
-        CREATE VIRTUAL TABLE IF NOT EXISTS attachments_fts USING fts5(
-            provider,
-            conversation_id,
-            branch_id,
-            message_id,
-            attachment_name,
-            content,
-            tokenize='unicode61'
-        );
-        """
-    )
+    CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages
+    BEGIN
+        UPDATE messages_fts
+        SET content = NEW.content_text
+        WHERE provider = OLD.provider
+          AND conversation_id = OLD.conversation_id
+          AND branch_id = OLD.branch_id
+          AND message_id = OLD.message_id;
+    END;
 
-    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages
+    BEGIN
+        DELETE FROM messages_fts
+        WHERE provider = OLD.provider
+          AND conversation_id = OLD.conversation_id
+          AND branch_id = OLD.branch_id
+          AND message_id = OLD.message_id;
+    END;
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS attachments_fts USING fts5(
+        provider,
+        conversation_id,
+        branch_id,
+        message_id,
+        attachment_name,
+        content,
+        tokenize='unicode61'
+    );
+    """
+
+    # Execute all schema statements
+    conn.executescript(schema_sql)
     conn.commit()
+
+
+def _run_migrations(db_path: Path) -> None:
+    """Run Alembic migrations to ensure database schema is up to date.
+
+    This replaces the old _apply_schema() function with proper Alembic migrations.
+    Migrations are defined in polylogue/alembic/versions/.
+
+    If Alembic is not installed, falls back to applying the schema directly.
+    """
+    # Ensure parent directory exists
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Get project root (where alembic.ini is located)
+    project_root = Path(__file__).parent.parent
+
+    # Run alembic upgrade head
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "alembic", "upgrade", "head"],
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            # If alembic fails, it might not be installed - fall back to direct schema
+            conn = sqlite3.connect(db_path)
+            try:
+                # Check if tables exist
+                cursor = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
+                )
+                if not cursor.fetchone():
+                    # No tables exist - apply schema directly
+                    _apply_schema_fallback(conn)
+            finally:
+                conn.close()
+    except FileNotFoundError:
+        # Alembic not installed - apply schema directly
+        conn = sqlite3.connect(db_path)
+        try:
+            cursor = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
+            )
+            if not cursor.fetchone():
+                # No tables exist - apply schema directly
+                _apply_schema_fallback(conn)
+        finally:
+            conn.close()
 
 
 def _get_state() -> dict:
@@ -190,9 +282,13 @@ def open_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
 
     created_here = False
     if state["conn"] is None:
+        # Run Alembic migrations to ensure schema is up to date
+        _run_migrations(target_path)
+
+        # Open connection
         conn = sqlite3.connect(target_path)
         conn.row_factory = sqlite3.Row
-        _apply_schema(conn)
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode=WAL;")
         state["conn"] = conn
         state["path"] = target_path
@@ -325,11 +421,11 @@ def replace_messages(
             """
             INSERT INTO messages (
                 provider, conversation_id, branch_id, message_id, parent_id,
-                position, timestamp, role, content_hash, rendered_text,
-                raw_json, token_count, word_count, attachment_count,
-                attachment_names, metadata_json
+                position, timestamp, role, model, content_hash, content_text,
+                content_json, rendered_text, raw_json, token_count, word_count,
+                attachment_count, attachment_names, is_leaf, metadata_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 (
@@ -341,13 +437,17 @@ def replace_messages(
                     msg.get("position"),
                     msg.get("timestamp"),
                     msg.get("role"),
+                    msg.get("model"),
                     msg.get("content_hash"),
+                    msg.get("content_text"),
+                    msg.get("content_json"),
                     msg.get("rendered_text"),
                     msg.get("raw_json"),
                     msg.get("token_count", 0),
                     msg.get("word_count", 0),
                     msg.get("attachment_count", 0),
                     msg.get("attachment_names"),
+                    msg.get("is_leaf", 0),
                     json.dumps(msg.get("metadata")) if msg.get("metadata") else None,
                 )
                 for msg in messages
@@ -480,3 +580,151 @@ def record_run(
             json.dumps(metadata) if metadata else None,
         ),
     )
+
+
+def upsert_raw_import(
+    conn: sqlite3.Connection,
+    *,
+    hash: str,
+    provider: str,
+    conversation_id: str,
+    source_path: Optional[str],
+    blob: bytes,
+    parser_version: str,
+    parse_status: str = "pending",
+    error_message: Optional[str] = None,
+    metadata: Optional[Dict[str, object]] = None,
+) -> int:
+    """Insert or update a raw import record with conversation-aware versioning.
+
+    Args:
+        conn: Database connection
+        hash: Content hash (for deduplication)
+        provider: Provider name (chatgpt, claude, etc.)
+        conversation_id: Unique conversation identifier
+        source_path: Original file path
+        blob: Compressed or raw data
+        parser_version: Parser version string
+        parse_status: Parse status (pending, success, failed)
+        error_message: Optional error message
+        metadata: Optional metadata dict
+
+    Returns:
+        Version number assigned to this import
+    """
+    # Get next version for this conversation
+    result = conn.execute(
+        """
+        SELECT COALESCE(MAX(version), 0) + 1
+        FROM raw_imports
+        WHERE provider = ? AND conversation_id = ?
+        """,
+        (provider, conversation_id),
+    ).fetchone()
+    version = result[0] if result else 1
+
+    # Insert new version
+    conn.execute(
+        """
+        INSERT INTO raw_imports (
+            provider, conversation_id, version, hash, source_path, blob,
+            parser_version, parse_status, error_message, metadata_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(provider, conversation_id, version) DO UPDATE SET
+            hash=excluded.hash,
+            parse_status=excluded.parse_status,
+            error_message=excluded.error_message,
+            metadata_json=excluded.metadata_json
+        """,
+        (
+            provider,
+            conversation_id,
+            version,
+            hash,
+            source_path,
+            blob,
+            parser_version,
+            parse_status,
+            error_message,
+            json.dumps(metadata) if metadata else None,
+        ),
+    )
+
+    # Cleanup: keep only last 100 versions per conversation
+    conn.execute(
+        """
+        DELETE FROM raw_imports
+        WHERE provider = ? AND conversation_id = ?
+        AND version < (
+            SELECT MAX(version) - 99
+            FROM raw_imports
+            WHERE provider = ? AND conversation_id = ?
+        )
+        """,
+        (provider, conversation_id, provider, conversation_id),
+    )
+
+    return version
+
+
+def get_raw_import(conn: sqlite3.Connection, hash: str) -> Optional[sqlite3.Row]:
+    """Retrieve a raw import by hash (returns latest version if multiple exist)."""
+    return conn.execute(
+        """
+        SELECT * FROM raw_imports
+        WHERE hash = ?
+        ORDER BY version DESC
+        LIMIT 1
+        """,
+        (hash,),
+    ).fetchone()
+
+
+def get_raw_import_by_conversation(
+    conn: sqlite3.Connection,
+    provider: str,
+    conversation_id: str,
+    version: Optional[int] = None,
+) -> Optional[sqlite3.Row]:
+    """Retrieve a raw import by conversation ID and optional version.
+
+    Args:
+        conn: Database connection
+        provider: Provider name
+        conversation_id: Conversation identifier
+        version: Specific version (defaults to latest)
+
+    Returns:
+        Raw import row or None
+    """
+    if version is not None:
+        return conn.execute(
+            """
+            SELECT * FROM raw_imports
+            WHERE provider = ? AND conversation_id = ? AND version = ?
+            """,
+            (provider, conversation_id, version),
+        ).fetchone()
+    else:
+        return conn.execute(
+            """
+            SELECT * FROM raw_imports
+            WHERE provider = ? AND conversation_id = ?
+            ORDER BY version DESC
+            LIMIT 1
+            """,
+            (provider, conversation_id),
+        ).fetchone()
+
+
+def list_failed_imports(conn: sqlite3.Connection, provider: Optional[str] = None) -> List[sqlite3.Row]:
+    """List all imports that failed to parse."""
+    if provider:
+        return conn.execute(
+            "SELECT * FROM raw_imports WHERE parse_status = 'failed' AND provider = ? ORDER BY imported_at DESC",
+            (provider,),
+        ).fetchall()
+    return conn.execute(
+        "SELECT * FROM raw_imports WHERE parse_status = 'failed' ORDER BY imported_at DESC"
+    ).fetchall()
