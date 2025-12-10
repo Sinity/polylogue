@@ -6,7 +6,7 @@ from typing import Optional
 
 from ..db import open_connection
 from ..persistence.database import ConversationDatabase
-from .commands import CommandEnv
+from ..commands import CommandEnv
 
 
 def run_render_force(

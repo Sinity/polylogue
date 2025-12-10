@@ -167,7 +167,7 @@ def _convert_output_dirs(paths: CoreOutputPaths) -> OutputDirs:
     )
 
 
-def _convert_defaults(core: CoreDefaults) -> Defaults:
+def _convert_defaults(core: CoreDefaults, output_paths: CoreOutputPaths) -> Defaults:
     roots: dict[str, OutputDirs] = {}
     for label, paths in getattr(core, "roots", {}).items():
         roots[label] = _convert_output_dirs(paths)
@@ -175,7 +175,7 @@ def _convert_defaults(core: CoreDefaults) -> Defaults:
         collapse_threshold=core.collapse_threshold,
         html_previews=core.html_previews,
         html_theme=core.html_theme,
-        output_dirs=_convert_output_dirs(core.output_dirs),
+        output_dirs=_convert_output_dirs(output_paths),
         roots=roots,
     )
 
@@ -204,11 +204,19 @@ def _convert_exports(core: CoreExportsConfig) -> ExportsConfig:
 def load_config() -> Config:
     global CONFIG_PATH
     app_config: CoreAppConfig = load_configuration()
-    CONFIG_PATH = app_config.path
+    CONFIG_PATH = app_config.config_path
+
+    # Get exports, use default if not present
+    from .core.configuration import ExportsConfig as CoreExports
+    exports_config = getattr(app_config, 'exports', None) or CoreExports()
+
+    # Get output paths from app config
+    output_paths_config = app_config.get_output_paths()
+
     return Config(
-        defaults=_convert_defaults(app_config.defaults),
+        defaults=_convert_defaults(app_config.defaults, output_paths_config),
         index=_convert_index(app_config.index),
-        exports=_convert_exports(app_config.exports),
+        exports=_convert_exports(exports_config),
         drive=DriveConfig(),
     )
 

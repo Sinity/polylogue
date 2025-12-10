@@ -10,6 +10,31 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ..paths import CONFIG_HOME, DATA_HOME
 
+# Configuration constants
+CONFIG_ENV = "POLYLOGUE_CONFIG"
+DEFAULT_CONFIG_LOCATIONS = [CONFIG_HOME / "config.json"]
+
+
+class ExportsConfig(BaseSettings):
+    """Export source paths configuration."""
+
+    chatgpt: Path = Field(default=DATA_HOME / "inbox")
+    claude: Path = Field(default=DATA_HOME / "inbox")
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def expand_path(cls, v: Any) -> Path:
+        if isinstance(v, str):
+            return Path(v).expanduser()
+        if isinstance(v, Path):
+            return v.expanduser()
+        return v
+
+    model_config = SettingsConfigDict(
+        env_prefix="POLYLOGUE_EXPORTS_",
+        env_nested_delimiter="__",
+    )
+
 
 class OutputPathsConfig(BaseSettings):
     """Output paths configuration."""
@@ -81,7 +106,7 @@ class PathsConfig(BaseSettings):
     )
 
 
-class AppConfigV2(BaseSettings):
+class AppConfig(BaseSettings):
     """Main application configuration with Pydantic Settings.
 
     Supports:
@@ -94,6 +119,7 @@ class AppConfigV2(BaseSettings):
     paths: PathsConfig = Field(default_factory=PathsConfig)
     defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
     index: IndexConfig = Field(default_factory=IndexConfig)
+    exports: ExportsConfig = Field(default_factory=ExportsConfig)
 
     # Additional config for compatibility
     raw: Dict[str, Any] = Field(default_factory=dict)
@@ -140,7 +166,7 @@ class AppConfigV2(BaseSettings):
             return cls()
 
     @classmethod
-    def load(cls) -> "AppConfigV2":
+    def load(cls) -> "AppConfig":
         """Load configuration from standard locations."""
         # Check for explicit config path
         import os
@@ -171,7 +197,12 @@ class AppConfigV2(BaseSettings):
         )
 
 
+# Type aliases for backward compatibility
+Defaults = DefaultsConfig
+OutputPaths = OutputPathsConfig
+
+
 # Convenience function for backward compatibility
-def load_configuration_v2() -> AppConfigV2:
+def load_configuration() -> AppConfig:
     """Load the application configuration."""
-    return AppConfigV2.load()
+    return AppConfig.load()
