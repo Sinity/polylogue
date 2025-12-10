@@ -19,12 +19,39 @@ from .context import (
     DEFAULT_COLLAPSE,
     DEFAULT_SYNC_OUT,
     default_sync_namespace,
-    resolve_collapse_value,
+    resolve_collapse_thresholds,
     resolve_html_enabled,
     resolve_output_path,
     merge_with_defaults,
 )
 from .summaries import summarize_import
+
+
+def _truthy(val: str) -> bool:
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_sync_prefs(args: argparse.Namespace, env: CommandEnv) -> argparse.Namespace:
+    prefs = getattr(env, "prefs", {}) or {}
+    sync_prefs = prefs.get("sync", {}) if isinstance(prefs, dict) else {}
+    if not sync_prefs:
+        return args
+
+    def _apply_flag(flag: str, attr: str) -> None:
+        if flag in sync_prefs and not getattr(args, attr, False) and _truthy(sync_prefs[flag]):
+            setattr(args, attr, True)
+
+    if "--html" in sync_prefs and getattr(args, "html_mode", "auto") == "auto":
+        args.html_mode = "on" if _truthy(sync_prefs["--html"]) else "off"
+
+    _apply_flag("--links-only", "links_only")
+    _apply_flag("--diff", "diff")
+    _apply_flag("--prune", "prune")
+    _apply_flag("--watch", "watch")
+    _apply_flag("--once", "once")
+    _apply_flag("--attachment-ocr", "attachment_ocr")
+    _apply_flag("--offline", "offline")
+    return args
 
 
 def _log_local_sync(ui, title: str, result: LocalSyncResult, *, provider: str, footer: Optional[List[str]] = None) -> None:
@@ -40,6 +67,8 @@ def _log_local_sync(ui, title: str, result: LocalSyncResult, *, provider: str, f
         console.print(f"[cyan]{title}: skipped {result.skipped} up-to-date item(s).")
     if result.pruned:
         console.print(f"[cyan]{title}: pruned {result.pruned} path(s).")
+    if getattr(result, "ignored", 0):
+        console.print(f"[yellow]{title}: skipped {result.ignored} path(s) via .polylogueignore.")
     add_run(
         {
             "cmd": title.lower().replace(" ", "-"),
@@ -90,11 +119,21 @@ def run_list_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
 def run_sync_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     provider = getattr(args, "provider", None)
     settings = env.settings
+    args = _apply_sync_prefs(args, env)
+    if getattr(args, "offline", False) and provider == "drive":
+        env.ui.console.print("[red]Drive sync does not support --offline.")
+        raise SystemExit(1)
     if provider == "drive":
         merged = merge_with_defaults(default_sync_namespace("drive", settings), args)
         _run_sync_drive(merged, env)
     elif provider in LOCAL_SYNC_PROVIDER_NAMES:
         merged = merge_with_defaults(default_sync_namespace(provider, settings), args)
+        if getattr(args, "max_disk", None):
+            # Assume up to 20 MiB per session including attachments as a coarse estimate.
+            projected = 20 * 1024 * 1024 * max(1, len(getattr(args, "sessions", []) or []))
+            from ..util import preflight_disk_requirement
+
+            preflight_disk_requirement(projected_bytes=projected, limit_gib=args.max_disk, ui=env.ui)
         _run_local_sync(provider, merged, env)
     else:
         env.ui.console.print(f"[red]Unsupported provider for sync: {provider}")
@@ -118,16 +157,20 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         return
 
     download_attachments = not args.links_only
+    if getattr(args, "offline", False):
+        download_attachments = False
 
     previous_run_note = format_run_brief(latest_run(provider="drive", cmd="sync drive"))
+
+    drive = env.drive or DriveClient(ui)
+    env.drive = drive
+    folder_id = drive.resolve_folder_id(args.folder_name, args.folder_id)
+    raw_chats = drive.list_chats(args.folder_name, folder_id)
+    filtered = filter_chats(raw_chats, args.name_filter, args.since, args.until)
 
     cli_ids = [item.strip() for item in getattr(args, "chat_ids", []) if item and item.strip()]
     selected_ids: Optional[List[str]] = cli_ids or None
     if selected_ids is None and not ui.plain and not json_mode:
-        drive = env.drive or DriveClient(ui)
-        env.drive = drive
-        raw_chats = drive.list_chats(args.folder_name, args.folder_id)
-        filtered = filter_chats(raw_chats, args.name_filter, args.since, args.until)
         if not filtered:
             console.print("No chats to sync")
             return
@@ -136,7 +179,7 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
                 f"{c.get('name') or '(untitled)'}\t{c.get('modifiedTime') or ''}\t{c.get('id')}"
                 for c in filtered
             ]
-            selection = sk_select(lines, preview="printf '%s' {+}")
+            selection = sk_select(lines, preview="printf '%s' {+}", plain=ui.plain)
             if selection is None:
                 console.print("[yellow]Sync cancelled; no chats selected.")
                 return
@@ -146,13 +189,19 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
             selected_ids = [line.split("\t")[-1] for line in selection]
 
     settings = env.settings
+    collapse_thresholds = resolve_collapse_thresholds(args, settings)
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
+    prefetched = filtered
+    if selected_ids:
+        selected_set = set(selected_ids)
+        prefetched = [chat for chat in filtered if chat.get("id") in selected_set]
     options = SyncOptions(
         folder_name=args.folder_name,
-        folder_id=args.folder_id,
+        folder_id=folder_id,
         output_dir=resolve_output_path(args.out, DEFAULT_SYNC_OUT),
-        collapse_threshold=resolve_collapse_value(args.collapse_threshold, settings),
+        collapse_threshold=collapse_thresholds["message"],
+        collapse_thresholds=collapse_thresholds,
         download_attachments=download_attachments,
         dry_run=args.dry_run,
         force=args.force,
@@ -164,9 +213,9 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         html=html_enabled,
         html_theme=html_theme,
         diff=getattr(args, "diff", False),
+        prefetched_chats=prefetched,
+        attachment_ocr=getattr(args, "attachment_ocr", False),
     )
-    if download_attachments and env.drive is None:
-        env.drive = DriveClient(ui)
 
     try:
         result = sync_command(options, env)
@@ -204,6 +253,10 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         return
 
     lines = [f"Synced {result.count} chat(s) → {result.output_dir}"]
+    if getattr(args, "print_paths", False):
+        lines.append("Written paths:")
+        for item in result.items:
+            lines.append(f"  {item.output}")
     attachments_total = result.total_stats.get("attachments", 0)
     if attachments_total:
         lines.append(f"Attachments: {attachments_total}")
@@ -252,6 +305,7 @@ def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optiona
         lines,
         header=f"{header} — tab to toggle, ctrl-a select all, enter accept",
         prompt="Sessions> ",
+        plain=ui.plain,
     )
     if selection is None:
         console.print("[yellow]Sync cancelled; no sessions selected.")
@@ -273,7 +327,8 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base.expanduser()
     out_dir = resolve_output_path(args.out, provider.default_output)
     settings = env.settings
-    collapse = resolve_collapse_value(args.collapse_threshold, settings)
+    collapse_thresholds = resolve_collapse_thresholds(args, settings)
+    collapse = collapse_thresholds["message"]
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     force = args.force
@@ -296,19 +351,25 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
             return
         selected_paths = selection
 
-    result = provider.sync_fn(
-        base_dir=base_dir,
-        output_dir=out_dir,
-        collapse_threshold=collapse,
-        html=html_enabled,
-        html_theme=html_theme,
-        force=force,
-        prune=prune,
-        diff=diff_enabled,
-        sessions=selected_paths,
-        registrar=env.registrar,
-        ui=env.ui,
-    )
+    try:
+        result = provider.sync_fn(
+            base_dir=base_dir,
+            output_dir=out_dir,
+            collapse_threshold=collapse,
+            collapse_thresholds=collapse_thresholds,
+            html=html_enabled,
+            html_theme=html_theme,
+            force=force,
+            prune=prune,
+            diff=diff_enabled,
+            sessions=selected_paths,
+            registrar=env.registrar,
+            ui=env.ui,
+            attachment_ocr=getattr(args, "attachment_ocr", False),
+        )
+    except Exception as exc:
+        ui.console.print(f"[red]{provider.title} sync failed: {exc}")
+        raise SystemExit(1) from exc
 
     attachments = result.attachments
     attachment_bytes = result.attachment_bytes

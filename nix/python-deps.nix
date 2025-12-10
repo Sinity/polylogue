@@ -17,6 +17,7 @@ let
     ijson
     tiktoken
     qdrant-client
+    pypdf
   ];
   devDeps = with pyPkgs; [
     pytest

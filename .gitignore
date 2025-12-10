@@ -20,6 +20,9 @@ __pycache__
 # Local tool state
 .claude/
 
+# Local shell env files
+.env
+
 # not project code
 data
 sinex_md/
