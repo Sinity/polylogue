@@ -6,7 +6,7 @@ from typing import Optional
 from ..db import open_connection
 from ..importers.raw_storage import get_failed_imports, retrieve_raw_import, mark_parse_success, mark_parse_failed
 from ..importers.fallback_parser import extract_messages_heuristic, create_degraded_markdown
-from .commands import CommandEnv
+from ..commands import CommandEnv
 
 
 def run_reprocess(

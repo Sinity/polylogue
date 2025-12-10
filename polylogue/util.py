@@ -15,9 +15,6 @@ from typing import Any, Dict, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
-import pyperclip
-from pyperclip import PyperclipException
-
 from .db import open_connection, record_run
 from .paths import DATA_HOME
 from .persistence.state import ConversationStateRepository
@@ -547,18 +544,63 @@ def current_utc_timestamp() -> str:
 
 
 def read_clipboard_text() -> Optional[str]:
+    """Read text from clipboard using platform-specific tools."""
+    # Determine platform-specific clipboard command
+    if sys.platform == "darwin":
+        cmd = ["pbpaste"]
+    elif sys.platform == "win32":
+        # Windows: Use PowerShell
+        cmd = ["powershell.exe", "-command", "Get-Clipboard"]
+    else:
+        # Linux: Try xclip, then xsel, then wl-paste (Wayland)
+        for tool in ["xclip", "xsel", "wl-paste"]:
+            if shutil.which(tool):
+                if tool == "xclip":
+                    cmd = ["xclip", "-selection", "clipboard", "-o"]
+                elif tool == "xsel":
+                    cmd = ["xsel", "--clipboard", "--output"]
+                else:  # wl-paste
+                    cmd = ["wl-paste"]
+                break
+        else:
+            logger.debug("No clipboard tool found (xclip, xsel, or wl-paste)")
+            return None
+
     try:
-        text = pyperclip.paste()
-    except PyperclipException:  # pragma: no cover - clipboard backend unavailable
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout:
+            return result.stdout
         return None
-    if not text:
+    except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired):
+        logger.debug(f"Failed to read clipboard with {cmd[0]}")
         return None
-    return text
 
 
 def write_clipboard_text(text: str) -> bool:
+    """Write text to clipboard using platform-specific tools."""
+    # Determine platform-specific clipboard command
+    if sys.platform == "darwin":
+        cmd = ["pbcopy"]
+    elif sys.platform == "win32":
+        cmd = ["powershell.exe", "-command", f"Set-Clipboard -Value '{text}'"]
+    else:
+        # Linux: Try xclip, then xsel, then wl-copy (Wayland)
+        for tool in ["xclip", "xsel", "wl-copy"]:
+            if shutil.which(tool):
+                if tool == "xclip":
+                    cmd = ["xclip", "-selection", "clipboard"]
+                elif tool == "xsel":
+                    cmd = ["xsel", "--clipboard", "--input"]
+                else:  # wl-copy
+                    cmd = ["wl-copy"]
+                break
+        else:
+            logger.debug("No clipboard tool found (xclip, xsel, or wl-copy)")
+            return False
+
     try:
-        pyperclip.copy(text)
-        return True
-    except PyperclipException:  # pragma: no cover - clipboard backend unavailable
+        result = subprocess.run(cmd, input=text, text=True, capture_output=True, timeout=5)
+        return result.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired):
+        logger.debug(f"Failed to write clipboard with {cmd[0]}")
         return False
