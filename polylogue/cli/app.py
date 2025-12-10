@@ -59,6 +59,7 @@ from ..settings import ensure_settings_defaults, persist_settings, clear_persist
 from ..config import CONFIG, CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN
 from ..local_sync import LOCAL_SYNC_PROVIDER_NAMES, WATCHABLE_LOCAL_PROVIDER_NAMES
 from ..paths import STATE_HOME
+from ..schema import stamp_payload
 from .imports import (
     run_import_cli,
     run_import_chatgpt,
@@ -253,20 +254,22 @@ def _record_failure(args: argparse.Namespace, exc: BaseException, *, phase: str 
             "schema": "Validate input/export schema and retry with updated tooling.",
             "error": "Re-run with --verbose for a traceback and file a bug if reproducible.",
         }
-        record = {
-            "id": f"fail-{int(time.time() * 1000)}",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "cmd": getattr(args, "cmd", None),
-            "provider": provider,
-            "file": file_hint,
-            "phase": phase,
-            "exception": exc.__class__.__name__,
-            "message": str(exc),
-            "exit_reason": exit_reason,
-            "hint": hints.get(exit_reason),
-            "cwd": str(Path.cwd()),
-            "argv": sys.argv[1:],
-        }
+        record = stamp_payload(
+            {
+                "id": f"fail-{int(time.time() * 1000)}",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "cmd": getattr(args, "cmd", None),
+                "provider": provider,
+                "file": file_hint,
+                "phase": phase,
+                "exception": exc.__class__.__name__,
+                "message": str(exc),
+                "exit_reason": exit_reason,
+                "hint": hints.get(exit_reason),
+                "cwd": str(Path.cwd()),
+                "argv": sys.argv[1:],
+            }
+        )
         path = STATE_HOME / "failures.jsonl"
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, default=str))
