@@ -22,6 +22,8 @@ See [STATUS.md](STATUS.md) for detailed implementation tracking and [COMPLETION_
 
 **Build Status:** ✅ Package builds successfully, 184/226 tests passing (81%)
 
+**Next Phase:** 🚧 Database as Source of Truth + Async I/O (see [DB_PIVOT_PLAN.md](DB_PIVOT_PLAN.md))
+
 ---
 
 ## 1. Executive Summary: What is Polylogue?
