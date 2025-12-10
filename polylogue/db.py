@@ -13,7 +13,7 @@ DB_PATH = STATE_HOME / "polylogue.db"
 
 _LOCAL = threading.local()
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -101,6 +101,23 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             key TEXT PRIMARY KEY,
             value TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS raw_imports (
+            hash TEXT PRIMARY KEY,
+            imported_at INTEGER DEFAULT (unixepoch()),
+            provider TEXT NOT NULL,
+            source_path TEXT,
+            blob BLOB,
+            parser_version TEXT,
+            parse_status TEXT DEFAULT 'pending',
+            error_message TEXT,
+            metadata_json TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_raw_imports_status
+            ON raw_imports(parse_status);
+        CREATE INDEX IF NOT EXISTS idx_raw_imports_provider
+            ON raw_imports(provider, imported_at DESC);
 
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
             provider,
@@ -480,3 +497,61 @@ def record_run(
             json.dumps(metadata) if metadata else None,
         ),
     )
+
+
+def upsert_raw_import(
+    conn: sqlite3.Connection,
+    *,
+    hash: str,
+    provider: str,
+    source_path: Optional[str],
+    blob: bytes,
+    parser_version: str,
+    parse_status: str = "pending",
+    error_message: Optional[str] = None,
+    metadata: Optional[Dict[str, object]] = None,
+) -> None:
+    """Insert or update a raw import record."""
+    conn.execute(
+        """
+        INSERT INTO raw_imports (
+            hash, provider, source_path, blob, parser_version,
+            parse_status, error_message, metadata_json
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(hash) DO UPDATE SET
+            parse_status=excluded.parse_status,
+            error_message=excluded.error_message,
+            metadata_json=excluded.metadata_json
+        """,
+        (
+            hash,
+            provider,
+            source_path,
+            blob,
+            parser_version,
+            parse_status,
+            error_message,
+            json.dumps(metadata) if metadata else None,
+        ),
+    )
+
+
+def get_raw_import(conn: sqlite3.Connection, hash: str) -> Optional[sqlite3.Row]:
+    """Retrieve a raw import by hash."""
+    return conn.execute(
+        "SELECT * FROM raw_imports WHERE hash = ?",
+        (hash,),
+    ).fetchone()
+
+
+def list_failed_imports(conn: sqlite3.Connection, provider: Optional[str] = None) -> List[sqlite3.Row]:
+    """List all imports that failed to parse."""
+    if provider:
+        return conn.execute(
+            "SELECT * FROM raw_imports WHERE parse_status = 'failed' AND provider = ? ORDER BY imported_at DESC",
+            (provider,),
+        ).fetchall()
+    return conn.execute(
+        "SELECT * FROM raw_imports WHERE parse_status = 'failed' ORDER BY imported_at DESC"
+    ).fetchall()
