@@ -13,6 +13,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import webbrowser
 from datetime import datetime, timezone
 from collections import Counter
 from pathlib import Path
@@ -1026,7 +1027,17 @@ def run_inspect_search(args: argparse.Namespace, env: CommandEnv) -> None:
             anchor_label = f"msg-{hit.position}"
             line_hint = _find_anchor_line(Path(target_path), anchor_label)
         if target_path:
-            if open_in_editor(Path(target_path), line=line_hint):
+            target_obj = Path(target_path)
+            is_html = target_obj.suffix.lower() == ".html"
+            if is_html and anchor_label:
+                fragment = f"#${anchor_label}" if anchor_label else ""
+                try:
+                    webbrowser.open(target_obj.as_uri() + f"#{anchor_label}")
+                    ui.console.print(f"[dim]Opened {target_obj}#{anchor_label} in browser[/dim]")
+                    return
+                except Exception:
+                    pass
+            if open_in_editor(target_obj, line=line_hint):
                 suffix = f" (line {line_hint})" if line_hint else ""
                 label = f"{target_path}#{anchor_label}" if anchor_label else str(target_path)
                 ui.console.print(f"[dim]Opened {label}{suffix} in editor[/dim]")
@@ -1253,14 +1264,16 @@ def run_compare_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     hits_b = _search(args.provider_b)
 
     if getattr(args, "json", False):
-        payload = {
-            "query": args.query,
-            "limit": limit,
-            "providers": [
-                _compare_hits(args.provider_a, hits_a, fields),
-                _compare_hits(args.provider_b, hits_b, fields),
-            ],
-        }
+        payload = stamp_payload(
+            {
+                "query": args.query,
+                "limit": limit,
+                "providers": [
+                    _compare_hits(args.provider_a, hits_a, fields),
+                    _compare_hits(args.provider_b, hits_b, fields),
+                ],
+            }
+        )
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return
 
@@ -1889,6 +1902,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_maintain_doctor.add_argument("--claude-code-dir", type=Path, default=None, help="Override Claude Code projects directory")
     p_maintain_doctor.add_argument("--limit", type=int, default=None, help="Limit number of files inspected per provider")
     p_maintain_doctor.add_argument("--json", action="store_true", help="Emit machine-readable report")
+    p_maintain_doctor.add_argument("--json-verbose", action="store_true", help="Emit JSON with verbose details")
 
     p_maintain_index = _add_command_parser(maintain_sub, "index", help="Index maintenance helpers", description="Inspect/repair Polylogue indexes")
     index_sub = p_maintain_index.add_subparsers(dest="subcmd", required=True)
@@ -1896,6 +1910,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_index_check.add_argument("--repair", action="store_true", help="Attempt to rebuild missing SQLite FTS data")
     p_index_check.add_argument("--skip-qdrant", action="store_true", help="Skip Qdrant validation even when configured")
     p_index_check.add_argument("--json", action="store_true", help="Emit validation results as JSON")
+    p_index_check.add_argument("--json-verbose", action="store_true", help="Emit JSON with verbose details")
 
     p_maintain_restore = _add_command_parser(
         maintain_sub,

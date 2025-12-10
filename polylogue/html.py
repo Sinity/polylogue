@@ -155,6 +155,14 @@ HTML_TEMPLATE = """
       code { font-family: "JetBrains Mono", "Fira Code", monospace; }
       h2 { margin-top: 2rem; }
       .hidden { display: none !important; }
+      .anchor-btn {
+        margin-left: 0.4rem;
+        font-size: 0.85rem;
+        color: var(--accent);
+        text-decoration: none;
+        opacity: 0.7;
+      }
+      .anchor-btn:hover { opacity: 1; }
     </style>
   </head>
   <body>
@@ -202,6 +210,18 @@ HTML_TEMPLATE = """
       const headings = document.querySelectorAll('#content h1, #content h2, #content h3');
       headings.forEach(h => {
         if (!h.id) return;
+        const anchor = document.createElement('a');
+        anchor.href = `#${h.id}`;
+        anchor.textContent = '🔗';
+        anchor.className = 'anchor-btn';
+        anchor.title = 'Copy link';
+        anchor.addEventListener('click', evt => {
+          evt.preventDefault();
+          const url = `${window.location.origin}${window.location.pathname}#${h.id}`;
+          navigator.clipboard?.writeText(url).catch(() => {});
+          window.location.hash = h.id;
+        });
+        h.appendChild(anchor);
         const li = document.createElement('li');
         const a = document.createElement('a');
         a.href = `#${h.id}`;

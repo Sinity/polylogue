@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 from ..commands import CommandEnv
 from ..index_health import verify_qdrant_collection, verify_sqlite_indexes
+from ..schema import stamp_payload
 
 
 def run_index_cli(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -37,7 +38,8 @@ def run_index_check(args: argparse.Namespace, env: CommandEnv) -> None:
             report["qdrant"]["messages"].append(str(exc))
 
     if getattr(args, "json", False):
-        print(json.dumps(report, indent=2))
+        payload = stamp_payload(report)
+        print(json.dumps(payload, indent=2))
         return
 
     ui = env.ui
