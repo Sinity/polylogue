@@ -27,8 +27,11 @@ def run_runs_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         runs = [run for run in runs if _timestamp_in_range(run.get("timestamp"), since_epoch, until_epoch)]
 
     if getattr(args, "json", False):
-        payload = stamp_payload({"runs": runs}) if not getattr(args, "json_verbose", False) else stamp_payload({"runs": runs, "count": len(runs)})
-        print(json.dumps(payload, indent=2))
+        if getattr(args, "json_verbose", False):
+            payload = stamp_payload({"runs": runs, "count": len(runs)})
+            print(json.dumps(payload, indent=2))
+        else:
+            print(json.dumps(runs, indent=2))
         return
 
     if env.ui.plain:

@@ -145,11 +145,13 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     # Optional labeled roots
     labeled_roots: dict[str, Path] = {}
     if not ui.plain:
-        if ui.confirm("Add a labeled secondary archive root (e.g., work/personal)?", default=False):
-            label = ui.input("  Label (e.g., work)", default="work") or "work"
+        while ui.confirm("Add a labeled archive root (e.g., work/personal)?", default=False):
+            label = ui.input("  Label (e.g., work)", default=f"root{len(labeled_roots)+1}") or f"root{len(labeled_roots)+1}"
             root_input = ui.input("  Root path", default=str(output_dir))
             if root_input:
                 labeled_roots[label] = Path(root_input).expanduser()
+            if not ui.confirm("Add another root?", default=False):
+                break
 
     # Step 6: Drive credentials (optional)
     drive_setup = False
