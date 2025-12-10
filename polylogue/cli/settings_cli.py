@@ -89,6 +89,7 @@ def run_settings_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             html_theme=settings.html_theme,
             index=config_obj.index,
             path=CONFIG_PATH,
+            roots=config_obj.defaults.roots if getattr(config_obj.defaults, "roots", None) else None,
         )
 
     payload = _settings_snapshot(settings)
