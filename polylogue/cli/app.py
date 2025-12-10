@@ -68,6 +68,8 @@ from .imports import (
     run_import_claude_code,
     run_import_codex,
 )
+from .reprocess import run_reprocess
+from .render_force import run_render_force
 from .runs import run_runs_cli
 from .index_cli import run_index_cli
 from .watch import run_watch_cli
@@ -1339,6 +1341,23 @@ def _dispatch_search(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 def _dispatch_render(args: argparse.Namespace, env: CommandEnv) -> None:
+    # Check if --force flag is set to regenerate from database
+    if getattr(args, "force", False):
+        # Extract provider and conversation_id from input if provided
+        provider = None
+        conversation_id = None
+        output_dir = getattr(args, "out", None)
+
+        # Call render_force command
+        exit_code = run_render_force(
+            env,
+            provider=provider,
+            conversation_id=conversation_id,
+            output_dir=output_dir
+        )
+        raise SystemExit(exit_code)
+
+    # Normal render flow
     run_render_cli(args, env, json_output=getattr(args, "json", False))
 
 
@@ -1507,6 +1526,19 @@ def _dispatch_maintain(args: argparse.Namespace, env: CommandEnv) -> None:
     run_maintain_cli(args, env)
 
 
+def _dispatch_reprocess(args: argparse.Namespace, env: CommandEnv) -> None:
+    """Reprocess failed imports with optional fallback parser."""
+    provider = getattr(args, "provider", None)
+    use_fallback = getattr(args, "fallback", False)
+
+    exit_code = run_reprocess(
+        env,
+        provider=provider,
+        use_fallback=use_fallback
+    )
+    raise SystemExit(exit_code)
+
+
 def _dispatch_status(args: argparse.Namespace, env: CommandEnv) -> None:
     run_status_cli(args, env)
 
@@ -1568,6 +1600,7 @@ def _register_default_commands() -> None:
 
     # Maintenance
     _ensure("maintain", _dispatch_maintain, "System maintenance (prune/doctor/index)", ["m"])
+    _ensure("reprocess", _dispatch_reprocess, "Reprocess failed imports")
     _ensure("prefs", _dispatch_prefs, "Manage per-command preference defaults")
     _ensure("open", _dispatch_open, "Open or print paths from the latest run")
 
@@ -1668,6 +1701,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_render.add_argument("--json", action="store_true", help="Emit machine-readable summary")
     p_render.add_argument("--print-paths", action="store_true", help="List written files after rendering")
     p_render.add_argument("--to-clipboard", action="store_true", help="Copy single rendered file to clipboard")
+    p_render.add_argument("--force", action="store_true", help="Regenerate markdown from database instead of reading source files")
 
     # Core workflow: sync
     p_sync = _add_command_parser(
@@ -1924,6 +1958,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_maintain_restore.add_argument("--to", dest="dest", type=Path, required=True, help="Destination output directory")
     p_maintain_restore.add_argument("--force", action="store_true", help="Overwrite destination if it exists")
     p_maintain_restore.add_argument("--json", action="store_true", help="Emit restoration summary as JSON")
+
+    # Reprocess command for failed imports
+    p_reprocess = _add_command_parser(
+        sub,
+        "reprocess",
+        help="Reprocess failed imports",
+        description="Reprocess imports that failed during initial parsing",
+        epilog=_examples_epilog("reprocess"),
+    )
+    p_reprocess.add_argument(
+        "--provider",
+        type=str,
+        default=None,
+        help="Filter by provider (chatgpt, claude, etc.)",
+    )
+    p_reprocess.add_argument(
+        "--fallback",
+        action="store_true",
+        help="Use fallback heuristic parser for extraction",
+    )
+    p_reprocess.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable summary",
+    )
 
     p_config = _add_command_parser(
         sub,
