@@ -198,20 +198,47 @@ class ConversationRegistrar:
                     attachment_names = ",".join(
                         sorted({name for name, _ in record.links})
                     ) if record.links else None
+
+                    # Schema v5: Extract structured content
+                    content_text = record.text if record.text else None
+                    content_json = None
+                    model = None
+
+                    # Try to extract model from chunk/metadata
+                    if isinstance(record.chunk, dict):
+                        model = record.chunk.get("model") or record.metadata.get("model")
+                        # Check if this is a tool call or structured content
+                        if record.role in ("tool_call", "function_call"):
+                            content_json = json.dumps(record.chunk.get("arguments", record.chunk), ensure_ascii=False)
+                        elif "tool_calls" in record.chunk or "function_call" in record.chunk:
+                            content_json = json.dumps({
+                                "tool_calls": record.chunk.get("tool_calls"),
+                                "function_call": record.chunk.get("function_call"),
+                            }, ensure_ascii=False)
+
+                    # Schema v5: Mark leaf nodes
+                    is_leaf = 0
+                    if idx == len(branch_records) - 1:
+                        is_leaf = 1
+
                     messages.append(
                         {
                             "message_id": record.message_id,
                             "parent_id": record.parent_id,
                             "role": record.role,
+                            "model": model,
                             "position": idx,
                             "timestamp": record.timestamp,
                             "token_count": record.token_count,
                             "word_count": record.word_count,
                             "attachment_count": record.attachments,
                             "attachment_names": attachment_names,
+                            "content_text": content_text,
+                            "content_json": content_json,
                             "rendered_text": record.text,
                             "content_hash": content_hash,
                             "raw_json": json.dumps(record.chunk, ensure_ascii=False),
+                            "is_leaf": is_leaf,
                             "metadata": record.metadata,
                         }
                     )
