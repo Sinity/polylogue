@@ -10,6 +10,7 @@ from rich.table import Table
 from ..commands import CommandEnv
 from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
 from ..doctor import run_doctor as doctor_run
+from ..schema import stamp_payload
 from ..util import CLAUDE_CODE_PROJECT_ROOT, CODEX_SESSIONS_ROOT
 
 
@@ -53,7 +54,8 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     }
 
     if getattr(args, "json", False):
-        print(json.dumps(config_hint, indent=2))
+        payload = stamp_payload(config_hint)
+        print(json.dumps(payload, indent=2))
         return
 
     lines = [
