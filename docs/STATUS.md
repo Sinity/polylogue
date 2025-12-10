@@ -47,7 +47,7 @@ These recommendations from the report were NOT implemented as they represent maj
 - ❌ **Golden Master Tests** - Don't exist yet (explicitly excluded per user request)
 - ❌ **Switch to rclone** - Keeping existing Drive implementation
 - ❌ **Remove HTML generation** - HTML is still part of the feature set
-- ❌ **Database as Source of Truth** - Still using filesystem + DB hybrid
+- ✅ **Database as Source of Truth** - COMPLETED (December 2025)
 - ❌ **Messages table redesign** - Keeping current schema
 - ❌ **Async I/O for Drive** - Still using synchronous requests
 - ❌ **Remove watch.py** - Watch functionality retained
@@ -74,18 +74,17 @@ The plan.md file is a **living roadmap** for future improvements and should be p
 
 ## 🚀 Next Phase: Core Architecture Pivot
 
-**Now starting:** The two major architectural shifts from report.md that we agreed to implement:
+### 1. Database as Source of Truth ✅ COMPLETED
 
-### 1. Database as Source of Truth
+- ✅ **Completed:** Database-first architecture (December 2025)
+- ✅ **Removed:** All dual-write code and backwards compatibility
+- ✅ **Implementation:** SQLite is the authoritative source, markdown files are regenerable views
+- ✅ **Details:** See [DB_PIVOT_PLAN.md](DB_PIVOT_PLAN.md)
+- **Benefits achieved:** Single source of truth, regenerable views, true "forever archive"
 
-- **Current:** Dual-write (filesystem + database)
-- **Target:** Database-first, markdown as view
-- **Plan:** See [DB_PIVOT_PLAN.md](DB_PIVOT_PLAN.md)
-- **Benefits:** Single source of truth, regenerable views, true "forever archive"
-
-### 2. Async I/O
+### 2. Async I/O (Future Work)
 
 - **Current:** Synchronous requests for Drive API
 - **Target:** Async httpx with parallel downloads
-- **Plan:** See [DB_PIVOT_PLAN.md](DB_PIVOT_PLAN.md)
+- **Plan:** See [DB_PIVOT_PLAN.md](DB_PIVOT_PLAN.md) (Async section)
 - **Benefits:** 10x+ speedup for batch operations, better resource usage

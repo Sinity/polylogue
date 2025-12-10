@@ -362,6 +362,117 @@ ignore = ["E501", "B008"]  # line-too-long, function-call-in-defaults
 
 ---
 
+### Phase 2: Database as Source of Truth
+
+#### 9. Database-First Architecture
+
+**Status:** ✅ Implemented (December 2025)
+
+**What Changed:**
+
+- Removed all dual-write code from conversation processing
+- SQLite is now the ONLY authoritative data source
+- Markdown files are generated on-demand from database
+- Removed feature flags and backwards compatibility code
+- Importers write ONLY to database
+
+**Benefits:**
+
+- **Single source of truth** - no more filesystem/DB sync issues
+- **Regenerable views** - delete all markdown and regenerate from DB
+- **True forever archive** - database contains all conversation history
+- **Cleaner codebase** - eliminated ~200 lines of dual-write logic
+
+**Architecture:**
+
+```text
+Import Flow (Database-First):
+1. Import → Parse → Write to SQLite only
+2. Render → Read from SQLite → Generate markdown
+
+Old Flow (Dual-Write):
+1. Import → Parse → Write to filesystem AND database
+   Problem: Two sources of truth can drift out of sync
+```
+
+**New Workflow:**
+
+```bash
+# Import conversations (writes to database only)
+polylogue sync chatgpt
+
+# Generate markdown from database
+polylogue render --force
+
+# Regenerate specific conversation
+polylogue render --provider chatgpt --conversation-id abc123
+
+# Regenerate all conversations
+polylogue render --force
+```
+
+**Implementation Details:**
+
+**process_conversation() - Rewritten for DB-only:**
+
+- Removed all file writing code (~200 lines)
+- Only calls `registrar.record_branch_plan()` and `registrar.record_attachments()`
+- Returns minimal `ImportResult` with path references
+- No markdown generation during import
+
+**DatabaseRenderer - New class for rendering:**
+
+```python
+from polylogue.renderers.db_renderer import DatabaseRenderer
+
+# Create renderer
+renderer = DatabaseRenderer(db_path=Path("~/.config/polylogue/polylogue.db"))
+
+# Render single conversation
+markdown_path = renderer.render_conversation(
+    provider="chatgpt",
+    conversation_id="abc123",
+    output_dir=Path("~/conversations"),
+)
+
+# Render all conversations
+paths = renderer.render_all(
+    output_dir=Path("~/conversations"),
+    provider="chatgpt",  # Optional filter
+)
+```
+
+**Removed Code:**
+
+- `FeatureFlagsConfig` class (no more feature flags)
+- `db_only` parameters from all functions
+- Dual-write logic in `process_conversation()`
+- `repository.persist()` calls
+- Branch file generation loops
+- HTML generation during import
+
+**Files Modified:**
+
+- `polylogue/core/configuration.py` - Removed FeatureFlagsConfig
+- `polylogue/conversation.py` - Rewrote process_conversation()
+- `polylogue/importers/chatgpt.py` - Removed db_only parameter
+- `polylogue/importers/claude_ai.py` - Already clean
+- `polylogue/importers/claude_code.py` - Already clean
+- `polylogue/importers/codex.py` - Already clean
+
+**Files Added:**
+
+- `polylogue/renderers/db_renderer.py` - DatabaseRenderer class
+- `polylogue/cli/render_force.py` - Regenerate markdown from DB
+- `tests/unit/test_db_renderer.py` - Unit tests
+
+**Documentation:**
+
+- [DB_PIVOT_PLAN.md](DB_PIVOT_PLAN.md) - Complete implementation plan
+- [STATUS.md](STATUS.md) - Updated to show DB-first as complete
+
+---
+
 ## 🚧 Pending Improvements (Not Yet Implemented)
 
 These improvements are designed and ready to implement but require more extensive refactoring:
@@ -566,25 +677,27 @@ except ValidationError as e:
 
 ## Summary
 
-✅ **Completed: 8 major improvements**
+✅ **Completed: 9 major improvements**
 - Data safety (raw storage, schemas, fallback parser)
 - Portability (pure Python UI, no binaries)
 - Better config (Pydantic Settings)
 - Better tooling (ruff)
 - Anonymized error reporting
+- **Database as Source of Truth** (December 2025)
 
-🚧 **Pending: 9 improvements**
+🚧 **Pending: 8 improvements**
 - Importer integration with raw storage
 - Click migration
 - httpx migration
 - App.py refactoring
-- Render --force
 - Schema migrations
 - Golden master tests
 - Clipboard security fix
+- Async I/O for Drive API
 
 **Next Steps:**
 1. Integrate raw storage into existing importers
 2. Add `polylogue reprocess` command
 3. Consider Click migration for cleaner CLI code
 4. Add golden master tests for regression detection
+5. Implement async I/O for Drive API (10x+ speedup)
