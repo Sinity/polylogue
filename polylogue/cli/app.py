@@ -105,12 +105,34 @@ def _should_use_plain(args: argparse.Namespace) -> bool:
 PARSER_FORMATTER = argparse.ArgumentDefaultsHelpFormatter
 
 
+class ExamplesHelpFormatter(argparse.ArgumentDefaultsHelpFormatter):
+    """Formatter that appends command examples from COMMAND_EXAMPLES."""
+
+    def format_help(self) -> str:  # pragma: no cover - formatting path
+        help_text = super().format_help()
+        # Only append when the parser name exists in COMMAND_EXAMPLES
+        prog = getattr(self, "_prog", None) or getattr(getattr(self, "_parser", None), "prog", "")
+        # Map parser prog tokens like "polylogue search" to the subcommand key
+        if prog:
+            tokens = prog.split()
+            if len(tokens) >= 2:
+                cmd = tokens[1]
+                examples = COMMAND_EXAMPLES.get(cmd)
+                if examples:
+                    lines = ["\nExamples:"]
+                    for desc, cmdline in examples:
+                        lines.append(f"  # {desc}")
+                        lines.append(f"  $ {cmdline}")
+                    help_text = help_text.rstrip() + "\n" + "\n".join(lines) + "\n"
+        return help_text
+
+
 def _add_command_parser(subparsers: argparse._SubParsersAction, name: str, **kwargs):
     if "epilog" not in kwargs:
         epilog = _examples_epilog(name)
         if epilog:
             kwargs["epilog"] = epilog
-    kwargs.setdefault("formatter_class", PARSER_FORMATTER)
+    kwargs.setdefault("formatter_class", ExamplesHelpFormatter)
     return subparsers.add_parser(name, **kwargs)
 
 # Command Examples for --examples flag
