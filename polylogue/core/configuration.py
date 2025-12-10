@@ -1,113 +1,167 @@
+"""Configuration using Pydantic Settings for automatic env var support."""
 from __future__ import annotations
 
 import json
-import os
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
+
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from ..paths import CONFIG_HOME, DATA_HOME
-from .config_validation import validate_config_payload
-
-CONFIG_ENV = "POLYLOGUE_CONFIG"
-DEFAULT_CONFIG_LOCATIONS = [
-    CONFIG_HOME / "config.json",
-]
-DEFAULT_INPUT_ROOT = DATA_HOME / "inbox"
-DEFAULT_OUTPUT_ROOT = DATA_HOME / "archive"
 
 
-@dataclass
-class OutputPaths:
-    render: Path
-    sync_drive: Path
-    sync_codex: Path
-    sync_claude_code: Path
-    import_chatgpt: Path
-    import_claude: Path
+class OutputPathsConfig(BaseSettings):
+    """Output paths configuration."""
+
+    render: Path = Field(default=DATA_HOME / "archive" / "render")
+    sync_drive: Path = Field(default=DATA_HOME / "archive" / "gemini")
+    sync_codex: Path = Field(default=DATA_HOME / "archive" / "codex")
+    sync_claude_code: Path = Field(default=DATA_HOME / "archive" / "claude-code")
+    import_chatgpt: Path = Field(default=DATA_HOME / "archive" / "chatgpt")
+    import_claude: Path = Field(default=DATA_HOME / "archive" / "claude")
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def expand_path(cls, v: Any) -> Path:
+        if isinstance(v, str):
+            return Path(v).expanduser()
+        if isinstance(v, Path):
+            return v.expanduser()
+        return v
+
+
+class DefaultsConfig(BaseSettings):
+    """Default settings for the application."""
+
+    collapse_threshold: int = Field(default=25, ge=0)
+    html_previews: bool = Field(default=True)
+    html_theme: str = Field(default="dark")
+
+    model_config = SettingsConfigDict(
+        env_prefix="POLYLOGUE_",
+        env_nested_delimiter="__",
+    )
+
+
+class IndexConfig(BaseSettings):
+    """Search index configuration."""
+
+    backend: str = Field(default="sqlite")
+    qdrant_url: Optional[str] = Field(default=None)
+    qdrant_api_key: Optional[str] = Field(default=None)
+    qdrant_collection: str = Field(default="polylogue")
+    qdrant_vector_size: Optional[int] = Field(default=None, ge=1)
+
+    model_config = SettingsConfigDict(
+        env_prefix="POLYLOGUE_INDEX_",
+        env_nested_delimiter="__",
+    )
+
+
+class PathsConfig(BaseSettings):
+    """Path configuration."""
+
+    input_root: Path = Field(default=DATA_HOME / "inbox")
+    output_root: Path = Field(default=DATA_HOME / "archive")
+    config_home: Path = Field(default=CONFIG_HOME)
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def expand_path(cls, v: Any) -> Path:
+        if isinstance(v, str):
+            return Path(v).expanduser()
+        if isinstance(v, Path):
+            return v.expanduser()
+        return v
+
+    model_config = SettingsConfigDict(
+        env_prefix="POLYLOGUE_",
+        env_nested_delimiter="__",
+    )
+
+
+class AppConfigV2(BaseSettings):
+    """Main application configuration with Pydantic Settings.
+
+    Supports:
+    - JSON config files
+    - Environment variables (POLYLOGUE_*)
+    - .env files
+    - Automatic type validation
+    """
+
+    paths: PathsConfig = Field(default_factory=PathsConfig)
+    defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
+    index: IndexConfig = Field(default_factory=IndexConfig)
+
+    # Additional config for compatibility
+    raw: Dict[str, Any] = Field(default_factory=dict)
+    config_path: Optional[Path] = Field(default=None)
+
+    model_config = SettingsConfigDict(
+        env_prefix="POLYLOGUE_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_nested_delimiter="__",
+        extra="allow",
+    )
 
     @classmethod
-    def default(cls) -> "OutputPaths":
-        output_root = DEFAULT_OUTPUT_ROOT
-        return cls(
-            render=output_root / "render",
-            sync_drive=output_root / "gemini",
-            sync_codex=output_root / "codex",
-            sync_claude_code=output_root / "claude-code",
-            import_chatgpt=output_root / "chatgpt",
-            import_claude=output_root / "claude",
-        )
+    def from_json_file(cls, path: Path) -> "AppConfigV2":
+        """Load configuration from a JSON file."""
+        if not path.exists():
+            return cls()
 
-
-@dataclass
-class Defaults:
-    collapse_threshold: int = 25
-    html_previews: bool = True
-    html_theme: str = "dark"
-    output_dirs: OutputPaths = field(default_factory=OutputPaths.default)
-
-
-@dataclass
-class AppConfig:
-    defaults: Defaults = field(default_factory=Defaults)
-    index: Optional["IndexConfig"] = None
-    exports: Optional["ExportsConfig"] = None
-    path: Optional[Path] = None
-    raw: Dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class IndexConfig:
-    backend: str = "sqlite"
-    qdrant_url: Optional[str] = None
-    qdrant_api_key: Optional[str] = None
-    qdrant_collection: str = "polylogue"
-    qdrant_vector_size: Optional[int] = None
-
-
-@dataclass
-class ExportsConfig:
-    chatgpt: Path
-    claude: Path
-
-
-def _load_config_sources() -> Tuple[Dict[str, Any], Optional[Path]]:
-    candidates: list[Path] = []
-    env_path = os.environ.get(CONFIG_ENV)
-    if env_path:
-        candidates.append(Path(env_path).expanduser())
-    candidates.extend(DEFAULT_CONFIG_LOCATIONS)
-
-    for path in candidates:
         try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+
+            # Parse nested structures
+            config_dict: Dict[str, Any] = {}
+
+            if "paths" in data:
+                config_dict["paths"] = PathsConfig(**data["paths"])
+
+            if "defaults" in data or "ui" in data:
+                defaults_data = data.get("defaults") or data.get("ui") or {}
+                config_dict["defaults"] = DefaultsConfig(**defaults_data)
+
+            if "index" in data:
+                config_dict["index"] = IndexConfig(**data["index"])
+
+            # Store raw data for compatibility
+            config_dict["raw"] = data
+            config_dict["config_path"] = path
+
+            return cls(**config_dict)
+        except Exception as e:
+            # Fallback to default config on parse error
+            print(f"Warning: Failed to parse config file {path}: {e}")
+            return cls()
+
+    @classmethod
+    def load(cls) -> "AppConfigV2":
+        """Load configuration from standard locations."""
+        # Check for explicit config path
+        import os
+        env_path = os.environ.get("POLYLOGUE_CONFIG")
+        if env_path:
+            path = Path(env_path).expanduser()
             if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                return data, path
-        except Exception:
-            continue
-    return {}, None
+                return cls.from_json_file(path)
 
+        # Check default locations
+        for path in [CONFIG_HOME / "config.json"]:
+            if path.exists():
+                return cls.from_json_file(path)
 
-def _load_paths(data: Dict[str, Any]) -> Tuple[Path, Path]:
-    paths_raw = data.get("paths") if isinstance(data, dict) else None
-    input_root = DEFAULT_INPUT_ROOT
-    output_root = DEFAULT_OUTPUT_ROOT
-    if isinstance(paths_raw, dict):
-        raw_input = paths_raw.get("input_root")
-        if isinstance(raw_input, str) and raw_input.strip():
-            input_root = Path(raw_input).expanduser()
-        raw_output = paths_raw.get("output_root")
-        if isinstance(raw_output, str) and raw_output.strip():
-            output_root = Path(raw_output).expanduser()
-    return input_root, output_root
+        # Return default config (will still load from env vars)
+        return cls()
 
-
-def _load_defaults(data: Dict[str, Any], *, output_root: Path) -> Defaults:
-    ui_raw = None
-    if isinstance(data, dict):
-        ui_raw = data.get("ui") or data.get("defaults")
-    defaults = Defaults(
-        output_dirs=OutputPaths(
+    def get_output_paths(self) -> OutputPathsConfig:
+        """Get output paths based on configuration."""
+        output_root = self.paths.output_root
+        return OutputPathsConfig(
             render=output_root / "render",
             sync_drive=output_root / "gemini",
             sync_codex=output_root / "codex",
@@ -115,63 +169,9 @@ def _load_defaults(data: Dict[str, Any], *, output_root: Path) -> Defaults:
             import_chatgpt=output_root / "chatgpt",
             import_claude=output_root / "claude",
         )
-    )
-    if not isinstance(ui_raw, dict):
-        return defaults
-
-    collapse = ui_raw.get("collapse_threshold")
-    if isinstance(collapse, (int, float)) and collapse > 0:
-        defaults.collapse_threshold = int(collapse)
-
-    html_enabled = ui_raw.get("html")
-    if isinstance(html_enabled, bool):
-        defaults.html_previews = html_enabled
-
-    html_theme = ui_raw.get("theme")
-    if isinstance(html_theme, str) and html_theme.strip():
-        defaults.html_theme = html_theme.strip()
-
-    return defaults
 
 
-def _load_index(data: Dict[str, Any]) -> IndexConfig:
-    index_raw = data.get("index") if isinstance(data, dict) else None
-    cfg = IndexConfig()
-    if not isinstance(index_raw, dict):
-        return cfg
-    backend = index_raw.get("backend")
-    if isinstance(backend, str) and backend.strip():
-        cfg.backend = backend.strip().lower()
-    qdrant_raw = index_raw.get("qdrant")
-    if isinstance(qdrant_raw, dict):
-        if qdrant_raw.get("url"):
-            cfg.qdrant_url = str(qdrant_raw["url"]).strip()
-        if qdrant_raw.get("api_key"):
-            cfg.qdrant_api_key = str(qdrant_raw["api_key"]).strip()
-        if qdrant_raw.get("collection"):
-            cfg.qdrant_collection = str(qdrant_raw["collection"]).strip()
-        vector_size = qdrant_raw.get("vector_size")
-        if isinstance(vector_size, int) and vector_size >= 1:
-            cfg.qdrant_vector_size = vector_size
-    return cfg
-
-
-def _load_exports(input_root: Path) -> ExportsConfig:
-    return ExportsConfig(chatgpt=input_root, claude=input_root)
-
-
-def load_configuration() -> AppConfig:
-    data, path = _load_config_sources()
-    if data:
-        validate_config_payload(data)
-    input_root, output_root = _load_paths(data)
-    defaults = _load_defaults(data, output_root=output_root)
-    index = _load_index(data)
-    exports = _load_exports(input_root)
-    return AppConfig(
-        defaults=defaults,
-        index=index,
-        exports=exports,
-        path=path,
-        raw=data if isinstance(data, dict) else {},
-    )
+# Convenience function for backward compatibility
+def load_configuration_v2() -> AppConfigV2:
+    """Load the application configuration."""
+    return AppConfigV2.load()
