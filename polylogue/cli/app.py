@@ -1606,6 +1606,7 @@ def _configure_status_parser(parser: argparse.ArgumentParser, *, require_provide
     parser.add_argument("--dump", type=str, default=None, help="Write recent runs to a file ('-' for stdout)")
     parser.add_argument("--dump-limit", type=int, default=100, help="Number of runs to include when dumping")
     parser.add_argument("--runs-limit", type=int, default=200, help="Number of historical runs to include in summaries")
+    parser.add_argument("--top", type=int, default=0, help="Show top runs by attachments/tokens")
     parser.add_argument(
         "--providers",
         type=str,
