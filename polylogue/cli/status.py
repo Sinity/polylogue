@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Set, cast
 
 from ..commands import CommandEnv, status_command
 from ..version import POLYLOGUE_VERSION, SCHEMA_VERSION
+from ..schema import stamp_payload
 from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
 from ..util import parse_input_time_to_epoch
 from .context import DEFAULT_OUTPUT_ROOTS, DEFAULT_RENDER_OUT
@@ -109,45 +110,33 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
         summary_requested = getattr(args, "summary", None)
         if summary_requested:
-            summary_payload = {
-                "generatedAt": datetime.now(timezone.utc).isoformat(),
-                "schemaVersion": SCHEMA_VERSION,
-                "polylogueVersion": POLYLOGUE_VERSION,
-                "runSummary": run_summary,
-                "providerSummary": provider_summary,
-            }
+            summary_payload = stamp_payload(
+                {
+                    "generatedAt": datetime.now(timezone.utc).isoformat(),
+                    "runSummary": run_summary,
+                    "providerSummary": provider_summary,
+                }
+            )
             _dump_summary(ui, summary_payload, summary_requested, quiet=quiet_json)
             if summary_only:
                 return
         if json_mode:
-            payload = {
-                "schemaVersion": SCHEMA_VERSION,
-                "polylogueVersion": POLYLOGUE_VERSION,
-                "credentials_present": result.credentials_present,
-                "credentialsPresent": result.credentials_present,
-                "token_present": result.token_present,
-                "tokenPresent": result.token_present,
-                "credential_path": str(result.credential_path),
-                "credentialPath": str(result.credential_path),
-                "token_path": str(result.token_path),
-                "tokenPath": str(result.token_path),
-                "credential_env": result.credential_env,
-                "credentialEnv": result.credential_env,
-                "token_env": result.token_env,
-                "tokenEnv": result.token_env,
-                "state_path": str(result.state_path),
-                "statePath": str(result.state_path),
-                "runs_path": str(result.runs_path),
-                "runsPath": str(result.runs_path),
-                "recent_runs": filtered_recent_runs,
-                "recentRuns": filtered_recent_runs,
-                "run_summary": run_summary,
-                "runSummary": run_summary,
-                "provider_summary": provider_summary,
-                "providerSummary": provider_summary,
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "generatedAt": datetime.now(timezone.utc).isoformat(),
-            }
+            payload = stamp_payload(
+                {
+                    "credentials_present": result.credentials_present,
+                    "token_present": result.token_present,
+                    "credential_path": str(result.credential_path),
+                    "token_path": str(result.token_path),
+                    "credential_env": result.credential_env,
+                    "token_env": result.token_env,
+                    "state_path": str(result.state_path),
+                    "runs_path": str(result.runs_path),
+                    "recent_runs": filtered_recent_runs,
+                    "run_summary": run_summary,
+                    "provider_summary": provider_summary,
+                    "generated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
             if json_lines:
                 print(json.dumps(payload, separators=(",", ":")), flush=True)
             else:
