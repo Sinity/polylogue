@@ -10,6 +10,7 @@ from typing import Dict, List, Tuple
 
 from ..commands import CommandEnv
 from .context import DEFAULT_OUTPUT_ROOTS
+from ..schema import stamp_payload
 
 
 def _iter_indexed_attachments(env: CommandEnv) -> List[Dict[str, object]]:
@@ -104,17 +105,19 @@ def _run_attachment_stats(args: argparse.Namespace, env: CommandEnv) -> None:
             top_rows = top_rows[:limit]
         if json_lines:
             for row in rows:
-                print(json.dumps(row, separators=(",", ":")))
+                print(json.dumps(stamp_payload(row, include_versions=False), separators=(",", ":")))
             return
         if json_mode:
-            payload = {
-                "count": len(rows),
-                "bytes": total_bytes,
-                "textBytes": total_text_bytes,
-                "ocrUsed": ocr_used,
-                "uniqueBytes": hashed_bytes if getattr(args, "hash", False) else None,
-                "top": top_rows,
-            }
+            payload = stamp_payload(
+                {
+                    "count": len(rows),
+                    "bytes": total_bytes,
+                    "textBytes": total_text_bytes,
+                    "ocrUsed": ocr_used,
+                    "uniqueBytes": hashed_bytes if getattr(args, "hash", False) else None,
+                    "top": top_rows,
+                }
+            )
             print(json.dumps(payload, indent=2))
             return
         csv_target = getattr(args, "csv", None)
@@ -201,16 +204,18 @@ def _run_attachment_stats(args: argparse.Namespace, env: CommandEnv) -> None:
     json_mode = bool(getattr(args, "json", False) or json_lines)
     if json_lines:
         for row in rows:
-            print(json.dumps(row, separators=(",", ":")))
+            print(json.dumps(stamp_payload(row, include_versions=False), separators=(",", ":")))
         return
     if json_mode:
-        payload = {
-            "roots": [str(r) for r in roots],
-            "count": len(files),
-            "bytes": total_bytes,
-            "uniqueBytes": hashed_bytes if getattr(args, "hash", False) else None,
-            "top": rows_sorted,
-        }
+        payload = stamp_payload(
+            {
+                "roots": [str(r) for r in roots],
+                "count": len(files),
+                "bytes": total_bytes,
+                "uniqueBytes": hashed_bytes if getattr(args, "hash", False) else None,
+                "top": rows_sorted,
+            }
+        )
         print(json.dumps(payload, indent=2))
         return
 
@@ -292,12 +297,14 @@ def _run_attachment_extract(args: argparse.Namespace, env: CommandEnv) -> None:
             break
 
     if getattr(args, "json", False):
-        payload = {
-            "roots": [str(r) for r in roots],
-            "copied": copied,
-            "errors": errors,
-            "destination": str(destination),
-        }
+        payload = stamp_payload(
+            {
+                "roots": [str(r) for r in roots],
+                "copied": copied,
+                "errors": errors,
+                "destination": str(destination),
+            }
+        )
         print(json.dumps(payload, indent=2))
         return
 
