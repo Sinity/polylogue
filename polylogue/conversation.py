@@ -274,283 +274,102 @@ def process_conversation(
     registrar: Optional[ConversationRegistrar] = None,
     repository: Optional[ConversationRepository] = None,
     citations: Optional[List[Any]] = None,
-    db_only: bool = False,
 ) -> ImportResult:
+    """Process a conversation and write to database only.
+
+    Database-first architecture: This function writes conversation data
+    to the SQLite database. Markdown files are generated separately by
+    the DatabaseRenderer.
+
+    Args:
+        provider: Provider name (chatgpt, claude, etc.)
+        conversation_id: Provider's conversation ID
+        slug: URL-safe conversation identifier
+        title: Conversation title
+        message_records: List of message records
+        attachments: List of attachment info
+        canonical_leaf_id: ID of the canonical leaf message
+        collapse_threshold: Threshold for collapsing long content
+        collapse_thresholds: Per-type collapse thresholds
+        html: Whether to generate HTML (ignored, kept for compatibility)
+        html_theme: HTML theme (ignored, kept for compatibility)
+        output_dir: Output directory (used for slug path only)
+        extra_yaml: Extra YAML metadata
+        extra_state: Extra state metadata
+        source_file_id: Source file ID
+        modified_time: Modification timestamp
+        created_time: Creation timestamp
+        run_settings: Run settings
+        source_mime: Source MIME type
+        source_size: Source size in bytes
+        attachment_policy: Attachment policy (ignored)
+        force: Force flag (ignored)
+        allow_dirty: Allow dirty flag (ignored)
+        attachment_ocr: Whether to OCR attachments
+        registrar: Conversation registrar
+        repository: Conversation repository (ignored)
+        citations: Citation list
+
+    Returns:
+        ImportResult with database status
+    """
     if registrar is None:
         raise ValueError("ConversationRegistrar instance required")
 
-    if repository is None:
-        repository = ConversationRepository()
-
-    write_branch_tree = True
-    write_full_branch_docs = True
-    write_overlay_docs = True
-
+    # Build conversation structure
     records_by_id = {record.message_id: record for record in message_records}
     plan = build_branch_plan(message_records, canonical_leaf_id=canonical_leaf_id)
     branch_stats = _compute_branch_stats(plan, records_by_id)
-
     attachment_bytes = sum(att.size_bytes or 0 for att in attachments)
 
-    canonical_records = [records_by_id[mid] for mid in plan.messages_for_branch(plan.canonical_branch_id) if mid in records_by_id]
-    canonical_links = _links_mapping(canonical_records)
-    canonical_document = _render_markdown_document(
-        canonical_records,
-        title=title,
-        source_file_id=source_file_id,
-        modified_time=modified_time,
-        created_time=created_time,
-        run_settings=run_settings,
-        source_mime=source_mime,
-        source_size=source_size,
-        collapse_threshold=collapse_threshold,
-        collapse_thresholds=collapse_thresholds,
-        extra_yaml=extra_yaml,
-        attachments=attachments,
-        per_chunk_links=canonical_links,
-        citations=citations,
-    )
-
-    branch_map = _branch_map_snippet(output_dir / slug / "branches", plan.branch_ids)
-    if branch_map and "Branch map" not in canonical_document.body:
-        canonical_document.body = branch_map + "\n" + canonical_document.body
-
-    # When in DB-only mode, skip file writes and only do database writes
-    if db_only:
-        # Write only to database via registrar
-        registrar.record_branch_plan(
-            provider=provider,
-            conversation_id=conversation_id,
-            slug=slug,
-            plan=plan,
-            branch_stats=branch_stats,
-            records_by_id=records_by_id,
-            attachment_bytes=attachment_bytes,
-        )
-
-        # Create minimal attachment rows (no file access needed for DB-only)
-        attachment_rows = []
-        for att in attachments:
-            if att.local_path:
-                attachment_rows.append({
-                    "branch_id": plan.canonical_branch_id,
-                    "message_id": None,  # Could be extracted from message_records if needed
-                    "attachment_name": att.name,
-                    "attachment_path": str(att.local_path) if att.local_path else None,
-                    "size_bytes": att.size_bytes,
-                    "content_hash": None,  # Could compute if needed
-                    "mime_type": None,
-                    "text_content": None,
-                    "text_bytes": None,
-                    "truncated": False,
-                    "ocr_used": False,
-                })
-
-        registrar.record_attachments(
-            provider=provider,
-            conversation_id=conversation_id,
-            attachments=attachment_rows,
-        )
-
-        # Return minimal result indicating DB-only write
-        return ImportResult(
-            markdown_path=output_dir / slug / "conversation.md",  # Path that would be created
-            html_path=None,
-            attachments_dir=output_dir / slug / "attachments" if attachments else None,
-            document=canonical_document,
-            slug=slug,
-            diff_path=None,
-            skipped=False,
-            skip_reason="db-only",
-            dirty=False,
-            content_hash=None,
-            branch_count=len(plan.branches),
-            canonical_branch_id=plan.canonical_branch_id,
-            branch_directories=None,
-        )
-
-    # Normal flow: persist files and write to database
-    persist_result = repository.persist(
-        provider=provider,
-        conversation_id=conversation_id,
-        title=title,
-        document=canonical_document,
-        output_dir=output_dir,
-        collapse_threshold=collapse_threshold,
-        attachments=attachments,
-        updated_at=modified_time,
-        created_at=created_time,
-        html=html,
-        html_theme=html_theme,
-        attachment_policy=attachment_policy,
-        extra_state=extra_state,
-        slug_hint=slug,
-        id_hint=conversation_id[:8] if conversation_id else None,
-        force=force,
-        allow_dirty=allow_dirty,
-        registrar=registrar,
-    )
-
-    conversation_dir: Path = persist_result.markdown_path.parent
-    branch_directories: List[Path] = []
-    if not persist_result.skipped and persist_result.markdown_path:
-        branches_dir = conversation_dir / "branches"
-        attachments_dir = persist_result.attachments_dir
-
-        canonical_path = persist_result.markdown_path
-        canonical_path.write_text(
-            (persist_result.document or canonical_document).to_markdown(),
-            encoding="utf-8",
-        )
-
-        common_path = conversation_dir / "conversation.common.md"
-        if not write_branch_tree:
-            if common_path.exists():
-                try:
-                    common_path.unlink()
-                except OSError:
-                    pass
-            if branches_dir.exists():
-                try:
-                    shutil.rmtree(branches_dir)
-                except OSError:
-                    pass
-        else:
-            branches_dir.mkdir(parents=True, exist_ok=True)
-
-            common_ids = _common_prefix(plan)
-            common_records = [records_by_id[mid] for mid in common_ids if mid in records_by_id]
-            if common_records:
-                common_links = _links_mapping(common_records)
-                common_doc = _render_markdown_document(
-                    common_records,
-                    title=f"{title} — Common Prefix",
-                    source_file_id=source_file_id,
-                    modified_time=modified_time,
-                    created_time=created_time,
-                    run_settings=run_settings,
-                    source_mime=source_mime,
-                    source_size=source_size,
-                    collapse_threshold=collapse_threshold,
-                    collapse_thresholds=collapse_thresholds,
-                    extra_yaml=extra_yaml,
-                    attachments=None,
-                    per_chunk_links=_adjust_links_for_base(common_links, conversation_dir, persist_result.markdown_path.parent),
-                )
-                common_path.write_text(common_doc.to_markdown(), encoding="utf-8")
-            elif common_path.exists():
-                try:
-                    common_path.unlink()
-                except OSError:
-                    pass
-
-            for branch_id, info in plan.branches.items():
-                branch_records = [records_by_id[mid] for mid in info.message_ids if mid in records_by_id]
-                branch_dir = branches_dir / branch_id
-                branch_dir.mkdir(parents=True, exist_ok=True)
-                branch_directories.append(branch_dir)
-
-                branch_links = _links_mapping(branch_records)
-                branch_doc_path = branch_dir / f"{branch_id}.md"
-                if write_full_branch_docs and branch_records:
-                    branch_doc = _render_markdown_document(
-                        branch_records,
-                        title=f"{title} — {branch_id}",
-                        source_file_id=source_file_id,
-                        modified_time=modified_time,
-                        created_time=created_time,
-                        run_settings=run_settings,
-                        source_mime=source_mime,
-                        source_size=source_size,
-                        collapse_threshold=collapse_threshold,
-                        collapse_thresholds=collapse_thresholds,
-                        extra_yaml=extra_yaml,
-                        attachments=None,
-                        per_chunk_links=_adjust_links_for_base(
-                            branch_links, branch_dir, persist_result.markdown_path.parent
-                        ),
-                    )
-                    branch_doc_path.write_text(branch_doc.to_markdown(), encoding="utf-8")
-                elif branch_doc_path.exists():
-                    try:
-                        branch_doc_path.unlink()
-                    except OSError:
-                        pass
-
-                overlay_records = branch_records[info.divergence_index :] if info.divergence_index else branch_records
-                overlay_path = branch_dir / "overlay.md"
-                if write_overlay_docs and overlay_records:
-                    overlay_links = _links_mapping(overlay_records)
-                    overlay_doc = _render_markdown_document(
-                        overlay_records,
-                        title=f"{title} — {branch_id} Overlay",
-                        source_file_id=source_file_id,
-                        modified_time=modified_time,
-                        created_time=created_time,
-                        run_settings=run_settings,
-                        source_mime=source_mime,
-                        source_size=source_size,
-                        collapse_threshold=collapse_threshold,
-                        collapse_thresholds=collapse_thresholds,
-                        extra_yaml=extra_yaml,
-                        attachments=None,
-                        per_chunk_links=_adjust_links_for_base(
-                            overlay_links, branch_dir, persist_result.markdown_path.parent
-                        ),
-                    )
-                    overlay_path.write_text(overlay_doc.to_markdown(), encoding="utf-8")
-                elif overlay_path.exists():
-                    try:
-                        overlay_path.unlink()
-                    except OSError:
-                        pass
-
-                if attachments_dir and attachments_dir.exists():
-                    (branch_dir / "attachments").mkdir(exist_ok=True)
-
-            existing_branch_dirs = [path for path in branches_dir.iterdir() if path.is_dir()]
-            active_branch_names = {branch_id for branch_id in plan.branches}
-            for path in existing_branch_dirs:
-                if path.name not in active_branch_names:
-                    try:
-                        shutil.rmtree(path)
-                    except OSError:
-                        continue
-
+    # Write to database via registrar
     registrar.record_branch_plan(
         provider=provider,
         conversation_id=conversation_id,
-        slug=persist_result.slug,
+        slug=slug,
         plan=plan,
         branch_stats=branch_stats,
         records_by_id=records_by_id,
         attachment_bytes=attachment_bytes,
     )
-    attachment_rows = _attachment_rows(
-        attachments=attachments,
-        plan=plan,
-        records_by_id=records_by_id,
-        conversation_dir=conversation_dir,
-        attachment_ocr=attachment_ocr,
-    )
+
+    # Create minimal attachment rows (no file access needed for DB-only)
+    attachment_rows = []
+    for att in attachments:
+        if att.local_path or att.size_bytes:
+            attachment_rows.append({
+                "branch_id": plan.canonical_branch_id,
+                "message_id": None,  # Could be extracted from message_records if needed
+                "attachment_name": att.name,
+                "attachment_path": str(att.local_path) if att.local_path else None,
+                "size_bytes": att.size_bytes,
+                "content_hash": None,
+                "mime_type": None,
+                "text_content": None,
+                "text_bytes": None,
+                "truncated": False,
+                "ocr_used": False,
+            })
+
     registrar.record_attachments(
         provider=provider,
         conversation_id=conversation_id,
         attachments=attachment_rows,
     )
 
+    # Return minimal result indicating DB-only write
     return ImportResult(
-        markdown_path=persist_result.markdown_path,
-        html_path=persist_result.html_path,
-        attachments_dir=persist_result.attachments_dir,
-        document=persist_result.document or canonical_document,
-        slug=persist_result.slug,
+        markdown_path=output_dir / slug / "conversation.md",  # Path that would be created
+        html_path=None,
+        attachments_dir=output_dir / slug / "attachments" if attachments else None,
+        document=None,  # No document generated in DB-only mode
+        slug=slug,
         diff_path=None,
-        skipped=persist_result.skipped,
-        skip_reason=persist_result.skip_reason,
-        dirty=persist_result.dirty,
-        content_hash=persist_result.content_hash,
+        skipped=False,
+        skip_reason=None,
+        dirty=False,
+        content_hash=None,
         branch_count=len(plan.branches),
         canonical_branch_id=plan.canonical_branch_id,
-        branch_directories=branch_directories if branch_directories else None,
+        branch_directories=None,
     )
