@@ -3,28 +3,30 @@ let
   pyPkgs = pkgs.python3Packages;
   commonDeps = with pyPkgs; [
     google-auth-oauthlib
-    requests
+    httpx
     pathvalidate
-    aiohttp
     aiofiles
     rich
     pydantic
+    pydantic-settings
     python-frontmatter
     jinja2
     markdown-it-py
-    pyperclip
     watchfiles
     ijson
     tiktoken
     qdrant-client
     pypdf
+    questionary
+    pygments
+    tenacity
+    click
   ];
   devDeps = with pyPkgs; [
     pytest
     pytest-cov
     coverage
     mypy
-    types-requests
   ];
 in {
   inherit commonDeps devDeps;
