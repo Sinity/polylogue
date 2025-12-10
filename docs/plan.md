@@ -3,6 +3,7 @@
 This file consolidates the high-impact UX and refactoring issues observed across the CLI, renderers, and supporting workflows. Items are grouped by area with the expected remediation direction to make planning and scoping easier.
 
 ## Correctness & Core UX
+
 - Unify version reporting: `build_parser` currently hard-codes `0.1.0` (polylogue/cli/app.py:1159). Derive the version from `pyproject.toml`/package metadata so releases never drift.
 - Deduplicate parser construction: `build_parser()` is defined twice in `polylogue/cli/app.py`, inviting divergence in flags/descriptions. Keep a single source of truth and fan out to sub-builders.
 - HTML default logic: `default_html_mode` sets `html_mode` to "on"/"off", so the documented default "auto" path never executes. Restore true auto detection.
@@ -18,6 +19,7 @@ This file consolidates the high-impact UX and refactoring issues observed across
 - Duplicate examples: `COMMAND_EXAMPLES` exists but is not surfaced in `--help` and can drift from the parser. Wire examples into help output and add a `--examples` flag.
 
 ## Configuration, Auth, and Schema
+
 - Config visibility: `config show --json` omits credential/token paths and env overrides (`POLYLOGUE_CREDENTIAL_PATH`, `POLYLOGUE_TOKEN_PATH`). Surface resolved auth paths and the source (env vs. config).
 - Output root consistency: `config set --output-root` only updates the render root, leaving per-provider paths unchanged. Apply root updates consistently or warn about mixed roots.
 - Init wizard drift: `polylogue/cli/init.py` hardcodes `~/polylogue-data` and skips inbox/index/Qdrant prompts, diverging from `docs/polylogue.config.sample.jsonc`. Expand prompts to match documented settings.
@@ -26,6 +28,7 @@ This file consolidates the high-impact UX and refactoring issues observed across
 - Schema/version stamp: embed Polylogue version and schema version in front matter; warn on opening older outputs and offer `polylogue migrate` for metadata updates. Also add a self-update reminder when the CLI lags the flake version.
 
 ## Non-Interactive Safety & Dependency Preflight
+
 - Non-TTY prompts: `UI.confirm/choose/input` and `cli_common.choose_single_entry` call `input()` when stdin is not interactive, hanging CI/cron. In plain mode/non-TTY, fail fast or require explicit flags.
 - Plain auto-select: plain mode currently auto-selects the first option silently, triggering unintended actions. Require explicit `--all`/IDs or abort with a clear message.
 - Dependency coverage: interactive flows only preflight `gum`/`skim`, but previews use `bat`/`glow`/`delta`. Add upfront checks for all required tools and fail early with guidance.
@@ -33,11 +36,13 @@ This file consolidates the high-impact UX and refactoring issues observed across
   **Status:** non-TTY guards added to UI prompts and skim pickers; dependency preflight expanded; Drive plain-mode hint added; plain auto-select still needs opt-in flags.
 
 ## Drive/Import/Filtering
+
 - Drive chat filtering: `filter_chats` drops items without `modifiedTime` silently. Emit warnings and counts for discarded entries so users understand why chats were skipped.
 - HTML auto default: default sync/import namespaces force html_mode on/off, bypassing the documented auto behavior. Honor "auto" to match docs and user expectations.
 - Filter order: `run_status_cli` provider filtering happens after limiting (see above) and can hide older matching runs; fix ordering and add a warning when results are incomplete.
 
 ## Status/Stats/Reporting UX
+
 - Help/examples discoverability: examples are present but hidden; expose in `--help` and via a dedicated flag. Keep a single example table to avoid drift. **(examples flag added)**
 - Browse status output: current stats are totals only; add sorting/top lists (largest attachments/tokens/recent) and CSV/JSONL export for ranked data to make outputs actionable.
 - Failure signaling: when stats/status inputs are missing or empty (missing dir/provider), exit non-zero and print a clear hint. **(exit codes added for missing dirs)**
@@ -46,6 +51,7 @@ This file consolidates the high-impact UX and refactoring issues observed across
 - Shell-friendly exits: expose `POLYLOGUE_EXIT_REASON` (auth|io|schema|partial) and map common cases to stable exit codes for wrappers.
 
 ## HTML/Rendering & Navigation
+
 - Modernize HTML: current template is single-column with minimal metadata. Add anchors/TOC, sticky header, attachment index, and updated layout for large transcripts.
 - Permalinks and anchors: add stable heading IDs and a "copy link" control per message; ensure `search --open` jumps to anchors in Markdown/HTML.
 - Client-side navigation: add lightweight in-page search/filter (text/role) with keyboard shortcuts (/, j/k) for large HTML exports.
@@ -56,12 +62,14 @@ This file consolidates the high-impact UX and refactoring issues observed across
 - Branch context in transcripts: embed a small branch map (links to branch files) near the top of `conversation.md` so branch context is visible without opening branch files.
 
 ## Watch/Sync Workflow
+
 - Base dir safety: `_run_watch_sessions` unconditionally `mkdir`s `base_dir`, so typos create junk paths (e.g., `~/.codex/sessions/~/.claude/projects`). Validate existence and warn instead of creating.
 - Debounce visibility: watch drops changes within the debounce window silently. Log suppressed paths and emit a summary of dropped events.
 - Live feedback: add an optional live tail pane for `--watch` showing recent messages/errors and detect stalls (no progress for X seconds) with suggested next steps.
 - Watch wizard: add an interactive helper to assemble watch commands (provider/base-dir/out/html/diff/prune/debounce) and print the exact invocation.
 
 ## Guardrails & Reliability
+
 - Dependency preflight (expanded): fail early when required tools are missing (gum/skim/bat/glow/delta).
 - Config drift check: detect stale configs (older than code version or containing deprecated keys) and prompt to run config lint/auto-fix before commands proceed.
 - Disk/quota preflight: estimate disk needed (attachments + HTML/diffs) and Drive API calls before starting; warn or require `--force` when exceeding thresholds.
@@ -73,6 +81,7 @@ This file consolidates the high-impact UX and refactoring issues observed across
 - Quiet long runs: detect stalled runs and surface spinner warnings plus guidance (`--trace`, `--timeout`, retry suggestions).
 
 ## Attachments & Inbox Handling
+
 - Attachment lifecycle: add `attachments stats --provider --since/--until` and `--clean-orphans` to summarize and clean orphaned blobs; report deduped bytes when hashing duplicates across runs.
 - Attachment routing: allow rules to route certain MIME types to external viewers or skip rendering; report routed/skipped counts.
 - Attachment batch extract: `polylogue attachments extract --type pdf --out <dir>` with collision-safe naming and progress.
@@ -81,6 +90,7 @@ This file consolidates the high-impact UX and refactoring issues observed across
 - Inbox quarantine: validate incoming exports/JSONL before processing; move malformed/unknown provider files to quarantine with a report command.
 
 ## Search & Filtering Enhancements
+
 - CSV/NDJSON export: `search --csv/--json-lines --fields provider,slug,branch,timestamp,snippet` for pipelines.
 - Interactive filter chains: a `polylogue filter` subcommand to trim transcripts by role/attachments/models/time window, producing a filtered copy.
 - Piping support: allow `search --from-stdin` for queries and `--output -` for Markdown/HTML to integrate with shells.
@@ -89,6 +99,7 @@ This file consolidates the high-impact UX and refactoring issues observed across
 - Path reveal & open helpers: `--print-paths` to list written files and `open last` to jump to the most recent output (with provider filters).
 
 ## Performance & Parallelism
+
 - Parallel imports/sync: expose concurrency knobs for Drive/local imports (chat + attachment downloads) with sensible limits; summarize parallelism, retries, and bottlenecks.
 - Predictive ETA: show per-provider ETA and retry budget during runs based on past throughput and remaining items.
 - Profile toggles: add `--profile-io/--profile-sql` to surface top slow steps (download, parse, render, index) with timings.
@@ -96,6 +107,7 @@ This file consolidates the high-impact UX and refactoring issues observed across
 - Pre-run space check: estimate required disk before sync/import; warn or require `--force` when projected usage exceeds available space.
 
 ## Metadata, Provenance, and Integrity
+
 - Per-run metadata injection: support `--meta key=value` on render/import/sync to append to front matter and record in the runs DB.
 - Session provenance: stamp rendered Markdown/HTML headers with source path, import time, CLI version, and hash so outputs are traceable.
 - Integrity verifier: `polylogue verify --slug/--provider` to confirm front matter matches DB state, attachments exist, and branch files are present; emit a single-pass report.
@@ -103,11 +115,13 @@ This file consolidates the high-impact UX and refactoring issues observed across
 - Partial run recovery: `--resume-from <run-id>` to retry only failed chats/attachments and report what was retried.
 
 ## User Preferences & Multi-Root Support
+
 - Multi-root configs: allow multiple inbox/output roots with labels selectable via `--root <name>` for separate work/personal archives.
 - Persistent per-command defaults: store user preferences (e.g., `search --limit 50 --no-picker`, `sync drive --links-only`) and provide `polylogue prefs` to list/reset.
 - Interactive config editor: a TUI (`polylogue config edit`) that validates fields live, lists defaults, and shows resolved paths/index settings.
 
 ## Analytics, Reporting, and Visualization
+
 - Timeline views: add `browse timeline --provider --since/--until` to list conversations chronologically with quick links.
 - Conversation/branch maps: generate HTML maps grouped by month/size/attachments and embed a branch map in transcripts for orientation.
 - Role/model analytics: `browse roles --provider --since/--until` to show distribution of roles/models/tool calls (table/heatmap).
