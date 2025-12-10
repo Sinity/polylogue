@@ -46,49 +46,25 @@ def dispatch(args, env):
 
 ## Migration Status
 
-### ✅ Completed
-- `sync.py` - Sync command (example implementation)
+### ✅ Completed (9/9 Core Commands)
 
-### ⏳ TODO (Extract from app.py)
+All major commands have been extracted into modular files:
 
-Extract these commands following the sync.py pattern:
+1. **sync.py** - Sync provider archives (watch mode, Drive/local sync)
+2. **render.py** - Render JSON exports to Markdown/HTML
+3. **config.py** - Configuration management (init/set/show)
+4. **attachments.py** - Attachment utilities (stats/extract)
+5. **browse.py** - Browse data (branches/stats/status/runs/inbox)
+6. **import_cmd.py** - Import provider exports
+7. **search.py** - Search rendered transcripts (FTS5)
+8. **maintain.py** - System maintenance (prune/doctor/index/restore)
+9. **status.py** - Show cached Drive info and recent runs
 
-1. **render.py** (~80 lines)
-   - Parser setup: lines 1807-1850
-   - Dispatch: `_dispatch_render()` at line 1343
+### 📝 Next Steps
 
-2. **maintain.py** (~150 lines)
-   - Parser setup: lines 1924-1990
-   - Dispatch: Multiple functions for maintain/index subcommands
-   - Includes: `maintain index`, `maintain vacuum`, etc.
-
-3. **config.py** (~100 lines)
-   - Parser setup: lines 1994-2015
-   - Dispatch: `_dispatch_config()` at line 1368
-   - Includes: `config init`, `config set`, `config show`
-
-4. **attachments.py** (~80 lines)
-   - Parser setup: lines 2018-2040
-   - Dispatch: `_dispatch_attachments()` at line 1383
-
-5. **browse.py** (~100 lines)
-   - Parser setup: lines 1808-1850
-   - Dispatch: Browse command logic
-
-6. **import_cmd.py** (~60 lines)
-   - Parser setup: lines 1774-1806
-   - Dispatch: `_dispatch_import()` at line 1334
-
-7. **search.py** (~40 lines)
-   - Parser setup: lines ~1850-1870
-   - Dispatch: `_dispatch_search()` at line 1338
-
-8. **status.py** (~50 lines)
-   - Parser setup and dispatch for status command
-
-9. **prefs.py** (~70 lines)
-   - Parser setup: lines 2090-2115
-   - Dispatch: Preferences commands
+- **Update app.py** - Integrate command modules, remove old parser code
+- **Test** - Verify all commands still work
+- **Target** - Reduce app.py from 2163 lines to <300 lines
 
 ## After Extraction
 
