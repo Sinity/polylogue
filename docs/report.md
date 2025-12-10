@@ -13,12 +13,13 @@
 See [STATUS.md](STATUS.md) for detailed implementation tracking and [COMPLETION_SUMMARY.md](../COMPLETION_SUMMARY.md) for results.
 
 **Completed:**
+
 - ✅ ELT Pattern (Extract-Load-Transform) with raw imports table
 - ✅ Pydantic Settings for configuration
 - ✅ Pydantic schemas for provider validation
 - ✅ Pure Python portability (removed external binaries)
 - ✅ Security improvements (clipboard opt-in)
-- ✅ Comprehensive unit tests and documentation
+- ✅ Comprehensive unit tests and utilsdocumentation
 
 **Build Status:** ✅ Package builds successfully, 184/226 tests passing (81%)
 
@@ -28,7 +29,8 @@ See [STATUS.md](STATUS.md) for detailed implementation tracking and [COMPLETION_
 
 ## 1. Executive Summary: What is Polylogue?
 
-Polylogue is a sophisticated **universal adapter and archival system for AI conversations**. It solves the problem of "Fragmented Intelligence"—where valuable context, code snippets, and reasoning chains are scattered across proprietary silos (ChatGPT, Claude, Google AI Studio) or ephemeral local logs (Codex, Claude Code).
+Polylogue is a sophisticated **universal adapter and archival system for AI conversations**. It solves the problem of "Fragmented Intelligence"—where valuable context, code snippets, and reasoning chains are scattered across proprietaWith Alembic (More structure, more overhead)
+ry silos (ChatGPT, Claude, Google AI Studio) or ephemeral local logs (Codex, Claude Code).
 
 It functions as a **middleware layer** between AI providers and the user's local filesystem. It ingests disparate export formats, normalizes them into a unified schema, and projects them into human-readable formats (Markdown/HTML) while indexing them for machine-speed retrieval (SQLite/Vector).
 
@@ -38,13 +40,13 @@ It functions as a **middleware layer** between AI providers and the user's local
 
 Most AI providers lock data into JSON blobs or web interfaces. Polylogue essentially performs an ETL (Extract, Transform, Load) process to convert these proprietary formats into **Markdown**.
 
-* **Why this matters:** Markdown is future-proof. Even if Polylogue ceases to exist, the output remains readable by any text editor or rendering engine forever.
+- **Why this matters:** Markdown is future-proof. Even if Polylogue ceases to exist, the output remains readable by any text editor or rendering engine forever.
 
 ### B. High-Fidelity Branch Preservation
 
 Unlike simple exporters that flatten conversations into a linear script, Polylogue understands that LLM interactions are **trees**. Users often edit previous prompts or regenerate responses, creating diverging branches.
 
-* **The Mechanism:** The `BranchPlan` logic allows Polylogue to map, visualize, and store divergent conversation paths. It identifies a "canonical" path but preserves the "multiverse" of other attempts in overlay files. This is a critical differentiator for developers who use AI iteratively.
+- **The Mechanism:** The `BranchPlan` logic allows Polylogue to map, visualize, and store divergent conversation paths. It identifies a "canonical" path but preserves the "multiverse" of other attempts in overlay files. This is a critical differentiator for developers who use AI iteratively.
 
 ### C. Live "Observability" for AI Workflows
 
@@ -58,15 +60,15 @@ Polylogue operates on a **Pipeline Architecture** with three distinct operationa
 
 It supports two types of ingestion:
 
-* **API/Cloud Pull:** Specifically for Google Drive (Gemini/AI Studio), it acts as a client, downloading JSON chats and attachments via the Drive API.
-* **Local Ingestion:** It watches specific directories for ZIP exports (ChatGPT, Claude.ai) or JSONL stream files (Codex, Claude Code).
+- **API/Cloud Pull:** Specifically for Google Drive (Gemini/AI Studio), it acts as a client, downloading JSON chats and attachments via the Drive API.
+- **Local Ingestion:** It watches specific directories for ZIP exports (ChatGPT, Claude.ai) or JSONL stream files (Codex, Claude Code).
 
 ### 2. The Normalization Layer (The "Transform")
 
 This is the system's "Rosetta Stone." It takes the chaotic, undocumented schemas of providers and maps them to a strictly typed internal `MessageRecord`.
 
-* **Heuristics:** It applies logic to determine if a message is a user prompt, a model response, a tool call (function execution), or a tool output.
-* **Sanitization:** It handles messy realities like inline LaTeX, proprietary citation tokens (e.g., `\uE200`), and base64 encoded blobs.
+- **Heuristics:** It applies logic to determine if a message is a user prompt, a model response, a tool call (function execution), or a tool output.
+- **Sanitization:** It handles messy realities like inline LaTeX, proprietary citation tokens (e.g., `\uE200`), and base64 encoded blobs.
 
 ### 3. The Projection Layer (The "Load")
 
@@ -80,24 +82,24 @@ It writes data to three destinations simultaneously:
 
 ### Strengths (Competitive Advantage)
 
-* **Idempotency:** The system is obsessively designed to handle interruptions. It uses content hashing to avoid re-processing unchanged conversations, making it efficient for syncing gigabytes of history.
-* **Rich TUI Integration:** By leveraging `gum`, `skim`, and `rich`, it provides a GUI-like experience in the terminal. It feels like a polished product, not a hacky script.
-* **Nix-Native:** The project is distributed as a Nix Flake, ensuring that the complex dependency chain (Python + specific CLI binaries) works perfectly on any machine without "dependency hell."
+- **Idempotency:** The system is obsessively designed to handle interruptions. It uses content hashing to avoid re-processing unchanged conversations, making it efficient for syncing gigabytes of history.
+- **Rich TUI Integration:** By leveraging `gum`, `skim`, and `rich`, it provides a GUI-like experience in the terminal. It feels like a polished product, not a hacky script.
+- **Nix-Native:** The project is distributed as a Nix Flake, ensuring that the complex dependency chain (Python + specific CLI binaries) works perfectly on any machine without "dependency hell."
 
 ### Weaknesses (Friction Points)
 
-* **Heavy Toolchain:** It is not a standalone binary. It requires a specific environment (Nix) or a manual installation of several non-standard CLI tools (`gum`, `sk`, `delta`). This alienates Windows users and non-sysadmins.
-* **fragility of Parsers:** The importers rely on the export formats of SaaS companies (OpenAI, Anthropic). These formats are not public contracts; they change silently. The codebase will require constant maintenance to keep importers working.
+- **Heavy Toolchain:** It is not a standalone binary. It requires a specific environment (Nix) or a manual installation of several non-standard CLI tools (`gum`, `sk`, `delta`). This alienates Windows users and non-sysadmins.
+- **fragility of Parsers:** The importers rely on the export formats of SaaS companies (OpenAI, Anthropic). These formats are not public contracts; they change silently. The codebase will require constant maintenance to keep importers working.
 
 ### Opportunities
 
-* **Knowledge Graphing:** Since it parses `tool_use` and `tool_result`, Polylogue effectively has a map of everything the AI *did* (file edits, shell commands). This data could be visualized to show "what code did the AI touch this week?"
-* **RAG Source:** The normalized SQLite/Qdrant index creates a perfect, clean dataset for "Chat with your History" (RAG) applications.
+- **Knowledge Graphing:** Since it parses `tool_use` and `tool_result`, Polylogue effectively has a map of everything the AI *did* (file edits, shell commands). This data could be visualized to show "what code did the AI touch this week?"
+- **RAG Source:** The normalized SQLite/Qdrant index creates a perfect, clean dataset for "Chat with your History" (RAG) applications.
 
 ### Threats
 
-* **Provider API Closure:** If providers stop offering export features or encrypt local logs (as some enterprise tools do), the ingestion pipelines break.
-* **Complexity Creep:** The project supports many providers. As each provider adds features (Canvas, Artifacts, reasoning tokens), maintaining parity in the `MarkdownDocument` renderer becomes exponentially difficult.
+- **Provider API Closure:** If providers stop offering export features or encrypt local logs (as some enterprise tools do), the ingestion pipelines break.
+- **Complexity Creep:** The project supports many providers. As each provider adds features (Canvas, Artifacts, reasoning tokens), maintaining parity in the `MarkdownDocument` renderer becomes exponentially difficult.
 
 ## 5. Final Verdict
 
@@ -122,16 +124,16 @@ The project currently suffers from **"Client Identity Crisis."** It is trying to
 
 **Where it is bloated:**
 
-* **HTML Generation:** The project maintains a Jinja2 template engine, CSS themes, and JavaScript logic to generate static HTML files. While nice, this is high maintenance. If the goal is *archival*, Markdown is sufficient. If the goal is *viewing*, a lightweight local web server reading from the DB is better than generating thousands of static HTML files.
-* **Vector Search (Qdrant):** Adding a vector database dependency for a local CLI tool is arguably over-engineering. SQLite FTS5 (Full Text Search) is built-in, zero-dependency, and sufficient for 99% of personal archival needs.
-* **The "Viewer" Stack:** The hard dependency on `gum` and `skim` makes deployment fragile. The CLI spends a lot of logic managing UI states (pickers, diffs) that might be better handled by the user's existing tools (e.g., just opening the file in VS Code or Obsidian).
+- **HTML Generation:** The project maintains a Jinja2 template engine, CSS themes, and JavaScript logic to generate static HTML files. While nice, this is high maintenance. If the goal is *archival*, Markdown is sufficient. If the goal is *viewing*, a lightweight local web server reading from the DB is better than generating thousands of static HTML files.
+- **Vector Search (Qdrant):** Adding a vector database dependency for a local CLI tool is arguably over-engineering. SQLite FTS5 (Full Text Search) is built-in, zero-dependency, and sufficient for 99% of personal archival needs.
+- **The "Viewer" Stack:** The hard dependency on `gum` and `skim` makes deployment fragile. The CLI spends a lot of logic managing UI states (pickers, diffs) that might be better handled by the user's existing tools (e.g., just opening the file in VS Code or Obsidian).
 
 **Recommendation for Streamlining:**
 Focus entirely on the **ETL Pipeline** (Ingest $\to$ Normalize $\to$ Archive).
 
-* Drop static HTML generation (or move it to a plugin).
-* Drop Qdrant support (stick to SQLite FTS).
-* Reduce interactive UI features; focus on being a rock-solid background daemon.
+- Drop static HTML generation (or move it to a plugin).
+- Drop Qdrant support (stick to SQLite FTS).
+- Reduce interactive UI features; focus on being a rock-solid background daemon.
 
 ---
 
@@ -157,23 +159,23 @@ You should refactor the system so that **SQLite is the Source of Truth**, and Ma
 **How this changes the flow:**
 
 1. **Ingest (Raw Store):**
-    * Provider Exports $\to$ **SQLite**.
-    * Store the *raw* JSON chunks and normalized `MessageRecords` in the DB.
-    * Do *not* write Markdown files yet.
+    - Provider Exports $\to$ **SQLite**.
+    - Store the *raw* JSON chunks and normalized `MessageRecords` in the DB.
+    - Do *not* write Markdown files yet.
 
 2. **Projection (The View Layer):**
-    * A command like `polylogue export` or `polylogue render` queries the SQLite DB.
-    * It generates the folder structure and Markdown files on disk.
+    - A command like `polylogue export` or `polylogue render` queries the SQLite DB.
+    - It generates the folder structure and Markdown files on disk.
 
 **Why this is superior:**
 
-* **Instant Re-rendering:** Want to change your Markdown template? Want to hide "Tool Calls"? Want to change the file naming convention? You don't need to re-download or re-parse the raw exports. You just run `polylogue render --force` and it regenerates the Markdown views from the DB in seconds.
-* **Virtual Views:** You can generate different "views" of the same data.
-  * `/archive/chronological/` (Time based)
-  * `/archive/by-provider/` (Source based)
-  * `/archive/topics/` (Tag based)
-  * *Note: These are just symlinks or generated files pointing back to the data in the DB.*
-* **Incremental Sync:** The DB handles the hard logic of "what changed." The renderer simply reflects the current state of the DB onto the filesystem.
+- **Instant Re-rendering:** Want to change your Markdown template? Want to hide "Tool Calls"? Want to change the file naming convention? You don't need to re-download or re-parse the raw exports. You just run `polylogue render --force` and it regenerates the Markdown views from the DB in seconds.
+- **Virtual Views:** You can generate different "views" of the same data.
+  - `/archive/chronological/` (Time based)
+  - `/archive/by-provider/` (Source based)
+  - `/archive/topics/` (Tag based)
+  - *Note: These are just symlinks or generated files pointing back to the data in the DB.*
+- **Incremental Sync:** The DB handles the hard logic of "what changed." The renderer simply reflects the current state of the DB onto the filesystem.
 
 ### 4. Proposed Architecture Shift
 
@@ -185,8 +187,8 @@ The DB schema becomes the absolute master. It must store enough fidelity (raw JS
 **Phase 2: The Projector (The Face)**
 The "Markdown Renderer" becomes a distinct subsystem that reads *only* from the DB.
 
-* `polylogue sync`: Updates the DB from sources (Drive/Local).
-* `polylogue mount` (conceptually): Updates the filesystem Markdown files to match the DB.
+- `polylogue sync`: Updates the DB from sources (Drive/Local).
+- `polylogue mount` (conceptually): Updates the filesystem Markdown files to match the DB.
 
 ### Executive Recommendation
 
@@ -204,10 +206,10 @@ The overarching theme of this analysis is **De-coupling**. The project currently
 **Current State:**
 The code contains a significant amount of logic dedicated to:
 
-* File system monitoring (`watchfiles`).
-* Debouncing triggers (handling rapid file saves).
-* Polling loops (checking Drive APIs).
-* Process management (keeping the watcher alive).
+- File system monitoring (`watchfiles`).
+- Debouncing triggers (handling rapid file saves).
+- Polling loops (checking Drive APIs).
+- Process management (keeping the watcher alive).
 
 **Verdict:** **Delete this code.**
 These are infrastructure concerns, not application logic. Embedding a long-running daemon inside a CLI data-processing tool makes it brittle, hard to debug, and memory-inefficient (Python is not ideal for idle daemons).
@@ -230,7 +232,7 @@ Instead of maintaining `polylogue/cli/watch.py` and complex debounce logic:
 $ watchexec -w ~/.codex/sessions -- debounce 1000 -- polylogue sync codex --once
 ```
 
-* **Gain:** You delete ~500 lines of Python code (threading, loops, exception handling for crashes). You gain robust signal handling and lower memory footprint.
+- **Gain:** You delete ~500 lines of Python code (threading, loops, exception handling for crashes). You gain robust signal handling and lower memory footprint.
 
 #### B. Replace Drive Syncing with `rclone`
 
@@ -240,8 +242,8 @@ The `DriveClient` (`polylogue/drive.py`) implements OAuth flows, token refreshin
 If the data exists as files in Google Drive (e.g., the "AI Studio" export folder), stop writing a Google Drive client. Use **[rclone](https://rclone.org/)**.
 
 1. **Workflow:**
-    * `rclone sync gdrive:/AI_Studio ~/inbox/drive`
-    * `polylogue import drive ~/inbox/drive`
+    - `rclone sync gdrive:/AI_Studio ~/inbox/drive`
+    - `polylogue import drive ~/inbox/drive`
 2. **Gain:** You delete the entire `drive.py`, `drive_client.py`, and the need to manage `credentials.json` or OAuth scopes. You trust `rclone` (industry standard) to handle network flakes and auth.
 
 ---
@@ -252,28 +254,28 @@ The codebase currently carries "heavy" dependencies (`gum`, `sk`) that are binar
 
 ### A. Database Layer: Adopt `sqlite-utils`
 
-* **Current:** `polylogue/db.py` contains raw SQL strings (`CREATE TABLE`, `INSERT`, `FTS5` setup). Schema migrations are manual and fragile.
-* **Recommendation:** Adopt **[sqlite-utils](https://sqlite-utils.datasette.io/)**.
-* **Why:**
-  * It handles schema creation automatically (just pass a dict).
-  * It handles FTS (Full Text Search) configuration with a single method call.
-  * It handles bulk inserts/upserts efficiently.
-  * **Code Reduction:** This would likely reduce `db.py` and `persistence/*.py` by **60-70%**.
+- **Current:** `polylogue/db.py` contains raw SQL strings (`CREATE TABLE`, `INSERT`, `FTS5` setup). Schema migrations are manual and fragile.
+- **Recommendation:** Adopt **[sqlite-utils](https://sqlite-utils.datasette.io/)**.
+- **Why:**
+  - It handles schema creation automatically (just pass a dict).
+  - It handles FTS (Full Text Search) configuration with a single method call.
+  - It handles bulk inserts/upserts efficiently.
+  - **Code Reduction:** This would likely reduce `db.py` and `persistence/*.py` by **60-70%**.
 
 ### B. UI Layer: Adopt `Textual` or `Questionary`
 
-* **Current:** The app shells out to `subprocess.run(['gum', ...])` or `sk` for interactive prompts.
-* **Problem:** This breaks portability. It creates a hard dependency on the Nix environment. A Windows user or a standard `pip install` user cannot run this app.
-* **Recommendation:**
-  * **Lightweight:** Use **[Questionary](https://github.com/tmbo/questionary)** for prompts/selects. It is pure Python and provides the same UX as `gum` without the external binary.
-  * **Heavyweight:** Use **[Textual](https://textual.textualize.io/)** if you want a full TUI dashboard.
-* **Gain:** The project becomes a standard Python package installable anywhere.
+- **Current:** The app shells out to `subprocess.run(['gum', ...])` or `sk` for interactive prompts.
+- **Problem:** This breaks portability. It creates a hard dependency on the Nix environment. A Windows user or a standard `pip install` user cannot run this app.
+- **Recommendation:**
+  - **Lightweight:** Use **[Questionary](https://github.com/tmbo/questionary)** for prompts/selects. It is pure Python and provides the same UX as `gum` without the external binary.
+  - **Heavyweight:** Use **[Textual](https://textual.textualize.io/)** if you want a full TUI dashboard.
+- **Gain:** The project becomes a standard Python package installable anywhere.
 
 ### C. Configuration: Adopt `Pydantic Settings`
 
-* **Current:** Custom config loading logic in `polylogue/core/configuration.py`.
-* **Recommendation:** Use **Pydantic Settings**.
-* **Why:** You are already using Pydantic. Pydantic Settings handles environment variable overrides (`POLYLOGUE_...`), `.env` files, and validation automatically. It deletes your custom config loader boilerplate.
+- **Current:** Custom config loading logic in `polylogue/core/configuration.py`.
+- **Recommendation:** Use **Pydantic Settings**.
+- **Why:** You are already using Pydantic. Pydantic Settings handles environment variable overrides (`POLYLOGUE_...`), `.env` files, and validation automatically. It deletes your custom config loader boilerplate.
 
 ---
 
@@ -306,8 +308,8 @@ Here is the analysis of why you should cut them, and how to replace the specific
 
 If Polylogue is an **Archival System**, its goal is **consistency**.
 
-* **Manual Import** implies the user is the scheduler. "I did a chat, now I must remember to run a command." This guarantees data gaps when the user forgets.
-* **Sync All** implies the system is the scheduler. "I configured the sources once. Polylogue ensures the archive matches reality."
+- **Manual Import** implies the user is the scheduler. "I did a chat, now I must remember to run a command." This guarantees data gaps when the user forgets.
+- **Sync All** implies the system is the scheduler. "I configured the sources once. Polylogue ensures the archive matches reality."
 
 **The Architectural Win:**
 If you enforce "Sync All," you eliminate the need for:
@@ -337,9 +339,9 @@ The main reason users want manual selection is to avoid importing "junk" (e.g., 
 **Don't solve this with selection. Solve it with Filtering.**
 Instead of picking what to *include* (Manual), define rules for what to *exclude* (Configuration).
 
-* **Implementation:** Add a simple `.polylogueignore` or a `filters` section in `config.json`.
-  * `ignore_titles: ["Untitled", "Test*"]`
-  * `ignore_short: true` (Skip chats with < 2 turns)
+- **Implementation:** Add a simple `.polylogueignore` or a `filters` section in `config.json`.
+  - `ignore_titles: ["Untitled", "Test*"]`
+  - `ignore_short: true` (Skip chats with < 2 turns)
 
 ### 4. How to "Cut Without Regret"
 
@@ -347,8 +349,8 @@ You hate cutting working features because you wrote the code. Here is how to dep
 
 1. **Internalize, Don't Delete:** Keep the core `import_session(path)` function in your Python API. It is useful for unit tests. Just remove the CLI subcommand that exposes it to the user.
 2. **The "One Command" Vision:**
-    * **Current:** `polylogue import ...`, `polylogue sync ...`, `polylogue watch ...`
-    * **Proposed:** `polylogue sync` (Runs everything defined in config).
+    - **Current:** `polylogue import ...`, `polylogue sync ...`, `polylogue watch ...`
+    - **Proposed:** `polylogue sync` (Runs everything defined in config).
 
 ### 5. Revised UX
 
@@ -389,9 +391,9 @@ Here is the architectural strategy to manage parser fragility:
 
 **The Rule:** Never parse data before archiving it.
 
-* **Current Flow:** Read Zip $\to$ Parse JSON $\to$ Save MessageRecord to DB.
-* **The Problem:** If `conversations.json` adds a new field that breaks your parser, the import aborts. The user has to keep that Zip file manually until you ship a patch.
-* **The Fix:**
+- **Current Flow:** Read Zip $\to$ Parse JSON $\to$ Save MessageRecord to DB.
+- **The Problem:** If `conversations.json` adds a new field that breaks your parser, the import aborts. The user has to keep that Zip file manually until you ship a patch.
+- **The Fix:**
     1. **Ingest:** Take the raw `conversations.json` (or the specific session JSONL).
     2. **Archive Raw:** Dump that exact JSON blob into a `raw_exports` table in SQLite (or a `raw/` folder), keyed by a hash of the file.
     3. **Parse (Async/Lazy):** Attempt to parse that blob into your `MessageRecord` format.
@@ -415,16 +417,16 @@ class ChatGPTMessage(BaseModel):
     model_config = ConfigDict(extra='forbid') # Optional: Fail on unknown keys to detect drifts early
 ```
 
-* **Why:** When OpenAI changes the format, Pydantic will throw a `ValidationError` telling you exactly *what* changed (e.g., "Field 'author' is missing", or "Found unexpected field 'canvas_data'").
-* **Workflow:** This turns a cryptic `KeyError` or `NoneType` error into a clear "Schema Drift Detected" alert.
+- **Why:** When OpenAI changes the format, Pydantic will throw a `ValidationError` telling you exactly *what* changed (e.g., "Field 'author' is missing", or "Found unexpected field 'canvas_data'").
+- **Workflow:** This turns a cryptic `KeyError` or `NoneType` error into a clear "Schema Drift Detected" alert.
 
 ### 3. The "Heuristic Fallback" (Degraded Mode)
 
 If the strict parser fails, fall back to a "Greedy Text Scraper."
 
-* **Logic:** Most format changes involve metadata wrappers or new feature flags (e.g., "Canvas" or "Artifacts"). The actual *text* of the conversation usually remains in a field named `text` or `content`.
-* **Implementation:** If the Pydantic parser fails, run a `fallback_parser` that just recursively walks the JSON tree looking for strings longer than 50 characters or keys named `text`.
-* **Result:** You render a "Degraded Mode" Markdown file. It might lack timestamps or tool-call formatting, but the *text is there*. The user can read their chat.
+- **Logic:** Most format changes involve metadata wrappers or new feature flags (e.g., "Canvas" or "Artifacts"). The actual *text* of the conversation usually remains in a field named `text` or `content`.
+- **Implementation:** If the Pydantic parser fails, run a `fallback_parser` that just recursively walks the JSON tree looking for strings longer than 50 characters or keys named `text`.
+- **Result:** You render a "Degraded Mode" Markdown file. It might lack timestamps or tool-call formatting, but the *text is there*. The user can read their chat.
 
 ### 4. The "Anonymized Reporter" (Crowdsourced Maintenance)
 
@@ -432,19 +434,19 @@ The hardest part of fixing parsers is getting the sample data. You cannot ask us
 
 **Tooling:** Add a command: `polylogue report-broken-export <file>`.
 
-* **Action:**
+- **Action:**
     1. It attempts to parse the file.
     2. On failure, it extracts the *structure* of the JSON but obfuscates the values.
     3. `{"user": "hello world"}` becomes `{"user": "xxxxx xxxxx"}`.
     4. It keeps the keys (e.g., `mapping`, `message`, `content`).
-* **Result:** The user can send you a JSON skeleton that reproduces the crash without leaking their secrets. You can add this to your test suite immediately.
+- **Result:** The user can send you a JSON skeleton that reproduces the crash without leaking their secrets. You can add this to your test suite immediately.
 
 ### 5. Test against "Golden Masters"
 
 You need a repository of "Reference Exports" from different eras (ChatGPT 2023, ChatGPT 2024, Claude 3.5, etc.).
 
-* **Snapshot Testing:** Every time you touch an importer, run it against *all* historical formats.
-* **The "Unparsed" Metric:** Your CI should track the % of "Unparsed Blocks". If you update `importers/claude.py` and suddenly 5% of the content in your test suite drops out, you broke backward compatibility.
+- **Snapshot Testing:** Every time you touch an importer, run it against *all* historical formats.
+- **The "Unparsed" Metric:** Your CI should track the % of "Unparsed Blocks". If you update `importers/claude.py` and suddenly 5% of the content in your test suite drops out, you broke backward compatibility.
 
 ### Summary: The "Immortal Archive" Strategy
 
@@ -482,8 +484,8 @@ CREATE TABLE raw_imports (
 
 **Why this matters:**
 
-* **Deduplication:** If the user syncs the same ChatGPT zip file 10 times, the `hash` primary key rejects duplicates instantly.
-* **Disaster Recovery:** If OpenAI changes their format and your parser crashes, the data is safely stored here with `parse_status = 'failed'`. You can fix the code and re-run parsing later.
+- **Deduplication:** If the user syncs the same ChatGPT zip file 10 times, the `hash` primary key rejects duplicates instantly.
+- **Disaster Recovery:** If OpenAI changes their format and your parser crashes, the data is safely stored here with `parse_status = 'failed'`. You can fix the code and re-run parsing later.
 
 ---
 
@@ -542,9 +544,9 @@ CREATE INDEX idx_msg_parent ON messages(parent_id);
 **Handling Tool Calls vs. Text:**
 Do not try to force Tool Calls into the `content_text` column.
 
-* If `role` == 'user'/'assistant', `content_text` holds the chat.
-* If `role` == 'tool_call', `content_json` holds the arguments (`{"code": "print('hi')"}``).
-* If `role` == 'tool_result', `content_text` holds the output.
+- If `role` == 'user'/'assistant', `content_text` holds the chat.
+- If `role` == 'tool_call', `content_json` holds the arguments (`{"code": "print('hi')"}``).
+- If `role` == 'tool_result', `content_text` holds the output.
 
 #### 3. Assets (Attachments & Blobs)
 
@@ -642,8 +644,8 @@ Here is the consolidated **Strategic Master Plan** for Polylogue. This combines 
 
 The project currently suffers from an identity crisis, trying to be a sync agent, an interactive explorer, and a data parser simultaneously.
 
-* **The Pivot:** Polylogue should become a pure **ETL/ELT Pipeline**. Its sole responsibility is to ingest raw data, secure it in a database, and project it into readable formats.
-* **The Rule:** SQLite is the **Source of Truth**. Markdown files are disposable "Views" generated from the DB.
+- **The Pivot:** Polylogue should become a pure **ETL/ELT Pipeline**. Its sole responsibility is to ingest raw data, secure it in a database, and project it into readable formats.
+- **The Rule:** SQLite is the **Source of Truth**. Markdown files are disposable "Views" generated from the DB.
 
 ---
 
@@ -652,11 +654,11 @@ The project currently suffers from an identity crisis, trying to be a sync agent
 Stop the "Dual-Write" architecture where the importer writes to Markdown and SQLite independently. This causes state drift. Adopt the **Projection Model**:
 
 1. **Ingest (Extract & Load):**
-    * Input (Drive/Local) $\to$ **SQLite**.
-    * Save raw JSON blobs first. Parse them second.
+    - Input (Drive/Local) $\to$ **SQLite**.
+    - Save raw JSON blobs first. Parse them second.
 2. **Project (Transform & View):**
-    * `polylogue render` reads **only** from SQLite.
-    * It generates the folder structure and Markdown files on disk.
+    - `polylogue render` reads **only** from SQLite.
+    - It generates the folder structure and Markdown files on disk.
 
 **Benefit:** You can change your Markdown templates or file naming conventions instantly by re-running the renderer against the DB, without needing the original source files.
 
@@ -712,10 +714,10 @@ The current manual import features (`--session`, interactive pickers) contradict
 
 **The New UX:**
 
-* **Configuration over Interaction:** Define `input_roots` in the config.
-* **The Inbox Pattern:** The user drags a ChatGPT export zip into `~/data/polylogue/inbox`. Polylogue detects it, ingests it, and archives it.
-* **Remove:** Delete manual selection flags. Delete the interactive file pickers.
-* **One Command:** `polylogue sync` runs everything defined in the config.
+- **Configuration over Interaction:** Define `input_roots` in the config.
+- **The Inbox Pattern:** The user drags a ChatGPT export zip into `~/data/polylogue/inbox`. Polylogue detects it, ingests it, and archives it.
+- **Remove:** Delete manual selection flags. Delete the interactive file pickers.
+- **One Command:** `polylogue sync` runs everything defined in the config.
 
 ---
 
@@ -754,19 +756,19 @@ Since OpenAI/Anthropic formats change silently, you must assume parsers will bre
 ## 7. Implementation Roadmap
 
 1. **The Great Deletion:**
-    * Remove `drive.py`, `drive_client.py` (Switch to rclone/local folder scanning).
-    * Remove `watch.py` (Switch to external triggers).
-    * Remove HTML generation logic (Focus on Markdown first).
+    - Remove `drive.py`, `drive_client.py` (Switch to rclone/local folder scanning).
+    - Remove `watch.py` (Switch to external triggers).
+    - Remove HTML generation logic (Focus on Markdown first).
 
 2. **The Database Migration:**
-    * Implement the `raw_imports` and `messages` tables using `sqlite-utils`.
-    * Update importers to write to DB instead of disk.
+    - Implement the `raw_imports` and `messages` tables using `sqlite-utils`.
+    - Update importers to write to DB instead of disk.
 
 3. **The Projection Layer:**
-    * Write a new `Renderer` class that reads the DB tree and outputs the file structure.
+    - Write a new `Renderer` class that reads the DB tree and outputs the file structure.
 
 4. **The Inbox:**
-    * Update `sync` to scan configured folders for new zips/jsonl files, hash them, and ingest them if new.
+    - Update `sync` to scan configured folders for new zips/jsonl files, hash them, and ingest them if new.
 This is a comprehensive architectural and code-level audit of the **Polylogue** codebase, based on the provided source artifacts.
 
 ---
@@ -785,27 +787,27 @@ This is a comprehensive architectural and code-level audit of the **Polylogue** 
 
 The architecture follows a distinct **Pipeline Pattern** for data processing and a **Hexagonal-lite** approach for the CLI/Core separation.
 
-* **Pattern Implementation:** The system effectively uses a pipeline architecture (`polylogue/pipeline_runner.py`) to manage the complexity of rendering and syncing. Segregating stages (Read -> Normalize -> Transform -> Persist) allows for high modularity.
-* **Separation of Concerns:**
-  * **CLI Layer:** `polylogue/cli/` handles user interaction, argument parsing, and UI rendering (Rich/Gum).
-  * **Service Layer:** `polylogue/services/` (e.g., `ConversationRegistrar`) mediates between domain logic and persistence.
-  * **Domain Layer:** `polylogue/domain/models.py` defines clean data structures (`Conversation`, `Message`) independent of the database or UI.
-  * **Persistence:** `polylogue/persistence/` handles SQLite and State interactions.
-* **Data Flow:** The flow is clear: Input (JSON/API) $\rightarrow$ `importers/*` (Normalization) $\rightarrow$ `MessageRecord` objects $\rightarrow$ `Render` Pipeline $\rightarrow$ `MarkdownDocument` $\rightarrow$ Storage (Filesystem + SQLite).
+- **Pattern Implementation:** The system effectively uses a pipeline architecture (`polylogue/pipeline_runner.py`) to manage the complexity of rendering and syncing. Segregating stages (Read -> Normalize -> Transform -> Persist) allows for high modularity.
+- **Separation of Concerns:**
+  - **CLI Layer:** `polylogue/cli/` handles user interaction, argument parsing, and UI rendering (Rich/Gum).
+  - **Service Layer:** `polylogue/services/` (e.g., `ConversationRegistrar`) mediates between domain logic and persistence.
+  - **Domain Layer:** `polylogue/domain/models.py` defines clean data structures (`Conversation`, `Message`) independent of the database or UI.
+  - **Persistence:** `polylogue/persistence/` handles SQLite and State interactions.
+- **Data Flow:** The flow is clear: Input (JSON/API) $\rightarrow$ `importers/*` (Normalization) $\rightarrow$ `MessageRecord` objects $\rightarrow$ `Render` Pipeline $\rightarrow$ `MarkdownDocument` $\rightarrow$ Storage (Filesystem + SQLite).
 
 **Critique:**
 
-* **Leakage:** The `CommandEnv` object (`polylogue/commands.py`) acts as a Service Locator/Context object passed everywhere. While convenient, it tightly couples CLI handlers to specific implementations of the UI and Database, making isolation testing slightly harder without extensive mocking.
+- **Leakage:** The `CommandEnv` object (`polylogue/commands.py`) acts as a Service Locator/Context object passed everywhere. While convenient, it tightly couples CLI handlers to specific implementations of the UI and Database, making isolation testing slightly harder without extensive mocking.
 
 ## 2. Code Quality & Maintainability
 
 **Rating:** 7/10
 
-* **Cognitive Complexity:**
-  * **High Complexity:** `polylogue/cli/app.py` is a massive file (approaching God Object status for the CLI entry point). The `build_parser` function is monolithic and defines nested sub-parsers inline, making navigation difficult.
-  * **Complex Logic:** `polylogue/importers/chatgpt.py` contains nested logic for parsing provider-specific JSON structures. The `_render_chatgpt_conversation` function is dense.
-* **Typing:** The code makes excellent use of Python type hinting (`from __future__ import annotations`), enhancing readability and IDE support.
-* **DRY Principles:** Generally good, though there is some repetition in how arguments are added to parsers (`polylogue/cli/arg_helpers.py` helps, but `app.py` still repeats logic).
+- **Cognitive Complexity:**
+  - **High Complexity:** `polylogue/cli/app.py` is a massive file (approaching God Object status for the CLI entry point). The `build_parser` function is monolithic and defines nested sub-parsers inline, making navigation difficult.
+  - **Complex Logic:** `polylogue/importers/chatgpt.py` contains nested logic for parsing provider-specific JSON structures. The `_render_chatgpt_conversation` function is dense.
+- **Typing:** The code makes excellent use of Python type hinting (`from __future__ import annotations`), enhancing readability and IDE support.
+- **DRY Principles:** Generally good, though there is some repetition in how arguments are added to parsers (`polylogue/cli/arg_helpers.py` helps, but `app.py` still repeats logic).
 
 **Refactoring Recommendation:**
 Break `polylogue/cli/app.py`. Move specific command handlers (e.g., `sync`, `render`) into their own modules within `polylogue/cli/commands/`, leaving `app.py` strictly for wiring and entry point logic.
@@ -814,89 +816,89 @@ Break `polylogue/cli/app.py`. Move specific command handlers (e.g., `sync`, `ren
 
 **Rating:** 6/10
 
-* **Clipboard Interaction (Critical):**
-  * **File:** `polylogue/drive_client.py`
-  * **Issue:** The method `_try_clipboard_credentials` automatically reads the system clipboard to check for JSON tokens.
-  * **Risk:** While convenient, automatically reading the clipboard can inadvertently capture sensitive data (passwords, keys) that the user did not intend to paste into this specific application. This data might then be logged or processed if exception handling logs `kwargs`.
-* **HTML Injection:**
-  * **File:** `polylogue/html.py`
-  * **Analysis:** The code uses `jinja2` with `autoescape=True`, which mitigates XSS. However, `_transform_callouts` uses regex substitution on HTML strings. If the regex is not perfectly strict, malformed markdown could break out of the HTML structure.
-* **Zip Slip Vulnerability:**
-  * **File:** `polylogue/importers/utils.py`
-  * **Finding:** The function `safe_extract` explicitly checks for path traversal (`_is_within_directory`). **Commendable.** This is a frequent vulnerability in archive importers, and it is handled correctly here.
-* **Input Sanitization:**
-  * **File:** `polylogue/util.py` -> `sanitize_filename`.
-  * **Status:** Robust sanitization is present to prevent filesystem traversal via malicious chat titles.
+- **Clipboard Interaction (Critical):**
+  - **File:** `polylogue/drive_client.py`
+  - **Issue:** The method `_try_clipboard_credentials` automatically reads the system clipboard to check for JSON tokens.
+  - **Risk:** While convenient, automatically reading the clipboard can inadvertently capture sensitive data (passwords, keys) that the user did not intend to paste into this specific application. This data might then be logged or processed if exception handling logs `kwargs`.
+- **HTML Injection:**
+  - **File:** `polylogue/html.py`
+  - **Analysis:** The code uses `jinja2` with `autoescape=True`, which mitigates XSS. However, `_transform_callouts` uses regex substitution on HTML strings. If the regex is not perfectly strict, malformed markdown could break out of the HTML structure.
+- **Zip Slip Vulnerability:**
+  - **File:** `polylogue/importers/utils.py`
+  - **Finding:** The function `safe_extract` explicitly checks for path traversal (`_is_within_directory`). **Commendable.** This is a frequent vulnerability in archive importers, and it is handled correctly here.
+- **Input Sanitization:**
+  - **File:** `polylogue/util.py` -> `sanitize_filename`.
+  - **Status:** Robust sanitization is present to prevent filesystem traversal via malicious chat titles.
 
 ## 4. Performance & Scalability
 
 **Rating:** 6/10
 
-* **Synchronous I/O:**
-  * **Bottleneck:** The Google Drive sync (`polylogue/drive.py`) appears to be synchronous. `download_file` uses `requests` (blocking). Syncing thousands of small files (attachments) will be network-latency bound and slow.
-  * **Recommendation:** Move to `aiohttp` or use `concurrent.futures.ThreadPoolExecutor` for parallelizing attachment downloads.
-* **Indexing:**
-  * **File:** `polylogue/db.py`
-  * **Status:** Using SQLite FTS5 for search is an excellent choice for a local-first CLI. It scales well to hundreds of thousands of messages without the overhead of a dedicated search server.
-* **Streaming:**
-  * **File:** `polylogue/importers/chatgpt.py`
-  * **Status:** Uses `ijson` for streaming parsing of large JSON exports. **Excellent.** This prevents OOM errors when processing massive ChatGPT history dumps.
+- **Synchronous I/O:**
+  - **Bottleneck:** The Google Drive sync (`polylogue/drive.py`) appears to be synchronous. `download_file` uses `requests` (blocking). Syncing thousands of small files (attachments) will be network-latency bound and slow.
+  - **Recommendation:** Move to `aiohttp` or use `concurrent.futures.ThreadPoolExecutor` for parallelizing attachment downloads.
+- **Indexing:**
+  - **File:** `polylogue/db.py`
+  - **Status:** Using SQLite FTS5 for search is an excellent choice for a local-first CLI. It scales well to hundreds of thousands of messages without the overhead of a dedicated search server.
+- **Streaming:**
+  - **File:** `polylogue/importers/chatgpt.py`
+  - **Status:** Uses `ijson` for streaming parsing of large JSON exports. **Excellent.** This prevents OOM errors when processing massive ChatGPT history dumps.
 
 ## 5. Error Handling & Resilience
 
 **Rating:** 8/10
 
-* **Crash Reporting:**
-  * **File:** `polylogue/cli/app.py` -> `_record_failure`
-  * **Status:** The application writes structured failure logs (`failures.jsonl`) to the state directory. This is a pro-grade feature for a CLI, aiding debugging without spamming the user.
-* **Drive API Resilience:**
-  * **File:** `polylogue/drive.py`
-  * **Status:** Implements explicit retry logic with exponential backoff (`_retry`). This makes the application resilient to transient network flakes common with the Drive API.
-* **Database Atomicity:**
-  * **File:** `polylogue/db.py`
-  * **Status:** The `replace_messages` function uses `SAVEPOINT` to ensure atomicity. If an insert fails mid-stream, the delete is rolled back. This prevents data corruption during interruptions.
+- **Crash Reporting:**
+  - **File:** `polylogue/cli/app.py` -> `_record_failure`
+  - **Status:** The application writes structured failure logs (`failures.jsonl`) to the state directory. This is a pro-grade feature for a CLI, aiding debugging without spamming the user.
+- **Drive API Resilience:**
+  - **File:** `polylogue/drive.py`
+  - **Status:** Implements explicit retry logic with exponential backoff (`_retry`). This makes the application resilient to transient network flakes common with the Drive API.
+- **Database Atomicity:**
+  - **File:** `polylogue/db.py`
+  - **Status:** The `replace_messages` function uses `SAVEPOINT` to ensure atomicity. If an insert fails mid-stream, the delete is rolled back. This prevents data corruption during interruptions.
 
 ## 6. Testing & QA Strategy
 
 **Rating:** 7/10
 
-* **Coverage:** The `tests/` directory is substantial (`conftest.py`, `test_commands_logic.py`, `test_idempotency.py`).
-* **Idempotency Testing:** `tests/test_idempotency.py` is a standout. Explicitly testing that operations can be repeated without side effects or data loss is rigorous and high-value.
-* **Mocking:**
-  * **Critique:** Tests rely on custom fake classes (e.g., `StubDrive` in `test_cli_flags.py`) rather than a standardized mocking framework or library like `responses` or `vcrpy`. While this works, it requires maintaining the fake implementations as the real API evolves.
+- **Coverage:** The `tests/` directory is substantial (`conftest.py`, `test_commands_logic.py`, `test_idempotency.py`).
+- **Idempotency Testing:** `tests/test_idempotency.py` is a standout. Explicitly testing that operations can be repeated without side effects or data loss is rigorous and high-value.
+- **Mocking:**
+  - **Critique:** Tests rely on custom fake classes (e.g., `StubDrive` in `test_cli_flags.py`) rather than a standardized mocking framework or library like `responses` or `vcrpy`. While this works, it requires maintaining the fake implementations as the real API evolves.
 
 ## 7. Dependencies & Stack Health
 
 **Rating:** 8/10
 
-* **Stack:** Python 3.10+, Rich, Pydantic V2, SQLite. This is a modern, healthy stack.
-* **Dependency Management:** The project uses Nix (`flake.nix`, `nix/python-deps.nix`) for hermetic dependency management. This ensures absolute reproducibility of the environment.
-* **Hard Dependencies:** The code relies on external binaries (`gum`, `sk`, `delta`) to be present in the `$PATH`.
-  * **Risk:** While Nix handles this, users installing via `pip` on a standard OS will experience runtime crashes if these tools are missing. The `_ensure_ui_contract` / `InteractiveConsoleFacade` checks for these, but it creates a heavy external dependency footprint.
+- **Stack:** Python 3.10+, Rich, Pydantic V2, SQLite. This is a modern, healthy stack.
+- **Dependency Management:** The project uses Nix (`flake.nix`, `nix/python-deps.nix`) for hermetic dependency management. This ensures absolute reproducibility of the environment.
+- **Hard Dependencies:** The code relies on external binaries (`gum`, `sk`, `delta`) to be present in the `$PATH`.
+  - **Risk:** While Nix handles this, users installing via `pip` on a standard OS will experience runtime crashes if these tools are missing. The `_ensure_ui_contract` / `InteractiveConsoleFacade` checks for these, but it creates a heavy external dependency footprint.
 
 ## 8. Documentation & Developer Experience (DX)
 
 **Rating:** 9/10
 
-* **Documentation:** The `docs/` folder is extensive. `architecture.md`, `cli_tips.md`, and `GIT_WORKFLOW.md` are exemplary.
-* **Onboarding:** The `AGENTS.md` file specifically targeting AI agents/coding assistants is a forward-thinking touch.
-* **Git Workflow:** The project enforces strict commit discipline via hooks (`.githooks/`). While excellent for hygiene, this raises the barrier to entry for junior contributors who might struggle with interactive rebasing.
+- **Documentation:** The `docs/` folder is extensive. `architecture.md`, `cli_tips.md`, and `GIT_WORKFLOW.md` are exemplary.
+- **Onboarding:** The `AGENTS.md` file specifically targeting AI agents/coding assistants is a forward-thinking touch.
+- **Git Workflow:** The project enforces strict commit discipline via hooks (`.githooks/`). While excellent for hygiene, this raises the barrier to entry for junior contributors who might struggle with interactive rebasing.
 
 ## 9. Business Logic & Domain Modeling
 
 **Rating:** 8/10
 
-* **Branching Model:** The handling of conversation branching (`polylogue/branching.py`) is sophisticated. It correctly models conversations not just as lists of messages, but as trees (Canonical vs. Divergent branches), which is essential for preserving the integrity of AI interactions that utilize edit/regenerate features.
-* **Versioning:** The system tracks `content_hash` and modification times (`polylogue/document_store.py`) to determine if a render is stale. This logic is sound and essential for performance.
+- **Branching Model:** The handling of conversation branching (`polylogue/branching.py`) is sophisticated. It correctly models conversations not just as lists of messages, but as trees (Canonical vs. Divergent branches), which is essential for preserving the integrity of AI interactions that utilize edit/regenerate features.
+- **Versioning:** The system tracks `content_hash` and modification times (`polylogue/document_store.py`) to determine if a render is stale. This logic is sound and essential for performance.
 
 ## 10. Future-Proofing & Technical Debt
 
 **Rating:** 7/10
 
-* **Raw SQL:** `polylogue/db.py` contains a significant amount of raw SQL strings.
-  * **Risk:** As the schema grows (`schema version = 3` currently), manual schema migration via `_apply_schema` inside Python logic will become error-prone.
-  * **Recommendation:** Adopt a lightweight migration tool like **Alembic**, even if keeping raw SQL for performance in critical paths.
-* **Vendor Code:** `polylogue/_vendor/` exists. While valid for minimizing deps, vendoring `watchfiles` or `frontmatter` logic increases maintenance burden if upstream patches security issues.
+- **Raw SQL:** `polylogue/db.py` contains a significant amount of raw SQL strings.
+  - **Risk:** As the schema grows (`schema version = 3` currently), manual schema migration via `_apply_schema` inside Python logic will become error-prone.
+  - **Recommendation:** Adopt a lightweight migration tool like **Alembic**, even if keeping raw SQL for performance in critical paths.
+- **Vendor Code:** `polylogue/_vendor/` exists. While valid for minimizing deps, vendoring `watchfiles` or `frontmatter` logic increases maintenance burden if upstream patches security issues.
 
 ---
 
