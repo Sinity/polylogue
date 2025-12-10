@@ -56,6 +56,7 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     json_mode = bool(getattr(args, "json", False) or json_lines)
     json_verbose = bool(getattr(args, "json_verbose", False))
     quiet_json = json_mode and not json_verbose
+    show_inbox = bool(getattr(args, "inbox", False))
     if json_lines:
         setattr(args, "json", True)
         setattr(args, "quiet", True)
@@ -103,6 +104,18 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         top_runs: List[dict] = []
         if top_n:
             top_runs = sorted(filtered_runs, key=lambda r: (r.get("attachments", 0), r.get("tokens", 0)), reverse=True)[:top_n]
+
+        inbox_summary = None
+        if show_inbox:
+            try:
+                from ..local_sync import _discover_export_targets
+
+                inbox_summary = {}
+                for label, root in (("chatgpt", env.config.exports.chatgpt), ("claude", env.config.exports.claude)):
+                    targets = _discover_export_targets(root, provider=label)
+                    inbox_summary[label] = {"pending": len(targets), "root": str(root)}
+            except Exception:
+                inbox_summary = None
         console = ui.console
 
         if dump_only:
@@ -245,6 +258,14 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                         (stats.get("last") or "-") + (f" → {stats.get('last_out')}" if stats.get("last_out") else ""),
                     )
                 console.print(provider_table)
+            if inbox_summary:
+                inbox_table = Table(title="Inbox Coverage", show_lines=False)
+                inbox_table.add_column("Provider")
+                inbox_table.add_column("Pending", justify="right")
+                inbox_table.add_column("Root")
+                for prov, stats in inbox_summary.items():
+                    inbox_table.add_row(prov, str(stats.get("pending", 0)), str(stats.get("root", "-")))
+                console.print(inbox_table)
             if top_runs:
                 top_table = Table(title=f"Top Runs (attachments/tokens) [limit {len(top_runs)}]", show_lines=False)
                 top_table.add_column("Timestamp")
