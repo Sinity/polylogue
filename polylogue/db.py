@@ -18,11 +18,178 @@ _LOCAL = threading.local()
 SCHEMA_VERSION = 5
 
 
+def _apply_schema_fallback(conn: sqlite3.Connection) -> None:
+    """Apply schema directly when Alembic is not available.
+
+    This creates the current schema (Schema v5 + conversation-aware raw storage).
+    For production use, install Alembic for proper migrations.
+    """
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    # Create all tables with current schema
+    schema_sql = """
+    CREATE TABLE IF NOT EXISTS conversations (
+        provider TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        slug TEXT NOT NULL,
+        title TEXT,
+        current_branch TEXT,
+        root_message_id TEXT,
+        last_updated TEXT,
+        content_hash TEXT,
+        metadata_json TEXT,
+        PRIMARY KEY (provider, conversation_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS branches (
+        provider TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        parent_branch_id TEXT,
+        label TEXT,
+        depth INTEGER DEFAULT 0,
+        is_current INTEGER DEFAULT 0,
+        metadata_json TEXT,
+        PRIMARY KEY (provider, conversation_id, branch_id),
+        FOREIGN KEY (provider, conversation_id)
+            REFERENCES conversations(provider, conversation_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS messages (
+        provider TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        message_id TEXT NOT NULL,
+        parent_id TEXT,
+        position INTEGER NOT NULL,
+        timestamp TEXT,
+        role TEXT,
+        model TEXT,
+        content_hash TEXT,
+        content_text TEXT,
+        content_json TEXT,
+        rendered_text TEXT,
+        raw_json TEXT,
+        token_count INTEGER DEFAULT 0,
+        word_count INTEGER DEFAULT 0,
+        attachment_count INTEGER DEFAULT 0,
+        attachment_names TEXT,
+        is_leaf INTEGER DEFAULT 0,
+        metadata_json TEXT,
+        PRIMARY KEY (provider, conversation_id, branch_id, position),
+        FOREIGN KEY (provider, conversation_id, branch_id)
+            REFERENCES branches(provider, conversation_id, branch_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp TEXT NOT NULL,
+        cmd TEXT NOT NULL,
+        count INTEGER DEFAULT 0,
+        attachments INTEGER DEFAULT 0,
+        attachment_bytes INTEGER DEFAULT 0,
+        tokens INTEGER DEFAULT 0,
+        skipped INTEGER DEFAULT 0,
+        pruned INTEGER DEFAULT 0,
+        diffs INTEGER DEFAULT 0,
+        duration REAL,
+        out TEXT,
+        provider TEXT,
+        branch_id TEXT,
+        metadata_json TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS state_meta (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS assets (
+        provider TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        position INTEGER NOT NULL,
+        asset_id TEXT NOT NULL,
+        asset_type TEXT NOT NULL,
+        local_path TEXT,
+        size_bytes INTEGER,
+        mime_type TEXT,
+        metadata_json TEXT,
+        PRIMARY KEY (provider, conversation_id, branch_id, position, asset_id),
+        FOREIGN KEY (provider, conversation_id, branch_id, position)
+            REFERENCES messages(provider, conversation_id, branch_id, position) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS raw_imports (
+        provider TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        hash TEXT NOT NULL,
+        imported_at INTEGER DEFAULT (unixepoch()),
+        imported_at_ns INTEGER DEFAULT (unixepoch() * 1000000000),
+        source_path TEXT,
+        blob BLOB,
+        parser_version TEXT,
+        parse_status TEXT DEFAULT 'pending',
+        error_message TEXT,
+        metadata_json TEXT,
+        PRIMARY KEY (provider, conversation_id, version)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_raw_imports_hash ON raw_imports(hash);
+    CREATE INDEX IF NOT EXISTS idx_raw_imports_status ON raw_imports(parse_status);
+    CREATE INDEX IF NOT EXISTS idx_messages_branch_order ON messages(provider, conversation_id, branch_id, position);
+    CREATE INDEX IF NOT EXISTS idx_messages_conversation_message ON messages(provider, conversation_id, message_id);
+    CREATE INDEX IF NOT EXISTS idx_branches_conversation ON branches(provider, conversation_id);
+    CREATE INDEX IF NOT EXISTS idx_assets_message ON assets(provider, conversation_id, branch_id, position);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+        provider,
+        conversation_id,
+        branch_id,
+        message_id,
+        content,
+        tokenize='porter unicode61'
+    );
+
+    CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages
+    BEGIN
+        INSERT INTO messages_fts(provider, conversation_id, branch_id, message_id, content)
+        VALUES (NEW.provider, NEW.conversation_id, NEW.branch_id, NEW.message_id, NEW.content_text);
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages
+    BEGIN
+        UPDATE messages_fts
+        SET content = NEW.content_text
+        WHERE provider = OLD.provider
+          AND conversation_id = OLD.conversation_id
+          AND branch_id = OLD.branch_id
+          AND message_id = OLD.message_id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages
+    BEGIN
+        DELETE FROM messages_fts
+        WHERE provider = OLD.provider
+          AND conversation_id = OLD.conversation_id
+          AND branch_id = OLD.branch_id
+          AND message_id = OLD.message_id;
+    END;
+    """
+
+    # Execute all schema statements
+    conn.executescript(schema_sql)
+    conn.commit()
+
+
 def _run_migrations(db_path: Path) -> None:
     """Run Alembic migrations to ensure database schema is up to date.
 
     This replaces the old _apply_schema() function with proper Alembic migrations.
     Migrations are defined in polylogue/alembic/versions/.
+
+    If Alembic is not installed, falls back to applying the schema directly.
     """
     # Ensure parent directory exists
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -40,8 +207,7 @@ def _run_migrations(db_path: Path) -> None:
             check=False,
         )
         if result.returncode != 0:
-            # If alembic fails, it might not be installed - fall back to manual check
-            # This allows the code to work even if alembic isn't available at runtime
+            # If alembic fails, it might not be installed - fall back to direct schema
             conn = sqlite3.connect(db_path)
             try:
                 # Check if tables exist
@@ -49,26 +215,20 @@ def _run_migrations(db_path: Path) -> None:
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
                 )
                 if not cursor.fetchone():
-                    # No tables exist - need migration but alembic failed
-                    raise RuntimeError(
-                        f"Database migration failed and no tables exist. "
-                        f"Install alembic or run migrations manually.\n"
-                        f"Error: {result.stderr}"
-                    )
+                    # No tables exist - apply schema directly
+                    _apply_schema_fallback(conn)
             finally:
                 conn.close()
     except FileNotFoundError:
-        # Alembic not installed - warn but don't fail if DB already exists
+        # Alembic not installed - apply schema directly
         conn = sqlite3.connect(db_path)
         try:
             cursor = conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='conversations'"
             )
             if not cursor.fetchone():
-                raise RuntimeError(
-                    "Alembic is not installed and database is not initialized. "
-                    "Install alembic with: pip install alembic"
-                )
+                # No tables exist - apply schema directly
+                _apply_schema_fallback(conn)
         finally:
             conn.close()
 
