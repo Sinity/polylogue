@@ -61,6 +61,11 @@ def setup_parser(subparsers: argparse._SubParsersAction, _add_command_parser, ad
     add_helpers["dry_run_option"](p)
     add_helpers["force_option"](p, help_text="Re-render even if conversations are up-to-date")
     p.add_argument("--prune", action="store_true", help="Remove outputs for conversations that vanished upstream")
+    p.add_argument(
+        "--prune-snapshot",
+        action="store_true",
+        help="When using --prune, snapshot the output directory to STATE_HOME/rollback before deleting",
+    )
     add_helpers["collapse_option"](p)
     add_helpers["html_option"](p)
     add_helpers["diff_option"](p, help_text="Write delta diff alongside updated Markdown")
@@ -110,6 +115,8 @@ def setup_parser(subparsers: argparse._SubParsersAction, _add_command_parser, ad
     p.add_argument("--name-filter", type=str, default=None, help="Regex filter for Drive chat names")
     p.add_argument("--list-only", action="store_true", help="List Drive chats without syncing")
     p.add_argument("--offline", action="store_true", help="Skip network-dependent steps (Drive disallowed)")
+    p.add_argument("--drive-retries", type=int, default=None, help="Override Drive retry attempts (default: config or 3)")
+    p.add_argument("--drive-retry-base", type=float, default=None, help="Override Drive retry base delay seconds (default: config or 0.5)")
 
     # Watch mode flags (local providers only)
     p.add_argument(
@@ -130,6 +137,16 @@ def setup_parser(subparsers: argparse._SubParsersAction, _add_command_parser, ad
         help="Warn when watch makes no progress for this many seconds"
     )
     p.add_argument(
+        "--fail-on-stall",
+        action="store_true",
+        help="Exit with non-zero status when watch detects a stall",
+    )
+    p.add_argument(
+        "--tail",
+        action="store_true",
+        help="Log changed paths as they are detected in watch mode",
+    )
+    p.add_argument(
         "--once",
         action="store_true",
         help="In watch mode, run a single sync pass and exit"
@@ -138,6 +155,11 @@ def setup_parser(subparsers: argparse._SubParsersAction, _add_command_parser, ad
         "--snapshot",
         action="store_true",
         help="Create a rollback snapshot of the output directory before watching"
+    )
+    p.add_argument(
+        "--watch-plan",
+        action="store_true",
+        help="Print the assembled watch command and exit (no watch run)",
     )
 
 
