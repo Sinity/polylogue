@@ -46,6 +46,19 @@ from .arg_helpers import (
     create_render_parent,
     create_write_parent,
 )
+
+# Command modules
+from .commands import (
+    sync as sync_cmd,
+    render as render_cmd,
+    config as config_cmd,
+    attachments as attachments_cmd,
+    import_cmd,
+    search as search_cmd,
+    maintain as maintain_cmd,
+    status as status_cmd,
+    browse as browse_cmd,
+)
 from .editor import open_in_editor, get_editor
 from .context import (
     DEFAULT_OUTPUT_ROOTS,
@@ -1676,289 +1689,29 @@ def build_parser() -> argparse.ArgumentParser:
     mode_group.add_argument("--plain", action="store_true", help="Force plain/CI-safe output even when running in a TTY")
     sub = parser.add_subparsers(dest="cmd")
 
-    render_parents = [create_render_parent(), create_write_parent()]
-    p_render = _add_command_parser(
-        sub,
-        "render",
-        parents=render_parents,
-        help="Render JSON exports to Markdown/HTML",
-        description="Render provider exports to Markdown/HTML",
-        epilog=_examples_epilog("render"),
-    )
-    p_render.add_argument("input", type=Path, help="Input JSON file or directory containing exports")
-    add_out_option(
-        p_render,
-        default_path=DEFAULT_RENDER_OUT,
-        help_text="Output directory for rendered Markdown/HTML",
-    )
-    p_render.add_argument("--links-only", action="store_true", help="Link attachments without downloading")
-    p_render.add_argument(
-        "--attachment-ocr",
-        action="store_true",
-        help="Attempt OCR on image attachments when indexing attachment text",
-    )
-    add_diff_option(p_render)
-    p_render.add_argument("--json", action="store_true", help="Emit machine-readable summary")
-    p_render.add_argument("--print-paths", action="store_true", help="List written files after rendering")
-    p_render.add_argument("--to-clipboard", action="store_true", help="Copy single rendered file to clipboard")
-    p_render.add_argument("--force", action="store_true", help="Regenerate markdown from database instead of reading source files")
+    # Helper dict for command modules
+    add_helpers = {
+        "out_option": add_out_option,
+        "dry_run_option": add_dry_run_option,
+        "force_option": add_force_option,
+        "collapse_option": add_collapse_option,
+        "html_option": add_html_option,
+        "diff_option": add_diff_option,
+        "examples_epilog": _examples_epilog,
+    }
 
-    # Core workflow: sync
-    p_sync = _add_command_parser(
-        sub,
-        "sync",
-        help="Synchronize provider archives",
-        description="Synchronize provider archives",
-        epilog=_examples_epilog("sync"),
-    )
-    p_sync.add_argument(
-        "provider",
-        choices=["drive", *LOCAL_SYNC_PROVIDER_NAMES],
-        help="Provider to synchronize",
-    )
-    add_out_option(
-        p_sync,
-        default_path=DEFAULT_SYNC_OUT,
-        help_text="Override output directory (provider defaults from config are used otherwise)",
-    )
-    p_sync.add_argument("--links-only", action="store_true", help="Link attachments instead of downloading (Drive only)")
-    p_sync.add_argument(
-        "--attachment-ocr",
-        action="store_true",
-        help="Attempt OCR on image attachments when indexing attachment text",
-    )
-    add_dry_run_option(p_sync)
-    add_force_option(p_sync, help_text="Re-render even if conversations are up-to-date")
-    p_sync.add_argument("--prune", action="store_true", help="Remove outputs for conversations that vanished upstream")
-    add_collapse_option(p_sync)
-    add_html_option(p_sync)
-    add_diff_option(p_sync, help_text="Write delta diff alongside updated Markdown")
-    p_sync.add_argument("--json", action="store_true", help="Emit machine-readable summary")
-    p_sync.add_argument("--print-paths", action="store_true", help="List written files after sync")
-    p_sync.add_argument(
-        "--chat-id",
-        dest="chat_ids",
-        action="append",
-        help="Drive chat/file ID to sync (repeatable)",
-    )
-    sync_selection_group = p_sync.add_mutually_exclusive_group()
-    sync_selection_group.add_argument(
-        "--session",
-        dest="sessions",
-        action="append",
-        type=Path,
-        help="Local session/export path to sync (repeatable; local providers)",
-    )
-    sync_selection_group.add_argument("--all", action="store_true", help="Process all available items without interactive selection")
-    p_sync.add_argument(
-        "--base-dir",
-        type=Path,
-        default=None,
-        help="Override local session/export directory",
-    )
-    p_sync.add_argument("--folder-name", type=str, default=DEFAULT_FOLDER_NAME, help="Drive folder name (drive provider)")
-    p_sync.add_argument("--folder-id", type=str, default=None, help="Drive folder ID override")
-    p_sync.add_argument("--since", type=str, default=None, help="Only include Drive chats updated on/after this timestamp")
-    p_sync.add_argument("--until", type=str, default=None, help="Only include Drive chats updated on/before this timestamp")
-    p_sync.add_argument("--name-filter", type=str, default=None, help="Regex filter for Drive chat names")
-    p_sync.add_argument("--list-only", action="store_true", help="List Drive chats without syncing")
-    p_sync.add_argument("--offline", action="store_true", help="Skip network-dependent steps (Drive disallowed)")
-    # Watch mode flags (local providers only)
-    p_sync.add_argument("--watch", action="store_true", help="Watch for changes and sync continuously (local providers only)")
-    p_sync.add_argument("--debounce", type=float, default=2.0, help="Minimal seconds between sync runs in watch mode (default: 2.0)")
-    p_sync.add_argument("--stall-seconds", type=float, default=60.0, help="Warn when watch makes no progress for this many seconds")
-    p_sync.add_argument("--once", action="store_true", help="In watch mode, run a single sync pass and exit")
-    p_sync.add_argument("--snapshot", action="store_true", help="Create a rollback snapshot of the output directory before watching")
+    # Setup command parsers using modular command files
+    render_cmd.setup_parser(sub, _add_command_parser, add_helpers)
+    sync_cmd.setup_parser(sub, _add_command_parser, add_helpers)
+    import_cmd.setup_parser(sub, _add_command_parser, add_helpers)
+    browse_cmd.setup_parser(sub, _add_command_parser, add_helpers)
+    search_cmd.setup_parser(sub, _add_command_parser, add_helpers)
+    maintain_cmd.setup_parser(sub, _add_command_parser, add_helpers)
+    config_cmd.setup_parser(sub, _add_command_parser, add_helpers)
+    attachments_cmd.setup_parser(sub, _add_command_parser, add_helpers)
+    status_cmd.setup_parser(sub, _add_command_parser, add_helpers)
 
-    # Core workflow: import
-    p_import = _add_command_parser(
-        sub,
-        "import",
-        help="Import provider exports",
-        description="Import provider exports",
-        epilog=_examples_epilog("import"),
-    )
-    p_import.add_argument("provider", choices=["chatgpt", "claude", "claude-code", "codex"], help="Provider export format")
-    p_import.add_argument("source", nargs="*", help="Export path or session identifier (depends on provider); use 'pick', '?', or '-' to trigger interactive picker")
-    add_out_option(p_import, default_path=Path("(provider-specific)"), help_text="Override output directory")
-    add_collapse_option(p_import)
-    add_html_option(p_import)
-    p_import.add_argument(
-        "--attachment-ocr",
-        action="store_true",
-        help="Attempt OCR on image attachments when importing",
-    )
-    add_dry_run_option(p_import)
-    add_force_option(p_import, help_text="Rewrite even if conversations appear up-to-date")
-    p_import.add_argument("--print-paths", action="store_true", help="List written files after import")
-    import_selection_group = p_import.add_mutually_exclusive_group()
-    import_selection_group.add_argument("--all", action="store_true", help="Process all available items without interactive selection")
-    import_selection_group.add_argument("--conversation-id", dest="conversation_ids", action="append", help="Specific conversation ID to import (repeatable)")
-    p_import.add_argument("--base-dir", type=Path, default=None, help="Override source directory for codex/claude-code sessions")
-    p_import.add_argument("--json", action="store_true", help="Emit machine-readable summary")
-    p_import.add_argument("--to-clipboard", action="store_true", help="Copy a single imported Markdown file to the clipboard")
-
-    p_browse = _add_command_parser(
-        sub,
-        "browse",
-        help="Browse data (branches/stats/status/runs)",
-        description="Explore rendered data and system status",
-        epilog=_examples_epilog("browse"),
-    )
-    browse_sub = p_browse.add_subparsers(dest="browse_cmd", required=True)
-
-    p_browse_branches = _add_command_parser(browse_sub, "branches", help="Explore branch graphs for conversations", description="Explore branch graphs for conversations")
-    p_browse_branches.add_argument("--provider", type=str, default=None, help="Filter by provider slug")
-    p_browse_branches.add_argument("--slug", type=str, default=None, help="Filter by conversation slug")
-    p_browse_branches.add_argument("--conversation-id", type=str, default=None, help="Filter by provider conversation id")
-    p_browse_branches.add_argument("--min-branches", type=int, default=1, help="Only include conversations with at least this many branches")
-    p_browse_branches.add_argument("--branch", type=str, default=None, help="Branch ID to inspect or diff against the canonical path")
-    p_browse_branches.add_argument("--diff", action="store_true", help="Display a unified diff between a branch and canonical transcript")
-    p_browse_branches.add_argument(
-        "--html",
-        dest="html_mode",
-        nargs="?",
-        const="on",
-        default="auto",
-        choices=["auto", "on", "off"],
-        metavar="MODE",
-        help="Branch HTML mode: on/off/auto (default auto)",
-    )
-    p_browse_branches.add_argument("--out", type=Path, default=None, help="Write the branch explorer HTML to this path")
-    p_browse_branches.add_argument("--theme", type=str, default=None, choices=["light", "dark"], help="Override HTML explorer theme")
-    p_browse_branches.add_argument("--no-picker", action="store_true", help="Skip interactive selection even when skim/gum are available")
-    p_browse_branches.add_argument("--open", action="store_true", help="Open result in $EDITOR after command completes")
-
-    output_parent = create_output_parent()
-    filter_parent = create_filter_parent()
-
-    p_browse_stats = _add_command_parser(
-        browse_sub,
-        "stats",
-        parents=[output_parent, filter_parent],
-        help="Summarize Markdown output directories",
-        description="Summarize Markdown output directories"
-    )
-    p_browse_stats.add_argument("--dir", type=Path, default=None, help="Directory containing Markdown exports")
-    p_browse_stats.add_argument("--ignore-legacy", action="store_true", help="Ignore legacy *.md files alongside conversation.md")
-    p_browse_stats.add_argument(
-        "--sort",
-        choices=["tokens", "attachments", "attachment-bytes", "words", "recent"],
-        default="tokens",
-        help="Sort per-file rows before display/export",
-    )
-    p_browse_stats.add_argument("--limit", type=int, default=0, help="Limit the number of file rows shown/exported (0 shows all)")
-    p_browse_stats.add_argument("--csv", type=str, default=None, help="Write per-file rows to CSV ('-' for stdout)")
-    p_browse_stats.add_argument("--json-verbose", action="store_true", help="Print warnings/logs alongside --json/--json-lines output")
-
-    p_browse_status = _add_command_parser(
-        browse_sub,
-        "status",
-        help="Show cached Drive info and recent runs",
-        description="Show cached Drive info and recent runs",
-    )
-    _configure_status_parser(p_browse_status)
-
-    p_browse_runs = _add_command_parser(browse_sub, "runs", help="List recent runs", description="List run history with filters")
-    p_browse_runs.add_argument("--limit", type=int, default=50, help="Number of runs to display")
-    p_browse_runs.add_argument("--providers", type=str, default=None, help="Comma-separated provider filter")
-    p_browse_runs.add_argument("--commands", type=str, default=None, help="Comma-separated command filter")
-    p_browse_runs.add_argument("--since", type=str, default=None, help="Only include runs on/after this timestamp (YYYY-MM-DD or ISO)")
-    p_browse_runs.add_argument("--until", type=str, default=None, help="Only include runs on/before this timestamp")
-    p_browse_runs.add_argument("--json", action="store_true", help="Emit runs as JSON")
-    p_browse_runs.add_argument("--json-verbose", action="store_true", help="Print logs alongside --json output")
-
-    p_browse_inbox = _add_command_parser(
-        browse_sub,
-        "inbox",
-        help="List pending inbox exports and quarantine malformed items",
-        description="List pending inbox exports and quarantine malformed items",
-    )
-    p_browse_inbox.add_argument("--providers", type=str, default="chatgpt,claude", help="Comma-separated provider filter (default: chatgpt,claude)")
-    p_browse_inbox.add_argument("--dir", type=Path, default=None, help="Override inbox root for a generic scan")
-    p_browse_inbox.add_argument("--quarantine", action="store_true", help="Move unknown/malformed inbox items into a quarantine folder")
-    p_browse_inbox.add_argument("--quarantine-dir", type=Path, default=None, help="Target directory for quarantined items (default: <inbox>/quarantine)")
-    p_browse_inbox.add_argument("--json", action="store_true", help="Emit machine-readable inbox status")
-
-    p_search = _add_command_parser(
-        sub,
-        "search",
-        help="Search rendered transcripts",
-        description="Search rendered transcripts",
-        epilog=_examples_epilog("search"),
-    )
-    p_search.add_argument("query", type=str, help="FTS search query (SQLite syntax); use --from-stdin to read from stdin")
-    p_search.add_argument("--limit", type=int, default=20, help="Maximum number of hits to return")
-    p_search.add_argument("--provider", type=str, default=None, help="Filter by provider slug")
-    p_search.add_argument("--slug", type=str, default=None, help="Filter by conversation slug")
-    p_search.add_argument("--conversation-id", type=str, default=None, help="Filter by provider conversation id")
-    p_search.add_argument("--branch", type=str, default=None, help="Restrict to a single branch ID")
-    p_search.add_argument("--model", type=str, default=None, help="Filter by source model when recorded")
-    p_search.add_argument("--since", type=str, default=None, help="Only include messages on/after this timestamp")
-    p_search.add_argument("--until", type=str, default=None, help="Only include messages on/before this timestamp")
-    search_attachment_group = p_search.add_mutually_exclusive_group()
-    search_attachment_group.add_argument("--with-attachments", action="store_true", help="Limit to messages with extracted attachments")
-    search_attachment_group.add_argument("--without-attachments", action="store_true", help="Limit to messages without attachments")
-    p_search.add_argument("--in-attachments", action="store_true", help="Search within attachment text when indexed")
-    p_search.add_argument("--attachment-name", type=str, default=None, help="Filter by attachment filename substring")
-    p_search.add_argument("--no-picker", action="store_true", help="Skip skim picker preview even when interactive")
-    p_search.add_argument("--json", action="store_true", help="Emit machine-readable search results")
-    p_search.add_argument("--json-lines", action="store_true", help="Emit newline-delimited JSON hits (implies --json and disables tables)")
-    p_search.add_argument("--csv", type=str, default=None, help="Write search hits to CSV ('-' for stdout)")
-    p_search.add_argument(
-        "--fields",
-        type=str,
-        default="provider,conversationId,slug,branchId,messageId,position,timestamp,score,model,attachments,snippet,conversationPath,branchPath",
-        help="Comma-separated fields to include in CSV/JSONL output",
-    )
-    p_search.add_argument("--from-stdin", action="store_true", help="Read the search query from stdin (ignores positional query if present)")
-    p_search.add_argument("--open", action="store_true", help="Open result file in $EDITOR after search")
-
-    p_maintain = _add_command_parser(
-        sub,
-        "maintain",
-        help="System maintenance (prune/doctor/index)",
-        description="System maintenance and diagnostics",
-        epilog=_examples_epilog("maintain"),
-    )
-    maintain_sub = p_maintain.add_subparsers(dest="maintain_cmd", required=True)
-
-    p_maintain_prune = _add_command_parser(maintain_sub, "prune", help="Remove legacy single-file outputs and attachments", description="Remove legacy single-file outputs and attachments")
-    p_maintain_prune.add_argument(
-        "--dir",
-        dest="dirs",
-        action="append",
-        type=Path,
-        help="Root directory to prune (repeatable). Defaults to all configured output directories.",
-    )
-    p_maintain_prune.add_argument("--dry-run", action="store_true", help="Print planned actions without deleting files")
-
-    p_maintain_doctor = _add_command_parser(maintain_sub, "doctor", help="Check local data directories for common issues", description="Check local data directories for common issues")
-    p_maintain_doctor.add_argument("--codex-dir", type=Path, default=None, help="Override Codex sessions directory")
-    p_maintain_doctor.add_argument("--claude-code-dir", type=Path, default=None, help="Override Claude Code projects directory")
-    p_maintain_doctor.add_argument("--limit", type=int, default=None, help="Limit number of files inspected per provider")
-    p_maintain_doctor.add_argument("--json", action="store_true", help="Emit machine-readable report")
-    p_maintain_doctor.add_argument("--json-verbose", action="store_true", help="Emit JSON with verbose details")
-
-    p_maintain_index = _add_command_parser(maintain_sub, "index", help="Index maintenance helpers", description="Inspect/repair Polylogue indexes")
-    index_sub = p_maintain_index.add_subparsers(dest="subcmd", required=True)
-    p_index_check = index_sub.add_parser("check", help="Validate SQLite/Qdrant indexes")
-    p_index_check.add_argument("--repair", action="store_true", help="Attempt to rebuild missing SQLite FTS data")
-    p_index_check.add_argument("--skip-qdrant", action="store_true", help="Skip Qdrant validation even when configured")
-    p_index_check.add_argument("--json", action="store_true", help="Emit validation results as JSON")
-    p_index_check.add_argument("--json-verbose", action="store_true", help="Emit JSON with verbose details")
-
-    p_maintain_restore = _add_command_parser(
-        maintain_sub,
-        "restore",
-        help="Restore a snapshot directory",
-        description="Restore a previously snapshotted output directory",
-    )
-    p_maintain_restore.add_argument("--from", dest="src", type=Path, required=True, help="Snapshot directory to restore from")
-    p_maintain_restore.add_argument("--to", dest="dest", type=Path, required=True, help="Destination output directory")
-    p_maintain_restore.add_argument("--force", action="store_true", help="Overwrite destination if it exists")
-    p_maintain_restore.add_argument("--json", action="store_true", help="Emit restoration summary as JSON")
-
+    # Utility/meta commands (not yet modularized)
     # Reprocess command for failed imports
     p_reprocess = _add_command_parser(
         sub,
@@ -1983,62 +1736,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit machine-readable summary",
     )
-
-    p_config = _add_command_parser(
-        sub,
-        "config",
-        help="Configuration (init/set/show)",
-        description="Configure Polylogue settings",
-        epilog=_examples_epilog("config"),
-    )
-    config_sub = p_config.add_subparsers(dest="config_cmd", required=True)
-
-    p_config_init = config_sub.add_parser("init", help="Interactive configuration setup", description="Interactive configuration setup wizard")
-    p_config_init.add_argument("--force", action="store_true", help="Overwrite existing configuration")
-
-    p_config_set = config_sub.add_parser("set", help="Update settings", description="Show or update Polylogue defaults")
-    p_config_set.add_argument("--html", choices=["on", "off"], default=None, help="Enable or disable default HTML previews")
-    p_config_set.add_argument("--theme", choices=["light", "dark"], default=None, help="Set the default HTML theme")
-    p_config_set.add_argument("--collapse-threshold", type=int, default=None, help="Set the default collapse threshold for long outputs")
-    p_config_set.add_argument("--output-root", type=Path, default=None, help="Set the output root for archives (overrides config.json)")
-    p_config_set.add_argument("--input-root", type=Path, default=None, help="Set the inbox/input root for provider exports (overrides config.json)")
-    p_config_set.add_argument("--reset", action="store_true", help="Reset to config defaults")
-    p_config_set.add_argument("--json", action="store_true", help="Emit settings as JSON")
-
-    p_config_show = config_sub.add_parser("show", help="Show configuration", description="Show resolved configuration and output paths")
-    p_config_show.add_argument("--json", action="store_true", help="Emit environment info as JSON")
-
-    p_attachments = _add_command_parser(
-        sub,
-        "attachments",
-        help="Attachment utilities (stats/extract)",
-        description="Inspect and extract attachments",
-        epilog=_examples_epilog("attachments"),
-    )
-    attachments_sub = p_attachments.add_subparsers(dest="attachments_cmd", required=True)
-
-    p_att_stats = _add_command_parser(attachments_sub, "stats", help="Summarize attachments", description="Summarize attachment counts/bytes")
-    p_att_stats.add_argument("--dir", type=Path, default=None, help="Root directory containing archives (defaults to all output roots)")
-    p_att_stats.add_argument("--ext", type=str, default=None, help="Filter by file extension (e.g., .png)")
-    p_att_stats.add_argument("--hash", action="store_true", help="Hash attachments to compute deduped totals")
-    p_att_stats.add_argument("--sort", choices=["size", "name"], default="size", help="Sort field for top rows")
-    p_att_stats.add_argument("--limit", type=int, default=10, help="Limit number of files displayed (0 for all)")
-    p_att_stats.add_argument("--csv", type=str, default=None, help="Write attachment rows to CSV ('-' for stdout)")
-    p_att_stats.add_argument("--json", action="store_true", help="Emit stats as JSON")
-    p_att_stats.add_argument("--json-lines", action="store_true", help="Emit per-attachment JSONL (implies --json)")
-    p_att_stats.add_argument(
-        "--from-index",
-        action="store_true",
-        help="Read attachment metadata from the index DB (includes text/OCR stats when available)",
-    )
-
-    p_att_extract = _add_command_parser(attachments_sub, "extract", help="Copy attachments to a directory", description="Extract attachments by extension")
-    p_att_extract.add_argument("--dir", type=Path, default=None, help="Root directory containing archives (defaults to all output roots)")
-    p_att_extract.add_argument("--ext", type=str, required=True, help="File extension to extract (e.g., .pdf)")
-    p_att_extract.add_argument("--out", type=Path, required=True, help="Destination directory for extracted files")
-    p_att_extract.add_argument("--limit", type=int, default=0, help="Limit number of files extracted (0 for all)")
-    p_att_extract.add_argument("--overwrite", action="store_true", help="Allow overwriting existing files in destination")
-    p_att_extract.add_argument("--json", action="store_true", help="Emit extraction summary as JSON")
 
     p_help_cmd = _add_command_parser(sub, "help", help="Show help for a specific command", description="Show help for a specific command")
     p_help_cmd.add_argument("topic", nargs="?", help="Command name")
