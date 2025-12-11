@@ -178,6 +178,22 @@ def import_chatgpt_export(
     Database-first: All conversation data is written to SQLite.
     Use 'polylogue render --force' to generate markdown files.
     """
+    from .raw_storage import store_raw_import, mark_parse_success, mark_parse_failed
+
+    # Store raw import data before parsing
+    # For export files, use file path as conversation_id since one export contains many conversations
+    data_hash = None
+    if export_path.is_file():
+        raw_data = export_path.read_bytes()
+        # Use export file name (without extension) as conversation_id
+        export_id = export_path.stem
+        data_hash = store_raw_import(
+            data=raw_data,
+            provider="chatgpt",
+            conversation_id=export_id,
+            source_path=export_path,
+        )
+
     registrar = registrar or create_default_registrar()
     base_path, tmp = _load_export(export_path)
     try:
@@ -210,11 +226,25 @@ def import_chatgpt_export(
                         )
                     )
             except Exception as exc:
+                # Mark parse failure if we stored raw data
+                if data_hash:
+                    mark_parse_failed(data_hash, str(exc))
                 raise ValueError(
                     "Unexpected ChatGPT export format: conversations.json must contain a list. "
                     "Make sure you're using a valid ChatGPT export from the official export feature."
                 ) from exc
+
+        # Mark parse success if we stored raw data
+        if data_hash:
+            mark_parse_success(data_hash)
+
         return results
+    except Exception:
+        # Mark parse failure for any other exceptions
+        if data_hash:
+            import traceback
+            mark_parse_failed(data_hash, traceback.format_exc())
+        raise
     finally:
         if tmp is not None:
             tmp.cleanup()
