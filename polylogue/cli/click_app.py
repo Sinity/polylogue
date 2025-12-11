@@ -17,8 +17,7 @@ from ..commands import CommandEnv
 from ..ui import create_ui
 from . import (
     attachments,
-    arg_helpers,
-    browse,
+    browse as browse_cmd,
     config as config_cmd,
     env_cli,
     imports,
@@ -27,11 +26,16 @@ from . import (
     prefs as prefs_cmd,
     render as render_cmd,
     reprocess,
-    runs as runs_cmd,
     search as search_cmd,
     status as status_cmd,
     sync as sync_cmd,
-    browse as browse_cmd,
+)
+from .app import (
+    run_complete_cli,
+    run_completions_cli,
+    run_compare_cli,
+    run_help_cli,
+    run_search_preview,
 )
 
 
@@ -195,10 +199,26 @@ def status(env: CommandEnv, **kwargs) -> None:
     args = Namespace(**kwargs)
     status_cmd.dispatch(args, env)
 
+
+# ---------------------------- compare ----------------------------
+
+
+@cli.command()
+@click.argument("query", type=str)
+@click.option("--provider-a", required=True, help="First provider slug")
+@click.option("--provider-b", required=True, help="Second provider slug")
+@click.option("--limit", type=int, default=20, show_default=True, help="Maximum hits per provider")
+@click.option("--json", is_flag=True, help="Emit machine-readable comparison summary")
+@click.option("--fields", type=str, default="provider,slug,branchId,messageId,score,snippet,model,path", show_default=True, help="Fields for JSON export")
+@click.pass_obj
+def compare(env: CommandEnv, **kwargs) -> None:
+    args = Namespace(**kwargs)
+    run_compare_cli(args, env)
+
 # ---------------------------- browse ----------------------------
 
 
-@cli.group()
+@cli.group(name="browse")
 @click.pass_context
 def browse_group(ctx: click.Context) -> None:
     """Browse commands (branches/stats/status/runs/inbox)."""
@@ -352,6 +372,42 @@ def env(env: CommandEnv, **kwargs) -> None:
     run_env_cli(Namespace(**kwargs), env)
 
 
+@cli.command()
+@click.argument("topic", required=False)
+@click.option("--examples", is_flag=True, help="Show all examples for the topic (or all commands if none specified)")
+@click.pass_obj
+def help(env: CommandEnv, **kwargs) -> None:  # type: ignore[func-returns-value]
+    args = Namespace(**kwargs)
+    run_help_cli(args, env)
+
+
+@cli.command()
+@click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True)
+@click.pass_obj
+def completions(env: CommandEnv, **kwargs) -> None:
+    args = Namespace(**kwargs)
+    run_completions_cli(args, env)
+
+
+@cli.command(name="_complete", hidden=True)
+@click.option("--shell", required=True)
+@click.option("--cword", type=int, required=True)
+@click.argument("words", nargs=-1)
+@click.pass_obj
+def _complete(env: CommandEnv, **kwargs) -> None:
+    args = Namespace(**kwargs)
+    run_complete_cli(args, env)
+
+
+@cli.command(name="_search-preview", hidden=True)
+@click.option("--data-file", type=click.Path(path_type=Path), required=True)
+@click.option("--index", type=int, required=True)
+@click.pass_obj
+def _search_preview(env: CommandEnv, **kwargs) -> None:
+    args = Namespace(**kwargs)
+    run_search_preview(args)
+
+
 @cli.group()
 @click.pass_context
 def config(ctx: click.Context) -> None:
@@ -389,23 +445,21 @@ def config_init(env: CommandEnv, **kwargs) -> None:
 
 
 @cli.command()
-@click.argument("prefs_cmd", type=click.Choice(["list", "set", "clear"]))
+@click.argument("subcmd", type=click.Choice(["list", "set", "clear"]))
 @click.option("--command", "command_name", type=str, help="Command name (e.g., search, sync)")
 @click.option("--flag", type=str, help="Flag name, e.g., --limit")
 @click.option("--value", type=str, help="Value for the flag")
-@click.option("--json", is_flag=True, help="Emit JSON output")
+@click.option("--json", "json_mode", is_flag=True, help="Emit JSON output")
 @click.pass_obj
-def prefs(env: CommandEnv, prefs_cmd: str, command_name: Optional[str], flag: Optional[str], value: Optional[str], json: bool) -> None:  # type: ignore[func-returns-value]
-    args = Namespace(prefs_cmd=prefs_cmd, command=command_name, flag=flag, value=value, json=json)
-    prefs_cmd_mod = prefs_cmd  # quiet lint
-    prefs_cmd = prefs_cmd_mod
-    prefs_cmd.dispatch(args, env)  # type: ignore[attr-defined]
+def prefs(env: CommandEnv, subcmd: str, command_name: Optional[str], flag: Optional[str], value: Optional[str], json_mode: bool) -> None:  # type: ignore[func-returns-value]
+    args = Namespace(prefs_cmd=subcmd, command=command_name, flag=flag, value=value, json=json_mode)
+    prefs_cmd.run_prefs_cli(args, env)
 
 
 # ---------------------------- attachments ----------------------------
 
 
-@cli.group()
+@cli.group(name="attachments")
 @click.pass_context
 def attachments_group(ctx: click.Context) -> None:
     """Attachment utilities."""
@@ -414,7 +468,7 @@ def attachments_group(ctx: click.Context) -> None:
 @attachments_group.command(name="stats")
 @click.option("--dir", type=click.Path(path_type=Path), help="Root directory containing archives")
 @click.option("--ext", type=str, help="Filter by file extension")
-@click.option("--hash", "hash_mode", is_flag=True, help="Hash attachments to compute deduped totals")
+@click.option("--hash", "hash", is_flag=True, help="Hash attachments to compute deduped totals")
 @click.option("--sort", type=click.Choice(["size", "name"]), default="size")
 @click.option("--limit", type=int, default=10)
 @click.option("--csv", type=str, help="Write attachment rows to CSV")
