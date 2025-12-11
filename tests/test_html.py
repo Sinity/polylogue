@@ -87,3 +87,23 @@ def test_branch_html_escapes_untrusted_content(tmp_path: Path):
     html_output = build_branch_html(summary)
     assert "<script>" not in html_output
     assert "branch%20file.md" in html_output
+
+
+def test_branch_html_handles_empty_conversation():
+    summary = BranchConversationSummary(
+        provider="chatgpt",
+        conversation_id="conv-empty",
+        slug="empty",
+        title="Empty",
+        current_branch=None,
+        last_updated=None,
+        branch_count=0,
+        canonical_branch_id=None,
+        conversation_path=None,
+        conversation_dir=None,
+        nodes={},
+    )
+
+    html_output = build_branch_html(summary, theme="light")
+
+    assert "No branch data" in html_output

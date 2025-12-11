@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import os
 import time
+import json
+import zipfile
+import fnmatch
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -33,6 +36,7 @@ class LocalSyncResult:
     skipped: int
     pruned: int
     output_dir: Path
+    ignored: int = 0
     attachments: int = 0
     attachment_bytes: int = 0
     tokens: int = 0
@@ -91,9 +95,9 @@ def _is_up_to_date(source: Path, target: Path) -> bool:
     return True
 
 
-EXPORTS_ROOT = DATA_HOME / "exports"
-CHATGPT_EXPORTS_DEFAULT = EXPORTS_ROOT / "chatgpt"
-CLAUDE_EXPORTS_DEFAULT = EXPORTS_ROOT / "claude"
+INBOX_ROOT = DATA_HOME / "inbox"
+CHATGPT_EXPORTS_DEFAULT = CONFIG.exports.chatgpt
+CLAUDE_EXPORTS_DEFAULT = CONFIG.exports.claude
 
 
 class _NoopProgress:
@@ -112,6 +116,8 @@ def _sync_sessions(
     *,
     output_dir: Path,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
+    base_dir: Optional[Path] = None,
     html: bool,
     html_theme: str,
     force: bool,
@@ -122,6 +128,7 @@ def _sync_sessions(
     importer_kwargs: Optional[dict] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
+    attachment_ocr: bool = False,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -132,16 +139,31 @@ def _sync_sessions(
     importer_kwargs = importer_kwargs or {}
     importer_kwargs = dict(importer_kwargs)
     importer_kwargs.setdefault("registrar", registrar)
+    importer_kwargs.setdefault("attachment_ocr", attachment_ocr)
     attachments_total = 0
     attachment_bytes_total = 0
     tokens_total = 0
     words_total = 0
 
     diff_total = 0
+    session_list: List[Path]
     if isinstance(sessions, (list, tuple)):
-        iterable: Iterable[Path] = sorted((Path(p) for p in sessions), key=path_order_key)
+        session_list = [Path(p) for p in sessions]
     else:
-        iterable = sorted(list(sessions), key=path_order_key)
+        session_list = [Path(p) for p in sessions]
+    ignore_patterns: List[str] = []
+    if base_dir:
+        ignore_patterns = _load_ignore_patterns(base_dir.expanduser())
+    filtered_sessions: List[Path] = []
+    ignored = 0
+    for path in sorted(session_list, key=path_order_key):
+        if base_dir and _is_ignored(path, base_dir.expanduser(), ignore_patterns):
+            ignored += 1
+            continue
+        filtered_sessions.append(path)
+    if ignored and ui:
+        ui.console.print(f"[yellow]Skipped {ignored} session(s) via .polylogueignore")
+    iterable: Iterable[Path] = filtered_sessions
 
     session_list = list(iterable)
     progress_ctx = ui.progress(f"Syncing {provider} sessions", total=len(session_list)) if ui else _NoopProgress()
@@ -201,6 +223,7 @@ def _sync_sessions(
             str(session_path),
             output_dir=output_dir,
             collapse_threshold=collapse_threshold,
+            collapse_thresholds=collapse_thresholds,
             html=html,
             html_theme=html_theme,
             force=force,
@@ -285,6 +308,7 @@ def _sync_sessions(
         skipped=skipped,
         pruned=pruned,
         output_dir=output_dir,
+        ignored=ignored,
         attachments=attachments_total,
         attachment_bytes=attachment_bytes_total,
         tokens=tokens_total,
@@ -294,10 +318,62 @@ def _sync_sessions(
     )
 
 
-def _discover_export_targets(base_dir: Path) -> List[Path]:
+def _detect_export_provider(path: Path) -> Optional[str]:
+    conv_path: Optional[Path] = None
+    suffix = path.suffix.lower()
+    if path.is_dir():
+        candidate = path / "conversations.json"
+        if candidate.exists():
+            conv_path = candidate
+    elif path.is_file() and path.name.lower() == "conversations.json":
+        conv_path = path
+    elif path.is_file() and suffix == ".zip" and zipfile.is_zipfile(path):
+        try:
+            with zipfile.ZipFile(path) as zf:
+                if "conversations.json" in zf.namelist():
+                    with zf.open("conversations.json") as fh:
+                        data = json.loads(fh.read().decode("utf-8"))
+                        return _classify_conversations_json(data)
+        except Exception:
+            return None
+
+    if conv_path and conv_path.exists():
+        try:
+            data = json.loads(conv_path.read_text(encoding="utf-8"))
+            return _classify_conversations_json(data)
+        except Exception:
+            return None
+
+    # Fallback: hint from filename
+    name = path.name.lower()
+    if "chatgpt" in name:
+        return "chatgpt"
+    if "claude" in name:
+        return "claude"
+    return None
+
+
+def _classify_conversations_json(data: object) -> Optional[str]:
+    if isinstance(data, dict):
+        conversations = data.get("conversations") if isinstance(data.get("conversations"), list) else None
+        if conversations:
+            data = conversations
+    if isinstance(data, list) and data:
+        first = data[0]
+        if isinstance(first, dict):
+            if "mapping" in first:
+                return "chatgpt"
+            # Claude exports typically lack mapping and include simple message lists
+            return "claude"
+    return None
+
+
+def _discover_export_targets(base_dir: Path, *, provider: Optional[str] = None) -> List[Path]:
     base = base_dir.expanduser()
     if not base.exists():
         return []
+    provider_hint = base.name.lower() if provider else None
+    ignore_patterns = _load_ignore_patterns(base)
     candidates: set[Path] = set()
     try:
         for zip_path in base.rglob("*.zip"):
@@ -309,11 +385,55 @@ def _discover_export_targets(base_dir: Path) -> List[Path]:
             candidates.add(conv_file.parent)
     except OSError:
         pass
-    return sorted(candidates, key=path_order_key, reverse=True)
+    results: List[Path] = []
+    for cand in sorted(candidates, key=path_order_key, reverse=True):
+        detected = _detect_export_provider(cand)
+        if provider:
+            if detected and detected != provider:
+                continue
+            if detected is None:
+                hint = provider_hint or ""
+                path_str = str(cand).lower()
+                if provider not in hint and provider not in path_str:
+                    continue
+        if _is_ignored(cand, base, ignore_patterns):
+            continue
+        results.append(cand)
+    return results
+
+
+def _load_ignore_patterns(base_dir: Path) -> List[str]:
+    path = base_dir / ".polylogueignore"
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return []
+    patterns: List[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        patterns.append(stripped)
+    return patterns
+
+
+def _is_ignored(path: Path, base_dir: Path, patterns: Sequence[str]) -> bool:
+    if not patterns:
+        return False
+    try:
+        rel = path.relative_to(base_dir)
+        candidate = rel.as_posix()
+    except ValueError:
+        candidate = path.name
+    return any(fnmatch.fnmatch(candidate, pat) for pat in patterns)
 
 
 def _normalize_export_target(path: Path) -> Optional[Path]:
     candidate = Path(path).expanduser()
+    if not candidate.exists():
+        return None
     suffix = candidate.suffix.lower()
     if suffix == ".zip":
         return candidate
@@ -329,6 +449,8 @@ def _sync_export_bundles(
     *,
     output_dir: Path,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
+    base_dir: Optional[Path] = None,
     html: bool,
     html_theme: str,
     force: bool,
@@ -337,6 +459,7 @@ def _sync_export_bundles(
     import_fn: Callable[..., Sequence[ImportResult] | ImportResult | None],
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
+    attachment_ocr: bool = False,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -356,7 +479,13 @@ def _sync_export_bundles(
     else:
         iterable = sorted([Path(p) for p in bundles], key=path_order_key)
 
-    exports = list(iterable)
+    ignore_patterns: List[str] = []
+    if base_dir:
+        ignore_patterns = _load_ignore_patterns(base_dir.expanduser())
+
+    exports = [
+        path for path in iterable if not (base_dir and _is_ignored(path, base_dir.expanduser(), ignore_patterns))
+    ]
     progress_ctx = ui.progress(f"Processing {provider} exports", total=len(exports)) if ui else _NoopProgress()
 
     with progress_ctx as tracker:
@@ -368,11 +497,13 @@ def _sync_export_bundles(
                 export_path=export_path,
                 output_dir=output_dir,
                 collapse_threshold=collapse_threshold,
+                collapse_thresholds=collapse_thresholds,
                 html=html,
                 html_theme=html_theme,
                 selected_ids=None,
                 force=force,
                 registrar=registrar,
+                attachment_ocr=attachment_ocr,
             )
             if results_raw is None:
                 result_list: List[ImportResult] = []
@@ -436,6 +567,7 @@ def sync_codex_sessions(
     base_dir: Path = CODEX_DEFAULT,
     output_dir: Path,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool,
     html_theme: str,
     force: bool,
@@ -444,6 +576,7 @@ def sync_codex_sessions(
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
+    attachment_ocr: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -452,6 +585,8 @@ def sync_codex_sessions(
         sessions,
         output_dir=output_dir,
         collapse_threshold=collapse_threshold,
+        collapse_thresholds=collapse_thresholds,
+        base_dir=base_dir,
         html=html,
         html_theme=html_theme,
         force=force,
@@ -465,6 +600,7 @@ def sync_codex_sessions(
         ),
         registrar=registrar,
         ui=ui,
+        attachment_ocr=attachment_ocr,
     )
 
 
@@ -473,6 +609,7 @@ def sync_claude_code_sessions(
     base_dir: Path = CLAUDE_CODE_DEFAULT,
     output_dir: Path,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool,
     html_theme: str,
     force: bool,
@@ -481,6 +618,7 @@ def sync_claude_code_sessions(
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
+    attachment_ocr: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -489,6 +627,8 @@ def sync_claude_code_sessions(
         sessions,
         output_dir=output_dir,
         collapse_threshold=collapse_threshold,
+        collapse_thresholds=collapse_thresholds,
+        base_dir=base_dir,
         html=html,
         html_theme=html_theme,
         force=force,
@@ -502,6 +642,7 @@ def sync_claude_code_sessions(
         ),
         registrar=registrar,
         ui=ui,
+        attachment_ocr=attachment_ocr,
     )
 
 
@@ -532,6 +673,7 @@ def sync_chatgpt_exports(
     base_dir: Path = CHATGPT_EXPORTS_DEFAULT,
     output_dir: Path,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool,
     html_theme: str,
     force: bool,
@@ -540,19 +682,32 @@ def sync_chatgpt_exports(
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
+    attachment_ocr: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
-    targets = sessions or _discover_export_targets(base_dir)
-    if sessions:
-        targets = [_normalize_export_target(Path(p)) for p in sessions if p]
-    targets = [t for t in targets if t]
-    if not targets:
-        targets = _discover_export_targets(base_dir)
+    invalid_inputs: List[Path] = []
+    targets: List[Path] = []
+    if sessions is not None:
+        for raw in sessions:
+            normalized = _normalize_export_target(Path(raw))
+            if normalized is None:
+                invalid_inputs.append(Path(raw))
+            else:
+                targets.append(normalized)
+        if invalid_inputs:
+            bad_list = ", ".join(str(p) for p in invalid_inputs)
+            raise ValueError(f"Invalid ChatGPT export path(s): {bad_list}")
+        if not targets:
+            raise ValueError("No valid ChatGPT exports found for the provided --session paths")
+    else:
+        targets = _discover_export_targets(base_dir, provider="chatgpt")
     return _sync_export_bundles(
         targets,
         output_dir=output_dir,
         collapse_threshold=collapse_threshold,
+        collapse_thresholds=collapse_thresholds,
+        base_dir=base_dir,
         html=html,
         html_theme=html_theme,
         force=force,
@@ -561,6 +716,7 @@ def sync_chatgpt_exports(
         import_fn=import_chatgpt_export,
         registrar=registrar,
         ui=ui,
+        attachment_ocr=attachment_ocr,
     )
 
 
@@ -569,6 +725,7 @@ def sync_claude_exports(
     base_dir: Path = CLAUDE_EXPORTS_DEFAULT,
     output_dir: Path,
     collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool,
     html_theme: str,
     force: bool,
@@ -577,19 +734,32 @@ def sync_claude_exports(
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
+    attachment_ocr: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
-    targets = sessions or _discover_export_targets(base_dir)
-    if sessions:
-        targets = [_normalize_export_target(Path(p)) for p in sessions if p]
-    targets = [t for t in targets if t]
-    if not targets:
-        targets = _discover_export_targets(base_dir)
+    invalid_inputs: List[Path] = []
+    targets: List[Path] = []
+    if sessions is not None:
+        for raw in sessions:
+            normalized = _normalize_export_target(Path(raw))
+            if normalized is None:
+                invalid_inputs.append(Path(raw))
+            else:
+                targets.append(normalized)
+        if invalid_inputs:
+            bad_list = ", ".join(str(p) for p in invalid_inputs)
+            raise ValueError(f"Invalid Claude export path(s): {bad_list}")
+        if not targets:
+            raise ValueError("No valid Claude exports found for the provided --session paths")
+    else:
+        targets = _discover_export_targets(base_dir, provider="claude")
     return _sync_export_bundles(
         targets,
         output_dir=output_dir,
         collapse_threshold=collapse_threshold,
+        collapse_thresholds=collapse_thresholds,
+        base_dir=base_dir,
         html=html,
         html_theme=html_theme,
         force=force,
@@ -598,6 +768,7 @@ def sync_claude_exports(
         import_fn=import_claude_export,
         registrar=registrar,
         ui=ui,
+        attachment_ocr=attachment_ocr,
     )
 
 

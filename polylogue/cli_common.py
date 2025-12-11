@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple, TypeVar
 
@@ -25,9 +26,11 @@ def filter_chats(
     u_epoch = parse_input_time_to_epoch(until)
     if s_epoch is not None or u_epoch is not None:
         tmp: List[Dict[str, Any]] = []
+        dropped_missing_modified = 0
         for c in out:
             mt = parse_rfc3339_to_epoch(c.get("modifiedTime"))
             if mt is None:
+                dropped_missing_modified += 1
                 continue
             if s_epoch is not None and mt < s_epoch:
                 continue
@@ -35,6 +38,11 @@ def filter_chats(
                 continue
             tmp.append(c)
         out = tmp
+        if dropped_missing_modified:
+            print(
+                f"Skipped {dropped_missing_modified} chat(s) missing modifiedTime; unable to apply --since/--until.",
+                file=sys.stderr,
+            )
     return out
 
 
@@ -57,11 +65,17 @@ def sk_select(
     bindings: Optional[Sequence[str]] = None,
     prompt: Optional[str] = None,
     cycle: bool = True,
+    plain: bool = False,
 ) -> Optional[List[str]]:
     """Return the lines selected via skim, or None if the picker was aborted."""
 
     if not lines:
         return []
+
+    import sys
+
+    if plain or not sys.stdin.isatty():
+        return None
 
     cmd = ["sk", "--ansi"]
     if multi:
@@ -133,7 +147,29 @@ def choose_single_entry(
         lines.append(line)
 
     if getattr(ui, "plain", False):
-        return entries[0], False
+        # Avoid blocking on stdin in non-interactive environments.
+        import sys
+
+        if not sys.stdin.isatty():
+            if hasattr(ui, "console"):
+                ui.console.print("[yellow]Plain mode cannot prompt; pass --all/IDs or rerun with --interactive.")
+            return None, True
+        if header:
+            ui.console.print(header)
+        for idx, line in enumerate(lines):
+            ui.console.print(line)
+        while True:
+            try:
+                response = input((prompt or "select") + " [index or blank to cancel]: ").strip()
+            except EOFError:
+                return None, True
+            if not response:
+                return None, True
+            if response.isdigit():
+                value = int(response)
+                if 0 <= value < len(entries):
+                    return entries[value], False
+            ui.console.print("[yellow]Enter a valid numeric index or cancel with Enter.")
 
     selection = sk_select(
         lines,
@@ -224,8 +260,14 @@ def resolve_inputs(path: Path, plain: bool) -> Optional[List[Path]]:
     candidates = [
         p for p in sorted(path.iterdir()) if p.is_file() and p.suffix.lower() == ".json"
     ]
-    if len(candidates) <= 1 or plain:
+    if len(candidates) <= 1:
         return candidates
+    if plain:
+        if not sys.stdin.isatty():
+            print("[yellow]Plain mode cannot prompt for input selection; specify explicit file paths or rerun with --interactive.")
+            return None
+        print("[yellow]Multiple inputs found; plain mode requires an explicit selection. Rerun with --interactive or point at a single file.")
+        return None
     lines = [str(p) for p in candidates]
     selection = sk_select(
         lines,

@@ -19,12 +19,39 @@ from .context import (
     DEFAULT_COLLAPSE,
     DEFAULT_SYNC_OUT,
     default_sync_namespace,
-    resolve_collapse_value,
+    resolve_collapse_thresholds,
     resolve_html_enabled,
     resolve_output_path,
     merge_with_defaults,
 )
 from .summaries import summarize_import
+
+
+def _truthy(val: str) -> bool:
+    return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_sync_prefs(args: argparse.Namespace, env: CommandEnv) -> argparse.Namespace:
+    prefs = getattr(env, "prefs", {}) or {}
+    sync_prefs = prefs.get("sync", {}) if isinstance(prefs, dict) else {}
+    if not sync_prefs:
+        return args
+
+    def _apply_flag(flag: str, attr: str) -> None:
+        if flag in sync_prefs and not getattr(args, attr, False) and _truthy(sync_prefs[flag]):
+            setattr(args, attr, True)
+
+    if "--html" in sync_prefs and getattr(args, "html_mode", "auto") == "auto":
+        args.html_mode = "on" if _truthy(sync_prefs["--html"]) else "off"
+
+    _apply_flag("--links-only", "links_only")
+    _apply_flag("--diff", "diff")
+    _apply_flag("--prune", "prune")
+    _apply_flag("--watch", "watch")
+    _apply_flag("--once", "once")
+    _apply_flag("--attachment-ocr", "attachment_ocr")
+    _apply_flag("--offline", "offline")
+    return args
 
 
 def _log_local_sync(ui, title: str, result: LocalSyncResult, *, provider: str, footer: Optional[List[str]] = None) -> None:
@@ -40,6 +67,8 @@ def _log_local_sync(ui, title: str, result: LocalSyncResult, *, provider: str, f
         console.print(f"[cyan]{title}: skipped {result.skipped} up-to-date item(s).")
     if result.pruned:
         console.print(f"[cyan]{title}: pruned {result.pruned} path(s).")
+    if getattr(result, "ignored", 0):
+        console.print(f"[yellow]{title}: skipped {result.ignored} path(s) via .polylogueignore.")
     add_run(
         {
             "cmd": title.lower().replace(" ", "-"),
@@ -90,11 +119,23 @@ def run_list_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
 def run_sync_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     provider = getattr(args, "provider", None)
     settings = env.settings
+    args = _apply_sync_prefs(args, env)
+    if getattr(args, "offline", False) and provider == "drive":
+        env.ui.console.print("[red]Drive sync does not support --offline.")
+        raise SystemExit(1)
     if provider == "drive":
         merged = merge_with_defaults(default_sync_namespace("drive", settings), args)
         _run_sync_drive(merged, env)
     elif provider in LOCAL_SYNC_PROVIDER_NAMES:
         merged = merge_with_defaults(default_sync_namespace(provider, settings), args)
+        if getattr(args, "max_disk", None):
+            # Assume up to 20 MiB per session including attachments as a coarse estimate.
+            projected = 20 * 1024 * 1024 * max(1, len(getattr(args, "sessions", []) or []))
+            from ..util import preflight_disk_requirement
+
+            preflight_disk_requirement(projected_bytes=projected, limit_gib=args.max_disk, ui=env.ui)
+        if getattr(args, "offline", False):
+            env.ui.console.print("[yellow]Offline mode: network-dependent steps will be skipped; results may be incomplete.")
         _run_local_sync(provider, merged, env)
     else:
         env.ui.console.print(f"[red]Unsupported provider for sync: {provider}")
@@ -118,16 +159,26 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         return
 
     download_attachments = not args.links_only
+    if getattr(args, "offline", False):
+        download_attachments = False
 
     previous_run_note = format_run_brief(latest_run(provider="drive", cmd="sync drive"))
+
+    retries_override = getattr(args, "drive_retries", None)
+    retry_base_override = getattr(args, "drive_retry_base", None)
+    drive_cfg = getattr(env.config, "drive", None)
+    drive_retries = retries_override if retries_override is not None else getattr(drive_cfg, "retries", None)
+    drive_retry_base = retry_base_override if retry_base_override is not None else getattr(drive_cfg, "retry_base", None)
+
+    drive = env.drive or DriveClient(ui, retries=drive_retries, retry_base=drive_retry_base)
+    env.drive = drive
+    folder_id = drive.resolve_folder_id(args.folder_name, args.folder_id)
+    raw_chats = drive.list_chats(args.folder_name, folder_id)
+    filtered = filter_chats(raw_chats, args.name_filter, args.since, args.until)
 
     cli_ids = [item.strip() for item in getattr(args, "chat_ids", []) if item and item.strip()]
     selected_ids: Optional[List[str]] = cli_ids or None
     if selected_ids is None and not ui.plain and not json_mode:
-        drive = env.drive or DriveClient(ui)
-        env.drive = drive
-        raw_chats = drive.list_chats(args.folder_name, args.folder_id)
-        filtered = filter_chats(raw_chats, args.name_filter, args.since, args.until)
         if not filtered:
             console.print("No chats to sync")
             return
@@ -136,7 +187,7 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
                 f"{c.get('name') or '(untitled)'}\t{c.get('modifiedTime') or ''}\t{c.get('id')}"
                 for c in filtered
             ]
-            selection = sk_select(lines, preview="printf '%s' {+}")
+            selection = sk_select(lines, preview="printf '%s' {+}", plain=ui.plain)
             if selection is None:
                 console.print("[yellow]Sync cancelled; no chats selected.")
                 return
@@ -146,13 +197,19 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
             selected_ids = [line.split("\t")[-1] for line in selection]
 
     settings = env.settings
+    collapse_thresholds = resolve_collapse_thresholds(args, settings)
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
+    prefetched = filtered
+    if selected_ids:
+        selected_set = set(selected_ids)
+        prefetched = [chat for chat in filtered if chat.get("id") in selected_set]
     options = SyncOptions(
         folder_name=args.folder_name,
-        folder_id=args.folder_id,
+        folder_id=folder_id,
         output_dir=resolve_output_path(args.out, DEFAULT_SYNC_OUT),
-        collapse_threshold=resolve_collapse_value(args.collapse_threshold, settings),
+        collapse_threshold=collapse_thresholds["message"],
+        collapse_thresholds=collapse_thresholds,
         download_attachments=download_attachments,
         dry_run=args.dry_run,
         force=args.force,
@@ -164,15 +221,46 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         html=html_enabled,
         html_theme=html_theme,
         diff=getattr(args, "diff", False),
+        prefetched_chats=prefetched,
+        attachment_ocr=getattr(args, "attachment_ocr", False),
     )
-    if download_attachments and env.drive is None:
-        env.drive = DriveClient(ui)
 
+    if getattr(args, "prune", False) and getattr(args, "prune_snapshot", False):
+        from ..paths import STATE_HOME
+        from ..util import preflight_disk_requirement
+        output_dir = options.output_dir
+        snapshot_root = STATE_HOME / "rollback"
+        snapshot_root.mkdir(parents=True, exist_ok=True)
+        estimated = 0
+        for path in output_dir.rglob("*"):
+            try:
+                if path.is_file():
+                    estimated += path.stat().st_size
+            except Exception:
+                continue
+        preflight_disk_requirement(projected_bytes=estimated, limit_gib=getattr(args, "max_disk", None), ui=ui)
+        snapshot_path = snapshot_root / f"sync-drive-{int(time.time())}.zip"
+        try:
+            from zipfile import ZipFile
+
+            with ZipFile(snapshot_path, "w") as zipf:
+                for path in output_dir.rglob("*"):
+                    try:
+                        if path.is_file():
+                            zipf.write(path, arcname=path.relative_to(output_dir))
+                    except Exception:
+                        continue
+            ui.console.print(f"[dim]Prune snapshot saved to {snapshot_path}[/dim]")
+        except Exception as exc:
+            ui.console.print(f"[yellow]Snapshot failed: {exc}")
+
+    from .app import _record_failure
     try:
         result = sync_command(options, env)
     except Exception as exc:
         console.print(f"[red]Drive sync failed: {exc}")
         console.print("[cyan]Run `polylogue doctor` and `polylogue config show --json` to verify credentials, tokens, and output directories.")
+        _record_failure(args, exc, phase="sync")
         raise
 
     if json_mode:
@@ -197,6 +285,8 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
                 for item in result.items
             ],
             "total_stats": result.total_stats,
+            "retries": getattr(result, "retries", None),
+            "retry_base": drive_retry_base,
         }
         if previous_run_note:
             payload["previousRun"] = previous_run_note
@@ -204,6 +294,10 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         return
 
     lines = [f"Synced {result.count} chat(s) → {result.output_dir}"]
+    if getattr(args, "print_paths", False):
+        lines.append("Written paths:")
+        for item in result.items:
+            lines.append(f"  {item.output}")
     attachments_total = result.total_stats.get("attachments", 0)
     if attachments_total:
         lines.append(f"Attachments: {attachments_total}")
@@ -232,6 +326,8 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         if getattr(item, "diff", None):
             info += " [+diff]"
         lines.append(info)
+    if drive_retries is not None or drive_retry_base is not None:
+        lines.append(f"Drive retries: {drive_retries or 3} (base delay {drive_retry_base or 0.5}s)")
     if previous_run_note:
         lines.append(f"Previous run: {previous_run_note}")
     console.print("\n".join(lines))
@@ -252,6 +348,7 @@ def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optiona
         lines,
         header=f"{header} — tab to toggle, ctrl-a select all, enter accept",
         prompt="Sessions> ",
+        plain=ui.plain,
     )
     if selection is None:
         console.print("[yellow]Sync cancelled; no sessions selected.")
@@ -273,15 +370,22 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base.expanduser()
     out_dir = resolve_output_path(args.out, provider.default_output)
     settings = env.settings
-    collapse = resolve_collapse_value(args.collapse_threshold, settings)
+    collapse_thresholds = resolve_collapse_thresholds(args, settings)
+    collapse = collapse_thresholds["message"]
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
     force = args.force
     prune = args.prune
     diff_enabled = getattr(args, "diff", False)
 
-    if provider.create_base_dir:
-        base_dir.mkdir(parents=True, exist_ok=True)
+    if not base_dir.exists():
+        if provider.create_base_dir and args.base_dir is None:
+            base_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            hint = f"pass --base-dir to override (current default: {base_dir})" if args.base_dir is None else "double-check the path or create it before running"
+            ui.console.print(f"[red]Base directory does not exist: {base_dir}[/red]")
+            ui.console.print(f"[yellow]{hint}[/yellow]")
+            raise SystemExit(1)
 
     selected_paths: Optional[List[Path]] = None
     cli_sessions = getattr(args, "sessions", None)
@@ -296,19 +400,53 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
             return
         selected_paths = selection
 
-    result = provider.sync_fn(
-        base_dir=base_dir,
-        output_dir=out_dir,
-        collapse_threshold=collapse,
-        html=html_enabled,
-        html_theme=html_theme,
-        force=force,
-        prune=prune,
-        diff=diff_enabled,
-        sessions=selected_paths,
-        registrar=env.registrar,
-        ui=env.ui,
-    )
+    if prune and getattr(args, "prune_snapshot", False):
+        from ..paths import STATE_HOME
+        from ..util import preflight_disk_requirement
+        snapshot_root = STATE_HOME / "rollback"
+        snapshot_root.mkdir(parents=True, exist_ok=True)
+        estimated = 0
+        for path in out_dir.rglob("*"):
+            try:
+                if path.is_file():
+                    estimated += path.stat().st_size
+            except Exception:
+                continue
+        preflight_disk_requirement(projected_bytes=estimated, limit_gib=getattr(args, "max_disk", None), ui=ui)
+        snapshot_path = snapshot_root / f"sync-{provider.name}-{int(time.time())}.zip"
+        try:
+            from zipfile import ZipFile
+
+            with ZipFile(snapshot_path, "w") as zipf:
+                for path in out_dir.rglob("*"):
+                    try:
+                        if path.is_file():
+                            zipf.write(path, arcname=path.relative_to(out_dir))
+                    except Exception:
+                        continue
+            ui.console.print(f"[dim]Prune snapshot saved to {snapshot_path}[/dim]")
+        except Exception as exc:
+            ui.console.print(f"[yellow]Snapshot failed: {exc}")
+
+    try:
+        result = provider.sync_fn(
+            base_dir=base_dir,
+            output_dir=out_dir,
+            collapse_threshold=collapse,
+            collapse_thresholds=collapse_thresholds,
+            html=html_enabled,
+            html_theme=html_theme,
+            force=force,
+            prune=prune,
+            diff=diff_enabled,
+            sessions=selected_paths,
+            registrar=env.registrar,
+            ui=env.ui,
+            attachment_ocr=getattr(args, "attachment_ocr", False),
+        )
+    except Exception as exc:
+        ui.console.print(f"[red]{provider.title} sync failed: {exc}")
+        raise SystemExit(1) from exc
 
     attachments = result.attachments
     attachment_bytes = result.attachment_bytes

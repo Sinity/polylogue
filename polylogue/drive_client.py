@@ -14,55 +14,50 @@ from .drive import (
     get_drive_service,
     get_file_meta,
     list_children,
+    set_retry_defaults,
 )
 from .paths import CONFIG_HOME
 from .util import parse_rfc3339_to_epoch, read_clipboard_text
 from .ui import UI
-
 GDRIVE_INSTRUCTIONS = "https://developers.google.com/drive/api/quickstart/python"
 CONFIG_DIR = CONFIG_HOME
 DEFAULT_CREDENTIALS = CONFIG_DIR / "credentials.json"
-DEFAULT_TOKEN = CONFIG_DIR / "token.json"
+_ENV_TOKEN_PATH = os.environ.get("POLYLOGUE_TOKEN_PATH")
+DEFAULT_TOKEN = Path(_ENV_TOKEN_PATH).expanduser() if _ENV_TOKEN_PATH else CONFIG_DIR / "token.json"
 DEFAULT_FOLDER_NAME = "AI Studio"
-DRIVE_CREDENTIAL_ENV = "POLYLOGUE_DRIVE_CREDENTIALS"
 
 
 class DriveClient:
     """Wrapper that manages credentials and Drive service access."""
 
-    def __init__(self, ui: UI):
+    def __init__(self, ui: UI, *, retries: Optional[int] = None, retry_base: Optional[float] = None):
         self.ui = ui
-        self._credentials_path: Path = DEFAULT_CREDENTIALS
+        env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+        self._credentials_path: Path = Path(env_path).expanduser() if env_path else DEFAULT_CREDENTIALS
+        token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
+        self._token_path: Path = Path(token_env).expanduser() if token_env else DEFAULT_TOKEN
         self._service = None
+        if retries is not None or retry_base is not None:
+            set_retry_defaults(retries=retries, base_delay=retry_base)
 
     @property
     def credentials_path(self) -> Path:
         return self._credentials_path
 
+    @property
+    def token_path(self) -> Path:
+        return self._token_path
+
     def ensure_credentials(self) -> Path:
         cred_path = self._credentials_path
         if cred_path.exists():
             return cred_path
-        env_copy = self._copy_credentials_from_env()
-        if env_copy:
-            return env_copy
         if self.ui.plain:
             raise SystemExit(
-                f"Missing credentials.json. Set ${DRIVE_CREDENTIAL_ENV} or download a Google OAuth client secret "
-                "and place it next to polylogue.py."
+                "Missing credentials.json. Download a Google OAuth client secret and place it at "
+                f"{cred_path} or set POLYLOGUE_CREDENTIAL_PATH/POLYLOGUE_TOKEN_PATH to point at your files."
             )
         return self._prompt_for_credentials()
-
-    def _copy_credentials_from_env(self) -> Optional[Path]:
-        env_credential = os.environ.get(DRIVE_CREDENTIAL_ENV)
-        if not env_credential:
-            return None
-        src = Path(env_credential).expanduser()
-        if not src.exists():
-            raise SystemExit(
-                f"Credential path from ${DRIVE_CREDENTIAL_ENV} not found: {src}"
-            )
-        return self._copy_credentials_from_path(src)
 
     def _copy_credentials_from_path(self, src: Path) -> Path:
         cred_path = self._credentials_path
@@ -79,6 +74,7 @@ class DriveClient:
     def _prompt_for_credentials(self) -> Path:
         self.ui.banner("Google Drive access needs credentials", "Download OAuth client for Desktop app")
         clipboard_checked = False
+        # Try clipboard first (user will be prompted for confirmation)
         while True:
             if not clipboard_checked:
                 clipboard_checked = True
@@ -138,7 +134,7 @@ class DriveClient:
         if self._service is None:
             cred_path = self.ensure_credentials()
             try:
-                svc = get_drive_service(cred_path, verbose=not self.ui.plain)
+                svc = get_drive_service(cred_path, token_path=self._token_path, verbose=not self.ui.plain)
             except RuntimeError as exc:
                 message = str(exc)
                 if self.ui.plain:
