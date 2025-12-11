@@ -31,11 +31,25 @@ def import_claude_code_session(
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
 ) -> ImportResult:
+    from .raw_storage import store_raw_import, mark_parse_success, mark_parse_failed
+
     registrar = registrar or create_default_registrar()
     base_dir = base_dir.expanduser()
     session_path = _locate_session_file(session_id, base_dir)
     if session_path is None:
         raise FileNotFoundError(f"Claude Code session {session_id} not found under {base_dir}")
+
+    # Store raw session data before parsing
+    data_hash = None
+    if session_path.exists():
+        raw_data = session_path.read_bytes()
+        # Use session_id as conversation_id (each session file = one conversation)
+        data_hash = store_raw_import(
+            data=raw_data,
+            provider="claude-code",
+            conversation_id=session_id,
+            source_path=session_path,
+        )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     title = session_path.stem
@@ -253,33 +267,46 @@ def import_claude_code_session(
         "workspace": session_path.parent.name,
     }
 
-    return process_conversation(
-        provider="claude-code",
-        conversation_id=session_id,
-        slug=slug,
-        title=title,
-        message_records=message_records,
-        attachments=attachments,
-        canonical_leaf_id=canonical_leaf_id,
-        collapse_threshold=collapse_threshold,
-        collapse_thresholds=collapse_thresholds,
-        html=html,
-        html_theme=html_theme,
-        output_dir=output_dir,
-        extra_yaml=extra_yaml,
-        extra_state=extra_state,
-        source_file_id=session_path.name,
-        modified_time=None,
-        created_time=None,
-        run_settings=None,
-        source_mime="application/jsonl",
-        source_size=session_path.stat().st_size,
-        attachment_policy=None,
-        force=force,
-        allow_dirty=allow_dirty,
-        attachment_ocr=attachment_ocr,
-        registrar=registrar,
-    )
+    try:
+        result = process_conversation(
+            provider="claude-code",
+            conversation_id=session_id,
+            slug=slug,
+            title=title,
+            message_records=message_records,
+            attachments=attachments,
+            canonical_leaf_id=canonical_leaf_id,
+            collapse_threshold=collapse_threshold,
+            collapse_thresholds=collapse_thresholds,
+            html=html,
+            html_theme=html_theme,
+            output_dir=output_dir,
+            extra_yaml=extra_yaml,
+            extra_state=extra_state,
+            source_file_id=session_path.name,
+            modified_time=None,
+            created_time=None,
+            run_settings=None,
+            source_mime="application/jsonl",
+            source_size=session_path.stat().st_size,
+            attachment_policy=None,
+            force=force,
+            allow_dirty=allow_dirty,
+            attachment_ocr=attachment_ocr,
+            registrar=registrar,
+        )
+
+        # Mark parse success if we stored raw data
+        if data_hash:
+            mark_parse_success(data_hash)
+
+        return result
+    except Exception:
+        # Mark parse failure if we stored raw data
+        if data_hash:
+            import traceback
+            mark_parse_failed(data_hash, traceback.format_exc())
+        raise
 
 
 def list_claude_code_sessions(base_dir: Path = DEFAULT_PROJECT_ROOT) -> List[Dict[str, str]]:

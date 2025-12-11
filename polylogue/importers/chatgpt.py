@@ -23,6 +23,7 @@ from .utils import (
     safe_extractall,
     store_large_text,
 )
+from .raw_storage import compute_hash, store_raw_import, mark_parse_success, mark_parse_failed
 
 
 def _load_export(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
@@ -173,12 +174,25 @@ def import_chatgpt_export(
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
 ) -> List[ImportResult]:
+    """Import ChatGPT export to database.
+
+    Database-first: All conversation data is written to SQLite.
+    Use 'polylogue render --force' to generate markdown files.
+    Stores per-conversation raw blobs to avoid re-ingesting full exports repeatedly.
+    """
     registrar = registrar or create_default_registrar()
     base_path, tmp = _load_export(export_path)
+    bundle_hash: Optional[str] = None
     try:
         convo_path = base_path / "conversations.json"
         if not convo_path.exists():
             raise FileNotFoundError("conversations.json missing in export")
+        # Hash the bundle content to annotate per-conversation raws
+        try:
+            bundle_hash = compute_hash(convo_path.read_bytes())
+        except Exception:
+            bundle_hash = None
+
         output_dir.mkdir(parents=True, exist_ok=True)
         results: List[ImportResult] = []
         with convo_path.open("rb") as fh:
@@ -189,7 +203,21 @@ def import_chatgpt_export(
                     conv_id = conv.get("id") or conv.get("conversation_id")
                     if selected_ids and conv_id not in selected_ids:
                         continue
-                    results.append(
+                    # Store per-conversation raw snapshot (deduped by hash/version)
+                    raw_bytes = json.dumps(conv, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                    raw_hash = store_raw_import(
+                        data=raw_bytes,
+                        provider="chatgpt",
+                        conversation_id=conv_id or "conversation",
+                        source_path=export_path,
+                        metadata={
+                            "bundle_hash": bundle_hash,
+                            "bundle_path": str(export_path),
+                            "export_root": str(base_path),
+                        },
+                    )
+                    try:
+                        results.append(
                             _render_chatgpt_conversation(
                                 conv,
                                 base_path,
@@ -199,16 +227,25 @@ def import_chatgpt_export(
                                 html=html,
                                 html_theme=html_theme,
                                 force=force,
-                            allow_dirty=allow_dirty,
-                            registrar=registrar,
-                            attachment_ocr=attachment_ocr,
+                                allow_dirty=allow_dirty,
+                                registrar=registrar,
+                                attachment_ocr=attachment_ocr,
+                            )
                         )
-                    )
+                        if raw_hash:
+                            mark_parse_success(raw_hash)
+                    except Exception:
+                        if raw_hash:
+                            import traceback
+
+                            mark_parse_failed(raw_hash, traceback.format_exc())
+                        raise
             except Exception as exc:
                 raise ValueError(
                     "Unexpected ChatGPT export format: conversations.json must contain a list. "
                     "Make sure you're using a valid ChatGPT export from the official export feature."
                 ) from exc
+
         return results
     finally:
         if tmp is not None:
