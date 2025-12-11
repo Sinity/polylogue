@@ -134,6 +134,8 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             from ..util import preflight_disk_requirement
 
             preflight_disk_requirement(projected_bytes=projected, limit_gib=args.max_disk, ui=env.ui)
+        if getattr(args, "offline", False):
+            env.ui.console.print("[yellow]Offline mode: network-dependent steps will be skipped; results may be incomplete.")
         _run_local_sync(provider, merged, env)
     else:
         env.ui.console.print(f"[red]Unsupported provider for sync: {provider}")
@@ -162,7 +164,13 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
 
     previous_run_note = format_run_brief(latest_run(provider="drive", cmd="sync drive"))
 
-    drive = env.drive or DriveClient(ui)
+    retries_override = getattr(args, "drive_retries", None)
+    retry_base_override = getattr(args, "drive_retry_base", None)
+    drive_cfg = getattr(env.config, "drive", None)
+    drive_retries = retries_override if retries_override is not None else getattr(drive_cfg, "retries", None)
+    drive_retry_base = retry_base_override if retry_base_override is not None else getattr(drive_cfg, "retry_base", None)
+
+    drive = env.drive or DriveClient(ui, retries=drive_retries, retry_base=drive_retry_base)
     env.drive = drive
     folder_id = drive.resolve_folder_id(args.folder_name, args.folder_id)
     raw_chats = drive.list_chats(args.folder_name, folder_id)
@@ -217,11 +225,42 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         attachment_ocr=getattr(args, "attachment_ocr", False),
     )
 
+    if getattr(args, "prune", False) and getattr(args, "prune_snapshot", False):
+        from ..paths import STATE_HOME
+        from ..util import preflight_disk_requirement
+        output_dir = options.output_dir
+        snapshot_root = STATE_HOME / "rollback"
+        snapshot_root.mkdir(parents=True, exist_ok=True)
+        estimated = 0
+        for path in output_dir.rglob("*"):
+            try:
+                if path.is_file():
+                    estimated += path.stat().st_size
+            except Exception:
+                continue
+        preflight_disk_requirement(projected_bytes=estimated, limit_gib=getattr(args, "max_disk", None), ui=ui)
+        snapshot_path = snapshot_root / f"sync-drive-{int(time.time())}.zip"
+        try:
+            from zipfile import ZipFile
+
+            with ZipFile(snapshot_path, "w") as zipf:
+                for path in output_dir.rglob("*"):
+                    try:
+                        if path.is_file():
+                            zipf.write(path, arcname=path.relative_to(output_dir))
+                    except Exception:
+                        continue
+            ui.console.print(f"[dim]Prune snapshot saved to {snapshot_path}[/dim]")
+        except Exception as exc:
+            ui.console.print(f"[yellow]Snapshot failed: {exc}")
+
+    from .app import _record_failure
     try:
         result = sync_command(options, env)
     except Exception as exc:
         console.print(f"[red]Drive sync failed: {exc}")
         console.print("[cyan]Run `polylogue doctor` and `polylogue config show --json` to verify credentials, tokens, and output directories.")
+        _record_failure(args, exc, phase="sync")
         raise
 
     if json_mode:
@@ -246,6 +285,8 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
                 for item in result.items
             ],
             "total_stats": result.total_stats,
+            "retries": getattr(result, "retries", None),
+            "retry_base": drive_retry_base,
         }
         if previous_run_note:
             payload["previousRun"] = previous_run_note
@@ -285,6 +326,8 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         if getattr(item, "diff", None):
             info += " [+diff]"
         lines.append(info)
+    if drive_retries is not None or drive_retry_base is not None:
+        lines.append(f"Drive retries: {drive_retries or 3} (base delay {drive_retry_base or 0.5}s)")
     if previous_run_note:
         lines.append(f"Previous run: {previous_run_note}")
     console.print("\n".join(lines))
@@ -335,8 +378,14 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
     prune = args.prune
     diff_enabled = getattr(args, "diff", False)
 
-    if provider.create_base_dir:
-        base_dir.mkdir(parents=True, exist_ok=True)
+    if not base_dir.exists():
+        if provider.create_base_dir and args.base_dir is None:
+            base_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            hint = f"pass --base-dir to override (current default: {base_dir})" if args.base_dir is None else "double-check the path or create it before running"
+            ui.console.print(f"[red]Base directory does not exist: {base_dir}[/red]")
+            ui.console.print(f"[yellow]{hint}[/yellow]")
+            raise SystemExit(1)
 
     selected_paths: Optional[List[Path]] = None
     cli_sessions = getattr(args, "sessions", None)
@@ -350,6 +399,34 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
         if not selection:
             return
         selected_paths = selection
+
+    if prune and getattr(args, "prune_snapshot", False):
+        from ..paths import STATE_HOME
+        from ..util import preflight_disk_requirement
+        snapshot_root = STATE_HOME / "rollback"
+        snapshot_root.mkdir(parents=True, exist_ok=True)
+        estimated = 0
+        for path in out_dir.rglob("*"):
+            try:
+                if path.is_file():
+                    estimated += path.stat().st_size
+            except Exception:
+                continue
+        preflight_disk_requirement(projected_bytes=estimated, limit_gib=getattr(args, "max_disk", None), ui=ui)
+        snapshot_path = snapshot_root / f"sync-{provider.name}-{int(time.time())}.zip"
+        try:
+            from zipfile import ZipFile
+
+            with ZipFile(snapshot_path, "w") as zipf:
+                for path in out_dir.rglob("*"):
+                    try:
+                        if path.is_file():
+                            zipf.write(path, arcname=path.relative_to(out_dir))
+                    except Exception:
+                        continue
+            ui.console.print(f"[dim]Prune snapshot saved to {snapshot_path}[/dim]")
+        except Exception as exc:
+            ui.console.print(f"[yellow]Snapshot failed: {exc}")
 
     try:
         result = provider.sync_fn(
