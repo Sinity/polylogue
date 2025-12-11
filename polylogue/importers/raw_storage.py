@@ -32,8 +32,11 @@ def store_raw_import(
     """Store raw import data in the database before parsing.
 
     Uses conversation-aware versioning to prevent unbounded growth while keeping
-    history for catastrophic failure recovery. Automatically keeps the last 5
+    history for catastrophic failure recovery. Automatically keeps the last 100
     versions per conversation.
+
+    Version safety: Old versions can never overwrite newer ones because version
+    numbers are strictly incrementing (uses MAX(version) + 1).
 
     Args:
         data: Raw bytes from the import file
