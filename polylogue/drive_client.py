@@ -71,10 +71,9 @@ class DriveClient:
     def _prompt_for_credentials(self) -> Path:
         self.ui.banner("Google Drive access needs credentials", "Download OAuth client for Desktop app")
         clipboard_checked = False
-        # Only auto-read clipboard if explicitly enabled (security: don't read clipboard without permission)
-        allow_clipboard = os.environ.get("POLYLOGUE_ALLOW_CLIPBOARD", "").lower() in ("1", "true", "yes")
+        # Try clipboard first (user will be prompted for confirmation)
         while True:
-            if not clipboard_checked and allow_clipboard:
+            if not clipboard_checked:
                 clipboard_checked = True
                 clip_path = self._try_clipboard_credentials()
                 if clip_path:

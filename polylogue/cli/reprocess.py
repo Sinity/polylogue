@@ -74,12 +74,98 @@ def run_reprocess(
                 console.print(f"  [red]✗[/red] Fallback failed: {e}")
                 still_failed += 1
         else:
-            # Try re-parsing with updated parser
-            # This would require importing the actual parser for each provider
-            # For now, just report that it's available
-            console.print("  [yellow]![/yellow] Strict reprocessing not yet implemented")
-            console.print("  [cyan]Hint:[/cyan] Use --fallback to extract text heuristically")
-            still_failed += 1
+            # Try re-parsing with updated parser (strict mode)
+            try:
+                import tempfile
+                import json
+                from pathlib import Path
+
+                # Write raw data to temp file
+                with tempfile.NamedTemporaryFile(mode='wb', suffix='.json', delete=False) as tmp:
+                    tmp.write(raw_data)
+                    tmp_path = Path(tmp.name)
+
+                try:
+                    # Import using provider-specific parser
+                    if import_provider == 'chatgpt':
+                        from ..importers.chatgpt import import_chatgpt_export
+                        from ..settings import settings
+
+                        results = import_chatgpt_export(
+                            tmp_path,
+                            output_dir=env.config.defaults.output_dirs.get('import_chatgpt', Path('./out')),
+                            collapse_threshold=settings.collapse_threshold,
+                            html=settings.html_previews,
+                            html_theme=settings.html_theme,
+                            force=True,
+                            allow_dirty=True,
+                            attachment_ocr=False,
+                        )
+                    elif import_provider == 'claude':
+                        from ..importers.claude_ai import import_claude_export
+                        from ..settings import settings
+
+                        results = import_claude_export(
+                            tmp_path,
+                            output_dir=env.config.defaults.output_dirs.get('import_claude', Path('./out')),
+                            collapse_threshold=settings.collapse_threshold,
+                            html=settings.html_previews,
+                            html_theme=settings.html_theme,
+                            force=True,
+                            allow_dirty=True,
+                            attachment_ocr=False,
+                        )
+                    elif import_provider == 'codex':
+                        from ..importers.codex import import_codex_session
+                        from ..settings import settings
+
+                        results = [import_codex_session(
+                            session_id=str(tmp_path),
+                            output_dir=env.config.defaults.output_dirs.get('sync_codex', Path('./out')),
+                            collapse_threshold=settings.collapse_threshold,
+                            html=settings.html_previews,
+                            html_theme=settings.html_theme,
+                            force=True,
+                            allow_dirty=True,
+                            attachment_ocr=False,
+                        )]
+                    elif import_provider in ('claude-code', 'claude_code'):
+                        from ..importers.claude_code import import_claude_code_session
+                        from ..settings import settings
+
+                        results = [import_claude_code_session(
+                            session_id=str(tmp_path),
+                            output_dir=env.config.defaults.output_dirs.get('sync_claude_code', Path('./out')),
+                            collapse_threshold=settings.collapse_threshold,
+                            html=settings.html_previews,
+                            html_theme=settings.html_theme,
+                            force=True,
+                            allow_dirty=True,
+                            attachment_ocr=False,
+                        )]
+                    else:
+                        console.print(f"  [red]✗[/red] Unknown provider: {import_provider}")
+                        still_failed += 1
+                        continue
+
+                    # Check results
+                    if results and all(r.success for r in results):
+                        console.print(f"  [green]✓[/green] Successfully re-imported {len(results)} conversation(s)")
+                        mark_parse_success(data_hash)
+                        success_count += 1
+                    else:
+                        failed_count = sum(1 for r in results if not r.success)
+                        console.print(f"  [yellow]![/yellow] Partial success: {failed_count}/{len(results)} failed")
+                        still_failed += 1
+
+                finally:
+                    # Clean up temp file
+                    tmp_path.unlink(missing_ok=True)
+
+            except Exception as e:
+                console.print(f"  [red]✗[/red] Reprocessing failed: {e}")
+                mark_parse_failed(data_hash, str(e))
+                still_failed += 1
 
     # Summary
     console.print(f"\n[bold]Summary:[/bold]")
