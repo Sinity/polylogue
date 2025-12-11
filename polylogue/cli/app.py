@@ -1756,13 +1756,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_search_preview.add_argument("--data-file", type=Path, required=True)
     p_search_preview.add_argument("--index", type=int, required=True)
 
-    p_status = _add_command_parser(
-        sub,
-        "status",
-        help="Show cached Drive info and recent runs",
-        description="Show cached Drive info and recent runs",
-    )
-    _configure_status_parser(p_status, require_provider=False)
+    # Note: status command is set up by status_cmd.setup_parser() above (line 1712)
 
     p_compare = _add_command_parser(
         sub,
