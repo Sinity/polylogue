@@ -4,12 +4,7 @@ Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, re
 
 ## P0 – Reliability, Safety, and Guardrails
 
-- Non-TTY safety: final audit to ensure no prompts auto-select in plain/non-TTY (skim pickers, resolve_inputs, any remaining raw input paths).
-- Structured failure exports: extend coverage to any remaining phases and add frontmatter degradation warnings (stats now warns) when minimal parsing is used.
-- Env/config health: add drift/deprecated-key lint + auto-fix; extend `polylogue env check` to validate `POLYLOGUE_*`, index backends, path overrides (mutability/mixed roots reported).
-- Disk and rollback safety: add rollback snapshot option to other destructive actions (e.g., sync --prune) and require `--force` when projected disk headroom is low.
-- Retry/backoff/offline: surface retry/backoff settings in summaries across providers and add drift alarms/guardrails that flip exit codes; broaden offline warnings/flags.
-- Watch robustness: add live tail option (basic logging in place), clearer stall alarms, and fuller wizard output (arguments/flags summary).
+P0 items are now in place: non-TTY guards across prompts/pickers, structured failure logging (render/sync/import), config mutability and drift warnings, rollback/disk preflights for prune/watch/sync, retry/backoff tuning surfaced for Drive, offline warnings in local sync, and watch stall/tail/wizard helpers. Future work continues in P1+.
 
 ## P1 – CLI, Config, and Navigation
 
