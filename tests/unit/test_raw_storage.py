@@ -54,6 +54,7 @@ def test_store_and_retrieve_raw_import(temp_db):
     data_hash = store_raw_import(
         data=data,
         provider="chatgpt",
+        conversation_id="test-conv-1",
         source_path=Path("/tmp/test.json"),
         db_path=temp_db,
         compress=True,
@@ -68,20 +69,20 @@ def test_store_and_retrieve_raw_import(temp_db):
 
 
 def test_store_duplicate_hash(temp_db):
-    """Test that storing same data twice doesn't fail."""
+    """Test that storing same data twice doesn't fail (same conversation, same content)."""
     data = b'{"test": "data"}'
 
-    hash1 = store_raw_import(data=data, provider="chatgpt", db_path=temp_db)
-    hash2 = store_raw_import(data=data, provider="chatgpt", db_path=temp_db)
+    hash1 = store_raw_import(data=data, provider="chatgpt", conversation_id="test-conv-2", db_path=temp_db)
+    hash2 = store_raw_import(data=data, provider="chatgpt", conversation_id="test-conv-2", db_path=temp_db)
 
-    # Should return same hash
+    # Should return same hash and skip duplicate
     assert hash1 == hash2
 
 
 def test_mark_parse_status(temp_db):
     """Test marking parse success/failure."""
     data = b'{"test": "data"}'
-    data_hash = store_raw_import(data=data, provider="chatgpt", db_path=temp_db)
+    data_hash = store_raw_import(data=data, provider="chatgpt", conversation_id="test-conv-3", db_path=temp_db)
 
     # Mark as success
     mark_parse_success(data_hash, db_path=temp_db)
@@ -97,9 +98,9 @@ def test_get_import_stats(temp_db):
     data2 = b'{"test": "data2"}'
     data3 = b'{"test": "data3"}'
 
-    hash1 = store_raw_import(data=data1, provider="chatgpt", db_path=temp_db)
-    hash2 = store_raw_import(data=data2, provider="claude", db_path=temp_db)
-    hash3 = store_raw_import(data=data3, provider="chatgpt", db_path=temp_db)
+    hash1 = store_raw_import(data=data1, provider="chatgpt", conversation_id="conv-1", db_path=temp_db)
+    hash2 = store_raw_import(data=data2, provider="claude", conversation_id="conv-2", db_path=temp_db)
+    hash3 = store_raw_import(data=data3, provider="chatgpt", conversation_id="conv-3", db_path=temp_db)
 
     mark_parse_success(hash1, db_path=temp_db)
     mark_parse_failed(hash2, "error", db_path=temp_db)
@@ -122,6 +123,7 @@ def test_store_without_compression(temp_db):
     data_hash = store_raw_import(
         data=data,
         provider="chatgpt",
+        conversation_id="test-conv-4",
         db_path=temp_db,
         compress=False,
     )
