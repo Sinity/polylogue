@@ -11,21 +11,24 @@ authors = [{ name = "Polylogue Maintainers" }]
 requires-python = ">=3.10"
 dependencies = [
   "google-auth-oauthlib",
-  "requests",
+  "httpx[http2]>=0.25.0",
   "pathvalidate",
-  "aiohttp",
   "aiofiles",
-  "rich",
-  "pydantic",
+  "rich>=13.0.0",
+  "pydantic>=2.0.0",
+  "pydantic-settings>=2.0.0",
   "python-frontmatter",
   "jinja2",
   "markdown-it-py",
-  "pyperclip",
+  "pygments",
   "watchfiles",
   "ijson",
   "tiktoken",
   "qdrant-client",
   "pypdf",
+  "questionary>=2.0.0",
+  "click>=8.1.0",
+  "tenacity>=8.0.0",
 ]
 
 [project.optional-dependencies]
@@ -34,7 +37,9 @@ dev = [
   "pytest-cov>=4",
   "coverage[toml]>=7.6",
   "mypy>=1.11",
-  "types-requests",
+  "ruff>=0.1.0",
+  "alembic>=1.12.0",
+  "pre-commit>=3.5.0",
 ]
 ocr = [
   "pillow",
@@ -81,3 +86,34 @@ files = [
   "polylogue/cli/watch.py",
 ]
 ignore_missing_imports = true
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+exclude = [
+    ".git",
+    "__pycache__",
+    "build",
+    "dist",
+    ".venv",
+    "venv",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "N",   # pep8-naming
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # function calls in argument defaults
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["polylogue"]

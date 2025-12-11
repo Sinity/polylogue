@@ -172,7 +172,7 @@ def _search_attachments(options: SearchOptions, service: ConversationService) ->
           ON attachments_fts.provider = a.provider
          AND attachments_fts.conversation_id = a.conversation_id
          AND ifnull(attachments_fts.branch_id, '') = ifnull(a.branch_id, '')
-         AND attachments_fts.message_id = a.message_id
+         AND ifnull(attachments_fts.message_id, '') = ifnull(a.message_id, '')
         JOIN conversations AS c
           ON a.provider = c.provider
          AND a.conversation_id = c.conversation_id
@@ -180,7 +180,7 @@ def _search_attachments(options: SearchOptions, service: ConversationService) ->
           ON a.provider = m.provider
          AND a.conversation_id = m.conversation_id
          AND ifnull(a.branch_id, '') = ifnull(m.branch_id, '')
-         AND a.message_id = m.message_id
+         AND ifnull(a.message_id, '') = ifnull(m.message_id, '')
         WHERE attachments_fts MATCH ?
         """
     ]

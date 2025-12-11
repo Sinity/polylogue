@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import os
 import json
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from .core.configuration import (
     CONFIG_ENV,
@@ -43,6 +44,7 @@ DEFAULT_INPUT_ROOT = DATA_HOME / "inbox"
 DEFAULT_OUTPUT_ROOT = DATA_HOME / "archive"
 DEFAULT_EXPORTS_CHATGPT = DEFAULT_INPUT_ROOT
 DEFAULT_EXPORTS_CLAUDE = DEFAULT_INPUT_ROOT
+_DECLARATIVE_FLAG = os.environ.get("POLYLOGUE_DECLARATIVE")
 
 
 @dataclass
@@ -97,6 +99,49 @@ class Config:
 
 
 CONFIG_PATH: Optional[Path] = None
+
+
+def _truthy(val: Optional[str]) -> bool:
+    return bool(val) and str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_config_declarative(path: Optional[Path] = None) -> Tuple[bool, str, Path]:
+    """Detect declarative/immutable configs (e.g., NixOS module) to avoid runtime edits."""
+    target = path or CONFIG_PATH or (CONFIG_HOME / "config.json")
+    resolved = target
+    try:
+        resolved = target.resolve()
+    except Exception:
+        pass
+
+    if _truthy(_DECLARATIVE_FLAG):
+        return True, "POLYLOGUE_DECLARATIVE is set", target
+
+    if str(resolved).startswith("/nix/store/"):
+        return True, f"config file is in nix store ({resolved})", target
+
+    # If file exists but is not writable, treat as declarative
+    if target.exists():
+        writable = os.access(target, os.W_OK)
+        try:
+            mode = target.stat().st_mode
+            writable = writable and bool(mode & stat.S_IWUSR)
+        except Exception:
+            pass
+        if not writable:
+            return True, "config file is read-only", target
+    else:
+        parent = target.parent
+        try:
+            parent_resolved = parent.resolve()
+        except Exception:
+            parent_resolved = parent
+        if str(parent_resolved).startswith("/nix/store/"):
+            return True, f"config parent is in nix store ({parent_resolved})", target
+        if not os.access(parent, os.W_OK):
+            return True, "config parent directory is read-only", target
+
+    return False, "", target
 
 
 def persist_config(
@@ -167,7 +212,7 @@ def _convert_output_dirs(paths: CoreOutputPaths) -> OutputDirs:
     )
 
 
-def _convert_defaults(core: CoreDefaults) -> Defaults:
+def _convert_defaults(core: CoreDefaults, output_paths: CoreOutputPaths) -> Defaults:
     roots: dict[str, OutputDirs] = {}
     for label, paths in getattr(core, "roots", {}).items():
         roots[label] = _convert_output_dirs(paths)
@@ -175,7 +220,7 @@ def _convert_defaults(core: CoreDefaults) -> Defaults:
         collapse_threshold=core.collapse_threshold,
         html_previews=core.html_previews,
         html_theme=core.html_theme,
-        output_dirs=_convert_output_dirs(core.output_dirs),
+        output_dirs=_convert_output_dirs(output_paths),
         roots=roots,
     )
 
@@ -204,11 +249,19 @@ def _convert_exports(core: CoreExportsConfig) -> ExportsConfig:
 def load_config() -> Config:
     global CONFIG_PATH
     app_config: CoreAppConfig = load_configuration()
-    CONFIG_PATH = app_config.path
+    CONFIG_PATH = app_config.config_path
+
+    # Get exports, use default if not present
+    from .core.configuration import ExportsConfig as CoreExports
+    exports_config = getattr(app_config, 'exports', None) or CoreExports()
+
+    # Get output paths from app config
+    output_paths_config = app_config.get_output_paths()
+
     return Config(
-        defaults=_convert_defaults(app_config.defaults),
+        defaults=_convert_defaults(app_config.defaults, output_paths_config),
         index=_convert_index(app_config.index),
-        exports=_convert_exports(app_config.exports),
+        exports=_convert_exports(exports_config),
         drive=DriveConfig(),
     )
 

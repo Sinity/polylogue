@@ -9,7 +9,7 @@ from typing import Optional
 from ..settings import Settings, persist_settings, SETTINGS_PATH
 from ..commands import CommandEnv
 from ..drive_client import DriveClient
-from ..config import CONFIG, persist_config, IndexConfig
+from ..config import CONFIG, persist_config, IndexConfig, is_config_declarative
 
 
 def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
@@ -29,6 +29,14 @@ def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     """
     ui = env.ui
     console = ui.console
+
+    immutable, reason, cfg_path = is_config_declarative()
+    if immutable:
+        console.print(
+            f"[red]Configuration is managed declaratively ({cfg_path}): {reason}. "
+            "Edit your Nix/flake module instead of using 'config init'."
+        )
+        raise SystemExit(1)
 
     # Check if config already exists
     if SETTINGS_PATH.exists() and not getattr(args, "force", False):
