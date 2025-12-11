@@ -156,7 +156,7 @@ ruff format polylogue/       # Format
 
 ---
 
-## 🚧 Pending (9 Improvements Designed But Not Implemented)
+## 🚧 Pending (8 Improvements Designed But Not Implemented)
 
 These are ready to implement but require more extensive integration work:
 
@@ -167,7 +167,6 @@ These are ready to implement but require more extensive integration work:
 
 ### Phase 1 (Portability - Remaining)
 
-- **1.3:** Migrate argparse → Click (reduce app.py by 40%)
 - **1.4:** Migrate Drive client to httpx
 - **1.5:** Replace custom retry with tenacity
 
@@ -294,7 +293,7 @@ mypy polylogue/              # Type check
 
 ### 🚧 Agreed But Not Yet Implemented
 
-1. 🚧 **Migrate argparse → Click** - Still using argparse (30 files), Click migration deferred as non-critical
+1. ✅ **Click-based CLI entrypoint** - Click `polylogue` wrapper now the default; legacy argparse dispatchers remain under the hood for help/completions
 2. 🚧 **Add golden master tests** - Test infrastructure exists but golden masters not yet added
 
 ---
