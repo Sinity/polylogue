@@ -42,6 +42,7 @@ def setup_parser(subparsers: argparse._SubParsersAction, _add_command_parser, ad
         help="Root directory to prune (repeatable). Defaults to all configured output directories.",
     )
     p_maintain_prune.add_argument("--dry-run", action="store_true", help="Print planned actions without deleting files")
+    p_maintain_prune.add_argument("--max-disk", type=float, default=None, help="Abort if projected snapshot size exceeds this many GiB")
 
     # maintain doctor
     p_maintain_doctor = _add_command_parser(
