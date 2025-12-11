@@ -327,6 +327,7 @@ def process_conversation(
         provider=provider,
         conversation_id=conversation_id,
         slug=slug,
+        title=title,
         plan=plan,
         branch_stats=branch_stats,
         records_by_id=records_by_id,
