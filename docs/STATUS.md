@@ -31,7 +31,7 @@ This file tracks which items from [report.md](report.md) and [plan.md](plan.md) 
    - ✅ Updated all dependencies in pyproject.toml and nix/python-deps.nix
 
 5. **Security Improvements**
-   - ✅ Clipboard reading requires explicit opt-in (`POLYLOGUE_ALLOW_CLIPBOARD=1`)
+   - ✅ Clipboard reading requires user confirmation (interactive prompt)
    - ✅ Removed pyperclip dependency
    - ✅ Platform-specific subprocess-based clipboard access
 

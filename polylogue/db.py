@@ -396,29 +396,61 @@ def upsert_raw_import(
     *,
     hash: str,
     provider: str,
+    conversation_id: str,
     source_path: Optional[str],
     blob: bytes,
     parser_version: str,
     parse_status: str = "pending",
     error_message: Optional[str] = None,
     metadata: Optional[Dict[str, object]] = None,
-) -> None:
-    """Insert or update a raw import record."""
+) -> int:
+    """Insert or update a raw import record with conversation-aware versioning.
+
+    Args:
+        conn: Database connection
+        hash: Content hash (for deduplication)
+        provider: Provider name (chatgpt, claude, etc.)
+        conversation_id: Unique conversation identifier
+        source_path: Original file path
+        blob: Compressed or raw data
+        parser_version: Parser version string
+        parse_status: Parse status (pending, success, failed)
+        error_message: Optional error message
+        metadata: Optional metadata dict
+
+    Returns:
+        Version number assigned to this import
+    """
+    # Get next version for this conversation
+    result = conn.execute(
+        """
+        SELECT COALESCE(MAX(version), 0) + 1
+        FROM raw_imports
+        WHERE provider = ? AND conversation_id = ?
+        """,
+        (provider, conversation_id),
+    ).fetchone()
+    version = result[0] if result else 1
+
+    # Insert new version
     conn.execute(
         """
         INSERT INTO raw_imports (
-            hash, provider, source_path, blob, parser_version,
-            parse_status, error_message, metadata_json
+            provider, conversation_id, version, hash, source_path, blob,
+            parser_version, parse_status, error_message, metadata_json
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(hash) DO UPDATE SET
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(provider, conversation_id, version) DO UPDATE SET
+            hash=excluded.hash,
             parse_status=excluded.parse_status,
             error_message=excluded.error_message,
             metadata_json=excluded.metadata_json
         """,
         (
-            hash,
             provider,
+            conversation_id,
+            version,
+            hash,
             source_path,
             blob,
             parser_version,
@@ -428,13 +460,71 @@ def upsert_raw_import(
         ),
     )
 
+    # Cleanup: keep only last 5 versions per conversation
+    conn.execute(
+        """
+        DELETE FROM raw_imports
+        WHERE provider = ? AND conversation_id = ?
+        AND version < (
+            SELECT MAX(version) - 4
+            FROM raw_imports
+            WHERE provider = ? AND conversation_id = ?
+        )
+        """,
+        (provider, conversation_id, provider, conversation_id),
+    )
+
+    return version
+
 
 def get_raw_import(conn: sqlite3.Connection, hash: str) -> Optional[sqlite3.Row]:
-    """Retrieve a raw import by hash."""
+    """Retrieve a raw import by hash (returns latest version if multiple exist)."""
     return conn.execute(
-        "SELECT * FROM raw_imports WHERE hash = ?",
+        """
+        SELECT * FROM raw_imports
+        WHERE hash = ?
+        ORDER BY version DESC
+        LIMIT 1
+        """,
         (hash,),
     ).fetchone()
+
+
+def get_raw_import_by_conversation(
+    conn: sqlite3.Connection,
+    provider: str,
+    conversation_id: str,
+    version: Optional[int] = None,
+) -> Optional[sqlite3.Row]:
+    """Retrieve a raw import by conversation ID and optional version.
+
+    Args:
+        conn: Database connection
+        provider: Provider name
+        conversation_id: Conversation identifier
+        version: Specific version (defaults to latest)
+
+    Returns:
+        Raw import row or None
+    """
+    if version is not None:
+        return conn.execute(
+            """
+            SELECT * FROM raw_imports
+            WHERE provider = ? AND conversation_id = ? AND version = ?
+            """,
+            (provider, conversation_id, version),
+        ).fetchone()
+    else:
+        return conn.execute(
+            """
+            SELECT * FROM raw_imports
+            WHERE provider = ? AND conversation_id = ?
+            ORDER BY version DESC
+            LIMIT 1
+            """,
+            (provider, conversation_id),
+        ).fetchone()
 
 
 def list_failed_imports(conn: sqlite3.Connection, provider: Optional[str] = None) -> List[sqlite3.Row]:

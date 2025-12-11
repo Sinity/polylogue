@@ -23,6 +23,7 @@ def store_raw_import(
     *,
     data: bytes,
     provider: str,
+    conversation_id: str,
     source_path: Optional[Path] = None,
     db_path: Optional[Path] = None,
     compress: bool = True,
@@ -30,9 +31,14 @@ def store_raw_import(
 ) -> str:
     """Store raw import data in the database before parsing.
 
+    Uses conversation-aware versioning to prevent unbounded growth while keeping
+    history for catastrophic failure recovery. Automatically keeps the last 5
+    versions per conversation.
+
     Args:
         data: Raw bytes from the import file
         provider: Provider name (chatgpt, claude, etc.)
+        conversation_id: Unique conversation identifier
         source_path: Original file path
         db_path: Database path (uses default if None)
         compress: Whether to compress the blob (recommended for large files)
@@ -43,11 +49,12 @@ def store_raw_import(
     """
     data_hash = compute_hash(data)
 
-    # Check if already stored
     with open_connection(db_path) as conn:
-        existing = get_raw_import(conn, data_hash)
-        if existing:
-            # Already stored, skip
+        # Check if this exact content already exists for this conversation
+        from ..db import get_raw_import_by_conversation
+        existing = get_raw_import_by_conversation(conn, provider, conversation_id)
+        if existing and existing["hash"] == data_hash:
+            # Same content, skip storing duplicate
             return data_hash
 
         # Compress if requested
@@ -59,10 +66,11 @@ def store_raw_import(
         store_metadata["original_size"] = len(data)
         store_metadata["stored_size"] = len(blob)
 
-        upsert_raw_import(
+        version = upsert_raw_import(
             conn,
             hash=data_hash,
             provider=provider,
+            conversation_id=conversation_id,
             source_path=str(source_path) if source_path else None,
             blob=blob,
             parser_version=PARSER_VERSION,
@@ -70,6 +78,9 @@ def store_raw_import(
             metadata=store_metadata,
         )
         conn.commit()
+
+        # Add version to metadata for tracking
+        store_metadata["version"] = version
 
     return data_hash
 

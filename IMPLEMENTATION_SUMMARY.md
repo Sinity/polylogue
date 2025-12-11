@@ -260,16 +260,20 @@ mypy polylogue/              # Type check
 5. ❌ **Use sqlite-utils** - Kept raw SQL (current code is clean)
 6. ❌ **Force "always sync all"** - Made it default but kept manual options
 
+### ✅ Recently Completed (Database-First & Refactoring)
+
+1. ✅ **Split app.py into modules** - Extracted 9 core commands into separate modular files (sync, render, config, browse, search, maintain, import, attachments, status)
+2. ✅ **Add `polylogue render --force`** - Fully implemented database-to-markdown regeneration (`render_force.py`, `db_renderer.py`)
+3. ✅ **Integrate raw storage into ALL importers** - ChatGPT, Claude, Codex, and Claude Code importers now store raw data before parsing with success/failure tracking
+4. ✅ **Add `polylogue reprocess` command** - Fully implemented with both fallback and strict mode reprocessing for all providers
+5. ✅ **Fix clipboard security issue** - Removed POLYLOGUE_ALLOW_CLIPBOARD environment variable (user confirmation already provides security)
+6. ✅ **Add Alembic migrations** - Implemented with Schema v5 as initial migration, replaces manual schema management
+7. ✅ **Migrate to httpx** - Both `drive.py` and `drive_async.py` now use httpx (sync and async respectively)
+
 ### 🚧 Agreed But Not Yet Implemented
-1. 🚧 Migrate argparse → Click
-2. 🚧 Split app.py into modules
-3. 🚧 Add `polylogue render --force`
-4. 🚧 Integrate raw storage into importers
-5. 🚧 Add `polylogue reprocess` command
-6. 🚧 Add golden master tests
-7. 🚧 Fix clipboard security issue
-8. 🚧 Add Alembic migrations
-9. 🚧 Migrate to httpx
+
+1. 🚧 **Migrate argparse → Click** - Still using argparse (30 files), Click migration deferred as non-critical
+2. 🚧 **Add golden master tests** - Test infrastructure exists but golden masters not yet added
 
 ---
 
