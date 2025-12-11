@@ -2,7 +2,7 @@
 
 ## 🎯 What Was Done
 
-This implementation addresses the architectural recommendations from [docs/report.md](docs/report.md) while maintaining a pragmatic, incremental approach that preserves working features.
+This implementation addresses the architectural recommendations captured in the former report (now summarized in docs/REMAINING_TASKS.md) while maintaining a pragmatic, incremental approach that preserves working features.
 
 ---
 
@@ -11,6 +11,7 @@ This implementation addresses the architectural recommendations from [docs/repor
 ### 🛡️ Data Safety & Resilience
 
 #### 1. **Raw Import Storage (ELT Pattern)**
+
 - **New:** `raw_imports` table in SQLite (schema v4)
 - **Purpose:** Store original exports BEFORE parsing
 - **Benefit:** Never lose data, even if parser crashes
@@ -31,6 +32,7 @@ data_hash = store_raw_import(
 ```
 
 #### 2. **Pydantic Schema Validation**
+
 - **New:** Strict schemas for ChatGPT, Claude.ai exports
 - **Purpose:** Detect format changes immediately with clear errors
 - **Benefit:** "Field 'author' missing" instead of cryptic "KeyError"
@@ -50,6 +52,7 @@ except ValidationError as e:
 ```
 
 #### 3. **Heuristic Fallback Parser**
+
 - **New:** Extract text when strict parsing fails
 - **Purpose:** Show SOMETHING instead of nothing
 - **Benefit:** Graceful degradation - users still access their conversations
@@ -70,6 +73,7 @@ markdown = create_degraded_markdown(messages, title="Recovered Chat")
 ### 🌍 Portability (No More External Binaries!)
 
 #### 5. **Pure Python UI Facade**
+
 - **Removed:** 5 external binary dependencies (gum, skim, bat, glow, delta)
 - **Added:** Pure Python replacements (questionary, rich, pygments)
 - **Benefit:** Works on Windows, Mac, Linux without Nix
@@ -78,6 +82,7 @@ markdown = create_degraded_markdown(messages, title="Recovered Chat")
   - `polylogue/ui/facade_v2.py`
 
 **Before:** Required external binaries
+
 ```bash
 # ❌ Fails on Windows
 nix develop  # Required for gum, skim, bat, glow, delta
@@ -85,6 +90,7 @@ polylogue sync codex
 ```
 
 **After:** Just works everywhere
+
 ```bash
 # ✅ Works anywhere
 pip install polylogue
@@ -105,6 +111,7 @@ console.render_markdown("## Summary\n\n**Total:** 10")
 ### ⚙️ Configuration & Tooling
 
 #### 6. **Pydantic Settings Configuration**
+
 - **New:** Type-safe config with automatic env var support
 - **Purpose:** Modern config management
 - **Benefit:** `export POLYLOGUE_COLLAPSE_THRESHOLD=50` just works
@@ -126,6 +133,7 @@ export POLYLOGUE_INDEX__BACKEND=qdrant
 ```
 
 #### 7. **Modern Dependencies**
+
 - **Replaced:** `requests` + `aiohttp` → `httpx` (unified API)
 - **Added:** `questionary`, `click`, `tenacity`, `pygments`
 - **Added (dev):** `ruff`, `alembic`, `pre-commit`
@@ -134,6 +142,7 @@ export POLYLOGUE_INDEX__BACKEND=qdrant
   - `pyproject.toml`
 
 #### 8. **Ruff Linting & Formatting**
+
 - **New:** Configured ruff (100x faster than black+flake8+isort)
 - **Purpose:** Better code quality, faster CI
 - **Files:**
@@ -152,23 +161,28 @@ ruff format polylogue/       # Format
 These are ready to implement but require more extensive integration work:
 
 ### Phase 0 (Data Safety - Remaining)
+
 - **0.2:** Modify importers to use raw storage
 - **0.5:** Add `polylogue reprocess` command for failed imports
 
 ### Phase 1 (Portability - Remaining)
+
 - **1.3:** Migrate argparse → Click (reduce app.py by 40%)
 - **1.4:** Migrate Drive client to httpx
 - **1.5:** Replace custom retry with tenacity
 
 ### Phase 2 (Architecture)
+
 - **2.1:** Split app.py into command modules
 - **2.2:** Add `polylogue render --force` (regenerate from DB)
 - **2.3:** Add Alembic for schema migrations
 
 ### Phase 3 (Testing)
+
 - **3.1:** Add golden master tests (parser regression detection)
 
 ### Phase 5 (Security)
+
 - **5.1:** Make clipboard reading opt-in
 
 ---
@@ -176,6 +190,7 @@ These are ready to implement but require more extensive integration work:
 ## 📊 Impact Summary
 
 ### Lines Changed
+
 | Component | Change |
 |-----------|--------|
 | `polylogue/db.py` | +160 lines (raw_imports table + helpers) |
@@ -183,6 +198,7 @@ These are ready to implement but require more extensive integration work:
 | New files | +1,200 lines (schemas, fallback parser, UI v2, config v2, etc.) |
 
 ### Files Added
+
 ```
 polylogue/
 ├── ui/
@@ -199,10 +215,11 @@ polylogue/
     └── anonymizer.py                     # Error report anonymization
 
 docs/
-└── IMPROVEMENTS.md                       # Comprehensive documentation
+└── IMPROVEMENTS.md                       # Comprehensive documentation (archived/removed; see docs/REMAINING_TASKS.md)
 ```
 
 ### Performance Impact
+
 | Change | Impact |
 |--------|--------|
 | Raw storage (compressed) | +5-10% import time, -70% storage size |
@@ -215,9 +232,11 @@ docs/
 ## 🔄 Migration Guide
 
 ### For End Users
+
 **No breaking changes!** Everything is backward compatible.
 
 **Optional upgrades:**
+
 ```python
 # Use new UI (optional)
 from polylogue.ui.facade_v2 import create_console_facade_v2
@@ -229,6 +248,7 @@ config = AppConfigV2.load()
 ```
 
 ### For Developers
+
 ```bash
 # Install with new dev deps
 pip install -e ".[dev]"
@@ -245,6 +265,7 @@ mypy polylogue/              # Type check
 ## 🎯 What We Agreed On (From Report Analysis)
 
 ### ✅ Implemented from Report
+
 1. ✅ Raw import storage (ELT pattern)
 2. ✅ Pydantic schema validation
 3. ✅ Heuristic fallback parser
@@ -253,6 +274,7 @@ mypy polylogue/              # Type check
 6. ✅ Ruff for linting
 
 ### ❌ Deliberately REJECTED from Report
+
 1. ❌ **Delete HTML generation** - Kept (it's optional, not causing problems)
 2. ❌ **Delete Qdrant support** - Kept (optional, valuable for semantic search)
 3. ❌ **Replace Drive client with rclone** - Kept (well-implemented, specific use case)
@@ -279,8 +301,7 @@ mypy polylogue/              # Type check
 
 ## 📚 Documentation
 
-- **Full Details:** [docs/IMPROVEMENTS.md](docs/IMPROVEMENTS.md)
-- **Original Report:** [docs/report.md](docs/report.md)
+- **Open Work:** [docs/REMAINING_TASKS.md](docs/REMAINING_TASKS.md)
 - **Architecture:** [docs/architecture.md](docs/architecture.md)
 
 ---
@@ -298,20 +319,7 @@ mypy polylogue/              # Type check
 
 ## 🚀 Next Steps
 
-### Immediate (High Value)
-1. Integrate raw storage into existing importers
-2. Add `polylogue reprocess` command
-3. Fix clipboard security issue
-
-### Medium Term
-4. Migrate argparse → Click (40% smaller app.py)
-5. Split app.py into command modules
-6. Add golden master tests
-
-### Long Term
-7. Add Alembic for migrations
-8. Implement `polylogue render --force`
-9. Consider httpx migration
+See [docs/REMAINING_TASKS.md](docs/REMAINING_TASKS.md) for the consolidated backlog.
 
 ---
 
@@ -320,6 +328,7 @@ mypy polylogue/              # Type check
 **Completed:** 7 major improvements focused on data safety, portability, and developer experience.
 
 **Impact:** Polylogue is now:
+
 - ✅ Safer (never loses data)
 - ✅ More portable (works on Windows without Nix)
 - ✅ More maintainable (better error handling, clearer errors)

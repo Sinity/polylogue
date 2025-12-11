@@ -537,12 +537,22 @@ def run_prune_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
     # Collect all legacy paths first
     all_legacy: List[Tuple[Path, Path]] = []  # (root, legacy_path)
+    total_bytes = 0
     for root in unique_roots:
         if not root.exists():
             continue
         legacy = _legacy_candidates(root)
         for path in legacy:
             all_legacy.append((root, path))
+            try:
+                if path.is_file():
+                    total_bytes += path.stat().st_size
+                elif path.is_dir():
+                    for child in path.rglob("*"):
+                        if child.is_file():
+                            total_bytes += child.stat().st_size
+            except Exception:
+                continue
         total_candidates += len(legacy)
 
     if dry_run:
@@ -551,6 +561,9 @@ def run_prune_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     else:
         snapshot_path = None
         if all_legacy:
+            from ..util import preflight_disk_requirement
+
+            preflight_disk_requirement(projected_bytes=total_bytes, limit_gib=getattr(args, "max_disk", None), ui=ui)
             from zipfile import ZipFile
             from ..paths import STATE_HOME
             snapshot_dir = STATE_HOME / "rollback"
@@ -1845,7 +1858,7 @@ def main() -> None:
         handler(args, env)
     except SystemExit:
         raise
-    except Exception as exc:
+    except BaseException as exc:  # pragma: no cover - top-level guardrail
         _record_failure(args, exc)
         raise
 

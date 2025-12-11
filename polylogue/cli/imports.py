@@ -59,10 +59,12 @@ class ImportExecuteStage:
             return
         kwargs: Dict[str, object] = context.get("import_kwargs", {})
         error_message = context.get("import_error_message", "Import failed")
+        from .app import _record_failure
         try:
             results = func(**kwargs)
         except Exception as exc:
             env.ui.console.print(f"[red]{error_message}: {exc}")
+            _record_failure(argparse.Namespace(**kwargs), exc, phase="import")
             context.set("error", exc)
             context.abort()
             return
