@@ -17,6 +17,7 @@ from ..commands import CommandEnv
 from ..ui import create_ui
 from . import (
     attachments,
+    arg_helpers,
     browse,
     config as config_cmd,
     env_cli,
@@ -26,9 +27,11 @@ from . import (
     prefs as prefs_cmd,
     render as render_cmd,
     reprocess,
+    runs as runs_cmd,
     search as search_cmd,
     status as status_cmd,
     sync as sync_cmd,
+    browse as browse_cmd,
 )
 
 
@@ -192,6 +195,97 @@ def status(env: CommandEnv, **kwargs) -> None:
     args = Namespace(**kwargs)
     status_cmd.dispatch(args, env)
 
+# ---------------------------- browse ----------------------------
+
+
+@cli.group()
+@click.pass_context
+def browse_group(ctx: click.Context) -> None:
+    """Browse commands (branches/stats/status/runs/inbox)."""
+
+
+@browse_group.command(name="branches")
+@click.option("--provider", type=str, help="Filter by provider slug")
+@click.option("--slug", type=str, help="Filter by conversation slug")
+@click.option("--conversation-id", type=str, help="Filter by provider conversation id")
+@click.option("--min-branches", type=int, default=1, show_default=True, help="Only include conversations with at least this many branches")
+@click.option("--branch", type=str, help="Branch ID to inspect or diff against the canonical path")
+@click.option("--diff", is_flag=True, help="Display a unified diff between a branch and canonical transcript")
+@click.option("--out", type=click.Path(path_type=Path), help="Write the branch explorer HTML to this path")
+@click.option("--theme", type=click.Choice(["light", "dark"]), help="Override HTML explorer theme")
+@click.option("--no-picker", is_flag=True, help="Skip interactive selection even when skim/gum are available")
+@click.option("--open", "open_result", is_flag=True, help="Open result in $EDITOR after command completes")
+@click.pass_obj
+def browse_branches(env: CommandEnv, **kwargs) -> None:
+    kwargs["open"] = kwargs.pop("open_result")
+    args = Namespace(browse_cmd="branches", **kwargs)
+    browse_cmd.run_browse_cli(args, env)
+
+
+@browse_group.command(name="stats")
+@click.option("--dir", type=click.Path(path_type=Path), help="Directory containing Markdown exports")
+@click.option("--provider", type=str, help="Provider filter")
+@click.option("--ignore-legacy", is_flag=True, help="Ignore legacy *.md files alongside conversation.md")
+@click.option("--sort", type=click.Choice(["tokens", "attachments", "attachment-bytes", "words", "recent"]), default="tokens")
+@click.option("--limit", type=int, default=0)
+@click.option("--csv", type=str, help="Write per-file rows to CSV ('-' for stdout)")
+@click.option("--json", is_flag=True)
+@click.option("--json-lines", is_flag=True)
+@click.option("--json-verbose", is_flag=True)
+@click.option("--since", type=str, help="Only include files on/after this timestamp")
+@click.option("--until", type=str, help="Only include files on/before this timestamp")
+@click.pass_obj
+def browse_stats(env: CommandEnv, **kwargs) -> None:
+    args = Namespace(browse_cmd="stats", **kwargs)
+    browse_cmd.run_browse_cli(args, env)
+
+
+@browse_group.command(name="status")
+@click.option("--json", is_flag=True)
+@click.option("--json-lines", is_flag=True)
+@click.option("--json-verbose", is_flag=True)
+@click.option("--watch", is_flag=True)
+@click.option("--interval", type=float, default=5.0, show_default=True)
+@click.option("--dump", type=str, help="Write recent runs to a file ('-' for stdout)")
+@click.option("--dump-limit", type=int, default=100, show_default=True)
+@click.option("--runs-limit", type=int, default=200, show_default=True)
+@click.option("--top", type=int, default=0, show_default=True)
+@click.option("--inbox", is_flag=True)
+@click.option("--providers", type=str, help="Comma-separated provider filter")
+@click.option("--quiet", is_flag=True)
+@click.option("--summary", type=str, help="Write aggregated provider/run summary JSON to a file ('-' for stdout)")
+@click.option("--summary-only", is_flag=True)
+@click.pass_obj
+def browse_status(env: CommandEnv, **kwargs) -> None:
+    args = Namespace(browse_cmd="status", **kwargs)
+    browse_cmd.run_browse_cli(args, env)
+
+
+@browse_group.command(name="runs")
+@click.option("--limit", type=int, default=50, show_default=True)
+@click.option("--providers", type=str, help="Comma-separated provider filter")
+@click.option("--commands", type=str, help="Comma-separated command filter")
+@click.option("--since", type=str, help="Only include runs on/after this timestamp")
+@click.option("--until", type=str, help="Only include runs on/before this timestamp")
+@click.option("--json", is_flag=True)
+@click.option("--json-verbose", is_flag=True)
+@click.pass_obj
+def browse_runs(env: CommandEnv, **kwargs) -> None:
+    args = Namespace(browse_cmd="runs", **kwargs)
+    browse_cmd.run_browse_cli(args, env)
+
+
+@browse_group.command(name="inbox")
+@click.option("--providers", type=str, default="chatgpt,claude", show_default=True, help="Comma-separated provider filter")
+@click.option("--dir", type=click.Path(path_type=Path), help="Override inbox root for a generic scan")
+@click.option("--quarantine", is_flag=True, help="Move unknown/malformed inbox items into a quarantine folder")
+@click.option("--quarantine-dir", type=click.Path(path_type=Path), help="Target directory for quarantined items")
+@click.option("--json", is_flag=True)
+@click.pass_obj
+def browse_inbox(env: CommandEnv, **kwargs) -> None:
+    args = Namespace(browse_cmd="inbox", **kwargs)
+    browse_cmd.run_browse_cli(args, env)
+
 
 # ---------------------------- maintain ----------------------------
 
@@ -221,6 +315,30 @@ def maintain_prune(env: CommandEnv, **kwargs) -> None:
 @click.pass_obj
 def maintain_doctor(env: CommandEnv, **kwargs) -> None:
     args = Namespace(maintain_cmd="doctor", **kwargs)
+    maintain.run_maintain_cli(args, env)
+
+
+@maintain.command(name="index")
+@click.argument("subcmd", type=click.Choice(["check"]))
+@click.option("--repair", is_flag=True, help="Attempt to rebuild missing SQLite FTS data")
+@click.option("--skip-qdrant", is_flag=True, help="Skip Qdrant validation even when configured")
+@click.option("--json", is_flag=True, help="Emit validation results as JSON")
+@click.option("--json-verbose", is_flag=True, help="Emit JSON with verbose details")
+@click.pass_obj
+def maintain_index(env: CommandEnv, **kwargs) -> None:
+    args = Namespace(maintain_cmd="index", subcmd=kwargs.pop("subcmd"), **kwargs)
+    maintain.run_maintain_cli(args, env)
+
+
+@maintain.command(name="restore")
+@click.option("--from", "src", type=click.Path(path_type=Path), required=True, help="Snapshot directory to restore from")
+@click.option("--to", "dest", type=click.Path(path_type=Path), required=True, help="Destination output directory")
+@click.option("--force", is_flag=True, help="Overwrite destination if it exists")
+@click.option("--json", is_flag=True, help="Emit restoration summary as JSON")
+@click.option("--max-disk", type=float, help="Abort if projected snapshot size exceeds this many GiB")
+@click.pass_obj
+def maintain_restore(env: CommandEnv, **kwargs) -> None:
+    args = Namespace(maintain_cmd="restore", **kwargs)
     maintain.run_maintain_cli(args, env)
 
 

@@ -10,7 +10,9 @@ Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, re
 - Multi-root/prefs polish: labeled roots, persistent per-command defaults, and an interactive config editor (TUI) that shows resolved paths/index settings.
 - Schema/version stamps: embed CLI + schema version in front matter/JSON, normalize casing via a shared schema layer, and surface migrate/self-update hints.
 - Redaction/sanitize: optional HTML/Markdown scrubbing (`--sanitize-html`, mask keys/emails/tokens) and mark redacted runs in summaries.
-- UI flow streamlining: unify progress/spinner panels across sync/render/import/search, reduce duplicate summary blocks, and ensure consistent wording/colour tokens between rich and plain modes.
+- UI flow streamlining: unify DID A LITTLE. DO IT ALL. FUCK.
+
+progress/spinner panels across sync/render/import/search, reduce duplicate summary blocks, and ensure consistent wording/colour tokens between rich and plain modes.
 
 ## P2 – Rendering, Attachments, and Inbox
 
