@@ -2,13 +2,9 @@
 
 Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, report.md, and live_capture.md.
 
-## P0 – Reliability, Safety, and Guardrails
-
-P0 items are now in place: non-TTY guards across prompts/pickers, structured failure logging (render/sync/import), config mutability and drift warnings, rollback/disk preflights for prune/watch/sync, retry/backoff tuning surfaced for Drive, offline warnings in local sync, and watch stall/tail/wizard helpers. Future work continues in P1+.
-
 ## P1 – CLI, Config, and Navigation
 
-- Migrate argparse → Click to reduce duplicated parser wiring; keep a single source of truth for examples/help.
+- Migrate argparse → Click to reduce duplicated parser wiring; keep a single source of truth for examples/help. **(in progress: click_app added; parity validation, examples/help/prefs/completions still needed)**
 - Expand `config init` prompts (inbox/output roots, index/Qdrant); make `config set --output-root` update per-provider paths or warn about mixed roots.
 - Anchors/open flow: ensure Markdown/HTML renders expose anchors and `search --open` jumps correctly; keep open/print-path helpers consistent across commands.
 - Multi-root/prefs polish: labeled roots, persistent per-command defaults, and an interactive config editor (TUI) that shows resolved paths/index settings.
