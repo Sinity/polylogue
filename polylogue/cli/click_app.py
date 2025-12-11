@@ -9,9 +9,10 @@ from __future__ import annotations
 import sys
 from argparse import Namespace
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Sequence, Tuple
 
 import click
+from rich.table import Table
 
 from ..commands import CommandEnv
 from ..ui import create_ui
@@ -33,14 +34,96 @@ from .app import (
     run_complete_cli,
     run_completions_cli,
     run_compare_cli,
-    run_help_cli,
     run_search_preview,
 )
+from .examples import COMMAND_EXAMPLES
 from .env_cli import run_env_cli
 
 
 def _build_env(plain: bool) -> CommandEnv:
     return CommandEnv(ui=create_ui(plain))
+
+
+def _click_command_entries(group: click.Group) -> List[Tuple[str, str]]:
+    entries: List[Tuple[str, str]] = []
+    for name, command in sorted(group.commands.items()):
+        if command.hidden:
+            continue
+        desc = command.help or command.short_help or (command.__doc__ or "")
+        description = " ".join((desc or "").split())
+        entries.append((name, description))
+    return entries
+
+
+def _print_command_listing(console, plain: bool, entries: Sequence[Tuple[str, str]]) -> None:
+    if not entries:
+        return
+    console.print("\nCommands:")
+    if plain:
+        width = max(len(name) for name, _ in entries) + 2
+        for name, description in entries:
+            if description:
+                console.print(f"  {name.ljust(width)}{description}")
+            else:
+                console.print(f"  {name}")
+        return
+    table = Table(show_header=True, header_style="bold cyan")
+    table.add_column("Command", style="cyan")
+    table.add_column("Description")
+    for name, description in entries:
+        table.add_row(name, description)
+    console.print(table)
+
+
+def _print_examples(console) -> None:
+    console.print("[bold cyan]EXAMPLES[/bold cyan]\n")
+    for name in sorted(COMMAND_EXAMPLES):
+        examples = COMMAND_EXAMPLES[name]
+        if not examples:
+            continue
+        console.print(f"[green]{name}[/green]")
+        for desc, cmdline in examples:
+            console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
+        console.print("")
+
+
+def _print_quick_examples(console) -> None:
+    console.print("\n[bold cyan]QUICK EXAMPLES[/bold cyan]")
+    console.print("[dim]Run 'polylogue help <command>' for full examples and details.[/dim]\n")
+    for cmd in ["render", "sync", "import", "search", "browse"]:
+        examples = COMMAND_EXAMPLES.get(cmd)
+        if not examples:
+            continue
+        desc, cmdline = examples[0]
+        console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
+
+
+def _run_click_help(env: CommandEnv, ctx: click.Context, topic: Optional[str], examples: bool) -> None:
+    console = env.ui.console
+    root_ctx = ctx.find_root()
+    group: click.Group = root_ctx.command  # type: ignore[assignment]
+    entries = _click_command_entries(group)
+    show_examples_only = examples and not topic
+
+    if topic:
+        command = group.get_command(root_ctx, topic)
+        if command is None or command.hidden:
+            available = ", ".join(name for name, _ in entries) or "<none>"
+            console.print(f"[red]Unknown command: {topic}")
+            console.print(f"Available commands: {available}")
+            raise SystemExit(1)
+        sub_ctx = click.Context(command, info_name=topic, parent=root_ctx)
+        console.print(f"[cyan]polylogue {topic}[/cyan]")
+        console.print(command.get_help(sub_ctx))
+        return
+
+    if show_examples_only:
+        _print_examples(console)
+        return
+
+    console.print(group.get_help(root_ctx))
+    _print_command_listing(console, getattr(env.ui, "plain", False), entries)
+    _print_quick_examples(console)
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -372,13 +455,17 @@ def env(env: CommandEnv, **kwargs) -> None:
     run_env_cli(Namespace(**kwargs), env)
 
 
-@cli.command()
+@cli.command(name="help")
 @click.argument("topic", required=False)
-@click.option("--examples", is_flag=True, help="Show all examples for the topic (or all commands if none specified)")
-@click.pass_obj
-def help(env: CommandEnv, **kwargs) -> None:  # type: ignore[func-returns-value]
-    args = Namespace(**kwargs)
-    run_help_cli(args, env)
+@click.option(
+    "--examples",
+    is_flag=True,
+    help="Show all examples for the topic (or all commands if none specified)",
+)
+@click.pass_context
+def help_cmd(ctx: click.Context, topic: Optional[str], examples: bool) -> None:  # type: ignore[func-returns-value]
+    env = ctx.ensure_object(CommandEnv)
+    _run_click_help(env, ctx, topic, examples)
 
 
 @cli.command()
