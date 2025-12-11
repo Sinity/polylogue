@@ -334,22 +334,51 @@ def process_conversation(
         attachment_bytes=attachment_bytes,
     )
 
-    # Create minimal attachment rows (no file access needed for DB-only)
+    # Extract attachment text for FTS indexing
     attachment_rows = []
     for att in attachments:
         if att.local_path or att.size_bytes:
+            # Extract text content if attachment has a local path
+            text_content = None
+            text_bytes = None
+            mime_type = None
+            content_hash = None
+            truncated = False
+            ocr_used = False
+
+            if att.local_path:
+                # Resolve path relative to output_dir
+                full_path = output_dir / slug / att.local_path
+                if full_path.exists() and full_path.is_file():
+                    try:
+                        result = extract_attachment_text(
+                            full_path,
+                            max_bytes=MAX_BYTES_DEFAULT,
+                            max_chars=MAX_CHARS_DEFAULT,
+                            ocr=attachment_ocr,
+                        )
+                        if result:
+                            text_content = result.text
+                            text_bytes = len(result.text.encode('utf-8')) if result.text else 0
+                            truncated = result.truncated
+                            ocr_used = result.ocr_used
+                            # Compute content hash
+                            content_hash = hashlib.sha256(full_path.read_bytes()).hexdigest()
+                    except Exception:
+                        pass  # Silently skip if text extraction fails
+
             attachment_rows.append({
                 "branch_id": plan.canonical_branch_id,
                 "message_id": None,  # Could be extracted from message_records if needed
                 "attachment_name": att.name,
                 "attachment_path": str(att.local_path) if att.local_path else None,
                 "size_bytes": att.size_bytes,
-                "content_hash": None,
-                "mime_type": None,
-                "text_content": None,
-                "text_bytes": None,
-                "truncated": False,
-                "ocr_used": False,
+                "content_hash": content_hash,
+                "mime_type": mime_type,
+                "text_content": text_content,
+                "text_bytes": text_bytes,
+                "truncated": truncated,
+                "ocr_used": ocr_used,
             })
 
     registrar.record_attachments(
