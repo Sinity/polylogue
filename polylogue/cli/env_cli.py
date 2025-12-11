@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
-from ..config import CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN
+from ..config import CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN, is_config_declarative
 from ..paths import CONFIG_HOME, DATA_HOME, STATE_HOME
 from ..version import POLYLOGUE_VERSION, SCHEMA_VERSION
 from ..commands import CommandEnv
@@ -48,6 +48,15 @@ def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         checks.append(EnvCheck(name="POLYLOGUE_TOKEN_PATH", ok=True, detail=str(token_env)))
 
     cfg_path = CONFIG_PATH if CONFIG_PATH else CONFIG_HOME / "config.json"
+    declarative, decl_reason, decl_target = is_config_declarative(cfg_path)
+    checks.append(
+        EnvCheck(
+            name="Config mutability",
+            ok=not declarative,
+            detail=decl_reason or "config is mutable",
+            severity="warn" if declarative else "info",
+        )
+    )
     checks.append(_path_status(cfg_path, required=False, label="Config file"))
 
     backend = env.config.index.backend if env.config and env.config.index else "sqlite"
@@ -72,10 +81,32 @@ def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     ):
         checks.append(_path_status(path, required=False, label=f"Output:{label}"))
 
+    # Detect mixed roots drift (different parents across providers)
+    parents = {
+        output_roots.render.parent,
+        output_roots.sync_drive.parent,
+        output_roots.sync_codex.parent,
+        output_roots.sync_claude_code.parent,
+        output_roots.import_chatgpt.parent,
+        output_roots.import_claude.parent,
+    }
+    if len(parents) > 1:
+        checks.append(
+            EnvCheck(
+                name="Output roots drift",
+                ok=False,
+                detail="Output roots have mixed parents; align with config set --output-root",
+                severity="warn",
+            )
+        )
+
     payload = {
         "schemaVersion": SCHEMA_VERSION,
         "polylogueVersion": POLYLOGUE_VERSION,
         "checks": [check.__dict__ for check in checks],
+        "configPath": str(cfg_path),
+        "configDeclarative": declarative,
+        "configDeclarativeReason": decl_reason,
     }
     all_ok = all(c.ok for c in checks if c.severity != "warn")
 
@@ -85,6 +116,9 @@ def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         print(json.dumps(payload, indent=2))
     else:
         lines = [f"polylogue={POLYLOGUE_VERSION} schema={SCHEMA_VERSION}"]
+        lines.append(f"Config: {cfg_path}")
+        if declarative:
+            lines.append(f"[yellow]Config is declarative/read-only: {decl_reason}")
         for check in checks:
             status = "ok" if check.ok else "fail"
             lines.append(f"- {check.name}: {status} ({check.detail})")
