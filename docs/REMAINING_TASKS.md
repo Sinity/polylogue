@@ -4,15 +4,13 @@ Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, re
 
 ## P1 – CLI, Config, and Navigation
 
-- Migrate argparse → Click to reduce duplicated parser wiring; keep a single source of truth for examples/help. **(done: click_app covers all commands; pending: examples/help/completions parity validation and tests)**
+- Migrate argparse → Click to reduce duplicated parser wiring; keep a single source of truth for examples/help. **(done: click_app now covers all commands and is the primary entrypoint)**
 - Expand `config init` prompts (inbox/output roots, index/Qdrant); make `config set --output-root` update per-provider paths or warn about mixed roots.
 - Anchors/open flow: ensure Markdown/HTML renders expose anchors and `search --open` jumps correctly; keep open/print-path helpers consistent across commands.
 - Multi-root/prefs polish: labeled roots, persistent per-command defaults, and an interactive config editor (TUI) that shows resolved paths/index settings.
 - Schema/version stamps: embed CLI + schema version in front matter/JSON, normalize casing via a shared schema layer, and surface migrate/self-update hints.
 - Redaction/sanitize: optional HTML/Markdown scrubbing (`--sanitize-html`, mask keys/emails/tokens) and mark redacted runs in summaries.
-- UI flow streamlining: unify DID A LITTLE. DO IT ALL. FUCK.
-
-progress/spinner panels across sync/render/import/search, reduce duplicate summary blocks, and ensure consistent wording/colour tokens between rich and plain modes.
+- UI flow streamlining: unify progress/spinner panels across sync/render/import/search, reduce duplicate summary blocks, and ensure consistent wording/colour tokens between rich and plain modes.
 
 ## P2 – Rendering, Attachments, and Inbox
 
