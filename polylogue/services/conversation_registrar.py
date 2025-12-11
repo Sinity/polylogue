@@ -151,30 +151,23 @@ class ConversationRegistrar:
 
         with open_connection(self.database.resolve_path()) as conn:
             if plan:
-                conn.execute(
-                    """
-                    UPDATE conversations
-                       SET current_branch = ?,
-                           root_message_id = COALESCE(?, root_message_id),
-                           slug = COALESCE(?, slug),
-                           metadata_json = json_set(
-                               COALESCE(metadata_json, '{}'),
-                               '$.token_count', ?,
-                               '$.word_count', ?,
-                               '$.attachment_bytes', ?
-                           )
-                     WHERE provider = ? AND conversation_id = ?
-                    """,
-                    (
-                        plan.canonical_branch_id,
-                        root_message_id,
-                        slug,
-                        total_tokens,
-                        total_words,
-                        attachment_bytes,
-                        provider,
-                        conversation_id,
-                    ),
+                # Ensure conversation exists before updating/inserting branches
+                from ..db import upsert_conversation
+                upsert_conversation(
+                    conn,
+                    provider=provider,
+                    conversation_id=conversation_id,
+                    slug=slug,
+                    title=None,  # Will be set by caller if available
+                    current_branch=plan.canonical_branch_id,
+                    root_message_id=root_message_id,
+                    last_updated=None,
+                    content_hash=None,
+                    metadata={
+                        "token_count": total_tokens,
+                        "word_count": total_words,
+                        "attachment_bytes": attachment_bytes,
+                    },
                 )
 
             replace_branches(
