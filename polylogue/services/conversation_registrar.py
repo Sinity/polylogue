@@ -110,6 +110,7 @@ class ConversationRegistrar:
         provider: str,
         conversation_id: str,
         slug: str,
+        title: Optional[str] = None,
         plan: BranchPlan,
         branch_stats: Dict[str, Dict[str, object]],
         records_by_id: Dict[str, MessageRecord],
@@ -158,7 +159,7 @@ class ConversationRegistrar:
                     provider=provider,
                     conversation_id=conversation_id,
                     slug=slug,
-                    title=None,  # Will be set by caller if available
+                    title=title,
                     current_branch=plan.canonical_branch_id,
                     root_message_id=root_message_id,
                     last_updated=None,
