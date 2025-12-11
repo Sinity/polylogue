@@ -4,7 +4,7 @@ import argparse
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any
 
 from ..config import CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN, is_config_declarative
 from ..paths import CONFIG_HOME, DATA_HOME, STATE_HOME
@@ -29,6 +29,7 @@ def _path_status(path: Path, *, required: bool = True, label: str | None = None)
 
 def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     checks: List[EnvCheck] = []
+    drift_warnings: List[str] = []
 
     credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
@@ -58,6 +59,19 @@ def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         )
     )
     checks.append(_path_status(cfg_path, required=False, label="Config file"))
+    if cfg_path.exists():
+        try:
+            cfg_raw: Dict[str, Any] = json.loads(cfg_path.read_text(encoding="utf-8"))
+            allowed_top = {"defaults", "index", "exports", "drive"}
+            extra_keys = sorted(set(cfg_raw.keys()) - allowed_top)
+            if extra_keys:
+                drift_warnings.append(f"config contains unknown keys: {', '.join(extra_keys)}")
+            defaults = cfg_raw.get("defaults") or {}
+            if isinstance(defaults, dict):
+                if "roots" in defaults and not isinstance(defaults.get("roots"), dict):
+                    drift_warnings.append("defaults.roots should be a mapping of labels to output paths")
+        except Exception as exc:
+            drift_warnings.append(f"config parse failed: {exc}")
 
     backend = env.config.index.backend if env.config and env.config.index else "sqlite"
     index_ok = backend in {"sqlite", "qdrant", "none"}
@@ -107,6 +121,7 @@ def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         "configPath": str(cfg_path),
         "configDeclarative": declarative,
         "configDeclarativeReason": decl_reason,
+        "driftWarnings": drift_warnings,
     }
     all_ok = all(c.ok for c in checks if c.severity != "warn")
 
@@ -119,6 +134,8 @@ def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         lines.append(f"Config: {cfg_path}")
         if declarative:
             lines.append(f"[yellow]Config is declarative/read-only: {decl_reason}")
+        for warning in drift_warnings:
+            lines.append(f"[yellow]{warning}")
         for check in checks:
             status = "ok" if check.ok else "fail"
             lines.append(f"- {check.name}: {status} ({check.detail})")
