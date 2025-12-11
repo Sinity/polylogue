@@ -27,6 +27,8 @@ except Exception as exc:
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 TOKEN_FILE = "token.json"
 DRIVE_BASE = "https://www.googleapis.com/drive/v3"
+_DEFAULT_RETRIES = 3
+_DEFAULT_BASE_DELAY = 0.5
 
 
 @dataclass
@@ -87,16 +89,25 @@ def require_google():
     ) from GOOGLE_IMPORT_ERROR
 
 
+def set_retry_defaults(*, retries: Optional[int] = None, base_delay: Optional[float] = None) -> None:
+    """Override global retry/backoff defaults (used by DriveClient)."""
+    global _DEFAULT_RETRIES, _DEFAULT_BASE_DELAY
+    if retries is not None and retries > 0:
+        _DEFAULT_RETRIES = retries
+    if base_delay is not None and base_delay >= 0:
+        _DEFAULT_BASE_DELAY = base_delay
+
+
 def _retry(
     fn,
     *,
-    retries: int = 3,
-    base_delay: float = 0.5,
+    retries: Optional[int] = None,
+    base_delay: Optional[float] = None,
     operation: str = "request",
     notifier=None,
 ):
-    base_delay = max(0.0, base_delay)
-    retries = max(1, retries)
+    retries = max(1, retries or _DEFAULT_RETRIES)
+    base_delay = max(0.0, base_delay if base_delay is not None else _DEFAULT_BASE_DELAY)
     last_err = None
     attempts = 0
     for i in range(retries):
