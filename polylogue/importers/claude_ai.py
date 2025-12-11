@@ -71,6 +71,22 @@ def import_claude_export(
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
 ) -> List[ImportResult]:
+    from .raw_storage import store_raw_import, mark_parse_success, mark_parse_failed
+
+    # Store raw import data before parsing
+    # For export files, use file path as conversation_id since one export contains many conversations
+    data_hash = None
+    if export_path.is_file():
+        raw_data = export_path.read_bytes()
+        # Use export file name (without extension) as conversation_id
+        export_id = export_path.stem
+        data_hash = store_raw_import(
+            data=raw_data,
+            provider="claude",
+            conversation_id=export_id,
+            source_path=export_path,
+        )
+
     registrar = registrar or create_default_registrar()
     root, tmp = _load_bundle(export_path)
     try:
@@ -103,7 +119,18 @@ def import_claude_export(
                     attachment_ocr=attachment_ocr,
                 )
             )
+
+        # Mark parse success if we stored raw data
+        if data_hash:
+            mark_parse_success(data_hash)
+
         return results
+    except Exception:
+        # Mark parse failure for any exceptions
+        if data_hash:
+            import traceback
+            mark_parse_failed(data_hash, traceback.format_exc())
+        raise
     finally:
         if tmp is not None:
             tmp.cleanup()

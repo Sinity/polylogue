@@ -1,4 +1,15 @@
-"""Async Google Drive client using httpx for parallel downloads."""
+"""Async Google Drive client using httpx for parallel downloads.
+
+This module provides async/await versions of Drive operations for use in
+async contexts. For synchronous code, use drive.py (which also uses httpx
+but with synchronous calls).
+
+Key differences:
+- drive.py: Synchronous API (httpx.Client) - use in CLI commands
+- drive_async.py: Asynchronous API (httpx.AsyncClient) - use for parallel operations
+
+Both modules use httpx as the HTTP client library.
+"""
 
 from __future__ import annotations
 
