@@ -21,6 +21,7 @@ from .utils import (
     safe_extractall,
     store_large_text,
 )
+from .raw_storage import compute_hash, store_raw_import, mark_parse_success, mark_parse_failed
 
 
 def _load_bundle(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
@@ -71,28 +72,17 @@ def import_claude_export(
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
 ) -> List[ImportResult]:
-    from .raw_storage import store_raw_import, mark_parse_success, mark_parse_failed
-
-    # Store raw import data before parsing
-    # For export files, use file path as conversation_id since one export contains many conversations
-    data_hash = None
-    if export_path.is_file():
-        raw_data = export_path.read_bytes()
-        # Use export file name (without extension) as conversation_id
-        export_id = export_path.stem
-        data_hash = store_raw_import(
-            data=raw_data,
-            provider="claude",
-            conversation_id=export_id,
-            source_path=export_path,
-        )
-
     registrar = registrar or create_default_registrar()
     root, tmp = _load_bundle(export_path)
+    bundle_hash: Optional[str] = None
     try:
         convo_path = root / "conversations.json"
         if not convo_path.exists():
             raise FileNotFoundError("conversations.json missing in Claude export")
+        try:
+            bundle_hash = compute_hash(convo_path.read_bytes())
+        except Exception:
+            bundle_hash = None
         output_dir.mkdir(parents=True, exist_ok=True)
         results: List[ImportResult] = []
         for conv in _iter_conversations(convo_path):
@@ -104,33 +94,44 @@ def import_claude_export(
             conv_id = conv.get("uuid") or conv.get("id")
             if selected_ids and conv_id not in selected_ids:
                 continue
-            results.append(
-                _render_claude_conversation(
-                    conv,
-                    root,
-                    output_dir,
-                    collapse_threshold=collapse_threshold,
-                    collapse_thresholds=collapse_thresholds,
-                    html=html,
-                    html_theme=html_theme,
-                    force=force,
-                    allow_dirty=allow_dirty,
-                    registrar=registrar,
-                    attachment_ocr=attachment_ocr,
-                )
+            raw_bytes = json.dumps(conv, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            raw_hash = store_raw_import(
+                data=raw_bytes,
+                provider="claude",
+                conversation_id=conv_id or "conversation",
+                source_path=export_path,
+                metadata={
+                    "bundle_hash": bundle_hash,
+                    "bundle_path": str(export_path),
+                    "export_root": str(root),
+                },
             )
+            try:
+                results.append(
+                    _render_claude_conversation(
+                        conv,
+                        root,
+                        output_dir,
+                        collapse_threshold=collapse_threshold,
+                        collapse_thresholds=collapse_thresholds,
+                        html=html,
+                        html_theme=html_theme,
+                        force=force,
+                        allow_dirty=allow_dirty,
+                        registrar=registrar,
+                        attachment_ocr=attachment_ocr,
+                    )
+                )
+                if raw_hash:
+                    mark_parse_success(raw_hash)
+            except Exception:
+                if raw_hash:
+                    import traceback
 
-        # Mark parse success if we stored raw data
-        if data_hash:
-            mark_parse_success(data_hash)
+                    mark_parse_failed(raw_hash, traceback.format_exc())
+                raise
 
         return results
-    except Exception:
-        # Mark parse failure for any exceptions
-        if data_hash:
-            import traceback
-            mark_parse_failed(data_hash, traceback.format_exc())
-        raise
     finally:
         if tmp is not None:
             tmp.cleanup()
