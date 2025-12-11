@@ -19,7 +19,6 @@ from . import (
     attachments,
     browse as browse_cmd,
     config as config_cmd,
-    env_cli,
     imports,
     maintain,
     open_helper,
@@ -37,6 +36,7 @@ from .app import (
     run_help_cli,
     run_search_preview,
 )
+from .env_cli import run_env_cli
 
 
 def _build_env(plain: bool) -> CommandEnv:

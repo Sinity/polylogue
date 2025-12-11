@@ -4,7 +4,7 @@ Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, re
 
 ## P1 – CLI, Config, and Navigation
 
-- Migrate argparse → Click to reduce duplicated parser wiring; keep a single source of truth for examples/help. **(in progress: click_app added; parity validation, examples/help/prefs/completions still needed)**
+- Migrate argparse → Click to reduce duplicated parser wiring; keep a single source of truth for examples/help. **(done: click_app covers all commands; pending: examples/help/completions parity validation and tests)**
 - Expand `config init` prompts (inbox/output roots, index/Qdrant); make `config set --output-root` update per-provider paths or warn about mixed roots.
 - Anchors/open flow: ensure Markdown/HTML renders expose anchors and `search --open` jumps correctly; keep open/print-path helpers consistent across commands.
 - Multi-root/prefs polish: labeled roots, persistent per-command defaults, and an interactive config editor (TUI) that shows resolved paths/index settings.
