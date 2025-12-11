@@ -136,6 +136,27 @@ def _apply_schema_fallback(conn: sqlite3.Connection) -> None:
         PRIMARY KEY (provider, conversation_id, version)
     );
 
+    CREATE TABLE IF NOT EXISTS attachments (
+        provider TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        branch_id TEXT,
+        message_id TEXT,
+        attachment_name TEXT NOT NULL,
+        attachment_path TEXT,
+        size_bytes INTEGER,
+        content_hash TEXT,
+        mime_type TEXT,
+        text_content TEXT,
+        text_bytes INTEGER,
+        truncated INTEGER DEFAULT 0,
+        ocr_used INTEGER DEFAULT 0,
+        PRIMARY KEY (provider, conversation_id, branch_id, message_id, attachment_name),
+        FOREIGN KEY (provider, conversation_id)
+            REFERENCES conversations(provider, conversation_id) ON DELETE CASCADE,
+        FOREIGN KEY (provider, conversation_id, branch_id)
+            REFERENCES branches(provider, conversation_id, branch_id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_raw_imports_hash ON raw_imports(hash);
     CREATE INDEX IF NOT EXISTS idx_raw_imports_status ON raw_imports(parse_status);
     CREATE INDEX IF NOT EXISTS idx_messages_branch_order ON messages(provider, conversation_id, branch_id, position);
@@ -176,6 +197,16 @@ def _apply_schema_fallback(conn: sqlite3.Connection) -> None:
           AND branch_id = OLD.branch_id
           AND message_id = OLD.message_id;
     END;
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS attachments_fts USING fts5(
+        provider,
+        conversation_id,
+        branch_id,
+        message_id,
+        attachment_name,
+        content,
+        tokenize='unicode61'
+    );
     """
 
     # Execute all schema statements
@@ -620,13 +651,13 @@ def upsert_raw_import(
         ),
     )
 
-    # Cleanup: keep only last 5 versions per conversation
+    # Cleanup: keep only last 100 versions per conversation
     conn.execute(
         """
         DELETE FROM raw_imports
         WHERE provider = ? AND conversation_id = ?
         AND version < (
-            SELECT MAX(version) - 4
+            SELECT MAX(version) - 99
             FROM raw_imports
             WHERE provider = ? AND conversation_id = ?
         )
