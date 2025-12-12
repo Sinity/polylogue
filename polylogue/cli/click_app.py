@@ -19,13 +19,15 @@ from ..ui import create_ui
 from . import (
     attachments,
     browse as browse_cmd,
-    config as config_cmd,
     imports,
     maintain,
     open_helper,
     prefs as prefs_cmd,
-    render as render_cmd,
     reprocess,
+)
+from .commands import (
+    config as config_cmd,
+    render as render_cmd,
     search as search_cmd,
     status as status_cmd,
     sync as sync_cmd,
@@ -213,6 +215,7 @@ def import_cmd_click(env: CommandEnv, **kwargs) -> None:
 @click.option("--collapse-threshold", type=int, default=None, help="Collapse threshold override")
 @click.option("--html", "html_mode", type=click.Choice(["on", "off", "auto"]), default="auto", show_default=True)
 @click.option("--force", is_flag=True, help="Overwrite outputs even when up-to-date")
+@click.option("--allow-dirty", is_flag=True, help="Allow overwriting files with local edits (requires --force)")
 @click.option("--links-only", is_flag=True, help="Link attachments instead of downloading")
 @click.option("--diff", is_flag=True, help="Write delta diff alongside updated Markdown")
 @click.option("--json", is_flag=True, help="Emit machine-readable summary")
@@ -223,6 +226,9 @@ def import_cmd_click(env: CommandEnv, **kwargs) -> None:
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.pass_obj
 def render(env: CommandEnv, **kwargs) -> None:
+    if kwargs.get("allow_dirty") and not kwargs.get("force"):
+        env.ui.console.print("--allow-dirty requires --force")
+        raise SystemExit(1)
     args = Namespace(**kwargs)
     render_cmd.dispatch(args, env)
 
