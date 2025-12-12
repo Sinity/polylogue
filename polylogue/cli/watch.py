@@ -64,16 +64,25 @@ def _run_watch_sessions(
         ui.console.print("[yellow]Offline mode enabled; network-dependent steps will be skipped.")
     base_exists = base_dir.exists()
     if not base_exists:
-        hint_parts = []
-        if not args.base_dir:
-            hint_parts.append(f"pass --base-dir to override (current default: {base_dir})")
-        else:
-            hint_parts.append("double-check the path or create it before watching")
-        hint = "; ".join(hint_parts)
-        ui.console.print(f"[red]Base directory does not exist: {base_dir}[/red]")
-        if hint:
-            ui.console.print(f"[yellow]{hint}[/yellow]")
-        raise SystemExit(1)
+        # In one-shot mode (or when provider opts in), create the base dir so
+        # we can still run an initial sync without forcing users to pre-create it.
+        if getattr(args, "once", False) or getattr(provider, "create_base_dir", False):
+            try:
+                base_dir.mkdir(parents=True, exist_ok=True)
+                base_exists = True
+            except OSError:
+                base_exists = False
+        if not base_exists:
+            hint_parts = []
+            if not args.base_dir:
+                hint_parts.append(f"pass --base-dir to override (current default: {base_dir})")
+            else:
+                hint_parts.append("double-check the path or create it before watching")
+            hint = "; ".join(hint_parts)
+            ui.console.print(f"[red]Base directory does not exist: {base_dir}[/red]")
+            if hint:
+                ui.console.print(f"[yellow]{hint}[/yellow]")
+            raise SystemExit(1)
     out_dir = resolve_output_path(args.out, provider.default_output)
     out_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir: Optional[Path] = None

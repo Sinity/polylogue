@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -11,7 +12,19 @@ from typing import Dict, Iterable, List, Optional, Sequence
 
 from .paths import STATE_HOME
 
-DB_PATH = STATE_HOME / "polylogue.db"
+
+def default_db_path() -> Path:
+    """Compute the default DB path from current XDG/HOME env.
+
+    Tests frequently set XDG_STATE_HOME/HOME after imports; relying on the
+    module-level DB_PATH would otherwise point at the real user store.
+    """
+    raw_state_root = os.environ.get("XDG_STATE_HOME")
+    state_root = Path(raw_state_root).expanduser() if raw_state_root else Path.home() / ".local/state"
+    return state_root / "polylogue" / "polylogue.db"
+
+
+DB_PATH = default_db_path()
 
 _LOCAL = threading.local()
 
@@ -264,6 +277,79 @@ def _run_migrations(db_path: Path) -> None:
             conn.close()
 
 
+def _ensure_raw_imports_schema(conn: sqlite3.Connection) -> None:
+    """Upgrade legacy raw_imports table to conversation-aware schema.
+
+    Alembic isn't available in the Nix devshell; older databases may still
+    have the hash-only schema from migration 001. When detected, rewrite
+    the table in-place, preserving existing rows.
+    """
+    try:
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(raw_imports)")}
+    except sqlite3.OperationalError:
+        return
+    if "conversation_id" in cols and "version" in cols:
+        return
+    if "hash" not in cols:
+        return
+
+    conn.executescript(
+        """
+        ALTER TABLE raw_imports RENAME TO raw_imports_old;
+
+        CREATE TABLE raw_imports (
+            provider TEXT NOT NULL,
+            conversation_id TEXT NOT NULL,
+            version INTEGER NOT NULL DEFAULT 1,
+            hash TEXT NOT NULL,
+            imported_at INTEGER DEFAULT (unixepoch()),
+            imported_at_ns INTEGER DEFAULT (unixepoch() * 1000000000),
+            source_path TEXT,
+            blob BLOB,
+            parser_version TEXT,
+            parse_status TEXT DEFAULT 'pending',
+            error_message TEXT,
+            metadata_json TEXT,
+            PRIMARY KEY (provider, conversation_id, version)
+        );
+
+        INSERT INTO raw_imports (
+            provider,
+            conversation_id,
+            version,
+            hash,
+            imported_at,
+            imported_at_ns,
+            source_path,
+            blob,
+            parser_version,
+            parse_status,
+            error_message,
+            metadata_json
+        )
+        SELECT
+            provider,
+            hash AS conversation_id,
+            1 AS version,
+            hash,
+            imported_at,
+            imported_at * 1000000000 AS imported_at_ns,
+            source_path,
+            blob,
+            parser_version,
+            parse_status,
+            error_message,
+            metadata_json
+        FROM raw_imports_old;
+
+        DROP TABLE raw_imports_old;
+
+        CREATE INDEX IF NOT EXISTS idx_raw_imports_hash ON raw_imports(hash);
+        CREATE INDEX IF NOT EXISTS idx_raw_imports_status ON raw_imports(parse_status);
+        """
+    )
+    conn.commit()
+
 def _get_state() -> dict:
     state = getattr(_LOCAL, "state", None)
     if state is None:
@@ -274,7 +360,7 @@ def _get_state() -> dict:
 
 @contextmanager
 def open_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
-    target_path = Path(db_path) if db_path is not None else DB_PATH
+    target_path = Path(db_path) if db_path is not None else default_db_path()
     target_path.parent.mkdir(parents=True, exist_ok=True)
     state = _get_state()
     if state["conn"] is not None and state["path"] != target_path:
@@ -290,6 +376,7 @@ def open_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode=WAL;")
+        _ensure_raw_imports_schema(conn)
         state["conn"] = conn
         state["path"] = target_path
         created_here = True
@@ -417,42 +504,84 @@ def replace_messages(
         if not messages:
             conn.execute("RELEASE replace_messages_sp")
             return
-        conn.executemany(
-            """
-            INSERT INTO messages (
-                provider, conversation_id, branch_id, message_id, parent_id,
-                position, timestamp, role, model, content_hash, content_text,
-                content_json, rendered_text, raw_json, token_count, word_count,
-                attachment_count, attachment_names, is_leaf, metadata_json
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    provider,
-                    conversation_id,
-                    branch_id,
-                    msg["message_id"],
-                    msg.get("parent_id"),
-                    msg.get("position"),
-                    msg.get("timestamp"),
-                    msg.get("role"),
-                    msg.get("model"),
-                    msg.get("content_hash"),
-                    msg.get("content_text"),
-                    msg.get("content_json"),
-                    msg.get("rendered_text"),
-                    msg.get("raw_json"),
-                    msg.get("token_count", 0),
-                    msg.get("word_count", 0),
-                    msg.get("attachment_count", 0),
-                    msg.get("attachment_names"),
-                    msg.get("is_leaf", 0),
-                    json.dumps(msg.get("metadata")) if msg.get("metadata") else None,
+        info_rows = conn.execute("PRAGMA table_info(messages)").fetchall()
+        cols: set[str] = set()
+        for row in info_rows:
+            try:
+                cols.add(row["name"])  # type: ignore[index]
+            except Exception:
+                cols.add(row[1])
+        if "model" in cols or "content_text" in cols:
+            conn.executemany(
+                """
+                INSERT INTO messages (
+                    provider, conversation_id, branch_id, message_id, parent_id,
+                    position, timestamp, role, model, content_hash, content_text,
+                    content_json, rendered_text, raw_json, token_count, word_count,
+                    attachment_count, attachment_names, is_leaf, metadata_json
                 )
-                for msg in messages
-            ],
-        )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        provider,
+                        conversation_id,
+                        branch_id,
+                        msg["message_id"],
+                        msg.get("parent_id"),
+                        msg.get("position"),
+                        msg.get("timestamp"),
+                        msg.get("role"),
+                        msg.get("model"),
+                        msg.get("content_hash"),
+                        msg.get("content_text"),
+                        msg.get("content_json"),
+                        msg.get("rendered_text"),
+                        msg.get("raw_json"),
+                        msg.get("token_count", 0),
+                        msg.get("word_count", 0),
+                        msg.get("attachment_count", 0),
+                        msg.get("attachment_names"),
+                        msg.get("is_leaf", 0),
+                        json.dumps(msg.get("metadata")) if msg.get("metadata") else None,
+                    )
+                    for msg in messages
+                ],
+            )
+        else:
+            # Legacy schema (no structured content/model columns).
+            conn.executemany(
+                """
+                INSERT INTO messages (
+                    provider, conversation_id, branch_id, message_id, parent_id,
+                    position, timestamp, role, content_hash, rendered_text,
+                    raw_json, token_count, word_count, attachment_count,
+                    attachment_names, metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        provider,
+                        conversation_id,
+                        branch_id,
+                        msg["message_id"],
+                        msg.get("parent_id"),
+                        msg.get("position"),
+                        msg.get("timestamp"),
+                        msg.get("role"),
+                        msg.get("content_hash"),
+                        msg.get("rendered_text"),
+                        msg.get("raw_json"),
+                        msg.get("token_count", 0),
+                        msg.get("word_count", 0),
+                        msg.get("attachment_count", 0),
+                        msg.get("attachment_names"),
+                        json.dumps(msg.get("metadata")) if msg.get("metadata") else None,
+                    )
+                    for msg in messages
+                ],
+            )
         conn.execute(
             """
             INSERT INTO messages_fts

@@ -130,7 +130,10 @@ def _sync_sessions(
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
 ) -> LocalSyncResult:
-    registrar = registrar or create_default_registrar()
+    if registrar is None:
+        state_dir = output_dir / ".polylogue-state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        registrar = create_default_registrar(database_path=state_dir / "polylogue.db")
     output_dir.mkdir(parents=True, exist_ok=True)
     start_time = time.perf_counter()
     written: List[ImportResult] = []
@@ -237,17 +240,14 @@ def _sync_sessions(
         result.diff_path = diff_tracker.finalize(result.markdown_path)
         entry["diff"] = bool(result.diff_path)
 
-        session_mtime = int(session_path.stat().st_mtime)
         try:
+            session_ns = _mtime_ns(session_path)
             result.markdown_path.parent.mkdir(parents=True, exist_ok=True)
-            os.utime(result.markdown_path, (session_mtime, session_mtime))
+            os.utime(result.markdown_path, ns=(session_ns, session_ns))
+            if result.html_path:
+                os.utime(result.html_path, ns=(session_ns, session_ns))
         except OSError:
             pass
-        if result.html_path:
-            try:
-                os.utime(result.html_path, (session_mtime, session_mtime))
-            except OSError:
-                pass
 
         entry["result"] = result
         return entry
