@@ -67,9 +67,9 @@ def extract_timestamps(obj: Any, max_depth: int = 5) -> List[float]:
         if 1577836800 <= obj <= 1893456000:
             timestamps.append(float(obj))
     elif isinstance(obj, dict):
-        for key, value in obj.items():
-            if any(kw in key.lower() for kw in ["time", "timestamp", "created", "updated", "date"]):
-                timestamps.extend(extract_timestamps(value, max_depth - 1))
+        # Recurse through all values; timestamp candidates are filtered by range.
+        for _key, value in obj.items():
+            timestamps.extend(extract_timestamps(value, max_depth - 1))
     elif isinstance(obj, list):
         for item in obj:
             timestamps.extend(extract_timestamps(item, max_depth - 1))
