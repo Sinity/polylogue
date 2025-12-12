@@ -72,6 +72,11 @@ def setup_parser(subparsers: argparse._SubParsersAction, _add_command_parser, ad
         action="store_true",
         help="Regenerate markdown from database instead of reading source files"
     )
+    p.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Allow overwriting files with local edits (requires --force)",
+    )
 
 
 def dispatch(args: argparse.Namespace, env: CommandEnv) -> None:
