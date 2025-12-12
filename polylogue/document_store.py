@@ -93,6 +93,9 @@ def _metadata_without_content_hash(metadata: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _compute_content_hash(body: str, metadata: Dict[str, Any]) -> str:
+    # Normalise body so YAML/frontmatter round-trips don't change the hash
+    # solely due to trailing newlines/whitespace.
+    body = body.rstrip()
     payload_metadata = _metadata_without_content_hash(metadata)
     try:
         metadata_str = json.dumps(payload_metadata, sort_keys=True, ensure_ascii=False)
