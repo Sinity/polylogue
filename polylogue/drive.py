@@ -353,12 +353,23 @@ def download_file(session, file_id: str, *, operation: str = "download", notifie
     url = f"{DRIVE_BASE}/files/{file_id}"
 
     def fetch():
-        with session.get(url, params={"alt": "media"}, timeout=120) as resp:
+        resp = session.get(url, params={"alt": "media"}, timeout=120)
+        try:
             _raise_for_status(resp)
             buf = io.BytesIO()
-            for chunk in resp.iter_bytes(chunk_size=1024 * 1024):
-                buf.write(chunk)
+            iterator = getattr(resp, "iter_bytes", None)
+            if callable(iterator):
+                for chunk in iterator(chunk_size=1024 * 1024):
+                    buf.write(chunk)
+            else:  # pragma: no cover - compatibility with requests-style sessions
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    buf.write(chunk)
             return buf.getvalue()
+        finally:
+            try:
+                resp.close()
+            except Exception:
+                pass
 
     try:
         return _retry(fetch, operation=operation, notifier=notifier)
