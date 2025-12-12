@@ -280,6 +280,7 @@ class RenderPersistStage:
             attachment_policy=None,
             force=getattr(options, "force", False),
             attachment_ocr=getattr(options, "attachment_ocr", False),
+            sanitize_html=getattr(options, "sanitize_html", False),
             registrar=env.registrar,
             citations=chat_context.citations,
         )
@@ -557,20 +558,21 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
 
     duration = time.perf_counter() - start_time
     totals = totals_acc.totals()
-    add_run(
-        {
-            "cmd": "render",
-            "provider": "render",
-            "count": len(render_files),
-            "out": str(output_dir),
-            "attachments": totals.get("attachments", 0),
-            "attachmentBytes": totals.get("attachmentBytes", 0),
-            "tokens": totals.get("totalTokensApprox", 0),
-            "words": totals.get("totalWordsApprox", 0),
-            "diffs": totals.get("diffs", 0),
-            "duration": duration,
-        }
-    )
+    run_payload = {
+        "cmd": "render",
+        "provider": "render",
+        "count": len(render_files),
+        "out": str(output_dir),
+        "attachments": totals.get("attachments", 0),
+        "attachmentBytes": totals.get("attachmentBytes", 0),
+        "tokens": totals.get("totalTokensApprox", 0),
+        "words": totals.get("totalWordsApprox", 0),
+        "diffs": totals.get("diffs", 0),
+        "duration": duration,
+    }
+    if getattr(options, "sanitize_html", False):
+        run_payload["redacted"] = True
+    add_run(run_payload)
     return RenderResult(
         count=len(render_files),
         output_dir=output_dir,
@@ -750,28 +752,29 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     duration = time.perf_counter() - start_time
     totals = totals_acc.totals()
     drive_stats = snapshot_drive_metrics(reset=True)
-    add_run(
-        {
-            "cmd": "sync drive",
-            "provider": "drive",
-            "count": len(items),
-            "out": str(options.output_dir),
-            "folder_name": options.folder_name,
-            "folder_id": folder_id,
-            "attachments": totals.get("attachments", 0),
-            "attachmentBytes": totals.get("attachmentBytes", 0),
-            "tokens": totals.get("totalTokensApprox", 0),
-            "words": totals.get("totalWordsApprox", 0),
-            "skipped": totals.get("skipped", 0),
-            "pruned": pruned_count,
-            "diffs": totals.get("diffs", 0),
-            "duration": duration,
-            "driveRequests": drive_stats.get("requests", 0),
-            "driveRetries": drive_stats.get("retries", 0),
-            "driveFailures": drive_stats.get("failures", 0),
-            "driveLastError": drive_stats.get("lastError"),
-        }
-    )
+    run_payload = {
+        "cmd": "sync drive",
+        "provider": "drive",
+        "count": len(items),
+        "out": str(options.output_dir),
+        "folder_name": options.folder_name,
+        "folder_id": folder_id,
+        "attachments": totals.get("attachments", 0),
+        "attachmentBytes": totals.get("attachmentBytes", 0),
+        "tokens": totals.get("totalTokensApprox", 0),
+        "words": totals.get("totalWordsApprox", 0),
+        "skipped": totals.get("skipped", 0),
+        "pruned": pruned_count,
+        "diffs": totals.get("diffs", 0),
+        "duration": duration,
+        "driveRequests": drive_stats.get("requests", 0),
+        "driveRetries": drive_stats.get("retries", 0),
+        "driveFailures": drive_stats.get("failures", 0),
+        "driveLastError": drive_stats.get("lastError"),
+    }
+    if getattr(options, "sanitize_html", False):
+        run_payload["redacted"] = True
+    add_run(run_payload)
     totals.setdefault("attachments", 0)
     totals.setdefault("skipped", 0)
     totals.setdefault("diffs", totals.get("diffs", 0))

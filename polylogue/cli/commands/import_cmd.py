@@ -53,6 +53,11 @@ def setup_parser(subparsers: argparse._SubParsersAction, _add_command_parser, ad
         action="store_true",
         help="Attempt OCR on image attachments when importing",
     )
+    p.add_argument(
+        "--sanitize-html",
+        action="store_true",
+        help="Mask emails/keys/tokens in imported Markdown/HTML outputs",
+    )
     add_helpers["dry_run_option"](p)
     add_helpers["force_option"](p, help_text="Rewrite even if conversations appear up-to-date")
     p.add_argument("--print-paths", action="store_true", help="List written files after import")
