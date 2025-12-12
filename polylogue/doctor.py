@@ -10,7 +10,7 @@ import os
 
 from .archive import Archive
 from .config import CONFIG, CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
-from .db import DB_PATH
+from .db import default_db_path
 from .drive_client import DEFAULT_CREDENTIALS, DEFAULT_TOKEN
 from .paths import STATE_HOME
 from .persistence.database import ConversationDatabase
@@ -355,13 +355,13 @@ def run_doctor(
     issues.extend(_credential_issues())
     issues.extend(_drive_failure_issues())
     try:
-        sqlite_notes = verify_sqlite_indexes(DB_PATH)
+        sqlite_notes = verify_sqlite_indexes(default_db_path())
         if sqlite_notes:
             counts["indexes"] = counts.get("indexes", 0) + len(sqlite_notes)
             for note in sqlite_notes:
-                issues.append(DoctorIssue("index", DB_PATH, note, "info"))
+                issues.append(DoctorIssue("index", default_db_path(), note, "info"))
     except Exception as exc:
-        issues.append(DoctorIssue("index", DB_PATH, str(exc), "error"))
+        issues.append(DoctorIssue("index", default_db_path(), str(exc), "error"))
     try:
         qdrant_notes = verify_qdrant_collection()
         if qdrant_notes:
