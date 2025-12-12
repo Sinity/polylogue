@@ -55,7 +55,15 @@ def _apply_sync_prefs(args: argparse.Namespace, env: CommandEnv) -> argparse.Nam
     return args
 
 
-def _log_local_sync(ui, title: str, result: LocalSyncResult, *, provider: str, footer: Optional[List[str]] = None) -> None:
+def _log_local_sync(
+    ui,
+    title: str,
+    result: LocalSyncResult,
+    *,
+    provider: str,
+    footer: Optional[List[str]] = None,
+    redacted: bool = False,
+) -> None:
     console = ui.console
     if result.written:
         summarize_import(ui, title, result.written, extra_lines=footer)
@@ -70,22 +78,23 @@ def _log_local_sync(ui, title: str, result: LocalSyncResult, *, provider: str, f
         console.print(f"[cyan]{title}: pruned {result.pruned} path(s).")
     if getattr(result, "ignored", 0):
         console.print(f"[yellow]{title}: skipped {result.ignored} path(s) via .polylogueignore.")
-    add_run(
-        {
-            "cmd": title.lower().replace(" ", "-"),
-            "provider": provider,
-            "count": len(result.written),
-            "out": str(result.output_dir),
-            "attachments": result.attachments,
-            "attachmentBytes": result.attachment_bytes,
-            "tokens": result.tokens,
-            "words": result.words,
-            "diffs": result.diffs,
-            "skipped": result.skipped,
-            "pruned": result.pruned,
-            "duration": getattr(result, "duration", 0.0),
-        }
-    )
+    run_payload = {
+        "cmd": title.lower().replace(" ", "-"),
+        "provider": provider,
+        "count": len(result.written),
+        "out": str(result.output_dir),
+        "attachments": result.attachments,
+        "attachmentBytes": result.attachment_bytes,
+        "tokens": result.tokens,
+        "words": result.words,
+        "diffs": result.diffs,
+        "skipped": result.skipped,
+        "pruned": result.pruned,
+        "duration": getattr(result, "duration", 0.0),
+    }
+    if redacted:
+        run_payload["redacted"] = True
+    add_run(run_payload)
 
 
 def run_list_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -> None:
@@ -222,6 +231,7 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         diff=getattr(args, "diff", False),
         prefetched_chats=prefetched,
         attachment_ocr=getattr(args, "attachment_ocr", False),
+        sanitize_html=getattr(args, "sanitize_html", False),
     )
 
     if getattr(args, "prune", False) and getattr(args, "prune_snapshot", False):
@@ -287,6 +297,8 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
             "retries": getattr(result, "retries", None),
             "retry_base": drive_retry_base,
         }
+        if getattr(args, "sanitize_html", False):
+            payload["redacted"] = True
         if previous_run_note:
             payload["previousRun"] = previous_run_note
         print(json.dumps(stamp_payload(payload), indent=2))
@@ -442,6 +454,7 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
             registrar=env.registrar,
             ui=env.ui,
             attachment_ocr=getattr(args, "attachment_ocr", False),
+            sanitize_html=getattr(args, "sanitize_html", False),
         )
     except Exception as exc:
         ui.console.print(f"[red]{provider.title} sync failed: {exc}")
@@ -480,6 +493,8 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
             "diffs": result.diffs,
             "files": files_payload,
         }
+        if getattr(args, "sanitize_html", False):
+            payload["redacted"] = True
         if previous_run_note:
             payload["previousRun"] = previous_run_note
         print(json.dumps(stamp_payload(payload), indent=2))
@@ -491,21 +506,22 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
         if result.pruned:
             console.print(f"Pruned {result.pruned} stale path(s).")
 
-    add_run(
-        {
-            "cmd": f"sync {provider.name}",
-            "provider": provider.name,
-            "count": len(result.written),
-            "out": str(result.output_dir),
-            "attachments": attachments,
-            "attachmentBytes": attachment_bytes,
-            "tokens": tokens,
-            "words": words,
-            "skipped": result.skipped,
-            "pruned": result.pruned,
-            "diffs": result.diffs,
-        }
-    )
+    run_payload = {
+        "cmd": f"sync {provider.name}",
+        "provider": provider.name,
+        "count": len(result.written),
+        "out": str(result.output_dir),
+        "attachments": attachments,
+        "attachmentBytes": attachment_bytes,
+        "tokens": tokens,
+        "words": words,
+        "skipped": result.skipped,
+        "pruned": result.pruned,
+        "diffs": result.diffs,
+    }
+    if getattr(args, "sanitize_html", False):
+        run_payload["redacted"] = True
+    add_run(run_payload)
 
 
 __all__ = [

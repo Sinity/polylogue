@@ -151,6 +151,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             json=args.json,
             to_clipboard=args.to_clipboard,
             attachment_ocr=args.attachment_ocr,
+            sanitize_html=getattr(args, "sanitize_html", False),
         )
         run_import_chatgpt(ns, env)
     elif provider == "claude":
@@ -167,6 +168,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             json=args.json,
             to_clipboard=args.to_clipboard,
             attachment_ocr=args.attachment_ocr,
+            sanitize_html=getattr(args, "sanitize_html", False),
         )
         run_import_claude(ns, env)
     elif provider == "claude-code":
@@ -182,6 +184,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             json=args.json,
             to_clipboard=args.to_clipboard,
             attachment_ocr=args.attachment_ocr,
+            sanitize_html=getattr(args, "sanitize_html", False),
         )
         run_import_claude_code(ns, env)
     elif provider == "codex":
@@ -197,6 +200,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             json=args.json,
             to_clipboard=args.to_clipboard,
             attachment_ocr=args.attachment_ocr,
+            sanitize_html=getattr(args, "sanitize_html", False),
         )
         run_import_codex(ns, env)
     else:
@@ -264,6 +268,7 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
                 "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
                 "attachment_ocr": getattr(args, "attachment_ocr", False),
+                "sanitize_html": getattr(args, "sanitize_html", False),
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
@@ -373,6 +378,7 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
                 "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
                 "attachment_ocr": getattr(args, "attachment_ocr", False),
+                "sanitize_html": getattr(args, "sanitize_html", False),
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
@@ -482,6 +488,7 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
                 "force": getattr(args, "force", False),
                 "registrar": env.registrar,
                 "attachment_ocr": getattr(args, "attachment_ocr", False),
+                "sanitize_html": getattr(args, "sanitize_html", False),
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
@@ -563,6 +570,7 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
                 "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
                 "attachment_ocr": getattr(args, "attachment_ocr", False),
+                "sanitize_html": getattr(args, "sanitize_html", False),
                 **kwargs,
             },
             "import_error_message": "Import failed",

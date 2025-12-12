@@ -146,6 +146,7 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--out", type=click.Path(path_type=Path), help="Override output directory")
 @click.option("--links-only", is_flag=True, help="Link attachments instead of downloading (Drive only)")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
+@click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in synced Markdown/HTML outputs")
 @click.option("--dry-run", is_flag=True, help="Report actions without writing files")
 @click.option("--force", is_flag=True, help="Re-render even if conversations are up-to-date")
 @click.option("--prune", is_flag=True, help="Remove outputs for conversations that vanished upstream")
@@ -200,6 +201,7 @@ def sync(env: CommandEnv, **kwargs) -> None:
 @click.option("--to-clipboard", is_flag=True, help="Copy single imported Markdown file to the clipboard")
 @click.option("--base-dir", type=click.Path(path_type=Path), help="Base directory for local providers")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
+@click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in imported Markdown/HTML outputs")
 @click.pass_obj
 def import_cmd_click(env: CommandEnv, **kwargs) -> None:
     args = Namespace(**kwargs)
@@ -224,6 +226,7 @@ def import_cmd_click(env: CommandEnv, **kwargs) -> None:
 @click.option("--dry-run", is_flag=True, help="Report actions without writing files")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
+@click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in rendered Markdown/HTML outputs")
 @click.pass_obj
 def render(env: CommandEnv, **kwargs) -> None:
     if kwargs.get("allow_dirty") and not kwargs.get("force"):

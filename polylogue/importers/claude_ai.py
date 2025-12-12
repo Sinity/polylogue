@@ -71,6 +71,7 @@ def import_claude_export(
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
     root, tmp = _load_bundle(export_path)
@@ -120,6 +121,7 @@ def import_claude_export(
                         allow_dirty=allow_dirty,
                         registrar=registrar,
                         attachment_ocr=attachment_ocr,
+                        sanitize_html=sanitize_html,
                     )
                 )
                 if raw_hash:
@@ -179,6 +181,7 @@ def _render_claude_conversation(
     allow_dirty: bool,
     registrar: Optional[ConversationRegistrar],
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> ImportResult:
     title = conv.get("name") or conv.get("title") or "claude-chat"
     conv_id = conv.get("uuid") or conv.get("id") or "claude"
@@ -308,6 +311,7 @@ def _render_claude_conversation(
         force=force,
         allow_dirty=allow_dirty,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
         registrar=registrar,
     )
 

@@ -64,6 +64,7 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         html_theme=html_theme,
         diff=getattr(args, "diff", False),
         attachment_ocr=getattr(args, "attachment_ocr", False) or _truthy(render_prefs.get("--attachment-ocr", "false")) if render_prefs else getattr(args, "attachment_ocr", False),
+        sanitize_html=getattr(args, "sanitize_html", False),
     )
     if getattr(args, "max_disk", None):
         projected = len(inputs) * 5 * 1024 * 1024  # rough 5MiB per file heuristic
@@ -98,6 +99,8 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
             ],
             "total_stats": result.total_stats,
         }
+        if getattr(args, "sanitize_html", False):
+            payload["redacted"] = True
         print(json.dumps(stamp_payload(payload), indent=2))
         return
     lines = [f"Rendered {result.count} file(s) → {result.output_dir}"]
