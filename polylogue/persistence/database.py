@@ -25,4 +25,4 @@ class ConversationDatabase:
             conn.commit()
 
     def resolve_path(self) -> Optional[Path]:
-        return self.path or db_module.DB_PATH
+        return self.path or db_module.default_db_path()
