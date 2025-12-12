@@ -1,32 +1,22 @@
 # CLI Command Modules
 
-This directory contains extracted command modules from `app.py` (2163 lines → modular structure).
+This directory contains command dispatchers extracted from the old `app.py`.
+The CLI is now Click-based (`polylogue/cli/click_app.py`), and these modules are called from Click callbacks.
 
 ## Pattern
 
-Each command module exports two functions:
+Each command module must export:
 
-### 1. `setup_parser(subparsers, _add_command_parser, add_helpers)`
-Sets up argparse subparser for the command.
-
-**Parameters:**
-- `subparsers`: The main `_SubParsersAction` object
-- `_add_command_parser`: Helper function to add command with examples epilog
-- `add_helpers`: Dict of common argument helper functions:
-  - `out_option(parser, default_path, help_text)`
-  - `dry_run_option(parser)`
-  - `force_option(parser, help_text)`
-  - `collapse_option(parser)`
-  - `html_option(parser)`
-  - `diff_option(parser, help_text)`
-  - `examples_epilog(command_name)`
-
-### 2. `dispatch(args, env)`
+### `dispatch(args, env)`
 Executes the command logic.
 
 **Parameters:**
-- `args`: `argparse.Namespace` with parsed arguments
+- `args`: `argparse.Namespace` constructed by Click callbacks.
 - `env`: `CommandEnv` object with config, UI, database, etc.
+
+### Legacy: `setup_parser(...)` (optional)
+Some modules still include an argparse `setup_parser` from the pre‑Click era.
+It is retained only for reference and is not used by the current CLI.
 
 ## Example: sync.py
 
@@ -44,11 +34,9 @@ def dispatch(args, env):
         run_sync_cli(args, env)
 ```
 
-## Migration Status
+## Current Commands
 
-### ✅ Completed (9/9 Core Commands)
-
-All major commands have been extracted into modular files:
+All major commands live here and are wired by Click:
 
 1. **sync.py** - Sync provider archives (watch mode, Drive/local sync)
 2. **render.py** - Render JSON exports to Markdown/HTML
@@ -60,44 +48,9 @@ All major commands have been extracted into modular files:
 8. **maintain.py** - System maintenance (prune/doctor/index/restore)
 9. **status.py** - Show cached Drive info and recent runs
 
-### 📝 Next Steps
+## Notes
 
-- **Update app.py** - Integrate command modules, remove old parser code
-- **Test** - Verify all commands still work
-- **Target** - Reduce app.py from 2163 lines to <300 lines
-
-## After Extraction
-
-Once all commands are extracted, `app.py` should be < 300 lines:
-
-```python
-# app.py (simplified)
-from .commands import sync, render, maintain, config, attachments, ...
-
-def build_parser():
-    parser = argparse.ArgumentParser(...)
-    sub = parser.add_subparsers(...)
-
-    # Setup all command parsers
-    sync.setup_parser(sub, _add_command_parser, helpers)
-    render.setup_parser(sub, _add_command_parser, helpers)
-    maintain.setup_parser(sub, _add_command_parser, helpers)
-    # ... etc
-
-    return parser
-
-def main():
-    parser = build_parser()
-    args = parser.parse_args()
-    env = CommandEnv(...)
-
-    # Dispatch to appropriate command
-    if args.cmd == "sync":
-        sync.dispatch(args, env)
-    elif args.cmd == "render":
-        render.dispatch(args, env)
-    # ... etc
-```
+- `polylogue/cli/app.py` is kept only for shared helpers and backwards‑compat shims. It no longer owns argument parsing.
 
 ## Benefits
 
