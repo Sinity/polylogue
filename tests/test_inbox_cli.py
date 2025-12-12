@@ -18,6 +18,10 @@ def test_inbox_cli_lists_and_quarantines(tmp_path: Path, capsys) -> None:
     bad = inbox / "bad.zip"
     bad.write_bytes(b"junk")
 
+    ignored = inbox / "ignored.zip"
+    ignored.write_bytes(b"junk")
+    (inbox / ".polylogueignore").write_text("ignored.zip\n", encoding="utf-8")
+
     args = SimpleNamespace(
         providers="chatgpt,claude",
         dir=inbox,
@@ -33,5 +37,6 @@ def test_inbox_cli_lists_and_quarantines(tmp_path: Path, capsys) -> None:
     providers = {entry["provider"] for entry in output.get("entries", [])}
     assert "chatgpt" in providers
     assert output.get("quarantined"), "expected bad.zip to be quarantined"
+    assert output.get("ignoredByRule", 0) == 1
     assert output.get("totals", {}).get("pending", 0) >= 1
     assert (inbox / "quarantine" / "bad.zip").exists()
