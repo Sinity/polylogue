@@ -6,6 +6,7 @@ from typing import Iterable, List, Optional, Protocol
 from rich.table import Table
 
 from ..importers import ImportResult
+from ..options import RenderResult
 from ..results import summarize_import_results
 from ..ui import ConsoleLike
 
@@ -57,6 +58,57 @@ def summarize_import(
     for reason, count in skipped_reasons.items():
         label = f"Skipped ({reason})" if reason else "Skipped"
         lines.append(f"{label}: {count}")
+
+    if extra_lines:
+        lines.extend(extra_lines)
+    ui.summary(title, lines)
+
+
+def summarize_render(
+    ui: SummaryUI,
+    title: str,
+    result: RenderResult,
+    *,
+    extra_lines: Optional[List[str]] = None,
+) -> None:
+    totals = result.total_stats or {}
+    lines = [f"Rendered {result.count} file(s) → {result.output_dir}"]
+    attachments_total = totals.get("attachments", 0)
+    if attachments_total:
+        lines.append(f"Attachments: {attachments_total}")
+    skipped_total = totals.get("skipped", 0)
+    if skipped_total:
+        lines.append(f"Skipped: {skipped_total}")
+    diffs_total = totals.get("diffs", 0)
+    if diffs_total:
+        lines.append(f"Diffs: {diffs_total}")
+    if "totalTokensApprox" in totals:
+        total_tokens = int(totals.get("totalTokensApprox") or 0)
+        total_words = int(totals.get("totalWordsApprox") or 0)
+        if total_words:
+            lines.append(f"Approx tokens: {total_tokens} (~{total_words} words)")
+        else:
+            lines.append(f"Approx tokens: {total_tokens}")
+    for key, label in (
+        ("chunkCount", "Total chunks"),
+        ("userTurns", "User turns"),
+        ("modelTurns", "Model turns"),
+    ):
+        value = totals.get(key)
+        if value:
+            lines.append(f"{label}: {int(value)}")
+
+    if result.files and not ui.plain:
+        table = Table(title=title, show_lines=False)
+        table.add_column("File")
+        table.add_column("Attachments", justify="right")
+        table.add_column("Tokens (~words)", justify="right")
+        for file in result.files:
+            tokens = int(file.stats.get("totalTokensApprox", 0) or 0)
+            words = int(file.stats.get("totalWordsApprox", 0) or 0)
+            token_label = f"{tokens} (~{words} words)" if words else str(tokens)
+            table.add_row(file.slug, str(file.attachments), token_label)
+        ui.console.print(table)
 
     if extra_lines:
         lines.extend(extra_lines)
