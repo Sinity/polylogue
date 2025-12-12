@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import json
-from argparse import Namespace
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional
 
 from polylogue.commands import CommandEnv
 from polylogue.cli.imports import run_import_chatgpt
 from polylogue.cli.render import run_render_cli
-from polylogue.cli.app import run_inspect_search
 from polylogue.cli.watch import run_watch_cli
+from polylogue.cli.search_cli import run_search_cli
 from polylogue.importers import ImportResult
 from polylogue.local_sync import LocalSyncResult, LocalSyncProvider
 
@@ -48,8 +48,8 @@ class RecordingUI:
         return None
 
 
-def _build_render_args(input_path: Path, out_dir: Path, *, json_mode: bool = False) -> Namespace:
-    return Namespace(
+def _build_render_args(input_path: Path, out_dir: Path, *, json_mode: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
         input=input_path,
         out=str(out_dir),
         collapse_threshold=None,
@@ -121,7 +121,7 @@ def test_run_import_chatgpt_invokes_summary(monkeypatch, tmp_path):
     ui = RecordingUI()
     export_path = tmp_path / "export.zip"
     export_path.write_text("stub", encoding="utf-8")
-    args = Namespace(
+    args = SimpleNamespace(
         export_path=export_path,
         out=str(tmp_path / "out"),
         collapse_threshold=None,
@@ -140,7 +140,7 @@ def test_run_import_chatgpt_invokes_summary(monkeypatch, tmp_path):
     assert title == "ChatGPT Import"
 
 
-def test_run_inspect_search_displays_summary(monkeypatch, tmp_path):
+def test_run_search_cli_displays_summary(monkeypatch, tmp_path):
     from polylogue.options import SearchHit, SearchResult
 
     hit = SearchHit(
@@ -164,9 +164,9 @@ def test_run_inspect_search_displays_summary(monkeypatch, tmp_path):
     def fake_search_command(options, env=None):  # pylint: disable=unused-argument
         return SearchResult(hits=[hit])
 
-    monkeypatch.setattr("polylogue.cli.app.search_command", fake_search_command)
+    monkeypatch.setattr("polylogue.cli.search_cli.search_command", fake_search_command)
 
-    args = Namespace(
+    args = SimpleNamespace(
         query="example",
         limit=10,
         provider=None,
@@ -184,7 +184,7 @@ def test_run_inspect_search_displays_summary(monkeypatch, tmp_path):
 
     ui = RecordingUI()
     env = CommandEnv(ui=ui)
-    run_inspect_search(args, env)
+    run_search_cli(args, env)
 
     assert ui.summaries, "expected inspect search to emit summary"
     title, lines = ui.summaries[0]
@@ -200,8 +200,8 @@ def test_run_watch_cli_dispatches_based_on_provider(monkeypatch):
 
     monkeypatch.setattr("polylogue.cli.watch._run_watch_sessions", recorder)
 
-    run_watch_cli(Namespace(provider="codex"), CommandEnv(ui=RecordingUI()))
-    run_watch_cli(Namespace(provider="claude-code"), CommandEnv(ui=RecordingUI()))
+    run_watch_cli(SimpleNamespace(provider="codex"), CommandEnv(ui=RecordingUI()))
+    run_watch_cli(SimpleNamespace(provider="claude-code"), CommandEnv(ui=RecordingUI()))
 
     assert markers == ["codex", "claude-code"], "watch CLI should delegate to provider-specific runners"
 
@@ -249,7 +249,7 @@ def test_watch_debounce_skips_fast_repeats(monkeypatch, tmp_path):
     )
 
     env = CommandEnv(ui=RecordingUI())
-    args = Namespace(
+    args = SimpleNamespace(
         provider="codex",
         base_dir=str(base_dir),
         out=str(out_dir),
@@ -307,7 +307,7 @@ def test_run_watch_sessions_once_triggers_sync(monkeypatch, tmp_path):
     monkeypatch.setattr("polylogue.cli.sync.add_run", lambda data: records.append(data))
 
     ui = RecordingUI()
-    args = Namespace(
+    args = SimpleNamespace(
         provider="codex",
         base_dir=str(tmp_path / "sessions"),
         out=str(tmp_path / "out"),
