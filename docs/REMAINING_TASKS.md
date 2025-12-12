@@ -20,7 +20,7 @@ Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, re
 
 ## P2 – Performance and Freshness
 
-- Content-hash freshness instead of mtime-only checks.
+- Content-hash freshness instead of mtime-only checks. **(done for codex/claude-code session sync; export-level freshness still pending)** 
 - Concurrency/ETA: clearer knobs with visible progress/retry surfacing and predictive ETA/profiling beyond existing `--profile-io/--profile-sql`.
 - Deterministic ordering across HTML/JSON/summaries; emit pre-run disk/quota estimates.
 
