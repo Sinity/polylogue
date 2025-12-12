@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -14,6 +13,8 @@ from ..version import POLYLOGUE_VERSION, SCHEMA_VERSION
 from ..schema import stamp_payload
 from ..ui import UI
 from ..util import write_clipboard_text
+from .summaries import summarize_render
+from .failure_logging import record_failure
 from .context import (
     DEFAULT_COLLAPSE,
     DEFAULT_RENDER_OUT,
@@ -24,7 +25,7 @@ from .context import (
 )
 
 
-def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -> None:
+def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
     ui = env.ui
     console = ui.console
     prefs = getattr(env, "prefs", {}) if hasattr(env, "prefs") else {}
@@ -48,6 +49,13 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         download_attachments = not _truthy(render_prefs["--links-only"])
     if not ui.plain and not args.links_only:
         download_attachments = ui.confirm("Download attachments to local folders?", default=download_attachments)
+
+    if "--diff" in render_prefs and not getattr(args, "diff", False) and _truthy(render_prefs["--diff"]):
+        args.diff = True
+    if "--sanitize-html" in render_prefs and not getattr(args, "sanitize_html", False) and _truthy(
+        render_prefs["--sanitize-html"]
+    ):
+        args.sanitize_html = True
     html_enabled = resolve_html_enabled(args, settings)
     if render_prefs.get("--html") is not None and args.html_mode == "auto":
         html_enabled = render_prefs.get("--html") == "on"
@@ -64,6 +72,7 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         html_theme=html_theme,
         diff=getattr(args, "diff", False),
         attachment_ocr=getattr(args, "attachment_ocr", False) or _truthy(render_prefs.get("--attachment-ocr", "false")) if render_prefs else getattr(args, "attachment_ocr", False),
+        sanitize_html=getattr(args, "sanitize_html", False),
     )
     if getattr(args, "max_disk", None):
         projected = len(inputs) * 5 * 1024 * 1024  # rough 5MiB per file heuristic
@@ -72,11 +81,10 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         preflight_disk_requirement(projected_bytes=projected, limit_gib=args.max_disk, ui=ui)
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
-    from .app import _record_failure
     try:
         result = render_command(options, env)
     except Exception as exc:
-        _record_failure(args, exc, phase="render")
+        record_failure(args, exc, phase="render")
         raise
     if json_output:
         payload = {
@@ -98,40 +106,22 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
             ],
             "total_stats": result.total_stats,
         }
+        if getattr(args, "sanitize_html", False):
+            payload["redacted"] = True
         print(json.dumps(stamp_payload(payload), indent=2))
         return
-    lines = [f"Rendered {result.count} file(s) → {result.output_dir}"]
+    extra_lines: List[str] = []
     if getattr(args, "print_paths", False):
-        lines.append("Written paths:")
+        extra_lines.append("Written paths:")
         for f in result.files:
-            lines.append(f"  {f.output}")
-    attachments_total = result.total_stats.get("attachments", 0)
-    if attachments_total:
-        lines.append(f"Attachments: {attachments_total}")
-    skipped_total = result.total_stats.get("skipped", 0)
-    if skipped_total:
-        lines.append(f"Skipped: {skipped_total}")
-    if "totalTokensApprox" in result.total_stats:
-        total_tokens = int(result.total_stats["totalTokensApprox"])
-        total_words = int(result.total_stats.get("totalWordsApprox", 0) or 0)
-        if total_words:
-            lines.append(f"Approx tokens: {total_tokens} (~{total_words} words)")
-        else:
-            lines.append(f"Approx tokens: {total_tokens}")
-    for key, label in (
-        ("chunkCount", "Total chunks"),
-        ("userTurns", "User turns"),
-        ("modelTurns", "Model turns"),
-    ):
-        value = result.total_stats.get(key)
-        if value:
-            lines.append(f"{label}: {int(value)}")
-    for file in result.files:
-        info = f"- {file.slug} (attachments: {file.attachments})"
-        if file.html:
-            info += " [+html]"
-        lines.append(info)
-    ui.summary("Render", lines)
+            extra_lines.append(f"  {f.output}")
+            if f.html:
+                extra_lines.append(f"  {f.html}")
+            if f.diff:
+                extra_lines.append(f"  {f.diff}")
+    if getattr(args, "sanitize_html", False):
+        extra_lines.append("Redacted: yes")
+    summarize_render(ui, "Render", result, extra_lines=extra_lines or None)
 
     if getattr(args, "to_clipboard", False):
         if result.count != 1 or not result.files:

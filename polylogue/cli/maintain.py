@@ -2,22 +2,22 @@
 
 from __future__ import annotations
 
-import argparse
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 
 from ..commands import CommandEnv
 from ..schema import stamp_payload
 
 
-def run_maintain_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_maintain_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     """Dispatch to appropriate maintenance subcommand."""
-    from .app import run_prune_cli
+    from .prune_cli import run_prune_cli
     from .doctor import run_doctor_cli
     from .index_cli import run_index_cli
     from ..util import preflight_disk_requirement
 
-    maintain_cmd = args.maintain_cmd  # required=True enforced by argparse
+    maintain_cmd = args.maintain_cmd
 
     if maintain_cmd == "prune":
         run_prune_cli(args, env)

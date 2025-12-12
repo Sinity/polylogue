@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict
 
 from ..paths import STATE_HOME
@@ -25,7 +25,7 @@ def _save_prefs(prefs: Dict[str, Dict[str, str]]) -> None:
     PREFS_PATH.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
 
 
-def run_prefs_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_prefs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     prefs = _load_prefs()
     sub = getattr(args, "prefs_cmd", None)

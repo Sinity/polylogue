@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from ..commands import CommandEnv
 from ..util import latest_run
@@ -10,7 +10,7 @@ from ..schema import stamp_payload
 from .editor import open_in_editor, get_editor
 
 
-def run_open_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_open_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     provider = getattr(args, "provider", None)
     cmd = getattr(args, "command", None)
