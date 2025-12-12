@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from polylogue.cli.app import main
+from polylogue.cli.click_app import main
 from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.browse import run_browse_cli
 from polylogue.cli.maintain import run_maintain_cli
@@ -120,11 +120,9 @@ def test_click_accepts_env_command():
 
 def test_browse_dispatcher_handles_branches():
     """Verify browse dispatcher correctly routes to branches."""
-    from polylogue.cli.app import run_inspect_branches
-
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         browse_cmd="branches",
         provider=None,
         slug=None,
@@ -147,7 +145,7 @@ def test_browse_dispatcher_handles_stats():
     """Verify browse dispatcher correctly routes to stats."""
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         browse_cmd="stats",
         dir=None,
         provider=None,
@@ -169,7 +167,7 @@ def test_browse_dispatcher_handles_status(monkeypatch, tmp_path):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         browse_cmd="status",
         json=False,
         json_lines=False,
@@ -194,7 +192,7 @@ def test_browse_dispatcher_handles_runs(monkeypatch, tmp_path):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         browse_cmd="runs",
         limit=50,
         providers=None,
@@ -212,7 +210,7 @@ def test_browse_dispatcher_rejects_invalid_subcommand():
     """Verify browse dispatcher rejects invalid subcommands."""
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(browse_cmd="invalid")
+    args = SimpleNamespace(browse_cmd="invalid")
 
     with pytest.raises(SystemExit):
         run_browse_cli(args, env)
@@ -224,7 +222,7 @@ def test_maintain_dispatcher_handles_prune(monkeypatch, tmp_path):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         maintain_cmd="prune",
         dirs=None,
         dry_run=True,
@@ -240,7 +238,7 @@ def test_maintain_dispatcher_handles_doctor(monkeypatch, tmp_path):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         maintain_cmd="doctor",
         codex_dir=None,
         claude_code_dir=None,
@@ -258,7 +256,7 @@ def test_maintain_dispatcher_handles_index(monkeypatch, tmp_path):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
+    args = SimpleNamespace(
         maintain_cmd="index",
         subcmd="check",
         repair=False,
@@ -274,7 +272,7 @@ def test_maintain_dispatcher_rejects_invalid_subcommand():
     """Verify maintain dispatcher rejects invalid subcommands."""
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(maintain_cmd="invalid")
+    args = SimpleNamespace(maintain_cmd="invalid")
 
     with pytest.raises(SystemExit):
         run_maintain_cli(args, env)
@@ -286,13 +284,10 @@ def test_config_dispatcher_handles_show(monkeypatch, tmp_path, capsys):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = argparse.Namespace(
-        config_cmd="show",
-        json=True,
-    )
+    args = SimpleNamespace(json=True)
+    from polylogue.cli.config_cli import run_config_show
 
-    from polylogue.cli.app import _dispatch_config
-    _dispatch_config(args, env)
+    run_config_show(args, env)
 
     output = capsys.readouterr().out
     parsed = json.loads(output)
@@ -366,7 +361,7 @@ def test_old_inspect_command_fails(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit) as exc_info:
         main()
-    assert exc_info.value.code == 2  # argparse error
+    assert exc_info.value.code == 2  # Click usage error
 
 
 def test_old_prune_command_fails(monkeypatch, tmp_path):
@@ -377,7 +372,7 @@ def test_old_prune_command_fails(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit) as exc_info:
         main()
-    assert exc_info.value.code == 2  # argparse error
+    assert exc_info.value.code == 2  # Click usage error
 
 
 def test_status_command_runs(monkeypatch, tmp_path):
@@ -406,4 +401,4 @@ def test_old_settings_command_fails(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit) as exc_info:
         main()
-    assert exc_info.value.code == 2  # argparse error
+    assert exc_info.value.code == 2  # Click usage error

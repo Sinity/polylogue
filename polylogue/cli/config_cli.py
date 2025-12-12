@@ -1,0 +1,120 @@
+from __future__ import annotations
+
+import json
+import os
+
+from ..commands import CommandEnv
+
+
+def run_config_show(args: object, env: CommandEnv) -> None:
+    """Show current configuration (combines env + settings)."""
+    from ..config import CONFIG, CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN
+    from ..schema import stamp_payload
+    from ..settings import SETTINGS_PATH
+
+    ui = env.ui
+    settings = env.settings
+    defaults = CONFIG.defaults
+
+    credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+    token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
+    drive_cfg = getattr(env, "config", None).drive if hasattr(env, "config") else None
+    credential_path = drive_cfg.credentials_path if drive_cfg else DEFAULT_CREDENTIALS
+    token_path = drive_cfg.token_path if drive_cfg else DEFAULT_TOKEN
+
+    if getattr(args, "json", False):
+        roots_map = getattr(env.config.defaults, "roots", {}) or {}
+        payload = stamp_payload(
+            {
+                "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
+                "settingsPath": str(SETTINGS_PATH),
+                "ui": {
+                    "html_previews": settings.html_previews,
+                    "html_theme": settings.html_theme,
+                    "collapse_threshold": settings.collapse_threshold,
+                },
+                "auth": {
+                    "credentialPath": str(credential_path) if credential_path else None,
+                    "tokenPath": str(token_path) if token_path else None,
+                    "env": {
+                        "POLYLOGUE_CREDENTIAL_PATH": credential_env,
+                        "POLYLOGUE_TOKEN_PATH": token_env,
+                    },
+                },
+                "outputs": {
+                    "render": str(defaults.output_dirs.render),
+                    "gemini": str(defaults.output_dirs.sync_drive),
+                    "codex": str(defaults.output_dirs.sync_codex),
+                    "claude_code": str(defaults.output_dirs.sync_claude_code),
+                    "chatgpt": str(defaults.output_dirs.import_chatgpt),
+                    "claude": str(defaults.output_dirs.import_claude),
+                    "roots": {label: vars(paths) for label, paths in roots_map.items()},
+                },
+                "inputs": {
+                    "chatgpt": str(CONFIG.exports.chatgpt),
+                    "claude": str(CONFIG.exports.claude),
+                },
+                "index": {
+                    "backend": CONFIG.index.backend if CONFIG.index else "sqlite",
+                    "qdrant": {
+                        "url": CONFIG.index.qdrant_url if CONFIG.index else None,
+                        "api_key": CONFIG.index.qdrant_api_key if CONFIG.index else None,
+                        "collection": CONFIG.index.qdrant_collection if CONFIG.index else None,
+                        "vector_size": CONFIG.index.qdrant_vector_size if CONFIG.index else None,
+                    },
+                },
+                "statePath": str(env.conversations.state_path),
+                "runsDb": str(env.database.resolve_path()),
+            }
+        )
+        print(json.dumps(payload))
+        return
+
+    summary_lines = [
+        f"Config: {CONFIG_PATH or '(default)'}",
+        f"Settings: {SETTINGS_PATH}",
+        "",
+        f"HTML previews: {'on' if settings.html_previews else 'off'}",
+        f"HTML theme: {settings.html_theme}",
+    ]
+    if settings.collapse_threshold is not None:
+        summary_lines.append(f"Collapse threshold: {settings.collapse_threshold}")
+
+    summary_lines.extend(
+        [
+            "",
+            "Auth paths:",
+            f"  credentials: {credential_env or credential_path}",
+            f"  token: {token_env or token_path}",
+        ]
+    )
+
+    summary_lines.extend(
+        [
+            "",
+            "Output directories:",
+            f"  render: {defaults.output_dirs.render}",
+            f"  gemini: {defaults.output_dirs.sync_drive}",
+            f"  codex: {defaults.output_dirs.sync_codex}",
+            f"  claude-code: {defaults.output_dirs.sync_claude_code}",
+            f"  chatgpt: {defaults.output_dirs.import_chatgpt}",
+            f"  claude: {defaults.output_dirs.import_claude}",
+        ]
+    )
+    roots_map = getattr(env.config.defaults, "roots", {}) or {}
+    if roots_map:
+        summary_lines.append("  labeled roots:")
+        for label, paths in roots_map.items():
+            summary_lines.append(f"    {label}: render={paths.render} codex={paths.sync_codex}")
+    summary_lines.extend(
+        [
+            "",
+            f"State DB: {env.conversations.state_path}",
+            f"Runs DB: {env.database.resolve_path()}",
+        ]
+    )
+    ui.summary("Configuration", summary_lines)
+
+
+__all__ = ["run_config_show"]
+

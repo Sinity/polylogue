@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import sys
-from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from polylogue.commands import CommandEnv
 from polylogue.cli.env_cli import run_env_cli
-from polylogue.cli.app import main
+from polylogue.cli.click_app import main
 from polylogue.ui import UI
 from tests.test_cli_integration import _configure_isolated_state
 
@@ -23,7 +23,7 @@ def test_env_cli_json(monkeypatch, tmp_path, capsys):
     env = CommandEnv(ui=DummyUI())
     for path in env.config.defaults.output_dirs.__dict__.values():
         Path(path).mkdir(parents=True, exist_ok=True)
-    args = Namespace(json=True)
+    args = SimpleNamespace(json=True)
     run_env_cli(args, env)
     payload = capsys.readouterr().out
     assert "schemaVersion" in payload

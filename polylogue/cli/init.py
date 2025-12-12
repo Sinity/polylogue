@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 from ..settings import Settings, persist_settings, SETTINGS_PATH
@@ -12,7 +12,7 @@ from ..drive_client import DriveClient
 from ..config import CONFIG, persist_config, IndexConfig, is_config_declarative
 
 
-def run_init_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_init_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     """Run interactive configuration wizard.
 
     Guides user through:

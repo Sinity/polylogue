@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import argparse
 import csv
 import hashlib
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, List, Tuple
 
 from ..commands import CommandEnv
@@ -58,7 +58,7 @@ def _collect_roots(args_dir) -> List[Path]:
     return [path for path in DEFAULT_OUTPUT_ROOTS if path.exists()]
 
 
-def run_attachments_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_attachments_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     sub = getattr(args, "attachments_cmd", None)
     if sub == "stats":
         _run_attachment_stats(args, env)
@@ -69,7 +69,7 @@ def run_attachments_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         raise SystemExit(1)
 
 
-def _run_attachment_stats(args: argparse.Namespace, env: CommandEnv) -> None:
+def _run_attachment_stats(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     use_index = bool(getattr(args, "from_index", False))
     if use_index:
@@ -256,7 +256,7 @@ def _hash_file(path: Path) -> str:
     return h.hexdigest()
 
 
-def _run_attachment_extract(args: argparse.Namespace, env: CommandEnv) -> None:
+def _run_attachment_extract(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     roots = _collect_roots(getattr(args, "dir", None))
     if not roots:
