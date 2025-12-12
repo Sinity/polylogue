@@ -1,11 +1,17 @@
-"""Pure Python UI facade using Questionary and Rich (no external binaries)."""
+"""Terminal UI facade.
+
+Polylogue ships with a small UI layer. In interactive mode we hard-require the
+external helpers provided by the Nix devshell (gum, skim, bat, glow, delta).
+Plain mode falls back to basic stdout prompting.
+"""
 from __future__ import annotations
 
 import difflib
+import subprocess
+import shutil
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Protocol
 
-import questionary
 from pygments import highlight
 from pygments.formatters import TerminalFormatter
 from pygments.lexers import get_lexer_by_name
@@ -177,15 +183,102 @@ class PlainConsoleFacade(ConsoleFacade):
 
 @dataclass
 class InteractiveConsoleFacade(ConsoleFacade):
-    """Interactive console facade using pure Python libraries."""
+    """Deprecated placeholder kept for backwards imports."""
 
-    def __post_init__(self) -> None:
+    def __post_init__(self) -> None:  # pragma: no cover - legacy alias
         self.plain = False
         self.console = Console(no_color=False, force_terminal=True)
 
 
 def create_console_facade(plain: bool) -> ConsoleFacade:
-    """Create a console facade with no external binary dependencies."""
+    """Create a console facade.
+
+    Interactive mode uses gum + friends. Missing deps are treated as a hard
+    failure (no graceful degradation).
+    """
     if plain:
         return PlainConsoleFacade(plain=True)
-    return InteractiveConsoleFacade(plain=False)
+    _ensure_interactive_deps()
+    return GumConsoleFacade(plain=False)
+
+
+_REQUIRED_INTERACTIVE_CMDS = ("gum", "sk", "bat", "glow", "delta")
+
+
+def _ensure_interactive_deps() -> None:
+    missing: List[str] = []
+    for cmd in _REQUIRED_INTERACTIVE_CMDS:
+        if shutil.which(cmd) is None:
+            missing.append(cmd)
+    if missing:
+        raise RuntimeError(
+            "Interactive dependencies missing: "
+            + ", ".join(missing)
+            + ". Enter `nix develop` in the repo to load required helpers."
+        )
+
+
+@dataclass
+class GumConsoleFacade(ConsoleFacade):
+    """Interactive facade backed by gum/skim helpers."""
+
+    def __post_init__(self) -> None:
+        self.plain = False
+        self.console = Console(no_color=False, force_terminal=True)
+
+    def summary(self, title: str, lines: Iterable[str]) -> None:
+        markdown_lines = [f"## {title}"] + [f"- {line}" for line in lines]
+        markdown = "\n".join(markdown_lines) + "\n"
+        proc = subprocess.run(
+            ["gum", "format"],
+            input=markdown,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.strip() or "gum format failed")
+        # gum emits formatted markdown; print verbatim (no rich markup).
+        self.console.print(proc.stdout.rstrip("\n"), markup=False, highlight=False)
+
+    def confirm(self, prompt: str, *, default: bool = True) -> bool:
+        cmd = ["gum", "confirm", "--prompt", prompt]
+        if default:
+            cmd.append("--default")
+        proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
+        if proc.returncode == 0:
+            return True
+        if proc.stderr and "--prompt" in proc.stderr and "unknown" in proc.stderr.lower():
+            # Newer gum expects prompt as a positional argument.
+            retry_cmd = ["gum", "confirm"]
+            if default:
+                retry_cmd.append("--default")
+            retry_cmd.append(prompt)
+            retry = subprocess.run(retry_cmd, text=True, capture_output=True, check=False)
+            return retry.returncode == 0
+        return False
+
+    def choose(self, prompt: str, options: List[str]) -> Optional[str]:
+        if not options:
+            return None
+        proc = subprocess.run(
+            ["sk", "--prompt", prompt],
+            input="\n".join(options),
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return None
+        choice = proc.stdout.strip()
+        return choice if choice else None
+
+    def input(self, prompt: str, *, default: Optional[str] = None) -> Optional[str]:
+        cmd = ["gum", "input", "--prompt", prompt]
+        if default is not None:
+            cmd += ["--value", default]
+        proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
+        if proc.returncode != 0:
+            return default
+        value = proc.stdout.strip()
+        return value or default
