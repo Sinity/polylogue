@@ -30,6 +30,7 @@ def import_claude_code_session(
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> ImportResult:
     from .raw_storage import store_raw_import, mark_parse_success, mark_parse_failed
 
@@ -293,6 +294,7 @@ def import_claude_code_session(
             force=force,
             allow_dirty=allow_dirty,
             attachment_ocr=attachment_ocr,
+            sanitize_html=sanitize_html,
             registrar=registrar,
         )
 

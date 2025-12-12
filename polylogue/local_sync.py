@@ -129,6 +129,7 @@ def _sync_sessions(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> LocalSyncResult:
     if registrar is None:
         state_dir = output_dir / ".polylogue-state"
@@ -143,6 +144,7 @@ def _sync_sessions(
     importer_kwargs = dict(importer_kwargs)
     importer_kwargs.setdefault("registrar", registrar)
     importer_kwargs.setdefault("attachment_ocr", attachment_ocr)
+    importer_kwargs.setdefault("sanitize_html", sanitize_html)
     attachments_total = 0
     attachment_bytes_total = 0
     tokens_total = 0
@@ -460,6 +462,7 @@ def _sync_export_bundles(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -504,6 +507,7 @@ def _sync_export_bundles(
                 force=force,
                 registrar=registrar,
                 attachment_ocr=attachment_ocr,
+                sanitize_html=sanitize_html,
             )
             if results_raw is None:
                 result_list: List[ImportResult] = []
@@ -577,6 +581,7 @@ def sync_codex_sessions(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -601,6 +606,7 @@ def sync_codex_sessions(
         registrar=registrar,
         ui=ui,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
     )
 
 
@@ -619,6 +625,7 @@ def sync_claude_code_sessions(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -643,6 +650,7 @@ def sync_claude_code_sessions(
         registrar=registrar,
         ui=ui,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
     )
 
 
@@ -683,6 +691,7 @@ def sync_chatgpt_exports(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -717,6 +726,7 @@ def sync_chatgpt_exports(
         registrar=registrar,
         ui=ui,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
     )
 
 
@@ -735,6 +745,7 @@ def sync_claude_exports(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -769,6 +780,7 @@ def sync_claude_exports(
         registrar=registrar,
         ui=ui,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
     )
 
 

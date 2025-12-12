@@ -47,6 +47,8 @@ def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             cmd.append("--prune")
         if getattr(args, "attachment_ocr", False):
             cmd.append("--attachment-ocr")
+        if getattr(args, "sanitize_html", False):
+            cmd.append("--sanitize-html")
         env.ui.console.print(" ".join(cmd))
         return
     _run_watch_sessions(args, env, provider)
@@ -139,11 +141,19 @@ def _run_watch_sessions(
                 sessions=session_override,
                 registrar=env.registrar,
                 ui=ui,
+                attachment_ocr=getattr(args, "attachment_ocr", False),
+                sanitize_html=getattr(args, "sanitize_html", False),
             )
         except Exception as exc:  # pragma: no cover - defensive
             console.print(f"[red]{provider.watch_log_title} failed: {exc}")
         else:
-            _log_local_sync(ui, provider.watch_log_title, result, provider=provider.name)
+            _log_local_sync(
+                ui,
+                provider.watch_log_title,
+                result,
+                provider=provider.name,
+                redacted=getattr(args, "sanitize_html", False),
+            )
 
     sync_once()
     if getattr(args, "once", False):
