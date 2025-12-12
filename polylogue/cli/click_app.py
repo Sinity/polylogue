@@ -540,6 +540,14 @@ def config_init(env: CommandEnv, **kwargs) -> None:
     config_cmd.dispatch(args, env)
 
 
+@config.command(name="edit")
+@click.pass_obj
+def config_edit(env: CommandEnv, **kwargs) -> None:
+    """Interactively edit configuration."""
+    args = Namespace(config_cmd="edit", **kwargs)
+    config_cmd.dispatch(args, env)
+
+
 @cli.command()
 @click.argument("subcmd", type=click.Choice(["list", "set", "clear"]))
 @click.option("--command", "command_name", type=str, help="Command name (e.g., search, sync)")

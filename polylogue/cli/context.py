@@ -78,18 +78,23 @@ DEFAULT_CLAUDE_CODE_SYNC_OUT = CONFIG.defaults.output_dirs.sync_claude_code
 DEFAULT_CHATGPT_OUT = CONFIG.defaults.output_dirs.import_chatgpt
 DEFAULT_CLAUDE_OUT = CONFIG.defaults.output_dirs.import_claude
 
-DEFAULT_OUTPUT_ROOTS = list(
-    dict.fromkeys(
-        [
-            DEFAULT_RENDER_OUT,
-            DEFAULT_SYNC_OUT,
-            DEFAULT_CODEX_SYNC_OUT,
-            DEFAULT_CLAUDE_CODE_SYNC_OUT,
-            DEFAULT_CHATGPT_OUT,
-            DEFAULT_CLAUDE_OUT,
-        ]
-    )
-)
+def _collect_output_dirs(dirs) -> list[Path]:
+    return [
+        dirs.render,
+        dirs.sync_drive,
+        dirs.sync_codex,
+        dirs.sync_claude_code,
+        dirs.import_chatgpt,
+        dirs.import_claude,
+    ]
+
+
+_base_output_dirs = _collect_output_dirs(CONFIG.defaults.output_dirs)
+_labeled_output_dirs: list[Path] = []
+for paths in getattr(CONFIG.defaults, "roots", {}).values():
+    _labeled_output_dirs.extend(_collect_output_dirs(paths))
+
+DEFAULT_OUTPUT_ROOTS = list(dict.fromkeys(_base_output_dirs + _labeled_output_dirs))
 
 
 ensure_settings_defaults()

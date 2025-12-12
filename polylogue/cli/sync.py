@@ -52,6 +52,11 @@ def _apply_sync_prefs(args: argparse.Namespace, env: CommandEnv) -> argparse.Nam
     _apply_flag("--once", "once")
     _apply_flag("--attachment-ocr", "attachment_ocr")
     _apply_flag("--offline", "offline")
+    _apply_flag("--sanitize-html", "sanitize_html")
+    if "--root" in sync_prefs and not getattr(args, "root", None):
+        root_label = str(sync_prefs.get("--root") or "").strip()
+        if root_label:
+            args.root = root_label
     return args
 
 
