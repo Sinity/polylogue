@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 from ..archive import Archive
 from ..branching import BranchPlan, MessageRecord
 from ..config import CONFIG
-from ..db import open_connection, replace_branches, replace_messages, upsert_conversation
+from ..db import open_connection, replace_attachments, replace_branches, replace_messages, upsert_conversation
 from ..persistence.database import ConversationDatabase
 from ..persistence.state import ConversationStateRepository
 
@@ -63,6 +63,18 @@ class ConversationRegistrar:
         if not provider or not conversation_id:
             return
 
+        existing_branch: Optional[str] = None
+        try:
+            with open_connection(self.database.resolve_path()) as conn:
+                row = conn.execute(
+                    "SELECT current_branch FROM conversations WHERE provider = ? AND conversation_id = ?",
+                    (provider, conversation_id),
+                ).fetchone()
+                if row is not None:
+                    existing_branch = row["current_branch"]
+        except Exception:
+            existing_branch = None
+
         state_payload: Dict[str, object] = {
             "slug": slug,
             "title": title,
@@ -77,6 +89,8 @@ class ConversationRegistrar:
             "html": html_enabled,
             "dirty": dirty,
         }
+        if existing_branch:
+            state_payload["currentBranch"] = existing_branch
         if extra_state:
             state_payload.update({k: v for k, v in extra_state.items() if v is not None})
         self.state_repo.upsert(provider, conversation_id, state_payload)
@@ -85,6 +99,8 @@ class ConversationRegistrar:
             **state_payload,
             "tokens": tokens,
             "words": words,
+            "token_count": tokens,
+            "word_count": words,
             "attachment_bytes": attachment_bytes,
             "dirty": dirty,
         }
@@ -96,7 +112,7 @@ class ConversationRegistrar:
                 conversation_id=conversation_id,
                 slug=slug,
                 title=title,
-                current_branch=None,
+                current_branch=existing_branch,
                 root_message_id=None,
                 last_updated=updated_at,
                 content_hash=content_hash,
@@ -110,6 +126,7 @@ class ConversationRegistrar:
         provider: str,
         conversation_id: str,
         slug: str,
+        title: Optional[str] = None,
         plan: BranchPlan,
         branch_stats: Dict[str, Dict[str, object]],
         records_by_id: Dict[str, MessageRecord],
@@ -151,30 +168,23 @@ class ConversationRegistrar:
 
         with open_connection(self.database.resolve_path()) as conn:
             if plan:
-                conn.execute(
-                    """
-                    UPDATE conversations
-                       SET current_branch = ?,
-                           root_message_id = COALESCE(?, root_message_id),
-                           slug = COALESCE(?, slug),
-                           metadata_json = json_set(
-                               COALESCE(metadata_json, '{}'),
-                               '$.token_count', ?,
-                               '$.word_count', ?,
-                               '$.attachment_bytes', ?
-                           )
-                     WHERE provider = ? AND conversation_id = ?
-                    """,
-                    (
-                        plan.canonical_branch_id,
-                        root_message_id,
-                        slug,
-                        total_tokens,
-                        total_words,
-                        attachment_bytes,
-                        provider,
-                        conversation_id,
-                    ),
+                # Ensure conversation exists before updating/inserting branches
+                from ..db import upsert_conversation
+                upsert_conversation(
+                    conn,
+                    provider=provider,
+                    conversation_id=conversation_id,
+                    slug=slug,
+                    title=title,
+                    current_branch=plan.canonical_branch_id,
+                    root_message_id=root_message_id,
+                    last_updated=None,
+                    content_hash=None,
+                    metadata={
+                        "token_count": total_tokens,
+                        "word_count": total_words,
+                        "attachment_bytes": attachment_bytes,
+                    },
                 )
 
             replace_branches(
@@ -195,19 +205,50 @@ class ConversationRegistrar:
                     content_hash = record.content_hash
                     if not content_hash and record.text:
                         content_hash = hashlib.sha256(record.text.encode("utf-8")).hexdigest()
+                    attachment_names = ",".join(
+                        sorted({name for name, _ in record.links})
+                    ) if record.links else None
+
+                    # Schema v5: Extract structured content
+                    content_text = record.text if record.text else None
+                    content_json = None
+                    model = None
+
+                    # Try to extract model from chunk/metadata
+                    if isinstance(record.chunk, dict):
+                        model = record.chunk.get("model") or record.metadata.get("model")
+                        # Check if this is a tool call or structured content
+                        if record.role in ("tool_call", "function_call"):
+                            content_json = json.dumps(record.chunk.get("arguments", record.chunk), ensure_ascii=False)
+                        elif "tool_calls" in record.chunk or "function_call" in record.chunk:
+                            content_json = json.dumps({
+                                "tool_calls": record.chunk.get("tool_calls"),
+                                "function_call": record.chunk.get("function_call"),
+                            }, ensure_ascii=False)
+
+                    # Schema v5: Mark leaf nodes
+                    is_leaf = 0
+                    if idx == len(branch_records) - 1:
+                        is_leaf = 1
+
                     messages.append(
                         {
                             "message_id": record.message_id,
                             "parent_id": record.parent_id,
                             "role": record.role,
+                            "model": model,
                             "position": idx,
                             "timestamp": record.timestamp,
                             "token_count": record.token_count,
                             "word_count": record.word_count,
                             "attachment_count": record.attachments,
+                            "attachment_names": attachment_names,
+                            "content_text": content_text,
+                            "content_json": content_json,
                             "rendered_text": record.text,
                             "content_hash": content_hash,
                             "raw_json": json.dumps(record.chunk, ensure_ascii=False),
+                            "is_leaf": is_leaf,
                             "metadata": record.metadata,
                         }
                     )
@@ -220,12 +261,36 @@ class ConversationRegistrar:
                 )
             conn.commit()
 
+    def record_attachments(
+        self,
+        *,
+        provider: str,
+        conversation_id: str,
+        attachments: List[Dict[str, object]],
+    ) -> None:
+        if not provider or not conversation_id:
+            return
+        with open_connection(self.database.resolve_path()) as conn:
+            replace_attachments(
+                conn,
+                provider=provider,
+                conversation_id=conversation_id,
+                attachments=attachments,
+            )
+            conn.commit()
 
-def create_default_registrar() -> ConversationRegistrar:
-    """Factory helper to build a registrar with default repositories."""
 
+def create_default_registrar(database_path: Optional[Path] = None) -> ConversationRegistrar:
+    """Factory helper to build a registrar with default repositories.
+
+    When used outside the full CLI environment (e.g., unit tests calling
+    local sync helpers directly), callers may not have re-rooted XDG paths.
+    Providing a database_path keeps state isolated to that location.
+    """
+    database = ConversationDatabase(path=database_path)
+    state_repo = ConversationStateRepository(database=database)
     return ConversationRegistrar(
-        state_repo=ConversationStateRepository(),
-        database=ConversationDatabase(),
+        state_repo=state_repo,
+        database=database,
         archive=Archive(CONFIG),
     )

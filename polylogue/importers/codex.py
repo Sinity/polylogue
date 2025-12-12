@@ -32,12 +32,16 @@ def import_codex_session(
     base_dir: Path = _DEFAULT_BASE,
     output_dir: Path,
     collapse_threshold: int = 24,
+    collapse_thresholds: Optional[Dict[str, int]] = None,
     html: bool = False,
     html_theme: str = "light",
     force: bool = False,
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
+    attachment_ocr: bool = False,
 ) -> ImportResult:
+    from .raw_storage import store_raw_import, mark_parse_success, mark_parse_failed
+
     registrar = registrar or create_default_registrar()
     base_dir = base_dir.expanduser()
     candidate = Path(session_id)
@@ -50,6 +54,18 @@ def import_codex_session(
         session_path = max(
             matches,
             key=lambda p: (p.stat().st_mtime if p.exists() else 0.0, str(p)),
+        )
+
+    # Store raw session data before parsing
+    data_hash = None
+    if session_path.exists():
+        raw_data = session_path.read_bytes()
+        # Use session_id as conversation_id (each session file = one conversation)
+        data_hash = store_raw_import(
+            data=raw_data,
+            provider="codex",
+            conversation_id=session_id,
+            source_path=session_path,
         )
 
     attachments: List[AttachmentInfo] = []
@@ -298,34 +314,49 @@ def import_codex_session(
         "sessionPath": str(session_path),
     }
 
-    return process_conversation(
-        provider="codex",
-        conversation_id=session_id,
-        slug=slug,
-        title=title,
-        message_records=message_records,
-        attachments=attachments,
-        canonical_leaf_id=message_records[-1].message_id if message_records else None,
-        collapse_threshold=collapse_threshold,
-        html=html,
-        html_theme=html_theme,
-        output_dir=output_dir,
-        extra_yaml=extra_yaml,
-        extra_state={
-            "sessionPath": str(session_path),
-        },
-        source_file_id=session_id,
-        modified_time=None,
-        created_time=None,
-        run_settings=metadata,
-        source_mime="application/jsonl",
-        source_size=session_path.stat().st_size,
-        attachment_policy={
-            "previewLines": PREVIEW_LINES,
-            "lineThreshold": LINE_THRESHOLD,
-            "charThreshold": CHAR_THRESHOLD,
-        },
-        force=force,
-        allow_dirty=allow_dirty,
-        registrar=registrar,
-    )
+    try:
+        result = process_conversation(
+            provider="codex",
+            conversation_id=session_id,
+            slug=slug,
+            title=title,
+            message_records=message_records,
+            attachments=attachments,
+            canonical_leaf_id=message_records[-1].message_id if message_records else None,
+            collapse_threshold=collapse_threshold,
+            collapse_thresholds=collapse_thresholds,
+            html=html,
+            html_theme=html_theme,
+            output_dir=output_dir,
+            extra_yaml=extra_yaml,
+            extra_state={
+                "sessionPath": str(session_path),
+            },
+            source_file_id=session_id,
+            modified_time=None,
+            created_time=None,
+            run_settings=metadata,
+            source_mime="application/jsonl",
+            source_size=session_path.stat().st_size,
+            attachment_policy={
+                "previewLines": PREVIEW_LINES,
+                "lineThreshold": LINE_THRESHOLD,
+                "charThreshold": CHAR_THRESHOLD,
+            },
+            force=force,
+            allow_dirty=allow_dirty,
+            attachment_ocr=attachment_ocr,
+            registrar=registrar,
+        )
+
+        # Mark parse success if we stored raw data
+        if data_hash:
+            mark_parse_success(data_hash)
+
+        return result
+    except Exception:
+        # Mark parse failure if we stored raw data
+        if data_hash:
+            import traceback
+            mark_parse_failed(data_hash, traceback.format_exc())
+        raise

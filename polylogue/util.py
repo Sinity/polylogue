@@ -8,28 +8,43 @@ import subprocess
 import sys
 import tempfile
 import unicodedata
+import shutil
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
-import pyperclip
-from pyperclip import PyperclipException
-
 from .db import open_connection, record_run
 from .paths import DATA_HOME
 from .persistence.state import ConversationStateRepository
 
 
-CODEX_SESSIONS_ROOT = Path(
-    os.environ.get("POLYLOGUE_CODEX_SESSIONS", str(DATA_HOME / "codex" / "sessions"))
-).expanduser()
+def _resolve_path(env_var: str, home_default: Path, xdg_default: Path) -> Path:
+    env_value = os.environ.get(env_var)
+    if env_value:
+        return Path(env_value).expanduser()
+    if home_default.exists():
+        return home_default
+    return xdg_default
 
 
-CLAUDE_CODE_PROJECT_ROOT = Path(
-    os.environ.get("POLYLOGUE_CLAUDE_CODE_PROJECTS", str(DATA_HOME / "claude" / "projects"))
-).expanduser()
+DEFAULT_CODEX_HOME = Path.home() / ".codex" / "sessions"
+DEFAULT_CLAUDE_CODE_HOME = Path.home() / ".claude" / "projects"
+
+
+CODEX_SESSIONS_ROOT = _resolve_path(
+    "POLYLOGUE_CODEX_SESSIONS",
+    DEFAULT_CODEX_HOME,
+    DATA_HOME / "codex" / "sessions",
+)
+
+
+CLAUDE_CODE_PROJECT_ROOT = _resolve_path(
+    "POLYLOGUE_CLAUDE_CODE_PROJECTS",
+    DEFAULT_CLAUDE_CODE_HOME,
+    DATA_HOME / "claude" / "projects",
+)
 
 
 def colorize(text: str, color: str) -> str:
@@ -399,6 +414,8 @@ def add_run(record: Dict[str, Any]) -> None:
     out = payload.get("out")
     provider = payload.get("provider")
     branch_id = payload.get("branch_id")
+    profile_io = bool(payload.get("profile_io"))
+    profile_sql = bool(payload.get("profile_sql"))
     metadata = {
         key: value
         for key, value in payload.items()
@@ -417,6 +434,8 @@ def add_run(record: Dict[str, Any]) -> None:
             "out",
             "provider",
             "branch_id",
+            "profile_io",
+            "profile_sql",
         }
     }
     with open_connection(None) as conn:
@@ -438,6 +457,29 @@ def add_run(record: Dict[str, Any]) -> None:
             metadata=metadata or None,
         )
         conn.commit()
+
+
+def preflight_disk_requirement(
+    *,
+    projected_bytes: int,
+    limit_gib: Optional[float],
+    ui=None,
+) -> None:
+    if limit_gib is None:
+        return
+    try:
+        stat = shutil.disk_usage(Path.cwd())
+        free_bytes = stat.free
+    except Exception:
+        free_bytes = None
+    threshold_bytes = int(limit_gib * (1024 ** 3))
+    if projected_bytes > threshold_bytes:
+        raise SystemExit(f"Projected disk use {projected_bytes / (1024 ** 3):.2f} GiB exceeds --max-disk {limit_gib} GiB")
+    if free_bytes is not None and projected_bytes > free_bytes:
+        msg = f"Projected disk use {projected_bytes / (1024 ** 3):.2f} GiB exceeds free space {free_bytes / (1024 ** 3):.2f} GiB"
+        if ui and hasattr(ui, "console"):
+            ui.console.print(f"[red]{msg}")
+        raise SystemExit(msg)
 
 
 def write_delta_diff(old_path: Path, new_path: Path, *, suffix: str = ".diff.txt") -> Optional[Path]:
@@ -502,18 +544,63 @@ def current_utc_timestamp() -> str:
 
 
 def read_clipboard_text() -> Optional[str]:
+    """Read text from clipboard using platform-specific tools."""
+    # Determine platform-specific clipboard command
+    if sys.platform == "darwin":
+        cmd = ["pbpaste"]
+    elif sys.platform == "win32":
+        # Windows: Use PowerShell
+        cmd = ["powershell.exe", "-command", "Get-Clipboard"]
+    else:
+        # Linux: Try xclip, then xsel, then wl-paste (Wayland)
+        for tool in ["xclip", "xsel", "wl-paste"]:
+            if shutil.which(tool):
+                if tool == "xclip":
+                    cmd = ["xclip", "-selection", "clipboard", "-o"]
+                elif tool == "xsel":
+                    cmd = ["xsel", "--clipboard", "--output"]
+                else:  # wl-paste
+                    cmd = ["wl-paste"]
+                break
+        else:
+            logger.debug("No clipboard tool found (xclip, xsel, or wl-paste)")
+            return None
+
     try:
-        text = pyperclip.paste()
-    except PyperclipException:  # pragma: no cover - clipboard backend unavailable
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout:
+            return result.stdout
         return None
-    if not text:
+    except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired):
+        logger.debug(f"Failed to read clipboard with {cmd[0]}")
         return None
-    return text
 
 
 def write_clipboard_text(text: str) -> bool:
+    """Write text to clipboard using platform-specific tools."""
+    # Determine platform-specific clipboard command
+    if sys.platform == "darwin":
+        cmd = ["pbcopy"]
+    elif sys.platform == "win32":
+        cmd = ["powershell.exe", "-command", f"Set-Clipboard -Value '{text}'"]
+    else:
+        # Linux: Try xclip, then xsel, then wl-copy (Wayland)
+        for tool in ["xclip", "xsel", "wl-copy"]:
+            if shutil.which(tool):
+                if tool == "xclip":
+                    cmd = ["xclip", "-selection", "clipboard"]
+                elif tool == "xsel":
+                    cmd = ["xsel", "--clipboard", "--input"]
+                else:  # wl-copy
+                    cmd = ["wl-copy"]
+                break
+        else:
+            logger.debug("No clipboard tool found (xclip, xsel, or wl-copy)")
+            return False
+
     try:
-        pyperclip.copy(text)
-        return True
-    except PyperclipException:  # pragma: no cover - clipboard backend unavailable
+        result = subprocess.run(cmd, input=text, text=True, capture_output=True, timeout=5)
+        return result.returncode == 0
+    except (subprocess.SubprocessError, FileNotFoundError, subprocess.TimeoutExpired):
+        logger.debug(f"Failed to write clipboard with {cmd[0]}")
         return False
