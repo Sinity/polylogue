@@ -13,6 +13,7 @@ from ..settings import (
     persist_settings,
 )
 from ..config import CONFIG, CONFIG_PATH, persist_config
+from ..schema import stamp_payload
 
 
 def _settings_snapshot(settings) -> dict:
@@ -102,7 +103,7 @@ def run_settings_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
     payload = _settings_snapshot(settings)
     if getattr(args, "json", False):
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(stamp_payload(payload), indent=2))
         return
 
     summary_lines = [
