@@ -524,6 +524,27 @@ def _sync_export_bundles(
             if not export_path.exists():
                 tracker.advance()
                 continue
+            bundle_hash = None
+            bundle_provider = f"{provider}-export"
+            export_id = str(export_path)
+            if not force and not prune:
+                try:
+                    from .importers.raw_storage import compute_hash
+
+                    target = export_path
+                    if export_path.is_dir():
+                        conv_file = export_path / "conversations.json"
+                        if conv_file.exists() and conv_file.is_file():
+                            target = conv_file
+                    bundle_hash = compute_hash(target.read_bytes())
+                    state = registrar.get_state(bundle_provider, export_id)
+                    if isinstance(state, dict) and state.get("bundleHash") == bundle_hash:
+                        skipped_exports += 1
+                        tracker.advance()
+                        continue
+                except Exception:
+                    bundle_hash = None
+
             results_raw = import_fn(
                 export_path=export_path,
                 output_dir=output_dir,
@@ -537,6 +558,19 @@ def _sync_export_bundles(
                 attachment_ocr=attachment_ocr,
                 sanitize_html=sanitize_html,
             )
+            if bundle_hash:
+                from .util import current_utc_timestamp
+
+                registrar.state_repo.upsert(
+                    bundle_provider,
+                    export_id,
+                    {
+                        "bundleHash": bundle_hash,
+                        "bundlePath": export_id,
+                        "lastImported": current_utc_timestamp(),
+                    },
+                )
+
             if results_raw is None:
                 result_list: List[ImportResult] = []
             elif isinstance(results_raw, ImportResult):
