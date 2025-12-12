@@ -63,6 +63,18 @@ class ConversationRegistrar:
         if not provider or not conversation_id:
             return
 
+        existing_branch: Optional[str] = None
+        try:
+            with open_connection(self.database.resolve_path()) as conn:
+                row = conn.execute(
+                    "SELECT current_branch FROM conversations WHERE provider = ? AND conversation_id = ?",
+                    (provider, conversation_id),
+                ).fetchone()
+                if row is not None:
+                    existing_branch = row["current_branch"]
+        except Exception:
+            existing_branch = None
+
         state_payload: Dict[str, object] = {
             "slug": slug,
             "title": title,
@@ -77,6 +89,8 @@ class ConversationRegistrar:
             "html": html_enabled,
             "dirty": dirty,
         }
+        if existing_branch:
+            state_payload["currentBranch"] = existing_branch
         if extra_state:
             state_payload.update({k: v for k, v in extra_state.items() if v is not None})
         self.state_repo.upsert(provider, conversation_id, state_payload)
@@ -85,6 +99,8 @@ class ConversationRegistrar:
             **state_payload,
             "tokens": tokens,
             "words": words,
+            "token_count": tokens,
+            "word_count": words,
             "attachment_bytes": attachment_bytes,
             "dirty": dirty,
         }
@@ -96,7 +112,7 @@ class ConversationRegistrar:
                 conversation_id=conversation_id,
                 slug=slug,
                 title=title,
-                current_branch=None,
+                current_branch=existing_branch,
                 root_message_id=None,
                 last_updated=updated_at,
                 content_hash=content_hash,
@@ -264,11 +280,17 @@ class ConversationRegistrar:
             conn.commit()
 
 
-def create_default_registrar() -> ConversationRegistrar:
-    """Factory helper to build a registrar with default repositories."""
+def create_default_registrar(database_path: Optional[Path] = None) -> ConversationRegistrar:
+    """Factory helper to build a registrar with default repositories.
 
+    When used outside the full CLI environment (e.g., unit tests calling
+    local sync helpers directly), callers may not have re-rooted XDG paths.
+    Providing a database_path keeps state isolated to that location.
+    """
+    database = ConversationDatabase(path=database_path)
+    state_repo = ConversationStateRepository(database=database)
     return ConversationRegistrar(
-        state_repo=ConversationStateRepository(),
-        database=ConversationDatabase(),
+        state_repo=state_repo,
+        database=database,
         archive=Archive(CONFIG),
     )
