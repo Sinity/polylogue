@@ -59,6 +59,13 @@ def setup_parser(subparsers: argparse._SubParsersAction, _add_command_parser, ad
     )
     p_config_show.add_argument("--json", action="store_true", help="Emit environment info as JSON")
 
+    # config edit
+    config_sub.add_parser(
+        "edit",
+        help="Interactively edit configuration",
+        description="Interactive config editor for paths, defaults, and index settings",
+    )
+
 
 def dispatch(args: argparse.Namespace, env: CommandEnv) -> None:
     """Execute config command.
@@ -78,6 +85,9 @@ def dispatch(args: argparse.Namespace, env: CommandEnv) -> None:
     elif config_cmd == "set":
         from ..settings_cli import run_settings_cli
         run_settings_cli(args, env)
+    elif config_cmd == "edit":
+        from ..config_editor import run_config_edit_cli
+        run_config_edit_cli(args, env)
     else:  # show
         _run_config_show(args, env)
 

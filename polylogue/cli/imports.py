@@ -48,6 +48,8 @@ def _apply_import_prefs(args: argparse.Namespace, env: CommandEnv) -> None:
         args.html_mode = "on" if _truthy(import_prefs["--html"]) else "off"
     if "--attachment-ocr" in import_prefs and _truthy(import_prefs["--attachment-ocr"]):
         setattr(args, "attachment_ocr", True)
+    if "--sanitize-html" in import_prefs and _truthy(import_prefs["--sanitize-html"]):
+        setattr(args, "sanitize_html", True)
 
 
 class ImportExecuteStage:
