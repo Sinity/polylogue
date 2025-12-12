@@ -267,54 +267,14 @@ def _legacy_candidates(root: Path) -> List[Path]:
 
 
 def run_help_cli(args: argparse.Namespace, env: CommandEnv) -> None:
-    parser = build_parser()
+    import click
+
+    from .click_app import _run_click_help, cli as click_cli
+
     topic = getattr(args, "topic", None)
-    show_examples_only = getattr(args, "examples", False) and not topic
-    entries = _command_entries(parser)
-    choices = {name: sub for name, sub in _collect_subparser_map(parser).items() if not name.startswith("_")}
-    console = env.ui.console
-
-    if topic:
-        subparser = choices.get(topic)
-        if subparser is None:
-            console.print(f"[red]Unknown command: {topic}")
-            available = ", ".join(sorted(choices)) or "<none>"
-            console.print(f"Available commands: {available}")
-            raise SystemExit(1)
-
-        console.print(f"[cyan]polylogue {topic}[/cyan]")
-        subparser.print_help()
-        return
-
-    if show_examples_only:
-        console.print("[bold cyan]EXAMPLES[/bold cyan]\n")
-        for name in sorted(COMMAND_EXAMPLES):
-            examples = COMMAND_EXAMPLES[name]
-            if not examples:
-                continue
-            console.print(f"[green]{name}[/green]")
-            for desc, cmdline in examples:
-                console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
-            console.print("")
-        return
-
-    # No topic specified - show general help with quick examples
-    parser.print_help()
-    _print_command_listing(console, getattr(env.ui, "plain", False), entries)
-
-    console.print("\n[bold cyan]QUICK EXAMPLES[/bold cyan]")
-    console.print("[dim]Run 'polylogue help <command>' for full examples and details.[/dim]\n")
-
-    key_commands = ["render", "sync", "import", "search", "browse"]
-    for cmd in key_commands:
-        if cmd not in COMMAND_EXAMPLES:
-            continue
-        examples = COMMAND_EXAMPLES[cmd]
-        if not examples:
-            continue
-        # Show first example for each key command
-        desc, cmdline = examples[0]
-        console.print(f"  [dim]{desc}:[/dim] [green]{cmdline}[/green]")
+    examples = getattr(args, "examples", False)
+    ctx = click.Context(click_cli)
+    _run_click_help(env, ctx, topic, examples)
 
 
 def _bash_dynamic_script() -> str:
@@ -412,8 +372,15 @@ def _zsh_dynamic_script() -> str:
 
 
 def run_completions_cli(args: argparse.Namespace, env: CommandEnv) -> None:
-    parser = build_parser()
-    entries = _command_entries(parser)
+    from .click_app import cli as click_cli
+
+    entries: List[Tuple[str, str]] = []
+    for name, command in sorted(click_cli.commands.items()):
+        if getattr(command, "hidden", False):
+            continue
+        desc = command.help or command.short_help or (command.__doc__ or "")
+        description = " ".join((desc or "").split())
+        entries.append((name, description))
     commands = [name for name, _ in entries]
     descriptions = {name: desc for name, desc in entries if desc}
     if args.shell == "zsh":
@@ -425,7 +392,9 @@ def run_completions_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
 def run_complete_cli(args: argparse.Namespace, env: Optional[CommandEnv] = None) -> None:
     env = env or CommandEnv(ui=create_ui(True))
-    engine = CompletionEngine(env, build_parser())
+    from .click_app import cli as click_cli
+
+    engine = CompletionEngine(env, click_cli)
     completions = engine.complete(args.shell, args.cword, args.words or [])
     for entry in completions:
         if entry.description:
@@ -1608,6 +1577,7 @@ def _configure_status_parser(parser: argparse.ArgumentParser, *, require_provide
 
 
 def build_parser() -> argparse.ArgumentParser:
+    raise RuntimeError("argparse CLI has been removed; use polylogue.cli.click_app")
     _register_default_commands()
     parser = argparse.ArgumentParser(description="Polylogue CLI", formatter_class=PARSER_FORMATTER)
     parser.add_argument("--version", action="version", version=f"polylogue {CLI_VERSION}")
@@ -1735,6 +1705,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    from .click_app import main as click_main
+
+    click_main()
+    return
     parser = build_parser()
     args = parser.parse_args()
     plain_mode = _should_use_plain(args)

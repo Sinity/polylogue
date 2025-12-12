@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from polylogue.commands import CommandEnv, status_command
-from polylogue.cli import build_parser
 from polylogue.cli.status import run_status_cli
 from polylogue import util
 
@@ -102,8 +101,7 @@ def test_status_cli_parser_summary(state_env, capsys):
             "timestamp": "2024-04-01T00:00:00Z",
         }
     )
-    parser = build_parser()
-    args = parser.parse_args(["status", "--providers", "render", "--summary", "-", "--summary-only"])
+    args = SimpleNamespace(providers="render", summary="-", summary_only=True)
     run_status_cli(args, CommandEnv(ui=DummyUI()))
     payload = json.loads(capsys.readouterr().out)
     assert list(payload["providerSummary"].keys()) == ["render"]

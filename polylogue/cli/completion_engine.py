@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import argparse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
-from ..local_sync import LOCAL_SYNC_PROVIDER_NAMES, get_local_provider
+import click
+
 from ..commands import CommandEnv
+from ..local_sync import LOCAL_SYNC_PROVIDER_NAMES, get_local_provider
 
 
 @dataclass
@@ -15,15 +16,15 @@ class Completion:
     description: str = ""
 
 
-def _top_level_commands() -> List[Tuple[str, str]]:
-    from .app import COMMAND_REGISTRY  # avoid circular import at module load
-
+def _click_command_entries(root: click.Group) -> List[Tuple[str, str]]:
     entries: List[Tuple[str, str]] = []
-    for name, info in COMMAND_REGISTRY._commands.items():  # pylint: disable=protected-access
-        if name.startswith("_"):
+    for name, command in sorted(root.commands.items()):
+        if getattr(command, "hidden", False):
             continue
-        entries.append((name, info.help_text or ""))
-    return sorted(entries, key=lambda item: item[0])
+        desc = command.help or command.short_help or (command.__doc__ or "")
+        description = " ".join((desc or "").split())
+        entries.append((name, description))
+    return entries
 
 
 def _list_provider_names() -> List[str]:
@@ -31,9 +32,9 @@ def _list_provider_names() -> List[str]:
 
 
 class CompletionEngine:
-    def __init__(self, env: CommandEnv, parser: argparse.ArgumentParser) -> None:
+    def __init__(self, env: CommandEnv, root: click.Group) -> None:
         self.env = env
-        self.parser = parser
+        self.root = root
 
     def complete(self, shell: str, cword: int, words: Sequence[str]) -> List[Completion]:
         args = list(words)
@@ -71,7 +72,7 @@ class CompletionEngine:
         return []
 
     def _complete_commands(self) -> List[Completion]:
-        return [Completion(value=name, description=desc) for name, desc in _top_level_commands()]
+        return [Completion(value=name, description=desc) for name, desc in _click_command_entries(self.root)]
 
     def _complete_sync(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
         if current_index == 1 and (not current_word or not current_word.startswith("-")):
@@ -197,31 +198,29 @@ class CompletionEngine:
         return [Completion("--shell", "Target shell (bash/zsh/fish)")]
 
     def _option_completions(self, command: str) -> List[Completion]:
-        parser = self._resolve_parser_for_command(command)
-        if parser is None:
+        click_command = self._resolve_command_for_path(command)
+        if click_command is None:
             return []
         pairs: List[Completion] = []
-        for action in parser._actions:
-            if not getattr(action, "option_strings", None):
+        for param in click_command.params:
+            if not isinstance(param, click.Option):
                 continue
-            help_text = self._format_action_help(action)
-            for opt in action.option_strings:
+            help_text = self._format_option_help(param)
+            for opt in list(param.opts) + list(getattr(param, "secondary_opts", [])):
                 pairs.append(Completion(opt, help_text))
         return pairs
 
-    def _format_action_help(self, action: argparse.Action) -> str:
-        help_text = (action.help or "").replace("\n", " ").strip()
-        default = getattr(action, "default", None)
-        show_default = default is not argparse.SUPPRESS
-        if isinstance(default, str) and not default:
-            show_default = False
-        if default in {None, False} and not isinstance(default, bool):
-            show_default = False
+    def _format_option_help(self, option: click.Option) -> str:
+        help_text = (option.help or "").replace("\n", " ").strip()
+        default = option.default
+        show_default = option.show_default
+        if show_default is None:
+            show_default = default not in {None, False, ""}
         if not show_default:
             return help_text
         if isinstance(default, bool):
             default_text = "on" if default else "off"
-        elif isinstance(default, (list, tuple)):
+        elif isinstance(default, (list, tuple, set)):
             default_text = ", ".join(str(value) for value in default) or "[]"
         else:
             default_text = str(default)
@@ -229,29 +228,21 @@ class CompletionEngine:
             return f"{help_text} (default: {default_text})"
         return f"(default: {default_text})"
 
-    def _resolve_parser_for_command(self, command: str) -> argparse.ArgumentParser | None:
-        parser = self.parser
+    def _resolve_command_for_path(self, command: str) -> click.Command | None:
         parts = command.split()
         if not parts:
             return None
-        # First part should be a top-level command
-        first = parts[0]
-        for action in parser._actions:
-            if isinstance(action, argparse._SubParsersAction) and first in action.choices:
-                parser = action.choices[first]
-                break
-        else:
-            return None
-        for part in parts[1:]:
-            matched = False
-            for action in parser._actions:
-                if isinstance(action, argparse._SubParsersAction) and part in action.choices:
-                    parser = action.choices[part]
-                    matched = True
-                    break
-            if not matched:
-                return parser
-        return parser
+        ctx = click.Context(self.root)
+        cmd: click.Command = self.root
+        for part in parts:
+            if not isinstance(cmd, click.MultiCommand):
+                return cmd
+            next_cmd = cmd.get_command(ctx, part)
+            if next_cmd is None:
+                return None
+            cmd = next_cmd
+            ctx = click.Context(cmd, info_name=part, parent=ctx)
+        return cmd
 
     def _provider_completions(self) -> List[Completion]:
         providers = sorted({provider for provider, *_ in self.env.conversations.iter_state()})
