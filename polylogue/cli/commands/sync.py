@@ -56,6 +56,11 @@ def setup_parser(subparsers: argparse._SubParsersAction, _add_command_parser, ad
         action="store_true",
         help="Attempt OCR on image attachments when indexing attachment text",
     )
+    p.add_argument(
+        "--sanitize-html",
+        action="store_true",
+        help="Mask emails/keys/tokens in synced Markdown/HTML outputs",
+    )
 
     # Common flags
     add_helpers["dry_run_option"](p)

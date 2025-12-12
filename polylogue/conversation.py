@@ -330,6 +330,7 @@ def process_conversation(
     attachment_policy,
     force: bool,
     allow_dirty: bool = False,
+    sanitize_html: bool = False,
     attachment_ocr: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
     repository: Optional[ConversationRepository] = None,
@@ -489,6 +490,7 @@ def process_conversation(
         attachment_policy=attachment_policy,
         force=force,
         allow_dirty=allow_dirty,
+        sanitize=sanitize_html,
     )
 
     # Write per-branch transcripts for the branch explorer / legacy workflows.

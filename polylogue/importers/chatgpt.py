@@ -173,6 +173,7 @@ def import_chatgpt_export(
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> List[ImportResult]:
     """Import ChatGPT export to database.
 
@@ -230,6 +231,7 @@ def import_chatgpt_export(
                                 allow_dirty=allow_dirty,
                                 registrar=registrar,
                                 attachment_ocr=attachment_ocr,
+                                sanitize_html=sanitize_html,
                             )
                         )
                         if raw_hash:
@@ -298,6 +300,7 @@ def _render_chatgpt_conversation(
     allow_dirty: bool,
     registrar: Optional[ConversationRegistrar],
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
     conv_id = conv.get("id") or conv.get("conversation_id") or "chat"
@@ -437,6 +440,7 @@ def _render_chatgpt_conversation(
         force=force,
         allow_dirty=allow_dirty,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
         registrar=registrar,
     )
 
