@@ -5,10 +5,11 @@ import sqlite3
 from pathlib import Path
 from typing import List
 
-from .db import DB_PATH
+from .db import default_db_path
 
 
-def verify_sqlite_indexes(db_path: Path = DB_PATH, *, attempt_rebuild: bool = True) -> List[str]:
+def verify_sqlite_indexes(db_path: Path | None = None, *, attempt_rebuild: bool = True) -> List[str]:
+    db_path = db_path or default_db_path()
     issues: List[str] = []
     conn = sqlite3.connect(db_path)
     try:
