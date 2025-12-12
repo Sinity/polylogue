@@ -497,7 +497,7 @@ def search_command(options: SearchOptions, env: Optional[CommandEnv] = None) -> 
 
 
 def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
-    from .cli.arg_helpers import PathPolicy, resolve_path
+    from .cli.path_policy import PathPolicy, resolve_path
 
     ui = env.ui
     output_dir = options.output_dir
@@ -617,7 +617,7 @@ def list_command(options: ListOptions, env: CommandEnv) -> ListResult:
 
 
 def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
-    from .cli.arg_helpers import PathPolicy, resolve_path
+    from .cli.path_policy import PathPolicy, resolve_path
 
     drive = _ensure_drive(env)
     folder_id = options.folder_id or drive.resolve_folder_id(options.folder_name, options.folder_id)

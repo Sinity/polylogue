@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, List, Optional
 
 from ..commands import CommandEnv
@@ -205,7 +205,7 @@ def _edit_labeled_roots(env: CommandEnv) -> None:
             _persist_all(env)
 
 
-def run_config_edit_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_config_edit_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     if ui.plain:
         ui.console.print("[red]config edit is interactive-only; rerun in a TTY or pass --interactive.")
@@ -252,4 +252,3 @@ def run_config_edit_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 __all__ = ["run_config_edit_cli"]
-

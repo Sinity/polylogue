@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from polylogue.cli.settings_cli import run_settings_cli
 from polylogue.commands import CommandEnv
@@ -34,7 +34,7 @@ def _make_args(**overrides):
         "input_root": None,
     }
     defaults.update(overrides)
-    return argparse.Namespace(**defaults)
+    return SimpleNamespace(**defaults)
 
 
 def test_run_settings_cli_updates_store(tmp_path, monkeypatch):
