@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .branching import BranchPlan, BranchInfo, MessageRecord, build_branch_plan
 from .importers.base import ImportResult
-from .render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
+from .render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks, per_chunk_remote_links
 from .repository import ConversationRepository
 from .services.conversation_registrar import ConversationRegistrar
 from .services.attachment_text import (
@@ -228,6 +228,66 @@ def _render_markdown_document(
     )
 
 
+def _write_branch_documents(
+    *,
+    plan: BranchPlan,
+    records_by_id: Dict[str, MessageRecord],
+    conversation_dir: Path,
+    title: str,
+    source_file_id: Optional[str],
+    modified_time: Optional[str],
+    created_time: Optional[str],
+    run_settings: Optional[Dict[str, object]],
+    source_mime: Optional[str],
+    source_size: Optional[int],
+    collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]],
+    extra_yaml: Optional[Dict[str, object]],
+    attachments: Optional[List[AttachmentInfo]],
+    citations: Optional[List[Any]],
+) -> None:
+    branches_root = conversation_dir / "branches"
+    branches_root.mkdir(parents=True, exist_ok=True)
+    for branch_id, info in plan.branches.items():
+        branch_dir = branches_root / branch_id
+        branch_dir.mkdir(parents=True, exist_ok=True)
+        branch_records = [records_by_id[mid] for mid in info.message_ids if mid in records_by_id]
+        branch_chunks = [rec.chunk for rec in branch_records]
+        per_chunk_links: Dict[int, List[Tuple[str, object]]] = {}
+        for idx, rec in enumerate(branch_records):
+            if rec.links:
+                per_chunk_links[idx] = list(rec.links)
+        branch_yaml = dict(extra_yaml or {})
+        branch_yaml.update(
+            {
+                "branchId": branch_id,
+                "parentBranchId": info.parent_branch_id,
+                "isCanonical": info.is_canonical,
+                "divergenceIndex": info.divergence_index,
+            }
+        )
+        branch_doc = build_markdown_from_chunks(
+            branch_chunks,
+            per_chunk_links,
+            title=title,
+            source_file_id=source_file_id,
+            modified_time=modified_time,
+            created_time=created_time,
+            run_settings=run_settings,
+            citations=citations,
+            source_mime=source_mime,
+            source_size=source_size,
+            collapse_threshold=collapse_threshold,
+            collapse_thresholds=collapse_thresholds,
+            extra_yaml=branch_yaml,
+            attachments=attachments,
+        )
+        (branch_dir / f"{branch_id}.md").write_text(branch_doc.to_markdown(), encoding="utf-8")
+        overlay_path = branch_dir / "overlay.md"
+        if not overlay_path.exists():
+            overlay_path.write_text("", encoding="utf-8")
+
+
 def _common_prefix(plan: BranchPlan) -> List[str]:
     if not plan.branches:
         return []
@@ -387,18 +447,84 @@ def process_conversation(
         attachments=attachment_rows,
     )
 
-    # Return minimal result indicating DB-only write
+    # Build and persist markdown/HTML for compatibility with the legacy
+    # file-first workflow. The database remains the source of truth, but
+    # import/sync commands still expect immediate on-disk renders.
+    chunks = [rec.chunk for rec in message_records]
+    per_chunk_links = per_chunk_remote_links(chunks)
+    document = _render_markdown_document(
+        records=message_records,
+        title=title,
+        source_file_id=source_file_id,
+        modified_time=modified_time,
+        created_time=created_time,
+        run_settings=run_settings,
+        source_mime=source_mime,
+        source_size=source_size,
+        collapse_threshold=collapse_threshold,
+        collapse_thresholds=collapse_thresholds,
+        extra_yaml=extra_yaml,
+        attachments=attachments,
+        per_chunk_links=per_chunk_links,
+        citations=citations,
+    )
+
+    from .document_store import persist_document
+
+    persisted = persist_document(
+        document=document,
+        output_dir=output_dir,
+        attachments=attachments,
+        registrar=registrar,
+        provider=provider,
+        conversation_id=conversation_id,
+        title=title,
+        updated_at=modified_time,
+        created_at=created_time,
+        slug_hint=slug,
+        extra_state=extra_state,
+        collapse_threshold=collapse_threshold,
+        html=html,
+        html_theme=html_theme,
+        attachment_policy=attachment_policy,
+        force=force,
+        allow_dirty=allow_dirty,
+    )
+
+    # Write per-branch transcripts for the branch explorer / legacy workflows.
+    try:
+        _write_branch_documents(
+            plan=plan,
+            records_by_id=records_by_id,
+            conversation_dir=persisted.markdown_path.parent,
+            title=title,
+            source_file_id=source_file_id,
+            modified_time=modified_time,
+            created_time=created_time,
+            run_settings=run_settings,
+            source_mime=source_mime,
+            source_size=source_size,
+            collapse_threshold=collapse_threshold,
+            collapse_thresholds=collapse_thresholds,
+            extra_yaml=extra_yaml,
+            attachments=attachments,
+            citations=citations,
+        )
+    except Exception:
+        # Branch transcripts are auxiliary; DB remains the source of truth.
+        pass
+
     return ImportResult(
-        markdown_path=output_dir / slug / "conversation.md",  # Path that would be created
-        html_path=None,
-        attachments_dir=output_dir / slug / "attachments" if attachments else None,
-        document=None,  # No document generated in DB-only mode
-        slug=slug,
+        markdown_path=persisted.markdown_path,
+        html_path=persisted.html_path,
+        attachments_dir=persisted.attachments_dir,
+        document=persisted.document,
+        slug=persisted.slug,
         diff_path=None,
-        skipped=False,
-        skip_reason=None,
-        dirty=False,
-        content_hash=None,
+        skipped=persisted.skipped,
+        skip_reason=persisted.skip_reason,
+        dirty=persisted.dirty,
+        content_hash=persisted.content_hash,
         branch_count=len(plan.branches),
         canonical_branch_id=plan.canonical_branch_id,
         branch_directories=None,
