@@ -1,4 +1,4 @@
-"""Shared click/argparse command examples."""
+"""Shared CLI command examples."""
 
 from __future__ import annotations
 

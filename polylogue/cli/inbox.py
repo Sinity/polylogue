@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 
 from ..commands import CommandEnv
@@ -41,7 +41,7 @@ def _dir_size(path: Path) -> int:
     return total
 
 
-def run_inbox_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     provider_filter = _parse_providers(getattr(args, "providers", None))
     quarantine_enabled = bool(getattr(args, "quarantine", False))

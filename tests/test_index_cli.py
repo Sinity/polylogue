@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from argparse import Namespace
+from types import SimpleNamespace
 
 from polylogue.cli.index_cli import run_index_cli
 from polylogue.commands import CommandEnv
@@ -24,7 +24,7 @@ class DummyUI:
 
 def test_index_cli_json(state_env, monkeypatch, capsys):
     env = CommandEnv(ui=DummyUI())
-    args = Namespace(subcmd="check", repair=False, skip_qdrant=True, json=True)
+    args = SimpleNamespace(subcmd="check", repair=False, skip_qdrant=True, json=True)
     run_index_cli(args, env)
     payload = json.loads(capsys.readouterr().out)
     assert "sqlite" in payload

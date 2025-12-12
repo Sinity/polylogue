@@ -8,23 +8,13 @@ import click
 
 from ..commands import CommandEnv
 from ..local_sync import LOCAL_SYNC_PROVIDER_NAMES, get_local_provider
+from .click_introspect import click_command_entries
 
 
 @dataclass
 class Completion:
     value: str
     description: str = ""
-
-
-def _click_command_entries(root: click.Group) -> List[Tuple[str, str]]:
-    entries: List[Tuple[str, str]] = []
-    for name, command in sorted(root.commands.items()):
-        if getattr(command, "hidden", False):
-            continue
-        desc = command.help or command.short_help or (command.__doc__ or "")
-        description = " ".join((desc or "").split())
-        entries.append((name, description))
-    return entries
 
 
 def _list_provider_names() -> List[str]:
@@ -72,7 +62,7 @@ class CompletionEngine:
         return []
 
     def _complete_commands(self) -> List[Completion]:
-        return [Completion(value=name, description=desc) for name, desc in _click_command_entries(self.root)]
+        return [Completion(value=name, description=desc) for name, desc in click_command_entries(self.root)]
 
     def _complete_sync(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
         if current_index == 1 and (not current_word or not current_word.startswith("-")):

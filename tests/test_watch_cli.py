@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,8 +56,8 @@ class RecordingProvider:
         )
 
 
-def _watch_args(base_dir: Path, out_dir: Path) -> Namespace:
-    return Namespace(
+def _watch_args(base_dir: Path, out_dir: Path) -> SimpleNamespace:
+    return SimpleNamespace(
         provider="recording",
         base_dir=str(base_dir),
         out=str(out_dir),

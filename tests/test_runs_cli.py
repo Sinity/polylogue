@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from argparse import Namespace
+from types import SimpleNamespace
 
 from polylogue.cli.runs import run_runs_cli
 from polylogue.commands import CommandEnv
@@ -26,7 +26,7 @@ class DummyUI:
 def test_runs_cli_json(state_env, capsys):
     util.add_run({"cmd": "sync drive", "provider": "drive", "count": 1})
     env = CommandEnv(ui=DummyUI())
-    run_runs_cli(Namespace(limit=5, providers=None, commands=None, since=None, until=None, json=True), env)
+    run_runs_cli(SimpleNamespace(limit=5, providers=None, commands=None, since=None, until=None, json=True), env)
     payload = json.loads(capsys.readouterr().out)
     assert payload[0]["cmd"] == "sync drive"
 
@@ -35,7 +35,7 @@ def test_runs_cli_filters(state_env):
     util.add_run({"cmd": "sync drive", "provider": "drive", "count": 1})
     util.add_run({"cmd": "sync codex", "provider": "codex", "count": 2})
     env = CommandEnv(ui=DummyUI())
-    run_runs_cli(Namespace(limit=10, providers="drive", commands=None, since=None, until=None, json=False), env)
+    run_runs_cli(SimpleNamespace(limit=10, providers="drive", commands=None, since=None, until=None, json=False), env)
     output = "\n".join(env.ui.console.lines)
     assert "sync drive" in output
     assert "codex" not in output
@@ -46,7 +46,7 @@ def test_runs_cli_since_until(state_env):
     util.add_run({"cmd": "sync codex", "provider": "codex", "count": 2, "timestamp": "2024-03-01T00:00:00Z"})
     env = CommandEnv(ui=DummyUI())
     run_runs_cli(
-        Namespace(limit=10, providers=None, commands=None, since="2024-02-01", until="2024-04-01", json=False),
+        SimpleNamespace(limit=10, providers=None, commands=None, since="2024-02-01", until="2024-04-01", json=False),
         env,
     )
     output = "\n".join(env.ui.console.lines)

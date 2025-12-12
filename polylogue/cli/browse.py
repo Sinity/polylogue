@@ -2,24 +2,21 @@
 
 from __future__ import annotations
 
-import argparse
+from types import SimpleNamespace
 from ..commands import CommandEnv
 
 
-def run_browse_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_browse_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     """Dispatch to appropriate browse subcommand."""
-    from .app import (
-        run_inspect_branches,
-        run_stats_cli,
-        run_status_cli,
-        run_runs_cli,
-        run_inbox_cli,
-    )
+    from .branches_cli import run_branches_cli
+    from .inbox import run_inbox_cli
+    from .runs import run_runs_cli
+    from .status import run_stats_cli, run_status_cli
 
-    browse_cmd = args.browse_cmd  # required=True enforced by argparse
+    browse_cmd = args.browse_cmd
 
     if browse_cmd == "branches":
-        run_inspect_branches(args, env)
+        run_branches_cli(args, env)
     elif browse_cmd == "stats":
         try:
             run_stats_cli(args, env)

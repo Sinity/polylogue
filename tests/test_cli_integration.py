@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import sys
-from argparse import Namespace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from polylogue.commands import CommandEnv
-from polylogue.cli.app import main
+from polylogue.cli.click_app import main
 from polylogue.cli.doctor import run_doctor_cli
 from polylogue.doctor import DoctorIssue, DoctorReport
 from polylogue import ui as ui_module
@@ -73,7 +72,7 @@ def test_doctor_cli_handles_bracket_paths(monkeypatch, tmp_path, capsys):
 
     ui = UI(plain=False)
     env = CommandEnv(ui=ui)
-    args = Namespace(codex_dir=None, claude_code_dir=None, limit=5, json=False)
+    args = SimpleNamespace(codex_dir=None, claude_code_dir=None, limit=5, json=False)
 
     run_doctor_cli(args, env)
 

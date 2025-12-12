@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from polylogue.cli.app import _find_anchor_line
+from polylogue.cli.search_cli import find_anchor_line
 
 
 def test_find_anchor_line(tmp_path: Path) -> None:
@@ -13,6 +13,6 @@ body
 """.strip()
     )
 
-    assert _find_anchor_line(target, "msg-2") == 2
-    assert _find_anchor_line(target, "#msg-2") == 2
-    assert _find_anchor_line(target, "msg-99") is None
+    assert find_anchor_line(target, "msg-2") == 2
+    assert find_anchor_line(target, "#msg-2") == 2
+    assert find_anchor_line(target, "msg-99") is None
