@@ -129,6 +129,7 @@ def _sync_sessions(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> LocalSyncResult:
     if registrar is None:
         state_dir = output_dir / ".polylogue-state"
@@ -143,6 +144,7 @@ def _sync_sessions(
     importer_kwargs = dict(importer_kwargs)
     importer_kwargs.setdefault("registrar", registrar)
     importer_kwargs.setdefault("attachment_ocr", attachment_ocr)
+    importer_kwargs.setdefault("sanitize_html", sanitize_html)
     attachments_total = 0
     attachment_bytes_total = 0
     tokens_total = 0
@@ -216,6 +218,34 @@ def _sync_sessions(
             pass
 
         entry["prune_slug"] = slug_for_prune
+
+        stored_hash = None
+        if isinstance(state_entry, dict):
+            stored_hash = state_entry.get("contentHash")
+        existing_dirty = False
+        if stored_hash and md_path.exists():
+            try:
+                from .document_store import read_existing_document
+
+                existing_doc = read_existing_document(md_path)
+                if existing_doc and existing_doc.content_hash != stored_hash:
+                    existing_dirty = True
+            except Exception:
+                existing_dirty = False
+
+        if not force and not existing_dirty:
+            try:
+                from .importers.raw_storage import compute_hash
+                from .db import get_raw_import_by_conversation, open_connection
+
+                current_hash = compute_hash(session_path.read_bytes())
+                with open_connection(registrar.database.resolve_path()) as conn:
+                    raw_row = get_raw_import_by_conversation(conn, provider, conversation_id)
+                if raw_row and raw_row["hash"] == current_hash:
+                    entry["skipped"] = True
+                    return entry
+            except Exception:
+                pass
 
         if not force and _is_up_to_date(session_path, md_path):
             entry["skipped"] = True
@@ -460,6 +490,7 @@ def _sync_export_bundles(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -493,6 +524,27 @@ def _sync_export_bundles(
             if not export_path.exists():
                 tracker.advance()
                 continue
+            bundle_hash = None
+            bundle_provider = f"{provider}-export"
+            export_id = str(export_path)
+            if not force and not prune:
+                try:
+                    from .importers.raw_storage import compute_hash
+
+                    target = export_path
+                    if export_path.is_dir():
+                        conv_file = export_path / "conversations.json"
+                        if conv_file.exists() and conv_file.is_file():
+                            target = conv_file
+                    bundle_hash = compute_hash(target.read_bytes())
+                    state = registrar.get_state(bundle_provider, export_id)
+                    if isinstance(state, dict) and state.get("bundleHash") == bundle_hash:
+                        skipped_exports += 1
+                        tracker.advance()
+                        continue
+                except Exception:
+                    bundle_hash = None
+
             results_raw = import_fn(
                 export_path=export_path,
                 output_dir=output_dir,
@@ -504,7 +556,21 @@ def _sync_export_bundles(
                 force=force,
                 registrar=registrar,
                 attachment_ocr=attachment_ocr,
+                sanitize_html=sanitize_html,
             )
+            if bundle_hash:
+                from .util import current_utc_timestamp
+
+                registrar.state_repo.upsert(
+                    bundle_provider,
+                    export_id,
+                    {
+                        "bundleHash": bundle_hash,
+                        "bundlePath": export_id,
+                        "lastImported": current_utc_timestamp(),
+                    },
+                )
+
             if results_raw is None:
                 result_list: List[ImportResult] = []
             elif isinstance(results_raw, ImportResult):
@@ -577,6 +643,7 @@ def sync_codex_sessions(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -601,6 +668,7 @@ def sync_codex_sessions(
         registrar=registrar,
         ui=ui,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
     )
 
 
@@ -619,6 +687,7 @@ def sync_claude_code_sessions(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -643,6 +712,7 @@ def sync_claude_code_sessions(
         registrar=registrar,
         ui=ui,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
     )
 
 
@@ -683,6 +753,7 @@ def sync_chatgpt_exports(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -717,6 +788,7 @@ def sync_chatgpt_exports(
         registrar=registrar,
         ui=ui,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
     )
 
 
@@ -735,6 +807,7 @@ def sync_claude_exports(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -769,6 +842,7 @@ def sync_claude_exports(
         registrar=registrar,
         ui=ui,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
     )
 
 

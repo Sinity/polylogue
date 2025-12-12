@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import argparse
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Dict, Any
 
 from ..config import CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN, is_config_declarative
@@ -28,7 +28,7 @@ def _path_status(path: Path, *, required: bool = True, label: str | None = None)
     return EnvCheck(name=label or path.name, ok=exists or not required, detail=detail, severity=severity)
 
 
-def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_env_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     checks: List[EnvCheck] = []
     drift_warnings: List[str] = []
 
