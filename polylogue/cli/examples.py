@@ -67,6 +67,8 @@ COMMAND_EXAMPLES: Dict[str, List[Tuple[str, str]]] = {
     "attachments": [
         ("Show top attachments by size", "polylogue attachments stats --sort size --limit 5"),
         ("Read attachment metadata from the index", "polylogue attachments stats --from-index --json"),
+        ("Filter attachment stats by provider/time", "polylogue attachments stats --from-index --provider codex --since 2024-01-01 --until 2024-12-31 --json"),
+        ("Clean orphaned attachment files", "polylogue attachments stats --from-index --clean-orphans --dry-run"),
         ("Extract PDFs to a folder", "polylogue attachments extract --ext .pdf --out ~/desk/pdfs"),
     ],
     "status": [
