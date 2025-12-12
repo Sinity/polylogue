@@ -616,6 +616,9 @@ def attachments_group(ctx: click.Context) -> None:
 
 @attachments_group.command(name="stats")
 @click.option("--dir", type=click.Path(path_type=Path), help="Root directory containing archives")
+@click.option("--provider", type=str, help="Filter by provider (comma-separated)")
+@click.option("--since", type=str, help="Only include attachments on/after this timestamp (index only)")
+@click.option("--until", type=str, help="Only include attachments on/before this timestamp (index only)")
 @click.option("--ext", type=str, help="Filter by file extension")
 @click.option("--hash", "hash", is_flag=True, help="Hash attachments to compute deduped totals")
 @click.option("--sort", type=click.Choice(["size", "name"]), default="size")
@@ -624,6 +627,8 @@ def attachments_group(ctx: click.Context) -> None:
 @click.option("--json", is_flag=True)
 @click.option("--json-lines", is_flag=True)
 @click.option("--from-index", is_flag=True, help="Read attachment metadata from the index DB")
+@click.option("--clean-orphans", is_flag=True, help="Remove on-disk attachments not referenced by the index DB (requires --from-index)")
+@click.option("--dry-run", is_flag=True, help="Preview actions without deleting files (used with --clean-orphans)")
 @click.pass_obj
 def attachments_stats(env: CommandEnv, **kwargs) -> None:
     args = SimpleNamespace(attachments_cmd="stats", **kwargs)
