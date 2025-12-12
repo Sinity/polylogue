@@ -219,6 +219,34 @@ def _sync_sessions(
 
         entry["prune_slug"] = slug_for_prune
 
+        stored_hash = None
+        if isinstance(state_entry, dict):
+            stored_hash = state_entry.get("contentHash")
+        existing_dirty = False
+        if stored_hash and md_path.exists():
+            try:
+                from .document_store import read_existing_document
+
+                existing_doc = read_existing_document(md_path)
+                if existing_doc and existing_doc.content_hash != stored_hash:
+                    existing_dirty = True
+            except Exception:
+                existing_dirty = False
+
+        if not force and not existing_dirty:
+            try:
+                from .importers.raw_storage import compute_hash
+                from .db import get_raw_import_by_conversation, open_connection
+
+                current_hash = compute_hash(session_path.read_bytes())
+                with open_connection(registrar.database.resolve_path()) as conn:
+                    raw_row = get_raw_import_by_conversation(conn, provider, conversation_id)
+                if raw_row and raw_row["hash"] == current_hash:
+                    entry["skipped"] = True
+                    return entry
+            except Exception:
+                pass
+
         if not force and _is_up_to_date(session_path, md_path):
             entry["skipped"] = True
             return entry

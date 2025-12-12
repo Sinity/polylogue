@@ -58,6 +58,21 @@ def test_sync_codex_sessions_creates_markdown(tmp_path):
     )
     assert result_skip.skipped >= 1
 
+    # Touch the source file without changing content; hash freshness should still skip.
+    session_path.write_text(session_path.read_text(encoding="utf-8"), encoding="utf-8")
+    result_hash_skip = sync_codex_sessions(
+        base_dir=base_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+        prune=False,
+        sessions=[session_path],
+    )
+    assert not result_hash_skip.written
+    assert result_hash_skip.skipped >= 1
+
     # prune removes stale outputs
     stale_dir = out_dir / "stale"
     stale_dir.mkdir(parents=True, exist_ok=True)
