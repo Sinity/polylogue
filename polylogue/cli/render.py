@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import List, Optional, Sequence
+import shutil
 
 from ..cli_common import resolve_inputs, sk_select
 from ..commands import CommandEnv, render_command
@@ -78,6 +79,15 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
         projected = len(inputs) * 5 * 1024 * 1024  # rough 5MiB per file heuristic
         from ..util import preflight_disk_requirement
 
+        if not json_output:
+            try:
+                free_bytes = shutil.disk_usage(Path.cwd()).free
+            except Exception:
+                free_bytes = None
+            extra = f", free={free_bytes / (1024 ** 3):.2f} GiB" if free_bytes is not None else ""
+            ui.console.print(
+                f"[dim]Disk estimate: projected={projected / (1024 ** 3):.2f} GiB, limit={args.max_disk:.2f} GiB{extra}[/dim]"
+            )
         preflight_disk_requirement(projected_bytes=projected, limit_gib=args.max_disk, ui=ui)
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
