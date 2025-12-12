@@ -11,6 +11,7 @@ from ..drive_client import DriveClient
 from ..importers import ImportResult
 from ..options import RenderOptions
 from ..version import POLYLOGUE_VERSION, SCHEMA_VERSION
+from ..schema import stamp_payload
 from ..ui import UI
 from ..util import write_clipboard_text
 from .context import (
@@ -97,7 +98,7 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
             ],
             "total_stats": result.total_stats,
         }
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(stamp_payload(payload), indent=2))
         return
     lines = [f"Rendered {result.count} file(s) → {result.output_dir}"]
     if getattr(args, "print_paths", False):

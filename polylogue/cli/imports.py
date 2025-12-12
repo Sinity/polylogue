@@ -19,6 +19,7 @@ from ..importers.claude_code import DEFAULT_PROJECT_ROOT, list_claude_code_sessi
 from ..importers.base import ImportResult
 from ..pipeline_runner import Pipeline, PipelineContext
 from ..util import CODEX_SESSIONS_ROOT, format_run_brief, latest_run, path_order_key
+from ..schema import stamp_payload
 from .context import (
     DEFAULT_CLAUDE_CODE_SYNC_OUT,
     DEFAULT_CHATGPT_OUT,
@@ -109,7 +110,7 @@ def _emit_import_json(results: List[ImportResult]) -> None:
             for res in results
         ],
     }
-    print(json.dumps(payload, indent=2))
+    print(json.dumps(stamp_payload(payload), indent=2))
 
 
 def _emit_print_paths(results: List[ImportResult], ui) -> None:

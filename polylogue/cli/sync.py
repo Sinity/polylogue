@@ -15,6 +15,7 @@ from ..local_sync import (
 )
 from ..options import ListOptions, SyncOptions
 from ..util import add_run, format_run_brief, latest_run, path_order_key
+from ..schema import stamp_payload
 from .context import (
     DEFAULT_COLLAPSE,
     DEFAULT_SYNC_OUT,
@@ -97,18 +98,16 @@ def run_list_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
     )
     result = list_command(options, env)
     if json_output:
-        print(
-            json.dumps(
-                {
-                    "cmd": "list",
-                    "folder_name": result.folder_name,
-                    "folder_id": result.folder_id,
-                    "count": len(result.files),
-                    "files": result.files,
-                },
-                indent=2,
+        payload = stamp_payload(
+            {
+                "cmd": "list",
+                "folder_name": result.folder_name,
+                "folder_id": result.folder_id,
+                "count": len(result.files),
+                "files": result.files,
+            }
         )
-        )
+        print(json.dumps(payload, indent=2))
         return
     console = env.ui.console
     console.print(f"{len(result.files)} chat(s) in {result.folder_name}:")
@@ -290,7 +289,7 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         }
         if previous_run_note:
             payload["previousRun"] = previous_run_note
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(stamp_payload(payload), indent=2))
         return
 
     lines = [f"Synced {result.count} chat(s) → {result.output_dir}"]
@@ -483,7 +482,7 @@ def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEn
         }
         if previous_run_note:
             payload["previousRun"] = previous_run_note
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(stamp_payload(payload), indent=2))
     else:
         summarize_import(ui, f"{provider.title} Sync", result.written, extra_lines=footer_lines)
         console = ui.console
