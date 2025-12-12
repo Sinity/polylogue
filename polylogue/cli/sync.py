@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Optional
+import shutil
 
 from ..cli_common import filter_chats, sk_select
 from ..commands import CommandEnv, list_command, sync_command
@@ -193,6 +194,15 @@ def run_sync_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             projected = 20 * 1024 * 1024 * max(1, len(getattr(args, "sessions", []) or []))
             from ..util import preflight_disk_requirement
 
+            if not getattr(args, "json", False):
+                try:
+                    free_bytes = shutil.disk_usage(Path.cwd()).free
+                except Exception:
+                    free_bytes = None
+                extra = f", free={free_bytes / (1024 ** 3):.2f} GiB" if free_bytes is not None else ""
+                env.ui.console.print(
+                    f"[dim]Disk estimate: projected={projected / (1024 ** 3):.2f} GiB, limit={args.max_disk:.2f} GiB{extra}[/dim]"
+                )
             preflight_disk_requirement(projected_bytes=projected, limit_gib=args.max_disk, ui=env.ui)
         if getattr(args, "offline", False):
             env.ui.console.print("[yellow]Offline mode: network-dependent steps will be skipped; results may be incomplete.")
