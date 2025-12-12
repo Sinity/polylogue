@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import argparse
 import time
 import shutil
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Iterable, List, Optional, Set, Tuple
 
 try:
@@ -22,7 +22,7 @@ WatchBatch = Iterable[Set[WatchChange]]
 WatchDirectoryFn = Callable[..., WatchBatch]
 
 
-def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_watch_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     provider_name = getattr(args, "provider", None)
     provider = get_local_provider(provider_name)
     if not provider.supports_watch:
@@ -55,7 +55,7 @@ def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 def _run_watch_sessions(
-    args: argparse.Namespace,
+    args: SimpleNamespace,
     env: CommandEnv,
     provider,
 ) -> None:

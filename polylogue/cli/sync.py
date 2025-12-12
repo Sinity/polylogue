@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional
 
 from ..cli_common import filter_chats, sk_select
@@ -26,13 +26,14 @@ from .context import (
     merge_with_defaults,
 )
 from .summaries import summarize_import
+from .failure_logging import record_failure
 
 
 def _truthy(val: str) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _apply_sync_prefs(args: argparse.Namespace, env: CommandEnv) -> argparse.Namespace:
+def _apply_sync_prefs(args: SimpleNamespace, env: CommandEnv) -> SimpleNamespace:
     prefs = getattr(env, "prefs", {}) or {}
     sync_prefs = prefs.get("sync", {}) if isinstance(prefs, dict) else {}
     if not sync_prefs:
@@ -102,7 +103,7 @@ def _log_local_sync(
     add_run(run_payload)
 
 
-def run_list_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -> None:
+def run_list_cli(args: SimpleNamespace, env: CommandEnv, json_output: bool) -> None:
     options = ListOptions(
         folder_name=args.folder_name,
         folder_id=args.folder_id,
@@ -129,13 +130,59 @@ def run_list_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -
         console.print(f"- {chat.get('name')}  {chat.get('modifiedTime', '')}  {chat.get('id', '')}")
 
 
-def run_sync_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_sync_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     provider = getattr(args, "provider", None)
     settings = env.settings
     args = _apply_sync_prefs(args, env)
+    provider = getattr(args, "provider", None)
+
+    if getattr(args, "watch", False):
+        if provider == "drive":
+            raise SystemExit("Drive does not support --watch; use local providers like codex/claude-code/chatgpt.")
+        from ..local_sync import get_local_provider
+        provider_obj = get_local_provider(provider)
+        if not provider_obj.supports_watch:
+            raise SystemExit(
+                f"{provider_obj.title} does not support watch mode "
+                f"(use --watch with codex, claude-code, or chatgpt)"
+            )
+        from .watch import run_watch_cli
+
+        run_watch_cli(args, env)
+        return
+
     if getattr(args, "offline", False) and provider == "drive":
         env.ui.console.print("[red]Drive sync does not support --offline.")
         raise SystemExit(1)
+
+    if getattr(args, "root", None):
+        label = getattr(args, "root")
+        defaults = env.config.defaults
+        roots = getattr(defaults, "roots", {}) or {}
+        paths = roots.get(label)
+        if not paths:
+            raise SystemExit(f"Unknown root label '{label}'. Define it in config or use a known label.")
+        env.config.defaults.output_dirs = paths
+
+    if provider == "drive":
+        from ..drive_client import DEFAULT_CREDENTIALS
+
+        cred_path = DEFAULT_CREDENTIALS
+        if env.config.drive and env.config.drive.credentials_path:
+            cred_path = env.config.drive.credentials_path
+        if not cred_path.exists():
+            raise SystemExit(
+                f"Drive sync requires credentials.json at {cred_path} "
+                f"(set drive.credentials_path in config)."
+            )
+
+    if provider in {"chatgpt", "claude"}:
+        exports_root = env.config.exports.chatgpt if provider == "chatgpt" else env.config.exports.claude
+        if not exports_root.exists():
+            raise SystemExit(
+                f"{provider} exports directory not found: {exports_root} "
+                f"(set exports.{provider} in config)."
+            )
     if provider == "drive":
         merged = merge_with_defaults(default_sync_namespace("drive", settings), args)
         _run_sync_drive(merged, env)
@@ -155,13 +202,13 @@ def run_sync_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         raise SystemExit(1)
 
 
-def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
+def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     console = ui.console
     json_mode = getattr(args, "json", False)
 
     if getattr(args, "list_only", False):
-        list_args = argparse.Namespace(
+        list_args = SimpleNamespace(
             folder_name=args.folder_name,
             folder_id=args.folder_id,
             since=args.since,
@@ -268,13 +315,12 @@ def _run_sync_drive(args: argparse.Namespace, env: CommandEnv) -> None:
         except Exception as exc:
             ui.console.print(f"[yellow]Snapshot failed: {exc}")
 
-    from .app import _record_failure
     try:
         result = sync_command(options, env)
     except Exception as exc:
         console.print(f"[red]Drive sync failed: {exc}")
         console.print("[cyan]Run `polylogue doctor` and `polylogue config show --json` to verify credentials, tokens, and output directories.")
-        _record_failure(args, exc, phase="sync")
+        record_failure(args, exc, phase="sync")
         raise
 
     if json_mode:
@@ -375,7 +421,7 @@ def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optiona
     return [Path(line.split("\t")[-1]) for line in selection]
 
 
-def _run_local_sync(provider_name: str, args: argparse.Namespace, env: CommandEnv) -> None:
+def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) -> None:
     provider = get_local_provider(provider_name)
     ui = env.ui
     previous_run_note = format_run_brief(latest_run(provider=provider.name, cmd=f"sync {provider.name}"))

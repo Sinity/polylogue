@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from argparse import Namespace
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from polylogue.commands import CommandEnv, RenderOptions, SyncOptions, render_command, sync_command
-from polylogue.cli import run_prune_cli
+from polylogue.cli.prune_cli import run_prune_cli
 from polylogue import commands as cmd_module, util
 
 
@@ -217,7 +217,7 @@ def test_run_prune_cli_removes_legacy(tmp_path):
 
     ui = DummyUI()
     env = CommandEnv(ui=ui)
-    args = Namespace(dirs=[root], dry_run=False)
+    args = SimpleNamespace(dirs=[root], dry_run=False)
 
     run_prune_cli(args, env)
 

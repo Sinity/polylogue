@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -15,6 +14,7 @@ from ..schema import stamp_payload
 from ..ui import UI
 from ..util import write_clipboard_text
 from .summaries import summarize_render
+from .failure_logging import record_failure
 from .context import (
     DEFAULT_COLLAPSE,
     DEFAULT_RENDER_OUT,
@@ -25,7 +25,7 @@ from .context import (
 )
 
 
-def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool) -> None:
+def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
     ui = env.ui
     console = ui.console
     prefs = getattr(env, "prefs", {}) if hasattr(env, "prefs") else {}
@@ -81,11 +81,10 @@ def run_render_cli(args: argparse.Namespace, env: CommandEnv, json_output: bool)
         preflight_disk_requirement(projected_bytes=projected, limit_gib=args.max_disk, ui=ui)
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
-    from .app import _record_failure
     try:
         result = render_command(options, env)
     except Exception as exc:
-        _record_failure(args, exc, phase="render")
+        record_failure(args, exc, phase="render")
         raise
     if json_output:
         payload = {

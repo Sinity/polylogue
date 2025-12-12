@@ -3,12 +3,12 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-import argparse
 import csv
 import importlib
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, cast
 
 from ..commands import CommandEnv, status_command
@@ -50,7 +50,7 @@ def _provider_filter(raw: Optional[str]) -> Optional[Set[str]]:
     return providers or None
 
 
-def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_status_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     json_lines = bool(getattr(args, "json_lines", False))
     json_mode = bool(getattr(args, "json", False) or json_lines)
@@ -303,9 +303,9 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     emit()
 
 
-def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_stats_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     from ..cli_common import sk_select
-    from .arg_helpers import PathPolicy, resolve_path
+    from .path_policy import PathPolicy, resolve_path
 
     ui = env.ui
     console = ui.console

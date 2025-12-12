@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, Optional, Tuple
 
 from ..config import CONFIG
@@ -13,8 +13,8 @@ def _resolve_settings(settings: Optional[Settings]) -> Settings:
     return settings or SETTINGS
 
 
-def default_sync_namespace(provider: str, settings: Optional[Settings] = None) -> argparse.Namespace:
-    return argparse.Namespace(
+def default_sync_namespace(provider: str, settings: Optional[Settings] = None) -> SimpleNamespace:
+    return SimpleNamespace(
         provider=provider,
         out=None,
         links_only=False,
@@ -47,8 +47,8 @@ def default_import_namespace(
     all_flag: bool,
     conversation_ids: list[str],
     settings: Optional[Settings] = None,
-) -> argparse.Namespace:
-    return argparse.Namespace(
+) -> SimpleNamespace:
+    return SimpleNamespace(
         provider=provider,
         source=sources,
         out=None,
@@ -63,8 +63,8 @@ def default_import_namespace(
     )
 
 
-def merge_with_defaults(defaults: argparse.Namespace, overrides: argparse.Namespace) -> argparse.Namespace:
-    merged = argparse.Namespace(**vars(defaults))
+def merge_with_defaults(defaults: SimpleNamespace, overrides: SimpleNamespace) -> SimpleNamespace:
+    merged = SimpleNamespace(**vars(defaults))
     for key, value in vars(overrides).items():
         setattr(merged, key, value)
     return merged
@@ -77,6 +77,7 @@ DEFAULT_CODEX_SYNC_OUT = CONFIG.defaults.output_dirs.sync_codex
 DEFAULT_CLAUDE_CODE_SYNC_OUT = CONFIG.defaults.output_dirs.sync_claude_code
 DEFAULT_CHATGPT_OUT = CONFIG.defaults.output_dirs.import_chatgpt
 DEFAULT_CLAUDE_OUT = CONFIG.defaults.output_dirs.import_claude
+
 
 def _collect_output_dirs(dirs) -> list[Path]:
     return [
@@ -105,7 +106,7 @@ def default_html_mode(settings: Optional[Settings] = None) -> str:
     return "auto"
 
 
-def resolve_html_settings(args: argparse.Namespace, settings: Optional[Settings] = None) -> Tuple[bool, bool]:
+def resolve_html_settings(args: object, settings: Optional[Settings] = None) -> Tuple[bool, bool]:
     active = _resolve_settings(settings)
     mode = getattr(args, "html_mode", "auto") or "auto"
     mode = mode.lower()
@@ -116,7 +117,7 @@ def resolve_html_settings(args: argparse.Namespace, settings: Optional[Settings]
     return active.html_previews, False
 
 
-def resolve_html_enabled(args: argparse.Namespace, settings: Optional[Settings] = None) -> bool:
+def resolve_html_enabled(args: object, settings: Optional[Settings] = None) -> bool:
     return resolve_html_settings(args, settings)[0]
 
 
@@ -147,7 +148,7 @@ def resolve_collapse_value(value: Optional[int], settings: Optional[Settings] = 
     return DEFAULT_COLLAPSE
 
 
-def resolve_collapse_thresholds(args: argparse.Namespace, settings: Optional[Settings] = None) -> Dict[str, int]:
+def resolve_collapse_thresholds(args: object, settings: Optional[Settings] = None) -> Dict[str, int]:
     """Return per-type collapse thresholds with sensible fallbacks."""
 
     def _clean(val: Optional[int]) -> Optional[int]:

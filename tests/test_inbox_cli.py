@@ -1,6 +1,6 @@
 import json
-from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 from polylogue.cli.inbox import run_inbox_cli
 from polylogue.commands import CommandEnv
@@ -18,7 +18,7 @@ def test_inbox_cli_lists_and_quarantines(tmp_path: Path, capsys) -> None:
     bad = inbox / "bad.zip"
     bad.write_bytes(b"junk")
 
-    args = Namespace(
+    args = SimpleNamespace(
         providers="chatgpt,claude",
         dir=inbox,
         quarantine=True,

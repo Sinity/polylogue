@@ -1,28 +1,23 @@
-from argparse import Namespace
+from __future__ import annotations
 
-import pytest
+from click.testing import CliRunner
 
-from polylogue.cli.app import _dispatch_inspect, _dispatch_config
-from polylogue.commands import CommandEnv
-from polylogue.ui import create_ui
+from polylogue.cli.click_app import cli as click_cli
 
 
-class DummyEnv(CommandEnv):
-    def __init__(self):
-        super().__init__(ui=create_ui(plain=True))
+def test_inspect_command_is_rejected(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["inspect"])
+    assert result.exit_code == 2
+    assert "No such command" in result.output
 
 
-def test_inspect_requires_subcommand(capsys):
-    env = DummyEnv()
-    with pytest.raises(SystemExit):
-        _dispatch_inspect(Namespace(inspect_cmd=None), env)
-    captured = capsys.readouterr()
-    assert "inspect requires a sub-command" in captured.out or captured.err
+def test_config_group_lists_subcommands(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["config"])
+    assert result.exit_code == 0
+    assert "init" in result.output
+    assert "set" in result.output
+    assert "show" in result.output
+    assert "edit" in result.output
 
-
-def test_config_requires_subcommand(capsys):
-    env = DummyEnv()
-    with pytest.raises(SystemExit):
-        _dispatch_config(Namespace(config_cmd=None), env)
-    captured = capsys.readouterr()
-    assert "config requires a sub-command" in captured.out or captured.err
