@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ..commands import CommandEnv
 from ..util import latest_run
+from ..schema import stamp_payload
 from .editor import open_in_editor, get_editor
 
 
@@ -18,7 +19,7 @@ def run_open_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     if not entry and fallback:
         path = Path(fallback)
         if getattr(args, "json", False):
-            print(json.dumps({"path": str(path), "source": "fallback"}))
+            print(json.dumps(stamp_payload({"path": str(path), "source": "fallback"})))
             return
         ui.console.print(str(path))
         return
@@ -34,7 +35,7 @@ def run_open_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         "path": str(path_value) if path_value else None,
     }
     if getattr(args, "json", False):
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(stamp_payload(payload), indent=2))
         return
     if not path_value:
         ui.console.print("[yellow]No path recorded for last run.")
