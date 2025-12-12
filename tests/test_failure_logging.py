@@ -1,18 +1,15 @@
 import json
-from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
-from polylogue.cli.app import _record_failure
-from polylogue.paths import STATE_HOME
-from polylogue.ui import create_ui
-from polylogue.commands import CommandEnv
+from polylogue.cli.failure_logging import record_failure
 
 
 def test_record_failure_stamps_schema(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setattr("polylogue.cli.app.STATE_HOME", tmp_path)
-    args = Namespace(cmd="render")
+    monkeypatch.setattr("polylogue.cli.failure_logging.STATE_HOME", tmp_path)
+    args = SimpleNamespace(cmd="render")
 
-    _record_failure(args, RuntimeError("boom"))
+    record_failure(args, RuntimeError("boom"))
 
     log_path = tmp_path / "failures.jsonl"
     assert log_path.exists()

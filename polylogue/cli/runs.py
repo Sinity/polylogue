@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import argparse
 import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import List, Optional
 
 from rich.table import Table
@@ -12,7 +12,7 @@ from ..schema import stamp_payload
 from ..util import load_runs, parse_input_time_to_epoch
 
 
-def run_runs_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_runs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     limit = max(1, getattr(args, "limit", 50))
     provider_filter = _normalize_filter(getattr(args, "providers", None))
     cmd_filter = _normalize_filter(getattr(args, "commands", None))
