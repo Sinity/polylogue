@@ -67,6 +67,6 @@ def dispatch(args: argparse.Namespace, env: CommandEnv) -> None:
         args: Parsed command-line arguments
         env: Command environment with config, UI, etc.
     """
-    from ..inspect import run_inspect_search
+    from ..app import run_inspect_search
 
     run_inspect_search(args, env)
