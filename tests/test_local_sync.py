@@ -172,6 +172,19 @@ def test_sync_chatgpt_exports(monkeypatch, tmp_path):
     assert {res.slug for res in result.written} == {"chatgpt-bundle-1", "chatgpt-bundle-dir"}
     assert set(calls) == {zip_path, dir_path}
 
+    calls.clear()
+    result_skip = sync_chatgpt_exports(
+        base_dir=base_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+        prune=False,
+    )
+    assert not calls
+    assert result_skip.skipped >= 2
+
 
 def test_sync_chatgpt_exports_normalizes_sessions(monkeypatch, tmp_path):
     base_dir = tmp_path / "chatgpt"
