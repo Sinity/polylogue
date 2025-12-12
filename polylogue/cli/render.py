@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import List, Optional, Sequence
+import shutil
 
 from ..cli_common import resolve_inputs, sk_select
 from ..commands import CommandEnv, render_command
@@ -18,6 +19,7 @@ from .failure_logging import record_failure
 from .context import (
     DEFAULT_COLLAPSE,
     DEFAULT_RENDER_OUT,
+    parse_meta_items,
     resolve_collapse_thresholds,
     resolve_collapse_value,
     resolve_html_enabled,
@@ -60,6 +62,7 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
     if render_prefs.get("--html") is not None and args.html_mode == "auto":
         html_enabled = render_prefs.get("--html") == "on"
     html_theme = settings.html_theme
+    meta = parse_meta_items(getattr(args, "meta", None)) or None
     options = RenderOptions(
         inputs=inputs,
         output_dir=output,
@@ -73,11 +76,21 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
         diff=getattr(args, "diff", False),
         attachment_ocr=getattr(args, "attachment_ocr", False) or _truthy(render_prefs.get("--attachment-ocr", "false")) if render_prefs else getattr(args, "attachment_ocr", False),
         sanitize_html=getattr(args, "sanitize_html", False),
+        meta=meta,
     )
     if getattr(args, "max_disk", None):
         projected = len(inputs) * 5 * 1024 * 1024  # rough 5MiB per file heuristic
         from ..util import preflight_disk_requirement
 
+        if not json_output:
+            try:
+                free_bytes = shutil.disk_usage(Path.cwd()).free
+            except Exception:
+                free_bytes = None
+            extra = f", free={free_bytes / (1024 ** 3):.2f} GiB" if free_bytes is not None else ""
+            ui.console.print(
+                f"[dim]Disk estimate: projected={projected / (1024 ** 3):.2f} GiB, limit={args.max_disk:.2f} GiB{extra}[/dim]"
+            )
         preflight_disk_requirement(projected_bytes=projected, limit_gib=args.max_disk, ui=ui)
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
@@ -108,7 +121,7 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
         }
         if getattr(args, "sanitize_html", False):
             payload["redacted"] = True
-        print(json.dumps(stamp_payload(payload), indent=2))
+        print(json.dumps(stamp_payload(payload), indent=2, sort_keys=True))
         return
     extra_lines: List[str] = []
     if getattr(args, "print_paths", False):

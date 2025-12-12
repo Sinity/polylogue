@@ -336,13 +336,16 @@ class DriveNormalizeStage:
         context.set("chat_context", chat_context)
         context.set("conversation_id", conversation_id)
         context.set("provider", "drive-sync")
-        context.set(
-            "extra_state",
+        extra_state = dict(context.get("extra_state") or {})
+        if getattr(options, "meta", None):
+            extra_state.setdefault("cliMeta", dict(getattr(options, "meta") or {}))
+        extra_state.update(
             {
                 "driveFileId": file_id,
                 "driveFolder": options.folder_name or DEFAULT_FOLDER_NAME,
-            },
+            }
         )
+        context.set("extra_state", extra_state)
         context.set("source_path", options.output_dir / name_safe / "conversation.json")
 
 
@@ -520,12 +523,24 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
     )
 
     render_files: List[RenderFile] = []
+    failures: List[Dict[str, Any]] = []
     totals_acc = RunAccumulator()
 
     with ui.progress("Rendering files", total=len(options.inputs)) as tracker:
         for src in options.inputs:
-            ctx = PipelineContext(env=env, options=options, data={"source_path": src})
-            pipeline.run(ctx)
+            extra_state: Dict[str, object] = {}
+            if getattr(options, "meta", None):
+                extra_state["cliMeta"] = dict(getattr(options, "meta") or {})
+            data: Dict[str, object] = {"source_path": src}
+            if extra_state:
+                data["extra_state"] = extra_state
+            ctx = PipelineContext(env=env, options=options, data=data)
+            try:
+                pipeline.run(ctx)
+            except Exception as exc:
+                failures.append({"source": str(src), "error": str(exc)})
+                tracker.advance()
+                continue
             tracker.advance()
 
             if ctx.aborted:
@@ -570,15 +585,22 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
         "diffs": totals.get("diffs", 0),
         "duration": duration,
     }
+    if failures:
+        run_payload["failures"] = len(failures)
+        run_payload["failedFiles"] = failures
+    if getattr(options, "meta", None):
+        run_payload["meta"] = dict(getattr(options, "meta") or {})
     if getattr(options, "sanitize_html", False):
         run_payload["redacted"] = True
     add_run(run_payload)
-    return RenderResult(
+    result = RenderResult(
         count=len(render_files),
         output_dir=output_dir,
         files=render_files,
         total_stats=totals,
     )
+    setattr(result, "failed_files", failures)
+    return result
 
 
 def _context_from_local(obj: Dict, fallback: str) -> ChatContext:
@@ -667,12 +689,45 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     items: List[SyncItem] = []
     wanted_slugs: set[str] = set()
     totals_acc = RunAccumulator()
+    failures: List[Dict[str, Any]] = []
     description = f"Syncing {options.folder_name or 'Drive'} chats"
     with env.ui.progress(description, total=len(chats)) as tracker:
         for meta in chats:
-            ctx = PipelineContext(env=env, options=options, data={"metadata": meta})
-            pipeline.run(ctx)
+            extra_state: Dict[str, object] = {}
+            if getattr(options, "meta", None):
+                extra_state["cliMeta"] = dict(getattr(options, "meta") or {})
+            data: Dict[str, object] = {"metadata": meta}
+            if extra_state:
+                data["extra_state"] = extra_state
+            ctx = PipelineContext(env=env, options=options, data=data)
+            try:
+                pipeline.run(ctx)
+            except Exception as exc:
+                stage = None
+                if ctx.history:
+                    stage = ctx.history[-1].get("name")
+                failures.append(
+                    {
+                        "id": meta.get("id"),
+                        "name": meta.get("name"),
+                        "error": str(exc),
+                        "stage": stage,
+                    }
+                )
+                tracker.advance()
+                continue
             if ctx.aborted:
+                stage = None
+                if ctx.history:
+                    stage = ctx.history[-1].get("name")
+                failures.append(
+                    {
+                        "id": meta.get("id"),
+                        "name": meta.get("name"),
+                        "error": "aborted",
+                        "stage": stage,
+                    }
+                )
                 tracker.advance()
                 continue
 
@@ -772,6 +827,11 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         "driveFailures": drive_stats.get("failures", 0),
         "driveLastError": drive_stats.get("lastError"),
     }
+    if failures:
+        run_payload["failures"] = len(failures)
+        run_payload["failedChats"] = failures
+    if getattr(options, "meta", None):
+        run_payload["meta"] = dict(getattr(options, "meta") or {})
     if getattr(options, "sanitize_html", False):
         run_payload["redacted"] = True
     add_run(run_payload)
@@ -779,7 +839,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     totals.setdefault("skipped", 0)
     totals.setdefault("diffs", totals.get("diffs", 0))
     totals["pruned"] = pruned_count
-    return SyncResult(
+    result = SyncResult(
         count=len(items),
         output_dir=options.output_dir,
         folder_name=options.folder_name,
@@ -787,6 +847,8 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         items=items,
         total_stats=totals,
     )
+    setattr(result, "failed_chats", failures)
+    return result
 
 
 def status_command(env: CommandEnv, runs_limit: Optional[int] = 200, provider_filter: Optional[Set[str]] = None) -> StatusResult:

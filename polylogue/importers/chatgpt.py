@@ -18,6 +18,9 @@ from ..services.conversation_registrar import ConversationRegistrar, create_defa
 from .base import ImportResult
 from .normalizer import build_message_record
 from .utils import (
+    CHAR_THRESHOLD,
+    LINE_THRESHOLD,
+    PREVIEW_LINES,
     estimate_token_count,
     normalise_inline_footnotes,
     safe_extractall,
@@ -174,6 +177,7 @@ def import_chatgpt_export(
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> List[ImportResult]:
     """Import ChatGPT export to database.
 
@@ -232,6 +236,7 @@ def import_chatgpt_export(
                                 registrar=registrar,
                                 attachment_ocr=attachment_ocr,
                                 sanitize_html=sanitize_html,
+                                meta=meta,
                             )
                         )
                         if raw_hash:
@@ -301,6 +306,7 @@ def _render_chatgpt_conversation(
     registrar: Optional[ConversationRegistrar],
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
     conv_id = conv.get("id") or conv.get("conversation_id") or "chat"
@@ -316,6 +322,7 @@ def _render_chatgpt_conversation(
     per_chunk_links: Dict[int, List[Tuple[str, Path]]] = {}
     message_records: List[MessageRecord] = []
     seen_message_ids: Set[str] = set()
+    routing_stats: Dict[str, int] = {"routed": 0, "skipped": 0}
 
     files_dir = export_root / "files"
     file_index = _build_file_index(files_dir)
@@ -383,6 +390,7 @@ def _render_chatgpt_conversation(
                 attachments=attachments,
                 per_chunk_links=per_chunk_links,
                 prefix="chatgpt",
+                routing_stats=routing_stats,
             )
             if preview != current_text:
                 chunks[idx]["text"] = preview
@@ -411,6 +419,12 @@ def _render_chatgpt_conversation(
     }
 
     thresholds = collapse_thresholds or {"message": collapse_threshold, "tool": collapse_threshold}
+    attachment_policy = {
+        "previewLines": PREVIEW_LINES,
+        "lineThreshold": LINE_THRESHOLD,
+        "charThreshold": CHAR_THRESHOLD,
+        "routing": routing_stats,
+    }
 
     return process_conversation(
         provider="chatgpt",
@@ -429,6 +443,7 @@ def _render_chatgpt_conversation(
         extra_state={
             "sourceModel": model_slug,
             "sourceExportPath": str(export_root),
+            "cliMeta": dict(meta) if meta else None,
         },
         source_file_id=conversation_id,
         modified_time=conv.get("update_time") or conv.get("modified_time"),
@@ -436,7 +451,7 @@ def _render_chatgpt_conversation(
         run_settings=None,
         source_mime="application/json",
         source_size=None,
-        attachment_policy=None,
+        attachment_policy=attachment_policy,
         force=force,
         allow_dirty=allow_dirty,
         attachment_ocr=attachment_ocr,
