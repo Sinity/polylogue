@@ -132,13 +132,19 @@ def is_config_declarative(path: Optional[Path] = None) -> Tuple[bool, str, Path]
             return True, "config file is read-only", target
     else:
         parent = target.parent
+        existing_parent = parent
         try:
-            parent_resolved = parent.resolve()
+            while not existing_parent.exists() and existing_parent != existing_parent.parent:
+                existing_parent = existing_parent.parent
         except Exception:
-            parent_resolved = parent
+            existing_parent = parent
+        try:
+            parent_resolved = existing_parent.resolve()
+        except Exception:
+            parent_resolved = existing_parent
         if str(parent_resolved).startswith("/nix/store/"):
             return True, f"config parent is in nix store ({parent_resolved})", target
-        if not os.access(parent, os.W_OK):
+        if existing_parent.exists() and not os.access(existing_parent, os.W_OK):
             return True, "config parent directory is read-only", target
 
     return False, "", target
