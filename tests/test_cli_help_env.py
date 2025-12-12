@@ -28,8 +28,8 @@ class DummyUI:
 def test_help_topic_outputs_details(capsys):
     env = CommandEnv(ui=DummyUI())
     run_help_cli(argparse.Namespace(topic="sync"), env)
-    out = capsys.readouterr().out
-    assert "Synchronize provider archives" in out
+    joined = "\n".join(env.ui.console.lines)
+    assert "Synchronize provider archives" in joined
 
 
 def test_help_examples_flag(capsys):
@@ -81,7 +81,7 @@ def test_fish_completions_include_descriptions(capsys):
     env = CommandEnv(ui=DummyUI())
     run_completions_cli(argparse.Namespace(shell="fish"), env)
     script = capsys.readouterr().out
-    assert '-d "Synchronize provider archives"' in script
+    assert "Synchronize provider archives" in script
 
 
 def test_complete_top_level(capsys):

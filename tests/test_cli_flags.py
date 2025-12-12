@@ -4,8 +4,10 @@ from argparse import Namespace
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
-from polylogue.cli import CommandEnv, build_parser, run_sync_cli, _resolve_html_settings, _should_use_plain
+from polylogue.cli import CommandEnv, run_sync_cli, _resolve_html_settings, _should_use_plain
+from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.sync import _run_sync_drive, _run_local_sync
 from polylogue.cli.context import resolve_collapse_value
 from polylogue.local_sync import LocalSyncResult
@@ -24,30 +26,63 @@ class DummyUI:
 
 
 def test_html_flag_default_and_overrides_render():
-    parser = build_parser()
-    args = parser.parse_args(["render", "input.json"])
-    assert args.html_mode == "auto"
+    captured = {}
 
-    args_on = parser.parse_args(["render", "input.json", "--html"])
-    assert args_on.html_mode == "on"
+    def fake_dispatch(args, env):  # noqa: ARG001
+        captured["html_mode"] = args.html_mode
 
-    args_off = parser.parse_args(["render", "input.json", "--html", "off"])
-    assert args_off.html_mode == "off"
+    runner = CliRunner()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("polylogue.cli.commands.render.dispatch", fake_dispatch)
+
+    result = runner.invoke(click_cli, ["render", "input.json"])
+    assert result.exit_code == 0
+    assert captured["html_mode"] == "auto"
+
+    result = runner.invoke(click_cli, ["render", "input.json", "--html"])
+    assert result.exit_code == 0
+    assert captured["html_mode"] == "on"
+
+    result = runner.invoke(click_cli, ["render", "input.json", "--html", "off"])
+    assert result.exit_code == 0
+    assert captured["html_mode"] == "off"
+    monkeypatch.undo()
 
 
 def test_html_flag_sync_variants():
-    parser = build_parser()
-    args_auto = parser.parse_args(["sync", "codex"])
-    assert args_auto.html_mode == "auto"
+    captured = {}
 
-    args_explicit = parser.parse_args(["sync", "codex", "--html", "on"])
-    assert args_explicit.html_mode == "on"
+    def fake_dispatch(args, env):  # noqa: ARG001
+        captured["html_mode"] = args.html_mode
+
+    runner = CliRunner()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("polylogue.cli.commands.sync.dispatch", fake_dispatch)
+
+    result = runner.invoke(click_cli, ["sync", "codex"])
+    assert result.exit_code == 0
+    assert captured["html_mode"] == "auto"
+
+    result = runner.invoke(click_cli, ["sync", "codex", "--html", "on"])
+    assert result.exit_code == 0
+    assert captured["html_mode"] == "on"
+    monkeypatch.undo()
 
 
 def test_html_flag_import_variants():
-    parser = build_parser()
-    args = parser.parse_args(["import", "chatgpt", "export.zip", "--html", "off"])
-    assert args.html_mode == "off"
+    captured = {}
+
+    def fake_import(args, env):  # noqa: ARG001
+        captured["html_mode"] = args.html_mode
+
+    runner = CliRunner()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("polylogue.cli.imports.run_import_cli", fake_import)
+
+    result = runner.invoke(click_cli, ["import", "chatgpt", "export.zip", "--html", "off"])
+    assert result.exit_code == 0
+    assert captured["html_mode"] == "off"
+    monkeypatch.undo()
 
 
 def test_resolve_html_settings_modes():
@@ -81,31 +116,53 @@ def test_run_sync_cli_dispatch(monkeypatch):
 
 
 def test_sync_parser_supports_selection_flags(tmp_path):
-    parser = build_parser()
-    drive_args = parser.parse_args(
-        ["sync", "drive", "--chat-id", "file-a", "--chat-id", "file-b"]
-    )
-    assert drive_args.chat_ids == ["file-a", "file-b"]
+    captured = {}
+
+    def fake_dispatch(args, env):  # noqa: ARG001
+        captured["args"] = args
+
+    runner = CliRunner()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("polylogue.cli.commands.sync.dispatch", fake_dispatch)
+
+    result = runner.invoke(click_cli, ["sync", "drive", "--chat-id", "file-a", "--chat-id", "file-b"])
+    assert result.exit_code == 0
+    assert list(captured["args"].chat_ids) == ["file-a", "file-b"]
 
     session_one = tmp_path / "one.jsonl"
     session_two = tmp_path / "two.jsonl"
-    local_args = parser.parse_args(
-        ["sync", "codex", "--session", str(session_one), "--session", str(session_two)]
+    result = runner.invoke(
+        click_cli,
+        ["sync", "codex", "--session", str(session_one), "--session", str(session_two)],
     )
-    assert local_args.sessions == [session_one, session_two]
+    assert result.exit_code == 0
+    assert list(captured["args"].sessions) == [session_one, session_two]
+    monkeypatch.undo()
 
 
 def test_print_paths_flags_present():
-    parser = build_parser()
+    captured = {}
 
-    render_args = parser.parse_args(["render", "input.json", "--print-paths"])
-    assert getattr(render_args, "print_paths", False) is True
+    def fake_dispatch(args, env):  # noqa: ARG001
+        captured["args"] = args
 
-    sync_args = parser.parse_args(["sync", "drive", "--print-paths"])
-    assert getattr(sync_args, "print_paths", False) is True
+    runner = CliRunner()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr("polylogue.cli.commands.render.dispatch", fake_dispatch)
+    result = runner.invoke(click_cli, ["render", "input.json", "--print-paths"])
+    assert result.exit_code == 0
+    assert captured["args"].print_paths is True
 
-    import_args = parser.parse_args(["import", "chatgpt", "export.zip", "--print-paths"])
-    assert getattr(import_args, "print_paths", False) is True
+    monkeypatch.setattr("polylogue.cli.commands.sync.dispatch", fake_dispatch)
+    result = runner.invoke(click_cli, ["sync", "drive", "--print-paths"])
+    assert result.exit_code == 0
+    assert captured["args"].print_paths is True
+
+    monkeypatch.setattr("polylogue.cli.imports.run_import_cli", fake_dispatch)
+    result = runner.invoke(click_cli, ["import", "chatgpt", "export.zip", "--print-paths"])
+    assert result.exit_code == 0
+    assert captured["args"].print_paths is True
+    monkeypatch.undo()
 
 
 def test_run_sync_drive_respects_selected_ids(monkeypatch, tmp_path):

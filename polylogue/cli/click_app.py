@@ -20,7 +20,7 @@ from . import (
     attachments,
     browse as browse_cmd,
     imports,
-    maintain,
+    maintain as maintain_cli,
     open_helper,
     prefs as prefs_cmd,
     reprocess,
@@ -38,6 +38,7 @@ from .app import (
     run_compare_cli,
     run_search_preview,
 )
+from .click_options import OptionalValueChoiceOption
 from .examples import COMMAND_EXAMPLES
 from .env_cli import run_env_cli
 
@@ -152,7 +153,17 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--prune", is_flag=True, help="Remove outputs for conversations that vanished upstream")
 @click.option("--prune-snapshot", is_flag=True, help="Snapshot outputs before pruning (STATE_HOME/rollback)")
 @click.option("--collapse-threshold", type=int, default=None, help="Collapse threshold override")
-@click.option("--html", "html_mode", type=click.Choice(["on", "off", "auto"]), default="auto", show_default=True)
+@click.option(
+    "--html",
+    "html_mode",
+    cls=OptionalValueChoiceOption,
+    is_flag=False,
+    flag_value="on",
+    type=click.Choice(["on", "off", "auto"]),
+    default="auto",
+    show_default=True,
+    help="HTML preview mode: on/off/auto (default auto)",
+)
 @click.option("--diff", is_flag=True, help="Write delta diff alongside updated Markdown")
 @click.option("--json", is_flag=True, help="Emit machine-readable summary")
 @click.option("--print-paths", is_flag=True, help="List written files after sync")
@@ -181,6 +192,7 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.pass_obj
 def sync(env: CommandEnv, **kwargs) -> None:
+    """Synchronize provider archives (use --watch for continuous mode)."""
     args = Namespace(**kwargs)
     sync_cmd.dispatch(args, env)
 
@@ -193,17 +205,29 @@ def sync(env: CommandEnv, **kwargs) -> None:
 @click.argument("source", nargs=-1, type=click.Path(path_type=Path))
 @click.option("--out", type=click.Path(path_type=Path), help="Output directory")
 @click.option("--collapse-threshold", type=int, default=None, help="Collapse threshold override")
-@click.option("--html", "html_mode", type=click.Choice(["on", "off", "auto"]), default="auto", show_default=True)
+@click.option(
+    "--html",
+    "html_mode",
+    cls=OptionalValueChoiceOption,
+    is_flag=False,
+    flag_value="on",
+    type=click.Choice(["on", "off", "auto"]),
+    default="auto",
+    show_default=True,
+    help="HTML preview mode: on/off/auto (default auto)",
+)
 @click.option("--force", is_flag=True, help="Overwrite outputs even when up-to-date")
 @click.option("--all", is_flag=True, help="Process all conversations/sessions without selection")
 @click.option("--conversation-id", "conversation_ids", multiple=True, help="Conversation ID filter (repeatable)")
 @click.option("--json", is_flag=True, help="Emit machine-readable summary")
+@click.option("--print-paths", is_flag=True, help="List written files after import")
 @click.option("--to-clipboard", is_flag=True, help="Copy single imported Markdown file to the clipboard")
 @click.option("--base-dir", type=click.Path(path_type=Path), help="Base directory for local providers")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in imported Markdown/HTML outputs")
 @click.pass_obj
 def import_cmd_click(env: CommandEnv, **kwargs) -> None:
+    """Import provider exports."""
     args = Namespace(**kwargs)
     imports.run_import_cli(args, env)
 
@@ -215,7 +239,17 @@ def import_cmd_click(env: CommandEnv, **kwargs) -> None:
 @click.argument("input", type=click.Path(path_type=Path))
 @click.option("--out", type=click.Path(path_type=Path), help="Output directory")
 @click.option("--collapse-threshold", type=int, default=None, help="Collapse threshold override")
-@click.option("--html", "html_mode", type=click.Choice(["on", "off", "auto"]), default="auto", show_default=True)
+@click.option(
+    "--html",
+    "html_mode",
+    cls=OptionalValueChoiceOption,
+    is_flag=False,
+    flag_value="on",
+    type=click.Choice(["on", "off", "auto"]),
+    default="auto",
+    show_default=True,
+    help="HTML preview mode: on/off/auto (default auto)",
+)
 @click.option("--force", is_flag=True, help="Overwrite outputs even when up-to-date")
 @click.option("--allow-dirty", is_flag=True, help="Allow overwriting files with local edits (requires --force)")
 @click.option("--links-only", is_flag=True, help="Link attachments instead of downloading")
@@ -229,6 +263,7 @@ def import_cmd_click(env: CommandEnv, **kwargs) -> None:
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in rendered Markdown/HTML outputs")
 @click.pass_obj
 def render(env: CommandEnv, **kwargs) -> None:
+    """Render JSON exports to Markdown/HTML."""
     if kwargs.get("allow_dirty") and not kwargs.get("force"):
         env.ui.console.print("--allow-dirty requires --force")
         raise SystemExit(1)
@@ -262,6 +297,7 @@ def render(env: CommandEnv, **kwargs) -> None:
 @click.option("--open", "open_result", is_flag=True, help="Open result file in $EDITOR after search")
 @click.pass_obj
 def search(env: CommandEnv, **kwargs) -> None:
+    """Search rendered transcripts."""
     kwargs["open"] = kwargs.pop("open_result")
     args = Namespace(**kwargs)
     search_cmd.dispatch(args, env)
@@ -288,6 +324,7 @@ def search(env: CommandEnv, **kwargs) -> None:
 @click.option("--summary-only", is_flag=True, help="Only emit the summary JSON without printing tables")
 @click.pass_obj
 def status(env: CommandEnv, **kwargs) -> None:
+    """Show cached Drive info and recent runs."""
     args = Namespace(**kwargs)
     status_cmd.dispatch(args, env)
 
@@ -304,6 +341,7 @@ def status(env: CommandEnv, **kwargs) -> None:
 @click.option("--fields", type=str, default="provider,slug,branchId,messageId,score,snippet,model,path", show_default=True, help="Fields for JSON export")
 @click.pass_obj
 def compare(env: CommandEnv, **kwargs) -> None:
+    """Compare coverage between two providers for a query."""
     args = Namespace(**kwargs)
     run_compare_cli(args, env)
 
@@ -415,7 +453,7 @@ def maintain(ctx: click.Context) -> None:
 @click.pass_obj
 def maintain_prune(env: CommandEnv, **kwargs) -> None:
     args = Namespace(maintain_cmd="prune", **kwargs)
-    maintain.run_maintain_cli(args, env)
+    maintain_cli.run_maintain_cli(args, env)
 
 
 @maintain.command(name="doctor")
@@ -427,7 +465,7 @@ def maintain_prune(env: CommandEnv, **kwargs) -> None:
 @click.pass_obj
 def maintain_doctor(env: CommandEnv, **kwargs) -> None:
     args = Namespace(maintain_cmd="doctor", **kwargs)
-    maintain.run_maintain_cli(args, env)
+    maintain_cli.run_maintain_cli(args, env)
 
 
 @maintain.command(name="index")
@@ -439,7 +477,7 @@ def maintain_doctor(env: CommandEnv, **kwargs) -> None:
 @click.pass_obj
 def maintain_index(env: CommandEnv, **kwargs) -> None:
     args = Namespace(maintain_cmd="index", subcmd=kwargs.pop("subcmd"), **kwargs)
-    maintain.run_maintain_cli(args, env)
+    maintain_cli.run_maintain_cli(args, env)
 
 
 @maintain.command(name="restore")
@@ -451,7 +489,7 @@ def maintain_index(env: CommandEnv, **kwargs) -> None:
 @click.pass_obj
 def maintain_restore(env: CommandEnv, **kwargs) -> None:
     args = Namespace(maintain_cmd="restore", **kwargs)
-    maintain.run_maintain_cli(args, env)
+    maintain_cli.run_maintain_cli(args, env)
 
 
 # ---------------------------- config/env/prefs ----------------------------
@@ -461,6 +499,7 @@ def maintain_restore(env: CommandEnv, **kwargs) -> None:
 @click.option("--json", is_flag=True, help="Emit environment info as JSON")
 @click.pass_obj
 def env(env: CommandEnv, **kwargs) -> None:
+    """Check environment and config paths."""
     run_env_cli(Namespace(**kwargs), env)
 
 
@@ -481,6 +520,7 @@ def help_cmd(ctx: click.Context, topic: Optional[str], examples: bool) -> None: 
 @click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True)
 @click.pass_obj
 def completions(env: CommandEnv, **kwargs) -> None:
+    """Emit shell completion script."""
     args = Namespace(**kwargs)
     run_completions_cli(args, env)
 
@@ -556,6 +596,7 @@ def config_edit(env: CommandEnv, **kwargs) -> None:
 @click.option("--json", "json_mode", is_flag=True, help="Emit JSON output")
 @click.pass_obj
 def prefs(env: CommandEnv, subcmd: str, command_name: Optional[str], flag: Optional[str], value: Optional[str], json_mode: bool) -> None:  # type: ignore[func-returns-value]
+    """Manage per-command preference defaults."""
     args = Namespace(prefs_cmd=subcmd, command=command_name, flag=flag, value=value, json=json_mode)
     prefs_cmd.run_prefs_cli(args, env)
 
@@ -610,6 +651,7 @@ def attachments_extract(env: CommandEnv, **kwargs) -> None:
 @click.option("--fallback", type=click.Path(path_type=Path), help="Fallback path if no run is found")
 @click.pass_obj
 def open(env: CommandEnv, **kwargs) -> None:  # type: ignore[func-returns-value]
+    """Open or print paths from the latest run."""
     args = Namespace(**kwargs)
     open_helper.run_open_cli(args, env)
 
@@ -619,12 +661,19 @@ def open(env: CommandEnv, **kwargs) -> None:  # type: ignore[func-returns-value]
 @click.option("--fallback", is_flag=True, help="Use fallback parser")
 @click.pass_obj
 def reprocess_cmd(env: CommandEnv, **kwargs) -> None:
+    """Reprocess failed imports."""
     args = Namespace(**kwargs)
     reprocess.run_reprocess_cli(args, env)
 
 
 def main() -> None:  # pragma: no cover
-    cli()
+    try:
+        cli.main(prog_name="polylogue", standalone_mode=False)
+    except click.ClickException as exc:
+        exc.show()
+        raise SystemExit(exc.exit_code) from exc
+    except click.Abort as exc:
+        raise SystemExit(1) from exc
 
 
 __all__ = ["cli", "main"]

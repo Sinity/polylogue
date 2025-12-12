@@ -65,5 +65,5 @@ class CommandRegistry:
 def build_default_registry() -> CommandRegistry:
     """Builds the default registry with high-level CLI commands.
 
-    The actual handler wiring occurs in polylogue.cli.app.main to avoid circular imports.
+    The Click entrypoint in polylogue.cli.click_app wires the dispatchers.
     """
