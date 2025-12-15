@@ -182,6 +182,7 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--watch-plan", is_flag=True, help="Print the assembled watch command and exit (no watch run)")
 @click.option("--drive-retries", type=int, help="Override Drive retry attempts (default: config or 3)")
 @click.option("--drive-retry-base", type=float, help="Override Drive retry base delay seconds (default: config or 0.5)")
+@click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.option("--root", type=str, help="Named root label to use when configs support multi-root archives")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.pass_obj
@@ -220,6 +221,7 @@ def sync(env: CommandEnv, **kwargs) -> None:
 @click.option("--base-dir", type=click.Path(path_type=Path), help="Base directory for local providers")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in imported Markdown/HTML outputs")
+@click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.pass_obj
 def import_cmd_click(env: CommandEnv, **kwargs) -> None:
     """Import provider exports."""
@@ -256,6 +258,7 @@ def import_cmd_click(env: CommandEnv, **kwargs) -> None:
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in rendered Markdown/HTML outputs")
+@click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.pass_obj
 def render(env: CommandEnv, **kwargs) -> None:
     """Render JSON exports to Markdown/HTML."""
@@ -270,6 +273,23 @@ def render(env: CommandEnv, **kwargs) -> None:
         exit_code = run_render_force(env, provider=None, conversation_id=None, output_dir=getattr(args, "out", None))
         raise SystemExit(exit_code)
     run_render_cli(args, env, json_output=getattr(args, "json", False))
+
+
+# ---------------------------- verify ----------------------------
+
+
+@cli.command()
+@click.option("--provider", type=str, help="Comma-separated provider filter")
+@click.option("--slug", type=str, help="Filter to a single slug")
+@click.option("--conversation-id", "conversation_ids", multiple=True, help="Filter to a conversation ID (repeatable)")
+@click.option("--limit", type=int, help="Limit number of conversations verified")
+@click.option("--json", is_flag=True, help="Emit machine-readable report")
+@click.pass_obj
+def verify(env: CommandEnv, **kwargs) -> None:
+    """Verify rendered outputs against the database and state store."""
+    from .verify import run_verify_cli
+
+    run_verify_cli(SimpleNamespace(**kwargs), env)
 
 
 # ---------------------------- search ----------------------------
@@ -420,6 +440,7 @@ def browse_status(env: CommandEnv, **kwargs) -> None:
 @click.option("--since", type=str, help="Only include runs on/after this timestamp")
 @click.option("--until", type=str, help="Only include runs on/before this timestamp")
 @click.option("--json", is_flag=True)
+@click.option("--json-lines", is_flag=True, help="Emit newline-delimited JSON records (implies --json)")
 @click.option("--json-verbose", is_flag=True)
 @click.pass_obj
 def browse_runs(env: CommandEnv, **kwargs) -> None:
