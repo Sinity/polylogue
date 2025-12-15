@@ -5,6 +5,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import shutil
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ..commands import CommandEnv
 from ..config import CONFIG
-from ..local_sync import _detect_export_provider, _discover_export_targets
+from ..local_sync import _detect_export_provider
 from ..schema import stamp_payload
 
 
@@ -70,6 +71,46 @@ def _dir_size(path: Path) -> int:
     return total
 
 
+def _inspect_export_candidate(path: Path) -> Tuple[Optional[str], Optional[str]]:
+    """Best-effort export inspection: returns (provider, error_kind)."""
+    suffix = path.suffix.lower()
+    conv_path: Optional[Path] = None
+    raw: Optional[object] = None
+
+    if path.is_dir():
+        candidate = path / "conversations.json"
+        if candidate.exists():
+            conv_path = candidate
+    elif path.is_file() and path.name.lower() == "conversations.json":
+        conv_path = path
+    elif path.is_file() and suffix == ".zip":
+        if not zipfile.is_zipfile(path):
+            return None, "not-a-zip"
+        try:
+            with zipfile.ZipFile(path) as zf:
+                if "conversations.json" not in zf.namelist():
+                    return None, "missing-conversations-json"
+                with zf.open("conversations.json") as fh:
+                    raw = json.loads(fh.read().decode("utf-8"))
+        except Exception:
+            return None, "invalid-conversations-json"
+
+    if raw is None and conv_path and conv_path.exists():
+        try:
+            raw = json.loads(conv_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None, "invalid-conversations-json"
+
+    if raw is None:
+        provider = _detect_export_provider(path)
+        return provider, None if provider else "unknown-format"
+
+    provider = _detect_export_provider(path)
+    if provider:
+        return provider, None
+    return None, "unknown-format"
+
+
 def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     provider_filter = _parse_providers(getattr(args, "providers", None))
@@ -87,6 +128,8 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     quarantined: List[str] = []
     missing_roots = 0
     ignored_by_rule = 0
+    malformed_by_reason: Dict[str, int] = {}
+    malformed = 0
     totals = {"pending": 0, "quarantined": 0}
 
     for provider, root in roots:
@@ -94,7 +137,6 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             missing_roots += 1
             continue
         ignore_patterns = _load_ignore_patterns(root)
-        # Count ignored candidates (respecting provider_filter).
         candidates: set[Path] = set()
         try:
             for zip_path in root.rglob("*.zip"):
@@ -106,19 +148,21 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
                 candidates.add(conv_file.parent)
         except OSError:
             pass
-        for cand in candidates:
-            detected = _detect_export_provider(cand)
-            entry_provider = (detected or provider or "unknown").lower()
-            if provider_filter and entry_provider != "unknown" and entry_provider not in provider_filter:
-                continue
+
+        for cand in sorted(candidates):
             if _is_ignored(cand, root, ignore_patterns):
                 ignored_by_rule += 1
-        candidates = _discover_export_targets(root, provider=provider)
-        for cand in candidates:
-            detected = _detect_export_provider(cand)
-            entry_provider = detected or provider or "unknown"
-            if provider_filter and entry_provider != "unknown" and entry_provider.lower() not in provider_filter:
                 continue
+
+            detected, error_kind = _inspect_export_candidate(cand)
+            entry_provider = detected or provider or "unknown"
+            entry_provider_lower = entry_provider.lower()
+            if provider_filter and entry_provider_lower != "unknown" and entry_provider_lower not in provider_filter:
+                continue
+            if error_kind:
+                malformed += 1
+                malformed_by_reason[error_kind] = malformed_by_reason.get(error_kind, 0) + 1
+
             size_bytes = _dir_size(cand)
             try:
                 mtime = cand.stat().st_mtime
@@ -127,7 +171,7 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
                 modified_at = None
             status = "pending"
             target_path = cand
-            if quarantine_enabled and detected is None:
+            if quarantine_enabled and (detected is None or error_kind):
                 quarantine_dir = getattr(args, "quarantine_dir", None)
                 qdir = Path(quarantine_dir).expanduser() if quarantine_dir else root / "quarantine"
                 qdir.mkdir(parents=True, exist_ok=True)
@@ -140,11 +184,13 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             entries.append(
                 {
                     "provider": entry_provider,
+                    "detectedProvider": detected,
                     "path": str(target_path),
                     "sourcePath": str(cand),
                     "sizeBytes": size_bytes,
                     "modifiedAt": modified_at,
                     "status": status,
+                    "errorKind": error_kind,
                 }
             )
             if status == "pending":
@@ -156,6 +202,8 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
                 "entries": entries,
                 "quarantined": quarantined,
                 "ignoredByRule": ignored_by_rule,
+                "malformed": malformed,
+                "malformedByReason": dict(sorted(malformed_by_reason.items())),
                 "missingRoots": missing_roots,
                 "totals": totals,
             }
@@ -179,6 +227,8 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         lines.append(f"Quarantined: {len(quarantined)} item(s)")
     if ignored_by_rule:
         lines.append(f"Skipped by .polylogueignore: {ignored_by_rule} item(s)")
+    if malformed:
+        lines.append(f"Malformed exports: {malformed} item(s)")
     if not entries and not quarantined:
         lines.append("No inbox items found.")
     else:
