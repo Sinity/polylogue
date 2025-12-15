@@ -191,7 +191,7 @@ def run_search_cli(args: object, env: CommandEnv) -> None:
                 "hits": payload_hits,
             }
         )
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
         return
 
     if csv_target:
@@ -472,4 +472,3 @@ def run_search_preview(args: object) -> None:
 
 
 __all__ = ["run_search_cli", "run_search_preview", "find_anchor_line"]
-

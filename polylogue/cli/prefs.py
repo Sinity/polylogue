@@ -22,7 +22,7 @@ def _load_prefs() -> Dict[str, Dict[str, str]]:
 
 def _save_prefs(prefs: Dict[str, Dict[str, str]]) -> None:
     PREFS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PREFS_PATH.write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+    PREFS_PATH.write_text(json.dumps(prefs, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def run_prefs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
@@ -32,7 +32,7 @@ def run_prefs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
 
     if sub == "list":
         if getattr(args, "json", False):
-            print(json.dumps(prefs, indent=2))
+            print(json.dumps(prefs, indent=2, sort_keys=True))
             return
         lines = []
         for cmd, values in sorted(prefs.items()):
@@ -52,7 +52,7 @@ def run_prefs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         cmd_prefs[flag] = value
         _save_prefs(prefs)
         if getattr(args, "json", False):
-            print(json.dumps({"command": command, "flag": flag, "value": value}))
+            print(json.dumps({"command": command, "flag": flag, "value": value}, sort_keys=True))
             return
         ui.console.print(f"[green]Saved preference: {command} {flag}={value}")
         return
@@ -65,7 +65,7 @@ def run_prefs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             prefs = {}
         _save_prefs(prefs)
         if getattr(args, "json", False):
-            print(json.dumps({"cleared": target or "all"}))
+            print(json.dumps({"cleared": target or "all"}, sort_keys=True))
             return
         ui.console.print(f"[green]Cleared preferences for {target or 'all commands'}")
         return
