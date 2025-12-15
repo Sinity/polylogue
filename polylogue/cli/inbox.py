@@ -71,8 +71,16 @@ def _dir_size(path: Path) -> int:
     return total
 
 
-def _inspect_export_candidate(path: Path) -> Tuple[Optional[str], Optional[str]]:
-    """Best-effort export inspection: returns (provider, error_kind)."""
+_MALFORMED_ERROR_KINDS = {
+    "not-a-zip",
+    "missing-conversations-json",
+    "invalid-conversations-json",
+    "invalid-jsonl",
+}
+
+
+def _inspect_inbox_candidate(path: Path) -> Tuple[Optional[str], Optional[str]]:
+    """Best-effort inbox inspection: returns (provider, error_kind)."""
     suffix = path.suffix.lower()
     conv_path: Optional[Path] = None
     raw: Optional[object] = None
@@ -94,6 +102,30 @@ def _inspect_export_candidate(path: Path) -> Tuple[Optional[str], Optional[str]]
                     raw = json.loads(fh.read().decode("utf-8"))
         except Exception:
             return None, "invalid-conversations-json"
+    elif path.is_file() and suffix == ".jsonl":
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                first = None
+                for line in handle:
+                    stripped = line.strip()
+                    if stripped:
+                        first = stripped
+                        break
+        except Exception:
+            return None, "invalid-jsonl"
+        if not first:
+            return None, "invalid-jsonl"
+        try:
+            obj = json.loads(first)
+        except Exception:
+            return None, "invalid-jsonl"
+        if isinstance(obj, dict):
+            entry_type = (obj.get("type") or "").strip().lower()
+            if entry_type in {"session_meta", "response_item", "request", "response"}:
+                return "codex", None
+            if entry_type in {"user", "assistant", "system"} and isinstance(obj.get("message"), dict):
+                return "claude-code", None
+        return None, "unknown-jsonl"
 
     if raw is None and conv_path and conv_path.exists():
         try:
@@ -130,6 +162,8 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     ignored_by_rule = 0
     malformed_by_reason: Dict[str, int] = {}
     malformed = 0
+    unrecognized_by_reason: Dict[str, int] = {}
+    unrecognized = 0
     totals = {"pending": 0, "quarantined": 0}
 
     for provider, root in roots:
@@ -144,6 +178,11 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         except OSError:
             pass
         try:
+            for jsonl_path in root.rglob("*.jsonl"):
+                candidates.add(jsonl_path)
+        except OSError:
+            pass
+        try:
             for conv_file in root.rglob("conversations.json"):
                 candidates.add(conv_file.parent)
         except OSError:
@@ -154,14 +193,18 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
                 ignored_by_rule += 1
                 continue
 
-            detected, error_kind = _inspect_export_candidate(cand)
+            detected, error_kind = _inspect_inbox_candidate(cand)
             entry_provider = detected or provider or "unknown"
             entry_provider_lower = entry_provider.lower()
             if provider_filter and entry_provider_lower != "unknown" and entry_provider_lower not in provider_filter:
                 continue
             if error_kind:
-                malformed += 1
-                malformed_by_reason[error_kind] = malformed_by_reason.get(error_kind, 0) + 1
+                if error_kind in _MALFORMED_ERROR_KINDS:
+                    malformed += 1
+                    malformed_by_reason[error_kind] = malformed_by_reason.get(error_kind, 0) + 1
+                else:
+                    unrecognized += 1
+                    unrecognized_by_reason[error_kind] = unrecognized_by_reason.get(error_kind, 0) + 1
 
             size_bytes = _dir_size(cand)
             try:
@@ -204,6 +247,8 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
                 "ignoredByRule": ignored_by_rule,
                 "malformed": malformed,
                 "malformedByReason": dict(sorted(malformed_by_reason.items())),
+                "unrecognized": unrecognized,
+                "unrecognizedByReason": dict(sorted(unrecognized_by_reason.items())),
                 "missingRoots": missing_roots,
                 "totals": totals,
             }
@@ -228,7 +273,9 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     if ignored_by_rule:
         lines.append(f"Skipped by .polylogueignore: {ignored_by_rule} item(s)")
     if malformed:
-        lines.append(f"Malformed exports: {malformed} item(s)")
+        lines.append(f"Malformed exports/JSONL: {malformed} item(s)")
+    if unrecognized:
+        lines.append(f"Unrecognized inbox items: {unrecognized} item(s)")
     if not entries and not quarantined:
         lines.append("No inbox items found.")
     else:
