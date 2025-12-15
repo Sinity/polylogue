@@ -26,6 +26,7 @@ from .context import (
     DEFAULT_CLAUDE_OUT,
     DEFAULT_CODEX_SYNC_OUT,
     DEFAULT_COLLAPSE,
+    parse_meta_items,
     resolve_collapse_thresholds,
     resolve_collapse_value,
     resolve_html_enabled,
@@ -133,6 +134,7 @@ def run_import_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     sources = args.source or []
     _apply_import_prefs(args, env)
     collapse_thresholds = resolve_collapse_thresholds(args, env.settings)
+    meta = parse_meta_items(getattr(args, "meta", None)) or None
 
     def _ensure_path() -> Path:
         if not sources:
@@ -154,6 +156,7 @@ def run_import_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             to_clipboard=args.to_clipboard,
             attachment_ocr=args.attachment_ocr,
             sanitize_html=getattr(args, "sanitize_html", False),
+            meta=meta,
         )
         run_import_chatgpt(ns, env)
     elif provider == "claude":
@@ -171,6 +174,7 @@ def run_import_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             to_clipboard=args.to_clipboard,
             attachment_ocr=args.attachment_ocr,
             sanitize_html=getattr(args, "sanitize_html", False),
+            meta=meta,
         )
         run_import_claude(ns, env)
     elif provider == "claude-code":
@@ -187,6 +191,7 @@ def run_import_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             to_clipboard=args.to_clipboard,
             attachment_ocr=args.attachment_ocr,
             sanitize_html=getattr(args, "sanitize_html", False),
+            meta=meta,
         )
         run_import_claude_code(ns, env)
     elif provider == "codex":
@@ -203,6 +208,7 @@ def run_import_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             to_clipboard=args.to_clipboard,
             attachment_ocr=args.attachment_ocr,
             sanitize_html=getattr(args, "sanitize_html", False),
+            meta=meta,
         )
         run_import_codex(ns, env)
     else:
@@ -271,6 +277,7 @@ def run_import_codex(args: SimpleNamespace, env: CommandEnv) -> None:
                 "registrar": env.registrar,
                 "attachment_ocr": getattr(args, "attachment_ocr", False),
                 "sanitize_html": getattr(args, "sanitize_html", False),
+                "meta": getattr(args, "meta", None),
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
@@ -381,6 +388,7 @@ def run_import_chatgpt(args: SimpleNamespace, env: CommandEnv) -> None:
                 "registrar": env.registrar,
                 "attachment_ocr": getattr(args, "attachment_ocr", False),
                 "sanitize_html": getattr(args, "sanitize_html", False),
+                "meta": getattr(args, "meta", None),
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
@@ -491,6 +499,7 @@ def run_import_claude(args: SimpleNamespace, env: CommandEnv) -> None:
                 "registrar": env.registrar,
                 "attachment_ocr": getattr(args, "attachment_ocr", False),
                 "sanitize_html": getattr(args, "sanitize_html", False),
+                "meta": getattr(args, "meta", None),
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
@@ -573,6 +582,7 @@ def run_import_claude_code(args: SimpleNamespace, env: CommandEnv) -> None:
                 "registrar": env.registrar,
                 "attachment_ocr": getattr(args, "attachment_ocr", False),
                 "sanitize_html": getattr(args, "sanitize_html", False),
+                "meta": getattr(args, "meta", None),
                 **kwargs,
             },
             "import_error_message": "Import failed",

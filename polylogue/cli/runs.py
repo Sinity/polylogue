@@ -18,6 +18,7 @@ def run_runs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     cmd_filter = _normalize_filter(getattr(args, "commands", None))
     since_epoch = parse_input_time_to_epoch(getattr(args, "since", None))
     until_epoch = parse_input_time_to_epoch(getattr(args, "until", None))
+    json_lines = bool(getattr(args, "json_lines", False))
     runs = load_runs(limit=limit)
     if provider_filter:
         runs = [run for run in runs if (run.get("provider") or "").lower() in provider_filter]
@@ -25,6 +26,11 @@ def run_runs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         runs = [run for run in runs if (run.get("cmd") or "").lower() in cmd_filter]
     if since_epoch is not None or until_epoch is not None:
         runs = [run for run in runs if _timestamp_in_range(run.get("timestamp"), since_epoch, until_epoch)]
+
+    if json_lines:
+        for row in runs:
+            print(json.dumps(row, separators=(",", ":"), sort_keys=True))
+        return
 
     if getattr(args, "json", False):
         if getattr(args, "json_verbose", False):
