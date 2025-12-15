@@ -24,7 +24,7 @@ Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, re
 
 - Content-hash freshness instead of mtime-only checks. **(done for local session + export sync; prune runs still force full scan)** 
 - Concurrency/ETA: clearer knobs with visible progress/retry surfacing and predictive ETA/profiling beyond existing `--profile-io/--profile-sql`.
-- Deterministic ordering across HTML/JSON/summaries; emit pre-run disk/quota estimates. **(partially done: render/sync now print disk estimate when `--max-disk` is set and not in JSON mode)**
+- Deterministic ordering across HTML/JSON/summaries; emit pre-run disk/quota estimates. **(partially done: render/sync now print disk estimate when `--max-disk` is set and not in JSON mode; CLI JSON output now uses `sort_keys=True` consistently)**
 
 ## P3 – Analytics and Reporting
 
