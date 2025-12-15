@@ -177,6 +177,7 @@ def import_chatgpt_export(
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> List[ImportResult]:
     """Import ChatGPT export to database.
 
@@ -235,6 +236,7 @@ def import_chatgpt_export(
                                 registrar=registrar,
                                 attachment_ocr=attachment_ocr,
                                 sanitize_html=sanitize_html,
+                                meta=meta,
                             )
                         )
                         if raw_hash:
@@ -304,6 +306,7 @@ def _render_chatgpt_conversation(
     registrar: Optional[ConversationRegistrar],
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> ImportResult:
     title = conv.get("title") or "chatgpt-conversation"
     conv_id = conv.get("id") or conv.get("conversation_id") or "chat"
@@ -440,6 +443,7 @@ def _render_chatgpt_conversation(
         extra_state={
             "sourceModel": model_slug,
             "sourceExportPath": str(export_root),
+            "cliMeta": dict(meta) if meta else None,
         },
         source_file_id=conversation_id,
         modified_time=conv.get("update_time") or conv.get("modified_time"),

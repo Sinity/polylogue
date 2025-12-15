@@ -19,6 +19,7 @@ class RenderOptions:
     diff: bool = False
     attachment_ocr: bool = False
     sanitize_html: bool = False
+    meta: Optional[Dict[str, str]] = None
 
 
 @dataclass
@@ -42,6 +43,7 @@ class SyncOptions:
     prefetched_chats: Optional[List[Dict[str, Any]]] = None
     attachment_ocr: bool = False
     sanitize_html: bool = False
+    meta: Optional[Dict[str, str]] = None
 
 
 @dataclass

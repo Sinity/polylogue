@@ -75,6 +75,7 @@ def import_claude_export(
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
     root, tmp = _load_bundle(export_path)
@@ -125,6 +126,7 @@ def import_claude_export(
                         registrar=registrar,
                         attachment_ocr=attachment_ocr,
                         sanitize_html=sanitize_html,
+                        meta=meta,
                     )
                 )
                 if raw_hash:
@@ -185,6 +187,7 @@ def _render_claude_conversation(
     registrar: Optional[ConversationRegistrar],
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> ImportResult:
     title = conv.get("name") or conv.get("title") or "claude-chat"
     conv_id = conv.get("uuid") or conv.get("id") or "claude"
@@ -311,6 +314,7 @@ def _render_claude_conversation(
         extra_state={
             "sourceModel": model_id,
             "sourceExportPath": str(export_root),
+            "cliMeta": dict(meta) if meta else None,
         },
         source_file_id=conv_id,
         modified_time=conv.get("updated_at") or conv.get("modified_at"),
