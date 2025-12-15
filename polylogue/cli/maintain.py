@@ -51,7 +51,7 @@ def run_maintain_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             payload = stamp_payload({"from": str(src), "to": str(dest), "bytes": total_bytes})
             import json
 
-            print(json.dumps(payload, indent=2))
+            print(json.dumps(payload, indent=2, sort_keys=True))
             return
         env.ui.summary(
             "Restore",
