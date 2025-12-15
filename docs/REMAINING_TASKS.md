@@ -2,6 +2,22 @@
 
 Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, report.md, and live_capture.md.
 
+## Current State (handoff)
+
+If you’re resuming work later, this is the “what’s already implemented” snapshot:
+
+- Click CLI is the primary entrypoint (`polylogue/cli/click_app.py`); argparse is gone.
+- Run logs: `browse runs --json-lines` emits newline-delimited JSON for `load_runs()` records.
+- Metadata injection: `sync|import|render` accept repeatable `--meta key=value`.
+  - Stored in markdown front matter as `polylogue.cliMeta` (to avoid collisions with provider-native `polylogue.meta`).
+  - Also recorded in run history as `run.meta` in `runs.metadata_json`.
+- Integrity: `polylogue verify` exists (checks front matter vs DB/state, attachments, and branch docs).
+- Golden tests: portable markdown snapshot suite exists.
+  - Fixtures live in `tests/fixtures/golden/`, expected outputs in `tests/golden/`.
+  - Regenerator: `nix develop -c python3 scripts/update_goldens.py`.
+  - Snapshots compare after canonicalization/scrubbing via `polylogue/frontmatter_canonical.py`.
+  - Determinism hooks: `POLYLOGUE_FIXED_NOW` (fixed timestamps) + tests force a stub `tiktoken` tokenizer for stable counts.
+
 ## P1 – CLI, Config, and Navigation
 
 - Migrate argparse → Click to reduce duplicated parser wiring; keep a single source of truth for examples/help. **(done: click_app now covers all commands and is the primary entrypoint)**
@@ -44,5 +60,5 @@ Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, re
 ## P3 – Metadata, Provenance, and Integrity
 
 - Per-run metadata injection (`--meta key=value`); stamp renders with source path, import time, CLI version, and content hash. **(done: `--meta` stored as `polylogue.cliMeta` + included in run logs)**
-- Integrity verifier (`polylogue verify`) to check front matter vs DB state, attachments, and branch files; front-matter canonicalizer to normalize keys/order and flag unknowns. **(partially done: `polylogue verify` command shipped)**
+- Integrity verifier (`polylogue verify`) to check front matter vs DB state, attachments, and branch files; front-matter canonicalizer to normalize keys/order and flag unknowns. **(partially done: `polylogue verify` shipped; canonicalizer exists for snapshot testing, but verify does not enforce canonicalization/unknown-key policy yet)**
 - Partial run recovery (`--resume-from <run-id>`) to retry failed chats/attachments with a clear report.
