@@ -16,6 +16,9 @@ from ..services.conversation_registrar import ConversationRegistrar, create_defa
 from .base import ImportResult
 from .normalizer import build_message_record
 from .utils import (
+    CHAR_THRESHOLD,
+    LINE_THRESHOLD,
+    PREVIEW_LINES,
     estimate_token_count,
     normalise_inline_footnotes,
     safe_extractall,
@@ -198,6 +201,7 @@ def _render_claude_conversation(
     chunks: List[Dict] = []
     message_records: List[MessageRecord] = []
     seen_message_ids: Set[str] = set()
+    routing_stats: Dict[str, int] = {"routed": 0, "skipped": 0}
 
     model_id = conv.get("model") or conv.get("model_id")
 
@@ -253,6 +257,7 @@ def _render_claude_conversation(
                 attachments=attachments,
                 per_chunk_links=per_chunk_links,
                 prefix="claude",
+                routing_stats=routing_stats,
             )
             if preview != text_block:
                 chunks[idx]["text"] = preview
@@ -282,6 +287,12 @@ def _render_claude_conversation(
 
     canonical_leaf_id = message_records[-1].message_id if message_records else None
     thresholds = collapse_thresholds or {"message": collapse_threshold, "tool": collapse_threshold}
+    attachment_policy = {
+        "previewLines": PREVIEW_LINES,
+        "lineThreshold": LINE_THRESHOLD,
+        "charThreshold": CHAR_THRESHOLD,
+        "routing": routing_stats,
+    }
 
     return process_conversation(
         provider="claude.ai",
@@ -307,7 +318,7 @@ def _render_claude_conversation(
         run_settings=None,
         source_mime="application/json",
         source_size=None,
-        attachment_policy=None,
+        attachment_policy=attachment_policy,
         force=force,
         allow_dirty=allow_dirty,
         attachment_ocr=attachment_ocr,

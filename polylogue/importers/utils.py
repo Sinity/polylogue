@@ -79,12 +79,21 @@ def store_large_text(
     attachments: List[AttachmentInfo],
     per_chunk_links: Dict[int, List[Tuple[str, Path]]],
     prefix: str = "chunk",
+    routing_stats: Optional[Dict[str, int]] = None,
 ) -> str:
     """Persist oversized text to an attachment and return a preview."""
 
+    if not text:
+        return text
+
     lines = text.splitlines()
     if len(lines) <= LINE_THRESHOLD and len(text) <= CHAR_THRESHOLD:
+        if routing_stats is not None:
+            routing_stats["skipped"] = routing_stats.get("skipped", 0) + 1
         return text
+
+    if routing_stats is not None:
+        routing_stats["routed"] = routing_stats.get("routed", 0) + 1
 
     attachments_dir.mkdir(parents=True, exist_ok=True)
     attachment_name = f"{prefix}{chunk_index:03d}.txt"
