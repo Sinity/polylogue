@@ -107,3 +107,62 @@ def test_branch_html_handles_empty_conversation():
     html_output = build_branch_html(summary, theme="light")
 
     assert "No branch data" in html_output
+
+
+def test_branch_html_includes_inline_diff_when_paths_exist(tmp_path: Path):
+    canonical_path = tmp_path / "conversation.md"
+    branch_path = tmp_path / "branch-001.md"
+    canonical_path.write_text("---\n---\n\nHello\n", encoding="utf-8")
+    branch_path.write_text("---\n---\n\nHello world\n", encoding="utf-8")
+
+    canonical = BranchNodeSummary(
+        branch_id="branch-000",
+        parent_branch_id=None,
+        is_canonical=True,
+        depth=0,
+        message_count=1,
+        token_count=0,
+        word_count=1,
+        first_timestamp=None,
+        last_timestamp=None,
+        divergence_index=0,
+        divergence_role=None,
+        divergence_snippet=None,
+        attachment_count=0,
+        branch_path=canonical_path,
+        overlay_path=None,
+    )
+    alt = BranchNodeSummary(
+        branch_id="branch-001",
+        parent_branch_id="branch-000",
+        is_canonical=False,
+        depth=0,
+        message_count=1,
+        token_count=0,
+        word_count=2,
+        first_timestamp=None,
+        last_timestamp=None,
+        divergence_index=1,
+        divergence_role="model",
+        divergence_snippet="Hello world",
+        attachment_count=0,
+        branch_path=branch_path,
+        overlay_path=None,
+    )
+    summary = BranchConversationSummary(
+        provider="chatgpt",
+        conversation_id="conv-1",
+        slug="conv-1",
+        title="Title",
+        current_branch="branch-000",
+        last_updated="2024-01-01",
+        branch_count=2,
+        canonical_branch_id="branch-000",
+        conversation_path=canonical_path,
+        conversation_dir=tmp_path,
+        nodes={"branch-000": canonical, "branch-001": alt},
+    )
+    html_output = build_branch_html(summary, theme="light")
+    assert "Diff vs canonical" in html_output
+    assert "-Hello" in html_output
+    assert "+Hello world" in html_output
