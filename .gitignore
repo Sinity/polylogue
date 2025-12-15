@@ -13,6 +13,9 @@ Thumbs.db
 # Local dev environment
 .direnv/
 
+# Local scratch
+.tmp/
+
 # Python
 __pycache__
 .pytest_cache/

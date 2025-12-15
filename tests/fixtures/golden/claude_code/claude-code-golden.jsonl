@@ -1,0 +1,4 @@
+{"type":"user","message":{"content":[{"type":"text","text":"Hello from Claude Code."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Footnote: \\\\[7\\\\] ok."}]}}
+{"type":"tool_use","id":"tool-1","name":"bash","input":{"cmd":"echo hi"}}
+{"type":"tool_result","tool_use_id":"tool-1","text":"\\\\[2\\\\] tool output footnote"}

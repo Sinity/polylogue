@@ -535,6 +535,11 @@ def snapshot_for_diff(path: Path) -> Optional[Path]:
 
 
 def current_utc_timestamp() -> str:
+    fixed = os.environ.get("POLYLOGUE_FIXED_NOW")
+    if fixed:
+        fixed = fixed.strip()
+        if fixed:
+            return fixed
     return (
         datetime.datetime.now(datetime.timezone.utc)
         .replace(microsecond=0)
