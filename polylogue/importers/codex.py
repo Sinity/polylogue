@@ -9,21 +9,18 @@ from ..util import CODEX_SESSIONS_ROOT, assign_conversation_slug
 from ..conversation import process_conversation
 from ..branching import MessageRecord
 from .base import ImportResult
-from .utils import CHAR_THRESHOLD, LINE_THRESHOLD, PREVIEW_LINES, estimate_token_count, normalise_inline_footnotes
+from .utils import (
+    CHAR_THRESHOLD,
+    LINE_THRESHOLD,
+    PREVIEW_LINES,
+    estimate_token_count,
+    normalise_inline_footnotes,
+    store_large_text,
+)
 from .normalizer import build_message_record
 from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 
 _DEFAULT_BASE = CODEX_SESSIONS_ROOT
-
-
-def _truncate_with_preview(text: str, attachment_name: str) -> str:
-    lines = text.splitlines()
-    if len(lines) <= PREVIEW_LINES * 2 + 1:
-        return text
-    head = lines[:PREVIEW_LINES]
-    tail = lines[-PREVIEW_LINES:]
-    preview = "\n".join(head + ["…", "", f"(Full content saved to {attachment_name})", ""] + tail)
-    return preview
 
 
 def import_codex_session(
@@ -76,6 +73,7 @@ def import_codex_session(
     call_index: Dict[str, int] = {}
     message_records: List[MessageRecord] = []
     seen_message_ids: Set[str] = set()
+    routing_stats: Dict[str, int] = {"routed": 0, "skipped": 0}
 
     output_dir.mkdir(parents=True, exist_ok=True)
     title = session_path.stem
@@ -274,19 +272,20 @@ def import_codex_session(
                         chunks[-1]["parentId"] = parent_ref
                         chunks[-1]["branchParent"] = parent_ref
 
-    # attachment extraction pass
     for idx, chunk in enumerate(chunks):
-        text = chunk.get("text", "")
-        lines = text.count("\n") + 1
-        if lines <= LINE_THRESHOLD and len(text) <= CHAR_THRESHOLD:
-            continue
-        attachment_name = f"chunk{idx:03d}.txt"
-        attachment_path = attachments_dir / attachment_name
-        attachment_path.write_text(text, encoding="utf-8")
-        rel = attachment_path.relative_to(markdown_path.parent)
-        attachments.append(AttachmentInfo(attachment_name, str(rel), rel, attachment_path.stat().st_size, False))
-        per_chunk_links.setdefault(idx, []).append((attachment_name, rel))
-        chunk["text"] = _truncate_with_preview(text, attachment_name)
+        text = chunk.get("text", "") or ""
+        preview = store_large_text(
+            text,
+            chunk_index=idx,
+            attachments_dir=attachments_dir,
+            markdown_dir=markdown_path.parent,
+            attachments=attachments,
+            per_chunk_links=per_chunk_links,
+            prefix="chunk",
+            routing_stats=routing_stats,
+        )
+        if preview != text:
+            chunk["text"] = preview
 
     for idx, chunk in enumerate(chunks):
         parent_id = chunk.get("parentId") or (message_records[-1].message_id if message_records else None)
@@ -343,6 +342,7 @@ def import_codex_session(
                 "previewLines": PREVIEW_LINES,
                 "lineThreshold": LINE_THRESHOLD,
                 "charThreshold": CHAR_THRESHOLD,
+                "routing": routing_stats,
             },
             force=force,
             allow_dirty=allow_dirty,
