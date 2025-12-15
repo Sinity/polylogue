@@ -49,7 +49,7 @@ def _compute_branch_stats(
     return stats
 
 
-def _branch_map_snippet(branch_dir: Path, branch_ids: List[str]) -> Optional[str]:
+def _branch_map_snippet(_branch_dir: Path, branch_ids: List[str]) -> Optional[str]:
     if not branch_ids:
         return None
     lines: List[str] = []
@@ -469,6 +469,14 @@ def process_conversation(
         per_chunk_links=per_chunk_links,
         citations=citations,
     )
+
+    if len(plan.branches) > 1:
+        snippet = _branch_map_snippet(
+            (output_dir / slug) / "branches",
+            list(plan.branches.keys()),
+        )
+        if snippet:
+            document.body = f"{snippet}\n{document.body}"
 
     from .document_store import persist_document
 
