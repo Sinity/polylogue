@@ -30,7 +30,7 @@ Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, re
 
 - Timeline views and conversation/branch maps (HTML-side conversation map/timeline).
 - Role/model/branch analytics: tables or heatmaps; per-branch metrics and branching hotspots in status.
-- Metrics export/serve endpoint (Prometheus-friendly) and structured run history export.
+- Metrics export/serve endpoint (Prometheus-friendly). Structured run history export. **(partially done: `browse runs --json-lines` emits JSONL)**
 
 ## P3 – Testing and Quality
 
@@ -43,6 +43,6 @@ Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, re
 
 ## P3 – Metadata, Provenance, and Integrity
 
-- Per-run metadata injection (`--meta key=value`); stamp renders with source path, import time, CLI version, and content hash.
-- Integrity verifier (`polylogue verify`) to check front matter vs DB state, attachments, and branch files; front-matter canonicalizer to normalize keys/order and flag unknowns.
+- Per-run metadata injection (`--meta key=value`); stamp renders with source path, import time, CLI version, and content hash. **(done: `--meta` stored as `polylogue.cliMeta` + included in run logs)**
+- Integrity verifier (`polylogue verify`) to check front matter vs DB state, attachments, and branch files; front-matter canonicalizer to normalize keys/order and flag unknowns. **(partially done: `polylogue verify` command shipped)**
 - Partial run recovery (`--resume-from <run-id>`) to retry failed chats/attachments with a clear report.
