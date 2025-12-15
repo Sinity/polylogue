@@ -11,7 +11,14 @@ from ..branching import MessageRecord
 from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .base import ImportResult
 from .normalizer import build_message_record
-from .utils import estimate_token_count, normalise_inline_footnotes, store_large_text
+from .utils import (
+    CHAR_THRESHOLD,
+    LINE_THRESHOLD,
+    PREVIEW_LINES,
+    estimate_token_count,
+    normalise_inline_footnotes,
+    store_large_text,
+)
 
 
 DEFAULT_PROJECT_ROOT = CLAUDE_CODE_PROJECT_ROOT
@@ -68,6 +75,7 @@ def import_claude_code_session(
     seen_message_ids: Set[str] = set()
     summaries: List[str] = []
     tool_results: Dict[str, int] = {}
+    routing_stats: Dict[str, int] = {"routed": 0, "skipped": 0}
 
     with session_path.open(encoding="utf-8") as handle:
         for line_idx, line in enumerate(handle, start=1):
@@ -234,6 +242,7 @@ def import_claude_code_session(
             attachments=attachments,
             per_chunk_links=per_chunk_links,
             prefix="claudecode",
+            routing_stats=routing_stats,
         )
         if preview != text:
             chunk["text"] = preview
@@ -262,6 +271,12 @@ def import_claude_code_session(
         extra_yaml["summaries"] = summaries
 
     canonical_leaf_id = message_records[-1].message_id if message_records else None
+    attachment_policy = {
+        "previewLines": PREVIEW_LINES,
+        "lineThreshold": LINE_THRESHOLD,
+        "charThreshold": CHAR_THRESHOLD,
+        "routing": routing_stats,
+    }
 
     extra_state = {
         "sessionFile": str(session_path),
@@ -290,7 +305,7 @@ def import_claude_code_session(
             run_settings=None,
             source_mime="application/jsonl",
             source_size=session_path.stat().st_size,
-            attachment_policy=None,
+            attachment_policy=attachment_policy,
             force=force,
             allow_dirty=allow_dirty,
             attachment_ocr=attachment_ocr,
