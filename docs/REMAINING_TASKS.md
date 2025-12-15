@@ -15,14 +15,16 @@ Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, re
 ## P2 – Rendering, Attachments, and Inbox
 
 - HTML refresh: TOC/anchors, sticky header, attachment index/gallery, client-side search/filter; modernize layout and branch explorer (inline diffs/snippets, branch map snippet in `conversation.md`).
-- Attachments lifecycle: `attachments stats --provider --since/--until` with deduped bytes, `--clean-orphans`, routing rules with skipped/routed counts; collision-safe extraction; attachment-aware search with OCR when enabled.
-- Inbox hygiene: coverage/quarantine reports for malformed exports/JSONL with `.polylogueignore`-aware “skipped-by-rule” summaries and a `--quarantine` path.
+- Attachments lifecycle: `attachments stats --provider --since/--until` (index-backed) + `--clean-orphans` + collision-safe extraction. **(done: filters/cleanup + collision-safe `attachments extract`)**
+- Attachments lifecycle: routing rules with skipped/routed counts; attachment-aware search with OCR when enabled. **(pending)**
+- Inbox hygiene: `.polylogueignore`-aware “skipped-by-rule” summaries and `--quarantine` path. **(done: ignored counts + quarantine reporting)**
+- Inbox hygiene: coverage reports for malformed exports/JSONL beyond current detection. **(pending)**
 
 ## P2 – Performance and Freshness
 
 - Content-hash freshness instead of mtime-only checks. **(done for local session + export sync; prune runs still force full scan)** 
 - Concurrency/ETA: clearer knobs with visible progress/retry surfacing and predictive ETA/profiling beyond existing `--profile-io/--profile-sql`.
-- Deterministic ordering across HTML/JSON/summaries; emit pre-run disk/quota estimates.
+- Deterministic ordering across HTML/JSON/summaries; emit pre-run disk/quota estimates. **(partially done: render/sync now print disk estimate when `--max-disk` is set and not in JSON mode)**
 
 ## P3 – Analytics and Reporting
 
