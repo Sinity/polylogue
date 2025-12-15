@@ -4,6 +4,7 @@ import html
 import json
 import textwrap
 from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import quote
@@ -495,6 +496,32 @@ _BRANCH_TEMPLATE = """
       .links a {
         color: {{ palette.accent }};
       }
+      .diff {
+        margin-top: 0.75rem;
+      }
+      .diff details {
+        border: 1px solid {{ palette.border }};
+        border-radius: 0.5rem;
+        background: {{ palette.bg }};
+        padding: 0.25rem 0.5rem;
+      }
+      .diff summary {
+        cursor: pointer;
+        color: {{ palette.accent }};
+        font-weight: 600;
+        padding: 0.25rem 0.2rem;
+      }
+      .diff pre {
+        margin: 0.5rem 0 0.25rem;
+        padding: 0.75rem;
+        overflow-x: auto;
+        background: {{ palette.alternate_bg }};
+        border-radius: 0.5rem;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 0.85rem;
+        line-height: 1.35;
+        white-space: pre;
+      }
       ul {
         list-style: none;
         padding-left: 1.5rem;
@@ -621,6 +648,37 @@ def build_branch_html(conversation: BranchConversationSummary, *, theme: str = "
     canonical_node = conversation.nodes[canonical_id]
     children = conversation.ordered_children(canonical_id)
 
+    def diff_for_node(node: BranchNodeSummary, *, max_lines: int = 200) -> Tuple[Optional[str], bool]:
+        if node.is_canonical:
+            return None, False
+        canonical_path = canonical_node.branch_path or conversation.conversation_path
+        branch_path = node.branch_path
+        if not canonical_path or not canonical_path.exists():
+            return None, False
+        if not branch_path or not branch_path.exists():
+            return None, False
+        try:
+            canonical_lines = canonical_path.read_text(encoding="utf-8").splitlines()
+            branch_lines = branch_path.read_text(encoding="utf-8").splitlines()
+            from difflib import unified_diff
+
+            diff_iter = unified_diff(
+                canonical_lines,
+                branch_lines,
+                fromfile=canonical_path.name,
+                tofile=branch_path.name,
+                lineterm="",
+            )
+            lines = list(islice(diff_iter, max_lines + 1))
+        except Exception:
+            return None, False
+        if not lines:
+            return None, False
+        truncated = len(lines) > max_lines
+        if truncated:
+            lines = lines[:max_lines] + ["… (diff truncated)"]
+        return "\n".join(lines), truncated
+
     def render_node(node: BranchNodeSummary) -> str:
         badges: List[str] = []
         if node.is_canonical:
@@ -649,22 +707,29 @@ def build_branch_html(conversation: BranchConversationSummary, *, theme: str = "
         link_html = ""
         if links:
             link_html = f'<div class="links">{" • ".join(links)}</div>'
+        diff_html = ""
+        diff_text, _truncated = diff_for_node(node)
+        if diff_text:
+            diff_html = (
+                '<div class="diff">'
+                "<details>"
+                "<summary>Diff vs canonical</summary>"
+                f"<pre>{html.escape(diff_text)}</pre>"
+                "</details>"
+                "</div>"
+            )
         child_html = ""
         sub_children = conversation.ordered_children(node.branch_id)
         if sub_children:
             rendered = "".join(render_child(child) for child in sub_children)
             child_html = f"<ul>{rendered}</ul>"
         card_class = "branch-card canonical" if node.is_canonical else "branch-card alternate"
-        snippet_block = ""
-        if node.divergence_snippet:
-            short = _short_snippet(node.divergence_snippet, limit=120)
-            snippet_block = f'<div class="snippet">{html.escape(short)}</div>'
         return (
             f'<div class="{card_class}">'
             f'<div class="branch-header"><h3>{html.escape(node.branch_id)}</h3><div class="badges">{"".join(badges)}</div></div>'
             f"{divergence_html}"
-            f"{snippet_block}"
             f"{link_html}"
+            f"{diff_html}"
             f"{child_html}"
             f"</div>"
         )
@@ -682,8 +747,9 @@ def build_branch_html(conversation: BranchConversationSummary, *, theme: str = "
         f"<strong>Last updated:</strong> {html.escape(conversation.last_updated or 'unknown')}"
     )
     if conversation.conversation_path:
+        href = quote(conversation.conversation_path.as_posix(), safe="/:")
         conversation_meta.append(
-            f"<strong>Canonical file:</strong> {html.escape(str(conversation.conversation_path))}"
+            f'<strong>Canonical file:</strong> <a href="{href}">{html.escape(str(conversation.conversation_path))}</a>'
         )
 
     return template.render(
