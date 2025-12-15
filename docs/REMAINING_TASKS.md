@@ -18,7 +18,7 @@ Consolidated outstanding items from impl_plan.md, IMPROVEMENTS.md, STATUS.md, re
 - Attachments lifecycle: `attachments stats --provider --since/--until` (index-backed) + `--clean-orphans` + collision-safe extraction. **(done: filters/cleanup + collision-safe `attachments extract`)**
 - Attachments lifecycle: routing rules with skipped/routed counts; attachment-aware search with OCR when enabled. **(pending)**
 - Inbox hygiene: `.polylogueignore`-aware “skipped-by-rule” summaries and `--quarantine` path. **(done: ignored counts + quarantine reporting)**
-- Inbox hygiene: coverage reports for malformed exports/JSONL beyond current detection. **(pending)**
+- Inbox hygiene: coverage reports for malformed exports/JSONL beyond current detection. **(partially done: inbox JSON now reports malformed exports + reasons; JSONL coverage pending)**
 
 ## P2 – Performance and Freshness
 
