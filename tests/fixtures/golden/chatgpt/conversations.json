@@ -1,0 +1,39 @@
+[
+  {
+    "id": "golden-chatgpt-1",
+    "title": "Golden ChatGPT",
+    "create_time": 1,
+    "update_time": 4,
+    "current_node": "node-assistant",
+    "mapping": {
+      "node-user": {
+        "id": "node-user",
+        "message": {
+          "id": "msg-user",
+          "author": { "role": "user" },
+          "create_time": 2,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Hello, ChatGPT.\n\nHere is code:\n\n```python\nprint('hi')\n```\n\nAnd a link: https://example.com"
+            ]
+          }
+        }
+      },
+      "node-assistant": {
+        "id": "node-assistant",
+        "message": {
+          "id": "msg-assistant",
+          "author": { "role": "assistant" },
+          "create_time": 3,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "Reply with an inline footnote: \\\\[7\\\\] works."
+            ]
+          }
+        }
+      }
+    }
+  }
+]
