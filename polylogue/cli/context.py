@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Sequence, Tuple
 
 from ..config import CONFIG
 from ..settings import SETTINGS, Settings, ensure_settings_defaults
@@ -163,3 +163,21 @@ def resolve_collapse_thresholds(args: object, settings: Optional[Settings] = Non
         "message": msg if msg is not None else base,
         "tool": tool if tool is not None else base,
     }
+
+
+def parse_meta_items(items: Optional[Sequence[str]]) -> Dict[str, str]:
+    """Parse repeatable key=value pairs (e.g., Click's multiple=True option)."""
+
+    meta: Dict[str, str] = {}
+    if not items:
+        return meta
+    for item in items:
+        raw = str(item)
+        if "=" not in raw:
+            raise SystemExit(f"Invalid --meta value {raw!r} (expected key=value).")
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise SystemExit(f"Invalid --meta value {raw!r} (empty key).")
+        meta[key] = value
+    return meta

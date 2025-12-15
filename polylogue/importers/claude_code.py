@@ -38,9 +38,11 @@ def import_claude_code_session(
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> ImportResult:
     from .raw_storage import store_raw_import, mark_parse_success, mark_parse_failed
 
+    cli_meta = dict(meta) if meta else None
     registrar = registrar or create_default_registrar()
     base_dir = base_dir.expanduser()
     session_path = _locate_session_file(session_id, base_dir)
@@ -200,8 +202,8 @@ def import_claude_code_session(
                     if parent_id and "parentId" not in chunks[idx]:
                         chunks[idx]["parentId"] = parent_id
                         chunks[idx]["branchParent"] = parent_id
-                    meta = chunk_metadata[idx]
-                    calls = meta.setdefault("tool_calls", [])
+                    chunk_meta = chunk_metadata[idx]
+                    calls = chunk_meta.setdefault("tool_calls", [])
                     if calls:
                         calls[0]["output"] = result_text
                     else:
@@ -250,7 +252,7 @@ def import_claude_code_session(
         if parent_id and "parentId" not in chunk:
             chunk["parentId"] = parent_id
             chunk["branchParent"] = parent_id
-        meta = chunk_metadata[idx] if idx < len(chunk_metadata) else {}
+        chunk_meta = chunk_metadata[idx] if idx < len(chunk_metadata) else {}
         links = list(per_chunk_links.get(idx, []))
         message_records.append(
             build_message_record(
@@ -258,9 +260,9 @@ def import_claude_code_session(
                 conversation_id=session_id,
                 chunk_index=idx,
                 chunk=chunk,
-                raw_metadata=meta.get("raw") if isinstance(meta, dict) else None,
+                raw_metadata=chunk_meta.get("raw") if isinstance(chunk_meta, dict) else None,
                 attachments=links,
-                tool_calls=meta.get("tool_calls") if isinstance(meta, dict) else None,
+                tool_calls=chunk_meta.get("tool_calls") if isinstance(chunk_meta, dict) else None,
                 seen_ids=seen_message_ids,
                 fallback_prefix=slug,
             )
@@ -281,6 +283,7 @@ def import_claude_code_session(
     extra_state = {
         "sessionFile": str(session_path),
         "workspace": session_path.parent.name,
+        "cliMeta": cli_meta,
     }
 
     try:

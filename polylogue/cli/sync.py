@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import Dict, List, Optional
 import shutil
 
 from ..cli_common import filter_chats, sk_select
@@ -25,6 +25,7 @@ from .context import (
     resolve_html_enabled,
     resolve_output_path,
     merge_with_defaults,
+    parse_meta_items,
 )
 from .summaries import summarize_import
 from .failure_logging import record_failure
@@ -70,6 +71,7 @@ def _log_local_sync(
     provider: str,
     footer: Optional[List[str]] = None,
     redacted: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> None:
     console = ui.console
     if result.written:
@@ -99,6 +101,8 @@ def _log_local_sync(
         "pruned": result.pruned,
         "duration": getattr(result, "duration", 0.0),
     }
+    if meta:
+        run_payload["meta"] = dict(meta)
     if redacted:
         run_payload["redacted"] = True
     add_run(run_payload)
@@ -270,6 +274,7 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
     collapse_thresholds = resolve_collapse_thresholds(args, settings)
     html_enabled = resolve_html_enabled(args, settings)
     html_theme = settings.html_theme
+    meta = parse_meta_items(getattr(args, "meta", None)) or None
     prefetched = filtered
     if selected_ids:
         selected_set = set(selected_ids)
@@ -294,6 +299,7 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
         prefetched_chats=prefetched,
         attachment_ocr=getattr(args, "attachment_ocr", False),
         sanitize_html=getattr(args, "sanitize_html", False),
+        meta=meta,
     )
 
     if getattr(args, "prune", False) and getattr(args, "prune_snapshot", False):
@@ -358,6 +364,8 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
             "retries": getattr(result, "retries", None),
             "retry_base": drive_retry_base,
         }
+        if meta:
+            payload["meta"] = dict(meta)
         if getattr(args, "sanitize_html", False):
             payload["redacted"] = True
         if previous_run_note:
@@ -449,6 +457,7 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
     force = args.force
     prune = args.prune
     diff_enabled = getattr(args, "diff", False)
+    meta = parse_meta_items(getattr(args, "meta", None)) or None
 
     if not base_dir.exists():
         if provider.create_base_dir and args.base_dir is None:
@@ -516,6 +525,7 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             ui=env.ui,
             attachment_ocr=getattr(args, "attachment_ocr", False),
             sanitize_html=getattr(args, "sanitize_html", False),
+            meta=meta,
         )
     except Exception as exc:
         ui.console.print(f"[red]{provider.title} sync failed: {exc}")
@@ -554,6 +564,8 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             "diffs": result.diffs,
             "files": files_payload,
         }
+        if meta:
+            payload["meta"] = dict(meta)
         if getattr(args, "sanitize_html", False):
             payload["redacted"] = True
         if previous_run_note:
@@ -580,6 +592,8 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
         "pruned": result.pruned,
         "diffs": result.diffs,
     }
+    if meta:
+        run_payload["meta"] = dict(meta)
     if getattr(args, "sanitize_html", False):
         run_payload["redacted"] = True
     add_run(run_payload)
