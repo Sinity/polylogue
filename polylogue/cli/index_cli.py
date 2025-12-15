@@ -38,7 +38,7 @@ def run_index_check(args: SimpleNamespace, env: CommandEnv) -> None:
 
     if getattr(args, "json", False):
         payload = stamp_payload(report)
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
     ui = env.ui

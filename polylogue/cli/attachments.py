@@ -496,7 +496,7 @@ def _run_attachment_extract(args: SimpleNamespace, env: CommandEnv) -> None:
                 "destination": str(destination),
             }
         )
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
     lines = [f"Roots: {', '.join(str(r) for r in roots)}", f"Copied: {copied}", f"Errors: {errors}", f"Destination: {destination}"]

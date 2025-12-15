@@ -253,7 +253,7 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
                 "totals": totals,
             }
         )
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
     if missing_roots == len(roots):

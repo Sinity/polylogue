@@ -112,7 +112,7 @@ def _emit_import_json(results: List[ImportResult]) -> None:
             for res in results
         ],
     }
-    print(json.dumps(stamp_payload(payload), indent=2))
+    print(json.dumps(stamp_payload(payload), indent=2, sort_keys=True))
 
 
 def _emit_print_paths(results: List[ImportResult], ui) -> None:

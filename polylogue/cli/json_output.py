@@ -87,7 +87,7 @@ def emit_json_or_error(payload: Optional[Dict], error: Optional[Exception], ui: 
         else:
             output = payload or {}
 
-        print(json.dumps(output, indent=2))
+        print(json.dumps(output, indent=2, sort_keys=True))
     elif error:
         ui.console.print(f"[red]Error: {error}")
 

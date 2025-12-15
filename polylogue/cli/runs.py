@@ -29,9 +29,9 @@ def run_runs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     if getattr(args, "json", False):
         if getattr(args, "json_verbose", False):
             payload = stamp_payload({"runs": runs, "count": len(runs)})
-            print(json.dumps(payload, indent=2))
+            print(json.dumps(payload, indent=2, sort_keys=True))
         else:
-            print(json.dumps(runs, indent=2))
+            print(json.dumps(runs, indent=2, sort_keys=True))
         return
 
     if env.ui.plain:
