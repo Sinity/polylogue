@@ -123,7 +123,7 @@ def run_list_cli(args: SimpleNamespace, env: CommandEnv, json_output: bool) -> N
                 "files": result.files,
             }
         )
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return
     console = env.ui.console
     console.print(f"{len(result.files)} chat(s) in {result.folder_name}:")
@@ -362,7 +362,7 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
             payload["redacted"] = True
         if previous_run_note:
             payload["previousRun"] = previous_run_note
-        print(json.dumps(stamp_payload(payload), indent=2))
+        print(json.dumps(stamp_payload(payload), indent=2, sort_keys=True))
         return
 
     lines = [f"Synced {result.count} chat(s) → {result.output_dir}"]
@@ -558,7 +558,7 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             payload["redacted"] = True
         if previous_run_note:
             payload["previousRun"] = previous_run_note
-        print(json.dumps(stamp_payload(payload), indent=2))
+        print(json.dumps(stamp_payload(payload), indent=2, sort_keys=True))
     else:
         summarize_import(ui, f"{provider.title} Sync", result.written, extra_lines=footer_lines)
         console = ui.console

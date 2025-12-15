@@ -71,7 +71,7 @@ def run_compare_cli(args: object, env: CommandEnv) -> None:
                 ],
             }
         )
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
         return
 
     lines = [f"Query: {query}", f"Limit: {limit}"]
@@ -90,4 +90,3 @@ def run_compare_cli(args: object, env: CommandEnv) -> None:
 
 
 __all__ = ["run_compare_cli"]
-

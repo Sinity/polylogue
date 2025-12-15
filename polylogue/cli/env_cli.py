@@ -129,7 +129,7 @@ def run_env_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     if getattr(args, "json", False):
         import json
 
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         lines = [f"polylogue={POLYLOGUE_VERSION} schema={SCHEMA_VERSION}"]
         lines.append(f"Config: {cfg_path}")

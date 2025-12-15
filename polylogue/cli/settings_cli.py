@@ -103,7 +103,7 @@ def run_settings_cli(args: SimpleNamespace, env: CommandEnv) -> None:
 
     payload = _settings_snapshot(settings)
     if getattr(args, "json", False):
-        print(json.dumps(stamp_payload(payload), indent=2))
+        print(json.dumps(stamp_payload(payload), indent=2, sort_keys=True))
         return
 
     summary_lines = [
