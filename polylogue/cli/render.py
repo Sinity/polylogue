@@ -118,7 +118,7 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
         }
         if getattr(args, "sanitize_html", False):
             payload["redacted"] = True
-        print(json.dumps(stamp_payload(payload), indent=2))
+        print(json.dumps(stamp_payload(payload), indent=2, sort_keys=True))
         return
     extra_lines: List[str] = []
     if getattr(args, "print_paths", False):
