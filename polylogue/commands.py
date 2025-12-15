@@ -336,13 +336,16 @@ class DriveNormalizeStage:
         context.set("chat_context", chat_context)
         context.set("conversation_id", conversation_id)
         context.set("provider", "drive-sync")
-        context.set(
-            "extra_state",
+        extra_state = dict(context.get("extra_state") or {})
+        if getattr(options, "meta", None):
+            extra_state.setdefault("cliMeta", dict(getattr(options, "meta") or {}))
+        extra_state.update(
             {
                 "driveFileId": file_id,
                 "driveFolder": options.folder_name or DEFAULT_FOLDER_NAME,
-            },
+            }
         )
+        context.set("extra_state", extra_state)
         context.set("source_path", options.output_dir / name_safe / "conversation.json")
 
 
@@ -524,7 +527,13 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
 
     with ui.progress("Rendering files", total=len(options.inputs)) as tracker:
         for src in options.inputs:
-            ctx = PipelineContext(env=env, options=options, data={"source_path": src})
+            extra_state: Dict[str, object] = {}
+            if getattr(options, "meta", None):
+                extra_state["cliMeta"] = dict(getattr(options, "meta") or {})
+            data: Dict[str, object] = {"source_path": src}
+            if extra_state:
+                data["extra_state"] = extra_state
+            ctx = PipelineContext(env=env, options=options, data=data)
             pipeline.run(ctx)
             tracker.advance()
 
@@ -570,6 +579,8 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
         "diffs": totals.get("diffs", 0),
         "duration": duration,
     }
+    if getattr(options, "meta", None):
+        run_payload["meta"] = dict(getattr(options, "meta") or {})
     if getattr(options, "sanitize_html", False):
         run_payload["redacted"] = True
     add_run(run_payload)
@@ -670,7 +681,13 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     description = f"Syncing {options.folder_name or 'Drive'} chats"
     with env.ui.progress(description, total=len(chats)) as tracker:
         for meta in chats:
-            ctx = PipelineContext(env=env, options=options, data={"metadata": meta})
+            extra_state: Dict[str, object] = {}
+            if getattr(options, "meta", None):
+                extra_state["cliMeta"] = dict(getattr(options, "meta") or {})
+            data: Dict[str, object] = {"metadata": meta}
+            if extra_state:
+                data["extra_state"] = extra_state
+            ctx = PipelineContext(env=env, options=options, data=data)
             pipeline.run(ctx)
             if ctx.aborted:
                 tracker.advance()
@@ -772,6 +789,8 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         "driveFailures": drive_stats.get("failures", 0),
         "driveLastError": drive_stats.get("lastError"),
     }
+    if getattr(options, "meta", None):
+        run_payload["meta"] = dict(getattr(options, "meta") or {})
     if getattr(options, "sanitize_html", False):
         run_payload["redacted"] = True
     add_run(run_payload)
