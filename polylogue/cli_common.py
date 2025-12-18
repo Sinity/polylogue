@@ -43,6 +43,13 @@ def filter_chats(
                 f"Skipped {dropped_missing_modified} chat(s) missing modifiedTime; unable to apply --since/--until.",
                 file=sys.stderr,
             )
+    out.sort(
+        key=lambda c: (
+            -(parse_rfc3339_to_epoch(c.get("modifiedTime")) or 0.0),
+            (c.get("name") or "").lower(),
+            str(c.get("id") or ""),
+        )
+    )
     return out
 
 

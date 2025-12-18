@@ -593,6 +593,15 @@ def build_markdown_from_chunks(
 
     attachments_list = attachments or []
     if attachments_list:
+        attachments_list = sorted(
+            attachments_list,
+            key=lambda info: (
+                (info.name or "").lower(),
+                (info.link or ""),
+                info.local_path.as_posix() if info.local_path else "",
+            ),
+        )
+    if attachments_list:
         parts.append("## Attachments\n\n")
         for info in attachments_list:
             size = _human_size(info.size_bytes)
