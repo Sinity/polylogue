@@ -183,12 +183,8 @@ def _run_watch_sessions(
                 console.print("[dim]Changes:[/dim]")
                 for path in relevant:
                     console.print(f"  {path}")
-            if now - last_run < debounce:
-                skipped_events.extend(relevant)
-                skipped_total += len(relevant)
-                continue
             elapsed = now - last_progress
-            if stall_seconds and elapsed > stall_seconds:
+            if stall_seconds and elapsed > stall_seconds and not stalled:
                 console.print(
                     f"[yellow]No sync progress for {stall_seconds}s; check watcher input or increase --stall-seconds."
                 )
@@ -198,9 +194,14 @@ def _run_watch_sessions(
 
                     os.environ["POLYLOGUE_EXIT_REASON"] = "partial"
                     raise SystemExit(2)
+            if now - last_run < debounce:
+                skipped_events.extend(relevant)
+                skipped_total += len(relevant)
+                continue
             sync_once(relevant)
             last_run = now
             last_progress = now
+            stalled = False
             if skipped_events:
                 total_skipped = len(skipped_events)
                 console.print(
