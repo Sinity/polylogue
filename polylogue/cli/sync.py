@@ -47,35 +47,52 @@ def _apply_resume_from(args: SimpleNamespace, env: CommandEnv, *, run_id: int) -
     if provider == "drive":
         failed = run.get("failedChats")
         ids: List[str] = []
+        stage_counts: Dict[str, int] = {}
         if isinstance(failed, list):
             for item in failed:
                 if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip():
                     ids.append(item["id"].strip())
+                    stage = item.get("stage")
+                    if isinstance(stage, str) and stage.strip():
+                        stage_counts[stage.strip()] = stage_counts.get(stage.strip(), 0) + 1
         if not ids:
             raise SystemExit(f"Run #{run_id} has no recorded failed Drive chats to resume.")
         args.chat_ids = list(dict.fromkeys(ids))
         args.resume_from = int(run_id)
         args.all = True
         args.prune = False
-        env.ui.console.print(f"[dim]Resuming run #{run_id}: {len(args.chat_ids)} Drive chat(s)[/dim]")
+        extra = ""
+        if stage_counts:
+            stage_summary = ", ".join(f"{name}={count}" for name, count in sorted(stage_counts.items()))
+            extra = f" ({stage_summary})"
+        env.ui.console.print(f"[dim]Resuming run #{run_id}: {len(args.chat_ids)} Drive chat(s){extra}[/dim]")
         return
 
     if provider in LOCAL_SYNC_PROVIDER_NAMES:
         failed = run.get("failedPaths")
         paths: List[Path] = []
+        error_counts: Dict[str, int] = {}
         if isinstance(failed, list):
             for item in failed:
                 if isinstance(item, str) and item.strip():
                     paths.append(Path(item.strip()))
                 elif isinstance(item, dict) and isinstance(item.get("path"), str):
                     paths.append(Path(item["path"]))
+                    err = item.get("error")
+                    if isinstance(err, str) and err.strip():
+                        key = err.strip()
+                        error_counts[key] = error_counts.get(key, 0) + 1
         if not paths:
             raise SystemExit(f"Run #{run_id} has no recorded failed local paths to resume.")
         args.sessions = [str(p) for p in paths]
         args.resume_from = int(run_id)
         args.all = True
         args.prune = False
-        env.ui.console.print(f"[dim]Resuming run #{run_id}: {len(args.sessions)} path(s)[/dim]")
+        extra = ""
+        if error_counts:
+            top = sorted(error_counts.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+            extra = " (" + ", ".join(f"{count}×{err}" for err, count in top) + ")"
+        env.ui.console.print(f"[dim]Resuming run #{run_id}: {len(args.sessions)} path(s){extra}[/dim]")
         return
 
     raise SystemExit(f"--resume-from is not supported for provider={provider!r}")
