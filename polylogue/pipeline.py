@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from .drive_client import DriveClient
+from .drive import snapshot_drive_metrics
 from .render import (
     AttachmentInfo,
     MarkdownDocument,
@@ -152,7 +153,11 @@ def collect_attachments(
                             rel = str(local_path.relative_to(collector.markdown_root))
                         except Exception:
                             rel = str(local_path)
-                        failures.append({"id": att_id, "filename": fname, "path": rel})
+                        err = snapshot_drive_metrics(reset=False).get("lastError")
+                        failure = {"id": att_id, "filename": fname, "path": rel}
+                        if isinstance(err, str) and err.strip():
+                            failure["error"] = err.strip()
+                        failures.append(failure)
                         collector.add_local(idx, fname, att_id, local_path)
                         continue
                 drive.touch_mtime(local_path, meta_att.get("modifiedTime"))
