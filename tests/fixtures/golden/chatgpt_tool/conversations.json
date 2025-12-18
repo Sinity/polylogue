@@ -1,0 +1,85 @@
+[
+  {
+    "id": "golden-chatgpt-tool-1",
+    "title": "Golden ChatGPT Tool + Attachments",
+    "create_time": 1700000000,
+    "update_time": 1700000004,
+    "current_node": "node-4",
+    "mapping": {
+      "node-1": {
+        "id": "node-1",
+        "parent": null,
+        "create_time": 1700000000,
+        "message": {
+          "id": "msg-1",
+          "author": { "role": "user" },
+          "create_time": 1700000000,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              { "content_type": "text", "text": "Hello. Please run a command and show the result. Also see attachments." }
+            ]
+          },
+          "metadata": {
+            "attachments": [
+              { "id": "file-abc", "name": "note.txt" },
+              { "id": "file-img", "name": "image.svg" }
+            ]
+          }
+        }
+      },
+      "node-2": {
+        "id": "node-2",
+        "parent": "node-1",
+        "create_time": 1700000001,
+        "message": {
+          "id": "msg-2",
+          "author": { "role": "assistant" },
+          "create_time": 1700000001,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              { "content_type": "tool_call", "id": "tool-1", "name": "bash", "input": { "cmd": "echo hi" } }
+            ]
+          },
+          "metadata": {}
+        }
+      },
+      "node-3": {
+        "id": "node-3",
+        "parent": "node-2",
+        "create_time": 1700000002,
+        "message": {
+          "id": "msg-3",
+          "author": { "role": "tool" },
+          "create_time": 1700000002,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              { "content_type": "tool_result", "id": "tool-1", "output": "hi" }
+            ]
+          },
+          "metadata": {}
+        }
+      },
+      "node-4": {
+        "id": "node-4",
+        "parent": "node-3",
+        "create_time": 1700000003,
+        "message": {
+          "id": "msg-4",
+          "author": { "role": "assistant" },
+          "create_time": 1700000003,
+          "content": {
+            "content_type": "text",
+            "parts": [
+              { "content_type": "text", "text": "Done." }
+            ]
+          },
+          "metadata": {}
+        }
+      }
+    }
+  }
+]
+

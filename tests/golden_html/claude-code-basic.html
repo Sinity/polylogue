@@ -44,6 +44,7 @@
         border-radius: 999px;
         font-size: 0.9rem;
       }
+      .muted { opacity: 0.8; font-size: 0.85rem; }
       .toolbar { display: flex; gap: 0.75rem; align-items: center; }
       .search-input {
         flex: 1;
@@ -53,12 +54,25 @@
         background: color-mix(in srgb, var(--bg) 96%, #00000008);
         color: var(--fg);
       }
+      .sidebar-input {
+        width: 100%;
+        padding: 0.4rem 0.6rem;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--bg) 96%, #00000008);
+        color: var(--fg);
+        margin: 0.4rem 0 0.75rem;
+      }
       .layout { display: grid; grid-template-columns: 260px 1fr; gap: 1.25rem; align-items: start; }
       .card {
         border: 1px solid var(--border);
         border-radius: 12px;
         padding: 1rem;
         background: color-mix(in srgb, var(--bg) 96%, #00000006);
+      }
+      @media (max-width: 860px) {
+        header { flex-wrap: wrap; }
+        .layout { grid-template-columns: 1fr; }
       }
       .metadata table {
         width: 100%;
@@ -74,6 +88,7 @@
       .toc ul { list-style: none; padding-left: 0; margin: 0; }
       .toc li { margin: 0.2rem 0; }
       .toc a { text-decoration: none; }
+      .toc a:hover { text-decoration: underline; }
       .attachments { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; }
       .attachment {
         border: 1px solid var(--border);
@@ -81,6 +96,9 @@
         padding: 0.6rem 0.75rem;
         background: color-mix(in srgb, var(--bg) 94%, #00000008);
       }
+      .attachment .att-meta { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
+      .attachment .att-name { font-weight: 600; }
+      .attachment .att-sub { font-size: 0.85rem; opacity: 0.8; }
       .attachment img {
         width: 100%;
         max-height: 160px;
@@ -88,6 +106,51 @@
         border-radius: 8px;
         border: 1px solid var(--border);
         margin-top: 0.5rem;
+      }
+      .lightbox {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: color-mix(in srgb, #000 75%, transparent);
+        z-index: 30;
+        padding: 1.25rem;
+      }
+      .lightbox[open] { display: flex; }
+      .lightbox-card {
+        max-width: 1100px;
+        width: 100%;
+        max-height: 92vh;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        overflow: hidden;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+      .lightbox-header {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.65rem 0.85rem;
+        border-bottom: 1px solid var(--border);
+      }
+      .lightbox-header a { text-decoration: none; }
+      .lightbox-body {
+        padding: 0.75rem;
+        overflow: auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .lightbox-body img {
+        max-width: 100%;
+        max-height: 80vh;
+        object-fit: contain;
+        border-radius: 10px;
+        border: 1px solid var(--border);
       }
       .content blockquote {
         border-left: 4px solid #3b82f6;
@@ -178,7 +241,7 @@
                 
                 <tr>
                   <th>contentHash</th>
-                  <td>c958013174df7a51a0e6a91df74991861f8f5742ca279b32661e54381235ba63</td>
+                  <td>1b6a5882d2e967ac2738d3bdfbfe4d4cba0aaa884e4956ba6eb1854e77f1e73c</td>
                 </tr>
                 
                 <tr>
@@ -218,7 +281,7 @@
                 
                 <tr>
                   <th>polylogue</th>
-                  <td>{&#34;contentHash&#34;: &#34;c958013174df7a51a0e6a91df74991861f8f5742ca279b32661e54381235ba63&#34;, &#34;conversationId&#34;: &#34;tests/fixtures/golden/claude_code/claude-code-golden.jsonl&#34;, &#34;lastUpdated&#34;: null, &#34;provider&#34;: &#34;claude-code&#34;, &#34;slug&#34;: &#34;claude-code-golden&#34;, &#34;title&#34;: &#34;claude-code-golden&#34;}</td>
+                  <td>{&#34;contentHash&#34;: &#34;1b6a5882d2e967ac2738d3bdfbfe4d4cba0aaa884e4956ba6eb1854e77f1e73c&#34;, &#34;conversationId&#34;: &#34;tests/fixtures/golden/claude_code/claude-code-golden.jsonl&#34;, &#34;lastUpdated&#34;: null, &#34;provider&#34;: &#34;claude-code&#34;, &#34;slug&#34;: &#34;claude-code-golden&#34;, &#34;title&#34;: &#34;claude-code-golden&#34;}</td>
                 </tr>
                 
                 <tr>
@@ -280,11 +343,31 @@
         </div>
       </div>
     </main>
+    <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Attachment preview">
+      <div class="lightbox-card">
+        <div class="lightbox-header">
+          <div>
+            <strong id="lightbox-title"></strong>
+            <span class="muted" id="lightbox-hint"></span>
+          </div>
+          <div class="toolbar">
+            <a id="lightbox-open" href="#" target="_blank" class="pill">open</a>
+            <a href="#" id="lightbox-close" class="pill">close</a>
+          </div>
+        </div>
+        <div class="lightbox-body">
+          <img id="lightbox-img" alt="" />
+        </div>
+      </div>
+    </div>
     <script>
       const tocEl = document.getElementById('toc');
       const headings = document.querySelectorAll('#content h1, #content h2, #content h3');
       headings.forEach(h => {
         if (!h.id) return;
+        const clone = h.cloneNode(true);
+        clone.querySelectorAll('.anchor-btn').forEach(n => n.remove());
+        const headingText = (clone.textContent || '').trim();
         const anchor = document.createElement('a');
         anchor.href = `#${h.id}`;
         anchor.textContent = '🔗';
@@ -300,7 +383,7 @@
         const li = document.createElement('li');
         const a = document.createElement('a');
         a.href = `#${h.id}`;
-        a.textContent = h.textContent;
+        a.textContent = headingText || h.id;
         li.appendChild(a);
         tocEl.appendChild(li);
       });
@@ -345,6 +428,51 @@
         });
         anchor.insertAdjacentElement('afterend', btn);
       });
+
+      // Attachments: filter + lightbox previews.
+      const attFilter = document.getElementById('att-filter');
+      const attCards = Array.from(document.querySelectorAll('.attachment'));
+      function applyAttFilter(term) {
+        const q = (term || '').trim().toLowerCase();
+        for (const card of attCards) {
+          const hay = card.getAttribute('data-att') || '';
+          card.classList.toggle('hidden', q && !hay.includes(q));
+        }
+      }
+      if (attFilter) attFilter.addEventListener('input', (e) => applyAttFilter(e.target.value));
+
+      const lightbox = document.getElementById('lightbox');
+      const lightboxImg = document.getElementById('lightbox-img');
+      const lightboxTitle = document.getElementById('lightbox-title');
+      const lightboxOpen = document.getElementById('lightbox-open');
+      const lightboxHint = document.getElementById('lightbox-hint');
+      const lightboxClose = document.getElementById('lightbox-close');
+
+      function closeLightbox() {
+        if (!lightbox) return;
+        lightbox.removeAttribute('open');
+        if (lightboxImg) lightboxImg.src = '';
+      }
+      function openLightbox(src, name) {
+        if (!lightbox) return;
+        lightbox.setAttribute('open', 'true');
+        if (lightboxImg) lightboxImg.src = src;
+        if (lightboxImg) lightboxImg.alt = name || '';
+        if (lightboxTitle) lightboxTitle.textContent = name || '';
+        if (lightboxHint) lightboxHint.textContent = ' (Esc to close)';
+        if (lightboxOpen) lightboxOpen.href = src;
+      }
+      document.querySelectorAll('.att-preview').forEach(img => {
+        img.addEventListener('click', (e) => {
+          e.preventDefault();
+          const src = img.getAttribute('data-full') || img.getAttribute('src');
+          const name = img.getAttribute('data-name') || '';
+          openLightbox(src, name);
+        });
+      });
+      if (lightboxClose) lightboxClose.addEventListener('click', (e) => { e.preventDefault(); closeLightbox(); });
+      if (lightbox) lightbox.addEventListener('click', (e) => { if (e.target === lightbox) closeLightbox(); });
+      window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
     </script>
   </body>
 </html>

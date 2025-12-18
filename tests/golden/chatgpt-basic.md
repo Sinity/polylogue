@@ -10,7 +10,7 @@ attachmentPolicy:
 attachment_bytes: 0
 attachmentsDir: null
 collapseThreshold: 10
-contentHash: 0e389ee88a35ed7ab13edee24abd8e7867cb0046e183a0f1e39139007d30f1c9
+contentHash: ba13482a4969c45bff3bf35e90070ba2422b9676f1d7f6bbdf13ea229408b59f
 currentBranch: branch-000
 dirty: false
 html: false
@@ -19,7 +19,7 @@ lastImported: '2000-01-01T00:00:00Z'
 lastUpdated: 4
 outputPath: <path>
 polylogue:
-  contentHash: 0e389ee88a35ed7ab13edee24abd8e7867cb0046e183a0f1e39139007d30f1c9
+  contentHash: ba13482a4969c45bff3bf35e90070ba2422b9676f1d7f6bbdf13ea229408b59f
   conversationId: golden-chatgpt-1
   lastUpdated: '4'
   provider: chatgpt

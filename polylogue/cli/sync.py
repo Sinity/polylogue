@@ -10,6 +10,7 @@ import shutil
 from ..cli_common import filter_chats, sk_select
 from ..commands import CommandEnv, list_command, sync_command
 from ..drive_client import DriveClient
+from ..drive import snapshot_drive_metrics
 from ..local_sync import (
     LocalSyncResult,
     LOCAL_SYNC_PROVIDER_NAMES,
@@ -196,7 +197,11 @@ def _retry_drive_attachments_only(
             meta = drive.attachment_meta(att_id)
             ok = drive.download_attachment(att_id, target_path)
             if not ok:
-                failures.append({"id": entry.get("id"), "slug": slug, "attachment": att_id, "path": str(target_path)})
+                err = snapshot_drive_metrics(reset=False).get("lastError")
+                failure = {"id": entry.get("id"), "slug": slug, "attachment": att_id, "path": str(target_path)}
+                if isinstance(err, str) and err.strip():
+                    failure["error"] = err.strip()
+                failures.append(failure)
                 continue
             downloaded += 1
             if isinstance(meta, dict):

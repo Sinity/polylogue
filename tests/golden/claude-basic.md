@@ -10,7 +10,7 @@ attachmentPolicy:
 attachment_bytes: 0
 attachmentsDir: null
 collapseThreshold: 10
-contentHash: 03bee25aeb24d3008c8f09f69d67e6c740a5d26efbd1faf2a592cd29221255fc
+contentHash: 1debf6fbfc81e761794797e3cb74a40e31f5066c76e1316459bacb6b96d1320c
 currentBranch: branch-000
 dirty: false
 html: false
@@ -19,7 +19,7 @@ lastImported: '2000-01-01T00:00:00Z'
 lastUpdated: null
 outputPath: <path>
 polylogue:
-  contentHash: 03bee25aeb24d3008c8f09f69d67e6c740a5d26efbd1faf2a592cd29221255fc
+  contentHash: 1debf6fbfc81e761794797e3cb74a40e31f5066c76e1316459bacb6b96d1320c
   conversationId: golden-claude-1
   lastUpdated: null
   provider: claude.ai
