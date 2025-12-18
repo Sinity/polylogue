@@ -13,6 +13,7 @@ def run_browse_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     from .metrics import run_metrics_cli
     from .runs import run_runs_cli
     from .status import run_stats_cli, run_status_cli
+    from .timeline import run_timeline_cli
 
     browse_cmd = args.browse_cmd
 
@@ -31,6 +32,8 @@ def run_browse_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         run_inbox_cli(args, env)
     elif browse_cmd == "metrics":
         run_metrics_cli(args, env)
+    elif browse_cmd == "timeline":
+        run_timeline_cli(args, env)
     else:
         raise SystemExit(f"Unknown browse sub-command: {browse_cmd}")
 
