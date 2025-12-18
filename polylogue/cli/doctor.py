@@ -55,7 +55,7 @@ def run_doctor_cli(args: SimpleNamespace, env: CommandEnv) -> None:
 
     if getattr(args, "json", False):
         payload = stamp_payload(config_hint)
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
     lines = [

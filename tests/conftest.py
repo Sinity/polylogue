@@ -39,11 +39,13 @@ def _build_tiktoken_stub() -> types.ModuleType:
     core_module = types.ModuleType("tiktoken.core")
     core_module.Encoding = _SimpleEncoding  # type: ignore[attr-defined]
     module.core = core_module  # type: ignore[attr-defined]
-    sys.modules.setdefault("tiktoken.core", core_module)
+    sys.modules["tiktoken.core"] = core_module
     return module
 
 
-sys.modules.setdefault("tiktoken", _build_tiktoken_stub())
+_tiktoken_stub = _build_tiktoken_stub()
+# Force deterministic tokenization in tests even when `tiktoken` is installed.
+sys.modules["tiktoken"] = _tiktoken_stub
 
 def _configure_state(monkeypatch, root: Path) -> Path:
     state_root = root / "state"

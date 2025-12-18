@@ -18,6 +18,7 @@ def run_runs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     cmd_filter = _normalize_filter(getattr(args, "commands", None))
     since_epoch = parse_input_time_to_epoch(getattr(args, "since", None))
     until_epoch = parse_input_time_to_epoch(getattr(args, "until", None))
+    json_lines = bool(getattr(args, "json_lines", False))
     runs = load_runs(limit=limit)
     if provider_filter:
         runs = [run for run in runs if (run.get("provider") or "").lower() in provider_filter]
@@ -26,12 +27,17 @@ def run_runs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     if since_epoch is not None or until_epoch is not None:
         runs = [run for run in runs if _timestamp_in_range(run.get("timestamp"), since_epoch, until_epoch)]
 
+    if json_lines:
+        for row in runs:
+            print(json.dumps(row, separators=(",", ":"), sort_keys=True))
+        return
+
     if getattr(args, "json", False):
         if getattr(args, "json_verbose", False):
             payload = stamp_payload({"runs": runs, "count": len(runs)})
-            print(json.dumps(payload, indent=2))
+            print(json.dumps(payload, indent=2, sort_keys=True))
         else:
-            print(json.dumps(runs, indent=2))
+            print(json.dumps(runs, indent=2, sort_keys=True))
         return
 
     if env.ui.plain:
@@ -39,6 +45,7 @@ def run_runs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         return
 
     table = Table(title=f"Recent Runs (n={len(runs)})")
+    table.add_column("ID", justify="right")
     table.add_column("Timestamp")
     table.add_column("Command")
     table.add_column("Provider")
@@ -48,6 +55,7 @@ def run_runs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     table.add_column("Failures", justify="right")
     for entry in runs:
         table.add_row(
+            str(entry.get("id") or ""),
             entry.get("timestamp", "-"),
             entry.get("cmd", "-"),
             entry.get("provider", "-"),
@@ -73,7 +81,7 @@ def _print_plain(env: CommandEnv, runs: List[dict]) -> None:
         return
     for entry in runs:
         console.print(
-            f"{entry.get('timestamp','-')} :: {entry.get('cmd','-')} provider={entry.get('provider','-')} count={entry.get('count',0)} duration={entry.get('duration',0)}"
+            f"#{entry.get('id','-')} {entry.get('timestamp','-')} :: {entry.get('cmd','-')} provider={entry.get('provider','-')} count={entry.get('count',0)} duration={entry.get('duration',0)}"
         )
 
 

@@ -173,6 +173,7 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--list-only", is_flag=True, help="List Drive chats without syncing")
 @click.option("--offline", is_flag=True, help="Skip network-dependent steps (Drive disallowed)")
 @click.option("--watch", is_flag=True, help="Watch for changes and sync continuously (local providers only)")
+@click.option("--jobs", type=int, default=1, show_default=True, help="Parallelism for local providers (codex/claude-code)")
 @click.option("--debounce", type=float, default=2.0, show_default=True, help="Minimal seconds between sync runs in watch mode")
 @click.option("--stall-seconds", type=float, default=60.0, show_default=True, help="Warn when watch makes no progress for this many seconds")
 @click.option("--fail-on-stall", is_flag=True, help="Exit with non-zero status when watch detects a stall")
@@ -182,6 +183,8 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--watch-plan", is_flag=True, help="Print the assembled watch command and exit (no watch run)")
 @click.option("--drive-retries", type=int, help="Override Drive retry attempts (default: config or 3)")
 @click.option("--drive-retry-base", type=float, help="Override Drive retry base delay seconds (default: config or 0.5)")
+@click.option("--resume-from", type=int, help="Resume a previous run by run ID (reprocess failed items only)")
+@click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.option("--root", type=str, help="Named root label to use when configs support multi-root archives")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.pass_obj
@@ -220,6 +223,7 @@ def sync(env: CommandEnv, **kwargs) -> None:
 @click.option("--base-dir", type=click.Path(path_type=Path), help="Base directory for local providers")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in imported Markdown/HTML outputs")
+@click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.pass_obj
 def import_cmd_click(env: CommandEnv, **kwargs) -> None:
     """Import provider exports."""
@@ -256,6 +260,7 @@ def import_cmd_click(env: CommandEnv, **kwargs) -> None:
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in rendered Markdown/HTML outputs")
+@click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.pass_obj
 def render(env: CommandEnv, **kwargs) -> None:
     """Render JSON exports to Markdown/HTML."""
@@ -270,6 +275,34 @@ def render(env: CommandEnv, **kwargs) -> None:
         exit_code = run_render_force(env, provider=None, conversation_id=None, output_dir=getattr(args, "out", None))
         raise SystemExit(exit_code)
     run_render_cli(args, env, json_output=getattr(args, "json", False))
+
+
+# ---------------------------- verify ----------------------------
+
+
+@cli.command()
+@click.option("--provider", type=str, help="Comma-separated provider filter")
+@click.option("--slug", type=str, help="Filter to a single slug")
+@click.option("--conversation-id", "conversation_ids", multiple=True, help="Filter to a conversation ID (repeatable)")
+@click.option("--limit", type=int, help="Limit number of conversations verified")
+@click.option("--fix", is_flag=True, help="Rewrite conversation.md front matter into canonical form when possible")
+@click.option(
+    "--unknown",
+    "unknown_policy",
+    type=click.Choice(["ignore", "warn", "error"]),
+    default="warn",
+    show_default=True,
+    help="How to handle unknown polylogue front-matter keys",
+)
+@click.option("--allow-polylogue-key", "allow_polylogue_keys", multiple=True, help="Allow additional polylogue metadata key (repeatable)")
+@click.option("--strict", is_flag=True, help="Treat warnings as errors")
+@click.option("--json", is_flag=True, help="Emit machine-readable report")
+@click.pass_obj
+def verify(env: CommandEnv, **kwargs) -> None:
+    """Verify rendered outputs against the database and state store."""
+    from .verify import run_verify_cli
+
+    run_verify_cli(SimpleNamespace(**kwargs), env)
 
 
 # ---------------------------- search ----------------------------
@@ -420,10 +453,25 @@ def browse_status(env: CommandEnv, **kwargs) -> None:
 @click.option("--since", type=str, help="Only include runs on/after this timestamp")
 @click.option("--until", type=str, help="Only include runs on/before this timestamp")
 @click.option("--json", is_flag=True)
+@click.option("--json-lines", is_flag=True, help="Emit newline-delimited JSON records (implies --json)")
 @click.option("--json-verbose", is_flag=True)
 @click.pass_obj
 def browse_runs(env: CommandEnv, **kwargs) -> None:
     args = SimpleNamespace(browse_cmd="runs", **kwargs)
+    browse_cmd.run_browse_cli(args, env)
+
+
+@browse_group.command(name="metrics")
+@click.option("--providers", type=str, help="Comma-separated provider filter")
+@click.option("--runs-limit", type=int, default=0, show_default=True, help="Limit historical runs considered (0 = all)")
+@click.option("--json", is_flag=True, help="Emit JSON instead of Prometheus text format")
+@click.option("--serve", is_flag=True, help="Serve metrics over HTTP at /metrics (Prometheus format)")
+@click.option("--host", type=str, default="127.0.0.1", show_default=True, help="Host to bind when serving metrics")
+@click.option("--port", type=int, default=8000, show_default=True, help="Port to bind when serving metrics")
+@click.pass_obj
+def browse_metrics(env: CommandEnv, **kwargs) -> None:
+    """Export Prometheus-friendly metrics from Polylogue state/run history."""
+    args = SimpleNamespace(browse_cmd="metrics", **kwargs)
     browse_cmd.run_browse_cli(args, env)
 
 
@@ -616,6 +664,9 @@ def attachments_group(ctx: click.Context) -> None:
 
 @attachments_group.command(name="stats")
 @click.option("--dir", type=click.Path(path_type=Path), help="Root directory containing archives")
+@click.option("--provider", type=str, help="Filter by provider (comma-separated)")
+@click.option("--since", type=str, help="Only include attachments on/after this timestamp (index only)")
+@click.option("--until", type=str, help="Only include attachments on/before this timestamp (index only)")
 @click.option("--ext", type=str, help="Filter by file extension")
 @click.option("--hash", "hash", is_flag=True, help="Hash attachments to compute deduped totals")
 @click.option("--sort", type=click.Choice(["size", "name"]), default="size")
@@ -624,6 +675,8 @@ def attachments_group(ctx: click.Context) -> None:
 @click.option("--json", is_flag=True)
 @click.option("--json-lines", is_flag=True)
 @click.option("--from-index", is_flag=True, help="Read attachment metadata from the index DB")
+@click.option("--clean-orphans", is_flag=True, help="Remove on-disk attachments not referenced by the index DB (requires --from-index)")
+@click.option("--dry-run", is_flag=True, help="Preview actions without deleting files (used with --clean-orphans)")
 @click.pass_obj
 def attachments_stats(env: CommandEnv, **kwargs) -> None:
     args = SimpleNamespace(attachments_cmd="stats", **kwargs)
