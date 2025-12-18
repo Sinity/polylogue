@@ -8,6 +8,7 @@ from ..commands import CommandEnv
 
 def run_browse_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     """Dispatch to appropriate browse subcommand."""
+    from .analytics import run_analytics_cli
     from .branches_cli import run_branches_cli
     from .inbox import run_inbox_cli
     from .metrics import run_metrics_cli
@@ -34,6 +35,8 @@ def run_browse_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         run_metrics_cli(args, env)
     elif browse_cmd == "timeline":
         run_timeline_cli(args, env)
+    elif browse_cmd == "analytics":
+        run_analytics_cli(args, env)
     else:
         raise SystemExit(f"Unknown browse sub-command: {browse_cmd}")
 

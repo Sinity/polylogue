@@ -46,7 +46,7 @@ If you’re resuming work later, this is the “what’s already implemented” 
 ## P3 – Analytics and Reporting
 
 - Timeline views and conversation/branch maps (HTML-side conversation map/timeline). **(partially done: `browse timeline` writes a global HTML timeline + `--json` mode)**
-- Role/model/branch analytics: tables or heatmaps; per-branch metrics and branching hotspots in status.
+- Role/model/branch analytics: tables or heatmaps; per-branch metrics and branching hotspots in status. **(partially done: `browse analytics` writes HTML + `--json` with roles/models/hotspots)**
 - Metrics export/serve endpoint (Prometheus-friendly). Structured run history export. **(done: `browse metrics` emits Prometheus text + `--serve`; `browse runs --json-lines` emits JSONL)**
 
 ## P3 – Testing and Quality
