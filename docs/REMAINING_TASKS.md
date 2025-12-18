@@ -62,4 +62,4 @@ If you’re resuming work later, this is the “what’s already implemented” 
 
 - Per-run metadata injection (`--meta key=value`); stamp renders with source path, import time, CLI version, and content hash. **(done: `--meta` stored as `polylogue.cliMeta` + included in run logs)**
 - Integrity verifier (`polylogue verify`) to check front matter vs DB state, attachments, and branch files; front-matter canonicalizer to normalize keys/order and flag unknowns. **(done: verify supports `--fix`, `--unknown`, `--strict`, and uses canonicalizer)**
-- Partial run recovery (`--resume-from <run-id>`) to retry failed chats/attachments with a clear report. **(partially done: sync supports `--resume-from` using recorded failures; next: capture more per-item reasons + attachment-only retries)**
+- Partial run recovery (`--resume-from <run-id>`) to retry failed chats/attachments with a clear report. **(partially done: sync supports `--resume-from` using recorded failures and now includes stage/error summaries; next: attachment-only retries + richer per-item failure detail)**
