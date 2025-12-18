@@ -55,7 +55,7 @@ If you’re resuming work later, this is the “what’s already implemented” 
 - CLI integration matrix: cover plain vs interactive (PTY-backed) runs, non-TTY guardrails, and picker flows; add fixtures for `search --open`, `--json/--json-lines/--csv`, `--print-paths`, and watch/dump flows. **(partially done: Click wrapper tests exist; skim picker selection + non-TTY guardrails now have unit coverage)**
 - Watch-mode regression: simulated file change streams with debounce windows to catch stalls, suppressed events, and base-dir validation. **(partially done: debounce + base-dir tests exist; stall detection now triggers during debounce and is covered)**
 - UI surface tests: stub gum/skim/bat/glow/delta (or the pure-Python facade when available) to assert prompts, summaries, anchors, progress output, and warnings render correctly in rich and plain modes. **(partially done: gum/skim-backed confirm/input/choose + picker flows have unit tests; delta diff output has unit coverage)**
-- Interactive harness: add PTY-driven tests (pexpect or similar) to exercise prompts/confirmations/menus end-to-end, including cancellation paths and default selections.
+- Interactive harness: add PTY-driven tests (pexpect or similar) to exercise prompts/confirmations/menus end-to-end, including cancellation paths and default selections. **(partially done: PTY tests cover `config init` end-to-end via stubbed gum/sk commands in `tests/test_interactive_harness.py`)**
 - Replace custom retry logic with tenacity-based wrappers (with retry-count assertions in tests). **(done: Drive retry wrappers now use tenacity; existing drive metrics tests cover retry counts)**
 
 ## P3 – Metadata, Provenance, and Integrity

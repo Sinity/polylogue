@@ -27,6 +27,7 @@ let
     pytest-cov
     coverage
     mypy
+    pexpect
   ];
 in {
   inherit commonDeps devDeps;
