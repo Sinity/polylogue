@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 from rich.table import Table
@@ -14,7 +14,7 @@ from ..schema import stamp_payload
 from ..util import CLAUDE_CODE_PROJECT_ROOT, CODEX_SESSIONS_ROOT
 
 
-def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_doctor_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     console = cast(Any, ui.console)
     codex_dir = Path(args.codex_dir).expanduser() if args.codex_dir else CODEX_SESSIONS_ROOT
@@ -55,7 +55,7 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
     if getattr(args, "json", False):
         payload = stamp_payload(config_hint)
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
     lines = [

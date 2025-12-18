@@ -1,14 +1,14 @@
-"""Click-based CLI entrypoint that wraps existing command dispatchers.
+"""Click-based CLI entrypoint.
 
-This preserves current behaviours by converting Click parameters into
-argparse-style Namespaces and deferring to the existing dispatch
-functions under polylogue.cli.commands.*.
+This preserves existing behaviours by converting Click parameters into
+simple attribute namespaces and deferring to existing `run_*_cli` helpers.
 """
 from __future__ import annotations
 
+import os
 import sys
-from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional, Sequence, Tuple
 
 import click
@@ -16,28 +16,21 @@ from rich.table import Table
 
 from ..commands import CommandEnv
 from ..ui import create_ui
+from .click_introspect import click_command_entries
+from .completions_cli import run_complete_cli, run_completions_cli
 from . import (
     attachments,
     browse as browse_cmd,
     imports,
-    maintain,
+    maintain as maintain_cli,
     open_helper,
     prefs as prefs_cmd,
     reprocess,
 )
-from .commands import (
-    config as config_cmd,
-    render as render_cmd,
-    search as search_cmd,
-    status as status_cmd,
-    sync as sync_cmd,
-)
-from .app import (
-    run_complete_cli,
-    run_completions_cli,
-    run_compare_cli,
-    run_search_preview,
-)
+from .config_cli import run_config_show
+from .search_cli import run_search_cli, run_search_preview
+from .compare_cli import run_compare_cli
+from .click_options import OptionalValueChoiceOption
 from .examples import COMMAND_EXAMPLES
 from .env_cli import run_env_cli
 
@@ -45,16 +38,18 @@ from .env_cli import run_env_cli
 def _build_env(plain: bool) -> CommandEnv:
     return CommandEnv(ui=create_ui(plain))
 
+_FORCE_PLAIN_VALUES = {"1", "true", "yes", "on"}
 
-def _click_command_entries(group: click.Group) -> List[Tuple[str, str]]:
-    entries: List[Tuple[str, str]] = []
-    for name, command in sorted(group.commands.items()):
-        if command.hidden:
-            continue
-        desc = command.help or command.short_help or (command.__doc__ or "")
-        description = " ".join((desc or "").split())
-        entries.append((name, description))
-    return entries
+
+def _should_use_plain(*, plain: bool, interactive: bool) -> bool:
+    if interactive:
+        return False
+    if plain:
+        return True
+    forced = os.environ.get("POLYLOGUE_FORCE_PLAIN")
+    if forced and forced.strip().lower() in _FORCE_PLAIN_VALUES:
+        return True
+    return not (sys.stdout.isatty() and sys.stderr.isatty())
 
 
 def _print_command_listing(console, plain: bool, entries: Sequence[Tuple[str, str]]) -> None:
@@ -104,7 +99,7 @@ def _run_click_help(env: CommandEnv, ctx: click.Context, topic: Optional[str], e
     console = env.ui.console
     root_ctx = ctx.find_root()
     group: click.Group = root_ctx.command  # type: ignore[assignment]
-    entries = _click_command_entries(group)
+    entries = click_command_entries(group)
     show_examples_only = examples and not topic
 
     if topic:
@@ -134,7 +129,7 @@ def _run_click_help(env: CommandEnv, ctx: click.Context, topic: Optional[str], e
 @click.pass_context
 def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
     """Polylogue CLI (Click)."""
-    use_plain = plain or (not sys.stdout.isatty() or not sys.stderr.isatty()) and not interactive
+    use_plain = _should_use_plain(plain=plain, interactive=interactive)
     ctx.obj = _build_env(use_plain)
 
 
@@ -146,12 +141,23 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--out", type=click.Path(path_type=Path), help="Override output directory")
 @click.option("--links-only", is_flag=True, help="Link attachments instead of downloading (Drive only)")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
+@click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in synced Markdown/HTML outputs")
 @click.option("--dry-run", is_flag=True, help="Report actions without writing files")
 @click.option("--force", is_flag=True, help="Re-render even if conversations are up-to-date")
 @click.option("--prune", is_flag=True, help="Remove outputs for conversations that vanished upstream")
 @click.option("--prune-snapshot", is_flag=True, help="Snapshot outputs before pruning (STATE_HOME/rollback)")
 @click.option("--collapse-threshold", type=int, default=None, help="Collapse threshold override")
-@click.option("--html", "html_mode", type=click.Choice(["on", "off", "auto"]), default="auto", show_default=True)
+@click.option(
+    "--html",
+    "html_mode",
+    cls=OptionalValueChoiceOption,
+    is_flag=False,
+    flag_value="on",
+    type=click.Choice(["on", "off", "auto"]),
+    default="auto",
+    show_default=True,
+    help="HTML preview mode: on/off/auto (default auto)",
+)
 @click.option("--diff", is_flag=True, help="Write delta diff alongside updated Markdown")
 @click.option("--json", is_flag=True, help="Emit machine-readable summary")
 @click.option("--print-paths", is_flag=True, help="List written files after sync")
@@ -167,6 +173,7 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--list-only", is_flag=True, help="List Drive chats without syncing")
 @click.option("--offline", is_flag=True, help="Skip network-dependent steps (Drive disallowed)")
 @click.option("--watch", is_flag=True, help="Watch for changes and sync continuously (local providers only)")
+@click.option("--jobs", type=int, default=1, show_default=True, help="Parallelism for local providers (codex/claude-code)")
 @click.option("--debounce", type=float, default=2.0, show_default=True, help="Minimal seconds between sync runs in watch mode")
 @click.option("--stall-seconds", type=float, default=60.0, show_default=True, help="Warn when watch makes no progress for this many seconds")
 @click.option("--fail-on-stall", is_flag=True, help="Exit with non-zero status when watch detects a stall")
@@ -176,12 +183,16 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--watch-plan", is_flag=True, help="Print the assembled watch command and exit (no watch run)")
 @click.option("--drive-retries", type=int, help="Override Drive retry attempts (default: config or 3)")
 @click.option("--drive-retry-base", type=float, help="Override Drive retry base delay seconds (default: config or 0.5)")
+@click.option("--resume-from", type=int, help="Resume a previous run by run ID (reprocess failed items only)")
+@click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.option("--root", type=str, help="Named root label to use when configs support multi-root archives")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.pass_obj
 def sync(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(**kwargs)
-    sync_cmd.dispatch(args, env)
+    """Synchronize provider archives (use --watch for continuous mode)."""
+    from .sync import run_sync_cli
+
+    run_sync_cli(SimpleNamespace(**kwargs), env)
 
 
 # ---------------------------- import ----------------------------
@@ -192,17 +203,31 @@ def sync(env: CommandEnv, **kwargs) -> None:
 @click.argument("source", nargs=-1, type=click.Path(path_type=Path))
 @click.option("--out", type=click.Path(path_type=Path), help="Output directory")
 @click.option("--collapse-threshold", type=int, default=None, help="Collapse threshold override")
-@click.option("--html", "html_mode", type=click.Choice(["on", "off", "auto"]), default="auto", show_default=True)
-@click.option("--force", is_flag=True, help="Overwrite outputs even when up-to-date")
+@click.option(
+    "--html",
+    "html_mode",
+    cls=OptionalValueChoiceOption,
+    is_flag=False,
+    flag_value="on",
+    type=click.Choice(["on", "off", "auto"]),
+    default="auto",
+    show_default=True,
+    help="HTML preview mode: on/off/auto (default auto)",
+)
+@click.option("--force", is_flag=True, help="Regenerate markdown from database instead of reading source files")
 @click.option("--all", is_flag=True, help="Process all conversations/sessions without selection")
 @click.option("--conversation-id", "conversation_ids", multiple=True, help="Conversation ID filter (repeatable)")
 @click.option("--json", is_flag=True, help="Emit machine-readable summary")
+@click.option("--print-paths", is_flag=True, help="List written files after import")
 @click.option("--to-clipboard", is_flag=True, help="Copy single imported Markdown file to the clipboard")
 @click.option("--base-dir", type=click.Path(path_type=Path), help="Base directory for local providers")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
+@click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in imported Markdown/HTML outputs")
+@click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.pass_obj
 def import_cmd_click(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(**kwargs)
+    """Import provider exports."""
+    args = SimpleNamespace(**kwargs)
     imports.run_import_cli(args, env)
 
 
@@ -213,7 +238,17 @@ def import_cmd_click(env: CommandEnv, **kwargs) -> None:
 @click.argument("input", type=click.Path(path_type=Path))
 @click.option("--out", type=click.Path(path_type=Path), help="Output directory")
 @click.option("--collapse-threshold", type=int, default=None, help="Collapse threshold override")
-@click.option("--html", "html_mode", type=click.Choice(["on", "off", "auto"]), default="auto", show_default=True)
+@click.option(
+    "--html",
+    "html_mode",
+    cls=OptionalValueChoiceOption,
+    is_flag=False,
+    flag_value="on",
+    type=click.Choice(["on", "off", "auto"]),
+    default="auto",
+    show_default=True,
+    help="HTML preview mode: on/off/auto (default auto)",
+)
 @click.option("--force", is_flag=True, help="Overwrite outputs even when up-to-date")
 @click.option("--allow-dirty", is_flag=True, help="Allow overwriting files with local edits (requires --force)")
 @click.option("--links-only", is_flag=True, help="Link attachments instead of downloading")
@@ -224,13 +259,50 @@ def import_cmd_click(env: CommandEnv, **kwargs) -> None:
 @click.option("--dry-run", is_flag=True, help="Report actions without writing files")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
+@click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in rendered Markdown/HTML outputs")
+@click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.pass_obj
 def render(env: CommandEnv, **kwargs) -> None:
+    """Render JSON exports to Markdown/HTML."""
     if kwargs.get("allow_dirty") and not kwargs.get("force"):
         env.ui.console.print("--allow-dirty requires --force")
         raise SystemExit(1)
-    args = Namespace(**kwargs)
-    render_cmd.dispatch(args, env)
+    from .render import run_render_cli
+    from .render_force import run_render_force
+
+    args = SimpleNamespace(**kwargs)
+    if getattr(args, "force", False):
+        exit_code = run_render_force(env, provider=None, conversation_id=None, output_dir=getattr(args, "out", None))
+        raise SystemExit(exit_code)
+    run_render_cli(args, env, json_output=getattr(args, "json", False))
+
+
+# ---------------------------- verify ----------------------------
+
+
+@cli.command()
+@click.option("--provider", type=str, help="Comma-separated provider filter")
+@click.option("--slug", type=str, help="Filter to a single slug")
+@click.option("--conversation-id", "conversation_ids", multiple=True, help="Filter to a conversation ID (repeatable)")
+@click.option("--limit", type=int, help="Limit number of conversations verified")
+@click.option("--fix", is_flag=True, help="Rewrite conversation.md front matter into canonical form when possible")
+@click.option(
+    "--unknown",
+    "unknown_policy",
+    type=click.Choice(["ignore", "warn", "error"]),
+    default="warn",
+    show_default=True,
+    help="How to handle unknown polylogue front-matter keys",
+)
+@click.option("--allow-polylogue-key", "allow_polylogue_keys", multiple=True, help="Allow additional polylogue metadata key (repeatable)")
+@click.option("--strict", is_flag=True, help="Treat warnings as errors")
+@click.option("--json", is_flag=True, help="Emit machine-readable report")
+@click.pass_obj
+def verify(env: CommandEnv, **kwargs) -> None:
+    """Verify rendered outputs against the database and state store."""
+    from .verify import run_verify_cli
+
+    run_verify_cli(SimpleNamespace(**kwargs), env)
 
 
 # ---------------------------- search ----------------------------
@@ -259,9 +331,10 @@ def render(env: CommandEnv, **kwargs) -> None:
 @click.option("--open", "open_result", is_flag=True, help="Open result file in $EDITOR after search")
 @click.pass_obj
 def search(env: CommandEnv, **kwargs) -> None:
+    """Search rendered transcripts."""
     kwargs["open"] = kwargs.pop("open_result")
-    args = Namespace(**kwargs)
-    search_cmd.dispatch(args, env)
+    args = SimpleNamespace(**kwargs)
+    run_search_cli(args, env)
 
 
 # ---------------------------- status ----------------------------
@@ -285,8 +358,10 @@ def search(env: CommandEnv, **kwargs) -> None:
 @click.option("--summary-only", is_flag=True, help="Only emit the summary JSON without printing tables")
 @click.pass_obj
 def status(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(**kwargs)
-    status_cmd.dispatch(args, env)
+    """Show cached Drive info and recent runs."""
+    from .status import run_status_cli
+
+    run_status_cli(SimpleNamespace(**kwargs), env)
 
 
 # ---------------------------- compare ----------------------------
@@ -301,7 +376,8 @@ def status(env: CommandEnv, **kwargs) -> None:
 @click.option("--fields", type=str, default="provider,slug,branchId,messageId,score,snippet,model,path", show_default=True, help="Fields for JSON export")
 @click.pass_obj
 def compare(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(**kwargs)
+    """Compare coverage between two providers for a query."""
+    args = SimpleNamespace(**kwargs)
     run_compare_cli(args, env)
 
 # ---------------------------- browse ----------------------------
@@ -327,7 +403,7 @@ def browse_group(ctx: click.Context) -> None:
 @click.pass_obj
 def browse_branches(env: CommandEnv, **kwargs) -> None:
     kwargs["open"] = kwargs.pop("open_result")
-    args = Namespace(browse_cmd="branches", **kwargs)
+    args = SimpleNamespace(browse_cmd="branches", **kwargs)
     browse_cmd.run_browse_cli(args, env)
 
 
@@ -345,7 +421,7 @@ def browse_branches(env: CommandEnv, **kwargs) -> None:
 @click.option("--until", type=str, help="Only include files on/before this timestamp")
 @click.pass_obj
 def browse_stats(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(browse_cmd="stats", **kwargs)
+    args = SimpleNamespace(browse_cmd="stats", **kwargs)
     browse_cmd.run_browse_cli(args, env)
 
 
@@ -366,7 +442,7 @@ def browse_stats(env: CommandEnv, **kwargs) -> None:
 @click.option("--summary-only", is_flag=True)
 @click.pass_obj
 def browse_status(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(browse_cmd="status", **kwargs)
+    args = SimpleNamespace(browse_cmd="status", **kwargs)
     browse_cmd.run_browse_cli(args, env)
 
 
@@ -377,10 +453,25 @@ def browse_status(env: CommandEnv, **kwargs) -> None:
 @click.option("--since", type=str, help="Only include runs on/after this timestamp")
 @click.option("--until", type=str, help="Only include runs on/before this timestamp")
 @click.option("--json", is_flag=True)
+@click.option("--json-lines", is_flag=True, help="Emit newline-delimited JSON records (implies --json)")
 @click.option("--json-verbose", is_flag=True)
 @click.pass_obj
 def browse_runs(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(browse_cmd="runs", **kwargs)
+    args = SimpleNamespace(browse_cmd="runs", **kwargs)
+    browse_cmd.run_browse_cli(args, env)
+
+
+@browse_group.command(name="metrics")
+@click.option("--providers", type=str, help="Comma-separated provider filter")
+@click.option("--runs-limit", type=int, default=0, show_default=True, help="Limit historical runs considered (0 = all)")
+@click.option("--json", is_flag=True, help="Emit JSON instead of Prometheus text format")
+@click.option("--serve", is_flag=True, help="Serve metrics over HTTP at /metrics (Prometheus format)")
+@click.option("--host", type=str, default="127.0.0.1", show_default=True, help="Host to bind when serving metrics")
+@click.option("--port", type=int, default=8000, show_default=True, help="Port to bind when serving metrics")
+@click.pass_obj
+def browse_metrics(env: CommandEnv, **kwargs) -> None:
+    """Export Prometheus-friendly metrics from Polylogue state/run history."""
+    args = SimpleNamespace(browse_cmd="metrics", **kwargs)
     browse_cmd.run_browse_cli(args, env)
 
 
@@ -392,7 +483,7 @@ def browse_runs(env: CommandEnv, **kwargs) -> None:
 @click.option("--json", is_flag=True)
 @click.pass_obj
 def browse_inbox(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(browse_cmd="inbox", **kwargs)
+    args = SimpleNamespace(browse_cmd="inbox", **kwargs)
     browse_cmd.run_browse_cli(args, env)
 
 
@@ -411,8 +502,8 @@ def maintain(ctx: click.Context) -> None:
 @click.option("--max-disk", type=float, help="Abort if projected snapshot size exceeds this many GiB")
 @click.pass_obj
 def maintain_prune(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(maintain_cmd="prune", **kwargs)
-    maintain.run_maintain_cli(args, env)
+    args = SimpleNamespace(maintain_cmd="prune", **kwargs)
+    maintain_cli.run_maintain_cli(args, env)
 
 
 @maintain.command(name="doctor")
@@ -423,8 +514,8 @@ def maintain_prune(env: CommandEnv, **kwargs) -> None:
 @click.option("--json-verbose", is_flag=True, help="Emit JSON with verbose details")
 @click.pass_obj
 def maintain_doctor(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(maintain_cmd="doctor", **kwargs)
-    maintain.run_maintain_cli(args, env)
+    args = SimpleNamespace(maintain_cmd="doctor", **kwargs)
+    maintain_cli.run_maintain_cli(args, env)
 
 
 @maintain.command(name="index")
@@ -435,8 +526,8 @@ def maintain_doctor(env: CommandEnv, **kwargs) -> None:
 @click.option("--json-verbose", is_flag=True, help="Emit JSON with verbose details")
 @click.pass_obj
 def maintain_index(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(maintain_cmd="index", subcmd=kwargs.pop("subcmd"), **kwargs)
-    maintain.run_maintain_cli(args, env)
+    args = SimpleNamespace(maintain_cmd="index", subcmd=kwargs.pop("subcmd"), **kwargs)
+    maintain_cli.run_maintain_cli(args, env)
 
 
 @maintain.command(name="restore")
@@ -447,8 +538,8 @@ def maintain_index(env: CommandEnv, **kwargs) -> None:
 @click.option("--max-disk", type=float, help="Abort if projected snapshot size exceeds this many GiB")
 @click.pass_obj
 def maintain_restore(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(maintain_cmd="restore", **kwargs)
-    maintain.run_maintain_cli(args, env)
+    args = SimpleNamespace(maintain_cmd="restore", **kwargs)
+    maintain_cli.run_maintain_cli(args, env)
 
 
 # ---------------------------- config/env/prefs ----------------------------
@@ -458,7 +549,8 @@ def maintain_restore(env: CommandEnv, **kwargs) -> None:
 @click.option("--json", is_flag=True, help="Emit environment info as JSON")
 @click.pass_obj
 def env(env: CommandEnv, **kwargs) -> None:
-    run_env_cli(Namespace(**kwargs), env)
+    """Check environment and config paths."""
+    run_env_cli(SimpleNamespace(**kwargs), env)
 
 
 @cli.command(name="help")
@@ -478,8 +570,9 @@ def help_cmd(ctx: click.Context, topic: Optional[str], examples: bool) -> None: 
 @click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True)
 @click.pass_obj
 def completions(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(**kwargs)
-    run_completions_cli(args, env)
+    """Emit shell completion script."""
+    args = SimpleNamespace(**kwargs)
+    run_completions_cli(args, env, cli)
 
 
 @cli.command(name="_complete", hidden=True)
@@ -488,8 +581,8 @@ def completions(env: CommandEnv, **kwargs) -> None:
 @click.argument("words", nargs=-1)
 @click.pass_obj
 def _complete(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(**kwargs)
-    run_complete_cli(args, env)
+    args = SimpleNamespace(**kwargs)
+    run_complete_cli(args, env, cli)
 
 
 @cli.command(name="_search-preview", hidden=True)
@@ -497,7 +590,7 @@ def _complete(env: CommandEnv, **kwargs) -> None:
 @click.option("--index", type=int, required=True)
 @click.pass_obj
 def _search_preview(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(**kwargs)
+    args = SimpleNamespace(**kwargs)
     run_search_preview(args)
 
 
@@ -511,8 +604,7 @@ def config(ctx: click.Context) -> None:
 @click.option("--json", is_flag=True, help="Emit environment info as JSON")
 @click.pass_obj
 def config_show(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(config_cmd="show", **kwargs)
-    config_cmd.dispatch(args, env)
+    run_config_show(SimpleNamespace(**kwargs), env)
 
 
 @config.command(name="set")
@@ -525,16 +617,27 @@ def config_show(env: CommandEnv, **kwargs) -> None:
 @click.option("--json", is_flag=True, help="Emit settings as JSON")
 @click.pass_obj
 def config_set(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(config_cmd="set", **kwargs)
-    config_cmd.dispatch(args, env)
+    from .settings_cli import run_settings_cli
+
+    run_settings_cli(SimpleNamespace(**kwargs), env)
 
 
 @config.command(name="init")
 @click.option("--force", is_flag=True, help="Overwrite existing configuration")
 @click.pass_obj
 def config_init(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(config_cmd="init", **kwargs)
-    config_cmd.dispatch(args, env)
+    from .init import run_init_cli
+
+    run_init_cli(SimpleNamespace(**kwargs), env)
+
+
+@config.command(name="edit")
+@click.pass_obj
+def config_edit(env: CommandEnv, **kwargs) -> None:
+    """Interactively edit configuration."""
+    from .config_editor import run_config_edit_cli
+
+    run_config_edit_cli(SimpleNamespace(**kwargs), env)
 
 
 @cli.command()
@@ -545,7 +648,8 @@ def config_init(env: CommandEnv, **kwargs) -> None:
 @click.option("--json", "json_mode", is_flag=True, help="Emit JSON output")
 @click.pass_obj
 def prefs(env: CommandEnv, subcmd: str, command_name: Optional[str], flag: Optional[str], value: Optional[str], json_mode: bool) -> None:  # type: ignore[func-returns-value]
-    args = Namespace(prefs_cmd=subcmd, command=command_name, flag=flag, value=value, json=json_mode)
+    """Manage per-command preference defaults."""
+    args = SimpleNamespace(prefs_cmd=subcmd, command=command_name, flag=flag, value=value, json=json_mode)
     prefs_cmd.run_prefs_cli(args, env)
 
 
@@ -560,6 +664,9 @@ def attachments_group(ctx: click.Context) -> None:
 
 @attachments_group.command(name="stats")
 @click.option("--dir", type=click.Path(path_type=Path), help="Root directory containing archives")
+@click.option("--provider", type=str, help="Filter by provider (comma-separated)")
+@click.option("--since", type=str, help="Only include attachments on/after this timestamp (index only)")
+@click.option("--until", type=str, help="Only include attachments on/before this timestamp (index only)")
 @click.option("--ext", type=str, help="Filter by file extension")
 @click.option("--hash", "hash", is_flag=True, help="Hash attachments to compute deduped totals")
 @click.option("--sort", type=click.Choice(["size", "name"]), default="size")
@@ -568,9 +675,11 @@ def attachments_group(ctx: click.Context) -> None:
 @click.option("--json", is_flag=True)
 @click.option("--json-lines", is_flag=True)
 @click.option("--from-index", is_flag=True, help="Read attachment metadata from the index DB")
+@click.option("--clean-orphans", is_flag=True, help="Remove on-disk attachments not referenced by the index DB (requires --from-index)")
+@click.option("--dry-run", is_flag=True, help="Preview actions without deleting files (used with --clean-orphans)")
 @click.pass_obj
 def attachments_stats(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(attachments_cmd="stats", **kwargs)
+    args = SimpleNamespace(attachments_cmd="stats", **kwargs)
     attachments.run_attachments_cli(args, env)
 
 
@@ -584,7 +693,7 @@ def attachments_stats(env: CommandEnv, **kwargs) -> None:
 @click.option("--json-lines", is_flag=True, help="Emit per-file JSONL")
 @click.pass_obj
 def attachments_extract(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(attachments_cmd="extract", **kwargs)
+    args = SimpleNamespace(attachments_cmd="extract", **kwargs)
     attachments.run_attachments_cli(args, env)
 
 
@@ -599,7 +708,8 @@ def attachments_extract(env: CommandEnv, **kwargs) -> None:
 @click.option("--fallback", type=click.Path(path_type=Path), help="Fallback path if no run is found")
 @click.pass_obj
 def open(env: CommandEnv, **kwargs) -> None:  # type: ignore[func-returns-value]
-    args = Namespace(**kwargs)
+    """Open or print paths from the latest run."""
+    args = SimpleNamespace(**kwargs)
     open_helper.run_open_cli(args, env)
 
 
@@ -608,12 +718,19 @@ def open(env: CommandEnv, **kwargs) -> None:  # type: ignore[func-returns-value]
 @click.option("--fallback", is_flag=True, help="Use fallback parser")
 @click.pass_obj
 def reprocess_cmd(env: CommandEnv, **kwargs) -> None:
-    args = Namespace(**kwargs)
+    """Reprocess failed imports."""
+    args = SimpleNamespace(**kwargs)
     reprocess.run_reprocess_cli(args, env)
 
 
 def main() -> None:  # pragma: no cover
-    cli()
+    try:
+        cli.main(prog_name="polylogue", standalone_mode=False)
+    except click.ClickException as exc:
+        exc.show()
+        raise SystemExit(exc.exit_code) from exc
+    except click.Abort as exc:
+        raise SystemExit(1) from exc
 
 
 __all__ = ["cli", "main"]

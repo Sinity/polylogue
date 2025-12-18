@@ -3,12 +3,12 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 
-import argparse
 import csv
 import importlib
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Set, cast
 
 from ..commands import CommandEnv, status_command
@@ -20,7 +20,7 @@ from .context import DEFAULT_OUTPUT_ROOTS, DEFAULT_RENDER_OUT
 
 
 def _dump_runs(ui, records: List[dict], destination: str, *, quiet: bool = False) -> None:
-    payload = json.dumps(records, indent=2)
+    payload = json.dumps(records, indent=2, sort_keys=True)
     if destination == "-":
         print(payload)
         return
@@ -32,7 +32,7 @@ def _dump_runs(ui, records: List[dict], destination: str, *, quiet: bool = False
 
 
 def _dump_summary(ui, payload: Dict[str, Any], destination: str, *, quiet: bool = False) -> None:
-    body = json.dumps(payload, indent=2)
+    body = json.dumps(payload, indent=2, sort_keys=True)
     if destination == "-":
         print(body)
         return
@@ -50,7 +50,7 @@ def _provider_filter(raw: Optional[str]) -> Optional[Set[str]]:
     return providers or None
 
 
-def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_status_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     json_lines = bool(getattr(args, "json_lines", False))
     json_mode = bool(getattr(args, "json", False) or json_lines)
@@ -157,9 +157,9 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
                 }
             )
             if json_lines:
-                print(json.dumps(payload, separators=(",", ":")), flush=True)
+                print(json.dumps(payload, separators=(",", ":"), sort_keys=True), flush=True)
             else:
-                print(json.dumps(payload, indent=2))
+                print(json.dumps(payload, indent=2, sort_keys=True))
             return
 
         if ui.plain:
@@ -303,9 +303,9 @@ def run_status_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     emit()
 
 
-def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_stats_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     from ..cli_common import sk_select
-    from .arg_helpers import PathPolicy, resolve_path
+    from .path_policy import PathPolicy, resolve_path
 
     ui = env.ui
     console = ui.console
@@ -334,7 +334,11 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         if warnings:
             payload["warnings"] = warnings
         if json_mode:
-            encoded = json.dumps(payload, separators=(",", ":")) if json_lines else json.dumps(payload, indent=2)
+            encoded = (
+                json.dumps(payload, separators=(",", ":"), sort_keys=True)
+                if json_lines
+                else json.dumps(payload, indent=2, sort_keys=True)
+            )
             print(encoded)
         else:
             ui.summary("Stats", [message])
@@ -530,7 +534,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
     if json_lines:
         for row in display_rows:
-            print(json.dumps(row, separators=(",", ":")))
+            print(json.dumps(row, separators=(",", ":"), sort_keys=True))
         if warnings and quiet_json:
             print("\n".join(warnings), file=sys.stderr)
         return
@@ -549,7 +553,7 @@ def run_stats_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             "filtered_out": filtered_out,
             "warnings": warnings,
         }
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
     if csv_destination:

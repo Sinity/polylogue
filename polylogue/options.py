@@ -18,6 +18,8 @@ class RenderOptions:
     html_theme: str = "light"
     diff: bool = False
     attachment_ocr: bool = False
+    sanitize_html: bool = False
+    meta: Optional[Dict[str, str]] = None
 
 
 @dataclass
@@ -40,6 +42,8 @@ class SyncOptions:
     diff: bool = False
     prefetched_chats: Optional[List[Dict[str, Any]]] = None
     attachment_ocr: bool = False
+    sanitize_html: bool = False
+    meta: Optional[Dict[str, str]] = None
 
 
 @dataclass

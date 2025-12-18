@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import argparse
 import time
 import shutil
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Iterable, List, Optional, Set, Tuple
 
 try:
@@ -22,7 +22,7 @@ WatchBatch = Iterable[Set[WatchChange]]
 WatchDirectoryFn = Callable[..., WatchBatch]
 
 
-def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_watch_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     provider_name = getattr(args, "provider", None)
     provider = get_local_provider(provider_name)
     if not provider.supports_watch:
@@ -47,13 +47,15 @@ def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             cmd.append("--prune")
         if getattr(args, "attachment_ocr", False):
             cmd.append("--attachment-ocr")
+        if getattr(args, "sanitize_html", False):
+            cmd.append("--sanitize-html")
         env.ui.console.print(" ".join(cmd))
         return
     _run_watch_sessions(args, env, provider)
 
 
 def _run_watch_sessions(
-    args: argparse.Namespace,
+    args: SimpleNamespace,
     env: CommandEnv,
     provider,
 ) -> None:
@@ -139,11 +141,19 @@ def _run_watch_sessions(
                 sessions=session_override,
                 registrar=env.registrar,
                 ui=ui,
+                attachment_ocr=getattr(args, "attachment_ocr", False),
+                sanitize_html=getattr(args, "sanitize_html", False),
             )
         except Exception as exc:  # pragma: no cover - defensive
             console.print(f"[red]{provider.watch_log_title} failed: {exc}")
         else:
-            _log_local_sync(ui, provider.watch_log_title, result, provider=provider.name)
+            _log_local_sync(
+                ui,
+                provider.watch_log_title,
+                result,
+                provider=provider.name,
+                redacted=getattr(args, "sanitize_html", False),
+            )
 
     sync_once()
     if getattr(args, "once", False):
@@ -173,12 +183,8 @@ def _run_watch_sessions(
                 console.print("[dim]Changes:[/dim]")
                 for path in relevant:
                     console.print(f"  {path}")
-            if now - last_run < debounce:
-                skipped_events.extend(relevant)
-                skipped_total += len(relevant)
-                continue
             elapsed = now - last_progress
-            if stall_seconds and elapsed > stall_seconds:
+            if stall_seconds and elapsed > stall_seconds and not stalled:
                 console.print(
                     f"[yellow]No sync progress for {stall_seconds}s; check watcher input or increase --stall-seconds."
                 )
@@ -188,9 +194,14 @@ def _run_watch_sessions(
 
                     os.environ["POLYLOGUE_EXIT_REASON"] = "partial"
                     raise SystemExit(2)
+            if now - last_run < debounce:
+                skipped_events.extend(relevant)
+                skipped_total += len(relevant)
+                continue
             sync_once(relevant)
             last_run = now
             last_progress = now
+            stalled = False
             if skipped_events:
                 total_skipped = len(skipped_events)
                 console.print(
