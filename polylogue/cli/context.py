@@ -21,6 +21,7 @@ def default_sync_namespace(provider: str, settings: Optional[Settings] = None) -
         dry_run=False,
         force=False,
         prune=False,
+        resume_from=None,
         collapse_threshold=None,
         html_mode="auto",
         diff=False,

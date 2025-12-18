@@ -182,6 +182,7 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--watch-plan", is_flag=True, help="Print the assembled watch command and exit (no watch run)")
 @click.option("--drive-retries", type=int, help="Override Drive retry attempts (default: config or 3)")
 @click.option("--drive-retry-base", type=float, help="Override Drive retry base delay seconds (default: config or 0.5)")
+@click.option("--resume-from", type=int, help="Resume a previous run by run ID (reprocess failed items only)")
 @click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.option("--root", type=str, help="Named root label to use when configs support multi-root archives")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
