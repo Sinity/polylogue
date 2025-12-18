@@ -24,7 +24,7 @@ from .importers.claude_code import (
 )
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
 from .paths import DATA_HOME
-from .util import DiffTracker, path_order_key, sanitize_filename, slugify_title
+from .util import DiffTracker, format_duration, path_order_key, sanitize_filename, slugify_title
 from .services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .pipeline_runner import Pipeline, PipelineContext
 from .config import CONFIG
@@ -186,18 +186,6 @@ def _sync_sessions(
 
     last_progress_time = 0.0
 
-    def _fmt_eta(seconds: Optional[float]) -> str:
-        if seconds is None:
-            return "?"
-        seconds = max(0.0, float(seconds))
-        mins, sec = divmod(int(seconds + 0.5), 60)
-        hrs, mins = divmod(mins, 60)
-        if hrs:
-            return f"{hrs}h{mins:02d}m{sec:02d}s"
-        if mins:
-            return f"{mins}m{sec:02d}s"
-        return f"{sec}s"
-
     def _maybe_plain_progress(done: int, total: int) -> None:
         nonlocal last_progress_time
         if not ui or not ui.plain or total <= 0:
@@ -210,7 +198,9 @@ def _sync_sessions(
         rate = (done / elapsed) if elapsed > 0 else 0.0
         eta = ((total - done) / rate) if rate > 0 else None
         pct = (done / total) * 100.0
-        ui.console.print(f"[dim]{provider} progress: {done}/{total} ({pct:.1f}%) elapsed={_fmt_eta(elapsed)} eta={_fmt_eta(eta)}[/dim]")
+        ui.console.print(
+            f"[dim]{provider} progress: {done}/{total} ({pct:.1f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
+        )
 
     def _process_single(session_path: Path) -> Dict[str, object]:
         entry: Dict[str, object] = {
@@ -626,11 +616,29 @@ def _sync_export_bundles(
         path for path in iterable if not (base_dir and _is_ignored(path, base_dir.expanduser(), ignore_patterns))
     ]
     progress_ctx = ui.progress(f"Processing {provider} exports", total=len(exports)) if ui else _NoopProgress()
+    last_progress_time = 0.0
+
+    def _maybe_plain_progress(done: int, total: int) -> None:
+        nonlocal last_progress_time
+        if not ui or not ui.plain or total <= 0:
+            return
+        now = time.perf_counter()
+        if done != total and done != 1 and (done % 5) != 0 and (now - last_progress_time) < 10.0:
+            return
+        last_progress_time = now
+        elapsed = now - start_time
+        rate = (done / elapsed) if elapsed > 0 else 0.0
+        eta = ((total - done) / rate) if rate > 0 else None
+        pct = (done / total) * 100.0
+        ui.console.print(
+            f"[dim]{provider} progress: {done}/{total} ({pct:.1f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
+        )
 
     with progress_ctx as tracker:
-        for export_path in exports:
+        for idx, export_path in enumerate(exports, start=1):
             if not export_path.exists():
                 tracker.advance()
+                _maybe_plain_progress(idx, len(exports))
                 continue
             bundle_hash = None
             bundle_provider = f"{provider}-export"
@@ -649,6 +657,7 @@ def _sync_export_bundles(
                     if isinstance(state, dict) and state.get("bundleHash") == bundle_hash:
                         skipped_exports += 1
                         tracker.advance()
+                        _maybe_plain_progress(idx, len(exports))
                         continue
                 except Exception:
                     bundle_hash = None
@@ -671,6 +680,7 @@ def _sync_export_bundles(
             except Exception as exc:
                 failures.append({"path": str(export_path), "error": str(exc)})
                 tracker.advance()
+                _maybe_plain_progress(idx, len(exports))
                 continue
             if bundle_hash:
                 from .util import current_utc_timestamp
@@ -709,6 +719,7 @@ def _sync_export_bundles(
             if not export_wrote:
                 skipped_exports += 1
             tracker.advance()
+            _maybe_plain_progress(idx, len(exports))
 
     pruned = 0
     if prune:
