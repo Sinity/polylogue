@@ -52,9 +52,9 @@ If you’re resuming work later, this is the “what’s already implemented” 
 ## P3 – Testing and Quality
 
 - Golden master tests for parsers/rendering (Markdown + HTML snapshots per provider/model/tool-call cases). **(partially done: portable markdown golden snapshots + generator script; HTML snapshots still pending)**
-- CLI integration matrix: cover plain vs interactive (PTY-backed) runs, non-TTY guardrails, and picker flows; add fixtures for `search --open`, `--json/--json-lines/--csv`, `--print-paths`, and watch/dump flows.
+- CLI integration matrix: cover plain vs interactive (PTY-backed) runs, non-TTY guardrails, and picker flows; add fixtures for `search --open`, `--json/--json-lines/--csv`, `--print-paths`, and watch/dump flows. **(partially done: Click wrapper tests exist; skim picker selection + non-TTY guardrails now have unit coverage)**
 - Watch-mode regression: simulated file change streams with debounce windows to catch stalls, suppressed events, and base-dir validation.
-- UI surface tests: stub gum/skim/bat/glow/delta (or the pure-Python facade when available) to assert prompts, summaries, anchors, progress output, and warnings render correctly in rich and plain modes.
+- UI surface tests: stub gum/skim/bat/glow/delta (or the pure-Python facade when available) to assert prompts, summaries, anchors, progress output, and warnings render correctly in rich and plain modes. **(partially done: gum/skim-backed confirm/input/choose + picker flows have unit tests)**
 - Interactive harness: add PTY-driven tests (pexpect or similar) to exercise prompts/confirmations/menus end-to-end, including cancellation paths and default selections.
 - Replace custom retry logic with tenacity-based wrappers (with retry-count assertions in tests).
 
