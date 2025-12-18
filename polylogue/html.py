@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Dict
 import re
 import math
+import json
 
 from jinja2 import Environment, BaseLoader
 from markupsafe import escape
@@ -302,8 +303,17 @@ def render_html(document: MarkdownDocument, options: HtmlRenderOptions) -> str:
         body_html,
     )
     body_html = _transform_callouts(body_html)
-    metadata_rows = {k: v for k, v in document.metadata.items() if k != "attachments"}
-    metadata_rows["attachments"] = len(document.attachments)
+    def _fmt(value: object) -> object:
+        if isinstance(value, (dict, list)):
+            try:
+                return json.dumps(value, sort_keys=True, ensure_ascii=False)
+            except Exception:
+                return str(value)
+        return value
+
+    metadata_rows_raw = {k: _fmt(v) for k, v in document.metadata.items() if k != "attachments"}
+    metadata_rows_raw["attachments"] = len(document.attachments)
+    metadata_rows = {k: metadata_rows_raw[k] for k in sorted(metadata_rows_raw)}
     attachments = [
         {
             "name": att.name,
