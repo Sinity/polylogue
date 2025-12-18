@@ -153,6 +153,21 @@ def main() -> None:
         _render_slug(db_path, output_dir, slug)
         return slug, "chatgpt"
 
+    def run_chatgpt_tool(output_dir: Path) -> Tuple[str, str]:
+        results = import_chatgpt_export(
+            Path("tests/fixtures/golden/chatgpt_tool"),
+            output_dir=output_dir,
+            collapse_threshold=10,
+            html=False,
+            html_theme="light",
+            force=True,
+        )
+        if not results:
+            raise RuntimeError("ChatGPT tool import produced no results.")
+        slug = results[0].slug
+        _render_slug(db_path, output_dir, slug)
+        return slug, "chatgpt"
+
     def run_claude(output_dir: Path) -> Tuple[str, str]:
         results = import_claude_export(
             Path("tests/fixtures/golden/claude"),
@@ -164,6 +179,21 @@ def main() -> None:
         )
         if not results:
             raise RuntimeError("Claude import produced no results.")
+        slug = results[0].slug
+        _render_slug(db_path, output_dir, slug)
+        return slug, "claude"
+
+    def run_claude_tool(output_dir: Path) -> Tuple[str, str]:
+        results = import_claude_export(
+            Path("tests/fixtures/golden/claude_tool"),
+            output_dir=output_dir,
+            collapse_threshold=10,
+            html=False,
+            html_theme="light",
+            force=True,
+        )
+        if not results:
+            raise RuntimeError("Claude tool import produced no results.")
         slug = results[0].slug
         _render_slug(db_path, output_dir, slug)
         return slug, "claude"
@@ -197,7 +227,9 @@ def main() -> None:
 
     cases: List[GoldenCase] = [
         GoldenCase("chatgpt-basic.md", run_chatgpt),
+        GoldenCase("chatgpt-tool.md", run_chatgpt_tool),
         GoldenCase("claude-basic.md", run_claude),
+        GoldenCase("claude-tool.md", run_claude_tool),
         GoldenCase("codex-basic.md", run_codex),
         GoldenCase("claude-code-basic.md", run_claude_code),
     ]

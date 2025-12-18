@@ -76,6 +76,26 @@ def test_golden_chatgpt_basic_html(tmp_path, state_env, monkeypatch):
     _render_slug(db_path, out_dir, slug)
     _assert_golden_html(out_dir / slug / "conversation.md", golden_dir / "chatgpt-basic.html")
 
+def test_golden_chatgpt_tool_html(tmp_path, state_env, monkeypatch):
+    monkeypatch.setenv("POLYLOGUE_FIXED_NOW", FIXED_NOW)
+    fixtures = _repo_root() / "tests" / "fixtures" / "golden"
+    golden_dir = _repo_root() / "tests" / "golden_html"
+    out_dir = tmp_path / "out"
+
+    results = import_chatgpt_export(
+        _rel(fixtures / "chatgpt_tool"),
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=True,
+    )
+    assert results
+    slug = results[0].slug
+    db_path = Path(state_env) / "polylogue.db"
+    _render_slug(db_path, out_dir, slug)
+    _assert_golden_html(out_dir / slug / "conversation.md", golden_dir / "chatgpt-tool.html")
+
 
 def test_golden_claude_basic_html(tmp_path, state_env, monkeypatch):
     monkeypatch.setenv("POLYLOGUE_FIXED_NOW", FIXED_NOW)
@@ -96,6 +116,26 @@ def test_golden_claude_basic_html(tmp_path, state_env, monkeypatch):
     db_path = Path(state_env) / "polylogue.db"
     _render_slug(db_path, out_dir, slug)
     _assert_golden_html(out_dir / slug / "conversation.md", golden_dir / "claude-basic.html")
+
+def test_golden_claude_tool_html(tmp_path, state_env, monkeypatch):
+    monkeypatch.setenv("POLYLOGUE_FIXED_NOW", FIXED_NOW)
+    fixtures = _repo_root() / "tests" / "fixtures" / "golden"
+    golden_dir = _repo_root() / "tests" / "golden_html"
+    out_dir = tmp_path / "out"
+
+    results = import_claude_export(
+        _rel(fixtures / "claude_tool"),
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=True,
+    )
+    assert results
+    slug = results[0].slug
+    db_path = Path(state_env) / "polylogue.db"
+    _render_slug(db_path, out_dir, slug)
+    _assert_golden_html(out_dir / slug / "conversation.md", golden_dir / "claude-tool.html")
 
 
 def test_golden_codex_basic_html(tmp_path, state_env, monkeypatch):
@@ -137,4 +177,3 @@ def test_golden_claude_code_basic_html(tmp_path, state_env, monkeypatch):
     db_path = Path(state_env) / "polylogue.db"
     _render_slug(db_path, out_dir, slug)
     _assert_golden_html(out_dir / slug / "conversation.md", golden_dir / "claude-code-basic.html")
-

@@ -1,0 +1,32 @@
+[
+  {
+    "uuid": "golden-claude-tool-1",
+    "name": "Golden Claude Tool + Attachments",
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:03Z",
+    "model": "claude-3.5-sonnet",
+    "chat_messages": [
+      {
+        "uuid": "cmsg-1",
+        "sender": "human",
+        "created_at": "2024-01-01T00:00:00Z",
+        "content": [
+          { "type": "text", "text": "Hello. Please run a command and show the result. Also see attachments." },
+          { "type": "file", "file_id": "file-claude", "file_name": "note.txt" },
+          { "type": "image", "file_id": "file-claude-img", "file_name": "image.svg" }
+        ]
+      },
+      {
+        "uuid": "cmsg-2",
+        "sender": "assistant",
+        "created_at": "2024-01-01T00:00:01Z",
+        "content": [
+          { "type": "tool_use", "id": "tool-1", "name": "bash", "input": { "cmd": "echo hi" } },
+          { "type": "tool_result", "id": "tool-1", "text": "hi" },
+          { "type": "text", "text": "Done." }
+        ]
+      }
+    ]
+  }
+]
+
