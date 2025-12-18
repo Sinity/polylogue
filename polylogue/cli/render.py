@@ -78,20 +78,22 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
         sanitize_html=getattr(args, "sanitize_html", False),
         meta=meta,
     )
-    if getattr(args, "max_disk", None):
+    disk_estimate = bool(getattr(args, "disk_estimate", False))
+    max_disk = getattr(args, "max_disk", None)
+    if disk_estimate or max_disk:
         projected = len(inputs) * 5 * 1024 * 1024  # rough 5MiB per file heuristic
-        from ..util import preflight_disk_requirement
-
+        try:
+            free_bytes = shutil.disk_usage(Path.cwd()).free
+        except Exception:
+            free_bytes = None
         if not json_output:
-            try:
-                free_bytes = shutil.disk_usage(Path.cwd()).free
-            except Exception:
-                free_bytes = None
             extra = f", free={free_bytes / (1024 ** 3):.2f} GiB" if free_bytes is not None else ""
-            ui.console.print(
-                f"[dim]Disk estimate: projected={projected / (1024 ** 3):.2f} GiB, limit={args.max_disk:.2f} GiB{extra}[/dim]"
-            )
-        preflight_disk_requirement(projected_bytes=projected, limit_gib=args.max_disk, ui=ui)
+            limit = f", limit={max_disk:.2f} GiB" if max_disk is not None else ""
+            ui.console.print(f"[dim]Disk estimate: projected={projected / (1024 ** 3):.2f} GiB{limit}{extra}[/dim]")
+        if max_disk is not None:
+            from ..util import preflight_disk_requirement
+
+            preflight_disk_requirement(projected_bytes=projected, limit_gib=max_disk, ui=ui)
     if download_attachments and env.drive is None:
         env.drive = DriveClient(ui)
     try:
@@ -119,6 +121,12 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
             ],
             "total_stats": result.total_stats,
         }
+        if disk_estimate or max_disk:
+            payload["diskEstimateBytes"] = projected
+            if free_bytes is not None:
+                payload["diskFreeBytes"] = int(free_bytes)
+            if max_disk is not None:
+                payload["maxDiskGiB"] = float(max_disk)
         if getattr(args, "sanitize_html", False):
             payload["redacted"] = True
         print(json.dumps(stamp_payload(payload), indent=2, sort_keys=True))
