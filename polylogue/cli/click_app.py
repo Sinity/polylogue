@@ -490,6 +490,22 @@ def browse_timeline(env: CommandEnv, **kwargs) -> None:
     browse_cmd.run_browse_cli(args, env)
 
 
+@browse_group.command(name="analytics")
+@click.option("--providers", type=str, help="Comma-separated provider filter")
+@click.option("--model-limit", type=int, default=25, show_default=True, help="Top-N models to include")
+@click.option("--hotspot-limit", type=int, default=25, show_default=True, help="Top-N branch hotspots to include")
+@click.option("--out", type=click.Path(path_type=Path), help="Write HTML analytics to this path (default: ./analytics.html)")
+@click.option("--theme", type=click.Choice(["light", "dark"]), default="light", show_default=True, help="HTML theme")
+@click.option("--open", "open_result", is_flag=True, help="Open result in $EDITOR after command completes")
+@click.option("--json", is_flag=True, help="Emit machine-readable summary instead of writing HTML")
+@click.pass_obj
+def browse_analytics(env: CommandEnv, **kwargs) -> None:
+    """Role/model/branch analytics from the SQLite state DB."""
+    kwargs["open"] = kwargs.pop("open_result")
+    args = SimpleNamespace(browse_cmd="analytics", **kwargs)
+    browse_cmd.run_browse_cli(args, env)
+
+
 @browse_group.command(name="inbox")
 @click.option("--providers", type=str, default="chatgpt,claude", show_default=True, help="Comma-separated provider filter")
 @click.option("--dir", type=click.Path(path_type=Path), help="Override inbox root for a generic scan")
