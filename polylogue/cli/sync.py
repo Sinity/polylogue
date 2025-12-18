@@ -15,7 +15,7 @@ from ..local_sync import (
     get_local_provider,
 )
 from ..options import ListOptions, SyncOptions
-from ..util import add_run, format_run_brief, latest_run, path_order_key
+from ..util import add_run, format_run_brief, latest_run, path_order_key, get_run_by_id
 from ..schema import stamp_payload
 from .context import (
     DEFAULT_COLLAPSE,
@@ -33,6 +33,52 @@ from .failure_logging import record_failure
 
 def _truthy(val: str) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _apply_resume_from(args: SimpleNamespace, env: CommandEnv, *, run_id: int) -> None:
+    run = get_run_by_id(int(run_id))
+    if not run:
+        raise SystemExit(f"Unknown run id: {run_id}")
+    cmd = str(run.get("cmd") or "")
+    provider = getattr(args, "provider", None)
+    if cmd and not cmd.startswith("sync"):
+        raise SystemExit(f"Run #{run_id} is not a sync run (cmd={cmd!r}).")
+
+    if provider == "drive":
+        failed = run.get("failedChats")
+        ids: List[str] = []
+        if isinstance(failed, list):
+            for item in failed:
+                if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip():
+                    ids.append(item["id"].strip())
+        if not ids:
+            raise SystemExit(f"Run #{run_id} has no recorded failed Drive chats to resume.")
+        args.chat_ids = list(dict.fromkeys(ids))
+        args.resume_from = int(run_id)
+        args.all = True
+        args.prune = False
+        env.ui.console.print(f"[dim]Resuming run #{run_id}: {len(args.chat_ids)} Drive chat(s)[/dim]")
+        return
+
+    if provider in LOCAL_SYNC_PROVIDER_NAMES:
+        failed = run.get("failedPaths")
+        paths: List[Path] = []
+        if isinstance(failed, list):
+            for item in failed:
+                if isinstance(item, str) and item.strip():
+                    paths.append(Path(item.strip()))
+                elif isinstance(item, dict) and isinstance(item.get("path"), str):
+                    paths.append(Path(item["path"]))
+        if not paths:
+            raise SystemExit(f"Run #{run_id} has no recorded failed local paths to resume.")
+        args.sessions = [str(p) for p in paths]
+        args.resume_from = int(run_id)
+        args.all = True
+        args.prune = False
+        env.ui.console.print(f"[dim]Resuming run #{run_id}: {len(args.sessions)} path(s)[/dim]")
+        return
+
+    raise SystemExit(f"--resume-from is not supported for provider={provider!r}")
 
 
 def _apply_sync_prefs(args: SimpleNamespace, env: CommandEnv) -> SimpleNamespace:
@@ -101,6 +147,12 @@ def _log_local_sync(
         "pruned": result.pruned,
         "duration": getattr(result, "duration", 0.0),
     }
+    failed_items = getattr(result, "failed", None)
+    if isinstance(failed_items, list) and failed_items:
+        run_payload["failedPaths"] = failed_items
+    failed_count = getattr(result, "failures", 0) or 0
+    if failed_count:
+        run_payload["failures"] = int(failed_count)
     if meta:
         run_payload["meta"] = dict(meta)
     if redacted:
@@ -140,6 +192,10 @@ def run_sync_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     settings = env.settings
     args = _apply_sync_prefs(args, env)
     provider = getattr(args, "provider", None)
+
+    resume_from = getattr(args, "resume_from", None)
+    if resume_from is not None:
+        _apply_resume_from(args, env, run_id=resume_from)
 
     if getattr(args, "watch", False):
         if provider == "drive":
@@ -339,8 +395,8 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
         record_failure(args, exc, phase="sync")
         raise
 
-    if json_mode:
-        payload = {
+        if json_mode:
+            payload = {
             "cmd": "sync drive",
             "provider": "drive",
             "count": result.count,
@@ -362,10 +418,16 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
             ],
             "total_stats": result.total_stats,
             "retries": getattr(result, "retries", None),
-            "retry_base": drive_retry_base,
-        }
-        if meta:
-            payload["meta"] = dict(meta)
+                "retry_base": drive_retry_base,
+            }
+            if getattr(args, "resume_from", None) is not None:
+                payload["resumeFrom"] = int(getattr(args, "resume_from") or 0)
+            failed_chats = getattr(result, "failed_chats", None)
+            if isinstance(failed_chats, list) and failed_chats:
+                payload["failedChats"] = failed_chats
+                payload["failures"] = len(failed_chats)
+            if meta:
+                payload["meta"] = dict(meta)
         if getattr(args, "sanitize_html", False):
             payload["redacted"] = True
         if previous_run_note:
@@ -374,6 +436,9 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
         return
 
     lines = [f"Synced {result.count} chat(s) → {result.output_dir}"]
+    failed_chats = getattr(result, "failed_chats", None)
+    if isinstance(failed_chats, list) and failed_chats:
+        lines.append(f"Failures: {len(failed_chats)}")
     if getattr(args, "print_paths", False):
         lines.append("Written paths:")
         for item in result.items:
@@ -564,6 +629,13 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             "diffs": result.diffs,
             "files": files_payload,
         }
+        if getattr(args, "resume_from", None) is not None:
+            payload["resumeFrom"] = int(getattr(args, "resume_from") or 0)
+        if getattr(result, "failures", 0):
+            payload["failures"] = int(getattr(result, "failures") or 0)
+        failed_items = getattr(result, "failed", None)
+        if isinstance(failed_items, list) and failed_items:
+            payload["failedPaths"] = failed_items
         if meta:
             payload["meta"] = dict(meta)
         if getattr(args, "sanitize_html", False):
@@ -592,6 +664,13 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
         "pruned": result.pruned,
         "diffs": result.diffs,
     }
+    if getattr(args, "resume_from", None) is not None:
+        run_payload["resumeFrom"] = int(getattr(args, "resume_from") or 0)
+    if getattr(result, "failures", 0):
+        run_payload["failures"] = int(getattr(result, "failures") or 0)
+    failed_items = getattr(result, "failed", None)
+    if isinstance(failed_items, list) and failed_items:
+        run_payload["failedPaths"] = failed_items
     if meta:
         run_payload["meta"] = dict(meta)
     if getattr(args, "sanitize_html", False):
