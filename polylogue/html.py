@@ -6,12 +6,13 @@ from typing import Dict
 import re
 import math
 import json
+import urllib.parse
 
 from jinja2 import Environment, BaseLoader
 from markupsafe import escape
 from markdown_it import MarkdownIt
 
-from .render import MarkdownDocument
+from .render import AttachmentInfo, MarkdownDocument
 
 
 def _human_size(num: float | int | None) -> str | None:
@@ -122,6 +123,14 @@ HTML_TEMPLATE = """
         padding: 0.6rem 0.75rem;
         background: color-mix(in srgb, var(--bg) 94%, #00000008);
       }
+      .attachment img {
+        width: 100%;
+        max-height: 160px;
+        object-fit: cover;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        margin-top: 0.5rem;
+      }
       .content blockquote {
         border-left: 4px solid {{ theme.callout_border }};
         padding-left: 1rem;
@@ -184,6 +193,7 @@ HTML_TEMPLATE = """
               <div class="attachment">
                 <div><a href="{{ att.link }}" target="_blank">{{ att.name }}</a></div>
                 {% if att.size %}<div>{{ att.size }}</div>{% endif %}
+                {% if att.preview_src %}<a href="{{ att.link }}" target="_blank"><img src="{{ att.preview_src }}" alt="{{ att.name }}" /></a>{% endif %}
               </div>
             {% endfor %}
           </div>
@@ -317,8 +327,9 @@ def render_html(document: MarkdownDocument, options: HtmlRenderOptions) -> str:
     attachments = [
         {
             "name": att.name,
-            "link": att.link,
+            "link": urllib.parse.quote(att.local_path.as_posix()) if getattr(att, "local_path", None) else att.link,
             "size": _human_size(att.size_bytes) if hasattr(att, "size_bytes") else None,
+            "preview_src": _attachment_preview_src(att),
         }
         for att in document.attachments
     ]
@@ -393,3 +404,16 @@ def _transform_callouts(html: str) -> str:
         return "\n".join(parts)
 
     return pattern.sub(repl, html)
+
+
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+
+
+def _attachment_preview_src(att: AttachmentInfo) -> Optional[str]:
+    local = getattr(att, "local_path", None)
+    if local is None:
+        return None
+    suffix = local.suffix.lower()
+    if suffix not in _IMAGE_SUFFIXES:
+        return None
+    return urllib.parse.quote(local.as_posix())
