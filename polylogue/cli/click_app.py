@@ -173,6 +173,7 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--list-only", is_flag=True, help="List Drive chats without syncing")
 @click.option("--offline", is_flag=True, help="Skip network-dependent steps (Drive disallowed)")
 @click.option("--watch", is_flag=True, help="Watch for changes and sync continuously (local providers only)")
+@click.option("--jobs", type=int, default=1, show_default=True, help="Parallelism for local providers (codex/claude-code)")
 @click.option("--debounce", type=float, default=2.0, show_default=True, help="Minimal seconds between sync runs in watch mode")
 @click.option("--stall-seconds", type=float, default=60.0, show_default=True, help="Warn when watch makes no progress for this many seconds")
 @click.option("--fail-on-stall", is_flag=True, help="Exit with non-zero status when watch detects a stall")
