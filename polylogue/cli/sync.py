@@ -523,6 +523,7 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
     prune = args.prune
     diff_enabled = getattr(args, "diff", False)
     meta = parse_meta_items(getattr(args, "meta", None)) or None
+    jobs = max(1, int(getattr(args, "jobs", 1) or 1))
 
     if not base_dir.exists():
         if provider.create_base_dir and args.base_dir is None:
@@ -591,6 +592,7 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             attachment_ocr=getattr(args, "attachment_ocr", False),
             sanitize_html=getattr(args, "sanitize_html", False),
             meta=meta,
+            jobs=jobs,
         )
     except Exception as exc:
         ui.console.print(f"[red]{provider.title} sync failed: {exc}")

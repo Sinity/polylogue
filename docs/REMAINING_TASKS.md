@@ -13,9 +13,9 @@ If you’re resuming work later, this is the “what’s already implemented” 
   - Stored in markdown front matter as `polylogue.cliMeta` (to avoid collisions with provider-native `polylogue.meta`).
   - Also recorded in run history as `run.meta` in `runs.metadata_json`.
 - Integrity: `polylogue verify` exists (checks front matter vs DB/state, attachments, and branch docs).
-- Golden tests: portable markdown snapshot suite exists.
-  - Fixtures live in `tests/fixtures/golden/`, expected outputs in `tests/golden/`.
-  - Regenerator: `nix develop -c python3 scripts/update_goldens.py`.
+- Golden tests: portable Markdown + basic HTML snapshot suites exist.
+  - Fixtures live in `tests/fixtures/golden/`, expected outputs in `tests/golden/` and `tests/golden_html/`.
+  - Regenerator: `nix develop -c python3 scripts/update_goldens.py` (updates both Markdown + HTML goldens).
   - Snapshots compare after canonicalization/scrubbing via `polylogue/frontmatter_canonical.py`.
   - Determinism hooks: `POLYLOGUE_FIXED_NOW` (fixed timestamps) + tests force a stub `tiktoken` tokenizer for stable counts.
 
@@ -40,7 +40,7 @@ If you’re resuming work later, this is the “what’s already implemented” 
 ## P2 – Performance and Freshness
 
 - Content-hash freshness instead of mtime-only checks. **(done for local session + export sync; prune runs still force full scan)** 
-- Concurrency/ETA: clearer knobs with visible progress/retry surfacing and predictive ETA/profiling beyond existing `--profile-io/--profile-sql`.
+- Concurrency/ETA: clearer knobs with visible progress/retry surfacing and predictive ETA/profiling beyond existing `--profile-io/--profile-sql`. **(partially done: `sync --jobs N` for local session providers + plain-mode ETA logs)**
 - Deterministic ordering across HTML/JSON/summaries; emit pre-run disk/quota estimates. **(partially done: render/sync now print disk estimate when `--max-disk` is set and not in JSON mode; CLI JSON output now uses `sort_keys=True` consistently)**
 
 ## P3 – Analytics and Reporting
