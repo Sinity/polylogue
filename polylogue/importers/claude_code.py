@@ -11,7 +11,14 @@ from ..branching import MessageRecord
 from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .base import ImportResult
 from .normalizer import build_message_record
-from .utils import estimate_token_count, normalise_inline_footnotes, store_large_text
+from .utils import (
+    CHAR_THRESHOLD,
+    LINE_THRESHOLD,
+    PREVIEW_LINES,
+    estimate_token_count,
+    normalise_inline_footnotes,
+    store_large_text,
+)
 
 
 DEFAULT_PROJECT_ROOT = CLAUDE_CODE_PROJECT_ROOT
@@ -31,9 +38,11 @@ def import_claude_code_session(
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> ImportResult:
     from .raw_storage import store_raw_import, mark_parse_success, mark_parse_failed
 
+    cli_meta = dict(meta) if meta else None
     registrar = registrar or create_default_registrar()
     base_dir = base_dir.expanduser()
     session_path = _locate_session_file(session_id, base_dir)
@@ -68,6 +77,7 @@ def import_claude_code_session(
     seen_message_ids: Set[str] = set()
     summaries: List[str] = []
     tool_results: Dict[str, int] = {}
+    routing_stats: Dict[str, int] = {"routed": 0, "skipped": 0}
 
     with session_path.open(encoding="utf-8") as handle:
         for line_idx, line in enumerate(handle, start=1):
@@ -192,8 +202,8 @@ def import_claude_code_session(
                     if parent_id and "parentId" not in chunks[idx]:
                         chunks[idx]["parentId"] = parent_id
                         chunks[idx]["branchParent"] = parent_id
-                    meta = chunk_metadata[idx]
-                    calls = meta.setdefault("tool_calls", [])
+                    chunk_meta = chunk_metadata[idx]
+                    calls = chunk_meta.setdefault("tool_calls", [])
                     if calls:
                         calls[0]["output"] = result_text
                     else:
@@ -234,6 +244,7 @@ def import_claude_code_session(
             attachments=attachments,
             per_chunk_links=per_chunk_links,
             prefix="claudecode",
+            routing_stats=routing_stats,
         )
         if preview != text:
             chunk["text"] = preview
@@ -241,7 +252,7 @@ def import_claude_code_session(
         if parent_id and "parentId" not in chunk:
             chunk["parentId"] = parent_id
             chunk["branchParent"] = parent_id
-        meta = chunk_metadata[idx] if idx < len(chunk_metadata) else {}
+        chunk_meta = chunk_metadata[idx] if idx < len(chunk_metadata) else {}
         links = list(per_chunk_links.get(idx, []))
         message_records.append(
             build_message_record(
@@ -249,9 +260,9 @@ def import_claude_code_session(
                 conversation_id=session_id,
                 chunk_index=idx,
                 chunk=chunk,
-                raw_metadata=meta.get("raw") if isinstance(meta, dict) else None,
+                raw_metadata=chunk_meta.get("raw") if isinstance(chunk_meta, dict) else None,
                 attachments=links,
-                tool_calls=meta.get("tool_calls") if isinstance(meta, dict) else None,
+                tool_calls=chunk_meta.get("tool_calls") if isinstance(chunk_meta, dict) else None,
                 seen_ids=seen_message_ids,
                 fallback_prefix=slug,
             )
@@ -262,10 +273,17 @@ def import_claude_code_session(
         extra_yaml["summaries"] = summaries
 
     canonical_leaf_id = message_records[-1].message_id if message_records else None
+    attachment_policy = {
+        "previewLines": PREVIEW_LINES,
+        "lineThreshold": LINE_THRESHOLD,
+        "charThreshold": CHAR_THRESHOLD,
+        "routing": routing_stats,
+    }
 
     extra_state = {
         "sessionFile": str(session_path),
         "workspace": session_path.parent.name,
+        "cliMeta": cli_meta,
     }
 
     try:
@@ -290,7 +308,7 @@ def import_claude_code_session(
             run_settings=None,
             source_mime="application/jsonl",
             source_size=session_path.stat().st_size,
-            attachment_policy=None,
+            attachment_policy=attachment_policy,
             force=force,
             allow_dirty=allow_dirty,
             attachment_ocr=attachment_ocr,

@@ -19,7 +19,7 @@ def run_open_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     if not entry and fallback:
         path = Path(fallback)
         if getattr(args, "json", False):
-            print(json.dumps(stamp_payload({"path": str(path), "source": "fallback"})))
+            print(json.dumps(stamp_payload({"path": str(path), "source": "fallback"}), sort_keys=True))
             return
         ui.console.print(str(path))
         return
@@ -35,7 +35,7 @@ def run_open_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         "path": str(path_value) if path_value else None,
     }
     if getattr(args, "json", False):
-        print(json.dumps(stamp_payload(payload), indent=2))
+        print(json.dumps(stamp_payload(payload), indent=2, sort_keys=True))
         return
     if not path_value:
         ui.console.print("[yellow]No path recorded for last run.")

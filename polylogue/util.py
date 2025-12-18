@@ -172,11 +172,13 @@ def load_runs(limit: Optional[int] = None) -> list[dict]:
     results: list[dict] = []
     for row in rows:
         payload = {
+            "id": row["id"],
             "timestamp": row["timestamp"],
             "cmd": row["cmd"],
             "count": row["count"],
             "attachments": row["attachments"],
             "attachment_bytes": row["attachment_bytes"],
+            "attachmentBytes": row["attachment_bytes"],
             "tokens": row["tokens"],
             "skipped": row["skipped"],
             "pruned": row["pruned"],
@@ -196,6 +198,40 @@ def load_runs(limit: Optional[int] = None) -> list[dict]:
         results.append(payload)
     results.reverse()  # restore chronological order
     return results
+
+
+def get_run_by_id(run_id: int) -> Optional[dict]:
+    if not isinstance(run_id, int) or run_id <= 0:
+        return None
+    with open_connection(None) as conn:
+        row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if not row:
+        return None
+    payload = {
+        "id": row["id"],
+        "timestamp": row["timestamp"],
+        "cmd": row["cmd"],
+        "count": row["count"],
+        "attachments": row["attachments"],
+        "attachment_bytes": row["attachment_bytes"],
+        "attachmentBytes": row["attachment_bytes"],
+        "tokens": row["tokens"],
+        "skipped": row["skipped"],
+        "pruned": row["pruned"],
+        "diffs": row["diffs"],
+        "duration": row["duration"],
+        "out": row["out"],
+        "provider": row["provider"],
+        "branch_id": row["branch_id"],
+    }
+    metadata = row["metadata_json"]
+    if metadata:
+        try:
+            payload.update(json.loads(metadata))
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to decode run metadata JSON (id=%s): %s", row["id"], exc)
+            payload["metadata_error"] = "invalid_json"
+    return payload
 
 
 def latest_run(provider: Optional[str] = None, cmd: Optional[str] = None) -> Optional[dict]:
@@ -405,7 +441,7 @@ def add_run(record: Dict[str, Any]) -> None:
     cmd = payload.get("cmd") or "unknown"
     count = int(payload.get("count") or 0)
     attachments = int(payload.get("attachments") or 0)
-    attachment_bytes = int(payload.get("attachment_bytes") or 0)
+    attachment_bytes = int(payload.get("attachment_bytes") or payload.get("attachmentBytes") or 0)
     tokens = int(payload.get("tokens") or 0)
     skipped = int(payload.get("skipped") or 0)
     pruned = int(payload.get("pruned") or 0)
@@ -426,6 +462,7 @@ def add_run(record: Dict[str, Any]) -> None:
             "count",
             "attachments",
             "attachment_bytes",
+            "attachmentBytes",
             "tokens",
             "skipped",
             "pruned",
@@ -535,6 +572,11 @@ def snapshot_for_diff(path: Path) -> Optional[Path]:
 
 
 def current_utc_timestamp() -> str:
+    fixed = os.environ.get("POLYLOGUE_FIXED_NOW")
+    if fixed:
+        fixed = fixed.strip()
+        if fixed:
+            return fixed
     return (
         datetime.datetime.now(datetime.timezone.utc)
         .replace(microsecond=0)

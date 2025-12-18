@@ -16,6 +16,9 @@ from ..services.conversation_registrar import ConversationRegistrar, create_defa
 from .base import ImportResult
 from .normalizer import build_message_record
 from .utils import (
+    CHAR_THRESHOLD,
+    LINE_THRESHOLD,
+    PREVIEW_LINES,
     estimate_token_count,
     normalise_inline_footnotes,
     safe_extractall,
@@ -72,6 +75,7 @@ def import_claude_export(
     registrar: Optional[ConversationRegistrar] = None,
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> List[ImportResult]:
     registrar = registrar or create_default_registrar()
     root, tmp = _load_bundle(export_path)
@@ -122,6 +126,7 @@ def import_claude_export(
                         registrar=registrar,
                         attachment_ocr=attachment_ocr,
                         sanitize_html=sanitize_html,
+                        meta=meta,
                     )
                 )
                 if raw_hash:
@@ -182,6 +187,7 @@ def _render_claude_conversation(
     registrar: Optional[ConversationRegistrar],
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> ImportResult:
     title = conv.get("name") or conv.get("title") or "claude-chat"
     conv_id = conv.get("uuid") or conv.get("id") or "claude"
@@ -198,6 +204,7 @@ def _render_claude_conversation(
     chunks: List[Dict] = []
     message_records: List[MessageRecord] = []
     seen_message_ids: Set[str] = set()
+    routing_stats: Dict[str, int] = {"routed": 0, "skipped": 0}
 
     model_id = conv.get("model") or conv.get("model_id")
 
@@ -253,6 +260,7 @@ def _render_claude_conversation(
                 attachments=attachments,
                 per_chunk_links=per_chunk_links,
                 prefix="claude",
+                routing_stats=routing_stats,
             )
             if preview != text_block:
                 chunks[idx]["text"] = preview
@@ -282,6 +290,12 @@ def _render_claude_conversation(
 
     canonical_leaf_id = message_records[-1].message_id if message_records else None
     thresholds = collapse_thresholds or {"message": collapse_threshold, "tool": collapse_threshold}
+    attachment_policy = {
+        "previewLines": PREVIEW_LINES,
+        "lineThreshold": LINE_THRESHOLD,
+        "charThreshold": CHAR_THRESHOLD,
+        "routing": routing_stats,
+    }
 
     return process_conversation(
         provider="claude.ai",
@@ -300,6 +314,7 @@ def _render_claude_conversation(
         extra_state={
             "sourceModel": model_id,
             "sourceExportPath": str(export_root),
+            "cliMeta": dict(meta) if meta else None,
         },
         source_file_id=conv_id,
         modified_time=conv.get("updated_at") or conv.get("modified_at"),
@@ -307,7 +322,7 @@ def _render_claude_conversation(
         run_settings=None,
         source_mime="application/json",
         source_size=None,
-        attachment_policy=None,
+        attachment_policy=attachment_policy,
         force=force,
         allow_dirty=allow_dirty,
         attachment_ocr=attachment_ocr,
