@@ -100,6 +100,19 @@ def parse_rfc3339_to_epoch(ts: Optional[str]) -> Optional[float]:
         return None
 
 
+def format_duration(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "?"
+    seconds = max(0.0, float(seconds))
+    mins, sec = divmod(int(seconds + 0.5), 60)
+    hrs, mins = divmod(mins, 60)
+    if hrs:
+        return f"{hrs}h{mins:02d}m{sec:02d}s"
+    if mins:
+        return f"{mins}m{sec:02d}s"
+    return f"{sec}s"
+
+
 def parse_input_time_to_epoch(s: Optional[Union[str, float, int, datetime.date, datetime.datetime]]) -> Optional[float]:
     if s is None:
         return None

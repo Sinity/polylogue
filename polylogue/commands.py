@@ -45,6 +45,7 @@ from .util import (
     DiffTracker,
     RunAccumulator,
     add_run,
+    format_duration,
     load_runs,
     parse_rfc3339_to_epoch,
     sanitize_filename,
@@ -709,8 +710,25 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     attachment_failures: List[Dict[str, Any]] = []
     attachment_failures_total = 0
     description = f"Syncing {options.folder_name or 'Drive'} chats"
+    last_progress_time = 0.0
+
+    def _maybe_plain_progress(done: int, total: int) -> None:
+        nonlocal last_progress_time
+        if not env.ui.plain or total <= 0:
+            return
+        now = time.perf_counter()
+        if done != total and done != 1 and (done % 25) != 0 and (now - last_progress_time) < 10.0:
+            return
+        last_progress_time = now
+        elapsed = now - start_time
+        rate = (done / elapsed) if elapsed > 0 else 0.0
+        eta = ((total - done) / rate) if rate > 0 else None
+        pct = (done / total) * 100.0
+        env.ui.console.print(
+            f"[dim]drive progress: {done}/{total} ({pct:.1f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
+        )
     with env.ui.progress(description, total=len(chats)) as tracker:
-        for meta in chats:
+        for idx, meta in enumerate(chats, start=1):
             extra_state: Dict[str, object] = {}
             if getattr(options, "meta", None):
                 extra_state["cliMeta"] = dict(getattr(options, "meta") or {})
@@ -733,6 +751,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
                     }
                 )
                 tracker.advance()
+                _maybe_plain_progress(idx, len(chats))
                 continue
             if ctx.aborted:
                 stage = None
@@ -747,6 +766,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
                     }
                 )
                 tracker.advance()
+                _maybe_plain_progress(idx, len(chats))
                 continue
 
             result: Optional[ImportResult] = ctx.get("import_result")
@@ -758,11 +778,13 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
 
             if result is None:
                 tracker.advance()
+                _maybe_plain_progress(idx, len(chats))
                 continue
 
             if result.skipped:
                 totals_acc.increment("skipped")
                 tracker.advance()
+                _maybe_plain_progress(idx, len(chats))
                 continue
 
             if not options.dry_run and chat_context.modified_time:
@@ -824,6 +846,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
             if doc is not None:
                 totals_acc.add_stats(len(doc.attachments), doc.stats)
             tracker.advance()
+            _maybe_plain_progress(idx, len(chats))
 
     pruned_count = 0
     if options.prune:
