@@ -460,6 +460,20 @@ def browse_runs(env: CommandEnv, **kwargs) -> None:
     browse_cmd.run_browse_cli(args, env)
 
 
+@browse_group.command(name="metrics")
+@click.option("--providers", type=str, help="Comma-separated provider filter")
+@click.option("--runs-limit", type=int, default=0, show_default=True, help="Limit historical runs considered (0 = all)")
+@click.option("--json", is_flag=True, help="Emit JSON instead of Prometheus text format")
+@click.option("--serve", is_flag=True, help="Serve metrics over HTTP at /metrics (Prometheus format)")
+@click.option("--host", type=str, default="127.0.0.1", show_default=True, help="Host to bind when serving metrics")
+@click.option("--port", type=int, default=8000, show_default=True, help="Port to bind when serving metrics")
+@click.pass_obj
+def browse_metrics(env: CommandEnv, **kwargs) -> None:
+    """Export Prometheus-friendly metrics from Polylogue state/run history."""
+    args = SimpleNamespace(browse_cmd="metrics", **kwargs)
+    browse_cmd.run_browse_cli(args, env)
+
+
 @browse_group.command(name="inbox")
 @click.option("--providers", type=str, default="chatgpt,claude", show_default=True, help="Comma-separated provider filter")
 @click.option("--dir", type=click.Path(path_type=Path), help="Override inbox root for a generic scan")
