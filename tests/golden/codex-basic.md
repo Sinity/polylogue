@@ -10,7 +10,7 @@ attachmentPolicy:
 attachment_bytes: 0
 attachmentsDir: null
 collapseThreshold: 10
-contentHash: 866414d75a1892d89263f4c3cce6b6be71f71ce2b7407b9ffa6d1114726d95c1
+contentHash: 23449ecb7e9d11274b853f9afe072fb54be5c725dd245bce7ddfe6e6863d7b68
 currentBranch: branch-000
 dirty: false
 html: false
@@ -19,7 +19,7 @@ lastImported: '2000-01-01T00:00:00Z'
 lastUpdated: null
 outputPath: <path>
 polylogue:
-  contentHash: 866414d75a1892d89263f4c3cce6b6be71f71ce2b7407b9ffa6d1114726d95c1
+  contentHash: 23449ecb7e9d11274b853f9afe072fb54be5c725dd245bce7ddfe6e6863d7b68
   conversationId: tests/fixtures/golden/codex/codex-golden.jsonl
   lastUpdated: null
   provider: codex

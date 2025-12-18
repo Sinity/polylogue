@@ -85,11 +85,31 @@ def _metadata_without_content_hash(metadata: Dict[str, Any]) -> Dict[str, Any]:
         serialised = json.loads(json.dumps(metadata, default=str))
     except Exception:
         serialised = json.loads(json.dumps({}, default=str))
+    # Content hashes should be stable across machines/paths; strip path-like
+    # metadata that depends on where the archive lives.
+    for key in (
+        "outputPath",
+        "htmlPath",
+        "attachmentsDir",
+        "sourceExportPath",
+        "sourceFile",
+        "sessionPath",
+        "sessionFile",
+        "bundle_path",
+        "export_root",
+    ):
+        serialised.pop(key, None)
     polylogue = serialised.get("polylogue")
     if isinstance(polylogue, dict):
         polylogue.pop("contentHash", None)
         polylogue.pop("lastImported", None)
         polylogue.pop("dirty", None)
+        polylogue.pop("attachmentsDir", None)
+        polylogue.pop("htmlPath", None)
+        polylogue.pop("sourceExportPath", None)
+        polylogue.pop("sourceFile", None)
+        polylogue.pop("sessionPath", None)
+        polylogue.pop("sessionFile", None)
     return serialised
 
 
