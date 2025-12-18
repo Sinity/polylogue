@@ -52,6 +52,23 @@ def test_render_html_metadata_escaped(tmp_path: Path):
     assert "&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;" in output
 
 
+def test_render_html_uses_local_attachment_paths_and_previews(tmp_path: Path):
+    local_img = tmp_path / "attachments" / "image.png"
+    local_img.parent.mkdir(parents=True, exist_ok=True)
+    local_img.write_bytes(b"\x89PNG\r\n\x1a\n")
+    doc = MarkdownDocument(
+        body="Just text",
+        metadata={"title": "Safe"},
+        attachments=[AttachmentInfo(name="image.png", link="http://example.com/remote", local_path=local_img, size_bytes=9, remote=False)],
+        stats={},
+    )
+    output = render_html(doc, HtmlRenderOptions())
+    assert "http://example.com/remote" not in output
+    assert "image.png" in output
+    assert "<img" in output
+    assert "attachments/image.png" in output
+
+
 def test_branch_html_escapes_untrusted_content(tmp_path: Path):
     branch_path = Path("branch file.md")
     node = BranchNodeSummary(
