@@ -8,6 +8,7 @@ If you’re resuming work later, this is the “what’s already implemented” 
 
 - Click CLI is the primary entrypoint (`polylogue/cli/click_app.py`); argparse is gone.
 - Run logs: `browse runs --json-lines` emits newline-delimited JSON for `load_runs()` records.
+- Metrics: `browse metrics` emits Prometheus text (`--json` available) and can `--serve` at `/metrics`.
 - Metadata injection: `sync|import|render` accept repeatable `--meta key=value`.
   - Stored in markdown front matter as `polylogue.cliMeta` (to avoid collisions with provider-native `polylogue.meta`).
   - Also recorded in run history as `run.meta` in `runs.metadata_json`.
@@ -46,7 +47,7 @@ If you’re resuming work later, this is the “what’s already implemented” 
 
 - Timeline views and conversation/branch maps (HTML-side conversation map/timeline).
 - Role/model/branch analytics: tables or heatmaps; per-branch metrics and branching hotspots in status.
-- Metrics export/serve endpoint (Prometheus-friendly). Structured run history export. **(partially done: `browse runs --json-lines` emits JSONL)**
+- Metrics export/serve endpoint (Prometheus-friendly). Structured run history export. **(done: `browse metrics` emits Prometheus text + `--serve`; `browse runs --json-lines` emits JSONL)**
 
 ## P3 – Testing and Quality
 
