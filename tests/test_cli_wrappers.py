@@ -60,6 +60,8 @@ def _build_render_args(input_path: Path, out_dir: Path, *, json_mode: bool = Fal
         diff=False,
         to_clipboard=False,
         json=json_mode,
+        disk_estimate=False,
+        max_disk=None,
     )
 
 
@@ -88,6 +90,19 @@ def test_run_render_cli_json_output(tmp_path, capsys):
     assert payload["cmd"] == "render"
     assert payload["count"] == 1
     assert payload["files"][0]["slug"] == "sample"
+
+
+def test_run_render_cli_json_output_includes_disk_estimate(tmp_path, capsys):
+    src = tmp_path / "sample.json"
+    _write_render_input(src)
+    args = _build_render_args(src, tmp_path / "out", json_mode=True)
+    args.disk_estimate = True
+    ui = RecordingUI()
+
+    run_render_cli(args, CommandEnv(ui=ui), json_output=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "diskEstimateBytes" in payload
 
 
 def test_run_render_cli_plain_summary(tmp_path):
