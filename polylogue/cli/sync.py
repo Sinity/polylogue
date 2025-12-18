@@ -392,21 +392,6 @@ def run_sync_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         _run_sync_drive(merged, env)
     elif provider in LOCAL_SYNC_PROVIDER_NAMES:
         merged = merge_with_defaults(default_sync_namespace(provider, settings), args)
-        if getattr(args, "max_disk", None):
-            # Assume up to 20 MiB per session including attachments as a coarse estimate.
-            projected = 20 * 1024 * 1024 * max(1, len(getattr(args, "sessions", []) or []))
-            from ..util import preflight_disk_requirement
-
-            if not getattr(args, "json", False):
-                try:
-                    free_bytes = shutil.disk_usage(Path.cwd()).free
-                except Exception:
-                    free_bytes = None
-                extra = f", free={free_bytes / (1024 ** 3):.2f} GiB" if free_bytes is not None else ""
-                env.ui.console.print(
-                    f"[dim]Disk estimate: projected={projected / (1024 ** 3):.2f} GiB, limit={args.max_disk:.2f} GiB{extra}[/dim]"
-                )
-            preflight_disk_requirement(projected_bytes=projected, limit_gib=args.max_disk, ui=env.ui)
         if getattr(args, "offline", False):
             env.ui.console.print("[yellow]Offline mode: network-dependent steps will be skipped; results may be incomplete.")
         _run_local_sync(provider, merged, env)
@@ -746,6 +731,30 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             return
         selected_paths = selection
 
+    disk_estimate = bool(getattr(args, "disk_estimate", False))
+    max_disk = getattr(args, "max_disk", None)
+    disk_estimate_bytes: Optional[int] = None
+    disk_free_bytes: Optional[int] = None
+    if disk_estimate or max_disk is not None:
+        if selected_paths is not None:
+            session_count = len(selected_paths)
+        else:
+            session_count = len(provider.list_sessions(base_dir))
+        projected = 20 * 1024 * 1024 * max(1, session_count)
+        disk_estimate_bytes = projected
+        try:
+            disk_free_bytes = int(shutil.disk_usage(Path.cwd()).free)
+        except Exception:
+            disk_free_bytes = None
+        if not getattr(args, "json", False):
+            extra = f", free={disk_free_bytes / (1024 ** 3):.2f} GiB" if disk_free_bytes is not None else ""
+            limit = f", limit={max_disk:.2f} GiB" if max_disk is not None else ""
+            ui.console.print(f"[dim]Disk estimate: projected={projected / (1024 ** 3):.2f} GiB{limit}{extra}[/dim]")
+        if max_disk is not None:
+            from ..util import preflight_disk_requirement
+
+            preflight_disk_requirement(projected_bytes=projected, limit_gib=max_disk, ui=ui)
+
     if prune and getattr(args, "prune_snapshot", False):
         from ..paths import STATE_HOME
         from ..util import preflight_disk_requirement
@@ -830,6 +839,12 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             "diffs": result.diffs,
             "files": files_payload,
         }
+        if disk_estimate_bytes is not None:
+            payload["diskEstimateBytes"] = int(disk_estimate_bytes)
+        if disk_free_bytes is not None:
+            payload["diskFreeBytes"] = int(disk_free_bytes)
+        if max_disk is not None:
+            payload["maxDiskGiB"] = float(max_disk)
         if getattr(args, "resume_from", None) is not None:
             payload["resumeFrom"] = int(getattr(args, "resume_from") or 0)
         if getattr(result, "failures", 0):
@@ -865,6 +880,12 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
         "pruned": result.pruned,
         "diffs": result.diffs,
     }
+    if disk_estimate_bytes is not None:
+        run_payload["diskEstimateBytes"] = int(disk_estimate_bytes)
+    if disk_free_bytes is not None:
+        run_payload["diskFreeBytes"] = int(disk_free_bytes)
+    if max_disk is not None:
+        run_payload["maxDiskGiB"] = float(max_disk)
     if getattr(args, "resume_from", None) is not None:
         run_payload["resumeFrom"] = int(getattr(args, "resume_from") or 0)
     if getattr(result, "failures", 0):
