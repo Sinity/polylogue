@@ -461,6 +461,13 @@ def render_html(document: MarkdownDocument, options: HtmlRenderOptions) -> str:
     metadata_rows_raw["attachments"] = len(document.attachments)
     metadata_rows = {k: metadata_rows_raw[k] for k in sorted(metadata_rows_raw)}
     attachment_total_bytes = 0
+    attachments_sorted = sorted(
+        document.attachments,
+        key=lambda att: (
+            (att.name or "").lower(),
+            (att.local_path.as_posix() if getattr(att, "local_path", None) else (att.link or "")).lower(),
+        ),
+    )
     attachments = [
         {
             "name": att.name,
@@ -471,9 +478,9 @@ def render_html(document: MarkdownDocument, options: HtmlRenderOptions) -> str:
             "kind": "image" if _attachment_preview_src(att) else "file",
             "icon": _attachment_icon(att),
         }
-        for att in document.attachments
+        for att in attachments_sorted
     ]
-    for att in document.attachments:
+    for att in attachments_sorted:
         if getattr(att, "size_bytes", None):
             try:
                 attachment_total_bytes += int(att.size_bytes or 0)
