@@ -64,6 +64,8 @@ def _watch_args(base_dir: Path, out_dir: Path) -> SimpleNamespace:
         collapse_threshold=None,
         html_mode="off",
         debounce=0,
+        stall_seconds=60.0,
+        fail_on_stall=False,
         once=False,
         force=False,
         prune=False,
@@ -81,6 +83,38 @@ def test_watch_requires_existing_base_dir(tmp_path):
         _run_watch_sessions(args, env, provider)
 
     assert not missing.exists()
+
+
+def test_watch_once_creates_missing_base_dir(tmp_path):
+    missing = tmp_path / "missing"
+    provider = RecordingProvider(missing, (".jsonl",))
+    args = _watch_args(missing, provider.default_output)
+    args.once = True
+    env = CommandEnv(ui=DummyUI())
+
+    _run_watch_sessions(args, env, provider)
+
+    assert missing.exists()
+    # once mode runs the initial sync only
+    assert len(provider.calls) == 1
+
+
+def test_watch_provider_can_opt_in_to_base_dir_creation(monkeypatch, tmp_path):
+    missing = tmp_path / "missing"
+    provider = RecordingProvider(missing, (".jsonl",))
+    provider.create_base_dir = True
+    args = _watch_args(missing, provider.default_output)
+    env = CommandEnv(ui=DummyUI())
+
+    def no_events(_base, recursive=True):  # noqa: ARG001
+        return iter(())
+
+    monkeypatch.setattr("polylogue.cli.watch._watch_directory", no_events)
+
+    _run_watch_sessions(args, env, provider)
+
+    assert missing.exists()
+    assert len(provider.calls) == 1
 
 
 def test_watch_filters_suffixes(monkeypatch, tmp_path):
@@ -178,3 +212,29 @@ def test_watch_logs_skipped_events(monkeypatch, tmp_path, capsys):
 
     joined = "\n".join(env.ui.console.lines)
     assert "Skipped" in joined
+
+
+def test_watch_fail_on_stall_triggers_during_debounce(monkeypatch, tmp_path):
+    provider = RecordingProvider(tmp_path, (".jsonl",))
+    args = _watch_args(tmp_path, provider.default_output)
+    args.debounce = 10.0
+    args.stall_seconds = 1.0
+    args.fail_on_stall = True
+    env = CommandEnv(ui=DummyUI())
+
+    def fake_watch_directory(_base, recursive=True):  # noqa: ARG001
+        yield {(1, str(tmp_path / "a.jsonl"))}
+        yield {(1, str(tmp_path / "b.jsonl"))}
+        yield {(1, str(tmp_path / "c.jsonl"))}
+
+    ticks = iter([0.0, 0.2, 0.4, 2.0])
+
+    monkeypatch.setattr("polylogue.cli.watch._watch_directory", fake_watch_directory)
+    monkeypatch.setattr("polylogue.cli.watch.time.monotonic", lambda: next(ticks))
+
+    with pytest.raises(SystemExit) as excinfo:
+        _run_watch_sessions(args, env, provider)
+
+    assert excinfo.value.code == 2
+    joined = "\n".join(env.ui.console.lines)
+    assert "No sync progress" in joined

@@ -10,7 +10,7 @@ attachmentPolicy:
 attachment_bytes: 0
 attachmentsDir: null
 collapseThreshold: 10
-contentHash: c958013174df7a51a0e6a91df74991861f8f5742ca279b32661e54381235ba63
+contentHash: 1b6a5882d2e967ac2738d3bdfbfe4d4cba0aaa884e4956ba6eb1854e77f1e73c
 currentBranch: branch-000
 dirty: false
 html: false
@@ -19,7 +19,7 @@ lastImported: '2000-01-01T00:00:00Z'
 lastUpdated: null
 outputPath: <path>
 polylogue:
-  contentHash: c958013174df7a51a0e6a91df74991861f8f5742ca279b32661e54381235ba63
+  contentHash: 1b6a5882d2e967ac2738d3bdfbfe4d4cba0aaa884e4956ba6eb1854e77f1e73c
   conversationId: tests/fixtures/golden/claude_code/claude-code-golden.jsonl
   lastUpdated: null
   provider: claude-code

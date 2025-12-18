@@ -112,6 +112,72 @@ def test_import_chatgpt_export_basic(tmp_path):
     assert "## Model" in text
 
 
+def test_import_chatgpt_export_skips_when_unchanged(tmp_path):
+    export_dir = tmp_path / "chatgpt_skip"
+    export_dir.mkdir()
+    conversations = [
+        {
+            "id": "conv-skip",
+            "title": "Skip Chat",
+            "create_time": 1,
+            "update_time": 2,
+            "mapping": {
+                "node-user": {
+                    "id": "node-user",
+                    "message": {
+                        "id": "msg-user",
+                        "author": {"role": "user"},
+                        "create_time": 1,
+                        "content": {"content_type": "text", "parts": ["Hello"]},
+                    },
+                },
+                "node-assistant": {
+                    "id": "node-assistant",
+                    "message": {
+                        "id": "msg-assistant",
+                        "author": {"role": "assistant"},
+                        "create_time": 2,
+                        "content": {"content_type": "text", "parts": ["Hi there"]},
+                    },
+                },
+            },
+        }
+    ]
+    _write(export_dir / "conversations.json", conversations)
+
+    out_dir = tmp_path / "out"
+    first = import_chatgpt_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+    )
+    assert first and not first[0].skipped
+
+    second = import_chatgpt_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+    )
+    assert second and second[0].skipped
+    assert second[0].skip_reason
+
+    third = import_chatgpt_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=True,
+        html_theme="light",
+        force=False,
+    )
+    assert third and not third[0].skipped
+
+
 def test_import_claude_export_basic(tmp_path):
     export_dir = tmp_path / "claude"
     export_dir.mkdir()
@@ -148,6 +214,56 @@ def test_import_claude_export_basic(tmp_path):
     assert "Claude Chat" in body
     assert "Hi" in body
     assert "Hello" in body
+
+
+def test_import_claude_export_skips_when_unchanged(tmp_path):
+    export_dir = tmp_path / "claude_skip"
+    export_dir.mkdir()
+    conversations = {
+        "conversations": [
+            {
+                "uuid": "claude-skip",
+                "name": "Claude Skip",
+                "chat_messages": [
+                    {"sender": "user", "content": [{"type": "text", "text": "Hi"}]},
+                    {"sender": "assistant", "content": [{"type": "text", "text": "Hello"}]},
+                ],
+            }
+        ]
+    }
+    _write(export_dir / "conversations.json", conversations)
+
+    out_dir = tmp_path / "out_claude"
+    first = import_claude_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+    )
+    assert first and not first[0].skipped
+
+    second = import_claude_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+    )
+    assert second and second[0].skipped
+    assert second[0].skip_reason
+
+    third = import_claude_export(
+        export_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=True,
+        html_theme="light",
+        force=False,
+    )
+    assert third and not third[0].skipped
 
 
 def test_claude_import_unescapes_inline_footnotes(tmp_path):

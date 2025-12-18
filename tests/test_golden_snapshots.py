@@ -69,6 +69,26 @@ def test_golden_chatgpt_basic(tmp_path, state_env, monkeypatch):
     _render_slug(db_path, out_dir, slug)
     _assert_golden(out_dir / slug / "conversation.md", golden_dir / "chatgpt-basic.md")
 
+def test_golden_chatgpt_tool(tmp_path, state_env, monkeypatch):
+    monkeypatch.setenv("POLYLOGUE_FIXED_NOW", FIXED_NOW)
+    fixtures = _repo_root() / "tests" / "fixtures" / "golden"
+    golden_dir = _repo_root() / "tests" / "golden"
+    out_dir = tmp_path / "out"
+
+    results = import_chatgpt_export(
+        _rel(fixtures / "chatgpt_tool"),
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=True,
+    )
+    assert results
+    slug = results[0].slug
+    db_path = Path(state_env) / "polylogue.db"
+    _render_slug(db_path, out_dir, slug)
+    _assert_golden(out_dir / slug / "conversation.md", golden_dir / "chatgpt-tool.md")
+
 
 def test_golden_claude_basic(tmp_path, state_env, monkeypatch):
     monkeypatch.setenv("POLYLOGUE_FIXED_NOW", FIXED_NOW)
@@ -89,6 +109,26 @@ def test_golden_claude_basic(tmp_path, state_env, monkeypatch):
     db_path = Path(state_env) / "polylogue.db"
     _render_slug(db_path, out_dir, slug)
     _assert_golden(out_dir / slug / "conversation.md", golden_dir / "claude-basic.md")
+
+def test_golden_claude_tool(tmp_path, state_env, monkeypatch):
+    monkeypatch.setenv("POLYLOGUE_FIXED_NOW", FIXED_NOW)
+    fixtures = _repo_root() / "tests" / "fixtures" / "golden"
+    golden_dir = _repo_root() / "tests" / "golden"
+    out_dir = tmp_path / "out"
+
+    results = import_claude_export(
+        _rel(fixtures / "claude_tool"),
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=True,
+    )
+    assert results
+    slug = results[0].slug
+    db_path = Path(state_env) / "polylogue.db"
+    _render_slug(db_path, out_dir, slug)
+    _assert_golden(out_dir / slug / "conversation.md", golden_dir / "claude-tool.md")
 
 
 def test_golden_codex_basic(tmp_path, state_env, monkeypatch):

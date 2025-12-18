@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from .drive_client import DriveClient
+from .drive import snapshot_drive_metrics
 from .render import (
     AttachmentInfo,
     MarkdownDocument,
@@ -17,6 +18,23 @@ from .util import sanitize_filename, parse_rfc3339_to_epoch
 
 PerChunkLink = Tuple[str, Union[Path, str]]
 PerIndexLinks = Dict[int, List[PerChunkLink]]
+
+
+class AttachmentDownloadError(RuntimeError):
+    def __init__(
+        self,
+        failed_items: List[Dict[str, str]],
+        *,
+        per_index_links: PerIndexLinks,
+        attachments: List[AttachmentInfo],
+    ) -> None:
+        failed_ids = [item.get("id", "").strip() for item in failed_items if item.get("id")]
+        missing = ", ".join([fid for fid in failed_ids if fid])
+        super().__init__(f"Failed to download attachments: {missing}")
+        self.failed_ids = [fid for fid in failed_ids if fid]
+        self.failed_items = list(failed_items)
+        self.per_index_links = per_index_links
+        self.attachments = attachments
 
 
 @dataclass
@@ -104,7 +122,7 @@ def collect_attachments(
     dry_run: bool,
 ) -> Tuple[PerIndexLinks, List[AttachmentInfo]]:
     collector = _AttachmentCollector(md_path.parent, dry_run=dry_run)
-    failures: List[str] = []
+    failures: List[Dict[str, str]] = []
     for idx, chunk in enumerate(chunks):
         ids = collect_remote_ids(chunk)
         if not ids:
@@ -131,13 +149,25 @@ def collect_attachments(
                 if needs_download:
                     ok = drive.download_attachment(att_id, local_path)
                     if not ok:
-                        failures.append(att_id)
+                        try:
+                            rel = str(local_path.relative_to(collector.markdown_root))
+                        except Exception:
+                            rel = str(local_path)
+                        err = snapshot_drive_metrics(reset=False).get("lastError")
+                        failure = {"id": att_id, "filename": fname, "path": rel}
+                        if isinstance(err, str) and err.strip():
+                            failure["error"] = err.strip()
+                        failures.append(failure)
+                        collector.add_local(idx, fname, att_id, local_path)
                         continue
                 drive.touch_mtime(local_path, meta_att.get("modifiedTime"))
             collector.add_local(idx, fname, att_id, local_path)
     if failures and not dry_run:
-        missing = ", ".join(failures)
-        raise RuntimeError(f"Failed to download attachments: {missing}")
+        raise AttachmentDownloadError(
+            failures,
+            per_index_links=collector.per_index_links,
+            attachments=collector.attachments,
+        )
     return collector.per_index_links, collector.attachments
 
 
