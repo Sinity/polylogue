@@ -105,3 +105,37 @@ def test_ui_missing_dependencies_raise(monkeypatch):
 
     assert "Interactive dependencies missing" in str(excinfo.value)
     assert {"gum", "sk", "bat", "glow", "delta"}.issubset(set(calls))
+
+
+def test_ui_choose_interactive_uses_sk(monkeypatch):
+    monkeypatch.setattr(ui_module.shutil, "which", lambda _cmd: "/usr/bin/fake")
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd[:1] == ["sk"]:
+            return SimpleNamespace(stdout="two\n", stderr="", returncode=0)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(ui_module.subprocess, "run", fake_run)
+
+    view = UI(plain=False)
+    assert view.choose("Pick one", ["one", "two", "three"]) == "two"
+    assert calls and calls[-1][:2] == ["sk", "--prompt"]
+
+
+def test_ui_input_interactive_uses_gum(monkeypatch):
+    monkeypatch.setattr(ui_module.shutil, "which", lambda _cmd: "/usr/bin/fake")
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ["gum", "input"]:
+            return SimpleNamespace(stdout="value\n", stderr="", returncode=0)
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(ui_module.subprocess, "run", fake_run)
+
+    view = UI(plain=False)
+    assert view.input("Enter", default="fallback") == "value"
+    assert any(call[:2] == ["gum", "input"] for call in calls)
