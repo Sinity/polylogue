@@ -5,6 +5,7 @@ import time
 import json
 import zipfile
 import fnmatch
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -133,6 +134,7 @@ def _sync_sessions(
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
+    jobs: int = 1,
 ) -> LocalSyncResult:
     if registrar is None:
         state_dir = output_dir / ".polylogue-state"
@@ -180,6 +182,35 @@ def _sync_sessions(
     progress_ctx = ui.progress(f"Syncing {provider} sessions", total=len(session_list)) if ui else _NoopProgress()
 
     output_root = output_dir.resolve()
+    jobs = max(1, int(jobs or 1))
+
+    last_progress_time = 0.0
+
+    def _fmt_eta(seconds: Optional[float]) -> str:
+        if seconds is None:
+            return "?"
+        seconds = max(0.0, float(seconds))
+        mins, sec = divmod(int(seconds + 0.5), 60)
+        hrs, mins = divmod(mins, 60)
+        if hrs:
+            return f"{hrs}h{mins:02d}m{sec:02d}s"
+        if mins:
+            return f"{mins}m{sec:02d}s"
+        return f"{sec}s"
+
+    def _maybe_plain_progress(done: int, total: int) -> None:
+        nonlocal last_progress_time
+        if not ui or not ui.plain or total <= 0:
+            return
+        now = time.perf_counter()
+        if done != total and done != 1 and (done % 25) != 0 and (now - last_progress_time) < 10.0:
+            return
+        last_progress_time = now
+        elapsed = now - start_time
+        rate = (done / elapsed) if elapsed > 0 else 0.0
+        eta = ((total - done) / rate) if rate > 0 else None
+        pct = (done / total) * 100.0
+        ui.console.print(f"[dim]{provider} progress: {done}/{total} ({pct:.1f}%) elapsed={_fmt_eta(elapsed)} eta={_fmt_eta(eta)}[/dim]")
 
     def _process_single(session_path: Path) -> Dict[str, object]:
         entry: Dict[str, object] = {
@@ -297,43 +328,96 @@ def _sync_sessions(
     pipeline = Pipeline([_LocalSessionStage(_process_single)])
 
     with progress_ctx as tracker:
-        for session_path in session_list:
-            ctx = PipelineContext(env=None, options=None, data={"session_path": session_path})
-            try:
-                pipeline.run(ctx)
-            except Exception as exc:
-                failures.append({"path": str(session_path), "error": str(exc)})
+        if jobs <= 1:
+            done = 0
+            for session_path in session_list:
+                ctx = PipelineContext(env=None, options=None, data={"session_path": session_path})
+                try:
+                    pipeline.run(ctx)
+                except Exception as exc:
+                    failures.append({"path": str(session_path), "error": str(exc)})
+                    tracker.advance()
+                    done += 1
+                    _maybe_plain_progress(done, len(session_list))
+                    continue
+                session_output = ctx.get("session_result", {})
+                prune_slug = session_output.get("prune_slug")
+                if isinstance(prune_slug, str):
+                    wanted.add(prune_slug)
+
+                if session_output.get("skipped"):
+                    skipped += 1
+                    tracker.advance()
+                    done += 1
+                    _maybe_plain_progress(done, len(session_list))
+                    continue
+
+                result = session_output.get("result")
+                if not isinstance(result, ImportResult):
+                    error = session_output.get("error")
+                    if isinstance(error, str) and error:
+                        failures.append({"path": str(session_path), "error": error})
+                    tracker.advance()
+                    done += 1
+                    _maybe_plain_progress(done, len(session_list))
+                    continue
+
+                if session_output.get("diff"):
+                    diff_total += 1
+
+                wanted.add(result.slug)
+                if result.document:
+                    attachments_total += len(result.document.attachments)
+                    attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
+                    tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
+                    words_total += result.document.stats.get("totalWordsApprox", 0) or 0
+                written.append(result)
                 tracker.advance()
-                continue
-            session_output = ctx.get("session_result", {})
-            prune_slug = session_output.get("prune_slug")
-            if isinstance(prune_slug, str):
-                wanted.add(prune_slug)
+                done += 1
+                _maybe_plain_progress(done, len(session_list))
+        else:
+            results_by_index: List[Dict[str, object]] = [{} for _ in session_list]
+            with ThreadPoolExecutor(max_workers=jobs) as executor:
+                future_map = {executor.submit(_process_single, session_path): idx for idx, session_path in enumerate(session_list)}
+                done = 0
+                for future in as_completed(future_map):
+                    idx = future_map[future]
+                    session_path = session_list[idx]
+                    try:
+                        results_by_index[idx] = future.result()
+                    except Exception as exc:
+                        failures.append({"path": str(session_path), "error": str(exc)})
+                        results_by_index[idx] = {"session_path": session_path, "error": str(exc)}
+                    tracker.advance()
+                    done += 1
+                    _maybe_plain_progress(done, len(session_list))
 
-            if session_output.get("skipped"):
-                skipped += 1
-                tracker.advance()
-                continue
+            for idx, session_output in enumerate(results_by_index):
+                prune_slug = session_output.get("prune_slug")
+                if isinstance(prune_slug, str):
+                    wanted.add(prune_slug)
 
-            result = session_output.get("result")
-            if not isinstance(result, ImportResult):
-                error = session_output.get("error")
-                if isinstance(error, str) and error:
-                    failures.append({"path": str(session_path), "error": error})
-                tracker.advance()
-                continue
+                if session_output.get("skipped"):
+                    skipped += 1
+                    continue
 
-            if session_output.get("diff"):
-                diff_total += 1
+                result = session_output.get("result")
+                if not isinstance(result, ImportResult):
+                    error = session_output.get("error")
+                    if isinstance(error, str) and error:
+                        failures.append({"path": str(session_list[idx]), "error": error})
+                    continue
 
-            wanted.add(result.slug)
-            if result.document:
-                attachments_total += len(result.document.attachments)
-                attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
-                tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
-                words_total += result.document.stats.get("totalWordsApprox", 0) or 0
-            written.append(result)
-            tracker.advance()
+                if session_output.get("diff"):
+                    diff_total += 1
+
+                wanted.add(result.slug)
+                if result.document:
+                    attachments_total += len(result.document.attachments)
+                    attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
+                    tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
+                    words_total += result.document.stats.get("totalWordsApprox", 0) or 0
+                written.append(result)
 
     pruned = 0
     if prune:
@@ -677,6 +761,7 @@ def sync_codex_sessions(
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
+    jobs: int = 1,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -703,6 +788,7 @@ def sync_codex_sessions(
         attachment_ocr=attachment_ocr,
         sanitize_html=sanitize_html,
         meta=meta,
+        jobs=jobs,
     )
 
 
@@ -723,6 +809,7 @@ def sync_claude_code_sessions(
     attachment_ocr: bool = False,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
+    jobs: int = 1,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -749,6 +836,7 @@ def sync_claude_code_sessions(
         attachment_ocr=attachment_ocr,
         sanitize_html=sanitize_html,
         meta=meta,
+        jobs=jobs,
     )
 
 
