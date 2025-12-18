@@ -172,6 +172,7 @@ def load_runs(limit: Optional[int] = None) -> list[dict]:
     results: list[dict] = []
     for row in rows:
         payload = {
+            "id": row["id"],
             "timestamp": row["timestamp"],
             "cmd": row["cmd"],
             "count": row["count"],
@@ -196,6 +197,39 @@ def load_runs(limit: Optional[int] = None) -> list[dict]:
         results.append(payload)
     results.reverse()  # restore chronological order
     return results
+
+
+def get_run_by_id(run_id: int) -> Optional[dict]:
+    if not isinstance(run_id, int) or run_id <= 0:
+        return None
+    with open_connection(None) as conn:
+        row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if not row:
+        return None
+    payload = {
+        "id": row["id"],
+        "timestamp": row["timestamp"],
+        "cmd": row["cmd"],
+        "count": row["count"],
+        "attachments": row["attachments"],
+        "attachment_bytes": row["attachment_bytes"],
+        "tokens": row["tokens"],
+        "skipped": row["skipped"],
+        "pruned": row["pruned"],
+        "diffs": row["diffs"],
+        "duration": row["duration"],
+        "out": row["out"],
+        "provider": row["provider"],
+        "branch_id": row["branch_id"],
+    }
+    metadata = row["metadata_json"]
+    if metadata:
+        try:
+            payload.update(json.loads(metadata))
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to decode run metadata JSON (id=%s): %s", row["id"], exc)
+            payload["metadata_error"] = "invalid_json"
+    return payload
 
 
 def latest_run(provider: Optional[str] = None, cmd: Optional[str] = None) -> Optional[dict]:

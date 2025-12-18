@@ -45,6 +45,7 @@ def run_runs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         return
 
     table = Table(title=f"Recent Runs (n={len(runs)})")
+    table.add_column("ID", justify="right")
     table.add_column("Timestamp")
     table.add_column("Command")
     table.add_column("Provider")
@@ -54,6 +55,7 @@ def run_runs_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     table.add_column("Failures", justify="right")
     for entry in runs:
         table.add_row(
+            str(entry.get("id") or ""),
             entry.get("timestamp", "-"),
             entry.get("cmd", "-"),
             entry.get("provider", "-"),
@@ -79,7 +81,7 @@ def _print_plain(env: CommandEnv, runs: List[dict]) -> None:
         return
     for entry in runs:
         console.print(
-            f"{entry.get('timestamp','-')} :: {entry.get('cmd','-')} provider={entry.get('provider','-')} count={entry.get('count',0)} duration={entry.get('duration',0)}"
+            f"#{entry.get('id','-')} {entry.get('timestamp','-')} :: {entry.get('cmd','-')} provider={entry.get('provider','-')} count={entry.get('count',0)} duration={entry.get('duration',0)}"
         )
 
 
