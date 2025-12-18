@@ -37,6 +37,27 @@ def test_resume_from_drive_selects_failed_chat_ids(state_env):
     assert args.resume_from == run_id
 
 
+def test_resume_from_drive_includes_failed_attachments(state_env):
+    util.add_run(
+        {
+            "cmd": "sync drive",
+            "provider": "drive",
+            "failedAttachments": [
+                {"id": "abc", "name": "A", "attachments": ["file-1"]},
+                {"id": "def", "name": "B", "attachments": ["file-2", "file-3"]},
+            ],
+        }
+    )
+    run_id = util.load_runs(limit=1)[0]["id"]
+    env = CommandEnv(ui=DummyUI())
+    args = SimpleNamespace(provider="drive", chat_ids=None, sessions=None, all=False, prune=True, resume_from=None)
+    _apply_resume_from(args, env, run_id=run_id)
+    assert args.chat_ids == ["abc", "def"]
+    assert args.all is True
+    assert args.prune is False
+    assert args.resume_from == run_id
+
+
 def test_resume_from_local_selects_failed_paths(state_env):
     util.add_run(
         {
@@ -53,4 +74,3 @@ def test_resume_from_local_selects_failed_paths(state_env):
     assert args.all is True
     assert args.prune is False
     assert args.resume_from == run_id
-

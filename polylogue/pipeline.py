@@ -19,6 +19,21 @@ PerChunkLink = Tuple[str, Union[Path, str]]
 PerIndexLinks = Dict[int, List[PerChunkLink]]
 
 
+class AttachmentDownloadError(RuntimeError):
+    def __init__(
+        self,
+        failed_ids: List[str],
+        *,
+        per_index_links: PerIndexLinks,
+        attachments: List[AttachmentInfo],
+    ) -> None:
+        missing = ", ".join(failed_ids)
+        super().__init__(f"Failed to download attachments: {missing}")
+        self.failed_ids = list(failed_ids)
+        self.per_index_links = per_index_links
+        self.attachments = attachments
+
+
 @dataclass
 class ChatContext:
     title: str
@@ -132,12 +147,16 @@ def collect_attachments(
                     ok = drive.download_attachment(att_id, local_path)
                     if not ok:
                         failures.append(att_id)
+                        collector.add_local(idx, fname, att_id, local_path)
                         continue
                 drive.touch_mtime(local_path, meta_att.get("modifiedTime"))
             collector.add_local(idx, fname, att_id, local_path)
     if failures and not dry_run:
-        missing = ", ".join(failures)
-        raise RuntimeError(f"Failed to download attachments: {missing}")
+        raise AttachmentDownloadError(
+            failures,
+            per_index_links=collector.per_index_links,
+            attachments=collector.attachments,
+        )
     return collector.per_index_links, collector.attachments
 
 
