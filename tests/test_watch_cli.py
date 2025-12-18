@@ -64,6 +64,8 @@ def _watch_args(base_dir: Path, out_dir: Path) -> SimpleNamespace:
         collapse_threshold=None,
         html_mode="off",
         debounce=0,
+        stall_seconds=60.0,
+        fail_on_stall=False,
         once=False,
         force=False,
         prune=False,
@@ -178,3 +180,29 @@ def test_watch_logs_skipped_events(monkeypatch, tmp_path, capsys):
 
     joined = "\n".join(env.ui.console.lines)
     assert "Skipped" in joined
+
+
+def test_watch_fail_on_stall_triggers_during_debounce(monkeypatch, tmp_path):
+    provider = RecordingProvider(tmp_path, (".jsonl",))
+    args = _watch_args(tmp_path, provider.default_output)
+    args.debounce = 10.0
+    args.stall_seconds = 1.0
+    args.fail_on_stall = True
+    env = CommandEnv(ui=DummyUI())
+
+    def fake_watch_directory(_base, recursive=True):  # noqa: ARG001
+        yield {(1, str(tmp_path / "a.jsonl"))}
+        yield {(1, str(tmp_path / "b.jsonl"))}
+        yield {(1, str(tmp_path / "c.jsonl"))}
+
+    ticks = iter([0.0, 0.2, 0.4, 2.0])
+
+    monkeypatch.setattr("polylogue.cli.watch._watch_directory", fake_watch_directory)
+    monkeypatch.setattr("polylogue.cli.watch.time.monotonic", lambda: next(ticks))
+
+    with pytest.raises(SystemExit) as excinfo:
+        _run_watch_sessions(args, env, provider)
+
+    assert excinfo.value.code == 2
+    joined = "\n".join(env.ui.console.lines)
+    assert "No sync progress" in joined
