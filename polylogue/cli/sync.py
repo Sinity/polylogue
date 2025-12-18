@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List, Optional
@@ -15,7 +16,7 @@ from ..local_sync import (
     get_local_provider,
 )
 from ..options import ListOptions, SyncOptions
-from ..util import add_run, format_run_brief, latest_run, path_order_key, get_run_by_id
+from ..util import add_run, format_run_brief, latest_run, path_order_key, get_run_by_id, sanitize_filename
 from ..schema import stamp_payload
 from .context import (
     DEFAULT_COLLAPSE,
@@ -113,6 +114,109 @@ def _apply_resume_from(args: SimpleNamespace, env: CommandEnv, *, run_id: int) -
         return
 
     raise SystemExit(f"--resume-from is not supported for provider={provider!r}")
+
+
+def _retry_drive_attachments_only(
+    *,
+    run: dict,
+    env: CommandEnv,
+    output_dir: Path,
+    dry_run: bool,
+    force: bool,
+) -> dict:
+    ui = env.ui
+    drive = env.drive or DriveClient(ui)
+    env.drive = drive
+
+    failed_attachments = run.get("failedAttachments")
+    if not isinstance(failed_attachments, list) or not failed_attachments:
+        raise SystemExit("Run has no recorded failedAttachments to retry.")
+
+    attempted = 0
+    downloaded = 0
+    skipped = 0
+    failures: List[Dict[str, object]] = []
+
+    for entry in failed_attachments:
+        if not isinstance(entry, dict):
+            continue
+        slug = entry.get("slug")
+        name = entry.get("name")
+        if not isinstance(slug, str) or not slug.strip():
+            if isinstance(name, str) and name.strip():
+                slug = sanitize_filename(name)
+            else:
+                continue
+        slug = slug.strip()
+        convo_dir = output_dir / slug
+        attachments = entry.get("attachments")
+        if not isinstance(attachments, list) or not attachments:
+            continue
+
+        for att in attachments:
+            att_id: Optional[str] = None
+            rel_path: Optional[str] = None
+            if isinstance(att, dict):
+                att_id = str(att.get("id") or "").strip() or None
+                rel_path_raw = att.get("path")
+                if isinstance(rel_path_raw, str) and rel_path_raw.strip():
+                    rel_path = rel_path_raw.strip()
+                else:
+                    filename = att.get("filename")
+                    if isinstance(filename, str) and filename.strip():
+                        rel_path = str(Path("attachments") / filename.strip())
+            elif isinstance(att, str) and att.strip():
+                att_id = att.strip()
+
+            if not att_id:
+                continue
+
+            if rel_path is None:
+                meta = drive.attachment_meta(att_id)
+                filename = None
+                if isinstance(meta, dict):
+                    raw_name = meta.get("name")
+                    if isinstance(raw_name, str) and raw_name.strip():
+                        filename = sanitize_filename(raw_name)
+                if not filename:
+                    filename = sanitize_filename(att_id)
+                rel_path = str(Path("attachments") / filename)
+
+            target_path = (convo_dir / rel_path).resolve()
+            attempted += 1
+            if target_path.exists() and not force:
+                skipped += 1
+                continue
+
+            if dry_run:
+                ui.console.print(f"[yellow][dry-run] Would download attachment {att_id} → {target_path}[/yellow]")
+                downloaded += 1
+                continue
+
+            meta = drive.attachment_meta(att_id)
+            ok = drive.download_attachment(att_id, target_path)
+            if not ok:
+                failures.append({"id": entry.get("id"), "slug": slug, "attachment": att_id, "path": str(target_path)})
+                continue
+            downloaded += 1
+            if isinstance(meta, dict):
+                drive.touch_mtime(target_path, meta.get("modifiedTime"))
+
+    payload = {
+        "cmd": "sync drive",
+        "provider": "drive",
+        "attachmentsOnly": True,
+        "count": 0,
+        "out": str(output_dir),
+        "attempted": attempted,
+        "attachmentDownloads": downloaded,
+        "skipped": skipped,
+        "failures": len(failures),
+    }
+    if failures:
+        payload["failedAttachmentDownloads"] = failures
+    add_run(payload)
+    return payload
 
 
 def _apply_sync_prefs(args: SimpleNamespace, env: CommandEnv) -> SimpleNamespace:
@@ -320,6 +424,55 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
             name_filter=args.name_filter,
         )
         run_list_cli(list_args, env, json_output=json_mode)
+        return
+
+    if getattr(args, "attachments_only", False):
+        run_id = getattr(args, "resume_from", None)
+        if run_id is None:
+            raise SystemExit("--attachments-only requires --resume-from <run-id> (to load failedAttachments).")
+        if getattr(args, "links_only", False):
+            raise SystemExit("--attachments-only cannot be combined with --links-only.")
+        if getattr(args, "offline", False):
+            raise SystemExit("--attachments-only does not support --offline for Drive.")
+
+        run = get_run_by_id(int(run_id))
+        if not run:
+            raise SystemExit(f"Unknown run id: {run_id}")
+        cmd = str(run.get("cmd") or "")
+        if not cmd.startswith("sync drive"):
+            raise SystemExit(f"Run #{run_id} is not a sync drive run (cmd={cmd!r}).")
+        if run.get("failedChats"):
+            raise SystemExit("Run has failedChats; rerun without --attachments-only to retry full chat processing.")
+
+        out = args.out
+        if out is None:
+            stored = run.get("out")
+            if isinstance(stored, str) and stored.strip():
+                out = stored.strip()
+        output_dir = resolve_output_path(out, DEFAULT_SYNC_OUT)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        retries_override = getattr(args, "drive_retries", None)
+        retry_base_override = getattr(args, "drive_retry_base", None)
+        drive_cfg = getattr(env.config, "drive", None)
+        drive_retries = retries_override if retries_override is not None else getattr(drive_cfg, "retries", None)
+        drive_retry_base = retry_base_override if retry_base_override is not None else getattr(drive_cfg, "retry_base", None)
+
+        env.drive = env.drive or DriveClient(ui, retries=drive_retries, retry_base=drive_retry_base)
+        result_payload = _retry_drive_attachments_only(
+            run=run,
+            env=env,
+            output_dir=output_dir,
+            dry_run=bool(getattr(args, "dry_run", False)),
+            force=bool(getattr(args, "force", False)),
+        )
+        if json_mode:
+            print(json.dumps(stamp_payload(result_payload), indent=2, sort_keys=True))
+            return
+        console.print(
+            f"Attachment retry complete: downloaded={result_payload.get('attachmentDownloads', 0)} "
+            f"skipped={result_payload.get('skipped', 0)} failures={result_payload.get('failures', 0)}"
+        )
         return
 
     download_attachments = not args.links_only

@@ -140,6 +140,7 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.argument("provider", type=click.Choice(["drive", "codex", "claude-code", "chatgpt", "claude"]))
 @click.option("--out", type=click.Path(path_type=Path), help="Override output directory")
 @click.option("--links-only", is_flag=True, help="Link attachments instead of downloading (Drive only)")
+@click.option("--attachments-only", is_flag=True, help="Retry/download Drive attachments only (requires --resume-from; no re-render)")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in synced Markdown/HTML outputs")
 @click.option("--dry-run", is_flag=True, help="Report actions without writing files")
