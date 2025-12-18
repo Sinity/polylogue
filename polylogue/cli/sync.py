@@ -46,8 +46,10 @@ def _apply_resume_from(args: SimpleNamespace, env: CommandEnv, *, run_id: int) -
 
     if provider == "drive":
         failed = run.get("failedChats")
+        failed_attachments = run.get("failedAttachments")
         ids: List[str] = []
         stage_counts: Dict[str, int] = {}
+        attachment_counts: Dict[str, int] = {}
         if isinstance(failed, list):
             for item in failed:
                 if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip():
@@ -55,8 +57,20 @@ def _apply_resume_from(args: SimpleNamespace, env: CommandEnv, *, run_id: int) -
                     stage = item.get("stage")
                     if isinstance(stage, str) and stage.strip():
                         stage_counts[stage.strip()] = stage_counts.get(stage.strip(), 0) + 1
+        if isinstance(failed_attachments, list):
+            for item in failed_attachments:
+                if not isinstance(item, dict):
+                    continue
+                chat_id = item.get("id")
+                if isinstance(chat_id, str) and chat_id.strip():
+                    ids.append(chat_id.strip())
+                attachments = item.get("attachments")
+                if isinstance(chat_id, str) and chat_id.strip() and isinstance(attachments, list):
+                    attachment_counts[chat_id.strip()] = len([x for x in attachments if x])
         if not ids:
-            raise SystemExit(f"Run #{run_id} has no recorded failed Drive chats to resume.")
+            raise SystemExit(f"Run #{run_id} has no recorded failed Drive chats/attachments to resume.")
+        if getattr(args, "links_only", False) and failed_attachments:
+            raise SystemExit("Cannot resume attachment retries with --links-only (it disables attachment downloads).")
         args.chat_ids = list(dict.fromkeys(ids))
         args.resume_from = int(run_id)
         args.all = True
@@ -65,6 +79,9 @@ def _apply_resume_from(args: SimpleNamespace, env: CommandEnv, *, run_id: int) -
         if stage_counts:
             stage_summary = ", ".join(f"{name}={count}" for name, count in sorted(stage_counts.items()))
             extra = f" ({stage_summary})"
+        if attachment_counts:
+            attachment_total = sum(attachment_counts.values())
+            extra = f"{extra} (attachment failures={attachment_total})"
         env.ui.console.print(f"[dim]Resuming run #{run_id}: {len(args.chat_ids)} Drive chat(s){extra}[/dim]")
         return
 
@@ -412,8 +429,8 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
         record_failure(args, exc, phase="sync")
         raise
 
-        if json_mode:
-            payload = {
+    if json_mode:
+        payload = {
             "cmd": "sync drive",
             "provider": "drive",
             "count": result.count,
@@ -435,16 +452,20 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
             ],
             "total_stats": result.total_stats,
             "retries": getattr(result, "retries", None),
-                "retry_base": drive_retry_base,
-            }
-            if getattr(args, "resume_from", None) is not None:
-                payload["resumeFrom"] = int(getattr(args, "resume_from") or 0)
-            failed_chats = getattr(result, "failed_chats", None)
-            if isinstance(failed_chats, list) and failed_chats:
-                payload["failedChats"] = failed_chats
-                payload["failures"] = len(failed_chats)
-            if meta:
-                payload["meta"] = dict(meta)
+            "retry_base": drive_retry_base,
+        }
+        if getattr(args, "resume_from", None) is not None:
+            payload["resumeFrom"] = int(getattr(args, "resume_from") or 0)
+        failed_chats = getattr(result, "failed_chats", None)
+        if isinstance(failed_chats, list) and failed_chats:
+            payload["failedChats"] = failed_chats
+            payload["failures"] = len(failed_chats)
+        failed_attachments = getattr(result, "failed_attachments", None)
+        if isinstance(failed_attachments, list) and failed_attachments:
+            payload["failedAttachments"] = failed_attachments
+            payload["attachmentFailures"] = int(result.total_stats.get("attachmentFailures", 0) or 0)
+        if meta:
+            payload["meta"] = dict(meta)
         if getattr(args, "sanitize_html", False):
             payload["redacted"] = True
         if previous_run_note:
@@ -456,6 +477,9 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
     failed_chats = getattr(result, "failed_chats", None)
     if isinstance(failed_chats, list) and failed_chats:
         lines.append(f"Failures: {len(failed_chats)}")
+    attachment_failures_total = int(result.total_stats.get("attachmentFailures", 0) or 0)
+    if attachment_failures_total:
+        lines.append(f"Attachment failures: {attachment_failures_total}")
     if getattr(args, "print_paths", False):
         lines.append("Written paths:")
         for item in result.items:
