@@ -178,6 +178,7 @@ def load_runs(limit: Optional[int] = None) -> list[dict]:
             "count": row["count"],
             "attachments": row["attachments"],
             "attachment_bytes": row["attachment_bytes"],
+            "attachmentBytes": row["attachment_bytes"],
             "tokens": row["tokens"],
             "skipped": row["skipped"],
             "pruned": row["pruned"],
@@ -213,6 +214,7 @@ def get_run_by_id(run_id: int) -> Optional[dict]:
         "count": row["count"],
         "attachments": row["attachments"],
         "attachment_bytes": row["attachment_bytes"],
+        "attachmentBytes": row["attachment_bytes"],
         "tokens": row["tokens"],
         "skipped": row["skipped"],
         "pruned": row["pruned"],
@@ -439,7 +441,7 @@ def add_run(record: Dict[str, Any]) -> None:
     cmd = payload.get("cmd") or "unknown"
     count = int(payload.get("count") or 0)
     attachments = int(payload.get("attachments") or 0)
-    attachment_bytes = int(payload.get("attachment_bytes") or 0)
+    attachment_bytes = int(payload.get("attachment_bytes") or payload.get("attachmentBytes") or 0)
     tokens = int(payload.get("tokens") or 0)
     skipped = int(payload.get("skipped") or 0)
     pruned = int(payload.get("pruned") or 0)
@@ -460,6 +462,7 @@ def add_run(record: Dict[str, Any]) -> None:
             "count",
             "attachments",
             "attachment_bytes",
+            "attachmentBytes",
             "tokens",
             "skipped",
             "pruned",
