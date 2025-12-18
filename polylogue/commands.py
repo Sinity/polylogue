@@ -165,7 +165,7 @@ class RenderDocumentStage:
         slug: str = context.get("slug")
         md_path = (options.output_dir / slug) / "conversation.md"
         download_att = bool(getattr(options, "download_attachments", False))
-        attachment_failures: Optional[List[str]] = None
+        attachment_failures: Optional[List[Dict[str, str]]] = None
         try:
             per_chunk_links, attachments = prepare_render_assets(
                 chunks,
@@ -178,11 +178,11 @@ class RenderDocumentStage:
         except AttachmentDownloadError as exc:
             per_chunk_links = exc.per_index_links
             attachments = exc.attachments
-            attachment_failures = exc.failed_ids
+            attachment_failures = exc.failed_items
             context.set("attachment_failures", list(attachment_failures))
             env.ui.console.print(
-                f"[yellow]Warning: failed to download {len(attachment_failures)} attachment(s) "
-                f"for {chat_context.title!r}: {', '.join(attachment_failures)}[/yellow]"
+                f"[yellow]Warning: failed to download {len(exc.failed_ids)} attachment(s) "
+                f"for {chat_context.title!r}: {', '.join(exc.failed_ids)}[/yellow]"
             )
         context.set("per_chunk_links", per_chunk_links)
         context.set("attachments", attachments)
@@ -781,12 +781,28 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
             doc: Optional[MarkdownDocument] = result.document
             att_failures = ctx.get("attachment_failures")
             if isinstance(att_failures, list) and att_failures:
-                cleaned = [str(item).strip() for item in att_failures if item and str(item).strip()]
+                cleaned: List[Dict[str, str]] = []
+                for entry in att_failures:
+                    if isinstance(entry, dict):
+                        att_id = str(entry.get("id") or "").strip()
+                        if not att_id:
+                            continue
+                        item: Dict[str, str] = {"id": att_id}
+                        filename = entry.get("filename")
+                        if isinstance(filename, str) and filename.strip():
+                            item["filename"] = filename.strip()
+                        path_value = entry.get("path")
+                        if isinstance(path_value, str) and path_value.strip():
+                            item["path"] = path_value.strip()
+                        cleaned.append(item)
+                    elif isinstance(entry, str) and entry.strip():
+                        cleaned.append({"id": entry.strip()})
                 if cleaned:
                     attachment_failures.append(
                         {
                             "id": file_id or meta.get("id"),
                             "name": meta.get("name"),
+                            "slug": result.slug,
                             "attachments": cleaned,
                         }
                     )

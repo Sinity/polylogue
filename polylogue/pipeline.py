@@ -22,14 +22,16 @@ PerIndexLinks = Dict[int, List[PerChunkLink]]
 class AttachmentDownloadError(RuntimeError):
     def __init__(
         self,
-        failed_ids: List[str],
+        failed_items: List[Dict[str, str]],
         *,
         per_index_links: PerIndexLinks,
         attachments: List[AttachmentInfo],
     ) -> None:
-        missing = ", ".join(failed_ids)
+        failed_ids = [item.get("id", "").strip() for item in failed_items if item.get("id")]
+        missing = ", ".join([fid for fid in failed_ids if fid])
         super().__init__(f"Failed to download attachments: {missing}")
-        self.failed_ids = list(failed_ids)
+        self.failed_ids = [fid for fid in failed_ids if fid]
+        self.failed_items = list(failed_items)
         self.per_index_links = per_index_links
         self.attachments = attachments
 
@@ -119,7 +121,7 @@ def collect_attachments(
     dry_run: bool,
 ) -> Tuple[PerIndexLinks, List[AttachmentInfo]]:
     collector = _AttachmentCollector(md_path.parent, dry_run=dry_run)
-    failures: List[str] = []
+    failures: List[Dict[str, str]] = []
     for idx, chunk in enumerate(chunks):
         ids = collect_remote_ids(chunk)
         if not ids:
@@ -146,7 +148,11 @@ def collect_attachments(
                 if needs_download:
                     ok = drive.download_attachment(att_id, local_path)
                     if not ok:
-                        failures.append(att_id)
+                        try:
+                            rel = str(local_path.relative_to(collector.markdown_root))
+                        except Exception:
+                            rel = str(local_path)
+                        failures.append({"id": att_id, "filename": fname, "path": rel})
                         collector.add_local(idx, fname, att_id, local_path)
                         continue
                 drive.touch_mtime(local_path, meta_att.get("modifiedTime"))
