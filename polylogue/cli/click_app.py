@@ -475,6 +475,21 @@ def browse_metrics(env: CommandEnv, **kwargs) -> None:
     browse_cmd.run_browse_cli(args, env)
 
 
+@browse_group.command(name="timeline")
+@click.option("--providers", type=str, help="Comma-separated provider filter")
+@click.option("--limit", type=int, default=500, show_default=True, help="Maximum rows to include")
+@click.option("--out", type=click.Path(path_type=Path), help="Write HTML timeline to this path (default: ./timeline.html)")
+@click.option("--theme", type=click.Choice(["light", "dark"]), default="light", show_default=True, help="HTML theme")
+@click.option("--open", "open_result", is_flag=True, help="Open result in $EDITOR after command completes")
+@click.option("--json", is_flag=True, help="Emit machine-readable rows instead of writing HTML")
+@click.pass_obj
+def browse_timeline(env: CommandEnv, **kwargs) -> None:
+    """Render a global conversation timeline (HTML) from the SQLite state DB."""
+    kwargs["open"] = kwargs.pop("open_result")
+    args = SimpleNamespace(browse_cmd="timeline", **kwargs)
+    browse_cmd.run_browse_cli(args, env)
+
+
 @browse_group.command(name="inbox")
 @click.option("--providers", type=str, default="chatgpt,claude", show_default=True, help="Comma-separated provider filter")
 @click.option("--dir", type=click.Path(path_type=Path), help="Override inbox root for a generic scan")
