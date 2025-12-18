@@ -204,6 +204,89 @@ def test_sync_command_with_stub_drive(tmp_path, monkeypatch, state_env):
         conn.close()
 
 
+def test_sync_command_records_attachment_failures_without_aborting(tmp_path, monkeypatch, state_env):
+    records = []
+    monkeypatch.setattr(cmd_module, "add_run", lambda record: records.append(record))
+
+    class StubDrive:
+        def __init__(self, ui):
+            self.ui = ui
+
+        def resolve_folder_id(self, folder_name, folder_id):  # noqa: ARG002
+            return "folder-123"
+
+        def list_chats(self, folder_name, folder_id):  # noqa: ARG002
+            return [
+                {
+                    "id": "drive-1",
+                    "name": "Drive Attachments",
+                    "modifiedTime": "2024-01-01T00:00:00Z",
+                }
+            ]
+
+        def download_chat_bytes(self, file_id):  # noqa: ARG002
+            payload = {
+                "chunkedPrompt": {
+                    "chunks": [
+                        {"role": "user", "text": "See", "driveDocument": {"id": "bad", "name": "bad.txt"}},
+                        {"role": "user", "text": "And", "driveDocument": {"id": "good", "name": "good.txt"}},
+                        {"role": "model", "text": "Ok"},
+                    ]
+                }
+            }
+            return json.dumps(payload).encode("utf-8")
+
+        def attachment_meta(self, file_id):  # noqa: ARG002
+            return {"name": f"{file_id}.txt", "modifiedTime": "2024-01-01T00:00:00Z"}
+
+        def download_attachment(self, file_id, path: Path) -> bool:
+            if file_id == "bad":
+                return False
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("ok", encoding="utf-8")
+            return True
+
+        def touch_mtime(self, path: Path, _mt):  # noqa: ARG002
+            return None
+
+    monkeypatch.setattr(cmd_module, "DriveClient", StubDrive)
+
+    out_dir = tmp_path / "drive"
+    options = SyncOptions(
+        folder_name="AI Studio",
+        folder_id=None,
+        output_dir=out_dir,
+        collapse_threshold=12,
+        download_attachments=True,
+        dry_run=False,
+        force=False,
+        prune=False,
+        since=None,
+        until=None,
+        name_filter=None,
+        html=False,
+        html_theme="light",
+        diff=False,
+    )
+    result = sync_command(options, CommandEnv(ui=DummyUI()))
+
+    assert result.count == 1
+    expected_dir = out_dir / util.sanitize_filename("Drive Attachments")
+    assert (expected_dir / "conversation.md").exists()
+    assert (expected_dir / "attachments" / "good.txt").exists()
+    assert not (expected_dir / "attachments" / "bad.txt").exists()
+
+    assert int(result.total_stats.get("attachmentFailures", 0) or 0) == 1
+    failed_attachments = getattr(result, "failed_attachments", None)
+    assert isinstance(failed_attachments, list)
+    assert failed_attachments and failed_attachments[0]["id"] == "drive-1"
+
+    assert records
+    record = records[0]
+    assert record.get("attachmentFailures") == 1
+    assert record.get("failedAttachments") and record["failedAttachments"][0]["id"] == "drive-1"
+
+
 def test_run_prune_cli_removes_legacy(tmp_path):
     root = tmp_path / "legacy"
     root.mkdir()
