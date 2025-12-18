@@ -85,6 +85,38 @@ def test_watch_requires_existing_base_dir(tmp_path):
     assert not missing.exists()
 
 
+def test_watch_once_creates_missing_base_dir(tmp_path):
+    missing = tmp_path / "missing"
+    provider = RecordingProvider(missing, (".jsonl",))
+    args = _watch_args(missing, provider.default_output)
+    args.once = True
+    env = CommandEnv(ui=DummyUI())
+
+    _run_watch_sessions(args, env, provider)
+
+    assert missing.exists()
+    # once mode runs the initial sync only
+    assert len(provider.calls) == 1
+
+
+def test_watch_provider_can_opt_in_to_base_dir_creation(monkeypatch, tmp_path):
+    missing = tmp_path / "missing"
+    provider = RecordingProvider(missing, (".jsonl",))
+    provider.create_base_dir = True
+    args = _watch_args(missing, provider.default_output)
+    env = CommandEnv(ui=DummyUI())
+
+    def no_events(_base, recursive=True):  # noqa: ARG001
+        return iter(())
+
+    monkeypatch.setattr("polylogue.cli.watch._watch_directory", no_events)
+
+    _run_watch_sessions(args, env, provider)
+
+    assert missing.exists()
+    assert len(provider.calls) == 1
+
+
 def test_watch_filters_suffixes(monkeypatch, tmp_path):
     provider = RecordingProvider(tmp_path, (".jsonl",))
     args = _watch_args(tmp_path, provider.default_output)
