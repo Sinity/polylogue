@@ -13,9 +13,9 @@ If you’re resuming work later, this is the “what’s already implemented” 
   - Stored in markdown front matter as `polylogue.cliMeta` (to avoid collisions with provider-native `polylogue.meta`).
   - Also recorded in run history as `run.meta` in `runs.metadata_json`.
 - Integrity: `polylogue verify` exists (checks front matter vs DB/state, attachments, and branch docs).
-- Golden tests: portable markdown snapshot suite exists.
-  - Fixtures live in `tests/fixtures/golden/`, expected outputs in `tests/golden/`.
-  - Regenerator: `nix develop -c python3 scripts/update_goldens.py`.
+- Golden tests: portable Markdown + basic HTML snapshot suites exist.
+  - Fixtures live in `tests/fixtures/golden/`, expected outputs in `tests/golden/` and `tests/golden_html/`.
+  - Regenerator: `nix develop -c python3 scripts/update_goldens.py` (updates both Markdown + HTML goldens).
   - Snapshots compare after canonicalization/scrubbing via `polylogue/frontmatter_canonical.py`.
   - Determinism hooks: `POLYLOGUE_FIXED_NOW` (fixed timestamps) + tests force a stub `tiktoken` tokenizer for stable counts.
 
