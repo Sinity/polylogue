@@ -24,6 +24,21 @@ polylogue browse status --providers codex --summary-only --summary - --watch --i
 
 For unattended jobs, call `polylogue browse status --dump /path/to/runs.json --dump-limit 50` (and optionally `--summary metrics.json`) immediately after your sync/import command so dashboards and alerts can consume fresh JSON without parsing terminal output.
 
+## `polylogue browse metrics`
+
+For Prometheus-compatible metrics, use:
+
+```bash
+# Print Prometheus text format to stdout
+polylogue browse metrics
+
+# Serve /metrics over HTTP (localhost:8000 by default)
+polylogue browse metrics --serve --host 127.0.0.1 --port 8000
+
+# JSON payload for debugging or custom collectors
+polylogue browse metrics --json
+```
+
 ## Where the Data Lives
 
 - Run history + metadata: `$XDG_STATE_HOME/polylogue/polylogue.db` (use `polylogue browse status --dump runs.json` or `--dump -` when you need a JSON snapshot)
