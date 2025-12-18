@@ -284,6 +284,17 @@ def render(env: CommandEnv, **kwargs) -> None:
 @click.option("--slug", type=str, help="Filter to a single slug")
 @click.option("--conversation-id", "conversation_ids", multiple=True, help="Filter to a conversation ID (repeatable)")
 @click.option("--limit", type=int, help="Limit number of conversations verified")
+@click.option("--fix", is_flag=True, help="Rewrite conversation.md front matter into canonical form when possible")
+@click.option(
+    "--unknown",
+    "unknown_policy",
+    type=click.Choice(["ignore", "warn", "error"]),
+    default="warn",
+    show_default=True,
+    help="How to handle unknown polylogue front-matter keys",
+)
+@click.option("--allow-polylogue-key", "allow_polylogue_keys", multiple=True, help="Allow additional polylogue metadata key (repeatable)")
+@click.option("--strict", is_flag=True, help="Treat warnings as errors")
 @click.option("--json", is_flag=True, help="Emit machine-readable report")
 @click.pass_obj
 def verify(env: CommandEnv, **kwargs) -> None:
