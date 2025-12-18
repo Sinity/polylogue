@@ -56,7 +56,7 @@ If you’re resuming work later, this is the “what’s already implemented” 
 - Watch-mode regression: simulated file change streams with debounce windows to catch stalls, suppressed events, and base-dir validation.
 - UI surface tests: stub gum/skim/bat/glow/delta (or the pure-Python facade when available) to assert prompts, summaries, anchors, progress output, and warnings render correctly in rich and plain modes. **(partially done: gum/skim-backed confirm/input/choose + picker flows have unit tests)**
 - Interactive harness: add PTY-driven tests (pexpect or similar) to exercise prompts/confirmations/menus end-to-end, including cancellation paths and default selections.
-- Replace custom retry logic with tenacity-based wrappers (with retry-count assertions in tests).
+- Replace custom retry logic with tenacity-based wrappers (with retry-count assertions in tests). **(done: Drive retry wrappers now use tenacity; existing drive metrics tests cover retry counts)**
 
 ## P3 – Metadata, Provenance, and Integrity
 

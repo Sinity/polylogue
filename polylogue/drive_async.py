@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 import sys
 
 from .util import colorize, get_cached_folder_id, set_cached_folder_id
+from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 try:
     import httpx
@@ -111,31 +112,41 @@ async def _retry_async(
     notifier=None,
 ):
     """Async retry wrapper with exponential backoff."""
+    max_attempts = max(1, retries)
     base_delay = max(0.0, base_delay)
-    retries = max(1, retries)
-    last_err = None
+
     attempts = 0
-    for i in range(retries):
-        attempts += 1
-        try:
-            result = await fn()
-            _record_drive_completion(operation, attempts)
-            return result
-        except Exception as e:
-            last_err = e
-            delay = base_delay * (2 ** i)
-            if notifier:
-                try:
-                    notifier(operation=operation, attempt=attempts, total=retries, error=e, delay=delay)
-                except Exception:
-                    pass
-            if i == retries - 1:
-                _record_drive_completion(operation, attempts, error=e)
-                raise
-            await asyncio.sleep(delay)
-    if last_err:
-        raise last_err
-    return None
+
+    def _before(retry_state) -> None:
+        nonlocal attempts
+        attempts = retry_state.attempt_number
+
+    def _after(retry_state) -> None:
+        if notifier and retry_state.outcome.failed:
+            exc = retry_state.outcome.exception()
+            delay = base_delay * (2 ** (attempts - 1))
+            try:
+                notifier(operation=operation, attempt=attempts, total=max_attempts, error=exc, delay=delay)
+            except Exception:
+                pass
+
+    retrying = AsyncRetrying(
+        stop=stop_after_attempt(max_attempts),
+        wait=wait_exponential(multiplier=base_delay, exp_base=2, min=0),
+        retry=retry_if_exception_type(Exception),
+        reraise=True,
+        sleep=asyncio.sleep,
+        before=_before,
+        after=_after,
+    )
+
+    try:
+        result = await retrying(fn)
+        _record_drive_completion(operation, attempts or 1)
+        return result
+    except Exception as exc:
+        _record_drive_completion(operation, attempts or max_attempts, error=exc)
+        raise
 
 
 def _raise_for_status(resp: httpx.Response) -> None:
