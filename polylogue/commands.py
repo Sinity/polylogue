@@ -523,6 +523,7 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
     )
 
     render_files: List[RenderFile] = []
+    failures: List[Dict[str, Any]] = []
     totals_acc = RunAccumulator()
 
     with ui.progress("Rendering files", total=len(options.inputs)) as tracker:
@@ -534,7 +535,12 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
             if extra_state:
                 data["extra_state"] = extra_state
             ctx = PipelineContext(env=env, options=options, data=data)
-            pipeline.run(ctx)
+            try:
+                pipeline.run(ctx)
+            except Exception as exc:
+                failures.append({"source": str(src), "error": str(exc)})
+                tracker.advance()
+                continue
             tracker.advance()
 
             if ctx.aborted:
@@ -579,17 +585,22 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
         "diffs": totals.get("diffs", 0),
         "duration": duration,
     }
+    if failures:
+        run_payload["failures"] = len(failures)
+        run_payload["failedFiles"] = failures
     if getattr(options, "meta", None):
         run_payload["meta"] = dict(getattr(options, "meta") or {})
     if getattr(options, "sanitize_html", False):
         run_payload["redacted"] = True
     add_run(run_payload)
-    return RenderResult(
+    result = RenderResult(
         count=len(render_files),
         output_dir=output_dir,
         files=render_files,
         total_stats=totals,
     )
+    setattr(result, "failed_files", failures)
+    return result
 
 
 def _context_from_local(obj: Dict, fallback: str) -> ChatContext:
@@ -678,6 +689,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     items: List[SyncItem] = []
     wanted_slugs: set[str] = set()
     totals_acc = RunAccumulator()
+    failures: List[Dict[str, Any]] = []
     description = f"Syncing {options.folder_name or 'Drive'} chats"
     with env.ui.progress(description, total=len(chats)) as tracker:
         for meta in chats:
@@ -688,8 +700,26 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
             if extra_state:
                 data["extra_state"] = extra_state
             ctx = PipelineContext(env=env, options=options, data=data)
-            pipeline.run(ctx)
+            try:
+                pipeline.run(ctx)
+            except Exception as exc:
+                failures.append(
+                    {
+                        "id": meta.get("id"),
+                        "name": meta.get("name"),
+                        "error": str(exc),
+                    }
+                )
+                tracker.advance()
+                continue
             if ctx.aborted:
+                failures.append(
+                    {
+                        "id": meta.get("id"),
+                        "name": meta.get("name"),
+                        "error": "aborted",
+                    }
+                )
                 tracker.advance()
                 continue
 
@@ -789,6 +819,9 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         "driveFailures": drive_stats.get("failures", 0),
         "driveLastError": drive_stats.get("lastError"),
     }
+    if failures:
+        run_payload["failures"] = len(failures)
+        run_payload["failedChats"] = failures
     if getattr(options, "meta", None):
         run_payload["meta"] = dict(getattr(options, "meta") or {})
     if getattr(options, "sanitize_html", False):
@@ -798,7 +831,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     totals.setdefault("skipped", 0)
     totals.setdefault("diffs", totals.get("diffs", 0))
     totals["pruned"] = pruned_count
-    return SyncResult(
+    result = SyncResult(
         count=len(items),
         output_dir=options.output_dir,
         folder_name=options.folder_name,
@@ -806,6 +839,8 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         items=items,
         total_stats=totals,
     )
+    setattr(result, "failed_chats", failures)
+    return result
 
 
 def status_command(env: CommandEnv, runs_limit: Optional[int] = 200, provider_filter: Optional[Set[str]] = None) -> StatusResult:

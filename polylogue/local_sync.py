@@ -5,7 +5,7 @@ import time
 import json
 import zipfile
 import fnmatch
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -43,6 +43,8 @@ class LocalSyncResult:
     words: int = 0
     diffs: int = 0
     duration: float = 0.0
+    failures: int = 0
+    failed: List[Dict[str, str]] = field(default_factory=list)
 
 
 LocalSyncFn = Callable[..., LocalSyncResult]
@@ -154,6 +156,7 @@ def _sync_sessions(
     words_total = 0
 
     diff_total = 0
+    failures: List[Dict[str, str]] = []
     session_list: List[Path]
     if isinstance(sessions, (list, tuple)):
         session_list = [Path(p) for p in sessions]
@@ -185,6 +188,7 @@ def _sync_sessions(
             "result": None,
             "prune_slug": None,
             "diff": False,
+            "error": None,
         }
         if not session_path.is_file():
             entry["skipped"] = True
@@ -255,16 +259,21 @@ def _sync_sessions(
             return entry
 
         diff_tracker = DiffTracker(md_path, diff)
-        result = import_fn(
-            str(session_path),
-            output_dir=output_dir,
-            collapse_threshold=collapse_threshold,
-            collapse_thresholds=collapse_thresholds,
-            html=html,
-            html_theme=html_theme,
-            force=force,
-            **importer_kwargs,
-        )
+        try:
+            result = import_fn(
+                str(session_path),
+                output_dir=output_dir,
+                collapse_threshold=collapse_threshold,
+                collapse_thresholds=collapse_thresholds,
+                html=html,
+                html_theme=html_theme,
+                force=force,
+                **importer_kwargs,
+            )
+        except Exception as exc:
+            diff_tracker.cleanup()
+            entry["error"] = str(exc)
+            return entry
         if result.skipped:
             diff_tracker.cleanup()
             entry["skipped"] = True
@@ -290,7 +299,12 @@ def _sync_sessions(
     with progress_ctx as tracker:
         for session_path in session_list:
             ctx = PipelineContext(env=None, options=None, data={"session_path": session_path})
-            pipeline.run(ctx)
+            try:
+                pipeline.run(ctx)
+            except Exception as exc:
+                failures.append({"path": str(session_path), "error": str(exc)})
+                tracker.advance()
+                continue
             session_output = ctx.get("session_result", {})
             prune_slug = session_output.get("prune_slug")
             if isinstance(prune_slug, str):
@@ -303,6 +317,9 @@ def _sync_sessions(
 
             result = session_output.get("result")
             if not isinstance(result, ImportResult):
+                error = session_output.get("error")
+                if isinstance(error, str) and error:
+                    failures.append({"path": str(session_path), "error": error})
                 tracker.advance()
                 continue
 
@@ -348,6 +365,8 @@ def _sync_sessions(
         words=words_total,
         diffs=diff_total,
         duration=duration,
+        failures=len(failures),
+        failed=failures,
     )
 
 
@@ -506,6 +525,7 @@ def _sync_export_bundles(
     attachment_bytes_total = 0
     tokens_total = 0
     words_total = 0
+    failures: List[Dict[str, str]] = []
 
     normalized = [_normalize_export_target(Path(p)) for p in bundles]
     filtered = [p for p in normalized if p is not None]
@@ -549,20 +569,25 @@ def _sync_export_bundles(
                 except Exception:
                     bundle_hash = None
 
-            results_raw = import_fn(
-                export_path=export_path,
-                output_dir=output_dir,
-                collapse_threshold=collapse_threshold,
-                collapse_thresholds=collapse_thresholds,
-                html=html,
-                html_theme=html_theme,
-                selected_ids=None,
-                force=force,
-                registrar=registrar,
-                attachment_ocr=attachment_ocr,
-                sanitize_html=sanitize_html,
-                meta=dict(meta) if meta else None,
-            )
+            try:
+                results_raw = import_fn(
+                    export_path=export_path,
+                    output_dir=output_dir,
+                    collapse_threshold=collapse_threshold,
+                    collapse_thresholds=collapse_thresholds,
+                    html=html,
+                    html_theme=html_theme,
+                    selected_ids=None,
+                    force=force,
+                    registrar=registrar,
+                    attachment_ocr=attachment_ocr,
+                    sanitize_html=sanitize_html,
+                    meta=dict(meta) if meta else None,
+                )
+            except Exception as exc:
+                failures.append({"path": str(export_path), "error": str(exc)})
+                tracker.advance()
+                continue
             if bundle_hash:
                 from .util import current_utc_timestamp
 
@@ -630,6 +655,8 @@ def _sync_export_bundles(
         words=words_total,
         diffs=0,
         duration=duration,
+        failures=len(failures),
+        failed=failures,
     )
 
 
