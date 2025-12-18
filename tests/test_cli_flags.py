@@ -115,6 +115,68 @@ def test_run_sync_cli_dispatch(monkeypatch):
     assert calls == ["codex"]
 
 
+def test_sync_jobs_flag_passed_to_local_provider(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_sync_fn(**kwargs):
+        captured.update(kwargs)
+
+        class Result:
+            written = []
+            skipped = 0
+            pruned = 0
+            ignored = 0
+            attachments = 0
+            attachment_bytes = 0
+            tokens = 0
+            words = 0
+            diffs = 0
+            duration = 0.0
+            failures = 0
+            failed = []
+            output_dir = tmp_path
+
+        return Result()
+
+    class StubProvider:
+        title = "Stub"
+        name = "codex"
+        supports_diff = True
+        supports_watch = True
+        default_base = tmp_path
+        default_output = tmp_path
+        sync_fn = staticmethod(fake_sync_fn)
+
+    monkeypatch.setattr("polylogue.cli.sync.get_local_provider", lambda _name: StubProvider())
+    args = SimpleNamespace(
+        provider="codex",
+        out=str(tmp_path),
+        base_dir=str(tmp_path),
+        sessions=[tmp_path / "a.jsonl"],
+        all=True,
+        jobs=3,
+        dry_run=False,
+        force=False,
+        prune=False,
+        diff=False,
+        json=False,
+        watch=False,
+        offline=False,
+        collapse_threshold=None,
+        html_mode="off",
+        attachment_ocr=False,
+        sanitize_html=False,
+        meta=(),
+        max_disk=None,
+        resume_from=None,
+        prune_snapshot=False,
+        root=None,
+    )
+    env = CommandEnv(ui=DummyUI())
+    run_sync_cli(args, env)
+    assert captured["jobs"] == 3
+
+
 def test_sync_parser_supports_selection_flags(tmp_path):
     captured = {}
 
