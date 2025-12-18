@@ -31,7 +31,7 @@ If you’re resuming work later, this is the “what’s already implemented” 
 
 ## P2 – Rendering, Attachments, and Inbox
 
-- HTML refresh: TOC/anchors, sticky header, attachment index/gallery, client-side search/filter; modernize layout and branch explorer (inline diffs/snippets, branch map snippet in `conversation.md`). **(partially done: branch map snippet now injected into `conversation.md`; branches HTML explorer now includes inline diffs)**
+- HTML refresh: TOC/anchors, sticky header, attachment index/gallery, client-side search/filter; modernize layout and branch explorer (inline diffs/snippets, branch map snippet in `conversation.md`). **(partially done: conversation HTML now includes TOC/sticky header/search + image previews; branch map snippet injected into `conversation.md`; branches HTML explorer includes inline diffs)**
 - Attachments lifecycle: `attachments stats --provider --since/--until` (index-backed) + `--clean-orphans` + collision-safe extraction. **(done: filters/cleanup + collision-safe `attachments extract`)**
 - Attachments lifecycle: routing rules with skipped/routed counts; attachment-aware search with OCR when enabled. **(done: attachment routing counts are recorded in `attachmentPolicy.routing`; attachment search includes OCR text when enabled)**
 - Inbox hygiene: `.polylogueignore`-aware “skipped-by-rule” summaries and `--quarantine` path. **(done: ignored counts + quarantine reporting)**
