@@ -703,21 +703,29 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
             try:
                 pipeline.run(ctx)
             except Exception as exc:
+                stage = None
+                if ctx.history:
+                    stage = ctx.history[-1].get("name")
                 failures.append(
                     {
                         "id": meta.get("id"),
                         "name": meta.get("name"),
                         "error": str(exc),
+                        "stage": stage,
                     }
                 )
                 tracker.advance()
                 continue
             if ctx.aborted:
+                stage = None
+                if ctx.history:
+                    stage = ctx.history[-1].get("name")
                 failures.append(
                     {
                         "id": meta.get("id"),
                         "name": meta.get("name"),
                         "error": "aborted",
+                        "stage": stage,
                     }
                 )
                 tracker.advance()
