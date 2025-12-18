@@ -50,7 +50,12 @@ from .util import (
     sanitize_filename,
 )
 from .search import execute_search
-from .pipeline import ChatContext, build_message_records_from_chunks, prepare_render_assets
+from .pipeline import (
+    AttachmentDownloadError,
+    ChatContext,
+    build_message_records_from_chunks,
+    prepare_render_assets,
+)
 from .importers.base import ImportResult
 from .pipeline_runner import Pipeline, PipelineContext
 from .persistence.database import ConversationDatabase
@@ -160,14 +165,25 @@ class RenderDocumentStage:
         slug: str = context.get("slug")
         md_path = (options.output_dir / slug) / "conversation.md"
         download_att = bool(getattr(options, "download_attachments", False))
-        per_chunk_links, attachments = prepare_render_assets(
-            chunks,
-            md_path=md_path,
-            download_attachments=download_att,
-            drive=env.drive if download_att else None,
-            force=getattr(options, "force", False),
-            dry_run=getattr(options, "dry_run", False),
-        )
+        attachment_failures: Optional[List[str]] = None
+        try:
+            per_chunk_links, attachments = prepare_render_assets(
+                chunks,
+                md_path=md_path,
+                download_attachments=download_att,
+                drive=env.drive if download_att else None,
+                force=getattr(options, "force", False),
+                dry_run=getattr(options, "dry_run", False),
+            )
+        except AttachmentDownloadError as exc:
+            per_chunk_links = exc.per_index_links
+            attachments = exc.attachments
+            attachment_failures = exc.failed_ids
+            context.set("attachment_failures", list(attachment_failures))
+            env.ui.console.print(
+                f"[yellow]Warning: failed to download {len(attachment_failures)} attachment(s) "
+                f"for {chat_context.title!r}: {', '.join(attachment_failures)}[/yellow]"
+            )
         context.set("per_chunk_links", per_chunk_links)
         context.set("attachments", attachments)
         context.set("markdown_path", md_path)
@@ -690,6 +706,8 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     wanted_slugs: set[str] = set()
     totals_acc = RunAccumulator()
     failures: List[Dict[str, Any]] = []
+    attachment_failures: List[Dict[str, Any]] = []
+    attachment_failures_total = 0
     description = f"Syncing {options.folder_name or 'Drive'} chats"
     with env.ui.progress(description, total=len(chats)) as tracker:
         for meta in chats:
@@ -761,6 +779,18 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
                             pass
 
             doc: Optional[MarkdownDocument] = result.document
+            att_failures = ctx.get("attachment_failures")
+            if isinstance(att_failures, list) and att_failures:
+                cleaned = [str(item).strip() for item in att_failures if item and str(item).strip()]
+                if cleaned:
+                    attachment_failures.append(
+                        {
+                            "id": file_id or meta.get("id"),
+                            "name": meta.get("name"),
+                            "attachments": cleaned,
+                        }
+                    )
+                    attachment_failures_total += len(cleaned)
             items.append(
                 SyncItem(
                     id=file_id,
@@ -830,6 +860,9 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     if failures:
         run_payload["failures"] = len(failures)
         run_payload["failedChats"] = failures
+    if attachment_failures:
+        run_payload["attachmentFailures"] = attachment_failures_total
+        run_payload["failedAttachments"] = attachment_failures
     if getattr(options, "meta", None):
         run_payload["meta"] = dict(getattr(options, "meta") or {})
     if getattr(options, "sanitize_html", False):
@@ -838,6 +871,8 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     totals.setdefault("attachments", 0)
     totals.setdefault("skipped", 0)
     totals.setdefault("diffs", totals.get("diffs", 0))
+    if attachment_failures_total:
+        totals["attachmentFailures"] = attachment_failures_total
     totals["pruned"] = pruned_count
     result = SyncResult(
         count=len(items),
@@ -848,6 +883,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         total_stats=totals,
     )
     setattr(result, "failed_chats", failures)
+    setattr(result, "failed_attachments", attachment_failures)
     return result
 
 
