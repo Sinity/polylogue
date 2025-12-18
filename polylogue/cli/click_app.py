@@ -187,6 +187,7 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--resume-from", type=int, help="Resume a previous run by run ID (reprocess failed items only)")
 @click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.option("--root", type=str, help="Named root label to use when configs support multi-root archives")
+@click.option("--disk-estimate", is_flag=True, help="Print projected disk usage before running")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.pass_obj
 def sync(env: CommandEnv, **kwargs) -> None:
@@ -259,6 +260,7 @@ def import_cmd_click(env: CommandEnv, **kwargs) -> None:
 @click.option("--to-clipboard", is_flag=True, help="Copy a single rendered file to the clipboard")
 @click.option("--dry-run", is_flag=True, help="Report actions without writing files")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
+@click.option("--disk-estimate", is_flag=True, help="Print projected disk usage before running")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in rendered Markdown/HTML outputs")
 @click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
