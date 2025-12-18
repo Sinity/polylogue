@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from ..archive import Archive
 from ..commands import CommandEnv
 from ..document_store import read_existing_document
+from ..frontmatter_canonical import canonicalize_markdown
 from ..schema import stamp_payload
 
 
@@ -33,6 +34,37 @@ class VerifyIssue:
 _PROVIDER_ALIASES = {
     "drive-sync": "drive",
     "claude.ai": "claude",
+}
+
+_POLYLOGUE_KEYS = {
+    "attachmentPolicy",
+    "attachmentsDir",
+    "cliMeta",
+    "collapseThreshold",
+    "contentHash",
+    "conversationId",
+    "createdAt",
+    "dirty",
+    "driveFileId",
+    "driveFolder",
+    "html",
+    "htmlPath",
+    "lastImported",
+    "polylogueVersion",
+    "provider",
+    "redacted",
+    "schemaVersion",
+    "sessionFile",
+    "sessionPath",
+    "slug",
+    "sourceExportPath",
+    "sourceFile",
+    "sourceMimeType",
+    "sourceModel",
+    "sourcePlatform",
+    "title",
+    "updatedAt",
+    "workspace",
 }
 
 
@@ -87,6 +119,14 @@ def run_verify_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     conversation_id_filter = set(conversation_ids) if conversation_ids else None
     limit = getattr(args, "limit", None)
     json_mode = bool(getattr(args, "json", False))
+    fix = bool(getattr(args, "fix", False))
+    strict = bool(getattr(args, "strict", False))
+    unknown_policy = str(getattr(args, "unknown_policy", "warn") or "warn").strip().lower()
+    if unknown_policy not in {"ignore", "warn", "error"}:
+        raise SystemExit(f"Invalid --unknown policy: {unknown_policy}")
+    allow_polylogue_keys_raw = getattr(args, "allow_polylogue_keys", None)
+    allow_polylogue_keys = {str(v).strip() for v in (allow_polylogue_keys_raw or []) if str(v).strip()}
+    allowed_polylogue_keys = set(_POLYLOGUE_KEYS) | allow_polylogue_keys
 
     rows_raw = env.database.query(
         "SELECT provider, conversation_id, slug, content_hash, metadata_json FROM conversations"
@@ -136,6 +176,46 @@ def run_verify_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             )
             continue
 
+        try:
+            raw_text = md_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            issues.append(
+                VerifyIssue(
+                    provider=provider,
+                    conversation_id=conversation_id,
+                    path=md_path,
+                    message=f"Failed to read conversation.md: {exc}",
+                )
+            )
+            continue
+
+        canonical_text = canonicalize_markdown(raw_text)
+        if canonical_text != raw_text:
+            if fix:
+                try:
+                    md_path.write_text(canonical_text, encoding="utf-8")
+                except Exception as exc:
+                    issues.append(
+                        VerifyIssue(
+                            provider=provider,
+                            conversation_id=conversation_id,
+                            path=md_path,
+                            message=f"Failed to rewrite front matter: {exc}",
+                        )
+                    )
+                    continue
+                raw_text = canonical_text
+            else:
+                issues.append(
+                    VerifyIssue(
+                        provider=provider,
+                        conversation_id=conversation_id,
+                        path=md_path,
+                        message="Non-canonical front matter formatting (run verify --fix).",
+                        severity="warning",
+                    )
+                )
+
         existing = read_existing_document(md_path)
         if existing is None:
             issues.append(
@@ -159,6 +239,20 @@ def run_verify_cli(args: SimpleNamespace, env: CommandEnv) -> None:
                 )
             )
             continue
+
+        unknown_polylogue = sorted({str(k) for k in polylogue_meta.keys()} - allowed_polylogue_keys)
+        if unknown_policy != "ignore" and unknown_polylogue:
+            msg = f"Unknown polylogue metadata keys: {', '.join(unknown_polylogue)}"
+            severity = "warning" if unknown_policy == "warn" else "error"
+            issues.append(
+                VerifyIssue(
+                    provider=provider,
+                    conversation_id=conversation_id,
+                    path=md_path,
+                    message=msg,
+                    severity=severity,
+                )
+            )
 
         fm_provider = polylogue_meta.get("provider")
         fm_conversation_id = polylogue_meta.get("conversationId")
@@ -303,6 +397,10 @@ def run_verify_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     warning_count = sum(1 for issue in issues if issue.severity == "warning")
     info_count = sum(1 for issue in issues if issue.severity == "info")
 
+    if strict and warning_count:
+        error_count += warning_count
+        warning_count = 0
+
     if json_mode:
         payload = stamp_payload(
             {
@@ -311,6 +409,10 @@ def run_verify_cli(args: SimpleNamespace, env: CommandEnv) -> None:
                 "errors": error_count,
                 "warnings": warning_count,
                 "info": info_count,
+                "fix": fix,
+                "strict": strict,
+                "unknownPolicy": unknown_policy,
+                "allowedPolylogueKeys": sorted(allowed_polylogue_keys),
                 "issues": [issue.as_dict() for issue in issues],
             }
         )
