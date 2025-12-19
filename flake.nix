@@ -65,6 +65,9 @@
           cliApp = {
             type = "app";
             program = "${polylogueApp}/bin/polylogue";
+            meta = {
+              description = "Polylogue CLI";
+            };
           };
         in {
           packages = {
