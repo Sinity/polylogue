@@ -79,3 +79,48 @@ def test_complete_sync_provider(state_env) -> None:
     assert result.exit_code == 0
     assert "drive" in result.output
 
+
+def test_complete_browse_subcommands_include_recent_additions(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "browse", ""])
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "metrics" in values
+    assert "timeline" in values
+    assert "analytics" in values
+    assert "inbox" in values
+
+
+def test_complete_maintain_subcommands_include_restore(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "maintain", ""])
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "restore" in values
+
+
+def test_complete_config_subcommands_include_edit(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "config", ""])
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "edit" in values
+
+
+def test_complete_attachments_subcommands(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "attachments", ""])
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "stats" in values
+    assert "extract" in values
+
+
+def test_complete_prefs_subcommands(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "prefs", ""])
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "list" in values
+    assert "set" in values
+    assert "clear" in values
