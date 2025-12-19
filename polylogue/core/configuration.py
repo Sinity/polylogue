@@ -127,8 +127,6 @@ class AppConfig(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="POLYLOGUE_",
-        env_file=".env",
-        env_file_encoding="utf-8",
         env_nested_delimiter="__",
         extra="allow",
     )
