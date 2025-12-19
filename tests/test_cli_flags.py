@@ -143,6 +143,7 @@ def test_sync_jobs_flag_passed_to_local_provider(monkeypatch, tmp_path):
         name = "codex"
         supports_diff = True
         supports_watch = True
+        supports_jobs = True
         default_base = tmp_path
         default_output = tmp_path
         sync_fn = staticmethod(fake_sync_fn)
