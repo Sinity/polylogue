@@ -58,6 +58,12 @@ def _configure_state(monkeypatch, root: Path) -> Path:
     for module in (util, cmd_module, db_module):
         monkeypatch.setattr(module, "STATE_HOME", polylogue_state, raising=False)
 
+    cache_root = root / "cache"
+    cache_home = cache_root / "polylogue"
+    cache_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(cache_root))
+    monkeypatch.setattr(paths_module, "CACHE_HOME", cache_home, raising=False)
+
     monkeypatch.setattr(db_module, "DB_PATH", db_path, raising=False)
     return polylogue_state
 
