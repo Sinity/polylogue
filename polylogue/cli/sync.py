@@ -784,7 +784,7 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             ui.console.print(f"[yellow]Snapshot failed: {exc}")
 
     try:
-        result = provider.sync_fn(
+        sync_kwargs = dict(
             base_dir=base_dir,
             output_dir=out_dir,
             collapse_threshold=collapse,
@@ -800,8 +800,10 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             attachment_ocr=getattr(args, "attachment_ocr", False),
             sanitize_html=getattr(args, "sanitize_html", False),
             meta=meta,
-            jobs=jobs,
         )
+        if getattr(provider, "supports_jobs", False):
+            sync_kwargs["jobs"] = jobs
+        result = provider.sync_fn(**sync_kwargs)
     except Exception as exc:
         ui.console.print(f"[red]{provider.title} sync failed: {exc}")
         raise SystemExit(1) from exc

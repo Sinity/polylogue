@@ -65,6 +65,7 @@ class LocalSyncProvider:
     supports_watch: bool = True
     supports_diff: bool = True
     create_base_dir: bool = False
+    supports_jobs: bool = False
     watch_attachments: Tuple[str, ...] = ()
 
 
@@ -996,6 +997,7 @@ LOCAL_SYNC_PROVIDERS: Dict[str, LocalSyncProvider] = {
         watch_banner="Watching Codex sessions",
         watch_log_title="Codex Watch",
         watch_suffixes=(".jsonl",),
+        supports_jobs=True,
     ),
     "claude-code": LocalSyncProvider(
         name="claude-code",
@@ -1007,6 +1009,7 @@ LOCAL_SYNC_PROVIDERS: Dict[str, LocalSyncProvider] = {
         watch_banner="Watching Claude Code sessions",
         watch_log_title="Claude Code Watch",
         watch_suffixes=(".jsonl",),
+        supports_jobs=True,
     ),
     "chatgpt": LocalSyncProvider(
         name="chatgpt",
