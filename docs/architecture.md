@@ -56,10 +56,8 @@ Polylogue now follows a modular structure that separates orchestration concerns 
 
 - Extend the pipeline stages with richer validation (e.g., schema checks for provider exports) and tighten error reporting.
 - Build end-to-end snapshots for `sync`/`render` flows that assert both Markdown output and metadata side effects (state + SQLite) to guard against regressions.
-- Explore richer CLI ergonomics (completions, faceted status dashboards) on top of the existing registry/facade stack. Planned completion work includes:
-  - bringing the dynamic engine to bash/fish so every shell benefits from live suggestions;
-  - expanding suggestions beyond slugs/providers to include filtered Drive chats, recent session files, and constrained flag values discovered from Click metadata;
-  - caching completions to stay snappy even on large archives;
+- Explore richer CLI ergonomics (completions, faceted status dashboards) on top of the existing registry/facade stack. Next completion improvements include:
+  - expanding suggestions further (e.g., more context-aware Drive chat IDs, additional derived filters);
   - rethinking annotation formats (e.g., structured JSON) so shells can render descriptions/tooltips cleanly.
 
 This structure makes it easier to add providers, surface richer UI, and build new tooling on top of Polylogue without duplicating plumbing code.

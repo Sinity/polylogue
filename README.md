@@ -101,7 +101,7 @@ The dev shell equips Polylogue with:
 Interactive features assume the gum/skim/Rich toolchain from the dev shell; for raw stdout or CI-friendly output rely on the automatic plain-mode detection or export `POLYLOGUE_FORCE_PLAIN=1`.
 
 ### Shell Completions
-Generate a completion script with `polylogue completions --shell bash|zsh|fish` and source it from your shell profile. The zsh variant calls back into `polylogue _complete …` so it can surface live data (known providers, branch slugs, session paths, etc.) while you tab through arguments.
+Generate a completion script with `polylogue completions --shell bash|zsh|fish` and source it from your shell profile. All shells call back into `polylogue _complete …` so they can surface live data (known providers, branch slugs, session paths, etc.) while you tab through arguments.
 
 
 ## Nix Flake Usage
