@@ -69,10 +69,35 @@ def _log(argv):
     with open(log_path, "a", encoding="utf-8") as fh:
         fh.write("sk " + " ".join(argv[1:]) + "\\n")
 
+def _consume_choice_file(path: str) -> str | None:
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+    if not lines:
+        return None
+    choice = lines[0]
+    rest = lines[1:]
+    try:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("\\n".join(rest) + ("\\n" if rest else ""))
+    except Exception:
+        return choice
+    return choice
+
 def main():
     _log(sys.argv)
     if os.environ.get("POLYLOGUE_TEST_SK_CANCEL") in {"1", "true", "yes", "on"}:
         sys.exit(130)
+    choice_file = os.environ.get("POLYLOGUE_TEST_SK_CHOICE_FILE")
+    if choice_file:
+        choice = _consume_choice_file(choice_file)
+        if choice is not None:
+            sys.stdout.write(choice + "\\n")
+            return
     forced = os.environ.get("POLYLOGUE_TEST_SK_CHOICE")
     if forced is not None:
         sys.stdout.write(forced + "\\n")
@@ -331,6 +356,125 @@ def test_interactive_sync_chatgpt_cancelled_when_sk_aborts(tmp_path: Path):
 
     child = _spawn_polylogue(
         ["--interactive", "sync", "chatgpt", "--base-dir", str(export_root)],
+        cwd=repo_root,
+        env=env,
+    )
+    child.expect(pexpect.EOF)
+    child.close()
+    assert child.exitstatus == 0, f"exit={child.exitstatus} output={child.before!r}"
+
+
+def test_interactive_browse_branches_selects_conversation_and_exits(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[1]
+    stub_bin = _make_interactive_stubs(tmp_path)
+
+    export_root = tmp_path / "exports"
+    export_dir = export_root / "chatgpt-branchy-export"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    conversations_payload = [
+        {
+            "id": "branch-chat-1",
+            "title": "Branchy Chat 1",
+            "current_node": "node-a1",
+            "mapping": {
+                "root-1": {
+                    "id": "root-1",
+                    "parent": None,
+                    "message": {
+                        "id": "root-1",
+                        "author": {"role": "user"},
+                        "content": {"parts": ["Hello"]},
+                        "create_time": 1,
+                    },
+                },
+                "node-a1": {
+                    "id": "node-a1",
+                    "parent": "root-1",
+                    "message": {
+                        "id": "node-a1",
+                        "author": {"role": "assistant"},
+                        "content": {"parts": ["Path A"]},
+                        "create_time": 2,
+                    },
+                },
+                "node-b1": {
+                    "id": "node-b1",
+                    "parent": "root-1",
+                    "message": {
+                        "id": "node-b1",
+                        "author": {"role": "assistant"},
+                        "content": {"parts": ["Path B"]},
+                        "create_time": 3,
+                    },
+                },
+            },
+        },
+        {
+            "id": "branch-chat-2",
+            "title": "Branchy Chat 2",
+            "current_node": "node-a2",
+            "mapping": {
+                "root-2": {
+                    "id": "root-2",
+                    "parent": None,
+                    "message": {
+                        "id": "root-2",
+                        "author": {"role": "user"},
+                        "content": {"parts": ["Hello again"]},
+                        "create_time": 1,
+                    },
+                },
+                "node-a2": {
+                    "id": "node-a2",
+                    "parent": "root-2",
+                    "message": {
+                        "id": "node-a2",
+                        "author": {"role": "assistant"},
+                        "content": {"parts": ["Path A2"]},
+                        "create_time": 2,
+                    },
+                },
+                "node-b2": {
+                    "id": "node-b2",
+                    "parent": "root-2",
+                    "message": {
+                        "id": "node-b2",
+                        "author": {"role": "assistant"},
+                        "content": {"parts": ["Path B2"]},
+                        "create_time": 3,
+                    },
+                },
+            },
+        },
+    ]
+    (export_dir / "conversations.json").write_text(
+        __import__("json").dumps(conversations_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}{os.pathsep}{env.get('PATH', '')}"
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "config")
+    env["XDG_DATA_HOME"] = str(tmp_path / "data")
+    env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
+    env["XDG_STATE_HOME"] = str(tmp_path / "state")
+    (Path(env["XDG_DATA_HOME"]) / "polylogue" / "inbox").mkdir(parents=True, exist_ok=True)
+
+    sync = _spawn_polylogue(
+        ["--interactive", "sync", "chatgpt", "--base-dir", str(export_root)],
+        cwd=repo_root,
+        env=env,
+    )
+    sync.expect(pexpect.EOF)
+    sync.close()
+    assert sync.exitstatus == 0, f"exit={sync.exitstatus} output={sync.before!r}"
+
+    choice_file = tmp_path / "choices.txt"
+    choice_file.write_text("0\nDone\n", encoding="utf-8")
+    env["POLYLOGUE_TEST_SK_CHOICE_FILE"] = str(choice_file)
+
+    child = _spawn_polylogue(
+        ["--interactive", "browse", "branches"],
         cwd=repo_root,
         env=env,
     )
