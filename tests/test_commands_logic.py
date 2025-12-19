@@ -163,7 +163,7 @@ def test_sync_command_with_stub_drive(tmp_path, monkeypatch, state_env):
 
     out_dir = tmp_path / "drive"
     options = SyncOptions(
-        folder_name="AI Studio",
+        folder_name="Google AI Studio",
         folder_id=None,
         output_dir=out_dir,
         collapse_threshold=12,
@@ -253,7 +253,7 @@ def test_sync_command_records_attachment_failures_without_aborting(tmp_path, mon
 
     out_dir = tmp_path / "drive"
     options = SyncOptions(
-        folder_name="AI Studio",
+        folder_name="Google AI Studio",
         folder_id=None,
         output_dir=out_dir,
         collapse_threshold=12,

@@ -79,7 +79,7 @@ def test_html_flag_import_variants():
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr("polylogue.cli.imports.run_import_cli", fake_import)
 
-    result = runner.invoke(click_cli, ["import", "chatgpt", "export.zip", "--html", "off"])
+    result = runner.invoke(click_cli, ["import", "run", "chatgpt", "export.zip", "--html", "off"])
     assert result.exit_code == 0
     assert captured["html_mode"] == "off"
     monkeypatch.undo()
@@ -143,6 +143,7 @@ def test_sync_jobs_flag_passed_to_local_provider(monkeypatch, tmp_path):
         name = "codex"
         supports_diff = True
         supports_watch = True
+        supports_jobs = True
         default_base = tmp_path
         default_output = tmp_path
         sync_fn = staticmethod(fake_sync_fn)
@@ -164,7 +165,8 @@ def test_sync_jobs_flag_passed_to_local_provider(monkeypatch, tmp_path):
         offline=False,
         collapse_threshold=None,
         html_mode="off",
-        attachment_ocr=False,
+        attachment_ocr=True,
+        _attachment_ocr_explicit=False,
         sanitize_html=False,
         meta=(),
         max_disk=None,
@@ -175,6 +177,60 @@ def test_sync_jobs_flag_passed_to_local_provider(monkeypatch, tmp_path):
     env = CommandEnv(ui=DummyUI())
     run_sync_cli(args, env)
     assert captured["jobs"] == 3
+
+
+def test_sync_chatgpt_base_dir_does_not_require_config_inbox(tmp_path):
+    env = CommandEnv(ui=DummyUI())
+    # Point configured inbox at a missing path; --base-dir should override the check.
+    env.config.exports.chatgpt = tmp_path / "missing-inbox"
+    base_dir = tmp_path / "exports"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = tmp_path / "out"
+    args = SimpleNamespace(
+        provider="chatgpt",
+        out=str(out_dir),
+        base_dir=str(base_dir),
+        sessions=[],
+        all=True,
+        jobs=1,
+        dry_run=False,
+        force=False,
+        prune=False,
+        diff=False,
+        json=True,
+        watch=False,
+        offline=False,
+        collapse_threshold=None,
+        html_mode="off",
+        attachment_ocr=True,
+        _attachment_ocr_explicit=False,
+        sanitize_html=False,
+        meta=(),
+        max_disk=None,
+        resume_from=None,
+        prune_snapshot=False,
+        root=None,
+        folder_name=None,
+        folder_id=None,
+        since=None,
+        until=None,
+        name_filter=None,
+        list_only=False,
+        links_only=True,
+        attachments_only=False,
+        chat_ids=(),
+        print_paths=False,
+        debounce=0.0,
+        stall_seconds=60.0,
+        fail_on_stall=False,
+        tail=False,
+        once=False,
+        snapshot=False,
+        watch_plan=False,
+        drive_retries=None,
+        drive_retry_base=None,
+    )
+    run_sync_cli(args, env)
 
 
 def test_sync_parser_supports_selection_flags(tmp_path):
@@ -221,7 +277,7 @@ def test_print_paths_flags_present():
     assert captured["args"].print_paths is True
 
     monkeypatch.setattr("polylogue.cli.imports.run_import_cli", lambda args, env: captured.__setitem__("args", args))  # noqa: ARG005
-    result = runner.invoke(click_cli, ["import", "chatgpt", "export.zip", "--print-paths"])
+    result = runner.invoke(click_cli, ["import", "run", "chatgpt", "export.zip", "--print-paths"])
     assert result.exit_code == 0
     assert captured["args"].print_paths is True
     monkeypatch.undo()
@@ -236,7 +292,7 @@ def test_run_sync_drive_respects_selected_ids(monkeypatch, tmp_path):
         class Result:
             count = 0
             output_dir = tmp_path
-            folder_name = "AI Studio"
+            folder_name = "Google AI Studio"
             folder_id = "folder-id"
             items = []
             total_stats = {}
@@ -263,7 +319,7 @@ def test_run_sync_drive_respects_selected_ids(monkeypatch, tmp_path):
         name_filter=None,
         since=None,
         until=None,
-        folder_name="AI Studio",
+        folder_name="Google AI Studio",
         folder_id=None,
         list_only=False,
         dry_run=False,
@@ -355,13 +411,21 @@ def test_should_use_plain_flags_override(monkeypatch):
 
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     monkeypatch.setattr(sys.stderr, "isatty", lambda: True)
-    assert _should_use_plain(plain=False, interactive=False) is False
+    use_plain, reason = _should_use_plain(plain=False, interactive=False)
+    assert use_plain is False
+    assert reason is None
 
-    assert _should_use_plain(plain=True, interactive=False) is True
+    use_plain, reason = _should_use_plain(plain=True, interactive=False)
+    assert use_plain is True
+    assert reason is not None
 
     monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
     monkeypatch.setattr(sys.stderr, "isatty", lambda: False)
-    assert _should_use_plain(plain=False, interactive=True) is False
+    use_plain, reason = _should_use_plain(plain=False, interactive=True)
+    assert use_plain is False
+    assert reason is None
 
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-    assert _should_use_plain(plain=False, interactive=False) is True
+    use_plain, reason = _should_use_plain(plain=False, interactive=False)
+    assert use_plain is True
+    assert reason and "POLYLOGUE_FORCE_PLAIN" in reason

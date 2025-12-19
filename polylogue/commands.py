@@ -296,7 +296,7 @@ class RenderPersistStage:
             source_size=None,
             attachment_policy=None,
             force=getattr(options, "force", False),
-            attachment_ocr=getattr(options, "attachment_ocr", False),
+            attachment_ocr=getattr(options, "attachment_ocr", True),
             sanitize_html=getattr(options, "sanitize_html", False),
             registrar=env.registrar,
             citations=chat_context.citations,

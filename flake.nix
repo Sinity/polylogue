@@ -31,13 +31,14 @@
           pyPkgs = pkgs.python3Packages;
           deps = import ./nix/python-deps.nix { inherit pkgs; };
 
-          cliDeps = with pkgs; [ gum skim delta git ];
+          cliDeps = with pkgs; [ git bat glow skim ];
           cliBinPath = pkgs.lib.makeBinPath cliDeps;
 
           polylogueApp = pyPkgs.buildPythonApplication {
             pname = "polylogue";
             version = "0.1.0";
             pyproject = true;
+            doCheck = false;
             src = self;
             propagatedBuildInputs = deps.commonDeps;
             nativeBuildInputs =
@@ -54,6 +55,14 @@
             postInstall = ''
               wrapProgram $out/bin/polylogue \
                 --prefix PATH : ${cliBinPath}
+
+              mkdir -p $out/share/bash-completion/completions
+              mkdir -p $out/share/zsh/site-functions
+              mkdir -p $out/share/fish/vendor_completions.d
+
+              $out/bin/polylogue completions --shell bash > $out/share/bash-completion/completions/polylogue
+              $out/bin/polylogue completions --shell zsh > $out/share/zsh/site-functions/_polylogue
+              $out/bin/polylogue completions --shell fish > $out/share/fish/vendor_completions.d/polylogue.fish
             '';
           };
 
@@ -65,6 +74,9 @@
           cliApp = {
             type = "app";
             program = "${polylogueApp}/bin/polylogue";
+            meta = {
+              description = "Polylogue CLI";
+            };
           };
         in {
           packages = {

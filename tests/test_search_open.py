@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from polylogue.cli import editor as editor_module
 from polylogue.cli.search_cli import _open_single_search_hit, find_anchor_line, run_search_cli
 from polylogue.commands import CommandEnv
 from polylogue.options import SearchHit, SearchResult
@@ -69,7 +70,7 @@ def test_open_single_search_hit_opens_html_in_browser(monkeypatch, tmp_path: Pat
 
     opened: list[str] = []
 
-    monkeypatch.setattr("polylogue.cli.search_cli.webbrowser.open", lambda url: opened.append(url) or True)
+    monkeypatch.setattr("polylogue.cli.search_cli.open_in_browser", lambda path, anchor=None: opened.append(f"{path}#{anchor}") or True)
     monkeypatch.setattr("polylogue.cli.search_cli.open_in_editor", lambda *_a, **_k: pytest.fail("open_in_editor should not be called"))
 
     _open_single_search_hit(ui, hit)
@@ -91,12 +92,29 @@ def test_open_single_search_hit_opens_markdown_in_editor(monkeypatch, tmp_path: 
         return True
 
     monkeypatch.setattr("polylogue.cli.search_cli.open_in_editor", fake_open_in_editor)
-    monkeypatch.setattr("polylogue.cli.search_cli.webbrowser.open", lambda *_a, **_k: pytest.fail("webbrowser.open should not be called"))
+    monkeypatch.setattr("polylogue.cli.search_cli.open_in_browser", lambda *_a, **_k: pytest.fail("open_in_browser should not be called"))
 
     _open_single_search_hit(ui, hit)
 
     assert called["path"] == target
     assert called["line"] == 2
+
+
+def test_open_in_browser_resolves_relative_paths(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    target = Path("demo.html")
+    target.write_text("<html></html>", encoding="utf-8")
+
+    opened = {}
+
+    def fake_open(url: str) -> bool:
+        opened["url"] = url
+        return True
+
+    monkeypatch.setattr(editor_module.webbrowser, "open", fake_open)
+
+    assert editor_module.open_in_browser(target) is True
+    assert opened["url"].endswith("demo.html")
 
 
 def test_search_csv_stdout(monkeypatch, capsys) -> None:
