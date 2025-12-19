@@ -1,5 +1,6 @@
 import datetime
 import difflib
+import hashlib
 import json
 import logging
 import os
@@ -100,6 +101,19 @@ def parse_rfc3339_to_epoch(ts: Optional[str]) -> Optional[float]:
         return None
 
 
+def format_duration(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "?"
+    seconds = max(0.0, float(seconds))
+    mins, sec = divmod(int(seconds + 0.5), 60)
+    hrs, mins = divmod(mins, 60)
+    if hrs:
+        return f"{hrs}h{mins:02d}m{sec:02d}s"
+    if mins:
+        return f"{mins}m{sec:02d}s"
+    return f"{sec}s"
+
+
 def parse_input_time_to_epoch(s: Optional[Union[str, float, int, datetime.date, datetime.datetime]]) -> Optional[float]:
     if s is None:
         return None
@@ -159,6 +173,30 @@ def _set_meta_value(key: str, value: str) -> None:
             (key, value),
         )
         conn.commit()
+
+
+def import_sync_state_key(provider: str, conversation_id: str) -> str:
+    material = f"{provider}:{conversation_id}".encode("utf-8")
+    digest = hashlib.sha256(material).hexdigest()
+    return f"import.sync.{digest}"
+
+
+def get_import_sync_state(provider: str, conversation_id: str) -> Optional[dict]:
+    raw = _get_meta_value(import_sync_state_key(provider, conversation_id))
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def set_import_sync_state(provider: str, conversation_id: str, payload: dict) -> None:
+    payload = dict(payload)
+    payload.setdefault("provider", provider)
+    payload.setdefault("conversationId", conversation_id)
+    _set_meta_value(import_sync_state_key(provider, conversation_id), json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
 
 def load_runs(limit: Optional[int] = None) -> list[dict]:

@@ -140,6 +140,7 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.argument("provider", type=click.Choice(["drive", "codex", "claude-code", "chatgpt", "claude"]))
 @click.option("--out", type=click.Path(path_type=Path), help="Override output directory")
 @click.option("--links-only", is_flag=True, help="Link attachments instead of downloading (Drive only)")
+@click.option("--attachments-only", is_flag=True, help="Retry/download Drive attachments only (requires --resume-from; no re-render)")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in synced Markdown/HTML outputs")
 @click.option("--dry-run", is_flag=True, help="Report actions without writing files")
@@ -186,6 +187,7 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--resume-from", type=int, help="Resume a previous run by run ID (reprocess failed items only)")
 @click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.option("--root", type=str, help="Named root label to use when configs support multi-root archives")
+@click.option("--disk-estimate", is_flag=True, help="Print projected disk usage before running")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.pass_obj
 def sync(env: CommandEnv, **kwargs) -> None:
@@ -258,6 +260,7 @@ def import_cmd_click(env: CommandEnv, **kwargs) -> None:
 @click.option("--to-clipboard", is_flag=True, help="Copy a single rendered file to the clipboard")
 @click.option("--dry-run", is_flag=True, help="Report actions without writing files")
 @click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
+@click.option("--disk-estimate", is_flag=True, help="Print projected disk usage before running")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in rendered Markdown/HTML outputs")
 @click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
@@ -472,6 +475,37 @@ def browse_runs(env: CommandEnv, **kwargs) -> None:
 def browse_metrics(env: CommandEnv, **kwargs) -> None:
     """Export Prometheus-friendly metrics from Polylogue state/run history."""
     args = SimpleNamespace(browse_cmd="metrics", **kwargs)
+    browse_cmd.run_browse_cli(args, env)
+
+
+@browse_group.command(name="timeline")
+@click.option("--providers", type=str, help="Comma-separated provider filter")
+@click.option("--limit", type=int, default=500, show_default=True, help="Maximum rows to include")
+@click.option("--out", type=click.Path(path_type=Path), help="Write HTML timeline to this path (default: ./timeline.html)")
+@click.option("--theme", type=click.Choice(["light", "dark"]), default="light", show_default=True, help="HTML theme")
+@click.option("--open", "open_result", is_flag=True, help="Open result in $EDITOR after command completes")
+@click.option("--json", is_flag=True, help="Emit machine-readable rows instead of writing HTML")
+@click.pass_obj
+def browse_timeline(env: CommandEnv, **kwargs) -> None:
+    """Render a global conversation timeline (HTML) from the SQLite state DB."""
+    kwargs["open"] = kwargs.pop("open_result")
+    args = SimpleNamespace(browse_cmd="timeline", **kwargs)
+    browse_cmd.run_browse_cli(args, env)
+
+
+@browse_group.command(name="analytics")
+@click.option("--providers", type=str, help="Comma-separated provider filter")
+@click.option("--model-limit", type=int, default=25, show_default=True, help="Top-N models to include")
+@click.option("--hotspot-limit", type=int, default=25, show_default=True, help="Top-N branch hotspots to include")
+@click.option("--out", type=click.Path(path_type=Path), help="Write HTML analytics to this path (default: ./analytics.html)")
+@click.option("--theme", type=click.Choice(["light", "dark"]), default="light", show_default=True, help="HTML theme")
+@click.option("--open", "open_result", is_flag=True, help="Open result in $EDITOR after command completes")
+@click.option("--json", is_flag=True, help="Emit machine-readable summary instead of writing HTML")
+@click.pass_obj
+def browse_analytics(env: CommandEnv, **kwargs) -> None:
+    """Role/model/branch analytics from the SQLite state DB."""
+    kwargs["open"] = kwargs.pop("open_result")
+    args = SimpleNamespace(browse_cmd="analytics", **kwargs)
     browse_cmd.run_browse_cli(args, env)
 
 
