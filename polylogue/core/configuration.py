@@ -112,7 +112,6 @@ class AppConfig(BaseSettings):
     Supports:
     - JSON config files
     - Environment variables (POLYLOGUE_*)
-    - .env files
     - Automatic type validation
     """
 
