@@ -8,8 +8,15 @@ from typing import Dict, List, Optional, Set, Tuple
 
 import ijson
 
+from ..db import get_raw_import_by_conversation, open_connection
 from ..render import AttachmentInfo
-from ..util import assign_conversation_slug, sanitize_filename
+from ..util import (
+    assign_conversation_slug,
+    current_utc_timestamp,
+    get_import_sync_state,
+    sanitize_filename,
+    set_import_sync_state,
+)
 from ..conversation import process_conversation
 from ..branching import MessageRecord
 from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
@@ -25,6 +32,26 @@ from .utils import (
     store_large_text,
 )
 from .raw_storage import compute_hash, store_raw_import, mark_parse_success, mark_parse_failed
+
+
+def _render_config_hash(
+    *,
+    collapse_threshold: int,
+    collapse_thresholds: Optional[Dict[str, int]],
+    html: bool,
+    html_theme: str,
+    attachment_ocr: bool,
+    sanitize_html: bool,
+) -> str:
+    payload = {
+        "collapse_threshold": int(collapse_threshold),
+        "collapse_thresholds": dict(collapse_thresholds) if collapse_thresholds else None,
+        "html": bool(html),
+        "html_theme": str(html_theme),
+        "attachment_ocr": bool(attachment_ocr),
+        "sanitize_html": bool(sanitize_html),
+    }
+    return compute_hash(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
 
 def _load_bundle(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
@@ -80,6 +107,14 @@ def import_claude_export(
     registrar = registrar or create_default_registrar()
     root, tmp = _load_bundle(export_path)
     bundle_hash: Optional[str] = None
+    render_hash = _render_config_hash(
+        collapse_threshold=collapse_threshold,
+        collapse_thresholds=collapse_thresholds,
+        html=html,
+        html_theme=html_theme,
+        attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
+    )
     try:
         convo_path = root / "conversations.json"
         if not convo_path.exists():
@@ -90,53 +125,106 @@ def import_claude_export(
             bundle_hash = None
         output_dir.mkdir(parents=True, exist_ok=True)
         results: List[ImportResult] = []
-        for conv in _iter_conversations(convo_path):
-            if not isinstance(conv, dict):
-                raise ValueError(
-                    "Unexpected Claude export format: expected conversations to be objects. "
-                    "Make sure you're using a valid Claude.ai export file (JSON format)."
-                )
-            conv_id = conv.get("uuid") or conv.get("id")
-            if selected_ids and conv_id not in selected_ids:
-                continue
-            raw_bytes = json.dumps(conv, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            raw_hash = store_raw_import(
-                data=raw_bytes,
-                provider="claude",
-                conversation_id=conv_id or "conversation",
-                source_path=export_path,
-                metadata={
-                    "bundle_hash": bundle_hash,
-                    "bundle_path": str(export_path),
-                    "export_root": str(root),
-                },
-            )
-            try:
-                results.append(
-                    _render_claude_conversation(
-                        conv,
-                        root,
-                        output_dir,
-                        collapse_threshold=collapse_threshold,
-                        collapse_thresholds=collapse_thresholds,
-                        html=html,
-                        html_theme=html_theme,
-                        force=force,
-                        allow_dirty=allow_dirty,
-                        registrar=registrar,
-                        attachment_ocr=attachment_ocr,
-                        sanitize_html=sanitize_html,
-                        meta=meta,
+        db_path = registrar.database.resolve_path()
+        with open_connection(db_path) as conn:
+            for conv in _iter_conversations(convo_path):
+                if not isinstance(conv, dict):
+                    raise ValueError(
+                        "Unexpected Claude export format: expected conversations to be objects. "
+                        "Make sure you're using a valid Claude.ai export file (JSON format)."
                     )
-                )
-                if raw_hash:
-                    mark_parse_success(raw_hash)
-            except Exception:
-                if raw_hash:
-                    import traceback
+                conv_id = conv.get("uuid") or conv.get("id")
+                if selected_ids and conv_id not in selected_ids:
+                    continue
+                title = conv.get("name") or conv.get("title") or "claude-chat"
+                conv_id_str = conv_id or "conversation"
+                slug = assign_conversation_slug("claude.ai", conv_id_str, title, id_hint=(conv_id_str or "")[:8])
+                conversation_dir = output_dir / slug
+                markdown_path = conversation_dir / "conversation.md"
+                html_path = conversation_dir / "conversation.html" if html else None
+                attachments_dir = conversation_dir / "attachments"
+                raw_bytes = json.dumps(conv, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                raw_hash = compute_hash(raw_bytes)
 
-                    mark_parse_failed(raw_hash, traceback.format_exc())
-                raise
+                state_entry = registrar.get_state("claude.ai", conv_id_str)
+                raw_row = get_raw_import_by_conversation(conn, "claude", conv_id_str)
+                raw_ok = False
+                if raw_row is not None:
+                    try:
+                        raw_ok = raw_row["hash"] == raw_hash and (raw_row["parse_status"] or "") == "success"
+                    except Exception:
+                        raw_ok = False
+                sync_state = get_import_sync_state("claude", conv_id_str) or {}
+                sync_ok = sync_state.get("rawHash") == raw_hash and sync_state.get("renderConfigHash") == render_hash
+                if (
+                    not force
+                    and raw_ok
+                    and isinstance(state_entry, dict)
+                    and not bool(state_entry.get("dirty"))
+                    and sync_ok
+                    and markdown_path.exists()
+                    and (not html_path or html_path.exists())
+                ):
+                    results.append(
+                        ImportResult(
+                            markdown_path=markdown_path,
+                            html_path=html_path,
+                            attachments_dir=attachments_dir if attachments_dir.exists() else None,
+                            document=None,
+                            slug=slug,
+                            skipped=True,
+                            skip_reason="raw+render config unchanged",
+                        )
+                    )
+                    continue
+
+                raw_hash = store_raw_import(
+                    data=raw_bytes,
+                    provider="claude",
+                    conversation_id=conv_id_str,
+                    source_path=export_path,
+                    metadata={
+                        "bundle_hash": bundle_hash,
+                        "bundle_path": str(export_path),
+                        "export_root": str(root),
+                    },
+                )
+                try:
+                    rendered = _render_claude_conversation(
+                            conv,
+                            root,
+                            output_dir,
+                            collapse_threshold=collapse_threshold,
+                            collapse_thresholds=collapse_thresholds,
+                            html=html,
+                            html_theme=html_theme,
+                            force=force,
+                            allow_dirty=allow_dirty,
+                            registrar=registrar,
+                            attachment_ocr=attachment_ocr,
+                            sanitize_html=sanitize_html,
+                            meta=meta,
+                        )
+                    results.append(rendered)
+                    if raw_hash:
+                        mark_parse_success(raw_hash)
+                    if conv_id_str:
+                        set_import_sync_state(
+                            "claude",
+                            conv_id_str,
+                            {
+                                "rawHash": raw_hash,
+                                "renderConfigHash": render_hash,
+                                "bundleHash": bundle_hash,
+                                "lastImported": current_utc_timestamp(),
+                            },
+                        )
+                except Exception:
+                    if raw_hash:
+                        import traceback
+
+                        mark_parse_failed(raw_hash, traceback.format_exc())
+                    raise
 
         return results
     finally:
