@@ -631,7 +631,7 @@ def _search_preview(env: CommandEnv, **kwargs) -> None:
 @cli.group()
 @click.pass_context
 def config(ctx: click.Context) -> None:
-    """Configuration (init/set/show)."""
+    """Configuration (init/set/show/edit)."""
 
 
 @config.command(name="show")
