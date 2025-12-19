@@ -125,6 +125,9 @@ class CompletionEngine:
             return [Completion("__PATH__")]
         if prev in {"--chat-id", "--conversation-id"} and provider == "drive":
             return self._drive_chat_ids()
+        generic = self._complete_click_option_values("sync", prev)
+        if generic:
+            return generic
         if current_word.startswith("--"):
             return self._option_completions("sync")
         return []
@@ -141,6 +144,9 @@ class CompletionEngine:
             return self._branch_completions()
         if prev == "--model":
             return self._model_completions()
+        generic = self._complete_click_option_values("search", prev)
+        if generic:
+            return generic
         if current_word.startswith("--"):
             return self._option_completions("search")
         return []
@@ -153,6 +159,9 @@ class CompletionEngine:
             return [Completion("__PATH__")]
         if current_index > 1 and args[1] in {"chatgpt", "claude"} and prev == "--source":
             return [Completion("__PATH__")]
+        generic = self._complete_click_option_values("import", prev)
+        if generic:
+            return generic
         if current_word.startswith("--"):
             return self._option_completions("import")
         return []
@@ -173,11 +182,17 @@ class CompletionEngine:
                 return self._branch_completions()
             if prev in {"--out", "--theme"}:
                 return [Completion("__PATH__")] if prev == "--out" else [Completion("light"), Completion("dark")]
+            generic = self._complete_click_option_values("browse branches", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("browse branches")
         if subcmd == "stats":
             if prev == "--dir":
                 return [Completion("__PATH__")]
+            generic = self._complete_click_option_values("browse stats", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("browse stats")
         if subcmd == "status":
@@ -185,16 +200,25 @@ class CompletionEngine:
                 return self._provider_completions()
             if prev in {"--dump", "--summary"}:
                 return [Completion("__PATH__")]
+            generic = self._complete_click_option_values("browse status", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("browse status")
         if subcmd == "runs":
             if prev == "--providers":
                 return self._provider_completions()
+            generic = self._complete_click_option_values("browse runs", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("browse runs")
         if subcmd == "metrics":
             if prev == "--providers":
                 return self._provider_completions()
+            generic = self._complete_click_option_values("browse metrics", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("browse metrics")
         if subcmd == "timeline":
@@ -204,6 +228,9 @@ class CompletionEngine:
                 return [Completion("__PATH__")]
             if prev == "--theme":
                 return [Completion("light"), Completion("dark")]
+            generic = self._complete_click_option_values("browse timeline", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("browse timeline")
         if subcmd == "analytics":
@@ -213,6 +240,9 @@ class CompletionEngine:
                 return [Completion("__PATH__")]
             if prev == "--theme":
                 return [Completion("light"), Completion("dark")]
+            generic = self._complete_click_option_values("browse analytics", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("browse analytics")
         if subcmd == "inbox":
@@ -220,8 +250,15 @@ class CompletionEngine:
                 return self._provider_completions()
             if prev in {"--dir", "--quarantine-dir"}:
                 return [Completion("__PATH__")]
+            generic = self._complete_click_option_values("browse inbox", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("browse inbox")
+        if subcmd:
+            generic = self._complete_click_option_values(f"browse {subcmd}", prev)
+            if generic:
+                return generic
         return []
 
     def _complete_maintain(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
@@ -232,22 +269,37 @@ class CompletionEngine:
         if subcmd == "prune":
             if prev == "--dir":
                 return [Completion("__PATH__")]
+            generic = self._complete_click_option_values("maintain prune", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("maintain prune")
-        if subcmd == "doctor" and current_word.startswith("--"):
-            return self._option_completions("maintain doctor")
+        if subcmd == "doctor":
+            generic = self._complete_click_option_values("maintain doctor", prev)
+            if generic:
+                return generic
+            if current_word.startswith("--"):
+                return self._option_completions("maintain doctor")
         if subcmd == "index":
             if current_index == 2 and (not current_word or not current_word.startswith("-")):
                 return [Completion("check")]
-            if prev == "--dir":
-                return [Completion("__PATH__")]
+            generic = self._complete_click_option_values("maintain index", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("maintain index")
         if subcmd == "restore":
             if prev in {"--from", "--to"}:
                 return [Completion("__PATH__")]
+            generic = self._complete_click_option_values("maintain restore", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("maintain restore")
+        if subcmd:
+            generic = self._complete_click_option_values(f"maintain {subcmd}", prev)
+            if generic:
+                return generic
         return []
 
     def _complete_config(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
@@ -262,13 +314,23 @@ class CompletionEngine:
                 return [Completion("light"), Completion("dark")]
             if prev == "--html":
                 return [Completion("on"), Completion("off")]
+            generic = self._complete_click_option_values("config set", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("config set")
         if subcmd == "show":
+            generic = self._complete_click_option_values("config show", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("config show")
         if subcmd == "edit" and current_word.startswith("--"):
             return self._option_completions("config edit")
+        if subcmd:
+            generic = self._complete_click_option_values(f"config {subcmd}", prev)
+            if generic:
+                return generic
         return []
 
     def _complete_attachments(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
@@ -277,17 +339,29 @@ class CompletionEngine:
         subcmd = args[1] if len(args) > 1 else None
         prev = args[current_index - 1] if current_index > 0 else ""
         if subcmd == "stats":
+            if prev == "--provider":
+                return self._provider_completions()
             if prev in {"--dir", "--csv"}:
                 return [Completion("__PATH__")]
             if prev == "--sort":
                 return [Completion("size"), Completion("name")]
+            generic = self._complete_click_option_values("attachments stats", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("attachments stats")
         if subcmd == "extract":
             if prev in {"--dir", "--out"}:
                 return [Completion("__PATH__")]
+            generic = self._complete_click_option_values("attachments extract", prev)
+            if generic:
+                return generic
             if current_word.startswith("--"):
                 return self._option_completions("attachments extract")
+        if subcmd:
+            generic = self._complete_click_option_values(f"attachments {subcmd}", prev)
+            if generic:
+                return generic
         return []
 
     def _complete_prefs(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
@@ -305,6 +379,29 @@ class CompletionEngine:
         if not isinstance(click_command, click.Group):
             return []
         return [Completion(value=name, description=desc) for name, desc in click_command_entries(click_command)]
+
+    def _complete_click_option_values(self, command: str, option_name: str) -> List[Completion]:
+        if not option_name.startswith("--"):
+            return []
+        click_command = self._resolve_command_for_path(command)
+        if click_command is None:
+            return []
+        option = None
+        for param in click_command.params:
+            if not isinstance(param, click.Option):
+                continue
+            if option_name in param.opts or option_name in list(getattr(param, "secondary_opts", [])):
+                option = param
+                break
+        if option is None:
+            return []
+        if getattr(option, "is_flag", False):
+            return []
+        if isinstance(option.type, click.Choice):
+            return [Completion(str(value)) for value in option.type.choices]
+        if isinstance(option.type, click.Path):
+            return [Completion("__PATH__")]
+        return []
 
     def _option_completions(self, command: str) -> List[Completion]:
         click_command = self._resolve_command_for_path(command)
