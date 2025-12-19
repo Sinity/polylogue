@@ -8,7 +8,7 @@ from typing import Any, cast
 from rich.table import Table
 
 from ..commands import CommandEnv
-from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
+from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS, is_config_declarative
 from ..doctor import run_doctor as doctor_run
 from ..schema import stamp_payload
 from ..util import CLAUDE_CODE_PROJECT_ROOT, CODEX_SESSIONS_ROOT
@@ -26,6 +26,7 @@ def run_doctor_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         service=env.conversations,
         archive=env.archive,
     )
+    declarative, decl_reason, decl_target = is_config_declarative(CONFIG_PATH)
 
     sample_config = Path(__file__).resolve().parent.parent / "docs" / "polylogue.config.sample.jsonc"
     config_hint = {
@@ -42,6 +43,9 @@ def run_doctor_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             for issue in report.issues
         ],
         "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
+        "configDeclarative": declarative,
+        "configDeclarativeReason": decl_reason or None,
+        "configDeclarativeTarget": str(decl_target) if decl_target else None,
         "configEnv": CONFIG_ENV,
         "configCandidates": [str(p) for p in DEFAULT_PATHS],
         "configSample": str(sample_config),
@@ -64,6 +68,9 @@ def run_doctor_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         f"Credentials: {'present' if report.credentials_present else 'missing'} ({report.credential_path})",
         f"Token: {'present' if report.token_present else 'missing'} ({report.token_path})",
     ]
+    if declarative:
+        reason = f" ({decl_reason})" if decl_reason else ""
+        lines.append(f"Config is declarative{reason}; edit your Nix/flake module for changes.")
     if report.credential_env or report.token_env:
         lines.append(f"Env overrides: cred={report.credential_env or '-'} token={report.token_env or '-'}")
     if CONFIG_PATH is None:
