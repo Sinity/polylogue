@@ -279,3 +279,63 @@ def test_interactive_sync_chatgpt_cancelled_when_sk_aborts(tmp_path: Path):
     child.expect(pexpect.EOF)
     child.close()
     assert child.exitstatus == 0, f"exit={child.exitstatus} output={child.before!r}"
+
+
+def test_interactive_sync_claude_selects_first_export(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[1]
+    stub_bin = _make_interactive_stubs(tmp_path)
+
+    export_root = tmp_path / "exports"
+    export_dir = export_root / "claude-export"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    fixture = repo_root / "tests" / "fixtures" / "golden" / "claude" / "conversations.json"
+    (export_dir / "conversations.json").write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}{os.pathsep}{env.get('PATH', '')}"
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "config")
+    env["XDG_DATA_HOME"] = str(tmp_path / "data")
+    env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
+    env["XDG_STATE_HOME"] = str(tmp_path / "state")
+    (Path(env["XDG_DATA_HOME"]) / "polylogue" / "inbox").mkdir(parents=True, exist_ok=True)
+
+    child = _spawn_polylogue(
+        ["--interactive", "sync", "claude", "--base-dir", str(export_root)],
+        cwd=repo_root,
+        env=env,
+    )
+    child.expect(pexpect.EOF)
+    child.close()
+    assert child.exitstatus == 0, f"exit={child.exitstatus} output={child.before!r}"
+
+    output_dir = Path(env["XDG_DATA_HOME"]) / "polylogue" / "archive" / "claude"
+    assert any(output_dir.rglob("conversation.md"))
+
+
+def test_interactive_sync_claude_cancelled_when_sk_aborts(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[1]
+    stub_bin = _make_interactive_stubs(tmp_path)
+
+    export_root = tmp_path / "exports"
+    export_dir = export_root / "claude-export"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    fixture = repo_root / "tests" / "fixtures" / "golden" / "claude" / "conversations.json"
+    (export_dir / "conversations.json").write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}{os.pathsep}{env.get('PATH', '')}"
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "config")
+    env["XDG_DATA_HOME"] = str(tmp_path / "data")
+    env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
+    env["XDG_STATE_HOME"] = str(tmp_path / "state")
+    (Path(env["XDG_DATA_HOME"]) / "polylogue" / "inbox").mkdir(parents=True, exist_ok=True)
+    env["POLYLOGUE_TEST_SK_CANCEL"] = "1"
+
+    child = _spawn_polylogue(
+        ["--interactive", "sync", "claude", "--base-dir", str(export_root)],
+        cwd=repo_root,
+        env=env,
+    )
+    child.expect(pexpect.EOF)
+    child.close()
+    assert child.exitstatus == 0, f"exit={child.exitstatus} output={child.before!r}"
