@@ -364,6 +364,27 @@ def test_interactive_sync_chatgpt_cancelled_when_sk_aborts(tmp_path: Path):
     assert child.exitstatus == 0, f"exit={child.exitstatus} output={child.before!r}"
 
 
+def test_interactive_config_edit_quits_cleanly(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[1]
+    stub_bin = _make_interactive_stubs(tmp_path)
+
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}{os.pathsep}{env.get('PATH', '')}"
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "config")
+    env["XDG_DATA_HOME"] = str(tmp_path / "data")
+    env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
+    env["XDG_STATE_HOME"] = str(tmp_path / "state")
+
+    choice_file = tmp_path / "choices.txt"
+    choice_file.write_text("Quit\n", encoding="utf-8")
+    env["POLYLOGUE_TEST_SK_CHOICE_FILE"] = str(choice_file)
+
+    child = _spawn_polylogue(["--interactive", "config", "edit"], cwd=repo_root, env=env)
+    child.expect(pexpect.EOF)
+    child.close()
+    assert child.exitstatus == 0, f"exit={child.exitstatus} output={child.before!r}"
+
+
 def test_interactive_browse_branches_selects_conversation_and_exits(tmp_path: Path):
     repo_root = Path(__file__).resolve().parents[1]
     stub_bin = _make_interactive_stubs(tmp_path)
