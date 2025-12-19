@@ -45,12 +45,18 @@ from .util import (
     DiffTracker,
     RunAccumulator,
     add_run,
+    format_duration,
     load_runs,
     parse_rfc3339_to_epoch,
     sanitize_filename,
 )
 from .search import execute_search
-from .pipeline import ChatContext, build_message_records_from_chunks, prepare_render_assets
+from .pipeline import (
+    AttachmentDownloadError,
+    ChatContext,
+    build_message_records_from_chunks,
+    prepare_render_assets,
+)
 from .importers.base import ImportResult
 from .pipeline_runner import Pipeline, PipelineContext
 from .persistence.database import ConversationDatabase
@@ -160,14 +166,25 @@ class RenderDocumentStage:
         slug: str = context.get("slug")
         md_path = (options.output_dir / slug) / "conversation.md"
         download_att = bool(getattr(options, "download_attachments", False))
-        per_chunk_links, attachments = prepare_render_assets(
-            chunks,
-            md_path=md_path,
-            download_attachments=download_att,
-            drive=env.drive if download_att else None,
-            force=getattr(options, "force", False),
-            dry_run=getattr(options, "dry_run", False),
-        )
+        attachment_failures: Optional[List[Dict[str, str]]] = None
+        try:
+            per_chunk_links, attachments = prepare_render_assets(
+                chunks,
+                md_path=md_path,
+                download_attachments=download_att,
+                drive=env.drive if download_att else None,
+                force=getattr(options, "force", False),
+                dry_run=getattr(options, "dry_run", False),
+            )
+        except AttachmentDownloadError as exc:
+            per_chunk_links = exc.per_index_links
+            attachments = exc.attachments
+            attachment_failures = exc.failed_items
+            context.set("attachment_failures", list(attachment_failures))
+            env.ui.console.print(
+                f"[yellow]Warning: failed to download {len(exc.failed_ids)} attachment(s) "
+                f"for {chat_context.title!r}: {', '.join(exc.failed_ids)}[/yellow]"
+            )
         context.set("per_chunk_links", per_chunk_links)
         context.set("attachments", attachments)
         context.set("markdown_path", md_path)
@@ -280,6 +297,7 @@ class RenderPersistStage:
             attachment_policy=None,
             force=getattr(options, "force", False),
             attachment_ocr=getattr(options, "attachment_ocr", False),
+            sanitize_html=getattr(options, "sanitize_html", False),
             registrar=env.registrar,
             citations=chat_context.citations,
         )
@@ -335,13 +353,16 @@ class DriveNormalizeStage:
         context.set("chat_context", chat_context)
         context.set("conversation_id", conversation_id)
         context.set("provider", "drive-sync")
-        context.set(
-            "extra_state",
+        extra_state = dict(context.get("extra_state") or {})
+        if getattr(options, "meta", None):
+            extra_state.setdefault("cliMeta", dict(getattr(options, "meta") or {}))
+        extra_state.update(
             {
                 "driveFileId": file_id,
                 "driveFolder": options.folder_name or DEFAULT_FOLDER_NAME,
-            },
+            }
         )
+        context.set("extra_state", extra_state)
         context.set("source_path", options.output_dir / name_safe / "conversation.json")
 
 
@@ -496,7 +517,7 @@ def search_command(options: SearchOptions, env: Optional[CommandEnv] = None) -> 
 
 
 def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
-    from .cli.arg_helpers import PathPolicy, resolve_path
+    from .cli.path_policy import PathPolicy, resolve_path
 
     ui = env.ui
     output_dir = options.output_dir
@@ -519,12 +540,24 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
     )
 
     render_files: List[RenderFile] = []
+    failures: List[Dict[str, Any]] = []
     totals_acc = RunAccumulator()
 
     with ui.progress("Rendering files", total=len(options.inputs)) as tracker:
         for src in options.inputs:
-            ctx = PipelineContext(env=env, options=options, data={"source_path": src})
-            pipeline.run(ctx)
+            extra_state: Dict[str, object] = {}
+            if getattr(options, "meta", None):
+                extra_state["cliMeta"] = dict(getattr(options, "meta") or {})
+            data: Dict[str, object] = {"source_path": src}
+            if extra_state:
+                data["extra_state"] = extra_state
+            ctx = PipelineContext(env=env, options=options, data=data)
+            try:
+                pipeline.run(ctx)
+            except Exception as exc:
+                failures.append({"source": str(src), "error": str(exc)})
+                tracker.advance()
+                continue
             tracker.advance()
 
             if ctx.aborted:
@@ -557,26 +590,34 @@ def render_command(options: RenderOptions, env: CommandEnv) -> RenderResult:
 
     duration = time.perf_counter() - start_time
     totals = totals_acc.totals()
-    add_run(
-        {
-            "cmd": "render",
-            "provider": "render",
-            "count": len(render_files),
-            "out": str(output_dir),
-            "attachments": totals.get("attachments", 0),
-            "attachmentBytes": totals.get("attachmentBytes", 0),
-            "tokens": totals.get("totalTokensApprox", 0),
-            "words": totals.get("totalWordsApprox", 0),
-            "diffs": totals.get("diffs", 0),
-            "duration": duration,
-        }
-    )
-    return RenderResult(
+    run_payload = {
+        "cmd": "render",
+        "provider": "render",
+        "count": len(render_files),
+        "out": str(output_dir),
+        "attachments": totals.get("attachments", 0),
+        "attachmentBytes": totals.get("attachmentBytes", 0),
+        "tokens": totals.get("totalTokensApprox", 0),
+        "words": totals.get("totalWordsApprox", 0),
+        "diffs": totals.get("diffs", 0),
+        "duration": duration,
+    }
+    if failures:
+        run_payload["failures"] = len(failures)
+        run_payload["failedFiles"] = failures
+    if getattr(options, "meta", None):
+        run_payload["meta"] = dict(getattr(options, "meta") or {})
+    if getattr(options, "sanitize_html", False):
+        run_payload["redacted"] = True
+    add_run(run_payload)
+    result = RenderResult(
         count=len(render_files),
         output_dir=output_dir,
         files=render_files,
         total_stats=totals,
     )
+    setattr(result, "failed_files", failures)
+    return result
 
 
 def _context_from_local(obj: Dict, fallback: str) -> ChatContext:
@@ -615,7 +656,7 @@ def list_command(options: ListOptions, env: CommandEnv) -> ListResult:
 
 
 def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
-    from .cli.arg_helpers import PathPolicy, resolve_path
+    from .cli.path_policy import PathPolicy, resolve_path
 
     drive = _ensure_drive(env)
     folder_id = options.folder_id or drive.resolve_folder_id(options.folder_name, options.folder_id)
@@ -665,13 +706,67 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     items: List[SyncItem] = []
     wanted_slugs: set[str] = set()
     totals_acc = RunAccumulator()
+    failures: List[Dict[str, Any]] = []
+    attachment_failures: List[Dict[str, Any]] = []
+    attachment_failures_total = 0
     description = f"Syncing {options.folder_name or 'Drive'} chats"
+    last_progress_time = 0.0
+
+    def _maybe_plain_progress(done: int, total: int) -> None:
+        nonlocal last_progress_time
+        if not env.ui.plain or total <= 0:
+            return
+        now = time.perf_counter()
+        if done != total and done != 1 and (done % 25) != 0 and (now - last_progress_time) < 10.0:
+            return
+        last_progress_time = now
+        elapsed = now - start_time
+        rate = (done / elapsed) if elapsed > 0 else 0.0
+        eta = ((total - done) / rate) if rate > 0 else None
+        pct = (done / total) * 100.0
+        env.ui.console.print(
+            f"[dim]drive progress: {done}/{total} ({pct:.1f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
+        )
     with env.ui.progress(description, total=len(chats)) as tracker:
-        for meta in chats:
-            ctx = PipelineContext(env=env, options=options, data={"metadata": meta})
-            pipeline.run(ctx)
-            if ctx.aborted:
+        for idx, meta in enumerate(chats, start=1):
+            extra_state: Dict[str, object] = {}
+            if getattr(options, "meta", None):
+                extra_state["cliMeta"] = dict(getattr(options, "meta") or {})
+            data: Dict[str, object] = {"metadata": meta}
+            if extra_state:
+                data["extra_state"] = extra_state
+            ctx = PipelineContext(env=env, options=options, data=data)
+            try:
+                pipeline.run(ctx)
+            except Exception as exc:
+                stage = None
+                if ctx.history:
+                    stage = ctx.history[-1].get("name")
+                failures.append(
+                    {
+                        "id": meta.get("id"),
+                        "name": meta.get("name"),
+                        "error": str(exc),
+                        "stage": stage,
+                    }
+                )
                 tracker.advance()
+                _maybe_plain_progress(idx, len(chats))
+                continue
+            if ctx.aborted:
+                stage = None
+                if ctx.history:
+                    stage = ctx.history[-1].get("name")
+                failures.append(
+                    {
+                        "id": meta.get("id"),
+                        "name": meta.get("name"),
+                        "error": "aborted",
+                        "stage": stage,
+                    }
+                )
+                tracker.advance()
+                _maybe_plain_progress(idx, len(chats))
                 continue
 
             result: Optional[ImportResult] = ctx.get("import_result")
@@ -683,11 +778,13 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
 
             if result is None:
                 tracker.advance()
+                _maybe_plain_progress(idx, len(chats))
                 continue
 
             if result.skipped:
                 totals_acc.increment("skipped")
                 tracker.advance()
+                _maybe_plain_progress(idx, len(chats))
                 continue
 
             if not options.dry_run and chat_context.modified_time:
@@ -704,6 +801,34 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
                             pass
 
             doc: Optional[MarkdownDocument] = result.document
+            att_failures = ctx.get("attachment_failures")
+            if isinstance(att_failures, list) and att_failures:
+                cleaned: List[Dict[str, str]] = []
+                for entry in att_failures:
+                    if isinstance(entry, dict):
+                        att_id = str(entry.get("id") or "").strip()
+                        if not att_id:
+                            continue
+                        item: Dict[str, str] = {"id": att_id}
+                        filename = entry.get("filename")
+                        if isinstance(filename, str) and filename.strip():
+                            item["filename"] = filename.strip()
+                        path_value = entry.get("path")
+                        if isinstance(path_value, str) and path_value.strip():
+                            item["path"] = path_value.strip()
+                        cleaned.append(item)
+                    elif isinstance(entry, str) and entry.strip():
+                        cleaned.append({"id": entry.strip()})
+                if cleaned:
+                    attachment_failures.append(
+                        {
+                            "id": file_id or meta.get("id"),
+                            "name": meta.get("name"),
+                            "slug": result.slug,
+                            "attachments": cleaned,
+                        }
+                    )
+                    attachment_failures_total += len(cleaned)
             items.append(
                 SyncItem(
                     id=file_id,
@@ -721,6 +846,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
             if doc is not None:
                 totals_acc.add_stats(len(doc.attachments), doc.stats)
             tracker.advance()
+            _maybe_plain_progress(idx, len(chats))
 
     pruned_count = 0
     if options.prune:
@@ -750,33 +876,44 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
     duration = time.perf_counter() - start_time
     totals = totals_acc.totals()
     drive_stats = snapshot_drive_metrics(reset=True)
-    add_run(
-        {
-            "cmd": "sync drive",
-            "provider": "drive",
-            "count": len(items),
-            "out": str(options.output_dir),
-            "folder_name": options.folder_name,
-            "folder_id": folder_id,
-            "attachments": totals.get("attachments", 0),
-            "attachmentBytes": totals.get("attachmentBytes", 0),
-            "tokens": totals.get("totalTokensApprox", 0),
-            "words": totals.get("totalWordsApprox", 0),
-            "skipped": totals.get("skipped", 0),
-            "pruned": pruned_count,
-            "diffs": totals.get("diffs", 0),
-            "duration": duration,
-            "driveRequests": drive_stats.get("requests", 0),
-            "driveRetries": drive_stats.get("retries", 0),
-            "driveFailures": drive_stats.get("failures", 0),
-            "driveLastError": drive_stats.get("lastError"),
-        }
-    )
+    run_payload = {
+        "cmd": "sync drive",
+        "provider": "drive",
+        "count": len(items),
+        "out": str(options.output_dir),
+        "folder_name": options.folder_name,
+        "folder_id": folder_id,
+        "attachments": totals.get("attachments", 0),
+        "attachmentBytes": totals.get("attachmentBytes", 0),
+        "tokens": totals.get("totalTokensApprox", 0),
+        "words": totals.get("totalWordsApprox", 0),
+        "skipped": totals.get("skipped", 0),
+        "pruned": pruned_count,
+        "diffs": totals.get("diffs", 0),
+        "duration": duration,
+        "driveRequests": drive_stats.get("requests", 0),
+        "driveRetries": drive_stats.get("retries", 0),
+        "driveFailures": drive_stats.get("failures", 0),
+        "driveLastError": drive_stats.get("lastError"),
+    }
+    if failures:
+        run_payload["failures"] = len(failures)
+        run_payload["failedChats"] = failures
+    if attachment_failures:
+        run_payload["attachmentFailures"] = attachment_failures_total
+        run_payload["failedAttachments"] = attachment_failures
+    if getattr(options, "meta", None):
+        run_payload["meta"] = dict(getattr(options, "meta") or {})
+    if getattr(options, "sanitize_html", False):
+        run_payload["redacted"] = True
+    add_run(run_payload)
     totals.setdefault("attachments", 0)
     totals.setdefault("skipped", 0)
     totals.setdefault("diffs", totals.get("diffs", 0))
+    if attachment_failures_total:
+        totals["attachmentFailures"] = attachment_failures_total
     totals["pruned"] = pruned_count
-    return SyncResult(
+    result = SyncResult(
         count=len(items),
         output_dir=options.output_dir,
         folder_name=options.folder_name,
@@ -784,6 +921,9 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         items=items,
         total_stats=totals,
     )
+    setattr(result, "failed_chats", failures)
+    setattr(result, "failed_attachments", attachment_failures)
+    return result
 
 
 def status_command(env: CommandEnv, runs_limit: Optional[int] = 200, provider_filter: Optional[Set[str]] = None) -> StatusResult:

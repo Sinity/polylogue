@@ -5,12 +5,14 @@ from pathlib import Path
 from typing import Dict
 import re
 import math
+import json
+import urllib.parse
 
 from jinja2 import Environment, BaseLoader
 from markupsafe import escape
 from markdown_it import MarkdownIt
 
-from .render import MarkdownDocument
+from .render import AttachmentInfo, MarkdownDocument
 
 
 def _human_size(num: float | int | None) -> str | None:
@@ -84,6 +86,7 @@ HTML_TEMPLATE = """
         border-radius: 999px;
         font-size: 0.9rem;
       }
+      .muted { opacity: 0.8; font-size: 0.85rem; }
       .toolbar { display: flex; gap: 0.75rem; align-items: center; }
       .search-input {
         flex: 1;
@@ -93,12 +96,25 @@ HTML_TEMPLATE = """
         background: color-mix(in srgb, var(--bg) 96%, #00000008);
         color: var(--fg);
       }
+      .sidebar-input {
+        width: 100%;
+        padding: 0.4rem 0.6rem;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: color-mix(in srgb, var(--bg) 96%, #00000008);
+        color: var(--fg);
+        margin: 0.4rem 0 0.75rem;
+      }
       .layout { display: grid; grid-template-columns: 260px 1fr; gap: 1.25rem; align-items: start; }
       .card {
         border: 1px solid var(--border);
         border-radius: 12px;
         padding: 1rem;
         background: color-mix(in srgb, var(--bg) 96%, #00000006);
+      }
+      @media (max-width: 860px) {
+        header { flex-wrap: wrap; }
+        .layout { grid-template-columns: 1fr; }
       }
       .metadata table {
         width: 100%;
@@ -114,12 +130,69 @@ HTML_TEMPLATE = """
       .toc ul { list-style: none; padding-left: 0; margin: 0; }
       .toc li { margin: 0.2rem 0; }
       .toc a { text-decoration: none; }
+      .toc a:hover { text-decoration: underline; }
       .attachments { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; }
       .attachment {
         border: 1px solid var(--border);
         border-radius: 10px;
         padding: 0.6rem 0.75rem;
         background: color-mix(in srgb, var(--bg) 94%, #00000008);
+      }
+      .attachment .att-meta { display: flex; gap: 0.5rem; align-items: baseline; flex-wrap: wrap; }
+      .attachment .att-name { font-weight: 600; }
+      .attachment .att-sub { font-size: 0.85rem; opacity: 0.8; }
+      .attachment img {
+        width: 100%;
+        max-height: 160px;
+        object-fit: cover;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        margin-top: 0.5rem;
+      }
+      .lightbox {
+        position: fixed;
+        inset: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: color-mix(in srgb, #000 75%, transparent);
+        z-index: 30;
+        padding: 1.25rem;
+      }
+      .lightbox[open] { display: flex; }
+      .lightbox-card {
+        max-width: 1100px;
+        width: 100%;
+        max-height: 92vh;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: var(--bg);
+        overflow: hidden;
+        display: grid;
+        grid-template-rows: auto 1fr;
+      }
+      .lightbox-header {
+        display: flex;
+        gap: 0.75rem;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.65rem 0.85rem;
+        border-bottom: 1px solid var(--border);
+      }
+      .lightbox-header a { text-decoration: none; }
+      .lightbox-body {
+        padding: 0.75rem;
+        overflow: auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .lightbox-body img {
+        max-width: 100%;
+        max-height: 80vh;
+        object-fit: contain;
+        border-radius: 10px;
+        border: 1px solid var(--border);
       }
       .content blockquote {
         border-left: 4px solid {{ theme.callout_border }};
@@ -178,11 +251,19 @@ HTML_TEMPLATE = """
           <ul id="toc"></ul>
           {% if attachments %}
           <h4>Attachments</h4>
+          <input class="sidebar-input" id="att-filter" type="search" placeholder="Filter attachments" />
           <div class="attachments">
             {% for att in attachments %}
-              <div class="attachment">
-                <div><a href="{{ att.link }}" target="_blank">{{ att.name }}</a></div>
-                {% if att.size %}<div>{{ att.size }}</div>{% endif %}
+              <div class="attachment" data-att="{{ (att.name ~ ' ' ~ (att.kind or '') ~ ' ' ~ (att.ext or ''))|lower }}">
+                <div class="att-meta">
+                  <span class="att-name">{{ att.icon }} <a href="{{ att.link }}" target="_blank">{{ att.name }}</a></span>
+                  {% if att.size %}<span class="att-sub">{{ att.size }}</span>{% endif %}
+                </div>
+                {% if att.preview_src %}
+                  <a href="{{ att.link }}" target="_blank">
+                    <img class="att-preview" data-full="{{ att.link }}" data-name="{{ att.name }}" src="{{ att.preview_src }}" alt="{{ att.name }}" />
+                  </a>
+                {% endif %}
               </div>
             {% endfor %}
           </div>
@@ -205,11 +286,31 @@ HTML_TEMPLATE = """
         </div>
       </div>
     </main>
+    <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Attachment preview">
+      <div class="lightbox-card">
+        <div class="lightbox-header">
+          <div>
+            <strong id="lightbox-title"></strong>
+            <span class="muted" id="lightbox-hint"></span>
+          </div>
+          <div class="toolbar">
+            <a id="lightbox-open" href="#" target="_blank" class="pill">open</a>
+            <a href="#" id="lightbox-close" class="pill">close</a>
+          </div>
+        </div>
+        <div class="lightbox-body">
+          <img id="lightbox-img" alt="" />
+        </div>
+      </div>
+    </div>
     <script>
       const tocEl = document.getElementById('toc');
       const headings = document.querySelectorAll('#content h1, #content h2, #content h3');
       headings.forEach(h => {
         if (!h.id) return;
+        const clone = h.cloneNode(true);
+        clone.querySelectorAll('.anchor-btn').forEach(n => n.remove());
+        const headingText = (clone.textContent || '').trim();
         const anchor = document.createElement('a');
         anchor.href = `#${h.id}`;
         anchor.textContent = '🔗';
@@ -225,7 +326,7 @@ HTML_TEMPLATE = """
         const li = document.createElement('li');
         const a = document.createElement('a');
         a.href = `#${h.id}`;
-        a.textContent = h.textContent;
+        a.textContent = headingText || h.id;
         li.appendChild(a);
         tocEl.appendChild(li);
       });
@@ -270,6 +371,51 @@ HTML_TEMPLATE = """
         });
         anchor.insertAdjacentElement('afterend', btn);
       });
+
+      // Attachments: filter + lightbox previews.
+      const attFilter = document.getElementById('att-filter');
+      const attCards = Array.from(document.querySelectorAll('.attachment'));
+      function applyAttFilter(term) {
+        const q = (term || '').trim().toLowerCase();
+        for (const card of attCards) {
+          const hay = card.getAttribute('data-att') || '';
+          card.classList.toggle('hidden', q && !hay.includes(q));
+        }
+      }
+      if (attFilter) attFilter.addEventListener('input', (e) => applyAttFilter(e.target.value));
+
+      const lightbox = document.getElementById('lightbox');
+      const lightboxImg = document.getElementById('lightbox-img');
+      const lightboxTitle = document.getElementById('lightbox-title');
+      const lightboxOpen = document.getElementById('lightbox-open');
+      const lightboxHint = document.getElementById('lightbox-hint');
+      const lightboxClose = document.getElementById('lightbox-close');
+
+      function closeLightbox() {
+        if (!lightbox) return;
+        lightbox.removeAttribute('open');
+        if (lightboxImg) lightboxImg.src = '';
+      }
+      function openLightbox(src, name) {
+        if (!lightbox) return;
+        lightbox.setAttribute('open', 'true');
+        if (lightboxImg) lightboxImg.src = src;
+        if (lightboxImg) lightboxImg.alt = name || '';
+        if (lightboxTitle) lightboxTitle.textContent = name || '';
+        if (lightboxHint) lightboxHint.textContent = ' (Esc to close)';
+        if (lightboxOpen) lightboxOpen.href = src;
+      }
+      document.querySelectorAll('.att-preview').forEach(img => {
+        img.addEventListener('click', (e) => {
+          e.preventDefault();
+          const src = img.getAttribute('data-full') || img.getAttribute('src');
+          const name = img.getAttribute('data-name') || '';
+          openLightbox(src, name);
+        });
+      });
+      if (lightboxClose) lightboxClose.addEventListener('click', (e) => { e.preventDefault(); closeLightbox(); });
+      if (lightbox) lightbox.addEventListener('click', (e) => { if (e.target === lightbox) closeLightbox(); });
+      window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
     </script>
   </body>
 </html>
@@ -283,7 +429,8 @@ class HtmlRenderOptions:
 
 def _anchorize(text: str) -> str:
     """Create a URL-safe anchor id from text."""
-    safe = re.sub(r"[^a-zA-Z0-9\\-_]+", "-", text).strip("-").lower()
+    safe = re.sub(r"<[^>]+>", "", text or "")
+    safe = re.sub(r"[^a-zA-Z0-9\\-_]+", "-", safe).strip("-").lower()
     return safe or "section"
 
 
@@ -302,16 +449,45 @@ def render_html(document: MarkdownDocument, options: HtmlRenderOptions) -> str:
         body_html,
     )
     body_html = _transform_callouts(body_html)
-    metadata_rows = {k: v for k, v in document.metadata.items() if k != "attachments"}
-    metadata_rows["attachments"] = len(document.attachments)
+    def _fmt(value: object) -> object:
+        if isinstance(value, (dict, list)):
+            try:
+                return json.dumps(value, sort_keys=True, ensure_ascii=False)
+            except Exception:
+                return str(value)
+        return value
+
+    metadata_rows_raw = {k: _fmt(v) for k, v in document.metadata.items() if k != "attachments"}
+    metadata_rows_raw["attachments"] = len(document.attachments)
+    metadata_rows = {k: metadata_rows_raw[k] for k in sorted(metadata_rows_raw)}
+    attachment_total_bytes = 0
+    attachments_sorted = sorted(
+        document.attachments,
+        key=lambda att: (
+            (att.name or "").lower(),
+            (att.local_path.as_posix() if getattr(att, "local_path", None) else (att.link or "")).lower(),
+        ),
+    )
     attachments = [
         {
             "name": att.name,
-            "link": att.link,
+            "link": urllib.parse.quote(att.local_path.as_posix()) if getattr(att, "local_path", None) else att.link,
             "size": _human_size(att.size_bytes) if hasattr(att, "size_bytes") else None,
+            "preview_src": _attachment_preview_src(att),
+            "ext": getattr(att.local_path, "suffix", "") if getattr(att, "local_path", None) else Path(att.link).suffix,
+            "kind": "image" if _attachment_preview_src(att) else "file",
+            "icon": _attachment_icon(att),
         }
-        for att in document.attachments
+        for att in attachments_sorted
     ]
+    for att in attachments_sorted:
+        if getattr(att, "size_bytes", None):
+            try:
+                attachment_total_bytes += int(att.size_bytes or 0)
+            except Exception:
+                pass
+    if attachment_total_bytes:
+        metadata_rows["attachmentBytes"] = int(attachment_total_bytes)
 
     if _JINJA_TEMPLATE is None:
         rows = "".join(
@@ -383,3 +559,36 @@ def _transform_callouts(html: str) -> str:
         return "\n".join(parts)
 
     return pattern.sub(repl, html)
+
+
+_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+
+
+def _attachment_preview_src(att: AttachmentInfo) -> Optional[str]:
+    local = getattr(att, "local_path", None)
+    if local is None:
+        return None
+    suffix = local.suffix.lower()
+    if suffix not in _IMAGE_SUFFIXES:
+        return None
+    return urllib.parse.quote(local.as_posix())
+
+
+def _attachment_icon(att: AttachmentInfo) -> str:
+    local = getattr(att, "local_path", None)
+    suffix = ""
+    if local is not None:
+        suffix = local.suffix.lower()
+    elif isinstance(getattr(att, "link", None), str):
+        suffix = Path(att.link).suffix.lower()
+    if suffix in _IMAGE_SUFFIXES:
+        return "🖼"
+    if suffix in {".pdf"}:
+        return "📄"
+    if suffix in {".md", ".txt"}:
+        return "📝"
+    if suffix in {".json", ".jsonl", ".yaml", ".yml"}:
+        return "🧾"
+    if suffix in {".zip", ".tar", ".gz", ".bz2", ".xz"}:
+        return "🗜"
+    return "📎"

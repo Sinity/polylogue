@@ -1,0 +1,78 @@
+# Local Git Configuration for Polylogue
+# Include this in your Git config with:
+#   git config --local include.path ../.gitconfig
+# Or manually copy settings you want to your global ~/.gitconfig
+
+[alias]
+	# Clean history views (hide merge noise)
+	lg = log --first-parent --oneline --decorate
+	lgg = log --first-parent --graph --oneline --decorate
+
+	# Full history when you need it
+	lga = log --graph --oneline --decorate --all
+	lgf = log --graph --oneline --decorate
+
+	# Useful for reviewing PRs
+	review = log --first-parent --graph --oneline --decorate @{upstream}..HEAD
+
+	# Show what would be merged
+	incoming = log --first-parent --oneline --decorate ..@{upstream}
+	outgoing = log --first-parent --oneline --decorate @{upstream}..
+
+	# Better blame that focuses on meaningful commits
+	blamef = blame --first-parent
+
+	# Bisect with first-parent (skip WIP commits on feature branches)
+	bisectf = bisect start --first-parent
+
+	# Clean up local branches
+	cleanup = "!git branch --merged | grep -v '\\*\\|master\\|main' | xargs -n 1 git branch -d"
+
+	# Interactive rebase to clean up feature branch before merging
+	tidy = rebase -i @{upstream}
+
+	# Create merge commit even when fast-forward is possible
+	mergeff = merge --no-ff
+
+[log]
+	# Show commit graph by default
+	abbrevCommit = true
+
+[merge]
+	# Always create merge commit (preserve branch structure)
+	ff = false
+
+	# Use better conflict markers with branch names
+	conflictStyle = zdiff3
+
+[pull]
+	# When pulling, rebase local commits on top of upstream
+	# This keeps your feature branch clean before merging
+	rebase = true
+
+[rebase]
+	# Automatically stash/unstash when rebasing
+	autoStash = true
+
+	# Automatically mark fixup commits during interactive rebase
+	autoSquash = true
+
+[diff]
+	# Better diff algorithm
+	algorithm = histogram
+
+	# Show moved code differently
+	colorMoved = default
+
+[fetch]
+	# Automatically prune deleted remote branches
+	prune = true
+
+[branch]
+	# When creating new branch, set up tracking automatically
+	autoSetupMerge = always
+
+[core]
+	# Use custom commit message template
+	# Uncomment and adjust path:
+	# hooksPath = .githooks

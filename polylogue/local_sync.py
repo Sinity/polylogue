@@ -5,7 +5,8 @@ import time
 import json
 import zipfile
 import fnmatch
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -23,7 +24,7 @@ from .importers.claude_code import (
 )
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
 from .paths import DATA_HOME
-from .util import DiffTracker, path_order_key, sanitize_filename, slugify_title
+from .util import DiffTracker, format_duration, path_order_key, sanitize_filename, slugify_title
 from .services.conversation_registrar import ConversationRegistrar, create_default_registrar
 from .pipeline_runner import Pipeline, PipelineContext
 from .config import CONFIG
@@ -43,6 +44,8 @@ class LocalSyncResult:
     words: int = 0
     diffs: int = 0
     duration: float = 0.0
+    failures: int = 0
+    failed: List[Dict[str, str]] = field(default_factory=list)
 
 
 LocalSyncFn = Callable[..., LocalSyncResult]
@@ -62,6 +65,7 @@ class LocalSyncProvider:
     supports_watch: bool = True
     supports_diff: bool = True
     create_base_dir: bool = False
+    supports_jobs: bool = False
     watch_attachments: Tuple[str, ...] = ()
 
 
@@ -129,6 +133,9 @@ def _sync_sessions(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
+    jobs: int = 1,
 ) -> LocalSyncResult:
     if registrar is None:
         state_dir = output_dir / ".polylogue-state"
@@ -143,12 +150,16 @@ def _sync_sessions(
     importer_kwargs = dict(importer_kwargs)
     importer_kwargs.setdefault("registrar", registrar)
     importer_kwargs.setdefault("attachment_ocr", attachment_ocr)
+    importer_kwargs.setdefault("sanitize_html", sanitize_html)
+    if meta:
+        importer_kwargs.setdefault("meta", dict(meta))
     attachments_total = 0
     attachment_bytes_total = 0
     tokens_total = 0
     words_total = 0
 
     diff_total = 0
+    failures: List[Dict[str, str]] = []
     session_list: List[Path]
     if isinstance(sessions, (list, tuple)):
         session_list = [Path(p) for p in sessions]
@@ -172,6 +183,25 @@ def _sync_sessions(
     progress_ctx = ui.progress(f"Syncing {provider} sessions", total=len(session_list)) if ui else _NoopProgress()
 
     output_root = output_dir.resolve()
+    jobs = max(1, int(jobs or 1))
+
+    last_progress_time = 0.0
+
+    def _maybe_plain_progress(done: int, total: int) -> None:
+        nonlocal last_progress_time
+        if not ui or not ui.plain or total <= 0:
+            return
+        now = time.perf_counter()
+        if done != total and done != 1 and (done % 25) != 0 and (now - last_progress_time) < 10.0:
+            return
+        last_progress_time = now
+        elapsed = now - start_time
+        rate = (done / elapsed) if elapsed > 0 else 0.0
+        eta = ((total - done) / rate) if rate > 0 else None
+        pct = (done / total) * 100.0
+        ui.console.print(
+            f"[dim]{provider} progress: {done}/{total} ({pct:.1f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
+        )
 
     def _process_single(session_path: Path) -> Dict[str, object]:
         entry: Dict[str, object] = {
@@ -180,6 +210,7 @@ def _sync_sessions(
             "result": None,
             "prune_slug": None,
             "diff": False,
+            "error": None,
         }
         if not session_path.is_file():
             entry["skipped"] = True
@@ -217,21 +248,54 @@ def _sync_sessions(
 
         entry["prune_slug"] = slug_for_prune
 
+        stored_hash = None
+        if isinstance(state_entry, dict):
+            stored_hash = state_entry.get("contentHash")
+        existing_dirty = False
+        if stored_hash and md_path.exists():
+            try:
+                from .document_store import read_existing_document
+
+                existing_doc = read_existing_document(md_path)
+                if existing_doc and existing_doc.content_hash != stored_hash:
+                    existing_dirty = True
+            except Exception:
+                existing_dirty = False
+
+        if not force and not existing_dirty:
+            try:
+                from .importers.raw_storage import compute_hash
+                from .db import get_raw_import_by_conversation, open_connection
+
+                current_hash = compute_hash(session_path.read_bytes())
+                with open_connection(registrar.database.resolve_path()) as conn:
+                    raw_row = get_raw_import_by_conversation(conn, provider, conversation_id)
+                if raw_row and raw_row["hash"] == current_hash:
+                    entry["skipped"] = True
+                    return entry
+            except Exception:
+                pass
+
         if not force and _is_up_to_date(session_path, md_path):
             entry["skipped"] = True
             return entry
 
         diff_tracker = DiffTracker(md_path, diff)
-        result = import_fn(
-            str(session_path),
-            output_dir=output_dir,
-            collapse_threshold=collapse_threshold,
-            collapse_thresholds=collapse_thresholds,
-            html=html,
-            html_theme=html_theme,
-            force=force,
-            **importer_kwargs,
-        )
+        try:
+            result = import_fn(
+                str(session_path),
+                output_dir=output_dir,
+                collapse_threshold=collapse_threshold,
+                collapse_thresholds=collapse_thresholds,
+                html=html,
+                html_theme=html_theme,
+                force=force,
+                **importer_kwargs,
+            )
+        except Exception as exc:
+            diff_tracker.cleanup()
+            entry["error"] = str(exc)
+            return entry
         if result.skipped:
             diff_tracker.cleanup()
             entry["skipped"] = True
@@ -255,35 +319,96 @@ def _sync_sessions(
     pipeline = Pipeline([_LocalSessionStage(_process_single)])
 
     with progress_ctx as tracker:
-        for session_path in session_list:
-            ctx = PipelineContext(env=None, options=None, data={"session_path": session_path})
-            pipeline.run(ctx)
-            session_output = ctx.get("session_result", {})
-            prune_slug = session_output.get("prune_slug")
-            if isinstance(prune_slug, str):
-                wanted.add(prune_slug)
+        if jobs <= 1:
+            done = 0
+            for session_path in session_list:
+                ctx = PipelineContext(env=None, options=None, data={"session_path": session_path})
+                try:
+                    pipeline.run(ctx)
+                except Exception as exc:
+                    failures.append({"path": str(session_path), "error": str(exc)})
+                    tracker.advance()
+                    done += 1
+                    _maybe_plain_progress(done, len(session_list))
+                    continue
+                session_output = ctx.get("session_result", {})
+                prune_slug = session_output.get("prune_slug")
+                if isinstance(prune_slug, str):
+                    wanted.add(prune_slug)
 
-            if session_output.get("skipped"):
-                skipped += 1
+                if session_output.get("skipped"):
+                    skipped += 1
+                    tracker.advance()
+                    done += 1
+                    _maybe_plain_progress(done, len(session_list))
+                    continue
+
+                result = session_output.get("result")
+                if not isinstance(result, ImportResult):
+                    error = session_output.get("error")
+                    if isinstance(error, str) and error:
+                        failures.append({"path": str(session_path), "error": error})
+                    tracker.advance()
+                    done += 1
+                    _maybe_plain_progress(done, len(session_list))
+                    continue
+
+                if session_output.get("diff"):
+                    diff_total += 1
+
+                wanted.add(result.slug)
+                if result.document:
+                    attachments_total += len(result.document.attachments)
+                    attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
+                    tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
+                    words_total += result.document.stats.get("totalWordsApprox", 0) or 0
+                written.append(result)
                 tracker.advance()
-                continue
+                done += 1
+                _maybe_plain_progress(done, len(session_list))
+        else:
+            results_by_index: List[Dict[str, object]] = [{} for _ in session_list]
+            with ThreadPoolExecutor(max_workers=jobs) as executor:
+                future_map = {executor.submit(_process_single, session_path): idx for idx, session_path in enumerate(session_list)}
+                done = 0
+                for future in as_completed(future_map):
+                    idx = future_map[future]
+                    session_path = session_list[idx]
+                    try:
+                        results_by_index[idx] = future.result()
+                    except Exception as exc:
+                        failures.append({"path": str(session_path), "error": str(exc)})
+                        results_by_index[idx] = {"session_path": session_path, "error": str(exc)}
+                    tracker.advance()
+                    done += 1
+                    _maybe_plain_progress(done, len(session_list))
 
-            result = session_output.get("result")
-            if not isinstance(result, ImportResult):
-                tracker.advance()
-                continue
+            for idx, session_output in enumerate(results_by_index):
+                prune_slug = session_output.get("prune_slug")
+                if isinstance(prune_slug, str):
+                    wanted.add(prune_slug)
 
-            if session_output.get("diff"):
-                diff_total += 1
+                if session_output.get("skipped"):
+                    skipped += 1
+                    continue
 
-            wanted.add(result.slug)
-            if result.document:
-                attachments_total += len(result.document.attachments)
-                attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
-                tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
-                words_total += result.document.stats.get("totalWordsApprox", 0) or 0
-            written.append(result)
-            tracker.advance()
+                result = session_output.get("result")
+                if not isinstance(result, ImportResult):
+                    error = session_output.get("error")
+                    if isinstance(error, str) and error:
+                        failures.append({"path": str(session_list[idx]), "error": error})
+                    continue
+
+                if session_output.get("diff"):
+                    diff_total += 1
+
+                wanted.add(result.slug)
+                if result.document:
+                    attachments_total += len(result.document.attachments)
+                    attachment_bytes_total += result.document.metadata.get("attachmentBytes", 0) or 0
+                    tokens_total += result.document.stats.get("totalTokensApprox", 0) or 0
+                    words_total += result.document.stats.get("totalWordsApprox", 0) or 0
+                written.append(result)
 
     pruned = 0
     if prune:
@@ -315,6 +440,8 @@ def _sync_sessions(
         words=words_total,
         diffs=diff_total,
         duration=duration,
+        failures=len(failures),
+        failed=failures,
     )
 
 
@@ -460,6 +587,8 @@ def _sync_export_bundles(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -471,6 +600,7 @@ def _sync_export_bundles(
     attachment_bytes_total = 0
     tokens_total = 0
     words_total = 0
+    failures: List[Dict[str, str]] = []
 
     normalized = [_normalize_export_target(Path(p)) for p in bundles]
     filtered = [p for p in normalized if p is not None]
@@ -487,24 +617,85 @@ def _sync_export_bundles(
         path for path in iterable if not (base_dir and _is_ignored(path, base_dir.expanduser(), ignore_patterns))
     ]
     progress_ctx = ui.progress(f"Processing {provider} exports", total=len(exports)) if ui else _NoopProgress()
+    last_progress_time = 0.0
+
+    def _maybe_plain_progress(done: int, total: int) -> None:
+        nonlocal last_progress_time
+        if not ui or not ui.plain or total <= 0:
+            return
+        now = time.perf_counter()
+        if done != total and done != 1 and (done % 5) != 0 and (now - last_progress_time) < 10.0:
+            return
+        last_progress_time = now
+        elapsed = now - start_time
+        rate = (done / elapsed) if elapsed > 0 else 0.0
+        eta = ((total - done) / rate) if rate > 0 else None
+        pct = (done / total) * 100.0
+        ui.console.print(
+            f"[dim]{provider} progress: {done}/{total} ({pct:.1f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
+        )
 
     with progress_ctx as tracker:
-        for export_path in exports:
+        for idx, export_path in enumerate(exports, start=1):
             if not export_path.exists():
                 tracker.advance()
+                _maybe_plain_progress(idx, len(exports))
                 continue
-            results_raw = import_fn(
-                export_path=export_path,
-                output_dir=output_dir,
-                collapse_threshold=collapse_threshold,
-                collapse_thresholds=collapse_thresholds,
-                html=html,
-                html_theme=html_theme,
-                selected_ids=None,
-                force=force,
-                registrar=registrar,
-                attachment_ocr=attachment_ocr,
-            )
+            bundle_hash = None
+            bundle_provider = f"{provider}-export"
+            export_id = str(export_path)
+            if not force and not prune:
+                try:
+                    from .importers.raw_storage import compute_hash
+
+                    target = export_path
+                    if export_path.is_dir():
+                        conv_file = export_path / "conversations.json"
+                        if conv_file.exists() and conv_file.is_file():
+                            target = conv_file
+                    bundle_hash = compute_hash(target.read_bytes())
+                    state = registrar.get_state(bundle_provider, export_id)
+                    if isinstance(state, dict) and state.get("bundleHash") == bundle_hash:
+                        skipped_exports += 1
+                        tracker.advance()
+                        _maybe_plain_progress(idx, len(exports))
+                        continue
+                except Exception:
+                    bundle_hash = None
+
+            try:
+                results_raw = import_fn(
+                    export_path=export_path,
+                    output_dir=output_dir,
+                    collapse_threshold=collapse_threshold,
+                    collapse_thresholds=collapse_thresholds,
+                    html=html,
+                    html_theme=html_theme,
+                    selected_ids=None,
+                    force=force,
+                    registrar=registrar,
+                    attachment_ocr=attachment_ocr,
+                    sanitize_html=sanitize_html,
+                    meta=dict(meta) if meta else None,
+                )
+            except Exception as exc:
+                failures.append({"path": str(export_path), "error": str(exc)})
+                tracker.advance()
+                _maybe_plain_progress(idx, len(exports))
+                continue
+            if bundle_hash:
+                from .util import current_utc_timestamp
+
+                registrar.state_repo.upsert(
+                    bundle_provider,
+                    export_id,
+                    {
+                        "bundleHash": bundle_hash,
+                        "bundlePath": export_id,
+                        "lastImported": current_utc_timestamp(),
+                    },
+                )
+
             if results_raw is None:
                 result_list: List[ImportResult] = []
             elif isinstance(results_raw, ImportResult):
@@ -529,6 +720,7 @@ def _sync_export_bundles(
             if not export_wrote:
                 skipped_exports += 1
             tracker.advance()
+            _maybe_plain_progress(idx, len(exports))
 
     pruned = 0
     if prune:
@@ -559,6 +751,8 @@ def _sync_export_bundles(
         words=words_total,
         diffs=0,
         duration=duration,
+        failures=len(failures),
+        failed=failures,
     )
 
 
@@ -577,6 +771,9 @@ def sync_codex_sessions(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
+    jobs: int = 1,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -601,6 +798,9 @@ def sync_codex_sessions(
         registrar=registrar,
         ui=ui,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
+        meta=meta,
+        jobs=jobs,
     )
 
 
@@ -619,6 +819,9 @@ def sync_claude_code_sessions(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
+    jobs: int = 1,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
@@ -643,6 +846,9 @@ def sync_claude_code_sessions(
         registrar=registrar,
         ui=ui,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
+        meta=meta,
+        jobs=jobs,
     )
 
 
@@ -683,6 +889,8 @@ def sync_chatgpt_exports(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -717,6 +925,8 @@ def sync_chatgpt_exports(
         registrar=registrar,
         ui=ui,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
+        meta=meta,
     )
 
 
@@ -735,6 +945,8 @@ def sync_claude_exports(
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
     attachment_ocr: bool = False,
+    sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -769,6 +981,8 @@ def sync_claude_exports(
         registrar=registrar,
         ui=ui,
         attachment_ocr=attachment_ocr,
+        sanitize_html=sanitize_html,
+        meta=meta,
     )
 
 
@@ -783,6 +997,7 @@ LOCAL_SYNC_PROVIDERS: Dict[str, LocalSyncProvider] = {
         watch_banner="Watching Codex sessions",
         watch_log_title="Codex Watch",
         watch_suffixes=(".jsonl",),
+        supports_jobs=True,
     ),
     "claude-code": LocalSyncProvider(
         name="claude-code",
@@ -794,6 +1009,7 @@ LOCAL_SYNC_PROVIDERS: Dict[str, LocalSyncProvider] = {
         watch_banner="Watching Claude Code sessions",
         watch_log_title="Claude Code Watch",
         watch_suffixes=(".jsonl",),
+        supports_jobs=True,
     ),
     "chatgpt": LocalSyncProvider(
         name="chatgpt",
