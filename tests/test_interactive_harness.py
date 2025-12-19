@@ -5,7 +5,21 @@ import stat
 import sys
 from pathlib import Path
 
+import pytest
 import pexpect
+
+_SKIP_PTY = bool(os.environ.get("NIX_BUILD_TOP")) and not bool(os.environ.get("IN_NIX_SHELL"))
+if not _SKIP_PTY:
+    try:
+        import pty as _pty
+
+        master_fd, slave_fd = _pty.openpty()
+        os.close(master_fd)
+        os.close(slave_fd)
+    except Exception:
+        _SKIP_PTY = True
+
+pytestmark = pytest.mark.skipif(_SKIP_PTY, reason="PTY-based interactive tests are skipped in Nix build sandboxes")
 
 
 def _write_executable(path: Path, content: str) -> None:

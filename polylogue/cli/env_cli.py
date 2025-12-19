@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import List, Dict, Any
 
 from ..config import CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN, is_config_declarative
-from ..paths import CONFIG_HOME, DATA_HOME, STATE_HOME
+from .. import paths as paths_module
 from ..version import POLYLOGUE_VERSION, SCHEMA_VERSION
 from ..commands import CommandEnv
 
@@ -38,9 +38,9 @@ def run_env_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     credential_path = Path(credential_env).expanduser() if credential_env else DEFAULT_CREDENTIALS
     token_path = Path(token_env).expanduser() if token_env else DEFAULT_TOKEN
 
-    checks.append(_path_status(CONFIG_HOME, required=True, label="Config home"))
-    checks.append(_path_status(DATA_HOME, required=True, label="Data home"))
-    checks.append(_path_status(STATE_HOME, required=True, label="State home"))
+    checks.append(_path_status(paths_module.CONFIG_HOME, required=True, label="Config home"))
+    checks.append(_path_status(paths_module.DATA_HOME, required=True, label="Data home"))
+    checks.append(_path_status(paths_module.STATE_HOME, required=True, label="State home"))
 
     checks.append(_path_status(credential_path, required=False, label="Credentials"))
     checks.append(_path_status(token_path, required=False, label="Token"))
@@ -49,7 +49,7 @@ def run_env_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     if token_env:
         checks.append(EnvCheck(name="POLYLOGUE_TOKEN_PATH", ok=True, detail=str(token_env)))
 
-    cfg_path = CONFIG_PATH if CONFIG_PATH else CONFIG_HOME / "config.json"
+    cfg_path = CONFIG_PATH if CONFIG_PATH else paths_module.CONFIG_HOME / "config.json"
     declarative, decl_reason, decl_target = is_config_declarative(cfg_path)
     checks.append(
         EnvCheck(
