@@ -124,3 +124,28 @@ def test_complete_prefs_subcommands(state_env) -> None:
     assert "list" in values
     assert "set" in values
     assert "clear" in values
+
+
+def test_complete_browse_stats_sort_values(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        click_cli,
+        ["_complete", "--shell", "zsh", "--cword", "4", "--", "polylogue", "browse", "stats", "--sort", ""],
+    )
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "tokens" in values
+    assert "recent" in values
+
+
+def test_complete_sync_html_values(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        click_cli,
+        ["_complete", "--shell", "zsh", "--cword", "4", "--", "polylogue", "sync", "drive", "--html", ""],
+    )
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "on" in values
+    assert "off" in values
+    assert "auto" in values
