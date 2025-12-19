@@ -381,12 +381,14 @@ def run_sync_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             )
 
     if provider in {"chatgpt", "claude"}:
-        exports_root = env.config.exports.chatgpt if provider == "chatgpt" else env.config.exports.claude
+        if getattr(args, "base_dir", None):
+            exports_root = Path(getattr(args, "base_dir")).expanduser()
+            hint = "create it or pass a valid --base-dir"
+        else:
+            exports_root = env.config.exports.chatgpt if provider == "chatgpt" else env.config.exports.claude
+            hint = f"set exports.{provider} in config or pass --base-dir"
         if not exports_root.exists():
-            raise SystemExit(
-                f"{provider} exports directory not found: {exports_root} "
-                f"(set exports.{provider} in config)."
-            )
+            raise SystemExit(f"{provider} exports directory not found: {exports_root} ({hint}).")
     if provider == "drive":
         merged = merge_with_defaults(default_sync_namespace("drive", settings), args)
         _run_sync_drive(merged, env)
