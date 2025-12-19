@@ -221,6 +221,64 @@ def test_interactive_sync_codex_cancelled_when_sk_aborts(tmp_path: Path):
     assert child.exitstatus == 0
 
 
+def test_interactive_sync_claude_code_selects_first_session(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[1]
+    stub_bin = _make_interactive_stubs(tmp_path)
+
+    claude_base = tmp_path / "claude-code"
+    claude_base.mkdir(parents=True, exist_ok=True)
+    fixture = repo_root / "tests" / "fixtures" / "golden" / "claude_code" / "claude-code-golden.jsonl"
+    session_path = claude_base / "session.jsonl"
+    session_path.write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}{os.pathsep}{env.get('PATH', '')}"
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "config")
+    env["XDG_DATA_HOME"] = str(tmp_path / "data")
+    env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
+    env["XDG_STATE_HOME"] = str(tmp_path / "state")
+
+    child = _spawn_polylogue(
+        ["--interactive", "sync", "claude-code", "--base-dir", str(claude_base)],
+        cwd=repo_root,
+        env=env,
+    )
+    child.expect(pexpect.EOF)
+    child.close()
+    assert child.exitstatus == 0
+
+    output_dir = Path(env["XDG_DATA_HOME"]) / "polylogue" / "archive" / "claude-code"
+    assert any(output_dir.rglob("conversation.md"))
+
+
+def test_interactive_sync_claude_code_cancelled_when_sk_aborts(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[1]
+    stub_bin = _make_interactive_stubs(tmp_path)
+
+    claude_base = tmp_path / "claude-code"
+    claude_base.mkdir(parents=True, exist_ok=True)
+    fixture = repo_root / "tests" / "fixtures" / "golden" / "claude_code" / "claude-code-golden.jsonl"
+    session_path = claude_base / "session.jsonl"
+    session_path.write_text(fixture.read_text(encoding="utf-8"), encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PATH"] = f"{stub_bin}{os.pathsep}{env.get('PATH', '')}"
+    env["XDG_CONFIG_HOME"] = str(tmp_path / "config")
+    env["XDG_DATA_HOME"] = str(tmp_path / "data")
+    env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
+    env["XDG_STATE_HOME"] = str(tmp_path / "state")
+    env["POLYLOGUE_TEST_SK_CANCEL"] = "1"
+
+    child = _spawn_polylogue(
+        ["--interactive", "sync", "claude-code", "--base-dir", str(claude_base)],
+        cwd=repo_root,
+        env=env,
+    )
+    child.expect(pexpect.EOF)
+    child.close()
+    assert child.exitstatus == 0
+
+
 def test_interactive_sync_chatgpt_selects_first_export(tmp_path: Path):
     repo_root = Path(__file__).resolve().parents[1]
     stub_bin = _make_interactive_stubs(tmp_path)
