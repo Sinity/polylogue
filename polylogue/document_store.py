@@ -110,6 +110,9 @@ def _metadata_without_content_hash(metadata: Dict[str, Any]) -> Dict[str, Any]:
         polylogue.pop("sourceFile", None)
         polylogue.pop("sessionPath", None)
         polylogue.pop("sessionFile", None)
+        polylogue.pop("sourceRawHash", None)
+        polylogue.pop("renderConfigHash", None)
+        polylogue.pop("sourceBundleHash", None)
     return serialised
 
 
