@@ -178,6 +178,59 @@ def test_sync_jobs_flag_passed_to_local_provider(monkeypatch, tmp_path):
     assert captured["jobs"] == 3
 
 
+def test_sync_chatgpt_base_dir_does_not_require_config_inbox(tmp_path):
+    env = CommandEnv(ui=DummyUI())
+    # Point configured inbox at a missing path; --base-dir should override the check.
+    env.config.exports.chatgpt = tmp_path / "missing-inbox"
+    base_dir = tmp_path / "exports"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = tmp_path / "out"
+    args = SimpleNamespace(
+        provider="chatgpt",
+        out=str(out_dir),
+        base_dir=str(base_dir),
+        sessions=[],
+        all=True,
+        jobs=1,
+        dry_run=False,
+        force=False,
+        prune=False,
+        diff=False,
+        json=True,
+        watch=False,
+        offline=False,
+        collapse_threshold=None,
+        html_mode="off",
+        attachment_ocr=False,
+        sanitize_html=False,
+        meta=(),
+        max_disk=None,
+        resume_from=None,
+        prune_snapshot=False,
+        root=None,
+        folder_name=None,
+        folder_id=None,
+        since=None,
+        until=None,
+        name_filter=None,
+        list_only=False,
+        links_only=True,
+        attachments_only=False,
+        chat_ids=(),
+        print_paths=False,
+        debounce=0.0,
+        stall_seconds=60.0,
+        fail_on_stall=False,
+        tail=False,
+        once=False,
+        snapshot=False,
+        watch_plan=False,
+        drive_retries=None,
+        drive_retry_base=None,
+    )
+    run_sync_cli(args, env)
+
+
 def test_sync_parser_supports_selection_flags(tmp_path):
     captured = {}
 
