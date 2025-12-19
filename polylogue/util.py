@@ -1,5 +1,6 @@
 import datetime
 import difflib
+import hashlib
 import json
 import logging
 import os
@@ -172,6 +173,30 @@ def _set_meta_value(key: str, value: str) -> None:
             (key, value),
         )
         conn.commit()
+
+
+def import_sync_state_key(provider: str, conversation_id: str) -> str:
+    material = f"{provider}:{conversation_id}".encode("utf-8")
+    digest = hashlib.sha256(material).hexdigest()
+    return f"import.sync.{digest}"
+
+
+def get_import_sync_state(provider: str, conversation_id: str) -> Optional[dict]:
+    raw = _get_meta_value(import_sync_state_key(provider, conversation_id))
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def set_import_sync_state(provider: str, conversation_id: str, payload: dict) -> None:
+    payload = dict(payload)
+    payload.setdefault("provider", provider)
+    payload.setdefault("conversationId", conversation_id)
+    _set_meta_value(import_sync_state_key(provider, conversation_id), json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
 
 def load_runs(limit: Optional[int] = None) -> list[dict]:
