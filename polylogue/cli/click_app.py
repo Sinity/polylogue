@@ -389,7 +389,7 @@ def compare(env: CommandEnv, **kwargs) -> None:
 @cli.group(name="browse")
 @click.pass_context
 def browse_group(ctx: click.Context) -> None:
-    """Browse commands (branches/stats/status/runs/inbox)."""
+    """Browse commands (branches/stats/status/runs/metrics/timeline/analytics/inbox)."""
 
 
 @browse_group.command(name="branches")
