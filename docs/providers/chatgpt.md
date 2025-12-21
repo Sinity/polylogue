@@ -22,7 +22,7 @@ Polylogue ingests chat.openai.com exports (consumer ChatGPT) by walking the prov
 
 ### Branch Export Modes
 
-`polylogue import chatgpt` (and downstream sync/watch flows) always write the canonical transcript alongside `conversation.common.md` and per-branch directories under `branches/<branch-id>/{<branch-id>.md, overlay.md}` so divergent replies stay organised without extra flags.
+`polylogue import run chatgpt` (and downstream sync/watch flows) always write the canonical transcript alongside `conversation.common.md` and per-branch directories under `branches/<branch-id>/{<branch-id>.md, overlay.md}` so divergent replies stay organised without extra flags.
 
 ## Attachments
 
@@ -32,7 +32,7 @@ Polylogue ingests chat.openai.com exports (consumer ChatGPT) by walking the prov
 ## Operational Notes
 
 - There is no public API for historical exports. Users must trigger the ZIP export manually (Settings → Data Controls → Export) or orchestrate a headless browser flow.
-- Polylogue runs are idempotent: once the ZIP is refreshed, `polylogue import chatgpt` reuses stored slugs and skips conversations whose hashes match previous runs.
+- Polylogue runs are idempotent: once the ZIP is refreshed, `polylogue import run chatgpt` reuses stored slugs and skips conversations whose hashes match previous runs.
 - Use `--force` when you need to overwrite locally-edited Markdown; otherwise the importer preserves manual tweaks and marks the conversation as dirty.
 - Inline escape sequences such as `\[1]` in the export are normalised to `[1]` so numeric references render cleanly.
 - Per-turn headers show UTC timestamps with a relative offset from the start of the conversation (for example, `2024-04-30T19:00:46Z (+22s)`), keeping both absolute and contextual timing at a glance.
@@ -41,7 +41,7 @@ Polylogue ingests chat.openai.com exports (consumer ChatGPT) by walking the prov
 
 ## Local Sync Workflow
 
-For recurring exports, you no longer need to call `polylogue import chatgpt …` manually each time. Treat the bundles like a local provider instead:
+For recurring exports, you no longer need to call `polylogue import run chatgpt …` manually each time. Treat the bundles like a local provider instead:
 
 1. Save each ZIP (or its extracted folder with `conversations.json`) under the inbox at `$XDG_DATA_HOME/polylogue/inbox/chatgpt` — by default `~/.local/share/polylogue/inbox/chatgpt`. The directory is created automatically the first time you run the sync.
 2. Run `polylogue sync chatgpt` to ingest every bundle in that directory, or pick specific bundles interactively when not using `--all`.
