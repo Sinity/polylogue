@@ -87,7 +87,7 @@ def _print_examples(console) -> None:
 def _print_quick_examples(console) -> None:
     console.print("\n[bold cyan]QUICK EXAMPLES[/bold cyan]")
     console.print("[dim]Run 'polylogue help <command>' for full examples and details.[/dim]\n")
-    for cmd in ["render", "sync", "import", "search", "browse"]:
+    for cmd in ["render", "sync", "import", "search", "browse", "verify", "doctor"]:
         examples = COMMAND_EXAMPLES.get(cmd)
         if not examples:
             continue
@@ -200,7 +200,12 @@ def sync(env: CommandEnv, **kwargs) -> None:
 # ---------------------------- import ----------------------------
 
 
-@cli.command(name="import")
+@cli.group(name="import")
+def import_group() -> None:
+    """Import provider exports."""
+
+
+@import_group.command(name="run")
 @click.argument("provider", type=click.Choice(["chatgpt", "claude", "claude-code", "codex"]))
 @click.argument("source", nargs=-1, type=click.Path(path_type=Path))
 @click.option("--out", type=click.Path(path_type=Path), help="Output directory")
@@ -227,10 +232,19 @@ def sync(env: CommandEnv, **kwargs) -> None:
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in imported Markdown/HTML outputs")
 @click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.pass_obj
-def import_cmd_click(env: CommandEnv, **kwargs) -> None:
-    """Import provider exports."""
+def import_run(env: CommandEnv, **kwargs) -> None:
     args = SimpleNamespace(**kwargs)
     imports.run_import_cli(args, env)
+
+
+@import_group.command(name="reprocess")
+@click.option("--provider", type=str, help="Provider filter for reprocess")
+@click.option("--fallback", is_flag=True, help="Use fallback parser")
+@click.pass_obj
+def import_reprocess(env: CommandEnv, **kwargs) -> None:
+    """Reprocess failed imports."""
+    args = SimpleNamespace(**kwargs)
+    reprocess.run_reprocess_cli(args, env)
 
 
 # ---------------------------- render ----------------------------
@@ -283,7 +297,12 @@ def render(env: CommandEnv, **kwargs) -> None:
 # ---------------------------- verify ----------------------------
 
 
-@cli.command()
+@cli.group()
+def verify() -> None:
+    """Verify and compare archives."""
+
+
+@verify.command(name="check")
 @click.option("--provider", type=str, help="Comma-separated provider filter")
 @click.option("--slug", type=str, help="Filter to a single slug")
 @click.option("--conversation-id", "conversation_ids", multiple=True, help="Filter to a conversation ID (repeatable)")
@@ -301,11 +320,31 @@ def render(env: CommandEnv, **kwargs) -> None:
 @click.option("--strict", is_flag=True, help="Treat warnings as errors")
 @click.option("--json", is_flag=True, help="Emit machine-readable report")
 @click.pass_obj
-def verify(env: CommandEnv, **kwargs) -> None:
+def verify_check(env: CommandEnv, **kwargs) -> None:
     """Verify rendered outputs against the database and state store."""
     from .verify import run_verify_cli
 
     run_verify_cli(SimpleNamespace(**kwargs), env)
+
+
+@verify.command(name="compare")
+@click.argument("query", type=str)
+@click.option("--provider-a", required=True, help="First provider slug")
+@click.option("--provider-b", required=True, help="Second provider slug")
+@click.option("--limit", type=int, default=20, show_default=True, help="Maximum hits per provider")
+@click.option("--json", is_flag=True, help="Emit machine-readable comparison summary")
+@click.option(
+    "--fields",
+    type=str,
+    default="provider,slug,branchId,messageId,score,snippet,model,path",
+    show_default=True,
+    help="Fields for JSON export",
+)
+@click.pass_obj
+def verify_compare(env: CommandEnv, **kwargs) -> None:
+    """Compare coverage between two providers for a query."""
+    args = SimpleNamespace(**kwargs)
+    run_compare_cli(args, env)
 
 
 # ---------------------------- search ----------------------------
@@ -339,57 +378,12 @@ def search(env: CommandEnv, **kwargs) -> None:
     args = SimpleNamespace(**kwargs)
     run_search_cli(args, env)
 
-
-# ---------------------------- status ----------------------------
-
-
-@cli.command()
-@click.option("--json", is_flag=True, help="Emit machine-readable summary")
-@click.option("--json-lines", is_flag=True, help="Stream newline-delimited JSON records (auto-enables --json, useful with --watch)")
-@click.option("--json-verbose", is_flag=True, help="Allow status to print tables/logs alongside JSON/JSONL output")
-@click.option("--watch", is_flag=True, help="Continuously refresh the status output")
-@click.option("--dump-only", is_flag=True, help="Only perform the dump action without printing summaries")
-@click.option("--interval", type=float, default=5.0, show_default=True, help="Seconds between refresh while watching")
-@click.option("--dump", type=str, help="Write recent runs to a file ('-' for stdout)")
-@click.option("--dump-limit", type=int, default=100, show_default=True, help="Number of runs to include when dumping")
-@click.option("--runs-limit", type=int, default=200, show_default=True, help="Number of historical runs to include in summaries")
-@click.option("--top", type=int, default=0, show_default=True, help="Show top runs by attachments/tokens")
-@click.option("--inbox", is_flag=True, help="Include inbox coverage counts in summaries")
-@click.option("--providers", type=str, help="Comma-separated provider filter")
-@click.option("--quiet", is_flag=True, help="Suppress table output (useful with --json-lines)")
-@click.option("--summary", type=str, help="Write aggregated provider/run summary JSON to a file ('-' for stdout)")
-@click.option("--summary-only", is_flag=True, help="Only emit the summary JSON without printing tables")
-@click.pass_obj
-def status(env: CommandEnv, **kwargs) -> None:
-    """Show cached Drive info and recent runs."""
-    from .status import run_status_cli
-
-    run_status_cli(SimpleNamespace(**kwargs), env)
-
-
-# ---------------------------- compare ----------------------------
-
-
-@cli.command()
-@click.argument("query", type=str)
-@click.option("--provider-a", required=True, help="First provider slug")
-@click.option("--provider-b", required=True, help="Second provider slug")
-@click.option("--limit", type=int, default=20, show_default=True, help="Maximum hits per provider")
-@click.option("--json", is_flag=True, help="Emit machine-readable comparison summary")
-@click.option("--fields", type=str, default="provider,slug,branchId,messageId,score,snippet,model,path", show_default=True, help="Fields for JSON export")
-@click.pass_obj
-def compare(env: CommandEnv, **kwargs) -> None:
-    """Compare coverage between two providers for a query."""
-    args = SimpleNamespace(**kwargs)
-    run_compare_cli(args, env)
-
 # ---------------------------- browse ----------------------------
 
 
 @cli.group(name="browse")
-@click.pass_context
-def browse_group(ctx: click.Context) -> None:
-    """Browse commands (branches/stats/status/runs/metrics/timeline/analytics/inbox)."""
+def browse_group() -> None:
+    """Browse commands (branches/stats/runs/metrics/timeline/analytics/inbox/open)."""
 
 
 @browse_group.command(name="branches")
@@ -428,25 +422,17 @@ def browse_stats(env: CommandEnv, **kwargs) -> None:
     browse_cmd.run_browse_cli(args, env)
 
 
-@browse_group.command(name="status")
-@click.option("--json", is_flag=True)
-@click.option("--json-lines", is_flag=True)
-@click.option("--json-verbose", is_flag=True)
-@click.option("--watch", is_flag=True)
-@click.option("--interval", type=float, default=5.0, show_default=True)
-@click.option("--dump", type=str, help="Write recent runs to a file ('-' for stdout)")
-@click.option("--dump-limit", type=int, default=100, show_default=True)
-@click.option("--runs-limit", type=int, default=200, show_default=True)
-@click.option("--top", type=int, default=0, show_default=True)
-@click.option("--inbox", is_flag=True)
-@click.option("--providers", type=str, help="Comma-separated provider filter")
-@click.option("--quiet", is_flag=True)
-@click.option("--summary", type=str, help="Write aggregated provider/run summary JSON to a file ('-' for stdout)")
-@click.option("--summary-only", is_flag=True)
+@browse_group.command(name="open")
+@click.argument("provider", required=False)
+@click.option("--command", "cmd", type=str, help="Filter by command (e.g., sync codex)")
+@click.option("--print", "print_only", is_flag=True, help="Only print the path without opening")
+@click.option("--json", is_flag=True, help="Emit JSON with the last run info")
+@click.option("--fallback", type=click.Path(path_type=Path), help="Fallback path if no run is found")
 @click.pass_obj
-def browse_status(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(browse_cmd="status", **kwargs)
-    browse_cmd.run_browse_cli(args, env)
+def browse_open(env: CommandEnv, **kwargs) -> None:  # type: ignore[func-returns-value]
+    """Open or print paths from the latest run."""
+    args = SimpleNamespace(**kwargs)
+    open_helper.run_open_cli(args, env)
 
 
 @browse_group.command(name="runs")
@@ -521,70 +507,134 @@ def browse_inbox(env: CommandEnv, **kwargs) -> None:
     browse_cmd.run_browse_cli(args, env)
 
 
-# ---------------------------- maintain ----------------------------
+# ---------------------------- doctor ----------------------------
 
 
 @cli.group()
-@click.pass_context
-def maintain(ctx: click.Context) -> None:
-    """System maintenance and diagnostics."""
+def doctor() -> None:
+    """Diagnostics, status, and maintenance tools."""
 
 
-@maintain.command(name="prune")
-@click.option("--dir", "dirs", multiple=True, type=click.Path(path_type=Path), help="Root directory to prune")
-@click.option("--dry-run", is_flag=True, help="Print planned actions without deleting files")
-@click.option("--max-disk", type=float, help="Abort if projected snapshot size exceeds this many GiB")
-@click.pass_obj
-def maintain_prune(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(maintain_cmd="prune", **kwargs)
-    maintain_cli.run_maintain_cli(args, env)
-
-
-@maintain.command(name="doctor")
+@doctor.command(name="check")
 @click.option("--codex-dir", type=click.Path(path_type=Path), help="Override Codex sessions directory")
 @click.option("--claude-code-dir", type=click.Path(path_type=Path), help="Override Claude Code projects directory")
 @click.option("--limit", type=int, help="Limit number of files inspected per provider")
 @click.option("--json", is_flag=True, help="Emit machine-readable report")
 @click.option("--json-verbose", is_flag=True, help="Emit JSON with verbose details")
 @click.pass_obj
-def maintain_doctor(env: CommandEnv, **kwargs) -> None:
+def doctor_check(env: CommandEnv, **kwargs) -> None:
     args = SimpleNamespace(maintain_cmd="doctor", **kwargs)
     maintain_cli.run_maintain_cli(args, env)
 
 
-@maintain.command(name="index")
-@click.argument("subcmd", type=click.Choice(["check"]))
+@doctor.command(name="env")
+@click.option("--json", is_flag=True, help="Emit environment info as JSON")
+@click.pass_obj
+def doctor_env(env: CommandEnv, **kwargs) -> None:
+    """Check environment and config paths."""
+    run_env_cli(SimpleNamespace(**kwargs), env)
+
+
+@doctor.command(name="status")
+@click.option("--json", is_flag=True, help="Emit machine-readable summary")
+@click.option("--json-lines", is_flag=True, help="Stream newline-delimited JSON records (auto-enables --json, useful with --watch)")
+@click.option("--json-verbose", is_flag=True, help="Allow status to print tables/logs alongside JSON/JSONL output")
+@click.option("--watch", is_flag=True, help="Continuously refresh the status output")
+@click.option("--dump-only", is_flag=True, help="Only perform the dump action without printing summaries")
+@click.option("--interval", type=float, default=5.0, show_default=True, help="Seconds between refresh while watching")
+@click.option("--dump", type=str, help="Write recent runs to a file ('-' for stdout)")
+@click.option("--dump-limit", type=int, default=100, show_default=True, help="Number of runs to include when dumping")
+@click.option("--runs-limit", type=int, default=200, show_default=True, help="Number of historical runs to include in summaries")
+@click.option("--top", type=int, default=0, show_default=True, help="Show top runs by attachments/tokens")
+@click.option("--inbox", is_flag=True, help="Include inbox coverage counts in summaries")
+@click.option("--providers", type=str, help="Comma-separated provider filter")
+@click.option("--quiet", is_flag=True, help="Suppress table output (useful with --json-lines)")
+@click.option("--summary", type=str, help="Write aggregated provider/run summary JSON to a file ('-' for stdout)")
+@click.option("--summary-only", is_flag=True, help="Only emit the summary JSON without printing tables")
+@click.pass_obj
+def doctor_status(env: CommandEnv, **kwargs) -> None:
+    """Show cached Drive info and recent runs."""
+    from .status import run_status_cli
+
+    run_status_cli(SimpleNamespace(**kwargs), env)
+
+
+@doctor.command(name="prune")
+@click.option("--dir", "dirs", multiple=True, type=click.Path(path_type=Path), help="Root directory to prune")
+@click.option("--dry-run", is_flag=True, help="Print planned actions without deleting files")
+@click.option("--max-disk", type=float, help="Abort if projected snapshot size exceeds this many GiB")
+@click.pass_obj
+def doctor_prune(env: CommandEnv, **kwargs) -> None:
+    args = SimpleNamespace(maintain_cmd="prune", **kwargs)
+    maintain_cli.run_maintain_cli(args, env)
+
+
+@doctor.group(name="index")
+def doctor_index() -> None:
+    """Index validation/repair."""
+
+
+@doctor_index.command(name="check")
 @click.option("--repair", is_flag=True, help="Attempt to rebuild missing SQLite FTS data")
 @click.option("--skip-qdrant", is_flag=True, help="Skip Qdrant validation even when configured")
 @click.option("--json", is_flag=True, help="Emit validation results as JSON")
 @click.option("--json-verbose", is_flag=True, help="Emit JSON with verbose details")
 @click.pass_obj
-def maintain_index(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(maintain_cmd="index", subcmd=kwargs.pop("subcmd"), **kwargs)
+def doctor_index_check(env: CommandEnv, **kwargs) -> None:
+    args = SimpleNamespace(maintain_cmd="index", subcmd="check", **kwargs)
     maintain_cli.run_maintain_cli(args, env)
 
 
-@maintain.command(name="restore")
+@doctor.command(name="restore")
 @click.option("--from", "src", type=click.Path(path_type=Path), required=True, help="Snapshot directory to restore from")
 @click.option("--to", "dest", type=click.Path(path_type=Path), required=True, help="Destination output directory")
 @click.option("--force", is_flag=True, help="Overwrite destination if it exists")
 @click.option("--json", is_flag=True, help="Emit restoration summary as JSON")
 @click.option("--max-disk", type=float, help="Abort if projected snapshot size exceeds this many GiB")
 @click.pass_obj
-def maintain_restore(env: CommandEnv, **kwargs) -> None:
+def doctor_restore(env: CommandEnv, **kwargs) -> None:
     args = SimpleNamespace(maintain_cmd="restore", **kwargs)
     maintain_cli.run_maintain_cli(args, env)
 
 
-# ---------------------------- config/env/prefs ----------------------------
+@doctor.group(name="attachments")
+def doctor_attachments() -> None:
+    """Attachment utilities."""
 
 
-@cli.command()
-@click.option("--json", is_flag=True, help="Emit environment info as JSON")
+@doctor_attachments.command(name="stats")
+@click.option("--dir", type=click.Path(path_type=Path), help="Root directory containing archives")
+@click.option("--provider", type=str, help="Filter by provider (comma-separated)")
+@click.option("--since", type=str, help="Only include attachments on/after this timestamp (index only)")
+@click.option("--until", type=str, help="Only include attachments on/before this timestamp (index only)")
+@click.option("--ext", type=str, help="Filter by file extension")
+@click.option("--hash", "hash", is_flag=True, help="Hash attachments to compute deduped totals")
+@click.option("--sort", type=click.Choice(["size", "name"]), default="size")
+@click.option("--limit", type=int, default=10)
+@click.option("--csv", type=str, help="Write attachment rows to CSV")
+@click.option("--json", is_flag=True)
+@click.option("--json-lines", is_flag=True)
+@click.option("--from-index", is_flag=True, help="Read attachment metadata from the index DB")
+@click.option("--clean-orphans", is_flag=True, help="Remove on-disk attachments not referenced by the index DB (requires --from-index)")
+@click.option("--dry-run", is_flag=True, help="Preview actions without deleting files (used with --clean-orphans)")
 @click.pass_obj
-def env(env: CommandEnv, **kwargs) -> None:
-    """Check environment and config paths."""
-    run_env_cli(SimpleNamespace(**kwargs), env)
+def doctor_attachments_stats(env: CommandEnv, **kwargs) -> None:
+    args = SimpleNamespace(attachments_cmd="stats", **kwargs)
+    attachments.run_attachments_cli(args, env)
+
+
+@doctor_attachments.command(name="extract")
+@click.option("--dir", type=click.Path(path_type=Path), help="Root directory containing archives")
+@click.option("--ext", type=str, required=True, help="File extension to extract (e.g., .pdf)")
+@click.option("--out", type=click.Path(path_type=Path), required=True, help="Destination directory")
+@click.option("--limit", type=int, default=0, help="Limit number of files extracted (0 for all)")
+@click.option("--overwrite", is_flag=True, help="Allow overwriting existing files in destination")
+@click.option("--json", is_flag=True, help="Emit extraction summary as JSON")
+@click.option("--json-lines", is_flag=True, help="Emit per-file JSONL")
+@click.pass_obj
+def doctor_attachments_extract(env: CommandEnv, **kwargs) -> None:
+    args = SimpleNamespace(attachments_cmd="extract", **kwargs)
+    attachments.run_attachments_cli(args, env)
 
 
 @cli.command(name="help")
@@ -629,9 +679,8 @@ def _search_preview(env: CommandEnv, **kwargs) -> None:
 
 
 @cli.group()
-@click.pass_context
-def config(ctx: click.Context) -> None:
-    """Configuration (init/set/show/edit)."""
+def config() -> None:
+    """Configuration (init/set/show/edit/prefs)."""
 
 
 @config.command(name="show")
@@ -674,87 +723,37 @@ def config_edit(env: CommandEnv, **kwargs) -> None:
     run_config_edit_cli(SimpleNamespace(**kwargs), env)
 
 
-@cli.command()
-@click.argument("subcmd", type=click.Choice(["list", "set", "clear"]))
-@click.option("--command", "command_name", type=str, help="Command name (e.g., search, sync)")
-@click.option("--flag", type=str, help="Flag name, e.g., --limit")
-@click.option("--value", type=str, help="Value for the flag")
+@config.group(name="prefs")
+def config_prefs() -> None:
+    """Manage per-command preference defaults."""
+
+
+@config_prefs.command(name="list")
 @click.option("--json", "json_mode", is_flag=True, help="Emit JSON output")
 @click.pass_obj
-def prefs(env: CommandEnv, subcmd: str, command_name: Optional[str], flag: Optional[str], value: Optional[str], json_mode: bool) -> None:  # type: ignore[func-returns-value]
-    """Manage per-command preference defaults."""
-    args = SimpleNamespace(prefs_cmd=subcmd, command=command_name, flag=flag, value=value, json=json_mode)
+def config_prefs_list(env: CommandEnv, json_mode: bool) -> None:
+    args = SimpleNamespace(prefs_cmd="list", json=json_mode)
     prefs_cmd.run_prefs_cli(args, env)
 
 
-# ---------------------------- attachments ----------------------------
-
-
-@cli.group(name="attachments")
-@click.pass_context
-def attachments_group(ctx: click.Context) -> None:
-    """Attachment utilities."""
-
-
-@attachments_group.command(name="stats")
-@click.option("--dir", type=click.Path(path_type=Path), help="Root directory containing archives")
-@click.option("--provider", type=str, help="Filter by provider (comma-separated)")
-@click.option("--since", type=str, help="Only include attachments on/after this timestamp (index only)")
-@click.option("--until", type=str, help="Only include attachments on/before this timestamp (index only)")
-@click.option("--ext", type=str, help="Filter by file extension")
-@click.option("--hash", "hash", is_flag=True, help="Hash attachments to compute deduped totals")
-@click.option("--sort", type=click.Choice(["size", "name"]), default="size")
-@click.option("--limit", type=int, default=10)
-@click.option("--csv", type=str, help="Write attachment rows to CSV")
-@click.option("--json", is_flag=True)
-@click.option("--json-lines", is_flag=True)
-@click.option("--from-index", is_flag=True, help="Read attachment metadata from the index DB")
-@click.option("--clean-orphans", is_flag=True, help="Remove on-disk attachments not referenced by the index DB (requires --from-index)")
-@click.option("--dry-run", is_flag=True, help="Preview actions without deleting files (used with --clean-orphans)")
+@config_prefs.command(name="set")
+@click.option("--command", "command_name", required=True, type=str, help="Command name (e.g., search, sync)")
+@click.option("--flag", required=True, type=str, help="Flag name, e.g., --limit")
+@click.option("--value", required=True, type=str, help="Value for the flag")
+@click.option("--json", "json_mode", is_flag=True, help="Emit JSON output")
 @click.pass_obj
-def attachments_stats(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(attachments_cmd="stats", **kwargs)
-    attachments.run_attachments_cli(args, env)
+def config_prefs_set(env: CommandEnv, command_name: str, flag: str, value: str, json_mode: bool) -> None:
+    args = SimpleNamespace(prefs_cmd="set", command=command_name, flag=flag, value=value, json=json_mode)
+    prefs_cmd.run_prefs_cli(args, env)
 
 
-@attachments_group.command(name="extract")
-@click.option("--dir", type=click.Path(path_type=Path), help="Root directory containing archives")
-@click.option("--ext", type=str, required=True, help="File extension to extract (e.g., .pdf)")
-@click.option("--out", type=click.Path(path_type=Path), required=True, help="Destination directory")
-@click.option("--limit", type=int, default=0, help="Limit number of files extracted (0 for all)")
-@click.option("--overwrite", is_flag=True, help="Allow overwriting existing files in destination")
-@click.option("--json", is_flag=True, help="Emit extraction summary as JSON")
-@click.option("--json-lines", is_flag=True, help="Emit per-file JSONL")
+@config_prefs.command(name="clear")
+@click.option("--command", "command_name", type=str, help="Command name to clear (default: all)")
+@click.option("--json", "json_mode", is_flag=True, help="Emit JSON output")
 @click.pass_obj
-def attachments_extract(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(attachments_cmd="extract", **kwargs)
-    attachments.run_attachments_cli(args, env)
-
-
-# ---------------------------- misc ----------------------------
-
-
-@cli.command()
-@click.argument("provider", required=False)
-@click.option("--command", "cmd", type=str, help="Filter by command (e.g., sync codex)")
-@click.option("--print", "print_only", is_flag=True, help="Only print the path without opening")
-@click.option("--json", is_flag=True, help="Emit JSON with the last run info")
-@click.option("--fallback", type=click.Path(path_type=Path), help="Fallback path if no run is found")
-@click.pass_obj
-def open(env: CommandEnv, **kwargs) -> None:  # type: ignore[func-returns-value]
-    """Open or print paths from the latest run."""
-    args = SimpleNamespace(**kwargs)
-    open_helper.run_open_cli(args, env)
-
-
-@cli.command()
-@click.option("--provider", type=str, help="Provider filter for reprocess")
-@click.option("--fallback", is_flag=True, help="Use fallback parser")
-@click.pass_obj
-def reprocess_cmd(env: CommandEnv, **kwargs) -> None:
-    """Reprocess failed imports."""
-    args = SimpleNamespace(**kwargs)
-    reprocess.run_reprocess_cli(args, env)
+def config_prefs_clear(env: CommandEnv, command_name: Optional[str], json_mode: bool) -> None:
+    args = SimpleNamespace(prefs_cmd="clear", command=command_name, json=json_mode)
+    prefs_cmd.run_prefs_cli(args, env)
 
 
 def main() -> None:  # pragma: no cover
