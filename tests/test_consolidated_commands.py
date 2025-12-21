@@ -1,4 +1,4 @@
-"""Tests for consolidated command structure (browse, maintain, config)."""
+"""Tests for consolidated command structure (browse, doctor, config)."""
 
 from __future__ import annotations
 
@@ -64,31 +64,50 @@ def test_click_has_browse_command():
     assert "browse" in click_cli.commands
 
 
-def test_click_has_maintain_command():
-    """Verify maintain command exists in Click CLI."""
-    assert "maintain" in click_cli.commands
+def test_click_has_doctor_command():
+    """Verify doctor command exists in Click CLI."""
+    assert "doctor" in click_cli.commands
 
 
 def test_click_has_config_subcommands():
-    """Verify config command has init/set/show/edit subcommands."""
+    """Verify config command has init/set/show/edit/prefs subcommands."""
     config_group = click_cli.commands.get("config")
     assert config_group is not None
     assert hasattr(config_group, "commands")
-    assert {"init", "set", "show", "edit"}.issubset(set(config_group.commands))
+    assert {"init", "set", "show", "edit", "prefs"}.issubset(set(config_group.commands))
 
 
 def test_click_browse_has_all_subcommands():
     """Verify browse has all expected subcommands."""
     browse_group = click_cli.commands.get("browse")
     assert browse_group is not None
-    assert {"branches", "stats", "status", "runs", "inbox"}.issubset(set(browse_group.commands))
+    assert {"branches", "stats", "runs", "inbox", "metrics", "timeline", "analytics", "open"}.issubset(
+        set(browse_group.commands)
+    )
 
 
-def test_click_maintain_has_all_subcommands():
-    """Verify maintain has all expected subcommands."""
-    maintain_group = click_cli.commands.get("maintain")
-    assert maintain_group is not None
-    assert {"prune", "doctor", "index", "restore"}.issubset(set(maintain_group.commands))
+def test_click_doctor_has_all_subcommands():
+    """Verify doctor has all expected subcommands."""
+    doctor_group = click_cli.commands.get("doctor")
+    assert doctor_group is not None
+    assert {"check", "env", "status", "prune", "index", "restore", "attachments"}.issubset(set(doctor_group.commands))
+
+    index_group = doctor_group.commands.get("index")
+    assert index_group is not None
+    assert {"check"}.issubset(set(index_group.commands))
+
+    attachments_group = doctor_group.commands.get("attachments")
+    assert attachments_group is not None
+    assert {"stats", "extract"}.issubset(set(attachments_group.commands))
+
+
+def test_click_config_prefs_has_all_subcommands():
+    """Verify config prefs has list/set/clear subcommands."""
+    config_group = click_cli.commands.get("config")
+    assert config_group is not None
+    prefs_group = config_group.commands.get("prefs")
+    assert prefs_group is not None
+    assert {"list", "set", "clear"}.issubset(set(prefs_group.commands))
 
 
 def test_click_rejects_old_inspect_command():
@@ -101,9 +120,9 @@ def test_click_rejects_old_prune_command():
     assert "prune" not in click_cli.commands
 
 
-def test_click_accepts_status_command():
-    """Verify status remains available as a top-level command."""
-    assert "status" in click_cli.commands
+def test_click_rejects_status_command():
+    """Verify status is not a top-level command."""
+    assert "status" not in click_cli.commands
 
 
 def test_click_rejects_old_settings_command():
@@ -111,9 +130,9 @@ def test_click_rejects_old_settings_command():
     assert "settings" not in click_cli.commands
 
 
-def test_click_accepts_env_command():
-    """Verify env command is available as a top-level command."""
-    assert "env" in click_cli.commands
+def test_click_rejects_env_command():
+    """Verify env is not a top-level command."""
+    assert "env" not in click_cli.commands
 
 
 # ===== Dispatcher Tests =====
@@ -155,31 +174,6 @@ def test_browse_dispatcher_handles_stats():
         until=None,
         json=False,
         out=None,
-    )
-
-    # Should not raise
-    run_browse_cli(args, env)
-
-
-def test_browse_dispatcher_handles_status(monkeypatch, tmp_path):
-    """Verify browse dispatcher correctly routes to status."""
-    _configure_isolated_state(monkeypatch, tmp_path)
-
-    ui = DummyUI()
-    env = CommandEnv(ui=ui)
-    args = SimpleNamespace(
-        browse_cmd="status",
-        json=False,
-        json_lines=False,
-        watch=False,
-        dump_only=False,
-        interval=5.0,
-        dump=None,
-        dump_limit=100,
-        runs_limit=200,
-        providers=None,
-        summary=None,
-        summary_only=False,
     )
 
     # Should not raise
@@ -325,11 +319,11 @@ def test_browse_stats_integration(monkeypatch, tmp_path, capsys):
         assert isinstance(parsed, (dict, list))
 
 
-def test_maintain_prune_dry_run_integration(monkeypatch, tmp_path, capsys):
-    """Test maintain prune --dry-run command end-to-end."""
+def test_doctor_prune_dry_run_integration(monkeypatch, tmp_path, capsys):
+    """Test doctor prune --dry-run command end-to-end."""
     _configure_isolated_state(monkeypatch, tmp_path)
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-    monkeypatch.setattr(sys, "argv", ["polylogue", "maintain", "prune", "--dry-run"])
+    monkeypatch.setattr(sys, "argv", ["polylogue", "doctor", "prune", "--dry-run"])
 
     main()
 
@@ -375,20 +369,47 @@ def test_old_prune_command_fails(monkeypatch, tmp_path):
     assert exc_info.value.code == 2  # Click usage error
 
 
-def test_status_command_runs(monkeypatch, tmp_path):
-    """Verify 'status' command is accepted and runs."""
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["polylogue", "maintain", "prune", "--dry-run"],
+        ["polylogue", "status", "--summary", "-", "--summary-only"],
+        ["polylogue", "env"],
+        ["polylogue", "prefs", "list"],
+        ["polylogue", "attachments", "stats"],
+        ["polylogue", "open"],
+        ["polylogue", "compare", "query", "--provider-a", "codex", "--provider-b", "claude-code"],
+        ["polylogue", "reprocess-cmd"],
+        ["polylogue", "import", "chatgpt", "export.zip"],
+        ["polylogue", "verify", "--strict"],
+        ["polylogue", "browse", "status"],
+    ],
+)
+def test_old_command_paths_fail(monkeypatch, tmp_path, argv: list[str]):
+    """Verify removed command paths are rejected (no backwards compat)."""
     _configure_isolated_state(monkeypatch, tmp_path)
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-    monkeypatch.setattr(sys, "argv", ["polylogue", "status", "--summary", "-", "--summary-only"])
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+    assert exc_info.value.code == 2  # Click usage error
+
+
+def test_doctor_status_command_runs(monkeypatch, tmp_path):
+    """Verify 'doctor status' command is accepted and runs."""
+    _configure_isolated_state(monkeypatch, tmp_path)
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    monkeypatch.setattr(sys, "argv", ["polylogue", "doctor", "status", "--summary", "-", "--summary-only"])
 
     main()
 
 
-def test_env_command_runs(monkeypatch, tmp_path):
-    """Verify 'env' command is accepted and runs."""
+def test_doctor_env_command_runs(monkeypatch, tmp_path):
+    """Verify 'doctor env' command is accepted and runs."""
     _configure_isolated_state(monkeypatch, tmp_path)
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-    monkeypatch.setattr(sys, "argv", ["polylogue", "env"])
+    monkeypatch.setattr(sys, "argv", ["polylogue", "doctor", "env"])
 
     main()
 

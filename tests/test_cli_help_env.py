@@ -69,8 +69,10 @@ def test_complete_top_level(state_env) -> None:
     assert result.exit_code == 0
     values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
     assert "browse" in values
-    assert "maintain" in values
     assert "config" in values
+    assert "doctor" in values
+    assert "import" in values
+    assert "verify" in values
 
 
 def test_complete_sync_provider(state_env) -> None:
@@ -91,9 +93,9 @@ def test_complete_browse_subcommands_include_recent_additions(state_env) -> None
     assert "inbox" in values
 
 
-def test_complete_maintain_subcommands_include_restore(state_env) -> None:
+def test_complete_doctor_subcommands_include_restore(state_env) -> None:
     runner = CliRunner()
-    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "maintain", ""])
+    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "doctor", ""])
     assert result.exit_code == 0
     values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
     assert "restore" in values
@@ -109,7 +111,10 @@ def test_complete_config_subcommands_include_edit(state_env) -> None:
 
 def test_complete_attachments_subcommands(state_env) -> None:
     runner = CliRunner()
-    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "attachments", ""])
+    result = runner.invoke(
+        click_cli,
+        ["_complete", "--shell", "zsh", "--cword", "3", "polylogue", "doctor", "attachments", ""],
+    )
     assert result.exit_code == 0
     values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
     assert "stats" in values
@@ -118,7 +123,10 @@ def test_complete_attachments_subcommands(state_env) -> None:
 
 def test_complete_prefs_subcommands(state_env) -> None:
     runner = CliRunner()
-    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "prefs", ""])
+    result = runner.invoke(
+        click_cli,
+        ["_complete", "--shell", "zsh", "--cword", "3", "polylogue", "config", "prefs", ""],
+    )
     assert result.exit_code == 0
     values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
     assert "list" in values
