@@ -32,7 +32,7 @@ Codex imports, syncs, and watchers always write the full branch tree: the canoni
 ## Sync Notes
 
 - `polylogue sync codex` and `polylogue sync codex --watch` traverse `sessions/`, apply the import pipeline, and preserve modification times on generated Markdown/HTML.
-- Repeated runs reuse stored slugs and hashes, skipping untouched sessions while logging summary statistics to `polylogue browse status`.
+- Repeated runs reuse stored slugs and hashes, skipping untouched sessions while logging summary statistics to `polylogue doctor status`.
 - Pass `--force` if you need to overwrite local tweaks to a rendered session; otherwise Polylogue keeps the edits and marks the transcript dirty.
 - Escaped markers such as `\[2]` are normalised to `[2]` during import so numbered references stay readable.
 - Stats now include `totalWordsApprox`/`inputWordsApprox` so token counts in the Markdown metadata and CLI summaries always ship with approximate word counts.
