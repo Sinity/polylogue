@@ -79,6 +79,8 @@ class CompletionEngine:
             cword = max(cword - 1, 0)
         if not args:
             return self._complete_commands()
+        if args[0] == "":
+            return self._complete_commands()
         current_index = max(cword, 0)
         if current_index >= len(args):
             args = args + [""]
