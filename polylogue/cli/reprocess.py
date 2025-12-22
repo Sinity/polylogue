@@ -99,7 +99,7 @@ def run_reprocess(
                             html_theme=settings.html_theme,
                             force=True,
                             allow_dirty=True,
-                            attachment_ocr=False,
+                            attachment_ocr=True,
                         )
                     elif import_provider == 'claude':
                         from ..importers.claude_ai import import_claude_export
@@ -113,7 +113,7 @@ def run_reprocess(
                             html_theme=settings.html_theme,
                             force=True,
                             allow_dirty=True,
-                            attachment_ocr=False,
+                            attachment_ocr=True,
                         )
                     elif import_provider == 'codex':
                         from ..importers.codex import import_codex_session
@@ -127,7 +127,7 @@ def run_reprocess(
                             html_theme=settings.html_theme,
                             force=True,
                             allow_dirty=True,
-                            attachment_ocr=False,
+                            attachment_ocr=True,
                         )]
                     elif import_provider in ('claude-code', 'claude_code'):
                         from ..importers.claude_code import import_claude_code_session
@@ -141,7 +141,7 @@ def run_reprocess(
                             html_theme=settings.html_theme,
                             force=True,
                             allow_dirty=True,
-                            attachment_ocr=False,
+                            attachment_ocr=True,
                         )]
                     else:
                         console.print(f"  [red]✗[/red] Unknown provider: {import_provider}")

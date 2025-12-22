@@ -46,6 +46,11 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
     def _truthy(val: str) -> bool:
         return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
+    if getattr(args, "attachment_ocr", None) is None:
+        args.attachment_ocr = True
+    if "--attachment-ocr" in render_prefs and not getattr(args, "_attachment_ocr_explicit", False):
+        args.attachment_ocr = _truthy(render_prefs["--attachment-ocr"])
+
     download_attachments = not args.links_only
     if not args.links_only and "--links-only" in render_prefs:
         download_attachments = not _truthy(render_prefs["--links-only"])
@@ -74,7 +79,7 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
         html=html_enabled,
         html_theme=html_theme,
         diff=getattr(args, "diff", False),
-        attachment_ocr=getattr(args, "attachment_ocr", False) or _truthy(render_prefs.get("--attachment-ocr", "false")) if render_prefs else getattr(args, "attachment_ocr", False),
+        attachment_ocr=getattr(args, "attachment_ocr", True),
         sanitize_html=getattr(args, "sanitize_html", False),
         meta=meta,
     )
