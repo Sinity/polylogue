@@ -12,14 +12,18 @@ import shutil
 from dataclasses import dataclass, field
 from typing import Iterable, List, Optional, Protocol
 
+import questionary
 from pygments import highlight
 from pygments.formatters import TerminalFormatter
 from pygments.lexers import get_lexer_by_name
+from rich import box
+from rich.align import Align
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
+from rich.theme import Theme
 
 
 class ConsoleLike(Protocol):
@@ -45,11 +49,35 @@ class ConsoleFacade:
     plain: bool
     console: ConsoleLike = field(init=False)
 
+    theme: Theme = field(init=False, repr=False)
+
     def __post_init__(self) -> None:
+        self.theme = Theme(
+            {
+                "banner.icon": "bold #7fdbca",
+                "banner.title": "bold #e0f2f1",
+                "banner.subtitle": "#cdecef",
+                "banner.border": "#14b8a6",
+                "panel.border": "#3b82f6",
+                "panel.text": "#e5e7eb",
+                "summary.title": "bold #c4e0ff",
+                "summary.bullet": "bold #34d399",
+                "summary.text": "#d6dee8",
+                "status.icon.error": "bold #ff6b6b",
+                "status.icon.warning": "bold #f9a825",
+                "status.icon.success": "bold #34d399",
+                "status.icon.info": "bold #38bdf8",
+                "status.message": "#e5e7eb",
+                "code.border": "#4c1d95",
+                "markdown.border": "#475569",
+            }
+        )
         if self.plain:
             self.console = PlainConsole()
         else:
-            self.console = Console(no_color=False, force_terminal=True)
+            self.console = Console(no_color=False, force_terminal=True, theme=self.theme)
+        self._panel_box = box.ROUNDED
+        self._banner_box = box.DOUBLE
 
     def banner(self, title: str, subtitle: Optional[str] = None) -> None:
         """Display a banner message."""
@@ -59,8 +87,17 @@ class ConsoleFacade:
                 self.console.print(subtitle)
             return
 
-        body = title if not subtitle else f"{title}\n{subtitle}"
-        panel = Panel(Text(body, style="bold cyan"), border_style="blue")
+        title_text = Text(style="banner.title")
+        title_text.append("◈ ", style="banner.icon")
+        title_text.append(title)
+        if subtitle:
+            title_text.append(f"\n{subtitle}", style="banner.subtitle")
+        panel = Panel(
+            Align.left(title_text),
+            border_style="banner.border",
+            box=self._banner_box,
+            padding=(1, 3),
+        )
         self.console.print(panel)
 
     def summary(self, title: str, lines: Iterable[str]) -> None:
@@ -72,7 +109,18 @@ class ConsoleFacade:
                 self.console.print(text)
             return
 
-        panel = Panel(Text(text), title=title, title_align="left")
+        summary_text = Text()
+        for line in lines:
+            summary_text.append("• ", style="summary.bullet")
+            summary_text.append(line + "\n", style="summary.text")
+        panel = Panel(
+            summary_text if summary_text.plain else Text(text, style="summary.text"),
+            title=f"  {title}  ",
+            title_align="left",
+            border_style="panel.border",
+            box=self._panel_box,
+            padding=(1, 2),
+        )
         self.console.print(panel)
 
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
@@ -103,8 +151,14 @@ class ConsoleFacade:
             self.console.print(content)
             return
 
-        md = Markdown(content)
-        self.console.print(md)
+        md = Markdown(content, style="summary.text")
+        panel = Panel(
+            md,
+            border_style="markdown.border",
+            box=self._panel_box,
+            padding=(1, 2),
+        )
+        self.console.print(panel)
 
     def render_code(self, code: str, language: str = "python") -> None:
         """Render syntax-highlighted code."""
@@ -113,7 +167,13 @@ class ConsoleFacade:
             return
 
         syntax = Syntax(code, language, theme="monokai", line_numbers=True)
-        self.console.print(syntax)
+        panel = Panel(
+            syntax,
+            border_style="code.border",
+            box=self._panel_box,
+            padding=(0, 1),
+        )
+        self.console.print(panel)
 
     def render_diff(self, old_text: str, new_text: str, filename: str = "file") -> None:
         """Render a diff between two texts."""
@@ -134,42 +194,42 @@ class ConsoleFacade:
             self.console.print(diff_text)
             return
 
-        # Use pygments for diff highlighting
         try:
             lexer = get_lexer_by_name("diff")
             highlighted = highlight(diff_text, lexer, TerminalFormatter())
             self.console.print(highlighted, markup=False, highlight=False)
         except Exception:
-            # Fallback to plain diff
-            self.console.print(diff_text, markup=False)
+            syntax = Syntax(diff_text, "diff", theme="ansi_dark")
+            self.console.print(syntax)
 
     def error(self, message: str) -> None:
         """Display an error message."""
-        if self.plain:
-            self.console.print(f"ERROR: {message}")
-        else:
-            self.console.print(f"[bold red]ERROR:[/bold red] {message}")
+        self._status("✗", "status.icon.error", message)
 
     def warning(self, message: str) -> None:
         """Display a warning message."""
-        if self.plain:
-            self.console.print(f"WARNING: {message}")
-        else:
-            self.console.print(f"[bold yellow]WARNING:[/bold yellow] {message}")
+        self._status("!", "status.icon.warning", message)
 
     def success(self, message: str) -> None:
         """Display a success message."""
-        if self.plain:
-            self.console.print(f"SUCCESS: {message}")
-        else:
-            self.console.print(f"[bold green]✓[/bold green] {message}")
+        self._status("✓", "status.icon.success", message)
 
     def info(self, message: str) -> None:
         """Display an info message."""
         if self.plain:
             self.console.print(message)
-        else:
-            self.console.print(f"[cyan]ℹ[/cyan] {message}")
+            return
+        self._status("ℹ", "status.icon.info", message)
+
+    def _status(self, icon: str, icon_style: str, message: str) -> None:
+        if self.plain:
+            prefix = icon if icon in {"✓", "✗"} else icon.upper()
+            self.console.print(f"{prefix} {message}")
+            return
+        text = Text()
+        text.append(f"{icon} ", style=icon_style)
+        text.append(message, style="status.message")
+        self.console.print(text)
 
 
 @dataclass
