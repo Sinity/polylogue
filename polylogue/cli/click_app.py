@@ -12,6 +12,7 @@ import shutil
 from types import SimpleNamespace
 from typing import List, Optional, Sequence, Tuple
 
+import importlib
 import click
 from click.core import ParameterSource
 from rich.table import Table
@@ -43,7 +44,9 @@ def _build_env(plain: bool) -> CommandEnv:
 _FORCE_PLAIN_VALUES = {"1", "true", "yes", "on"}
 _PLAIN_REASON_FLAG = "requested via --plain"
 _REQUIRED_EXTERNAL_TOOLS = ("sk", "bat", "glow")
+_REQUIRED_PY_MODULES = ("pypdf",)
 _TOOLS_VERIFIED = False
+_MODULES_VERIFIED = False
 
 
 def _ensure_required_tools() -> None:
@@ -57,6 +60,25 @@ def _ensure_required_tools() -> None:
             f"Missing required command(s): {listed}. Install them (they are required for Polylogue's interactive workflows)."
         )
     _TOOLS_VERIFIED = True
+
+
+def _ensure_required_modules() -> None:
+    global _MODULES_VERIFIED
+    if _MODULES_VERIFIED:
+        return
+    missing: List[str] = []
+    for name in _REQUIRED_PY_MODULES:
+        try:
+            importlib.import_module(name)
+        except ImportError:
+            missing.append(name)
+    if missing:
+        listed = ", ".join(sorted(set(missing)))
+        raise SystemExit(
+            f"Missing required Python module(s): {listed}. Reinstall Polylogue "
+            "or run `pip install 'polylogue[ocr]'` inside the dev shell."
+        )
+    _MODULES_VERIFIED = True
 
 
 def _should_use_plain(*, plain: bool, interactive: bool) -> Tuple[bool, Optional[str]]:
@@ -150,6 +172,7 @@ def _run_click_help(env: CommandEnv, ctx: click.Context, topic: Optional[str], e
 def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
     """Polylogue CLI (Click)."""
     _ensure_required_tools()
+    _ensure_required_modules()
     use_plain, plain_reason = _should_use_plain(plain=plain, interactive=interactive)
     env = _build_env(use_plain)
     ctx.obj = env
@@ -460,7 +483,13 @@ def browse_group() -> None:
 @click.option("--out", type=click.Path(path_type=Path), help="Write the branch explorer HTML to this path")
 @click.option("--theme", type=click.Choice(["light", "dark"]), help="Override HTML explorer theme")
 @click.option("--no-picker", is_flag=True, help="Skip interactive selection even when prompts are available")
-@click.option("--open", "open_result", is_flag=True, help="Open result in $EDITOR after command completes")
+@click.option(
+    "--open/--no-open",
+    "open_result",
+    default=True,
+    show_default=True,
+    help="Open the rendered explorer (HTML or Markdown) after completion",
+)
 @click.pass_obj
 def browse_branches(env: CommandEnv, **kwargs) -> None:
     kwargs["open"] = kwargs.pop("open_result")

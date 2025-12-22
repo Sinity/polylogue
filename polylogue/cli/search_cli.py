@@ -6,7 +6,6 @@ import shlex
 import sys
 import tempfile
 import textwrap
-import webbrowser
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -15,7 +14,7 @@ from ..cli_common import choose_single_entry
 from ..commands import CommandEnv, search_command
 from ..options import SearchHit, SearchOptions
 from ..schema import stamp_payload
-from .editor import get_editor, open_in_editor
+from .editor import get_editor, open_in_editor, open_in_browser
 
 SCRIPT_MODULE = "polylogue.cli"
 
@@ -282,13 +281,11 @@ def _open_single_search_hit(ui, hit: SearchHit) -> None:
 
     target_obj = Path(target_path)
     is_html = target_obj.suffix.lower() == ".html"
-    if is_html and anchor_label:
-        try:
-            webbrowser.open(target_obj.as_uri() + f"#{anchor_label}")
-            ui.console.print(f"[dim]Opened {target_obj}#{anchor_label} in browser[/dim]")
+    if is_html:
+        if open_in_browser(target_obj, anchor_label):
+            suffix = f"#{anchor_label}" if anchor_label else ""
+            ui.console.print(f"[dim]Opened {target_obj}{suffix} in browser[/dim]")
             return
-        except Exception:
-            pass
 
     if open_in_editor(target_obj, line=line_hint):
         suffix = f" (line {line_hint})" if line_hint else ""

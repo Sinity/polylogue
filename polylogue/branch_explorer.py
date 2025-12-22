@@ -544,13 +544,20 @@ _BRANCH_TEMPLATE = """
     <h1>Branch graph · {{ title }}</h1>
     <div class="meta">
       {% for item in conversation_meta %}
-      <span>{{ item }}</span>
+      <span>
+        <strong>{{ item.label }}:</strong>
+        {% if item.href %}
+          <a href="{{ item.href }}">{{ item.value }}</a>
+        {% else %}
+          {{ item.value }}
+        {% endif %}
+      </span>
       {% endfor %}
     </div>
-    {{ render_node(canonical_node) }}
+    {{ render_node(canonical_node) | safe }}
     <ul>
       {% for child in children %}
-        {{ render_child(child) }}
+        {{ render_child(child) | safe }}
       {% endfor %}
     </ul>
   </body>
@@ -737,19 +744,18 @@ def build_branch_html(conversation: BranchConversationSummary, *, theme: str = "
     def render_child(node: BranchNodeSummary) -> str:
         return f"<li>{render_node(node)}</li>"
 
-    conversation_meta: List[str] = []
-    conversation_meta.append(f"<strong>Provider:</strong> {html.escape(conversation.provider)}")
-    conversation_meta.append(f"<strong>Slug:</strong> {html.escape(conversation.slug)}")
-    conversation_meta.append(
-        f"<strong>Conversation ID:</strong> {html.escape(conversation.conversation_id)}"
-    )
-    conversation_meta.append(
-        f"<strong>Last updated:</strong> {html.escape(conversation.last_updated or 'unknown')}"
-    )
+    conversation_meta: List[Dict[str, Optional[str]]] = []
+    conversation_meta.append({"label": "Provider", "value": conversation.provider})
+    conversation_meta.append({"label": "Slug", "value": conversation.slug})
+    conversation_meta.append({"label": "Conversation ID", "value": conversation.conversation_id})
+    conversation_meta.append({"label": "Last updated", "value": conversation.last_updated or "unknown"})
     if conversation.conversation_path:
-        href = quote(conversation.conversation_path.as_posix(), safe="/:")
         conversation_meta.append(
-            f'<strong>Canonical file:</strong> <a href="{href}">{html.escape(str(conversation.conversation_path))}</a>'
+            {
+                "label": "Canonical file",
+                "value": str(conversation.conversation_path),
+                "href": quote(conversation.conversation_path.as_posix(), safe="/:"),
+            }
         )
 
     return template.render(
