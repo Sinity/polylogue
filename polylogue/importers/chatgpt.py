@@ -202,7 +202,7 @@ def import_chatgpt_export(
     force: bool = False,
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
-    attachment_ocr: bool = False,
+    attachment_ocr: bool = True,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
 ) -> List[ImportResult]:
@@ -392,7 +392,7 @@ def _render_chatgpt_conversation(
     force: bool,
     allow_dirty: bool,
     registrar: Optional[ConversationRegistrar],
-    attachment_ocr: bool = False,
+    attachment_ocr: bool = True,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
 ) -> ImportResult:
