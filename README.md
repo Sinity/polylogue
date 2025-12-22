@@ -12,32 +12,32 @@ Polylogue is a CLI toolkit for archiving AI/LLM conversations—rendering local 
 - `pytest` is expected to stay green; add tests for new behaviours whenever possible.
 - Newly generated Markdown is spot-checked with `polylogue browse stats --dir …` and quick greps (timestamps, footnotes, attachment counts) before shipping.
 - Provider slugs are deterministic kebab-case so Git diffs stay tidy. Avoid manual renames unless conversation metadata truly changes.
-- Run `python3 polylogue.py import …`/`sync …` after importer changes to ensure real data still parses (set `POLYLOGUE_FORCE_PLAIN=1` if you need deterministic plain output in CI).
+- Run `python3 polylogue.py import run …`/`sync …` after importer changes to ensure real data still parses (set `POLYLOGUE_FORCE_PLAIN=1` if you need deterministic plain output in CI).
 
 - Enable the direnv-managed dev shell: `direnv allow` (uses `.envrc` to call `nix develop`).
 - Prefer manual entry? `nix develop` installs Python plus gum, skim, rich, bat, glow, etc.
 - Use `python3 polylogue.py <command>` (or `polylogue --help`) directly—every workflow is exposed as a CLI subcommand, and interactive pickers only appear when stdout/stderr are TTYs (pass `--interactive` to re-enable prompts in non-interactive shells, or `--plain` to force CI-friendly output).
-- When a directory has multiple JSON logs, commands such as `polylogue import` and `polylogue sync` use skim to preview files with `bat`; press `Ctrl+G` for a live `glow` render before confirming.
+- When a directory has multiple JSON logs, commands such as `polylogue import run` and `polylogue sync` use skim to preview files with `bat`; press `Ctrl+G` for a live `glow` render before confirming.
 - The first Drive action walks you through supplying a Google OAuth client JSON; credentials and tokens are stored under `$XDG_CONFIG_HOME/polylogue/` (defaults to `~/.config/polylogue/`).
 
 ## What You Can Do
-- **Import provider exports:** `polylogue import chatgpt|claude|codex|claude-code …` normalises exports into Markdown/HTML, reusing provider metadata and letting you cherry-pick conversations interactively when desired. Add `--print-paths` to list written files, or `--to-clipboard` when a single Markdown output should land on the system clipboard.
+- **Import provider exports:** `polylogue import run chatgpt|claude|codex|claude-code …` normalises exports into Markdown/HTML, reusing provider metadata and letting you cherry-pick conversations interactively when desired. Add `--print-paths` to list written files, or `--to-clipboard` when a single Markdown output should land on the system clipboard.
 - **Sync provider archives:** `polylogue sync drive|codex|claude-code|chatgpt|claude` unifies Drive pulls, local IDE sessions, and export bundles with consistent flags for collapse thresholds, HTML, pruning, diffs, and JSON output—now with Rich progress bars so you can see throughput as chats and sessions stream in. Defaults from `polylogue.config` keep outputs under `~/.local/share/polylogue/archive/{gemini,codex,claude-code,chatgpt,claude}`. Drive runs accept explicit chat IDs via `--chat-id file-id --chat-id other-id`, while local providers can point at specific sessions via `--session path/to/session.jsonl` or skip pickers entirely with `--all`. ChatGPT/Claude exports are treated like local providers: drop ZIPs (or extracted directories containing `conversations.json`) anywhere under the inbox (`~/.local/share/polylogue/inbox` by default; provider detection is automatic) and rerun `polylogue sync chatgpt` / `polylogue sync claude` as each export arrives. Add `--print-paths` to list written files in non-JSON mode.
   - Bulk exports are processed incrementally per conversation: re-syncing a large ChatGPT/Claude export skips unchanged conversations instead of re-importing everything.
 - **Search transcripts:** `polylogue search` queries the SQLite FTS index with rich filters for provider, model, date range, and attachment metadata. Use `--in-attachments` to search attachment text (PDF/text/HTML plus OCR’d images when enabled) and `--attachment-name` to constrain filenames. `--open --limit 1` jumps directly to the anchored message in Markdown/HTML; anchors are stable for deep links. Export hits via `--csv path.csv` or `--json-lines --fields provider,slug,branchId,...`, and supply queries from stdin with `--from-stdin`.
-- **Compare providers:** `polylogue compare "query" --provider-a codex --provider-b claude-code` runs the same search across two providers and summarizes hit counts/models/attachments side-by-side (with `--json` for structured output).
-- **Browse archives:** `polylogue browse branches` renders branch trees (and auto-writes HTML explorers), and `polylogue browse stats` summarises tokens/attachments per provider (`--ignore-legacy` skips legacy `*.md` alongside `conversation.md`). `polylogue attachments stats` summarizes attachment counts/bytes (CSV/JSONL supported), and `polylogue attachments extract --ext .pdf --out ~/desk/pdfs` copies specific types out of archives. Use `--attachment-ocr` on render/sync/import to OCR image attachments into the searchable index. `polylogue browse inbox` lists pending exports (or `--dir` overrides), surfaces size/mtime/provider detection, and quarantines malformed items with `--quarantine`.
+- **Compare providers:** `polylogue verify compare "query" --provider-a codex --provider-b claude-code` runs the same search across two providers and summarizes hit counts/models/attachments side-by-side (with `--json` for structured output).
+- **Browse archives:** `polylogue browse branches` renders branch trees (and auto-writes HTML explorers), and `polylogue browse stats` summarises tokens/attachments per provider (`--ignore-legacy` skips legacy `*.md` alongside `conversation.md`). `polylogue doctor attachments stats` summarizes attachment counts/bytes (CSV/JSONL supported), and `polylogue doctor attachments extract --ext .pdf --out ~/desk/pdfs` copies specific types out of archives. Use `--attachment-ocr` on render/sync/import to OCR image attachments into the searchable index. `polylogue browse inbox` lists pending exports (or `--dir` overrides), surfaces size/mtime/provider detection, and quarantines malformed items with `--quarantine`.
 - **Watch local sessions in real time:** `polylogue sync codex --watch` and `polylogue sync claude-code --watch` keep IDE logs mirrored automatically, and `polylogue sync chatgpt --watch` / `polylogue sync claude --watch` tail the inbox (`~/.local/share/polylogue/inbox` by default) so every new ZIP or freshly extracted `conversations.json` triggers an incremental sync. Adjust debounce, HTML, pruning, and stall warnings via `--debounce/--stall-seconds`, flip on `--offline` for local-only steps, or run a single pass with `--once` when you just want to sweep directories without staying attached.
-- **Doctor & Stats:** `polylogue maintain doctor` sanity-checks source directories, verifies SQLite/Qdrant indexes, and surfaces Drive retry/failure rates from recent runs; `polylogue maintain index check --repair` reruns index validation/repairs in isolation; `polylogue browse stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters) and can emit ranked CSV/NDJSON lists via `--sort/--limit --csv --json-lines`. `polylogue browse status` renders a Rich overview of provider health and the latest runs for at-a-glance monitoring.
+- **Doctor & Stats:** `polylogue doctor check` sanity-checks source directories, verifies SQLite/Qdrant indexes, and surfaces Drive retry/failure rates from recent runs; `polylogue doctor index check --repair` reruns index validation/repairs in isolation; `polylogue browse stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters) and can emit ranked CSV/NDJSON lists via `--sort/--limit --csv --json-lines`. `polylogue doctor status` renders a Rich overview of provider health and the latest runs for at-a-glance monitoring.
 - **Settings:** `polylogue config set --html on --theme dark --collapse-threshold 25` updates the default render/sync preferences so scripted runs inherit the same HTML behaviour without extra flags; `polylogue config show --json` surfaces credential/token paths (env overrides respected).
 - **View recent runs:** The status dashboard shows the last operations, including attachment MiB, diff counts, and Drive retry/failure stats per command.
-- **Monitor status non-interactively:** `polylogue browse status --json --watch` streams provider-level stats for dashboards or terminal monitoring, `--quiet` suppresses tables, and `polylogue browse status --dump <path> --dump-limit N` (optionally `--dump-only`) writes a JSON snapshot without reprinting the tables—perfect for cron/systemd hooks. Add `--top N` for ranked runs and `--inbox` to surface pending inbox counts.
-- **Observability exports:** Narrow status output with `--providers drive,codex`, stream summaries with `--watch`, emit newline-delimited snapshots via `polylogue browse status --watch --json-lines`, and dump machine-readable aggregates via `polylogue browse status --summary metrics.json` / `--summary-only`.
-- **Inspect environment:** `polylogue config show` prints the resolved config/output directories plus the state/runs DB paths; pass `--json` when you need to feed the same information into scripts. `config show`/`browse status` also surface credential/token paths and any env overrides (`POLYLOGUE_CREDENTIAL_PATH` / `POLYLOGUE_TOKEN_PATH`) so headless jobs can verify which files are in play. Use `polylogue help --examples` for a quick tour of example invocations.
-- **Run history:** Every sync/import operation (including watch mode) records a row in the SQLite database at `$XDG_STATE_HOME/polylogue/polylogue.db`. Use `polylogue browse runs --limit 20 --providers drive --since 2024-01-01 --json` for ad-hoc inspection (with `--until` to cap the window), or `polylogue browse status --dump runs.json` (pass `--dump -` for stdout) when you need a raw JSON export.
+- **Monitor status non-interactively:** `polylogue doctor status --json --watch` streams provider-level stats for dashboards or terminal monitoring, `--quiet` suppresses tables, and `polylogue doctor status --dump <path> --dump-limit N` (optionally `--dump-only`) writes a JSON snapshot without reprinting the tables—perfect for cron/systemd hooks. Add `--top N` for ranked runs and `--inbox` to surface pending inbox counts.
+- **Observability exports:** Narrow status output with `--providers drive,codex`, stream summaries with `--watch`, emit newline-delimited snapshots via `polylogue doctor status --watch --json-lines`, and dump machine-readable aggregates via `polylogue doctor status --summary metrics.json` / `--summary-only`.
+- **Inspect environment:** `polylogue config show` prints the resolved config/output directories plus the state/runs DB paths; pass `--json` when you need to feed the same information into scripts. `config show`/`doctor status` also surface credential/token paths and any env overrides (`POLYLOGUE_CREDENTIAL_PATH` / `POLYLOGUE_TOKEN_PATH`) so headless jobs can verify which files are in play. Use `polylogue help --examples` for a quick tour of example invocations.
+- **Run history:** Every sync/import operation (including watch mode) records a row in the SQLite database at `$XDG_STATE_HOME/polylogue/polylogue.db`. Use `polylogue browse runs --limit 20 --providers drive --since 2024-01-01 --json` for ad-hoc inspection (with `--until` to cap the window), or `polylogue doctor status --dump runs.json` (pass `--dump -` for stdout) when you need a raw JSON export.
 - **Branch-aware transcripts:** Canonical Markdown now lives at `<slug>/conversation.md`, with `<slug>/conversation.common.md` capturing shared context and `branches/<branch-id>/{<branch-id>.md, overlay.md}` preserving every alternate path.
 - **Explore branch graphs:** `polylogue browse branches` renders a skim-driven branch picker, prints the tree view, and auto-writes an HTML explorer when branches diverge (override output with `--out`, disable via `--html off`).
-- **Prune legacy outputs:** `polylogue maintain prune` cleans up flat `<slug>.md` files and `_attachments/` folders left behind by older releases, keeping only the canonical conversation directories.
+- **Prune legacy outputs:** `polylogue doctor prune` cleans up flat `<slug>.md` files and `_attachments/` folders left behind by older releases, keeping only the canonical conversation directories.
 - **SQLite/Qdrant indexing:** Every successful write updates `XDG_STATE_HOME/polylogue/polylogue.db` (and, optionally, a Qdrant collection) so downstream tooling can query or sync metadata without reparsing Markdown.
 
 For deeper observability notes (status filters, JSON summaries), see `docs/observability.md`.
@@ -46,17 +46,17 @@ For deeper observability notes (status filters, JSON summaries), see `docs/obser
 
 ### ChatGPT Exports
 - Export a ZIP from chat.openai.com → Settings → Data Controls → Export.
-- Import with `polylogue import chatgpt EXPORT.zip --all --out ~/polylogue-data/chatgpt --html`.
+- Import with `polylogue import run chatgpt EXPORT.zip --all --out ~/polylogue-data/chatgpt --html`.
 - Metadata includes `sourcePlatform: chatgpt`, `conversationId`, `sourceExportPath`, and detected `sourceModel`.
 - Attachments land in `<chat>/attachments/`; oversized tool outputs are truncated inline with full payloads saved beside the Markdown.
 
 ### Claude.ai Bundles
-- Export a bundle from claude.ai, then run `polylogue import claude EXPORT.zip --out ~/polylogue-data/claude --html`.
+- Export a bundle from claude.ai, then run `polylogue import run claude EXPORT.zip --out ~/polylogue-data/claude --html`.
 - Tool use/result blocks are rendered as paired call/result sections; attachments copy from the bundle’s `attachments/` directory.
 - Front matter records `sourcePlatform: claude.ai`, `conversationId`, `sourceModel`, and `sourceExportPath`.
 
 ### Claude Code Sessions
-- Local IDE logs live under `~/.claude/projects/`. Use `polylogue sync claude-code --out ~/polylogue-data/claude-code --html --diff` for continuous mirroring or `polylogue import claude-code [SESSION_ID]` for one-offs.
+- Local IDE logs live under `~/.claude/projects/`. Use `polylogue sync claude-code --out ~/polylogue-data/claude-code --html --diff` for continuous mirroring or `polylogue import run claude-code [SESSION_ID]` for one-offs.
 - Each Markdown file captures summaries, tool invocations, shell transcripts, and provenance fields (`sourceSessionPath`, `sourceWorkspace`).
 
 ### OpenAI Codex CLI
@@ -68,23 +68,31 @@ Every workflow is available directly via the CLI:
 - `python3 polylogue.py sync drive|codex|claude-code|chatgpt|claude [--out DIR] [--links-only] [--attachment-ocr] [--dry-run] [--force] [--prune] [--collapse-threshold N] [--html [on|off|auto]] [--diff] [--json] [--watch] [--debounce SECONDS] [--stall-seconds SECONDS] [--once] [--root LABEL] [--disk-estimate] [--max-disk GiB]` (note: `--diff` is only valid for drive/codex/claude-code; watch/once flags apply to local providers).
   - Drive extras: `--folder-name`, `--folder-id`, `--since`, `--until`, `--name-filter`, `--list-only`, `--chat-id ID` (repeatable)
   - Local extras: `--base-dir`, `--all`, `--session PATH` (repeatable) to bypass pickers
-- `python3 polylogue.py import chatgpt|claude|codex|claude-code SOURCE … [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--attachment-ocr] [--dry-run] [--force] [--all] [--conversation-id ID ...] [--base-dir DIR] [--json] [--to-clipboard]`
+- `python3 polylogue.py import run chatgpt|claude|codex|claude-code SOURCE … [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--attachment-ocr] [--dry-run] [--force] [--all] [--conversation-id ID ...] [--base-dir DIR] [--json] [--to-clipboard]`
+- `python3 polylogue.py import reprocess [--provider NAME] [--fallback]`
 - `python3 polylogue.py search QUERY [--limit N] [--provider NAME] [--slug SLUG] [--conversation-id ID] [--branch BRANCH_ID] [--model MODEL] [--since RFC3339] [--until RFC3339] [--with-attachments|--without-attachments] [--in-attachments] [--attachment-name NAME] [--no-picker] [--json] [--json-lines] [--csv PATH] [--fields field,list] [--from-stdin] [--open]`
-- `python3 polylogue.py compare QUERY --provider-a A --provider-b B [--limit N] [--json] [--fields ...]`
-- `python3 polylogue.py attachments stats [--dir DIR] [--ext .png] [--hash] [--sort size|name] [--limit N] [--csv PATH] [--json] [--json-lines]`
-- `python3 polylogue.py attachments extract --ext .pdf --out DIR [--dir DIR] [--limit N] [--overwrite] [--json]`
-- `python3 polylogue.py maintain restore --from SNAPSHOT --to DEST [--force] [--json]`
+- `python3 polylogue.py verify check [--provider NAME] [--slug SLUG] [--conversation-id ID ...] [--limit N] [--fix] [--unknown ignore|warn|error] [--allow-polylogue-key KEY ...] [--strict] [--json]`
+- `python3 polylogue.py verify compare QUERY --provider-a A --provider-b B [--limit N] [--json] [--fields ...]`
 - `python3 polylogue.py browse branches [--provider NAME] [--slug SLUG] [--conversation-id ID] [--branch BRANCH_ID] [--min-branches N] [--diff] [--html [on|off|auto]] [--out PATH] [--theme light|dark] [--no-picker] [--open]`
 - `python3 polylogue.py browse stats [--dir DIR] [--ignore-legacy] [--provider NAME] [--since DATE] [--until DATE] [--sort tokens|attachments|attachment-bytes|words|recent] [--limit N] [--csv PATH] [--json] [--json-lines] [--json-verbose]`
-- `python3 polylogue.py browse status [--json] [--json-lines] [--json-verbose] [--watch] [--interval seconds] [--dump path] [--dump-only] [--dump-limit N] [--runs-limit N] [--providers list] [--summary path] [--summary-only] [--quiet]`
 - `python3 polylogue.py browse runs [--limit N] [--providers list] [--commands list] [--since DATE] [--until DATE] [--json]`
-- `python3 polylogue.py maintain prune [--dir DIR] [--dry-run]`
-- `python3 polylogue.py maintain doctor [--codex-dir DIR] [--claude-code-dir DIR] [--limit N] [--json]`
-- `python3 polylogue.py maintain index check [--repair] [--skip-qdrant] [--json]`
+- `python3 polylogue.py browse metrics [--providers list] [--runs-limit N] [--json] [--serve] [--host HOST] [--port PORT]`
+- `python3 polylogue.py browse timeline [--providers list] [--limit N] [--out PATH] [--theme light|dark] [--open] [--json]`
+- `python3 polylogue.py browse analytics [--providers list] [--model-limit N] [--hotspot-limit N] [--out PATH] [--theme light|dark] [--open] [--json]`
+- `python3 polylogue.py browse inbox [--providers list] [--dir DIR] [--quarantine] [--quarantine-dir DIR] [--json]`
+- `python3 polylogue.py browse open`
+- `python3 polylogue.py doctor check [--codex-dir DIR] [--claude-code-dir DIR] [--limit N] [--json] [--json-verbose]`
+- `python3 polylogue.py doctor env [--json]`
+- `python3 polylogue.py doctor status [--json] [--json-lines] [--json-verbose] [--watch] [--interval seconds] [--dump path] [--dump-only] [--dump-limit N] [--runs-limit N] [--providers list] [--summary path] [--summary-only] [--quiet] [--top N] [--inbox]`
+- `python3 polylogue.py doctor prune [--dir DIR] [--dry-run] [--max-disk GiB]`
+- `python3 polylogue.py doctor index check [--repair] [--skip-qdrant] [--json] [--json-verbose]`
+- `python3 polylogue.py doctor restore --from SNAPSHOT --to DEST [--force] [--json] [--max-disk GiB]`
+- `python3 polylogue.py doctor attachments stats [--dir DIR] [--provider NAME] [--since DATE] [--until DATE] [--ext .png] [--hash] [--sort size|name] [--limit N] [--csv PATH] [--json] [--json-lines]`
+- `python3 polylogue.py doctor attachments extract --ext .pdf --out DIR [--dir DIR] [--limit N] [--overwrite] [--json]`
 - `python3 polylogue.py config init`
 - `python3 polylogue.py config set [--html on|off] [--theme light|dark] [--collapse-threshold N] [--reset] [--json]`
 - `python3 polylogue.py config show [--json]`
-- `python3 polylogue.py prefs list|set|clear [--json]` (e.g., `polylogue prefs set search --flag --limit --value 50`, `--flag --no-picker --value on`, `polylogue prefs set sync --flag --html --value on`, `polylogue prefs set import --flag --attachment-ocr --value on`)
+- `python3 polylogue.py config prefs list|set|clear [--json]` (e.g., `polylogue config prefs set --command search --flag --limit --value 50`, `--flag --no-picker --value on`, `polylogue config prefs set --command sync --flag --html --value on`, `polylogue config prefs set --command import --flag --attachment-ocr --value on`)
 - `python3 polylogue.py help [COMMAND]`
 - `python3 polylogue.py completions --shell bash|zsh|fish`
 
@@ -111,9 +119,9 @@ Generate a completion script with `polylogue completions --shell bash|zsh|fish` 
 - Polylogue reads configuration from `$POLYLOGUE_CONFIG` or `$XDG_CONFIG_HOME/polylogue/config.json`, and validates the contents at startup so typos (bad themes, non-numeric thresholds, mis-typed paths) fail fast with actionable messages.
 - Copy `docs/polylogue.config.sample.jsonc` to `$XDG_CONFIG_HOME/polylogue/config.json` to set the inbox/output roots plus UI defaults.
 - Use `polylogue config set --output-root <path> --input-root <path>` to update archive/inbox roots without editing JSON by hand (HTML/theme/collapse defaults are persisted alongside).
-- Run metadata and run history live in `$XDG_STATE_HOME/polylogue/polylogue.db` (SQLite); `polylogue browse status --dump` provides machine-readable exports for dashboards or scripts, and `polylogue config show --json` prints the resolved config/output paths for quick inspection.
-- If the config is managed declaratively (e.g., a NixOS module symlinks it into `/nix/store` or makes it read-only), `config init/set/edit` refuse to mutate it and `config show --json`/`doctor --json` report `configDeclarative` + a reason.
-- `polylogue doctor` reports the discovered paths when no config is detected.
+- Run metadata and run history live in `$XDG_STATE_HOME/polylogue/polylogue.db` (SQLite); `polylogue doctor status --dump` provides machine-readable exports for dashboards or scripts, and `polylogue config show --json` prints the resolved config/output paths for quick inspection.
+- If the config is managed declaratively (e.g., a NixOS module symlinks it into `/nix/store` or makes it read-only), `config init/set/edit` refuse to mutate it and `config show --json`/`doctor env --json` report `configDeclarative` + a reason.
+- `polylogue doctor env` reports the discovered paths when no config is detected.
 - Indexing backends are controlled via `$POLYLOGUE_INDEX_BACKEND` (`sqlite`, `qdrant`, or `none`) alongside optional Qdrant knobs (`POLYLOGUE_QDRANT_URL`, `POLYLOGUE_QDRANT_API_KEY`, `POLYLOGUE_QDRANT_COLLECTION`).
 
 ## Credentials & Tokens
@@ -151,5 +159,5 @@ This project uses **merge commits with clean feature branches** to preserve comp
 - Code follows PEP 8 with type hints where practical.
 - Run `pytest` for the automated test suite covering importers, sync flows, and HTML transforms.
 - Credentials (`credentials.json`, `token.json`) stay out of version control.
-- Run history lives in the SQLite database at `$XDG_STATE_HOME/polylogue/polylogue.db`; use `polylogue browse status --dump runs.json` (or `--dump -` for stdout) when you need a JSON export.
+- Run history lives in the SQLite database at `$XDG_STATE_HOME/polylogue/polylogue.db`; use `polylogue doctor status --dump runs.json` (or `--dump -` for stdout) when you need a JSON export.
 - See [AGENTS.md](AGENTS.md) for AI agent development guidelines.
