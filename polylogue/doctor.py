@@ -259,20 +259,7 @@ def prune_database_entries(
 
 
 def _dependency_issues() -> List[DoctorIssue]:
-    issues: List[DoctorIssue] = []
-    required_cmds = ("gum", "sk", "bat", "glow", "delta")
-    for cmd in required_cmds:
-        if shutil.which(cmd) is None:
-            issues.append(
-                DoctorIssue(
-                    "runtime",
-                    Path(cmd),
-                    f"Command '{cmd}' not found in PATH.",
-                    "error",
-                    hint="Enter `nix develop` in the repo to load the required CLI helpers.",
-                )
-            )
-    return issues
+    return []
 
 
 def _config_issues() -> List[DoctorIssue]:

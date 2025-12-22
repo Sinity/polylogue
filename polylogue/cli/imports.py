@@ -48,8 +48,8 @@ def _apply_import_prefs(args: object, env: CommandEnv) -> None:
         return
     if "--html" in import_prefs and getattr(args, "html_mode", "auto") == "auto":
         args.html_mode = "on" if _truthy(import_prefs["--html"]) else "off"
-    if "--attachment-ocr" in import_prefs and _truthy(import_prefs["--attachment-ocr"]):
-        setattr(args, "attachment_ocr", True)
+    if "--attachment-ocr" in import_prefs and not getattr(args, "_attachment_ocr_explicit", False):
+        setattr(args, "attachment_ocr", _truthy(import_prefs["--attachment-ocr"]))
     if "--sanitize-html" in import_prefs and _truthy(import_prefs["--sanitize-html"]):
         setattr(args, "sanitize_html", True)
 
@@ -133,6 +133,8 @@ def run_import_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     provider = getattr(args, "provider", None)
     sources = args.source or []
     _apply_import_prefs(args, env)
+    if getattr(args, "attachment_ocr", None) is None:
+        args.attachment_ocr = True
     collapse_thresholds = resolve_collapse_thresholds(args, env.settings)
     meta = parse_meta_items(getattr(args, "meta", None)) or None
 
@@ -275,7 +277,7 @@ def run_import_codex(args: SimpleNamespace, env: CommandEnv) -> None:
                 "force": getattr(args, "force", False),
                 "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
-                "attachment_ocr": getattr(args, "attachment_ocr", False),
+                "attachment_ocr": getattr(args, "attachment_ocr", True),
                 "sanitize_html": getattr(args, "sanitize_html", False),
                 "meta": getattr(args, "meta", None),
             },
@@ -386,7 +388,7 @@ def run_import_chatgpt(args: SimpleNamespace, env: CommandEnv) -> None:
                 "force": getattr(args, "force", False),
                 "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
-                "attachment_ocr": getattr(args, "attachment_ocr", False),
+                "attachment_ocr": getattr(args, "attachment_ocr", True),
                 "sanitize_html": getattr(args, "sanitize_html", False),
                 "meta": getattr(args, "meta", None),
             },
@@ -497,7 +499,7 @@ def run_import_claude(args: SimpleNamespace, env: CommandEnv) -> None:
                 "selected_ids": selected_ids,
                 "force": getattr(args, "force", False),
                 "registrar": env.registrar,
-                "attachment_ocr": getattr(args, "attachment_ocr", False),
+                "attachment_ocr": getattr(args, "attachment_ocr", True),
                 "sanitize_html": getattr(args, "sanitize_html", False),
                 "meta": getattr(args, "meta", None),
             },
@@ -580,7 +582,7 @@ def run_import_claude_code(args: SimpleNamespace, env: CommandEnv) -> None:
                 "force": getattr(args, "force", False),
                 "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
-                "attachment_ocr": getattr(args, "attachment_ocr", False),
+                "attachment_ocr": getattr(args, "attachment_ocr", True),
                 "sanitize_html": getattr(args, "sanitize_html", False),
                 "meta": getattr(args, "meta", None),
                 **kwargs,
