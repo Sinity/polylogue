@@ -9,7 +9,7 @@ from ..cli_common import choose_single_entry
 from ..commands import CommandEnv, branches_command
 from ..options import BranchExploreOptions
 from .context import resolve_html_settings
-from .editor import get_editor, open_in_editor
+from .editor import get_editor, open_in_editor, open_in_browser
 
 
 def run_branches_cli(args: object, env: CommandEnv) -> None:
@@ -59,6 +59,7 @@ def run_branches_cli(args: object, env: CommandEnv) -> None:
         selected_conversations = [chosen]
 
     multi_html = len(selected_conversations) > 1
+    pending_opens: List[Path] = []
     for conv in selected_conversations:
         title = conv.title or conv.slug
         header_lines = [
@@ -85,7 +86,7 @@ def run_branches_cli(args: object, env: CommandEnv) -> None:
         html_path = None
         html_enabled, html_explicit = resolve_html_settings(args, settings)
         html_out = getattr(args, "out", None)
-        should_auto_html = html_enabled and not html_explicit and html_out is None and conv.branch_count > 1
+        should_auto_html = html_enabled and not html_explicit and html_out is None
         force_html = html_out is not None or (html_explicit and html_enabled)
         if force_html or should_auto_html:
             html_path = _generate_branch_html(
@@ -110,17 +111,14 @@ def run_branches_cli(args: object, env: CommandEnv) -> None:
 
         html_path = _prompt_branch_followups(ui, conv, args, html_path, settings)
 
-        if getattr(args, "open", False):
+        if getattr(args, "open", False) and not ui.plain:
             target_path = html_path if html_path else conv.conversation_path
             if target_path:
-                if open_in_editor(Path(target_path)):
-                    ui.console.print(f"[dim]Opened {target_path} in editor[/dim]")
-                else:
-                    editor = get_editor()
-                    if not editor:
-                        ui.console.print("[yellow]Warning: $EDITOR not set. Cannot open file.")
-                    else:
-                        ui.console.print(f"[yellow]Warning: Could not open {target_path} in editor")
+                pending_opens.append(Path(target_path))
+
+    if pending_opens:
+        for path in pending_opens:
+            _open_branch_output(ui, path)
 
 
 def _generate_branch_html(conversation, target: Optional[Path], theme: str, ui, *, auto: bool) -> Optional[Path]:
@@ -237,6 +235,30 @@ def _display_diff(diff_text: str, ui) -> None:
         ui.console.print(diff_text)
     else:
         ui.render_diff("", diff_text, filename="branches.diff")
+
+
+def _open_branch_output(ui, path: Path) -> None:
+    """Open the generated explorer in the appropriate viewer."""
+
+    if path.suffix.lower() == ".html":
+        if open_in_browser(path):
+            ui.console.print(f"[dim]Opened {path} in browser[/dim]")
+            return
+        # Fallback to editor if browser open fails.
+        if open_in_editor(path):
+            ui.console.print(f"[yellow]Opened {path} in editor (browser unavailable)[/yellow]")
+            return
+        ui.console.print(f"[yellow]Failed to open {path} via browser or $EDITOR[/yellow]")
+        return
+
+    if open_in_editor(path):
+        ui.console.print(f"[dim]Opened {path} in editor[/dim]")
+        return
+    editor = get_editor()
+    if not editor:
+        ui.console.print("[yellow]Warning: $EDITOR not set. Cannot open file.")
+    else:
+        ui.console.print(f"[yellow]Warning: Could not open {path} in editor")
 
 
 __all__ = ["run_branches_cli"]
