@@ -3,17 +3,37 @@
 Tests that operations can be safely re-run after interruption without
 data loss or duplication.
 """
+import json
 import sqlite3
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
+from polylogue import util
+from polylogue.commands import CommandEnv, SyncOptions, sync_command
 from polylogue.conversation import process_conversation
 from polylogue.db import replace_messages
 from polylogue.document_store import persist_document
+from polylogue.pipeline_runner import Pipeline
 from polylogue.render import MarkdownDocument
 from polylogue.services.conversation_registrar import ConversationRegistrar
+from polylogue.ui import create_ui
+
+
+def _read_state_entry(state_home: Path, provider: str, conversation_id: str) -> dict:
+    conn = sqlite3.connect(state_home / "polylogue.db")
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT metadata_json FROM conversations WHERE provider = ? AND conversation_id = ?",
+            (provider, conversation_id),
+        ).fetchone()
+        if not row or not row["metadata_json"]:
+            return {}
+        return json.loads(row["metadata_json"])
+    finally:
+        conn.close()
 
 
 class TestDatabaseIdempotency:
@@ -226,15 +246,205 @@ class TestForceAndAllowDirty:
 class TestSyncIdempotency:
     """Test sync operations are idempotent."""
 
-    def test_sync_twice_produces_same_result(self, tmp_path):
+    def test_sync_twice_produces_same_result(self, tmp_path, state_env):
         """Running sync twice on same data produces identical output."""
-        # This is a higher-level test that would require more setup
-        # For now, documenting the test structure
-        pytest.skip("Requires full sync infrastructure setup")
+        chats = [
+            {"id": "drive-1", "name": "Alpha Thread", "modifiedTime": "2024-01-02T00:00:00Z"},
+            {"id": "drive-2", "name": "Beta Thread", "modifiedTime": "2024-01-03T00:00:00Z"},
+        ]
+        payloads = {
+            "drive-1": {
+                "chunkedPrompt": {
+                    "chunks": [
+                        {"role": "user", "text": "Question one"},
+                        {"role": "model", "text": "Answer one"},
+                    ]
+                }
+            },
+            "drive-2": {
+                "chunkedPrompt": {
+                    "chunks": [
+                        {"role": "user", "text": "Question two"},
+                        {"role": "model", "text": "Answer two"},
+                    ]
+                }
+            },
+        }
 
-    def test_interrupted_sync_resumable(self, tmp_path):
+        class StubDrive:
+            def resolve_folder_id(self, folder_name, folder_id):  # noqa: ARG002
+                return folder_id or "folder-123"
+
+            def list_chats(self, folder_name, folder_id):  # noqa: ARG002
+                return list(chats)
+
+            def download_chat_bytes(self, file_id):
+                return json.dumps(payloads[file_id]).encode("utf-8")
+
+        env = CommandEnv(ui=create_ui(plain=True))
+        env.drive = StubDrive()
+
+        options = SyncOptions(
+            folder_name="AI Studio",
+            folder_id="folder-123",
+            output_dir=tmp_path / "drive",
+            collapse_threshold=12,
+            download_attachments=False,
+            dry_run=False,
+            force=False,
+            prune=False,
+            since=None,
+            until=None,
+            name_filter=None,
+            html=False,
+            html_theme="light",
+            diff=False,
+            prefetched_chats=list(chats),
+        )
+
+        first_result = sync_command(options, env)
+        assert first_result.count == len(chats)
+        rendered = {
+            util.sanitize_filename(chat["name"]): (options.output_dir / util.sanitize_filename(chat["name"]) / "conversation.md").read_text()
+            for chat in chats
+        }
+
+        second_result = sync_command(options, env)
+        assert second_result.count == 0
+        assert second_result.items == []
+        assert second_result.total_stats.get("skipped") == len(chats)
+
+        for chat in chats:
+            slug = util.sanitize_filename(chat["name"])
+            md_path = options.output_dir / slug / "conversation.md"
+            assert md_path.read_text() == rendered[slug]
+
+        conn = sqlite3.connect(state_env / "polylogue.db")
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT conversation_id, COUNT(*) AS c FROM conversations WHERE provider = ? GROUP BY conversation_id",
+                ("drive-sync",),
+            ).fetchall()
+        finally:
+            conn.close()
+        assert [row["conversation_id"] for row in rows] == ["drive-1", "drive-2"]
+        assert all(row["c"] == 1 for row in rows)
+
+    def test_interrupted_sync_resumable(self, tmp_path, state_env, monkeypatch):
         """Interrupted sync can resume without duplicating work."""
-        pytest.skip("Requires sync pipeline mocking")
+        chats = [
+            {"id": "drive-1", "name": "Alpha Thread", "modifiedTime": "2024-01-02T00:00:00Z"},
+            {"id": "drive-2", "name": "Beta Thread", "modifiedTime": "2024-01-03T00:00:00Z"},
+        ]
+        payloads = {
+            "drive-1": {
+                "chunkedPrompt": {
+                    "chunks": [
+                        {"role": "user", "text": "Question one"},
+                        {"role": "model", "text": "Answer one"},
+                    ]
+                }
+            },
+            "drive-2": {
+                "chunkedPrompt": {
+                    "chunks": [
+                        {"role": "user", "text": "Question two"},
+                        {"role": "model", "text": "Answer two"},
+                    ]
+                }
+            },
+        }
+
+        class StubDrive:
+            def resolve_folder_id(self, folder_name, folder_id):  # noqa: ARG002
+                return folder_id or "folder-123"
+
+            def list_chats(self, folder_name, folder_id):  # noqa: ARG002
+                return list(chats)
+
+            def download_chat_bytes(self, file_id):
+                payload = payloads[file_id]
+                return json.dumps(payload).encode("utf-8")
+
+        ui = create_ui(plain=True)
+        env = CommandEnv(ui=ui)
+        env.drive = StubDrive()
+
+        options = SyncOptions(
+            folder_name="AI Studio",
+            folder_id="folder-123",
+            output_dir=tmp_path / "drive",
+            collapse_threshold=12,
+            download_attachments=False,
+            dry_run=False,
+            force=False,
+            prune=False,
+            since=None,
+            until=None,
+            name_filter=None,
+            html=False,
+            html_theme="light",
+            diff=False,
+            prefetched_chats=list(chats),
+        )
+
+        original_run = Pipeline.run
+        should_interrupt = True
+
+        def _interrupting_run(self, context):
+            nonlocal should_interrupt
+            metadata = context.get("metadata")
+            if should_interrupt and isinstance(metadata, dict) and metadata.get("id") == "drive-2":
+                should_interrupt = False
+                raise KeyboardInterrupt("simulated interrupt")
+            return original_run(self, context)
+
+        monkeypatch.setattr(Pipeline, "run", _interrupting_run)
+
+        with pytest.raises(KeyboardInterrupt):
+            sync_command(options, env)
+
+        output_dir = options.output_dir
+        slug_one = util.sanitize_filename(chats[0]["name"])
+        slug_two = util.sanitize_filename(chats[1]["name"])
+        conv_one = output_dir / slug_one / "conversation.md"
+        conv_two = output_dir / slug_two / "conversation.md"
+
+        assert conv_one.exists()
+        assert not conv_two.exists()
+
+        first_state = _read_state_entry(state_env, "drive-sync", "drive-1")
+        assert first_state["slug"] == slug_one
+        assert first_state["outputPath"] == str(conv_one)
+        assert _read_state_entry(state_env, "drive-sync", "drive-2") == {}
+
+        result = sync_command(options, env)
+
+        assert conv_one.exists()
+        assert conv_two.exists()
+        assert any(item.slug == slug_two for item in result.items)
+
+        second_state = _read_state_entry(state_env, "drive-sync", "drive-2")
+        assert second_state["slug"] == slug_two
+        assert second_state["outputPath"] == str(conv_two)
+
+        conn = sqlite3.connect(state_env / "polylogue.db")
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT conversation_id FROM conversations WHERE provider = ? ORDER BY conversation_id",
+                ("drive-sync",),
+            ).fetchall()
+        finally:
+            conn.close()
+        assert [row["conversation_id"] for row in rows] == ["drive-1", "drive-2"]
+
+        md_paths = sorted(path.relative_to(output_dir) for path in output_dir.rglob("conversation.md"))
+        assert md_paths == [
+            Path(slug_one) / "conversation.md",
+            Path(slug_two) / "conversation.md",
+        ]
 
 
 if __name__ == "__main__":

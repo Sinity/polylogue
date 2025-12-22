@@ -35,7 +35,7 @@ def import_codex_session(
     force: bool = False,
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
-    attachment_ocr: bool = False,
+    attachment_ocr: bool = True,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
 ) -> ImportResult:

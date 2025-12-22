@@ -77,19 +77,10 @@ def run_branches_cli(args: object, env: CommandEnv) -> None:
         if not tree.strip():
             ui.console.print("[yellow]No branch data recorded.")
         else:
-            if not ui.plain:
-                result = subprocess.run(
-                    ["gum", "format"],
-                    input=f"```\n{tree}\n```",
-                    text=True,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    check=True,
-                )
-                output = result.stdout.strip()
-                ui.console.print(output or tree)
-            else:
+            if ui.plain:
                 ui.console.print(tree)
+            else:
+                ui.render_markdown(f"```\n{tree}\n```")
 
         html_path = None
         html_enabled, html_explicit = resolve_html_settings(args, settings)
@@ -242,11 +233,10 @@ def _display_diff(diff_text: str, ui) -> None:
     if not diff_text.strip():
         ui.console.print("[cyan]No diff to display.")
         return
-    if not ui.plain:
-        subprocess.run(["gum", "pager"], input=diff_text, text=True, check=True)
-        return
-    ui.console.print(diff_text)
+    if ui.plain:
+        ui.console.print(diff_text)
+    else:
+        ui.render_diff("", diff_text, filename="branches.diff")
 
 
 __all__ = ["run_branches_cli"]
-

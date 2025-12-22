@@ -8,10 +8,12 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 from typing import List, Optional, Sequence, Tuple
 
 import click
+from click.core import ParameterSource
 from rich.table import Table
 
 from ..commands import CommandEnv
@@ -39,17 +41,35 @@ def _build_env(plain: bool) -> CommandEnv:
     return CommandEnv(ui=create_ui(plain))
 
 _FORCE_PLAIN_VALUES = {"1", "true", "yes", "on"}
+_PLAIN_REASON_FLAG = "requested via --plain"
+_REQUIRED_EXTERNAL_TOOLS = ("sk", "bat", "glow")
+_TOOLS_VERIFIED = False
 
 
-def _should_use_plain(*, plain: bool, interactive: bool) -> bool:
+def _ensure_required_tools() -> None:
+    global _TOOLS_VERIFIED
+    if _TOOLS_VERIFIED:
+        return
+    missing = [tool for tool in _REQUIRED_EXTERNAL_TOOLS if shutil.which(tool) is None]
+    if missing:
+        listed = ", ".join(missing)
+        raise SystemExit(
+            f"Missing required command(s): {listed}. Install them (they are required for Polylogue's interactive workflows)."
+        )
+    _TOOLS_VERIFIED = True
+
+
+def _should_use_plain(*, plain: bool, interactive: bool) -> Tuple[bool, Optional[str]]:
     if interactive:
-        return False
+        return False, None
     if plain:
-        return True
+        return True, _PLAIN_REASON_FLAG
     forced = os.environ.get("POLYLOGUE_FORCE_PLAIN")
     if forced and forced.strip().lower() in _FORCE_PLAIN_VALUES:
-        return True
-    return not (sys.stdout.isatty() and sys.stderr.isatty())
+        return True, "POLYLOGUE_FORCE_PLAIN is set"
+    if not (sys.stdout.isatty() and sys.stderr.isatty()):
+        return True, "stdout/stderr are not TTYs"
+    return False, None
 
 
 def _print_command_listing(console, plain: bool, entries: Sequence[Tuple[str, str]]) -> None:
@@ -129,8 +149,19 @@ def _run_click_help(env: CommandEnv, ctx: click.Context, topic: Optional[str], e
 @click.pass_context
 def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
     """Polylogue CLI (Click)."""
-    use_plain = _should_use_plain(plain=plain, interactive=interactive)
-    ctx.obj = _build_env(use_plain)
+    _ensure_required_tools()
+    use_plain, plain_reason = _should_use_plain(plain=plain, interactive=interactive)
+    env = _build_env(use_plain)
+    ctx.obj = env
+    if use_plain and plain_reason and plain_reason != _PLAIN_REASON_FLAG:
+        _announce_plain_mode(env, plain_reason)
+ 
+ 
+def _announce_plain_mode(env: CommandEnv, reason: str) -> None:
+    if reason == "stdout/stderr are not TTYs":
+        return
+    message = f"Plain output active ({reason}). Pass --interactive from a TTY to re-enable prompts."
+    sys.stderr.write(f"{message}\n")
 
 
 # ---------------------------- sync ----------------------------
@@ -141,7 +172,11 @@ def cli(ctx: click.Context, plain: bool, interactive: bool) -> None:
 @click.option("--out", type=click.Path(path_type=Path), help="Override output directory")
 @click.option("--links-only", is_flag=True, help="Link attachments instead of downloading (Drive only)")
 @click.option("--attachments-only", is_flag=True, help="Retry/download Drive attachments only (requires --resume-from; no re-render)")
-@click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
+@click.option(
+    "--attachment-ocr/--no-attachment-ocr",
+    default=None,
+    help="Attempt OCR on image attachments when indexing attachment text (enabled by default)",
+)
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in synced Markdown/HTML outputs")
 @click.option("--dry-run", is_flag=True, help="Report actions without writing files")
 @click.option("--force", is_flag=True, help="Re-render even if conversations are up-to-date")
@@ -194,7 +229,14 @@ def sync(env: CommandEnv, **kwargs) -> None:
     """Synchronize provider archives (use --watch for continuous mode)."""
     from .sync import run_sync_cli
 
-    run_sync_cli(SimpleNamespace(**kwargs), env)
+    ctx = click.get_current_context()
+    namespace_kwargs = dict(kwargs)
+    namespace_kwargs["_attachment_ocr_explicit"] = (
+        ctx.get_parameter_source("attachment_ocr") != ParameterSource.DEFAULT
+    )
+    if namespace_kwargs.get("attachment_ocr") is None:
+        namespace_kwargs["attachment_ocr"] = True
+    run_sync_cli(SimpleNamespace(**namespace_kwargs), env)
 
 
 # ---------------------------- import ----------------------------
@@ -228,12 +270,23 @@ def import_group() -> None:
 @click.option("--print-paths", is_flag=True, help="List written files after import")
 @click.option("--to-clipboard", is_flag=True, help="Copy single imported Markdown file to the clipboard")
 @click.option("--base-dir", type=click.Path(path_type=Path), help="Base directory for local providers")
-@click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
+@click.option(
+    "--attachment-ocr/--no-attachment-ocr",
+    default=None,
+    help="Attempt OCR on image attachments when indexing attachment text (enabled by default)",
+)
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in imported Markdown/HTML outputs")
 @click.option("--meta", multiple=True, help="Attach custom metadata key=value (repeatable)")
 @click.pass_obj
 def import_run(env: CommandEnv, **kwargs) -> None:
-    args = SimpleNamespace(**kwargs)
+    ctx = click.get_current_context()
+    params = dict(kwargs)
+    params["_attachment_ocr_explicit"] = (
+        ctx.get_parameter_source("attachment_ocr") != ParameterSource.DEFAULT
+    )
+    if params.get("attachment_ocr") is None:
+        params["attachment_ocr"] = True
+    args = SimpleNamespace(**params)
     imports.run_import_cli(args, env)
 
 
@@ -273,7 +326,11 @@ def import_reprocess(env: CommandEnv, **kwargs) -> None:
 @click.option("--print-paths", is_flag=True, help="List written files after rendering")
 @click.option("--to-clipboard", is_flag=True, help="Copy a single rendered file to the clipboard")
 @click.option("--dry-run", is_flag=True, help="Report actions without writing files")
-@click.option("--attachment-ocr", is_flag=True, help="Attempt OCR on image attachments when indexing attachment text")
+@click.option(
+    "--attachment-ocr/--no-attachment-ocr",
+    default=None,
+    help="Attempt OCR on image attachments when indexing attachment text (enabled by default)",
+)
 @click.option("--disk-estimate", is_flag=True, help="Print projected disk usage before running")
 @click.option("--max-disk", type=float, help="Abort if projected disk use exceeds this many GiB (approx)")
 @click.option("--sanitize-html", is_flag=True, help="Mask emails/keys/tokens in rendered Markdown/HTML outputs")
@@ -287,7 +344,14 @@ def render(env: CommandEnv, **kwargs) -> None:
     from .render import run_render_cli
     from .render_force import run_render_force
 
-    args = SimpleNamespace(**kwargs)
+    ctx = click.get_current_context()
+    params = dict(kwargs)
+    params["_attachment_ocr_explicit"] = (
+        ctx.get_parameter_source("attachment_ocr") != ParameterSource.DEFAULT
+    )
+    if params.get("attachment_ocr") is None:
+        params["attachment_ocr"] = True
+    args = SimpleNamespace(**params)
     if getattr(args, "force", False):
         exit_code = run_render_force(env, provider=None, conversation_id=None, output_dir=getattr(args, "out", None))
         raise SystemExit(exit_code)
@@ -395,7 +459,7 @@ def browse_group() -> None:
 @click.option("--diff", is_flag=True, help="Display a unified diff between a branch and canonical transcript")
 @click.option("--out", type=click.Path(path_type=Path), help="Write the branch explorer HTML to this path")
 @click.option("--theme", type=click.Choice(["light", "dark"]), help="Override HTML explorer theme")
-@click.option("--no-picker", is_flag=True, help="Skip interactive selection even when skim/gum are available")
+@click.option("--no-picker", is_flag=True, help="Skip interactive selection even when prompts are available")
 @click.option("--open", "open_result", is_flag=True, help="Open result in $EDITOR after command completes")
 @click.pass_obj
 def browse_branches(env: CommandEnv, **kwargs) -> None:

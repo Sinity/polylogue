@@ -1,7 +1,9 @@
 # CLI Tips
 
-Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetitive workflows. The Nix/devshell environment ships every required dependency (gum, skim, Rich, pyperclip, etc.), so these helpers are always available unless stdout/stderr aren’t TTYs (in which case Polylogue automatically switches to a plain UI—export `POLYLOGUE_FORCE_PLAIN=1` to force that behaviour in CI).
+Polylogue’s CLI bundles a handful of ergonomic helpers that smooth out repetitive workflows. The Nix/devshell environment ships every required dependency (Rich, questionary, pyperclip, etc.), so these helpers are always available unless stdout/stderr aren’t TTYs (in which case Polylogue automatically switches to a plain UI—export `POLYLOGUE_FORCE_PLAIN=1` to force that behaviour in CI).
 Plain/non-TTY runs never auto-prompt; if a prompt would be required (e.g., Drive auth, picker selection) the command exits with a warning so cron jobs don’t hang—pass explicit flags like `--all`/IDs or run with `--interactive` on a TTY when you do want prompts.
+
+Interactive workflows require the external binaries `sk` (skim), `bat`, and `glow` to be available on `PATH`; Polylogue now treats them as hard dependencies rather than optional helpers. Image OCR is also enabled by default—install Tesseract plus the Pillow/pytesseract bindings (or use `polylogue[ocr]`) to make sure attachment text is indexed, and pass `--no-attachment-ocr` when you want to skip OCR for a run.
 
 ## Clipboard & Credential Workflows
 

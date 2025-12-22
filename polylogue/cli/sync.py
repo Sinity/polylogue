@@ -242,9 +242,10 @@ def _apply_sync_prefs(args: SimpleNamespace, env: CommandEnv) -> SimpleNamespace
     _apply_flag("--prune", "prune")
     _apply_flag("--watch", "watch")
     _apply_flag("--once", "once")
-    _apply_flag("--attachment-ocr", "attachment_ocr")
     _apply_flag("--offline", "offline")
     _apply_flag("--sanitize-html", "sanitize_html")
+    if "--attachment-ocr" in sync_prefs and not getattr(args, "_attachment_ocr_explicit", False):
+        args.attachment_ocr = _truthy(sync_prefs["--attachment-ocr"])
     if "--root" in sync_prefs and not getattr(args, "root", None):
         root_label = str(sync_prefs.get("--root") or "").strip()
         if root_label:
@@ -334,6 +335,8 @@ def run_sync_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     provider = getattr(args, "provider", None)
     settings = env.settings
     args = _apply_sync_prefs(args, env)
+    if getattr(args, "attachment_ocr", None) is None:
+        args.attachment_ocr = True
     provider = getattr(args, "provider", None)
 
     resume_from = getattr(args, "resume_from", None)
@@ -532,7 +535,7 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
         html_theme=html_theme,
         diff=getattr(args, "diff", False),
         prefetched_chats=prefetched,
-        attachment_ocr=getattr(args, "attachment_ocr", False),
+        attachment_ocr=getattr(args, "attachment_ocr", True),
         sanitize_html=getattr(args, "sanitize_html", False),
         meta=meta,
     )
@@ -799,7 +802,7 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             sessions=selected_paths,
             registrar=env.registrar,
             ui=env.ui,
-            attachment_ocr=getattr(args, "attachment_ocr", False),
+            attachment_ocr=getattr(args, "attachment_ocr", True),
             sanitize_html=getattr(args, "sanitize_html", False),
             meta=meta,
         )
