@@ -45,8 +45,10 @@ def run_watch_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             cmd.append("--diff")
         if getattr(args, "prune", False):
             cmd.append("--prune")
-        if getattr(args, "attachment_ocr", False):
+        if getattr(args, "attachment_ocr", True):
             cmd.append("--attachment-ocr")
+        else:
+            cmd.append("--no-attachment-ocr")
         if getattr(args, "sanitize_html", False):
             cmd.append("--sanitize-html")
         env.ui.console.print(" ".join(cmd))
@@ -141,7 +143,7 @@ def _run_watch_sessions(
                 sessions=session_override,
                 registrar=env.registrar,
                 ui=ui,
-                attachment_ocr=getattr(args, "attachment_ocr", False),
+                attachment_ocr=getattr(args, "attachment_ocr", True),
                 sanitize_html=getattr(args, "sanitize_html", False),
             )
         except Exception as exc:  # pragma: no cover - defensive
