@@ -54,6 +54,14 @@
             postInstall = ''
               wrapProgram $out/bin/polylogue \
                 --prefix PATH : ${cliBinPath}
+
+              mkdir -p $out/share/bash-completion/completions
+              mkdir -p $out/share/zsh/site-functions
+              mkdir -p $out/share/fish/vendor_completions.d
+
+              $out/bin/polylogue completions --shell bash > $out/share/bash-completion/completions/polylogue
+              $out/bin/polylogue completions --shell zsh > $out/share/zsh/site-functions/_polylogue
+              $out/bin/polylogue completions --shell fish > $out/share/fish/vendor_completions.d/polylogue.fish
             '';
           };
 
