@@ -79,7 +79,7 @@ def test_html_flag_import_variants():
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr("polylogue.cli.imports.run_import_cli", fake_import)
 
-    result = runner.invoke(click_cli, ["import", "chatgpt", "export.zip", "--html", "off"])
+    result = runner.invoke(click_cli, ["import", "run", "chatgpt", "export.zip", "--html", "off"])
     assert result.exit_code == 0
     assert captured["html_mode"] == "off"
     monkeypatch.undo()
@@ -275,7 +275,7 @@ def test_print_paths_flags_present():
     assert captured["args"].print_paths is True
 
     monkeypatch.setattr("polylogue.cli.imports.run_import_cli", lambda args, env: captured.__setitem__("args", args))  # noqa: ARG005
-    result = runner.invoke(click_cli, ["import", "chatgpt", "export.zip", "--print-paths"])
+    result = runner.invoke(click_cli, ["import", "run", "chatgpt", "export.zip", "--print-paths"])
     assert result.exit_code == 0
     assert captured["args"].print_paths is True
     monkeypatch.undo()
