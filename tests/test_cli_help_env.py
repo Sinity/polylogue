@@ -56,6 +56,14 @@ def test_completions_emits_script(state_env) -> None:
     assert "complete -F" in result.output
 
 
+def test_zsh_completions_include_compdef(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["completions", "--shell", "zsh"])
+    assert result.exit_code == 0
+    assert "#compdef polylogue" in result.output
+    assert "compdef _polylogue_complete polylogue" in result.output
+
+
 def test_fish_completions_include_descriptions(state_env) -> None:
     runner = CliRunner()
     result = runner.invoke(click_cli, ["completions", "--shell", "fish"])
@@ -157,3 +165,15 @@ def test_complete_sync_html_values(state_env) -> None:
     assert "on" in values
     assert "off" in values
     assert "auto" in values
+
+
+def test_complete_render_path_values_trigger_path_mode(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        click_cli,
+        ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "render", ""],
+    )
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert values
+    assert values[0] == "__PATH__"
