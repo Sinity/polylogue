@@ -225,7 +225,7 @@ def run_init_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     console.print(f"\n[bold]Next steps:[/bold]")
     console.print("  [green]polylogue help[/green]                 # See commands and examples")
     console.print("  [green]polylogue search 'query'[/green]       # Search transcripts")
-    console.print("  [green]polylogue import chatgpt FILE[/green]  # Import ChatGPT export")
+    console.print("  [green]polylogue import run chatgpt FILE[/green]  # Import ChatGPT export")
     console.print("  [green]polylogue sync codex[/green]           # Sync Codex sessions")
     if drive_setup:
         console.print("  [green]polylogue sync drive[/green]           # Sync from Google Drive")

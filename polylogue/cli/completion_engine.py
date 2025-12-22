@@ -79,6 +79,8 @@ class CompletionEngine:
             cword = max(cword - 1, 0)
         if not args:
             return self._complete_commands()
+        if args[0] == "":
+            return self._complete_commands()
         current_index = max(cword, 0)
         if current_index >= len(args):
             args = args + [""]
@@ -87,26 +89,39 @@ class CompletionEngine:
         command = args[0]
         if current_index == 0 and len(args) == 1 and (current_word == "" or not current_word.startswith("-")):
             return self._complete_commands()
+        if command == "render":
+            return self._complete_render(args, current_index, current_word)
         if command == "search":
             return self._complete_search(args, current_index, current_word)
         if command == "sync":
             return self._complete_sync(args, current_index, current_word)
         if command == "import":
             return self._complete_import(args, current_index, current_word)
+        if command == "verify":
+            return self._complete_verify(args, current_index, current_word)
         if command == "browse":
             return self._complete_browse(args, current_index, current_word)
-        if command == "maintain":
-            return self._complete_maintain(args, current_index, current_word)
+        if command == "doctor":
+            return self._complete_doctor(args, current_index, current_word)
         if command == "config":
             return self._complete_config(args, current_index, current_word)
-        if command == "attachments":
-            return self._complete_attachments(args, current_index, current_word)
-        if command == "prefs":
-            return self._complete_prefs(args, current_index, current_word)
         if command == "help":
             return self._complete_commands()
         if command == "completions":
             return self._complete_completions()
+        return []
+
+    def _complete_render(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
+        prev = args[current_index - 1] if current_index > 0 else ""
+        if current_index == 1 and (not current_word or not current_word.startswith("-")):
+            return [Completion("__PATH__")]
+        if prev in {"--out"}:
+            return [Completion("__PATH__")]
+        generic = self._complete_click_option_values("render", prev)
+        if generic:
+            return generic
+        if current_word.startswith("--"):
+            return self._option_completions("render")
         return []
 
     def _complete_commands(self) -> List[Completion]:
@@ -152,18 +167,68 @@ class CompletionEngine:
         return []
 
     def _complete_import(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
-        if current_index == 1:
-            return [Completion(name) for name in ("chatgpt", "claude", "codex", "claude-code")]
+        if current_index == 1 and (not current_word or not current_word.startswith("-")):
+            return self._complete_group_subcommands("import")
+
+        subcmd = args[1] if len(args) > 1 else None
         prev = args[current_index - 1] if current_index > 0 else ""
-        if prev in {"--out", "--base-dir"}:
-            return [Completion("__PATH__")]
-        if current_index > 1 and args[1] in {"chatgpt", "claude"} and prev == "--source":
-            return [Completion("__PATH__")]
-        generic = self._complete_click_option_values("import", prev)
-        if generic:
-            return generic
-        if current_word.startswith("--"):
-            return self._option_completions("import")
+
+        if subcmd == "run":
+            if current_index == 2 and (not current_word or not current_word.startswith("-")):
+                return [Completion(name) for name in ("chatgpt", "claude", "codex", "claude-code")]
+            if prev in {"--out", "--base-dir"}:
+                return [Completion("__PATH__")]
+            generic = self._complete_click_option_values("import run", prev)
+            if generic:
+                return generic
+            if current_word.startswith("--"):
+                return self._option_completions("import run")
+            if current_index >= 3 and not current_word.startswith("-"):
+                return [Completion("__PATH__")]
+
+        if subcmd == "reprocess":
+            generic = self._complete_click_option_values("import reprocess", prev)
+            if generic:
+                return generic
+            if current_word.startswith("--"):
+                return self._option_completions("import reprocess")
+            return []
+
+        if subcmd:
+            generic = self._complete_click_option_values(f"import {subcmd}", prev)
+            if generic:
+                return generic
+        return []
+
+    def _complete_verify(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
+        if current_index == 1 and (not current_word or not current_word.startswith("-")):
+            return self._complete_group_subcommands("verify")
+        subcmd = args[1] if len(args) > 1 else None
+        prev = args[current_index - 1] if current_index > 0 else ""
+        if subcmd == "check":
+            if prev == "--provider":
+                return self._provider_completions()
+            if prev == "--slug":
+                return self._slug_completions()
+            if prev == "--conversation-id":
+                return self._conversation_id_completions()
+            generic = self._complete_click_option_values("verify check", prev)
+            if generic:
+                return generic
+            if current_word.startswith("--"):
+                return self._option_completions("verify check")
+        if subcmd == "compare":
+            if prev in {"--provider-a", "--provider-b"}:
+                return self._provider_completions()
+            generic = self._complete_click_option_values("verify compare", prev)
+            if generic:
+                return generic
+            if current_word.startswith("--"):
+                return self._option_completions("verify compare")
+        if subcmd:
+            generic = self._complete_click_option_values(f"verify {subcmd}", prev)
+            if generic:
+                return generic
         return []
 
     def _complete_browse(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
@@ -195,16 +260,6 @@ class CompletionEngine:
                 return generic
             if current_word.startswith("--"):
                 return self._option_completions("browse stats")
-        if subcmd == "status":
-            if prev == "--providers":
-                return self._provider_completions()
-            if prev in {"--dump", "--summary"}:
-                return [Completion("__PATH__")]
-            generic = self._complete_click_option_values("browse status", prev)
-            if generic:
-                return generic
-            if current_word.startswith("--"):
-                return self._option_completions("browse status")
         if subcmd == "runs":
             if prev == "--providers":
                 return self._provider_completions()
@@ -261,43 +316,94 @@ class CompletionEngine:
                 return generic
         return []
 
-    def _complete_maintain(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
+    def _complete_doctor(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
         if current_index == 1 and (not current_word or not current_word.startswith("-")):
-            return self._complete_group_subcommands("maintain")
+            return self._complete_group_subcommands("doctor")
+
         subcmd = args[1] if len(args) > 1 else None
         prev = args[current_index - 1] if current_index > 0 else ""
+
+        if subcmd == "check":
+            if prev in {"--codex-dir", "--claude-code-dir"}:
+                return [Completion("__PATH__")]
+            generic = self._complete_click_option_values("doctor check", prev)
+            if generic:
+                return generic
+            if current_word.startswith("--"):
+                return self._option_completions("doctor check")
+
+        if subcmd == "env":
+            generic = self._complete_click_option_values("doctor env", prev)
+            if generic:
+                return generic
+            if current_word.startswith("--"):
+                return self._option_completions("doctor env")
+
+        if subcmd == "status":
+            if prev == "--providers":
+                return self._provider_completions()
+            if prev in {"--dump", "--summary"}:
+                return [Completion("__PATH__")]
+            generic = self._complete_click_option_values("doctor status", prev)
+            if generic:
+                return generic
+            if current_word.startswith("--"):
+                return self._option_completions("doctor status")
+
         if subcmd == "prune":
             if prev == "--dir":
                 return [Completion("__PATH__")]
-            generic = self._complete_click_option_values("maintain prune", prev)
+            generic = self._complete_click_option_values("doctor prune", prev)
             if generic:
                 return generic
             if current_word.startswith("--"):
-                return self._option_completions("maintain prune")
-        if subcmd == "doctor":
-            generic = self._complete_click_option_values("maintain doctor", prev)
-            if generic:
-                return generic
-            if current_word.startswith("--"):
-                return self._option_completions("maintain doctor")
+                return self._option_completions("doctor prune")
+
         if subcmd == "index":
             if current_index == 2 and (not current_word or not current_word.startswith("-")):
-                return [Completion("check")]
-            generic = self._complete_click_option_values("maintain index", prev)
+                return self._complete_group_subcommands("doctor index")
+            generic = self._complete_click_option_values("doctor index", prev)
             if generic:
                 return generic
             if current_word.startswith("--"):
-                return self._option_completions("maintain index")
+                return self._option_completions("doctor index")
+
         if subcmd == "restore":
             if prev in {"--from", "--to"}:
                 return [Completion("__PATH__")]
-            generic = self._complete_click_option_values("maintain restore", prev)
+            generic = self._complete_click_option_values("doctor restore", prev)
             if generic:
                 return generic
             if current_word.startswith("--"):
-                return self._option_completions("maintain restore")
+                return self._option_completions("doctor restore")
+
+        if subcmd == "attachments":
+            if current_index == 2 and (not current_word or not current_word.startswith("-")):
+                return self._complete_group_subcommands("doctor attachments")
+            attachments_cmd = args[2] if len(args) > 2 else None
+            if attachments_cmd == "stats":
+                if prev == "--provider":
+                    return self._provider_completions()
+                if prev in {"--dir", "--csv"}:
+                    return [Completion("__PATH__")]
+                if prev == "--sort":
+                    return [Completion("size"), Completion("name")]
+                generic = self._complete_click_option_values("doctor attachments stats", prev)
+                if generic:
+                    return generic
+                if current_word.startswith("--"):
+                    return self._option_completions("doctor attachments stats")
+            if attachments_cmd == "extract":
+                if prev in {"--dir", "--out"}:
+                    return [Completion("__PATH__")]
+                generic = self._complete_click_option_values("doctor attachments extract", prev)
+                if generic:
+                    return generic
+                if current_word.startswith("--"):
+                    return self._option_completions("doctor attachments extract")
+
         if subcmd:
-            generic = self._complete_click_option_values(f"maintain {subcmd}", prev)
+            generic = self._complete_click_option_values(f"doctor {subcmd}", prev)
             if generic:
                 return generic
         return []
@@ -327,48 +433,22 @@ class CompletionEngine:
                 return self._option_completions("config show")
         if subcmd == "edit" and current_word.startswith("--"):
             return self._option_completions("config edit")
+        if subcmd == "prefs":
+            if current_index == 2 and (not current_word or not current_word.startswith("-")):
+                return self._complete_group_subcommands("config prefs")
+            prefs_cmd = args[2] if len(args) > 2 else None
+            if prefs_cmd == "set" and prev == "--command":
+                return [Completion(value) for value in ("search", "sync", "import", "render", "browse", "verify", "doctor", "config")]
+            if prefs_cmd:
+                generic = self._complete_click_option_values(f"config prefs {prefs_cmd}", prev)
+                if generic:
+                    return generic
+                if current_word.startswith("--"):
+                    return self._option_completions(f"config prefs {prefs_cmd}")
         if subcmd:
             generic = self._complete_click_option_values(f"config {subcmd}", prev)
             if generic:
                 return generic
-        return []
-
-    def _complete_attachments(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
-        if current_index == 1 and (not current_word or not current_word.startswith("-")):
-            return self._complete_group_subcommands("attachments")
-        subcmd = args[1] if len(args) > 1 else None
-        prev = args[current_index - 1] if current_index > 0 else ""
-        if subcmd == "stats":
-            if prev == "--provider":
-                return self._provider_completions()
-            if prev in {"--dir", "--csv"}:
-                return [Completion("__PATH__")]
-            if prev == "--sort":
-                return [Completion("size"), Completion("name")]
-            generic = self._complete_click_option_values("attachments stats", prev)
-            if generic:
-                return generic
-            if current_word.startswith("--"):
-                return self._option_completions("attachments stats")
-        if subcmd == "extract":
-            if prev in {"--dir", "--out"}:
-                return [Completion("__PATH__")]
-            generic = self._complete_click_option_values("attachments extract", prev)
-            if generic:
-                return generic
-            if current_word.startswith("--"):
-                return self._option_completions("attachments extract")
-        if subcmd:
-            generic = self._complete_click_option_values(f"attachments {subcmd}", prev)
-            if generic:
-                return generic
-        return []
-
-    def _complete_prefs(self, args: Sequence[str], current_index: int, current_word: str) -> List[Completion]:
-        if current_index == 1 and (not current_word or not current_word.startswith("-")):
-            return [Completion(value) for value in ("list", "set", "clear")]
-        if current_word.startswith("--"):
-            return self._option_completions("prefs")
         return []
 
     def _complete_completions(self) -> List[Completion]:

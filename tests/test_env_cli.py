@@ -33,5 +33,5 @@ def test_env_cli_json(monkeypatch, tmp_path, capsys):
 def test_env_cli_via_main(monkeypatch, tmp_path):
     _configure_isolated_state(monkeypatch, tmp_path)
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-    monkeypatch.setattr(sys, "argv", ["polylogue", "env"])
+    monkeypatch.setattr(sys, "argv", ["polylogue", "doctor", "env"])
     main()
