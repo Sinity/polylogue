@@ -15,7 +15,7 @@ Interactive workflows require the external binaries `sk` (skim), `bat`, and `glo
 
 ## Branch Explorer & Search
 
-- **Branch picker**: `polylogue browse branches` lists branch-aware conversations, opens a skim picker when `sk` is available, prints the tree, and writes a shareable HTML explorer automatically when forks exist (override with `--out`, disable via `--html off`). Inline prompts can queue a branch diff or on-demand HTML write/directory reveal without rerunning the command.
+- **Branch picker**: `polylogue browse branches` lists branch-aware conversations, opens a skim picker when `sk` is available, prints the tree, and now writes a shareable HTML explorer every time HTML is enabled (override with `--out`, disable via `--html off`). The explorer opens in your browser automatically unless you pass `--no-open`, and inline prompts can still queue branch diffs or re-open the HTML path without rerunning the command. Export `POLYLOGUE_BROWSER="custom command ..."` if you need to force a particular browser binary/profile; otherwise Polylogue defers to the OS default handler.
 - **FTS search**: `polylogue search` queries the SQLite `messages_fts` index. Filters include provider, slug, conversation/branch IDs, model, date range (`--since/--until`), and attachment presence. Interactive previews default to skim; add `--no-picker` in CI or scripts, or `--json` when you need machine-readable results.
 
 ## Session Settings & Themes
