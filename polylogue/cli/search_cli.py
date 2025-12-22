@@ -3,7 +3,6 @@ from __future__ import annotations
 import csv
 import json
 import shlex
-import subprocess
 import sys
 import tempfile
 import textwrap
@@ -420,10 +419,10 @@ def _render_search_hit(hit: SearchHit, ui) -> None:
         ui.console.print("[cyan](No text available for this result)")
         return
 
-    if not ui.plain:
-        subprocess.run(["gum", "format"], input=body, text=True, check=True)
-    else:
+    if ui.plain:
         ui.console.print(body)
+    else:
+        ui.render_markdown(body)
 
 
 def run_search_preview(args: object) -> None:

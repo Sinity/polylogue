@@ -1,16 +1,18 @@
 """Terminal UI facade.
 
-Polylogue ships with a small UI layer. In interactive mode we hard-require the
-external helpers provided by the Nix devshell (gum, skim, bat, glow, delta).
-Plain mode falls back to basic stdout prompting.
+Polylogue ships with a small UI layer. Interactive mode relies entirely on the
+bundled Python stack (questionary + Rich) so it works anywhere without external
+CLI binaries, while plain mode falls back to basic stdout prompting.
 """
 from __future__ import annotations
 
 import difflib
-import subprocess
-import shutil
+import json
+import os
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional, Protocol
+from pathlib import Path
+from typing import Deque, Dict, Iterable, List, Optional, Protocol
 
 import questionary
 from pygments import highlight
@@ -50,6 +52,7 @@ class ConsoleFacade:
     console: ConsoleLike = field(init=False)
 
     theme: Theme = field(init=False, repr=False)
+    _prompt_responses: Deque[Dict[str, object]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.theme = Theme(
@@ -78,6 +81,33 @@ class ConsoleFacade:
             self.console = Console(no_color=False, force_terminal=True, theme=self.theme)
         self._panel_box = box.ROUNDED
         self._banner_box = box.DOUBLE
+        self._prompt_responses = self._load_prompt_responses()
+
+    def _load_prompt_responses(self) -> Deque[Dict[str, object]]:
+        prompt_file = os.environ.get("POLYLOGUE_TEST_PROMPT_FILE")
+        if not prompt_file:
+            return deque()
+        entries: Deque[Dict[str, object]] = deque()
+        for line in Path(prompt_file).read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+                if isinstance(data, dict):
+                    entries.append(data)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"Invalid prompt stub entry: {line}") from exc
+        return entries
+
+    def _pop_prompt_response(self, kind: str) -> Optional[Dict[str, object]]:
+        if not self._prompt_responses:
+            return None
+        entry = self._prompt_responses.popleft()
+        expected = entry.get("type")
+        if expected and expected != kind:
+            raise RuntimeError(f"Prompt stub expected '{expected}' but got '{kind}'")
+        return entry
 
     def banner(self, title: str, subtitle: Optional[str] = None) -> None:
         """Display a banner message."""
@@ -127,7 +157,21 @@ class ConsoleFacade:
         """Ask for confirmation."""
         if self.plain:
             return default
-        return questionary.confirm(prompt, default=default).ask() or default
+        response = self._pop_prompt_response("confirm")
+        if response is not None:
+            if response.get("use_default"):
+                return default
+            value = response.get("value")
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                lowered = value.lower()
+                if lowered in {"y", "yes", "true", "1"}:
+                    return True
+                if lowered in {"n", "no", "false", "0"}:
+                    return False
+        result = questionary.confirm(prompt, default=default).ask()
+        return default if result is None else result
 
     def choose(self, prompt: str, options: List[str]) -> Optional[str]:
         """Choose from a list of options."""
@@ -135,13 +179,38 @@ class ConsoleFacade:
             return None
         if self.plain:
             return None
-        result = questionary.select(prompt, choices=options).ask()
+        response = self._pop_prompt_response("choose")
+        if response is not None:
+            if response.get("use_default"):
+                return options[0] if options else None
+            if "value" in response and response["value"] in options:
+                return response["value"]
+            if "index" in response:
+                try:
+                    idx = int(response["index"])  # type: ignore[arg-type]
+                    if 0 <= idx < len(options):
+                        return options[idx]
+                except Exception:
+                    pass
+        if len(options) > 12:
+            result = questionary.autocomplete(
+                prompt, choices=options, match_middle=True, instruction="Type to filter"
+            ).ask()
+        else:
+            result = questionary.select(prompt, choices=options).ask()
         return result
 
     def input(self, prompt: str, *, default: Optional[str] = None) -> Optional[str]:
         """Get text input from user."""
         if self.plain:
             return default
+        response = self._pop_prompt_response("input")
+        if response is not None:
+            if response.get("use_default"):
+                return default
+            if "value" in response:
+                value = response["value"]
+                return None if value is None else str(value)
         result = questionary.text(prompt, default=default or "").ask()
         return result if result else default
 
@@ -195,9 +264,10 @@ class ConsoleFacade:
             return
 
         try:
-            lexer = get_lexer_by_name("diff")
-            highlighted = highlight(diff_text, lexer, TerminalFormatter())
-            self.console.print(highlighted, markup=False, highlight=False)
+            with self.console.pager():
+                lexer = get_lexer_by_name("diff")
+                highlighted = highlight(diff_text, lexer, TerminalFormatter())
+                self.console.print(highlighted, markup=False, highlight=False)
         except Exception:
             syntax = Syntax(diff_text, "diff", theme="ansi_dark")
             self.console.print(syntax)
@@ -241,104 +311,8 @@ class PlainConsoleFacade(ConsoleFacade):
         self.console = PlainConsole()
 
 
-@dataclass
-class InteractiveConsoleFacade(ConsoleFacade):
-    """Deprecated placeholder kept for backwards imports."""
-
-    def __post_init__(self) -> None:  # pragma: no cover - legacy alias
-        self.plain = False
-        self.console = Console(no_color=False, force_terminal=True)
-
-
 def create_console_facade(plain: bool) -> ConsoleFacade:
-    """Create a console facade.
-
-    Interactive mode uses gum + friends. Missing deps are treated as a hard
-    failure (no graceful degradation).
-    """
+    """Create a console facade."""
     if plain:
         return PlainConsoleFacade(plain=True)
-    _ensure_interactive_deps()
-    return GumConsoleFacade(plain=False)
-
-
-_REQUIRED_INTERACTIVE_CMDS = ("gum", "sk", "bat", "glow", "delta")
-
-
-def _ensure_interactive_deps() -> None:
-    missing: List[str] = []
-    for cmd in _REQUIRED_INTERACTIVE_CMDS:
-        if shutil.which(cmd) is None:
-            missing.append(cmd)
-    if missing:
-        raise RuntimeError(
-            "Interactive dependencies missing: "
-            + ", ".join(missing)
-            + ". Enter `nix develop` in the repo to load required helpers."
-        )
-
-
-@dataclass
-class GumConsoleFacade(ConsoleFacade):
-    """Interactive facade backed by gum/skim helpers."""
-
-    def __post_init__(self) -> None:
-        self.plain = False
-        self.console = Console(no_color=False, force_terminal=True)
-
-    def summary(self, title: str, lines: Iterable[str]) -> None:
-        markdown_lines = [f"## {title}"] + [f"- {line}" for line in lines]
-        markdown = "\n".join(markdown_lines) + "\n"
-        proc = subprocess.run(
-            ["gum", "format"],
-            input=markdown,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or "gum format failed")
-        # gum emits formatted markdown; print verbatim (no rich markup).
-        self.console.print(proc.stdout.rstrip("\n"), markup=False, highlight=False)
-
-    def confirm(self, prompt: str, *, default: bool = True) -> bool:
-        cmd = ["gum", "confirm", "--prompt", prompt]
-        if default:
-            cmd.append("--default")
-        proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
-        if proc.returncode == 0:
-            return True
-        if proc.stderr and "--prompt" in proc.stderr and "unknown" in proc.stderr.lower():
-            # Newer gum expects prompt as a positional argument.
-            retry_cmd = ["gum", "confirm"]
-            if default:
-                retry_cmd.append("--default")
-            retry_cmd.append(prompt)
-            retry = subprocess.run(retry_cmd, text=True, capture_output=True, check=False)
-            return retry.returncode == 0
-        return False
-
-    def choose(self, prompt: str, options: List[str]) -> Optional[str]:
-        if not options:
-            return None
-        proc = subprocess.run(
-            ["sk", "--prompt", prompt],
-            input="\n".join(options),
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if proc.returncode != 0:
-            return None
-        choice = proc.stdout.strip()
-        return choice if choice else None
-
-    def input(self, prompt: str, *, default: Optional[str] = None) -> Optional[str]:
-        cmd = ["gum", "input", "--prompt", prompt]
-        if default is not None:
-            cmd += ["--value", default]
-        proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
-        if proc.returncode != 0:
-            return default
-        value = proc.stdout.strip()
-        return value or default
+    return ConsoleFacade(plain=False)

@@ -21,6 +21,8 @@ let
     pygments
     tenacity
     click
+    pillow
+    pytesseract
   ];
   devDeps = with pyPkgs; [
     pytest

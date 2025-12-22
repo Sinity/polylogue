@@ -331,7 +331,7 @@ def process_conversation(
     force: bool,
     allow_dirty: bool = False,
     sanitize_html: bool = False,
-    attachment_ocr: bool = False,
+    attachment_ocr: bool = True,
     registrar: Optional[ConversationRegistrar] = None,
     repository: Optional[ConversationRepository] = None,
     citations: Optional[List[Any]] = None,

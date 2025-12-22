@@ -10,7 +10,6 @@ from polylogue.commands import CommandEnv
 from polylogue.cli.click_app import main
 from polylogue.cli.doctor import run_doctor_cli
 from polylogue.doctor import DoctorIssue, DoctorReport
-from polylogue import ui as ui_module
 from polylogue.ui import UI
 from polylogue import util as util_module
 from polylogue import paths as paths_module
@@ -52,18 +51,6 @@ def test_cli_search_runs_without_name_error(monkeypatch, tmp_path, capsys):
 def test_doctor_cli_handles_bracket_paths(monkeypatch, tmp_path, capsys):
     _configure_isolated_state(monkeypatch, tmp_path)
 
-    monkeypatch.setattr(ui_module.shutil, "which", lambda _cmd: "/usr/bin/fake")
-
-    calls = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        if cmd[:2] == ["gum", "format"]:
-            return SimpleNamespace(stdout="## Doctor\nPaths: [/tmp/foo[bar].json]", stderr="", returncode=0)
-        return SimpleNamespace(stdout="", stderr="", returncode=0)
-
-    monkeypatch.setattr(ui_module.subprocess, "run", fake_run)
-
     report = DoctorReport(
         checked={"codex": 1},
         issues=[DoctorIssue("codex", Path("/tmp/foo[bar].json"), "Codex sessions directory missing", "warning")],
@@ -77,5 +64,4 @@ def test_doctor_cli_handles_bracket_paths(monkeypatch, tmp_path, capsys):
     run_doctor_cli(args, env)
 
     captured = capsys.readouterr().out
-    assert "Paths: [/tmp/foo[bar].json]" in captured
-    assert any(cmd[:2] == ["gum", "format"] for cmd in calls)
+    assert "/tmp/foo[bar].json" in captured

@@ -9,7 +9,7 @@ Polylogue now follows a modular structure that separates orchestration concerns 
 
 ## Console Facade & UI
 
-- `polylogue/ui/facade.py` wraps Rich/gum functionality (the devshell ships these by default) and automatically drops to the plain console whenever stdout/stderr aren’t TTYs (or when `POLYLOGUE_FORCE_PLAIN=1` is set).
+- `polylogue/ui/facade.py` wraps the Rich/questionary UI stack and automatically drops to the plain console whenever stdout/stderr aren’t TTYs (or when `POLYLOGUE_FORCE_PLAIN=1` is set).
 - `polylogue.ui.UI` delegates to the facade but still provides interactive prompts (pickers, yes/no prompts, etc.) whenever the session is interactive (use `--interactive` to force prompts even in headless shells).
 
 ## Provider Sessions

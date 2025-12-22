@@ -4,7 +4,8 @@ Polylogue is a CLI toolkit for archiving AI/LLM conversations—rendering local 
 
 ## Quick Start
 
-- `direnv allow` (or `nix develop`) to enter the dev shell with gum/skim/rich installed.
+- `direnv allow` (or `nix develop`) to enter the dev shell with Polylogue’s Python dependencies (Rich, questionary, etc.) preloaded.
+- Install the required terminal helpers and OCR dependencies: [`sk`](https://github.com/lotabout/skim), [`bat`](https://github.com/sharkdp/bat), [`glow`](https://github.com/charmbracelet/glow), plus [Tesseract OCR](https://github.com/tesseract-ocr/tesseract) with Pillow+pytesseract bindings. The Nix dev shell installs everything automatically and exports `TESSDATA_PREFIX` so pytesseract sees the bundled English/Polish tessdata; pip users can run `pip install 'polylogue[ocr]'` and install Tesseract via their package manager.
 - Run `python3 polylogue.py --help` (or `polylogue help --examples`) to see commands; try `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync codex --dry-run` as a smoke test.
 - Copy `docs/polylogue.config.sample.jsonc` to `$XDG_CONFIG_HOME/polylogue/config.json` to set inbox/output roots and HTML defaults.
 
@@ -15,7 +16,7 @@ Polylogue is a CLI toolkit for archiving AI/LLM conversations—rendering local 
 - Run `python3 polylogue.py import run …`/`sync …` after importer changes to ensure real data still parses (set `POLYLOGUE_FORCE_PLAIN=1` if you need deterministic plain output in CI).
 
 - Enable the direnv-managed dev shell: `direnv allow` (uses `.envrc` to call `nix develop`).
-- Prefer manual entry? `nix develop` installs Python plus gum, skim, rich, bat, glow, etc.
+- Prefer manual entry? `nix develop` installs Python plus the CLI helpers bundled with the project.
 - Use `python3 polylogue.py <command>` (or `polylogue --help`) directly—every workflow is exposed as a CLI subcommand, and interactive pickers only appear when stdout/stderr are TTYs (pass `--interactive` to re-enable prompts in non-interactive shells, or `--plain` to force CI-friendly output).
 - When a directory has multiple JSON logs, commands such as `polylogue import run` and `polylogue sync` use skim to preview files with `bat`; press `Ctrl+G` for a live `glow` render before confirming.
 - The first Drive action walks you through supplying a Google OAuth client JSON; credentials and tokens are stored under `$XDG_CONFIG_HOME/polylogue/` (defaults to `~/.config/polylogue/`).
@@ -26,7 +27,7 @@ Polylogue is a CLI toolkit for archiving AI/LLM conversations—rendering local 
   - Bulk exports are processed incrementally per conversation: re-syncing a large ChatGPT/Claude export skips unchanged conversations instead of re-importing everything.
 - **Search transcripts:** `polylogue search` queries the SQLite FTS index with rich filters for provider, model, date range, and attachment metadata. Use `--in-attachments` to search attachment text (PDF/text/HTML plus OCR’d images when enabled) and `--attachment-name` to constrain filenames. `--open --limit 1` jumps directly to the anchored message in Markdown/HTML; anchors are stable for deep links. Export hits via `--csv path.csv` or `--json-lines --fields provider,slug,branchId,...`, and supply queries from stdin with `--from-stdin`.
 - **Compare providers:** `polylogue verify compare "query" --provider-a codex --provider-b claude-code` runs the same search across two providers and summarizes hit counts/models/attachments side-by-side (with `--json` for structured output).
-- **Browse archives:** `polylogue browse branches` renders branch trees (and auto-writes HTML explorers), and `polylogue browse stats` summarises tokens/attachments per provider (`--ignore-legacy` skips legacy `*.md` alongside `conversation.md`). `polylogue doctor attachments stats` summarizes attachment counts/bytes (CSV/JSONL supported), and `polylogue doctor attachments extract --ext .pdf --out ~/desk/pdfs` copies specific types out of archives. Use `--attachment-ocr` on render/sync/import to OCR image attachments into the searchable index. `polylogue browse inbox` lists pending exports (or `--dir` overrides), surfaces size/mtime/provider detection, and quarantines malformed items with `--quarantine`.
+- **Browse archives:** `polylogue browse branches` renders branch trees (and auto-writes HTML explorers), and `polylogue browse stats` summarises tokens/attachments per provider (`--ignore-legacy` skips legacy `*.md` alongside `conversation.md`). `polylogue doctor attachments stats` summarizes attachment counts/bytes (CSV/JSONL supported), and `polylogue doctor attachments extract --ext .pdf --out ~/desk/pdfs` copies specific types out of archives. Image attachments are OCR’d by default during render/sync/import; disable with `--no-attachment-ocr` if you need to skip OCR. `polylogue browse inbox` lists pending exports (or `--dir` overrides), surfaces size/mtime/provider detection, and quarantines malformed items with `--quarantine`.
 - **Watch local sessions in real time:** `polylogue sync codex --watch` and `polylogue sync claude-code --watch` keep IDE logs mirrored automatically, and `polylogue sync chatgpt --watch` / `polylogue sync claude --watch` tail the inbox (`~/.local/share/polylogue/inbox` by default) so every new ZIP or freshly extracted `conversations.json` triggers an incremental sync. Adjust debounce, HTML, pruning, and stall warnings via `--debounce/--stall-seconds`, flip on `--offline` for local-only steps, or run a single pass with `--once` when you just want to sweep directories without staying attached.
 - **Doctor & Stats:** `polylogue doctor check` sanity-checks source directories, verifies SQLite/Qdrant indexes, and surfaces Drive retry/failure rates from recent runs; `polylogue doctor index check --repair` reruns index validation/repairs in isolation; `polylogue browse stats` aggregates attachment sizes, token counts, and provider summaries (with `--since/--until` filters) and can emit ranked CSV/NDJSON lists via `--sort/--limit --csv --json-lines`. `polylogue doctor status` renders a Rich overview of provider health and the latest runs for at-a-glance monitoring.
 - **Settings:** `polylogue config set --html on --theme dark --collapse-threshold 25` updates the default render/sync preferences so scripted runs inherit the same HTML behaviour without extra flags; `polylogue config show --json` surfaces credential/token paths (env overrides respected).
@@ -65,10 +66,10 @@ For deeper observability notes (status filters, JSON summaries), see `docs/obser
 
 ## Commands & Flags
 Every workflow is available directly via the CLI:
-- `python3 polylogue.py sync drive|codex|claude-code|chatgpt|claude [--out DIR] [--links-only] [--attachment-ocr] [--dry-run] [--force] [--prune] [--collapse-threshold N] [--html [on|off|auto]] [--diff] [--json] [--watch] [--debounce SECONDS] [--stall-seconds SECONDS] [--once] [--root LABEL] [--disk-estimate] [--max-disk GiB]` (note: `--diff` is only valid for drive/codex/claude-code; watch/once flags apply to local providers).
+- `python3 polylogue.py sync drive|codex|claude-code|chatgpt|claude [--out DIR] [--links-only] [--attachment-ocr/--no-attachment-ocr] [--dry-run] [--force] [--prune] [--collapse-threshold N] [--html [on|off|auto]] [--diff] [--json] [--watch] [--debounce SECONDS] [--stall-seconds SECONDS] [--once] [--root LABEL] [--disk-estimate] [--max-disk GiB]` (note: `--diff` is only valid for drive/codex/claude-code; watch/once flags apply to local providers).
   - Drive extras: `--folder-name`, `--folder-id`, `--since`, `--until`, `--name-filter`, `--list-only`, `--chat-id ID` (repeatable)
   - Local extras: `--base-dir`, `--all`, `--session PATH` (repeatable) to bypass pickers
-- `python3 polylogue.py import run chatgpt|claude|codex|claude-code SOURCE … [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--attachment-ocr] [--dry-run] [--force] [--all] [--conversation-id ID ...] [--base-dir DIR] [--json] [--to-clipboard]`
+- `python3 polylogue.py import run chatgpt|claude|codex|claude-code SOURCE … [--out DIR] [--collapse-threshold N] [--html [on|off|auto]] [--attachment-ocr/--no-attachment-ocr] [--dry-run] [--force] [--all] [--conversation-id ID ...] [--base-dir DIR] [--json] [--to-clipboard]`
 - `python3 polylogue.py import reprocess [--provider NAME] [--fallback]`
 - `python3 polylogue.py search QUERY [--limit N] [--provider NAME] [--slug SLUG] [--conversation-id ID] [--branch BRANCH_ID] [--model MODEL] [--since RFC3339] [--until RFC3339] [--with-attachments|--without-attachments] [--in-attachments] [--attachment-name NAME] [--no-picker] [--json] [--json-lines] [--csv PATH] [--fields field,list] [--from-stdin] [--open]`
 - `python3 polylogue.py verify check [--provider NAME] [--slug SLUG] [--conversation-id ID ...] [--limit N] [--fix] [--unknown ignore|warn|error] [--allow-polylogue-key KEY ...] [--strict] [--json]`
@@ -92,7 +93,7 @@ Every workflow is available directly via the CLI:
 - `python3 polylogue.py config init`
 - `python3 polylogue.py config set [--html on|off] [--theme light|dark] [--collapse-threshold N] [--reset] [--json]`
 - `python3 polylogue.py config show [--json]`
-- `python3 polylogue.py config prefs list|set|clear [--json]` (e.g., `polylogue config prefs set --command search --flag --limit --value 50`, `--flag --no-picker --value on`, `polylogue config prefs set --command sync --flag --html --value on`, `polylogue config prefs set --command import --flag --attachment-ocr --value on`)
+- `python3 polylogue.py config prefs list|set|clear [--json]` (e.g., `polylogue config prefs set --command search --flag --limit --value 50`, `--flag --no-picker --value on`, `polylogue config prefs set --command sync --flag --html --value on`, `polylogue config prefs set --command import --flag --attachment-ocr --value off`)
 - `python3 polylogue.py help [COMMAND]`
 - `python3 polylogue.py completions --shell bash|zsh|fish`
 
@@ -101,12 +102,11 @@ Use `--to-clipboard` on `import` commands to copy a single Markdown result direc
 
 ## Tooling & UX Stack
 The dev shell equips Polylogue with:
-- `gum` for confirmations, pickers, and formatted summaries.
-- `skim (sk)` for fuzzy selection with previews (`bat` and `glow`).
-- `rich` for progress bars, tables, and styled output.
-- `bat`, `delta`, `fd`, `ripgrep`, `glow` as supporting CLIs.
+- `questionary` (prompt_toolkit) for confirmations, pickers, and text input—everything runs directly in Python.
+- `rich` for progress bars, tables, markdown/code rendering, and styled output.
+- `pygments`, `fd`, `ripgrep`, `jq`, and other general-purpose helpers.
 
-Interactive features assume the gum/skim/Rich toolchain from the dev shell; for raw stdout or CI-friendly output rely on the automatic plain-mode detection or export `POLYLOGUE_FORCE_PLAIN=1`.
+Interactive features assume the built-in questionary/Rich UI; for raw stdout or CI-friendly output rely on the automatic plain-mode detection or export `POLYLOGUE_FORCE_PLAIN=1`.
 
 ### Shell Completions
 Generate a completion script with `polylogue completions --shell bash|zsh|fish` and source it from your shell profile. All shells call back into `polylogue _complete …` so they can surface live data (known providers, branch slugs, session paths, etc.) while you tab through arguments.
@@ -114,6 +114,7 @@ Generate a completion script with `polylogue completions --shell bash|zsh|fish` 
 
 ## Nix Flake Usage
 - This repository is a self-contained flake: add `inputs.polylogue.url = "github:yourname/polylogue";` (or your fork) to another flake and reference the packaged CLI as `inputs.polylogue.packages.${system}.polylogue` or `inputs.polylogue.apps.${system}.polylogue`.
+- The `nixosModules.polylogue` module provisions the watch services with the packaged CLI, hard-requires the skim/bat/glow helpers plus Tesseract, exports `TESSDATA_PREFIX`, and exposes OCR settings (`services.polylogue.ocr.enable`, `languages`, `tessdataPackage`). OCR defaults to on, so the generated systemd units only append `--no-attachment-ocr` if you explicitly disable the module option.
 
 ## Configuration
 - Polylogue reads configuration from `$POLYLOGUE_CONFIG` or `$XDG_CONFIG_HOME/polylogue/config.json`, and validates the contents at startup so typos (bad themes, non-numeric thresholds, mis-typed paths) fail fast with actionable messages.
@@ -133,7 +134,7 @@ Generate a completion script with `polylogue completions --shell bash|zsh|fish` 
 ## Formatting
 - Markdown keeps attachments in per-chat `attachments/` folders when downloads are enabled.
 - Responses are folded at 25 lines by default (configurable via flag or `polylogue config set --collapse-threshold`).
-- Summaries are shown both as rich panels and gum-formatted Markdown for easy copy/paste.
+- Summaries are shown as Rich panels/markdown for easy copy/paste.
 - Collapsible callouts stay as Markdown blockquotes; open the generated `.html` preview for interactive folding when terminal renderers (e.g., `glow`) don’t support it.
 - Imported providers share the same Markdown pipeline, so chunk counts, token approximations, and attachment sniffing behave consistently across Gemini, ChatGPT, Claude, Claude Code, and Codex sources.
 

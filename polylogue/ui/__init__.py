@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional, Set
 import sys
-
-import shutil as _shutil
-import subprocess as _subprocess
 from rich.progress import (
     BarColumn,
     Progress,
@@ -17,17 +14,12 @@ from rich.progress import (
 
 from .facade import Console, ConsoleFacade, ConsoleLike, create_console_facade
 
-shutil = _shutil
-subprocess = _subprocess
-
 __all__ = [
     "UI",
     "create_ui",
     "ConsoleFacade",
     "ConsoleLike",
     "Console",
-    "shutil",
-    "subprocess",
 ]
 
 
@@ -59,6 +51,15 @@ class UI:
 
     def summary(self, title: str, lines: Iterable[str]) -> None:
         self._facade.summary(title, lines)
+
+    def render_markdown(self, content: str) -> None:
+        self._facade.render_markdown(content)
+
+    def render_code(self, code: str, language: str = "python") -> None:
+        self._facade.render_code(code, language)
+
+    def render_diff(self, old_text: str, new_text: str, filename: str = "file") -> None:
+        self._facade.render_diff(old_text, new_text, filename)
 
     # Prompting ------------------------------------------------------------
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
@@ -93,7 +94,7 @@ class UI:
                     value = int(response)
                     if 1 <= value <= len(options):
                         return options[value - 1]
-                self.console.print("[yellow]Enter a number corresponding to your choice.")
+                self._print_notice("Enter a number corresponding to your choice.")
             return None
         return self._facade.choose(prompt, options)
 
@@ -112,7 +113,7 @@ class UI:
     # Progress -------------------------------------------------------------
     def progress(self, description: str, total: Optional[int] = None):
         if self.plain:
-            return _NullProgressTracker()
+            return _PlainProgressTracker(self.console, description, total)
         columns = (
             SpinnerColumn(),
             TextColumn("{task.description}"),
@@ -130,29 +131,58 @@ class UI:
         if topic in self._plain_warnings:
             return
         self._plain_warnings.add(topic)
-        self.console.print(f"[yellow]Plain mode cannot prompt for {topic}; rerun with --interactive or pass explicit flags.")
+        self._print_notice(
+            f"Plain mode cannot prompt for {topic}; rerun with --interactive or pass explicit flags."
+        )
 
     def _abort_plain_prompt(self, topic: str) -> None:
         self._warn_plain(topic)
         raise SystemExit(1)
+
+    def _print_notice(self, text: str) -> None:
+        if self.plain:
+            self.console.print(text)
+        else:
+            self.console.print(f"[yellow]{text}[/yellow]")
 
 
 def create_ui(plain: bool) -> UI:
     return UI(plain=plain)
 
 
-class _NullProgressTracker:
+class _PlainProgressTracker:
+    def __init__(self, console: ConsoleLike, description: str, total: Optional[int]) -> None:
+        self._console = console
+        self._description = description
+        self._total = float(total) if total is not None else None
+        self._completed = 0.0
+        self._console.print(f"{description}...")
+
     def __enter__(self):
         return self
 
-    def advance(self, *_args, **_kwargs) -> None:
-        return None
+    def advance(self, advance: float = 1.0) -> None:
+        self._completed += advance
 
-    def update(self, *_args, **_kwargs) -> None:
-        return None
+    def update(self, *, total: Optional[int] = None, description: Optional[str] = None) -> None:
+        if description and description != self._description:
+            self._description = description
+            self._console.print(f"{description}...")
+        if total is not None:
+            self._total = float(total)
 
-    def __exit__(self, *_exc) -> None:
-        return None
+    def __exit__(self, exc_type, exc, tb):
+        status = "aborted" if exc_type else "complete"
+        suffix = ""
+        if self._total is not None:
+            suffix = f" ({self._format_value(self._completed)}/{self._format_value(self._total)})"
+        self._console.print(f"{self._description} {status}{suffix}")
+
+    @staticmethod
+    def _format_value(value: float) -> str:
+        if value.is_integer():
+            return str(int(value))
+        return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 class _RichProgressTracker:
