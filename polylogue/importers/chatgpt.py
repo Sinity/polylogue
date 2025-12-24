@@ -9,8 +9,28 @@ from tempfile import TemporaryDirectory
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import ijson
+from decimal import Decimal
 
 from ..db import get_raw_import_by_conversation, open_connection
+
+
+class _DecimalEncoder(json.JSONEncoder):
+    """JSON encoder that converts Decimal to float for ijson compatibility."""
+    def default(self, o):
+        if isinstance(o, Decimal):
+            return float(o)
+        return super().default(o)
+
+
+def _convert_decimals(obj):
+    """Recursively convert Decimal values to float for JSON compatibility."""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, dict):
+        return {k: _convert_decimals(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_convert_decimals(item) for item in obj]
+    return obj
 from ..render import AttachmentInfo
 from ..util import (
     assign_conversation_slug,
@@ -242,6 +262,8 @@ def import_chatgpt_export(
                     for conv in ijson.items(fh, "item"):
                         if not isinstance(conv, dict):
                             raise ValueError
+                        # Convert Decimal values from ijson to floats for JSON compatibility
+                        conv = _convert_decimals(conv)
                         conv_id = conv.get("id") or conv.get("conversation_id")
                         if selected_ids and conv_id not in selected_ids:
                             continue
@@ -253,7 +275,7 @@ def import_chatgpt_export(
                         html_path = conversation_dir / "conversation.html" if html else None
                         attachments_dir = conversation_dir / "attachments"
                         # Store per-conversation raw snapshot (deduped by hash/version)
-                        raw_bytes = json.dumps(conv, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                        raw_bytes = json.dumps(conv, ensure_ascii=False, separators=(",", ":"), cls=_DecimalEncoder).encode("utf-8")
                         raw_hash = compute_hash(raw_bytes)
 
                         state_entry = registrar.get_state("chatgpt", conv_id_str)
