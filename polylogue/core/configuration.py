@@ -56,6 +56,28 @@ class OutputPathsConfig(BaseSettings):
         return v
 
 
+class LabeledRootPathsConfig(BaseSettings):
+    """Per-label output root overrides."""
+
+    render: Path
+    sync_drive: Path
+    sync_codex: Path
+    sync_claude_code: Path
+    import_chatgpt: Path
+    import_claude: Path
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def expand_path(cls, v: Any) -> Path:
+        if isinstance(v, str):
+            return Path(v).expanduser()
+        if isinstance(v, Path):
+            return v.expanduser()
+        return v
+
+    model_config = SettingsConfigDict(extra="allow")
+
+
 class DefaultsConfig(BaseSettings):
     """Default settings for the application."""
 
@@ -90,8 +112,9 @@ class PathsConfig(BaseSettings):
     input_root: Path = Field(default=DATA_HOME / "inbox")
     output_root: Path = Field(default=DATA_HOME / "archive")
     config_home: Path = Field(default=CONFIG_HOME)
+    roots: Dict[str, LabeledRootPathsConfig] = Field(default_factory=dict)
 
-    @field_validator("*", mode="before")
+    @field_validator("input_root", "output_root", "config_home", mode="before")
     @classmethod
     def expand_path(cls, v: Any) -> Path:
         if isinstance(v, str):
@@ -103,6 +126,7 @@ class PathsConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="POLYLOGUE_",
         env_nested_delimiter="__",
+        extra="allow",
     )
 
 
@@ -147,10 +171,27 @@ class AppConfig(BaseSettings):
 
             if "defaults" in data or "ui" in data:
                 defaults_data = data.get("defaults") or data.get("ui") or {}
+                # Map legacy field names from ui section
+                if "html" in defaults_data and "html_previews" not in defaults_data:
+                    defaults_data["html_previews"] = defaults_data.pop("html")
+                if "theme" in defaults_data and "html_theme" not in defaults_data:
+                    defaults_data["html_theme"] = defaults_data.pop("theme")
                 config_dict["defaults"] = DefaultsConfig(**defaults_data)
 
             if "index" in data:
-                config_dict["index"] = IndexConfig(**data["index"])
+                index_data = dict(data["index"])
+                # Flatten nested qdrant object to flat field names
+                if "qdrant" in index_data and isinstance(index_data["qdrant"], dict):
+                    qdrant = index_data.pop("qdrant")
+                    if "url" in qdrant and "qdrant_url" not in index_data:
+                        index_data["qdrant_url"] = qdrant["url"]
+                    if "api_key" in qdrant and "qdrant_api_key" not in index_data:
+                        index_data["qdrant_api_key"] = qdrant["api_key"]
+                    if "collection" in qdrant and "qdrant_collection" not in index_data:
+                        index_data["qdrant_collection"] = qdrant["collection"]
+                    if "vector_size" in qdrant and "qdrant_vector_size" not in index_data:
+                        index_data["qdrant_vector_size"] = qdrant["vector_size"]
+                config_dict["index"] = IndexConfig(**index_data)
 
             # Store raw data for compatibility
             config_dict["raw"] = data
@@ -159,7 +200,8 @@ class AppConfig(BaseSettings):
             return cls(**config_dict)
         except Exception as e:
             # Fallback to default config on parse error
-            print(f"Warning: Failed to parse config file {path}: {e}")
+            import sys
+            print(f"Warning: Failed to parse config file {path}: {e}", file=sys.stderr)
             return cls()
 
     @classmethod
