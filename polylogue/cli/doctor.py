@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from rich.table import Table
+from rich.text import Text
 
 from ..commands import CommandEnv
 from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS, is_config_declarative
@@ -96,9 +97,9 @@ def run_doctor_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             table.add_row(
                 issue.provider,
                 issue.severity.upper(),
-                str(issue.path),
-                issue.message,
-                issue.hint or "",
+                Text(str(issue.path)),
+                Text(issue.message),
+                Text(issue.hint or ""),
                 style=style,
             )
         console.print(table)
