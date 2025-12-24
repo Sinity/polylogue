@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 from click.testing import CliRunner
 
@@ -69,6 +70,22 @@ def test_fish_completions_include_descriptions(state_env) -> None:
     result = runner.invoke(click_cli, ["completions", "--shell", "fish"])
     assert result.exit_code == 0
     assert "Synchronize provider archives" in result.output
+
+
+def test_completions_auto_detects_shell_from_env(state_env) -> None:
+    runner = CliRunner()
+    env = {**os.environ, "SHELL": "/bin/zsh"}
+    result = runner.invoke(click_cli, ["completions"], env=env)
+    assert result.exit_code == 0
+    assert "#compdef polylogue" in result.output
+
+
+def test_completions_detection_failure_is_friendly(state_env) -> None:
+    runner = CliRunner()
+    env = {**os.environ, "SHELL": "/bin/tcsh"}
+    result = runner.invoke(click_cli, ["completions"], env=env)
+    assert result.exit_code == 1
+    assert "Unable to detect shell" in result.output
 
 
 def test_complete_top_level(state_env) -> None:

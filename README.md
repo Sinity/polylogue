@@ -95,7 +95,7 @@ Every workflow is available directly via the CLI:
 - `python3 polylogue.py config show [--json]`
 - `python3 polylogue.py config prefs list|set|clear [--json]` (e.g., `polylogue config prefs set --command search --flag --limit --value 50`, `--flag --no-picker --value on`, `polylogue config prefs set --command sync --flag --html --value on`, `polylogue config prefs set --command import --flag --attachment-ocr --value off`)
 - `python3 polylogue.py help [COMMAND]`
-- `python3 polylogue.py completions --shell bash|zsh|fish`
+- `python3 polylogue.py completions [--shell bash|zsh|fish]`
 
 Plain mode is selected automatically whenever stdout/stderr aren't TTYs (or when `POLYLOGUE_FORCE_PLAIN=1` is set), and `--json` prints machine-readable summaries.
 Use `--to-clipboard` on `import` commands to copy a single Markdown result directly to your system clipboard.
@@ -109,7 +109,7 @@ The dev shell equips Polylogue with:
 Interactive features assume the built-in questionary/Rich UI; for raw stdout or CI-friendly output rely on the automatic plain-mode detection or export `POLYLOGUE_FORCE_PLAIN=1`.
 
 ### Shell Completions
-Generate a completion script with `polylogue completions --shell bash|zsh|fish` and source it from your shell profile. All shells call back into `polylogue _complete …` so they can surface live data (known providers, branch slugs, session paths, etc.) while you tab through arguments.
+Generate a completion script with `polylogue completions --shell bash|zsh|fish` and source it from your shell profile. When `--shell` is omitted the CLI auto-detects your shell from `$SHELL` (or `POLYLOGUE_COMPLETIONS_SHELL`), so `polylogue completions` Just Works in most environments. All shells call back into `polylogue _complete …` so they can surface live data (known providers, branch slugs, session paths, etc.) while you tab through arguments.
 
 
 ## Nix Flake Usage

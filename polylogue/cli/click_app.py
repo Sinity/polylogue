@@ -744,7 +744,12 @@ def help_cmd(ctx: click.Context, topic: Optional[str], examples: bool) -> None: 
 
 
 @cli.command()
-@click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True)
+@click.option(
+    "--shell",
+    type=click.Choice(["bash", "zsh", "fish"]),
+    default=None,
+    help="Shell to emit completions for (auto-detected from $SHELL when omitted)",
+)
 @click.pass_obj
 def completions(env: CommandEnv, **kwargs) -> None:
     """Emit shell completion script."""

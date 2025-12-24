@@ -18,6 +18,7 @@ let
     XDG_DATA_HOME = toString cfg.dataHome;
     XDG_STATE_HOME = toString cfg.stateDir;
     POLYLOGUE_FORCE_PLAIN = "1";
+    POLYLOGUE_DECLARATIVE = "1";
     TESSDATA_PREFIX = tessdataDir;
   };
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import textwrap
+import os
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import click
@@ -9,6 +11,38 @@ from ..commands import CommandEnv
 from ..ui import create_ui
 from .click_introspect import click_command_entries
 from .completion_engine import CompletionEngine
+
+_SUPPORTED_SHELLS = ("bash", "zsh", "fish")
+
+
+def _normalize_shell_name(value: str) -> str:
+    candidate = value.strip()
+    if not candidate:
+        return ""
+    try:
+        candidate = Path(candidate).name
+    except Exception:
+        pass
+    return candidate.lower()
+
+
+def _detect_shell(explicit: Optional[str]) -> str:
+    if explicit:
+        return explicit
+    env_override = os.environ.get("POLYLOGUE_COMPLETIONS_SHELL")
+    if env_override:
+        normalized = _normalize_shell_name(env_override)
+        if normalized in _SUPPORTED_SHELLS:
+            return normalized
+    shell_env = os.environ.get("SHELL") or os.environ.get("COMSPEC")
+    if shell_env:
+        normalized = _normalize_shell_name(shell_env)
+        if normalized in _SUPPORTED_SHELLS:
+            return normalized
+    supported = ", ".join(_SUPPORTED_SHELLS)
+    raise click.ClickException(
+        f"Unable to detect shell automatically. Pass --shell ({supported}) or set POLYLOGUE_COMPLETIONS_SHELL."
+    )
 
 
 def _bash_dynamic_script() -> str:
@@ -108,7 +142,7 @@ def run_completions_cli(args: object, env: CommandEnv, root: click.Group) -> Non
     entries = click_command_entries(root)
     commands = [name for name, _ in entries]
     descriptions = {name: desc for name, desc in entries if desc}
-    shell = getattr(args, "shell", None)
+    shell = _detect_shell(getattr(args, "shell", None))
     if shell == "zsh":
         print(_zsh_dynamic_script())
         return
@@ -128,4 +162,3 @@ def run_complete_cli(args: object, env: Optional[CommandEnv], root: click.Group)
 
 
 __all__ = ["run_completions_cli", "run_complete_cli"]
-
