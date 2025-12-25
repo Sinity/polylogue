@@ -31,7 +31,7 @@
           pyPkgs = pkgs.python3Packages;
           deps = import ./nix/python-deps.nix { inherit pkgs; };
 
-          cliDeps = with pkgs; [ git ];
+          cliDeps = with pkgs; [ git bat glow skim ];
           cliBinPath = pkgs.lib.makeBinPath cliDeps;
 
           polylogueApp = pyPkgs.buildPythonApplication {
