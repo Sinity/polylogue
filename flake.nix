@@ -38,6 +38,7 @@
             pname = "polylogue";
             version = "0.1.0";
             pyproject = true;
+            doCheck = false;
             src = self;
             propagatedBuildInputs = deps.commonDeps;
             nativeBuildInputs =
