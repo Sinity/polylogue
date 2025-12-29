@@ -21,14 +21,8 @@ from ..pipeline_runner import Pipeline, PipelineContext
 from ..util import CODEX_SESSIONS_ROOT, format_run_brief, latest_run, path_order_key
 from ..schema import stamp_payload
 from .context import (
-    DEFAULT_CLAUDE_CODE_SYNC_OUT,
-    DEFAULT_CHATGPT_OUT,
-    DEFAULT_CLAUDE_OUT,
-    DEFAULT_CODEX_SYNC_OUT,
-    DEFAULT_COLLAPSE,
     parse_meta_items,
     resolve_collapse_thresholds,
-    resolve_collapse_value,
     resolve_html_enabled,
 )
 from .json_output import safe_json_handler
@@ -52,6 +46,18 @@ def _apply_import_prefs(args: object, env: CommandEnv) -> None:
         setattr(args, "attachment_ocr", _truthy(import_prefs["--attachment-ocr"]))
     if "--sanitize-html" in import_prefs and _truthy(import_prefs["--sanitize-html"]):
         setattr(args, "sanitize_html", True)
+
+
+def _resolve_import_output(provider: str, env: CommandEnv) -> Path:
+    outputs = env.config.defaults.output_dirs
+    mapping = {
+        "chatgpt": outputs.import_chatgpt,
+        "claude": outputs.import_claude,
+        "codex": outputs.sync_codex,
+        "claude-code": outputs.sync_claude_code,
+        "claude_code": outputs.sync_claude_code,
+    }
+    return mapping.get(provider, outputs.render)
 
 
 class ImportExecuteStage:
@@ -222,7 +228,7 @@ def run_import_codex(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     console = ui.console
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else CODEX_SESSIONS_ROOT
-    out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
+    out_dir = Path(args.out) if args.out else _resolve_import_output("codex", env)
     out_dir.mkdir(parents=True, exist_ok=True)
     settings = env.settings
     collapse_thresholds = getattr(args, "collapse_thresholds", None) or resolve_collapse_thresholds(args, settings)
@@ -318,7 +324,7 @@ def run_import_chatgpt(args: SimpleNamespace, env: CommandEnv) -> None:
             console.print(f"[dim]Check that the path is correct and the file exists.")
             raise SystemExit(1)
 
-    out_dir = Path(args.out) if args.out else DEFAULT_CHATGPT_OUT
+    out_dir = Path(args.out) if args.out else _resolve_import_output("chatgpt", env)
     settings = env.settings
     collapse_thresholds = getattr(args, "collapse_thresholds", None) or resolve_collapse_thresholds(args, settings)
     collapse = collapse_thresholds["message"]
@@ -430,7 +436,7 @@ def run_import_claude(args: SimpleNamespace, env: CommandEnv) -> None:
             console.print(f"[dim]Check that the path is correct and the file exists.")
             raise SystemExit(1)
 
-    out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_OUT
+    out_dir = Path(args.out) if args.out else _resolve_import_output("claude", env)
     settings = env.settings
     collapse_thresholds = getattr(args, "collapse_thresholds", None) or resolve_collapse_thresholds(args, settings)
     collapse = collapse_thresholds["message"]
@@ -527,8 +533,10 @@ def run_import_claude_code(args: SimpleNamespace, env: CommandEnv) -> None:
     console = ui.console
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else DEFAULT_PROJECT_ROOT
     session_id = args.session_id
+    chosen = None
+    cancelled = False
 
-    if session_id in {"pick", "?"} or (session_id == "-" and not ui.plain):
+    if (session_id in {None, "", "pick", "?", "-"}) and not ui.plain:
         from ..cli_common import choose_single_entry
         entries = list_claude_code_sessions(base_dir)
         if not entries:
@@ -541,15 +549,18 @@ def run_import_claude_code(args: SimpleNamespace, env: CommandEnv) -> None:
         chosen, cancelled = choose_single_entry(
             ui, entries, format_line=_format_session, header="Select Claude Code session", prompt="session>"
         )
-    if cancelled:
-        console.print("[yellow]Import cancelled; no session selected.")
+        if cancelled:
+            console.print("[yellow]Import cancelled; no session selected.")
+            return
+        if chosen is None:
+            console.print("[yellow]No session selected.")
+            return
+        session_id = chosen["path"]
+    elif session_id in {None, "", "pick", "?", "-"}:
+        console.print("[yellow]Provide a Claude Code session file or run interactively.")
         return
-    if chosen is None:
-        console.print("[yellow]No session selected.")
-        return
-    session_id = chosen["path"]
 
-    out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
+    out_dir = Path(args.out) if args.out else _resolve_import_output("claude-code", env)
     settings = env.settings
     collapse_thresholds = getattr(args, "collapse_thresholds", None) or resolve_collapse_thresholds(args, settings)
     collapse = collapse_thresholds["message"]
