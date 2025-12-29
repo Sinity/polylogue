@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 from ..commands import CommandEnv
 
@@ -23,8 +24,16 @@ def run_config_show(args: object, env: CommandEnv) -> None:
     credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
     drive_cfg = getattr(env, "config", None).drive if hasattr(env, "config") else None
-    credential_path = drive_cfg.credentials_path if drive_cfg else DEFAULT_CREDENTIALS
-    token_path = drive_cfg.token_path if drive_cfg else DEFAULT_TOKEN
+    credential_path = (
+        Path(credential_env).expanduser()
+        if credential_env
+        else (drive_cfg.credentials_path if drive_cfg else DEFAULT_CREDENTIALS)
+    )
+    token_path = (
+        Path(token_env).expanduser()
+        if token_env
+        else (drive_cfg.token_path if drive_cfg else DEFAULT_TOKEN)
+    )
 
     if getattr(args, "json", False):
         roots_map = getattr(env.config.defaults, "roots", {}) or {}

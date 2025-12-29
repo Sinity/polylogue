@@ -909,7 +909,7 @@ def sync_claude_code_sessions(
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
-        sessions = base_dir.rglob("*.jsonl")
+        sessions = _list_claude_code_paths(base_dir)
     return _sync_sessions(
         sessions,
         output_dir=output_dir,
