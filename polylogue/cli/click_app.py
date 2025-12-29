@@ -365,7 +365,6 @@ def render(env: CommandEnv, **kwargs) -> None:
         env.ui.console.print("--allow-dirty requires --force")
         raise SystemExit(1)
     from .render import run_render_cli
-    from .render_force import run_render_force
 
     ctx = click.get_current_context()
     params = dict(kwargs)
@@ -375,9 +374,6 @@ def render(env: CommandEnv, **kwargs) -> None:
     if params.get("attachment_ocr") is None:
         params["attachment_ocr"] = True
     args = SimpleNamespace(**params)
-    if getattr(args, "force", False):
-        exit_code = run_render_force(env, provider=None, conversation_id=None, output_dir=getattr(args, "out", None))
-        raise SystemExit(exit_code)
     run_render_cli(args, env, json_output=getattr(args, "json", False))
 
 

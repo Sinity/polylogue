@@ -40,6 +40,7 @@ def import_claude_code_session(
     attachment_ocr: bool = True,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
+    conversation_id_override: Optional[str] = None,
 ) -> ImportResult:
     from .raw_storage import store_raw_import, mark_parse_success, mark_parse_failed
 
@@ -50,7 +51,7 @@ def import_claude_code_session(
     if not session_paths:
         raise FileNotFoundError(f"Claude Code session {session_id} not found under {base_dir}")
 
-    conversation_id = resolved_session_id or session_id
+    conversation_id = conversation_id_override or resolved_session_id or session_id
     primary_path = primary_path or session_paths[0]
 
     # Store raw session data before parsing
