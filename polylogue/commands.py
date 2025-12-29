@@ -765,7 +765,7 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
         eta = ((total - done) / rate) if rate > 0 else None
         pct = (done / total) * 100.0
         env.ui.console.print(
-            f"[dim]drive progress: {done}/{total} ({pct:.1f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
+            f"[dim]drive progress: {done}/{total} ({pct:.0f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
         )
     with env.ui.progress(description, total=len(chats)) as tracker:
         for idx, meta in enumerate(chats, start=1):
