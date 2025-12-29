@@ -35,6 +35,7 @@ def _persist_all(env: CommandEnv) -> None:
         html_theme=settings.html_theme,
         index=config_obj.index,
         roots=config_obj.defaults.roots if getattr(config_obj.defaults, "roots", None) else None,
+        drive=config_obj.drive if hasattr(config_obj, "drive") else None,
         path=CONFIG_PATH,
     )
 
