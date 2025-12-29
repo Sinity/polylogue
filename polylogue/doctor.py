@@ -4,7 +4,7 @@ import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import os
 
@@ -57,37 +57,67 @@ def _check_jsonl(path: Path, max_lines: int = 3) -> Optional[str]:
     return None
 
 
-def inspect_codex(base_dir: Path, limit: Optional[int]) -> DoctorReport:
+ProgressCallback = Callable[[int, Optional[int]], None]
+
+
+def _iter_jsonl_paths(
+    base_dir: Path,
+    *,
+    limit: Optional[int],
+    progress: Optional[ProgressCallback],
+) -> Tuple[Iterable[Path], Optional[int]]:
+    total = limit if limit is not None else None
+    if progress:
+        progress(0, total)
+    return base_dir.rglob("*.jsonl"), total
+
+
+def inspect_codex(base_dir: Path, limit: Optional[int], progress: Optional[ProgressCallback] = None) -> DoctorReport:
     issues: List[DoctorIssue] = []
     checked = 0
     base_dir = base_dir.expanduser()
     if not base_dir.exists():
         issues.append(DoctorIssue("codex", base_dir, "Codex sessions directory missing", "warning"))
         return DoctorReport({"codex": 0}, issues)
-    for path in sorted(base_dir.rglob("*.jsonl")):
+    paths, total = _iter_jsonl_paths(base_dir, limit=limit, progress=progress)
+    for path in paths:
         if limit is not None and checked >= limit:
             break
         checked += 1
         error = _check_jsonl(path)
         if error:
             issues.append(DoctorIssue("codex", path, error))
+        if progress:
+            progress(checked, total)
+    if progress and (total is None or (total and checked < total)):
+        progress(checked, checked)
     return DoctorReport({"codex": checked}, issues)
 
 
-def inspect_claude_code(base_dir: Path, limit: Optional[int]) -> DoctorReport:
+def inspect_claude_code(
+    base_dir: Path,
+    limit: Optional[int],
+    progress: Optional[ProgressCallback] = None,
+) -> DoctorReport:
     issues: List[DoctorIssue] = []
     checked = 0
     base_dir = base_dir.expanduser()
     if not base_dir.exists():
         issues.append(DoctorIssue("claude-code", base_dir, "Claude Code projects directory missing", "warning"))
         return DoctorReport({"claude-code": 0}, issues)
-    for path in sorted(base_dir.rglob("*.jsonl")):
+    paths, total = _iter_jsonl_paths(base_dir, limit=limit, progress=progress)
+    for path in paths:
         if limit is not None and checked >= limit:
             break
         checked += 1
         error = _check_jsonl(path)
         if error:
             issues.append(DoctorIssue("claude-code", path, error))
+        if progress:
+            progress(checked, total)
+    if progress and (total is None or (total and checked < total)):
+        progress(checked, checked)
+    issues.extend(_claude_code_retention_issues())
     return DoctorReport({"claude-code": checked}, issues)
 
 
@@ -129,6 +159,72 @@ def _drive_failure_issues() -> List[DoctorIssue]:
         if stats.get("last_error"):
             message += f" Last error: {stats['last_error']}"
         issues.append(DoctorIssue(provider, STATE_HOME / "polylogue.db", message, severity))
+    return issues
+
+
+def _claude_code_retention_issues() -> List[DoctorIssue]:
+    issues: List[DoctorIssue] = []
+    config_root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    settings_path = config_root / "claude" / "settings.json"
+    if not settings_path.exists():
+        issues.append(
+            DoctorIssue(
+                "claude-code",
+                settings_path,
+                "Claude Code settings.json missing; default cleanup keeps history for 30 days.",
+                "warning",
+                hint="Add cleanupPeriodDays to settings.json to disable auto-deletion (e.g., 99999).",
+            )
+        )
+        return issues
+    try:
+        data = json.loads(settings_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        issues.append(
+            DoctorIssue(
+                "claude-code",
+                settings_path,
+                f"Claude Code settings.json unreadable: {exc}",
+                "warning",
+                hint="Fix settings.json and ensure cleanupPeriodDays is set to a large value.",
+            )
+        )
+        return issues
+    cleanup_days = data.get("cleanupPeriodDays")
+    if cleanup_days is None:
+        issues.append(
+            DoctorIssue(
+                "claude-code",
+                settings_path,
+                "cleanupPeriodDays not set; default cleanup keeps history for 30 days.",
+                "warning",
+                hint="Set cleanupPeriodDays to a large value (e.g., 99999) to disable auto-deletion.",
+            )
+        )
+        return issues
+    try:
+        cleanup_int = int(cleanup_days)
+    except (TypeError, ValueError):
+        issues.append(
+            DoctorIssue(
+                "claude-code",
+                settings_path,
+                f"cleanupPeriodDays is not an integer: {cleanup_days!r}.",
+                "warning",
+                hint="Set cleanupPeriodDays to a large integer (e.g., 99999).",
+            )
+        )
+        return issues
+    if cleanup_int < 90:
+        issues.append(
+            DoctorIssue(
+                "claude-code",
+                settings_path,
+                f"cleanupPeriodDays is set to {cleanup_int} days; history may be pruned.",
+                "warning",
+                hint="Increase cleanupPeriodDays to retain local history (e.g., 99999).",
+            )
+        )
     return issues
 
 
@@ -312,13 +408,27 @@ def run_doctor(
     limit: Optional[int] = None,
     service: Optional[ConversationService] = None,
     archive: Optional[Archive] = None,
+    progress: Optional[Callable[[str, int, Optional[int]], None]] = None,
 ) -> DoctorReport:
     credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
     credential_path = DEFAULT_CREDENTIALS
     token_path = DEFAULT_TOKEN
-    codex_report = inspect_codex(codex_dir, limit)
-    claude_report = inspect_claude_code(claude_code_dir, limit)
+
+    def _notify(provider: str, checked: int, total: Optional[int]) -> None:
+        if progress:
+            progress(provider, checked, total)
+
+    codex_report = inspect_codex(
+        codex_dir,
+        limit,
+        progress=(lambda checked, total: _notify("codex", checked, total)) if progress else None,
+    )
+    claude_report = inspect_claude_code(
+        claude_code_dir,
+        limit,
+        progress=(lambda checked, total: _notify("claude-code", checked, total)) if progress else None,
+    )
     issues = codex_report.issues + claude_report.issues
     counts = {**codex_report.checked, **claude_report.checked}
 

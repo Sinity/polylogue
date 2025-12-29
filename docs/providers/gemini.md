@@ -20,7 +20,7 @@ Each render writes the canonical `conversation.md`, a shared `conversation.commo
 
 ## Sync Notes
 
-- `polylogue sync drive` connects to the designated Drive folder (`AI Studio` by default) to pull new conversations, honouring filters like `--since`, `--until`, and `--name-filter`.
+- `polylogue sync drive` connects to the designated Drive folder (`Google AI Studio` by default) to pull new conversations, honouring filters like `--since`, `--until`, and `--name-filter`.
 - Target specific Drive files with repeatable `--chat-id FILE_ID` flags when you only need a handful of chats.
 - Collapse thresholds (`--collapse-threshold`) control how aggressively large Gemini responses are folded in the Markdown viewer.
 - Attachments downloaded from Drive inherit the remote modification timestamps; Polylogue applies the same mtime to the rendered Markdown/HTML so Git diffs reflect real content changes.

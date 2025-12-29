@@ -57,6 +57,7 @@ def test_sync_codex_sessions_creates_markdown(tmp_path):
         prune=False,
     )
     assert result_skip.skipped >= 1
+    assert result_skip.skip_reasons.get("up-to-date", 0) >= 1
 
     # Touch the source file without changing content; hash freshness should still skip.
     session_path.write_text(session_path.read_text(encoding="utf-8"), encoding="utf-8")
@@ -72,6 +73,7 @@ def test_sync_codex_sessions_creates_markdown(tmp_path):
     )
     assert not result_hash_skip.written
     assert result_hash_skip.skipped >= 1
+    assert result_hash_skip.skip_reasons.get("up-to-date", 0) >= 1
 
     # prune removes stale outputs
     stale_dir = out_dir / "stale"
@@ -106,8 +108,8 @@ def test_sync_claude_code_sessions(tmp_path):
         base_dir,
         "workspace/session-1",
         [
-            json.dumps({"type": "user", "message": {"content": [{"type": "text", "text": "task"}]}}),
-            json.dumps({"type": "assistant", "message": {"content": [{"type": "text", "text": "answer"}]}}),
+            json.dumps({"type": "user", "sessionId": "sess-1", "message": {"content": [{"type": "text", "text": "task"}]}}),
+            json.dumps({"type": "assistant", "sessionId": "sess-1", "message": {"content": [{"type": "text", "text": "answer"}]}}),
         ],
     )
     out_dir = tmp_path / "claude_out"
@@ -126,6 +128,78 @@ def test_sync_claude_code_sessions(tmp_path):
     body = md_path.read_text(encoding="utf-8")
     assert "task" in body
     assert "answer" in body
+
+    result_skip = sync_claude_code_sessions(
+        base_dir=base_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+        prune=False,
+        sessions=[session_path],
+    )
+    assert result_skip.skipped >= 1
+    assert result_skip.skip_reasons.get("up-to-date", 0) >= 1
+
+
+def test_sync_claude_code_sessions_merges_agent_logs(tmp_path):
+    base_dir = tmp_path / "claude_code"
+    session_id = "sess-merge"
+    summary_path = _write_claude_code_session(
+        base_dir,
+        "workspace/summary",
+        [
+            json.dumps({"type": "summary", "sessionId": session_id, "summary": "short summary"}),
+        ],
+    )
+    _write_claude_code_session(
+        base_dir,
+        "workspace/agent-1",
+        [
+            json.dumps({"type": "user", "sessionId": session_id, "message": {"content": [{"type": "text", "text": "alpha"}]}}),
+            json.dumps({"type": "assistant", "sessionId": session_id, "message": {"content": [{"type": "text", "text": "beta"}]}}),
+        ],
+    )
+    out_dir = tmp_path / "claude_merge_out"
+    result = sync_claude_code_sessions(
+        base_dir=base_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+        prune=False,
+        sessions=[summary_path],
+    )
+    assert result.written
+    md_path = result.written[0].markdown_path
+    body = md_path.read_text(encoding="utf-8")
+    assert "alpha" in body
+    assert "beta" in body
+
+
+def test_sync_claude_code_sessions_skips_summary_only(tmp_path):
+    base_dir = tmp_path / "claude_code"
+    summary_path = _write_claude_code_session(
+        base_dir,
+        "workspace/summary-only",
+        [
+            json.dumps({"type": "summary", "sessionId": "sess-summary", "summary": "only summary"}),
+        ],
+    )
+    result = sync_claude_code_sessions(
+        base_dir=base_dir,
+        output_dir=tmp_path / "claude_summary_out",
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+        prune=False,
+        sessions=[summary_path],
+    )
+    assert not result.written
+    assert result.skip_reasons.get("summary-only log", 0) >= 1
 
 
 def test_sync_chatgpt_exports(monkeypatch, tmp_path):

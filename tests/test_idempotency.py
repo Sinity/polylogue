@@ -285,7 +285,7 @@ class TestSyncIdempotency:
         env.drive = StubDrive()
 
         options = SyncOptions(
-            folder_name="AI Studio",
+            folder_name="Google AI Studio",
             folder_id="folder-123",
             output_dir=tmp_path / "drive",
             collapse_threshold=12,
@@ -372,7 +372,7 @@ class TestSyncIdempotency:
         env.drive = StubDrive()
 
         options = SyncOptions(
-            folder_name="AI Studio",
+            folder_name="Google AI Studio",
             folder_id="folder-123",
             output_dir=tmp_path / "drive",
             collapse_threshold=12,

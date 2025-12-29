@@ -292,7 +292,7 @@ def test_run_sync_drive_respects_selected_ids(monkeypatch, tmp_path):
         class Result:
             count = 0
             output_dir = tmp_path
-            folder_name = "AI Studio"
+            folder_name = "Google AI Studio"
             folder_id = "folder-id"
             items = []
             total_stats = {}
@@ -319,7 +319,7 @@ def test_run_sync_drive_respects_selected_ids(monkeypatch, tmp_path):
         name_filter=None,
         since=None,
         until=None,
-        folder_name="AI Studio",
+        folder_name="Google AI Studio",
         folder_id=None,
         list_only=False,
         dry_run=False,
