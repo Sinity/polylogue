@@ -392,9 +392,10 @@ def run_sync_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         from ..drive_client import DEFAULT_CREDENTIALS
 
         cred_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
-        cred_path = Path(cred_env).expanduser() if cred_env else DEFAULT_CREDENTIALS
-        if env.config.drive and env.config.drive.credentials_path:
-            cred_path = env.config.drive.credentials_path
+        if cred_env:
+            cred_path = Path(cred_env).expanduser()
+        else:
+            cred_path = env.config.drive.credentials_path if env.config.drive else DEFAULT_CREDENTIALS
         if not cred_path.exists():
             raise SystemExit(
                 f"Drive sync requires credentials.json at {cred_path} "
