@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,7 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import _should_use_plain, cli as click_cli
 from polylogue.cli.context import resolve_collapse_value
 from polylogue.cli.context import resolve_html_settings
+from polylogue.cli.prefs import prefs_path
 from polylogue.cli.sync import _run_local_sync, _run_sync_drive, run_sync_cli
 from polylogue.commands import CommandEnv
 from polylogue.local_sync import LocalSyncResult
@@ -83,6 +85,22 @@ def test_html_flag_import_variants():
     assert result.exit_code == 0
     assert captured["html_mode"] == "off"
     monkeypatch.undo()
+
+
+def test_sync_pref_applies_html_mode(state_env, monkeypatch):
+    prefs_file = prefs_path()
+    prefs_file.parent.mkdir(parents=True, exist_ok=True)
+    prefs_file.write_text(json.dumps({"sync": {"--html": "off"}}), encoding="utf-8")
+    captured = {}
+
+    def fake_local(_provider, args, _env):  # noqa: ARG001
+        captured["html_mode"] = args.html_mode
+
+    monkeypatch.setattr("polylogue.cli.sync._run_local_sync", fake_local)
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["sync", "codex"])
+    assert result.exit_code == 0
+    assert captured["html_mode"] == "off"
 
 
 def test_resolve_html_settings_modes():

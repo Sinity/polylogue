@@ -8,7 +8,7 @@ from typing import List, Tuple
 from ..commands import CommandEnv
 from ..paths import STATE_HOME
 from ..util import preflight_disk_requirement
-from .context import DEFAULT_OUTPUT_ROOTS
+from .context import resolve_output_roots
 
 
 def _legacy_candidates(root: Path) -> List[Path]:
@@ -27,7 +27,7 @@ def run_prune_cli(args: object, env: CommandEnv) -> None:
     if raw_dirs:
         roots = [Path(path).expanduser() for path in raw_dirs]
     else:
-        roots = list(DEFAULT_OUTPUT_ROOTS)
+        roots = resolve_output_roots(env.config)
     seen: set[Path] = set()
     unique_roots: List[Path] = []
     for root in roots:
@@ -107,4 +107,3 @@ def run_prune_cli(args: object, env: CommandEnv) -> None:
 
 
 __all__ = ["run_prune_cli"]
-

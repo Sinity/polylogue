@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, Optional, Sequence, Tuple
 
-from ..config import CONFIG
+from ..config import CONFIG, Config
 from ..settings import SETTINGS, Settings, ensure_settings_defaults
 from ..drive_client import DEFAULT_FOLDER_NAME
 
@@ -91,12 +91,15 @@ def _collect_output_dirs(dirs) -> list[Path]:
     ]
 
 
-_base_output_dirs = _collect_output_dirs(CONFIG.defaults.output_dirs)
-_labeled_output_dirs: list[Path] = []
-for paths in getattr(CONFIG.defaults, "roots", {}).values():
-    _labeled_output_dirs.extend(_collect_output_dirs(paths))
+def resolve_output_roots(config: Optional[Config] = None) -> list[Path]:
+    active = config or CONFIG
+    roots = list(_collect_output_dirs(active.defaults.output_dirs))
+    for paths in getattr(active.defaults, "roots", {}).values():
+        roots.extend(_collect_output_dirs(paths))
+    return list(dict.fromkeys(roots))
 
-DEFAULT_OUTPUT_ROOTS = list(dict.fromkeys(_base_output_dirs + _labeled_output_dirs))
+
+DEFAULT_OUTPUT_ROOTS = resolve_output_roots()
 
 
 ensure_settings_defaults()

@@ -9,7 +9,7 @@ from typing import Optional
 from ..settings import Settings, persist_settings, SETTINGS_PATH
 from ..commands import CommandEnv
 from ..drive_client import DriveClient
-from ..config import CONFIG, persist_config, IndexConfig, is_config_declarative
+from ..config import persist_config, IndexConfig, is_config_declarative
 
 
 def run_init_cli(args: SimpleNamespace, env: CommandEnv) -> None:
@@ -56,8 +56,8 @@ def run_init_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     console.print("Let's set up your configuration.\n")
 
     # Step 1: Roots
-    default_output_root = CONFIG.defaults.output_dirs.render.parent
-    default_input_root = CONFIG.exports.chatgpt
+    default_output_root = env.config.defaults.output_dirs.render.parent
+    default_input_root = env.config.exports.chatgpt
     console.print(f"[bold]Output Directory[/bold]")
     console.print(f"Where should rendered conversations be saved (root for all providers)?")
 
@@ -123,10 +123,11 @@ def run_init_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     console.print(f"\n[bold]Index Backend[/bold]")
     console.print("Choose index backend (sqlite is default; qdrant enables vector search).")
     backend = "sqlite"
-    qdrant_url: Optional[str] = CONFIG.index.qdrant_url if CONFIG.index else None
-    qdrant_key: Optional[str] = CONFIG.index.qdrant_api_key if CONFIG.index else None
-    qdrant_collection: Optional[str] = CONFIG.index.qdrant_collection if CONFIG.index else None
-    qdrant_vector: Optional[int] = CONFIG.index.qdrant_vector_size if CONFIG.index else None
+    index_cfg = env.config.index
+    qdrant_url: Optional[str] = index_cfg.qdrant_url if index_cfg else None
+    qdrant_key: Optional[str] = index_cfg.qdrant_api_key if index_cfg else None
+    qdrant_collection: Optional[str] = index_cfg.qdrant_collection if index_cfg else None
+    qdrant_vector: Optional[int] = index_cfg.qdrant_vector_size if index_cfg else None
     if not ui.plain:
         backend_choice = ui.choose("  Backend (sqlite/qdrant/none)", ["sqlite", "qdrant", "none"])
         backend = backend_choice or "sqlite"

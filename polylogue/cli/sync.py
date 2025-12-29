@@ -717,7 +717,14 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
     if getattr(args, "diff", False) and not provider.supports_diff:
         ui.console.print(f"[red]{provider.title} does not support --diff output")
         raise SystemExit(1)
-    base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base.expanduser()
+    if args.base_dir:
+        base_dir = Path(args.base_dir).expanduser()
+    elif provider.name == "chatgpt":
+        base_dir = env.config.exports.chatgpt
+    elif provider.name == "claude":
+        base_dir = env.config.exports.claude
+    else:
+        base_dir = provider.default_base.expanduser()
     out_dir = resolve_output_path(args.out, _resolve_default_output(provider.name, env))
     settings = env.settings
     collapse_thresholds = resolve_collapse_thresholds(args, settings)

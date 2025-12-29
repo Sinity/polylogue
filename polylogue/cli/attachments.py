@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Dict, List, Optional, Set, Tuple
 
 from ..commands import CommandEnv
-from .context import DEFAULT_OUTPUT_ROOTS
+from .context import resolve_output_roots
 from ..schema import stamp_payload
 from ..util import parse_input_time_to_epoch
 
@@ -65,11 +65,11 @@ def _iter_attachment_files(root: Path) -> List[Path]:
     return files
 
 
-def _collect_roots(args_dir) -> List[Path]:
+def _collect_roots(args_dir, env: CommandEnv) -> List[Path]:
     if args_dir:
         root = Path(args_dir).expanduser()
         return [root]
-    return [path for path in DEFAULT_OUTPUT_ROOTS if path.exists()]
+    return [path for path in resolve_output_roots(env.config) if path.exists()]
 
 
 def run_attachments_cli(args: SimpleNamespace, env: CommandEnv) -> None:
@@ -102,7 +102,7 @@ def _run_attachment_stats(args: SimpleNamespace, env: CommandEnv) -> None:
 
     orphan_summary: Dict[str, object] = {"requested": clean_orphans, "count": 0, "removed": 0, "bytes": 0, "errors": 0}
     if clean_orphans:
-        roots = _collect_roots(getattr(args, "dir", None))
+        roots = _collect_roots(getattr(args, "dir", None), env)
         if not roots:
             ui.console.print("[red]No output roots found for orphan cleanup.")
             raise SystemExit(1)

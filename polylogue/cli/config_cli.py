@@ -8,14 +8,16 @@ from ..commands import CommandEnv
 
 def run_config_show(args: object, env: CommandEnv) -> None:
     """Show current configuration (combines env + settings)."""
-    from ..config import CONFIG, CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN
+    from ..config import CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN
     from ..config import is_config_declarative
     from ..schema import stamp_payload
     from ..settings import SETTINGS_PATH
 
     ui = env.ui
     settings = env.settings
-    defaults = CONFIG.defaults
+    defaults = env.config.defaults
+    exports = env.config.exports
+    index_cfg = env.config.index
     declarative, decl_reason, decl_target = is_config_declarative(CONFIG_PATH)
 
     credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
@@ -56,16 +58,16 @@ def run_config_show(args: object, env: CommandEnv) -> None:
                     "roots": {label: vars(paths) for label, paths in roots_map.items()},
                 },
                 "inputs": {
-                    "chatgpt": str(CONFIG.exports.chatgpt),
-                    "claude": str(CONFIG.exports.claude),
+                    "chatgpt": str(exports.chatgpt),
+                    "claude": str(exports.claude),
                 },
                 "index": {
-                    "backend": CONFIG.index.backend if CONFIG.index else "sqlite",
+                    "backend": index_cfg.backend if index_cfg else "sqlite",
                     "qdrant": {
-                        "url": CONFIG.index.qdrant_url if CONFIG.index else None,
-                        "api_key": CONFIG.index.qdrant_api_key if CONFIG.index else None,
-                        "collection": CONFIG.index.qdrant_collection if CONFIG.index else None,
-                        "vector_size": CONFIG.index.qdrant_vector_size if CONFIG.index else None,
+                        "url": index_cfg.qdrant_url if index_cfg else None,
+                        "api_key": index_cfg.qdrant_api_key if index_cfg else None,
+                        "collection": index_cfg.qdrant_collection if index_cfg else None,
+                        "vector_size": index_cfg.qdrant_vector_size if index_cfg else None,
                     },
                 },
                 "statePath": str(env.conversations.state_path),

@@ -856,7 +856,7 @@ def sync_codex_sessions(
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
-        sessions = _list_claude_code_paths(base_dir)
+        sessions = _list_codex_paths(base_dir)
     return _sync_sessions(
         sessions,
         output_dir=output_dir,

@@ -14,9 +14,8 @@ from typing import Any, Dict, List, Optional, Set, cast
 from ..commands import CommandEnv, status_command
 from ..version import POLYLOGUE_VERSION, SCHEMA_VERSION
 from ..schema import stamp_payload
-from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
 from ..util import parse_input_time_to_epoch
-from .context import DEFAULT_OUTPUT_ROOTS, DEFAULT_RENDER_OUT
+from .context import resolve_output_roots
 
 
 def _dump_runs(ui, records: List[dict], destination: str, *, quiet: bool = False) -> None:
@@ -354,7 +353,7 @@ def run_stats_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             return _fail("No Markdown files found (stats directory missing).", directory=directory_input, directories=[directory_input])
         roots = [directory]
     else:
-        roots = [path for path in DEFAULT_OUTPUT_ROOTS if path.exists()]
+        roots = [path for path in resolve_output_roots(env.config) if path.exists()]
         if not roots:
             return _fail("No Markdown files found across configured output roots.")
 

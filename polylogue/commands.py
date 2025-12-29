@@ -102,6 +102,7 @@ class CommandEnv:
     config: Config = field(default_factory=lambda: CONFIG)
     repository: ConversationRepository = field(default_factory=ConversationRepository)
     settings: Settings = field(default_factory=Settings)
+    prefs: Dict[str, Dict[str, str]] = field(default_factory=dict)
     state_repo: ConversationStateRepository = field(default_factory=ConversationStateRepository)
     database: ConversationDatabase = field(default_factory=ConversationDatabase)
     archive: Archive = field(default_factory=lambda: Archive(CONFIG))
