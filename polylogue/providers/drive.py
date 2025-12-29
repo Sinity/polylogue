@@ -1,9 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional
-
-from typing import Callable
+from typing import Callable, Dict, List, Optional
 
 from ..drive_client import DriveClient
 from ..ui import UI
@@ -15,8 +13,8 @@ class DriveProviderSession:
     name = "drive"
     title = "Google Drive"
 
-    def __init__(self, ui: UI, client_factory: Callable[[UI], DriveClient] = DriveClient):
-        self._client = client_factory(ui)
+    def __init__(self, ui: UI, client_factory: Callable[..., DriveClient] = DriveClient, **client_kwargs: object):
+        self._client = client_factory(ui, **client_kwargs)
 
     @property
     def ui(self) -> UI:

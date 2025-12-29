@@ -8,8 +8,7 @@ from typing import Dict, List, Optional
 import shutil
 
 from ..cli_common import filter_chats, sk_select
-from ..commands import CommandEnv, list_command, sync_command
-from ..drive_client import DriveClient
+from ..commands import CommandEnv, build_drive_client, list_command, sync_command
 from ..drive import snapshot_drive_metrics
 from ..local_sync import (
     LocalSyncResult,
@@ -137,7 +136,7 @@ def _retry_drive_attachments_only(
     force: bool,
 ) -> dict:
     ui = env.ui
-    drive = env.drive or DriveClient(ui)
+    drive = env.drive or build_drive_client(env)
     env.drive = drive
 
     failed_attachments = run.get("failedAttachments")
@@ -470,7 +469,7 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
         drive_retries = retries_override if retries_override is not None else getattr(drive_cfg, "retries", None)
         drive_retry_base = retry_base_override if retry_base_override is not None else getattr(drive_cfg, "retry_base", None)
 
-        env.drive = env.drive or DriveClient(ui, retries=drive_retries, retry_base=drive_retry_base)
+        env.drive = env.drive or build_drive_client(env, retries=drive_retries, retry_base=drive_retry_base)
         result_payload = _retry_drive_attachments_only(
             run=run,
             env=env,
@@ -499,7 +498,7 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
     drive_retries = retries_override if retries_override is not None else getattr(drive_cfg, "retries", None)
     drive_retry_base = retry_base_override if retry_base_override is not None else getattr(drive_cfg, "retry_base", None)
 
-    drive = env.drive or DriveClient(ui, retries=drive_retries, retry_base=drive_retry_base)
+    drive = env.drive or build_drive_client(env, retries=drive_retries, retry_base=drive_retry_base)
     env.drive = drive
     folder_id = drive.resolve_folder_id(args.folder_name, args.folder_id)
     raw_chats = drive.list_chats(args.folder_name, folder_id)

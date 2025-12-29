@@ -162,3 +162,38 @@ def test_doctor_reports_drive_failures(tmp_path, monkeypatch):
     report = run_doctor(codex_dir=codex_dir, claude_code_dir=claude_dir, limit=0, service=service)
 
     assert any(issue.provider == "drive" and "failures" in issue.message for issue in report.issues)
+
+
+def test_doctor_uses_config_drive_paths(tmp_path, monkeypatch):
+    defaults = _fake_defaults(tmp_path)
+    cred_path = tmp_path / "drive" / "credentials.json"
+    token_path = tmp_path / "drive" / "token.json"
+    cred_path.parent.mkdir(parents=True, exist_ok=True)
+    cred_path.write_text("{}", encoding="utf-8")
+    token_path.write_text("{}", encoding="utf-8")
+    drive_cfg = type("DriveCfg", (), {"credentials_path": cred_path, "token_path": token_path})
+    cfg = type("Cfg", (), {"defaults": defaults, "drive": drive_cfg})
+    monkeypatch.setattr(doctor_module, "CONFIG", cfg)
+    monkeypatch.delenv("POLYLOGUE_CREDENTIAL_PATH", raising=False)
+    monkeypatch.delenv("POLYLOGUE_TOKEN_PATH", raising=False)
+
+    state_home = _configure_state(monkeypatch, tmp_path)
+    db_path = state_home / "polylogue.db"
+    codex_dir = tmp_path / "codex"
+    claude_dir = tmp_path / "claude"
+    codex_dir.mkdir()
+    claude_dir.mkdir()
+    archive = Archive(cfg)
+    registrar = ConversationRegistrar(
+        state_repo=ConversationStateRepository(database=ConversationDatabase(path=db_path)),
+        database=ConversationDatabase(path=db_path),
+        archive=archive,
+    )
+    service = ConversationService(registrar=registrar)
+
+    report = run_doctor(codex_dir=codex_dir, claude_code_dir=claude_dir, limit=0, service=service, archive=archive)
+
+    assert report.credential_path == cred_path
+    assert report.token_path == token_path
+    assert report.credentials_present is True
+    assert report.token_present is True

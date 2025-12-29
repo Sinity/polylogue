@@ -302,7 +302,12 @@ def _sync_sessions(
             if isinstance(raw_output, str) and raw_output.strip():
                 candidate_path = Path(raw_output)
                 if candidate_path.exists():
-                    md_path = candidate_path
+                    try:
+                        candidate_path.resolve().relative_to(output_root)
+                    except ValueError:
+                        pass
+                    else:
+                        md_path = candidate_path
 
         source_paths = _resolve_source_paths(provider, session_path, state_entry, session_id)
 
@@ -338,7 +343,7 @@ def _sync_sessions(
                 current_hash = compute_hash(session_path.read_bytes())
                 with open_connection(registrar.database.resolve_path()) as conn:
                     raw_row = get_raw_import_by_conversation(conn, provider, conversation_id)
-                if raw_row and raw_row["hash"] == current_hash:
+                if raw_row and raw_row["hash"] == current_hash and md_path.exists():
                     entry["skipped"] = True
                     entry["skip_reason"] = "up-to-date"
                     return entry

@@ -376,23 +376,23 @@ def _config_issues() -> List[DoctorIssue]:
     return issues
 
 
-def _credential_issues() -> List[DoctorIssue]:
+def _credential_issues(credentials_path: Path, token_path: Path) -> List[DoctorIssue]:
     issues: List[DoctorIssue] = []
-    if not DEFAULT_CREDENTIALS.exists():
+    if not credentials_path.exists():
         issues.append(
             DoctorIssue(
                 "drive",
-                DEFAULT_CREDENTIALS,
+                credentials_path,
                 "Google Drive credentials missing.",
                 "warning",
                 hint="Run `polylogue sync drive` and follow the OAuth prompt to save credentials.json.",
             )
         )
-    if not DEFAULT_TOKEN.exists():
+    if not token_path.exists():
         issues.append(
             DoctorIssue(
                 "drive",
-                DEFAULT_TOKEN,
+                token_path,
                 "Drive OAuth token missing; next sync will request authorization.",
                 "info",
                 hint="Allow the OAuth consent flow during the next Drive sync.",
@@ -436,6 +436,17 @@ def run_doctor(
     state_repo = service.state_repo
     database = service.database
     archive = archive or Archive(CONFIG)
+    drive_cfg = getattr(archive.config, "drive", None) if archive else None
+    if drive_cfg is None:
+        drive_cfg = getattr(CONFIG, "drive", None)
+    if credential_env:
+        credential_path = Path(credential_env).expanduser()
+    elif drive_cfg:
+        credential_path = drive_cfg.credentials_path
+    if token_env:
+        token_path = Path(token_env).expanduser()
+    elif drive_cfg:
+        token_path = drive_cfg.token_path
 
     removed_state, state_issues = prune_state_entries(state_repo, archive)
     if removed_state:
@@ -449,7 +460,7 @@ def run_doctor(
 
     issues.extend(_dependency_issues())
     issues.extend(_config_issues())
-    issues.extend(_credential_issues())
+    issues.extend(_credential_issues(credential_path, token_path))
     issues.extend(_drive_failure_issues())
     try:
         sqlite_notes = verify_sqlite_indexes(default_db_path())

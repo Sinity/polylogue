@@ -6,8 +6,7 @@ from typing import List, Optional, Sequence
 import shutil
 
 from ..cli_common import resolve_inputs, sk_select
-from ..commands import CommandEnv, render_command
-from ..drive_client import DriveClient
+from ..commands import CommandEnv, build_drive_client, render_command
 from ..importers import ImportResult
 from ..options import RenderOptions
 from ..version import POLYLOGUE_VERSION, SCHEMA_VERSION
@@ -97,7 +96,7 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
 
             preflight_disk_requirement(projected_bytes=projected, limit_gib=max_disk, ui=ui)
     if download_attachments and env.drive is None:
-        env.drive = DriveClient(ui)
+        env.drive = build_drive_client(env)
     try:
         result = render_command(options, env)
     except Exception as exc:

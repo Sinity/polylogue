@@ -107,7 +107,7 @@ class CommandEnv:
     database: ConversationDatabase = field(default_factory=ConversationDatabase)
     archive: Archive = field(default_factory=lambda: Archive(CONFIG))
     providers: ProviderRegistry = field(default_factory=ProviderRegistry)
-    drive_constructor: Callable[[UI], DriveClient] = field(init=False)
+    drive_constructor: Callable[..., DriveClient] = field(init=False)
     registrar: ConversationRegistrar = field(init=False)
     conversations: ConversationService = field(init=False)
 
@@ -493,10 +493,50 @@ class ProviderSummaryEntry:
 
 def _ensure_drive(env: CommandEnv) -> DriveClient:
     if env.drive is None:
-        session = DriveProviderSession(env.ui, client_factory=env.drive_constructor)
+        session = DriveProviderSession(env.ui, client_factory=env.drive_constructor, **_drive_client_kwargs(env))
         env.providers.register(session)
         env.drive = session
     return env.drive
+
+
+def _drive_client_kwargs(
+    env: CommandEnv,
+    *,
+    retries: Optional[int] = None,
+    retry_base: Optional[float] = None,
+) -> Dict[str, object]:
+    drive_cfg = getattr(env, "config", None).drive if hasattr(env, "config") else None
+    credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+    token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
+    kwargs: Dict[str, object] = {}
+    if credential_env:
+        kwargs["credentials_path"] = Path(credential_env).expanduser()
+    elif drive_cfg and getattr(drive_cfg, "credentials_path", None):
+        kwargs["credentials_path"] = drive_cfg.credentials_path
+    if token_env:
+        kwargs["token_path"] = Path(token_env).expanduser()
+    elif drive_cfg and getattr(drive_cfg, "token_path", None):
+        kwargs["token_path"] = drive_cfg.token_path
+    if drive_cfg:
+        if getattr(drive_cfg, "retries", None) is not None:
+            kwargs["retries"] = drive_cfg.retries
+        if getattr(drive_cfg, "retry_base", None) is not None:
+            kwargs["retry_base"] = drive_cfg.retry_base
+    if retries is not None:
+        kwargs["retries"] = retries
+    if retry_base is not None:
+        kwargs["retry_base"] = retry_base
+    return kwargs
+
+
+def build_drive_client(
+    env: CommandEnv,
+    *,
+    retries: Optional[int] = None,
+    retry_base: Optional[float] = None,
+) -> DriveClient:
+    kwargs = _drive_client_kwargs(env, retries=retries, retry_base=retry_base)
+    return env.drive_constructor(env.ui, **kwargs)
 
 
 
@@ -648,8 +688,7 @@ def _context_from_drive(meta: Dict, obj: Dict, fallback: str) -> ChatContext:
 
 
 def list_command(options: ListOptions, env: CommandEnv) -> ListResult:
-    drive = env.drive or DriveClient(env.ui)
-    env.drive = drive
+    drive = _ensure_drive(env)
     chats = drive.list_chats(options.folder_name, options.folder_id)
     chats = filter_chats(chats, options.name_filter, options.since, options.until)
     folder_id = drive.resolve_folder_id(options.folder_name, options.folder_id)
@@ -929,12 +968,20 @@ def sync_command(options: SyncOptions, env: CommandEnv) -> SyncResult:
 
 def status_command(env: CommandEnv, runs_limit: Optional[int] = 200, provider_filter: Optional[Set[str]] = None) -> StatusResult:
     drive_cfg = getattr(env, "config", None).drive if hasattr(env, "config") else None
-    credentials_path = drive_cfg.credentials_path if drive_cfg else DEFAULT_CREDENTIALS
-    token_path = drive_cfg.token_path if drive_cfg else DEFAULT_TOKEN
-    credentials_present = credentials_path.exists()
-    token_present = token_path.exists()
     credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
+    credentials_path = (
+        Path(credential_env).expanduser()
+        if credential_env
+        else (drive_cfg.credentials_path if drive_cfg else DEFAULT_CREDENTIALS)
+    )
+    token_path = (
+        Path(token_env).expanduser()
+        if token_env
+        else (drive_cfg.token_path if drive_cfg else DEFAULT_TOKEN)
+    )
+    credentials_present = credentials_path.exists()
+    token_present = token_path.exists()
     limit = runs_limit if runs_limit and runs_limit > 0 else None
 
     # When filtering by provider, load all runs so provider-specific history is not

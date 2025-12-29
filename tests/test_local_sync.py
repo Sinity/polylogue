@@ -11,6 +11,7 @@ from polylogue.local_sync import (
     sync_claude_exports,
     sync_codex_sessions,
 )
+from polylogue.services.conversation_registrar import create_default_registrar
 
 
 def _write_codex_session(root: Path, name: str, lines: list[dict]) -> Path:
@@ -95,6 +96,47 @@ def test_sync_codex_sessions_creates_markdown(tmp_path):
     assert result_prune.pruned >= 1
     assert not stale.exists()
     assert not stale_dir.exists()
+
+
+def test_sync_codex_sessions_respects_output_root_change(tmp_path, state_env):
+    base_dir = tmp_path / "codex"
+    _write_codex_session(
+        base_dir,
+        "session-002",
+        [
+            {"type": "response_item", "payload": {"type": "message", "role": "user", "content": [{"text": "hi", "type": "output_text"}]}},
+        ],
+    )
+    registrar = create_default_registrar()
+    first_out = tmp_path / "out-first"
+    second_out = tmp_path / "out-second"
+    first = sync_codex_sessions(
+        base_dir=base_dir,
+        output_dir=first_out,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+        prune=False,
+        registrar=registrar,
+    )
+    assert first.written
+    first_md = first.written[0].markdown_path
+    assert first_out.resolve() in first_md.resolve().parents
+
+    second = sync_codex_sessions(
+        base_dir=base_dir,
+        output_dir=second_out,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+        prune=False,
+        registrar=registrar,
+    )
+    assert second.written
+    second_md = second.written[0].markdown_path
+    assert second_out.resolve() in second_md.resolve().parents
 
 
 def _write_claude_code_session(root: Path, name: str, lines: list[str]) -> Path:
