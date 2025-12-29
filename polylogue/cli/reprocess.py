@@ -3,9 +3,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from ..db import open_connection
 from ..importers.raw_storage import get_failed_imports, retrieve_raw_import, mark_parse_success, mark_parse_failed
-from ..importers.fallback_parser import extract_messages_heuristic, create_degraded_markdown
+from ..importers.fallback_parser import extract_messages_heuristic
 from ..commands import CommandEnv
 
 
@@ -26,6 +25,19 @@ def run_reprocess(
         Exit code
     """
     console = env.ui.console
+    settings = env.settings
+    outputs = env.config.defaults.output_dirs
+
+    def _output_dir(import_provider: str):
+        mapping = {
+            "chatgpt": outputs.import_chatgpt,
+            "claude": outputs.import_claude,
+            "claude.ai": outputs.import_claude,
+            "codex": outputs.sync_codex,
+            "claude-code": outputs.sync_claude_code,
+            "claude_code": outputs.sync_claude_code,
+        }
+        return mapping.get(import_provider, outputs.render)
 
     # Get failed imports
     failed = get_failed_imports(provider=provider)
@@ -89,11 +101,10 @@ def run_reprocess(
                     # Import using provider-specific parser
                     if import_provider == 'chatgpt':
                         from ..importers.chatgpt import import_chatgpt_export
-                        from ..settings import settings
-
+                        out_dir = _output_dir(import_provider)
                         results = import_chatgpt_export(
                             tmp_path,
-                            output_dir=env.config.defaults.output_dirs.get('import_chatgpt', Path('./out')),
+                            output_dir=out_dir,
                             collapse_threshold=settings.collapse_threshold,
                             html=settings.html_previews,
                             html_theme=settings.html_theme,
@@ -101,13 +112,12 @@ def run_reprocess(
                             allow_dirty=True,
                             attachment_ocr=True,
                         )
-                    elif import_provider == 'claude':
+                    elif import_provider in ('claude', 'claude.ai'):
                         from ..importers.claude_ai import import_claude_export
-                        from ..settings import settings
-
+                        out_dir = _output_dir(import_provider)
                         results = import_claude_export(
                             tmp_path,
-                            output_dir=env.config.defaults.output_dirs.get('import_claude', Path('./out')),
+                            output_dir=out_dir,
                             collapse_threshold=settings.collapse_threshold,
                             html=settings.html_previews,
                             html_theme=settings.html_theme,
@@ -117,11 +127,10 @@ def run_reprocess(
                         )
                     elif import_provider == 'codex':
                         from ..importers.codex import import_codex_session
-                        from ..settings import settings
-
+                        out_dir = _output_dir(import_provider)
                         results = [import_codex_session(
                             session_id=str(tmp_path),
-                            output_dir=env.config.defaults.output_dirs.get('sync_codex', Path('./out')),
+                            output_dir=out_dir,
                             collapse_threshold=settings.collapse_threshold,
                             html=settings.html_previews,
                             html_theme=settings.html_theme,
@@ -131,11 +140,10 @@ def run_reprocess(
                         )]
                     elif import_provider in ('claude-code', 'claude_code'):
                         from ..importers.claude_code import import_claude_code_session
-                        from ..settings import settings
-
+                        out_dir = _output_dir(import_provider)
                         results = [import_claude_code_session(
                             session_id=str(tmp_path),
-                            output_dir=env.config.defaults.output_dirs.get('sync_claude_code', Path('./out')),
+                            output_dir=out_dir,
                             collapse_threshold=settings.collapse_threshold,
                             html=settings.html_previews,
                             html_theme=settings.html_theme,
@@ -149,14 +157,18 @@ def run_reprocess(
                         continue
 
                     # Check results
-                    if results and all(r.success for r in results):
-                        console.print(f"  [green]✓[/green] Successfully re-imported {len(results)} conversation(s)")
+                    if not results:
+                        console.print("  [yellow]![/yellow] No conversations returned; leaving import marked failed")
+                        still_failed += 1
+                    else:
+                        skipped = sum(1 for r in results if getattr(r, "skipped", False))
+                        written = len(results) - skipped
+                        console.print(
+                            f"  [green]✓[/green] Re-imported {written} conversation(s) "
+                            f"(skipped {skipped})"
+                        )
                         mark_parse_success(data_hash)
                         success_count += 1
-                    else:
-                        failed_count = sum(1 for r in results if not r.success)
-                        console.print(f"  [yellow]![/yellow] Partial success: {failed_count}/{len(results)} failed")
-                        still_failed += 1
 
                 finally:
                     # Clean up temp file

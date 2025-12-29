@@ -17,11 +17,8 @@ from ..util import write_clipboard_text
 from .summaries import summarize_render
 from .failure_logging import record_failure
 from .context import (
-    DEFAULT_COLLAPSE,
-    DEFAULT_RENDER_OUT,
     parse_meta_items,
     resolve_collapse_thresholds,
-    resolve_collapse_value,
     resolve_html_enabled,
     resolve_output_path,
 )
@@ -39,7 +36,7 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
     if not inputs:
         console.print("No JSON files to render")
         return
-    output = resolve_output_path(args.out, DEFAULT_RENDER_OUT)
+    output = resolve_output_path(args.out, env.config.defaults.output_dirs.render)
     settings = env.settings
     collapse_thresholds = resolve_collapse_thresholds(args, settings)
     collapse = collapse_thresholds["message"]
