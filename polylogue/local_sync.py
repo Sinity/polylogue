@@ -550,6 +550,8 @@ def _classify_conversation_entry(entry: object) -> Optional[str]:
         return "claude"
     if "create_time" in entry or "update_time" in entry:
         return "chatgpt"
+    if "uuid" in entry and any(key in entry for key in ("name", "title", "created_at", "updated_at")):
+        return "claude"
     if "uuid" in entry and "model" in entry:
         return "claude"
     messages = entry.get("messages")
@@ -579,6 +581,8 @@ def _classify_conversations_snippet(data: bytes) -> Optional[str]:
         return "claude"
     if b'"author"' in lowered or b'"role"' in lowered:
         return "chatgpt"
+    if b'"uuid"' in lowered and (b'"created_at"' in lowered or b'"updated_at"' in lowered):
+        return "claude"
     if b'"uuid"' in lowered and b'"model"' in lowered:
         return "claude"
     return None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
@@ -239,12 +240,27 @@ def _resolve_provider_root(archive: Archive, provider: str) -> Optional[Path]:
 def prune_state_entries(
     state_repo: ConversationStateRepository,
     archive: Archive,
+    status: Optional[Callable[[str], None]] = None,
 ) -> Tuple[int, List[DoctorIssue]]:
     issues: List[DoctorIssue] = []
     removed = 0
+    checked = 0
+    last_emit = 0.0
+
+    def _maybe_emit() -> None:
+        nonlocal last_emit
+        if not status:
+            return
+        now = time.perf_counter()
+        if checked == 1 or checked % 1000 == 0 or (now - last_emit) > 10:
+            last_emit = now
+            status(f"Pruning state entries ({checked} checked)")
+
     for provider in state_repo.providers():
         provider_root = _resolve_provider_root(archive, provider)
         for conversation_id, entry in state_repo.provider_items(provider):
+            checked += 1
+            _maybe_emit()
             output_path = entry.get("outputPath") if isinstance(entry, dict) else None
             if not output_path:
                 continue
@@ -310,15 +326,30 @@ def prune_database_entries(
     database: ConversationDatabase,
     state_repo: ConversationStateRepository,
     archive: Archive,
+    status: Optional[Callable[[str], None]] = None,
 ) -> Tuple[int, List[DoctorIssue]]:
     issues: List[DoctorIssue] = []
     to_delete: List[Tuple[str, str]] = []
+    checked = 0
+    last_emit = 0.0
+
+    def _maybe_emit() -> None:
+        nonlocal last_emit
+        if not status:
+            return
+        now = time.perf_counter()
+        if checked == 1 or checked % 2000 == 0 or (now - last_emit) > 10:
+            last_emit = now
+            status(f"Pruning database rows ({checked} scanned)")
+
     try:
         rows = database.query("SELECT provider, conversation_id, slug FROM conversations")
         for row in rows:
             provider = row["provider"]
             conversation_id = row["conversation_id"]
             slug = row["slug"]
+            checked += 1
+            _maybe_emit()
             candidate_paths: List[Path] = []
             state_entry = state_repo.get(provider, conversation_id)
             if isinstance(state_entry, dict):
@@ -499,13 +530,13 @@ def run_doctor(
         token_path = drive_cfg.token_path
 
     _status("Pruning stale state entries")
-    removed_state, state_issues = prune_state_entries(state_repo, archive)
+    removed_state, state_issues = prune_state_entries(state_repo, archive, status=status)
     if removed_state:
         counts["state"] = removed_state
     issues.extend(state_issues)
 
     _status("Pruning stale database entries")
-    removed_db, db_issues = prune_database_entries(database, state_repo, archive)
+    removed_db, db_issues = prune_database_entries(database, state_repo, archive, status=status)
     if removed_db:
         counts["database"] = removed_db
     issues.extend(db_issues)
