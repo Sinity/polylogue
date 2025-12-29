@@ -25,7 +25,6 @@ DEFAULT_CREDENTIALS = CONFIG_DIR / "credentials.json"
 _ENV_TOKEN_PATH = os.environ.get("POLYLOGUE_TOKEN_PATH")
 DEFAULT_TOKEN = Path(_ENV_TOKEN_PATH).expanduser() if _ENV_TOKEN_PATH else CONFIG_DIR / "token.json"
 DEFAULT_FOLDER_NAME = "Google AI Studio"
-FALLBACK_FOLDER_NAMES = ("AI Studio",)
 
 
 class DriveClient:
@@ -168,21 +167,8 @@ class DriveClient:
             return folder_id
         name = folder_name or DEFAULT_FOLDER_NAME
         svc = self.service()
-        candidates = [name]
-        if folder_name is None:
-            candidates.extend([c for c in FALLBACK_FOLDER_NAMES if c != name])
-
-        for candidate in candidates:
-            resolved = find_folder_id(svc, candidate, notifier=self._notify_retry)
-            if not resolved:
-                continue
-            if candidate != name:
-                prefix = "Default Drive folder" if folder_name is None else "Drive folder"
-                message = f"{prefix} '{name}' not found; using '{candidate}'."
-                if self.ui.plain:
-                    self.ui.console.print(message)
-                else:
-                    self.ui.console.print(f"[yellow]{message}[/yellow]")
+        resolved = find_folder_id(svc, name, notifier=self._notify_retry)
+        if resolved:
             return resolved
         raise SystemExit(f"Folder not found: {name}")
 

@@ -376,6 +376,45 @@ def _config_issues() -> List[DoctorIssue]:
     return issues
 
 
+def _output_dir_issues() -> List[DoctorIssue]:
+    issues: List[DoctorIssue] = []
+    paths: set[Path] = set()
+    defaults = getattr(CONFIG, "defaults", None)
+    if defaults and getattr(defaults, "output_dirs", None):
+        paths.update(Path(p) for p in vars(defaults.output_dirs).values())
+    roots = getattr(defaults, "roots", {}) if defaults else {}
+    if isinstance(roots, dict):
+        for entry in roots.values():
+            if entry:
+                paths.update(Path(p) for p in vars(entry).values())
+
+    for path in sorted(paths, key=lambda p: str(p)):
+        if not path.exists():
+            continue
+        if not path.is_dir():
+            issues.append(
+                DoctorIssue(
+                    "output",
+                    path,
+                    "Output path is not a directory.",
+                    "error",
+                    hint="Fix the path or update paths.output_root in config.json.",
+                )
+            )
+            continue
+        if not os.access(path, os.W_OK | os.X_OK):
+            issues.append(
+                DoctorIssue(
+                    "output",
+                    path,
+                    "Output directory is not writable.",
+                    "error",
+                    hint="Fix permissions or update paths.output_root in config.json.",
+                )
+            )
+    return issues
+
+
 def _credential_issues(credentials_path: Path, token_path: Path) -> List[DoctorIssue]:
     issues: List[DoctorIssue] = []
     if not credentials_path.exists():
@@ -473,10 +512,11 @@ def run_doctor(
 
     issues.extend(_dependency_issues())
     issues.extend(_config_issues())
+    issues.extend(_output_dir_issues())
     issues.extend(_credential_issues(credential_path, token_path))
     issues.extend(_drive_failure_issues())
     if not skip_index:
-        _status("Checking SQLite index health")
+        _status("Checking SQLite index health (may take a while on large archives)")
         try:
             sqlite_notes = verify_sqlite_indexes(default_db_path())
             if sqlite_notes:

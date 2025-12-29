@@ -106,6 +106,16 @@ def _truthy(val: Optional[str]) -> bool:
     return bool(val) and str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _exports_overridden(raw: object) -> bool:
+    if isinstance(raw, dict) and raw.get("exports") is not None:
+        return True
+    if os.environ.get("POLYLOGUE_EXPORTS_CHATGPT"):
+        return True
+    if os.environ.get("POLYLOGUE_EXPORTS_CLAUDE"):
+        return True
+    return False
+
+
 def is_config_declarative(path: Optional[Path] = None) -> Tuple[bool, str, Path]:
     """Detect declarative/immutable configs (e.g., NixOS module) to avoid runtime edits."""
     target = path or CONFIG_PATH or (CONFIG_HOME / "config.json")
@@ -306,7 +316,7 @@ def load_config() -> Config:
 
     # Get exports, use default if not present
     from .core.configuration import ExportsConfig as CoreExports
-    exports_config = getattr(app_config, 'exports', None) or CoreExports()
+    exports_config = getattr(app_config, "exports", None) or CoreExports()
 
     # Get output paths from app config
     output_paths_config = app_config.get_output_paths()
@@ -317,6 +327,10 @@ def load_config() -> Config:
             labeled_roots[label] = _convert_output_dirs(paths)
 
     raw = getattr(app_config, "raw", {}) or {}
+    if not _exports_overridden(raw):
+        input_root = getattr(getattr(app_config, "paths", None), "input_root", None)
+        if input_root:
+            exports_config = CoreExports(chatgpt=input_root, claude=input_root)
     return Config(
         defaults=_convert_defaults(app_config.defaults, output_paths_config, labeled_roots),
         index=_convert_index(app_config.index),
