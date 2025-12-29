@@ -99,6 +99,7 @@ def run_settings_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             index=config_obj.index,
             path=CONFIG_PATH,
             roots=config_obj.defaults.roots if getattr(config_obj.defaults, "roots", None) else None,
+            drive=config_obj.drive if hasattr(config_obj, "drive") else None,
         )
 
     payload = _settings_snapshot(settings)
