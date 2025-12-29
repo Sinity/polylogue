@@ -103,17 +103,25 @@ def _resolve_source_paths(
     provider: str,
     session_path: Path,
     state_entry: Optional[Dict[str, object]],
+    session_id: Optional[str],
 ) -> List[Path]:
-    if provider != "claude-code" or not isinstance(state_entry, dict):
+    if provider != "claude-code":
         return [session_path]
-    raw_files = state_entry.get("sessionFiles") or state_entry.get("sessionFile")
     sources: List[Path] = []
-    if isinstance(raw_files, list):
-        for entry in raw_files:
-            if isinstance(entry, str) and entry.strip():
-                sources.append(Path(entry.strip()))
-    elif isinstance(raw_files, str) and raw_files.strip():
-        sources.append(Path(raw_files.strip()))
+    if isinstance(state_entry, dict):
+        raw_files = state_entry.get("sessionFiles") or state_entry.get("sessionFile")
+        if isinstance(raw_files, list):
+            for entry in raw_files:
+                if isinstance(entry, str) and entry.strip():
+                    sources.append(Path(entry.strip()))
+        elif isinstance(raw_files, str) and raw_files.strip():
+            sources.append(Path(raw_files.strip()))
+    if session_id:
+        for candidate in session_path.parent.glob("*.jsonl"):
+            if candidate in sources:
+                continue
+            if extract_claude_code_session_id(candidate) == session_id:
+                sources.append(candidate)
     return sources or [session_path]
 
 
@@ -270,10 +278,11 @@ def _sync_sessions(
             return entry
 
         conversation_id = str(session_path)
+        session_id: Optional[str] = None
         if provider == "claude-code":
-            resolved_id = extract_claude_code_session_id(session_path)
-            if resolved_id:
-                conversation_id = resolved_id
+            session_id = extract_claude_code_session_id(session_path)
+            if session_id:
+                conversation_id = session_id
         state_entry = registrar.get_state(provider, conversation_id)
         state_slug = None
         if isinstance(state_entry, dict):
@@ -295,7 +304,7 @@ def _sync_sessions(
                 if candidate_path.exists():
                     md_path = candidate_path
 
-        source_paths = _resolve_source_paths(provider, session_path, state_entry)
+        source_paths = _resolve_source_paths(provider, session_path, state_entry, session_id)
 
         slug_for_prune = slug_hint
         try:
@@ -369,7 +378,7 @@ def _sync_sessions(
         try:
             if provider == "claude-code":
                 state_after = registrar.get_state(provider, conversation_id)
-                source_paths = _resolve_source_paths(provider, session_path, state_after)
+                source_paths = _resolve_source_paths(provider, session_path, state_after, session_id)
             session_ns = _latest_mtime_ns(source_paths) or _mtime_ns(session_path)
             result.markdown_path.parent.mkdir(parents=True, exist_ok=True)
             os.utime(result.markdown_path, ns=(session_ns, session_ns))
