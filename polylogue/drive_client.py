@@ -31,12 +31,26 @@ FALLBACK_FOLDER_NAMES = ("AI Studio",)
 class DriveClient:
     """Wrapper that manages credentials and Drive service access."""
 
-    def __init__(self, ui: UI, *, retries: Optional[int] = None, retry_base: Optional[float] = None):
+    def __init__(
+        self,
+        ui: UI,
+        *,
+        retries: Optional[int] = None,
+        retry_base: Optional[float] = None,
+        credentials_path: Optional[Path] = None,
+        token_path: Optional[Path] = None,
+    ):
         self.ui = ui
-        env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
-        self._credentials_path: Path = Path(env_path).expanduser() if env_path else DEFAULT_CREDENTIALS
-        token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
-        self._token_path: Path = Path(token_env).expanduser() if token_env else DEFAULT_TOKEN
+        if credentials_path is None:
+            env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+            self._credentials_path = Path(env_path).expanduser() if env_path else DEFAULT_CREDENTIALS
+        else:
+            self._credentials_path = Path(credentials_path).expanduser()
+        if token_path is None:
+            token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
+            self._token_path = Path(token_env).expanduser() if token_env else DEFAULT_TOKEN
+        else:
+            self._token_path = Path(token_path).expanduser()
         self._service = None
         if retries is not None or retry_base is not None:
             set_retry_defaults(retries=retries, base_delay=retry_base)

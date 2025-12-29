@@ -215,7 +215,7 @@ def _run_console_flow(flow: InstalledAppFlow, *, verbose: bool) -> Credentials:
     if session is not None and getattr(session, "redirect_uri", None) != flow.redirect_uri:
         session.redirect_uri = flow.redirect_uri
 
-    auth_url, _ = flow.authorization_url(prompt="consent")
+    auth_url, _ = flow.authorization_url(prompt="consent", redirect_uri=flow.redirect_uri)
     prompt = (
         "Open this link in your browser to authorize Polylogue:\n"
         f"  {auth_url}\n"
