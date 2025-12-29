@@ -409,6 +409,9 @@ def run_doctor(
     service: Optional[ConversationService] = None,
     archive: Optional[Archive] = None,
     progress: Optional[Callable[[str, int, Optional[int]], None]] = None,
+    status: Optional[Callable[[str], None]] = None,
+    skip_index: bool = False,
+    skip_qdrant: bool = False,
 ) -> DoctorReport:
     credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
@@ -419,11 +422,19 @@ def run_doctor(
         if progress:
             progress(provider, checked, total)
 
+    def _status(message: str) -> None:
+        if status:
+            status(message)
+
+    if progress is None:
+        _status("Scanning Codex sessions")
     codex_report = inspect_codex(
         codex_dir,
         limit,
         progress=(lambda checked, total: _notify("codex", checked, total)) if progress else None,
     )
+    if progress is None:
+        _status("Scanning Claude Code sessions")
     claude_report = inspect_claude_code(
         claude_code_dir,
         limit,
@@ -448,11 +459,13 @@ def run_doctor(
     elif drive_cfg:
         token_path = drive_cfg.token_path
 
+    _status("Pruning stale state entries")
     removed_state, state_issues = prune_state_entries(state_repo, archive)
     if removed_state:
         counts["state"] = removed_state
     issues.extend(state_issues)
 
+    _status("Pruning stale database entries")
     removed_db, db_issues = prune_database_entries(database, state_repo, archive)
     if removed_db:
         counts["database"] = removed_db
@@ -462,22 +475,26 @@ def run_doctor(
     issues.extend(_config_issues())
     issues.extend(_credential_issues(credential_path, token_path))
     issues.extend(_drive_failure_issues())
-    try:
-        sqlite_notes = verify_sqlite_indexes(default_db_path())
-        if sqlite_notes:
-            counts["indexes"] = counts.get("indexes", 0) + len(sqlite_notes)
-            for note in sqlite_notes:
-                issues.append(DoctorIssue("index", default_db_path(), note, "info"))
-    except Exception as exc:
-        issues.append(DoctorIssue("index", default_db_path(), str(exc), "error"))
-    try:
-        qdrant_notes = verify_qdrant_collection()
-        if qdrant_notes:
-            for note in qdrant_notes:
-                issues.append(DoctorIssue("qdrant", Path("qdrant"), note, "info"))
-    except RuntimeError as exc:
-        if os.environ.get("POLYLOGUE_INDEX_BACKEND", "sqlite").strip().lower() == "qdrant":
-            issues.append(DoctorIssue("qdrant", Path("qdrant"), str(exc), "error"))
+    if not skip_index:
+        _status("Checking SQLite index health")
+        try:
+            sqlite_notes = verify_sqlite_indexes(default_db_path())
+            if sqlite_notes:
+                counts["indexes"] = counts.get("indexes", 0) + len(sqlite_notes)
+                for note in sqlite_notes:
+                    issues.append(DoctorIssue("index", default_db_path(), note, "info"))
+        except Exception as exc:
+            issues.append(DoctorIssue("index", default_db_path(), str(exc), "error"))
+    if not skip_qdrant:
+        _status("Checking Qdrant index health")
+        try:
+            qdrant_notes = verify_qdrant_collection()
+            if qdrant_notes:
+                for note in qdrant_notes:
+                    issues.append(DoctorIssue("qdrant", Path("qdrant"), note, "info"))
+        except RuntimeError as exc:
+            if os.environ.get("POLYLOGUE_INDEX_BACKEND", "sqlite").strip().lower() == "qdrant":
+                issues.append(DoctorIssue("qdrant", Path("qdrant"), str(exc), "error"))
 
     return DoctorReport(
         checked=counts,

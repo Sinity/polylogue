@@ -70,7 +70,8 @@ class DriveClient:
         if self.ui.plain:
             raise SystemExit(
                 "Missing credentials.json. Download a Google OAuth client secret and place it at "
-                f"{cred_path} or set POLYLOGUE_CREDENTIAL_PATH/POLYLOGUE_TOKEN_PATH to point at your files."
+                f"{cred_path} or set POLYLOGUE_CREDENTIAL_PATH/POLYLOGUE_TOKEN_PATH "
+                "or drive.credentials_path/token_path in config.json."
             )
         return self._prompt_for_credentials()
 
@@ -167,22 +168,29 @@ class DriveClient:
             return folder_id
         name = folder_name or DEFAULT_FOLDER_NAME
         svc = self.service()
-        resolved = find_folder_id(svc, name, notifier=self._notify_retry)
-        if not resolved and folder_name is None:
-            for candidate in FALLBACK_FOLDER_NAMES:
-                if candidate == name:
-                    continue
-                resolved = find_folder_id(svc, candidate, notifier=self._notify_retry)
-                if resolved:
-                    message = f"Default Drive folder '{name}' not found; using '{candidate}'."
-                    if self.ui.plain:
-                        self.ui.console.print(message)
-                    else:
-                        self.ui.console.print(f"[yellow]{message}[/yellow]")
-                    return resolved
-        if not resolved:
-            raise SystemExit(f"Folder not found: {name}")
-        return resolved
+        candidates = [name]
+        if folder_name is None:
+            candidates.extend([c for c in FALLBACK_FOLDER_NAMES if c != name])
+        elif name in FALLBACK_FOLDER_NAMES:
+            if DEFAULT_FOLDER_NAME != name:
+                candidates.append(DEFAULT_FOLDER_NAME)
+            candidates.extend([c for c in FALLBACK_FOLDER_NAMES if c != name])
+        elif name == DEFAULT_FOLDER_NAME:
+            candidates.extend([c for c in FALLBACK_FOLDER_NAMES if c != name])
+
+        for candidate in candidates:
+            resolved = find_folder_id(svc, candidate, notifier=self._notify_retry)
+            if not resolved:
+                continue
+            if candidate != name:
+                prefix = "Default Drive folder" if folder_name is None else "Drive folder"
+                message = f"{prefix} '{name}' not found; using '{candidate}'."
+                if self.ui.plain:
+                    self.ui.console.print(message)
+                else:
+                    self.ui.console.print(f"[yellow]{message}[/yellow]")
+            return resolved
+        raise SystemExit(f"Folder not found: {name}")
 
     def list_chats(
         self,
