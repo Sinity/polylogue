@@ -63,7 +63,14 @@ def _run_watch_sessions(
 ) -> None:
     watch_fn = _watch_directory
     ui = env.ui
-    base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base
+    if args.base_dir:
+        base_dir = Path(args.base_dir).expanduser()
+    elif provider.name == "chatgpt":
+        base_dir = env.config.exports.chatgpt
+    elif provider.name == "claude":
+        base_dir = env.config.exports.claude
+    else:
+        base_dir = provider.default_base.expanduser()
     if getattr(args, "offline", False):
         ui.console.print("[yellow]Offline mode enabled; network-dependent steps will be skipped.")
     base_exists = base_dir.exists()

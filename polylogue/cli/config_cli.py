@@ -125,7 +125,11 @@ def run_config_show(args: object, env: CommandEnv) -> None:
     if roots_map:
         summary_lines.append("  labeled roots:")
         for label, paths in roots_map.items():
-            summary_lines.append(f"    {label}: render={paths.render} codex={paths.sync_codex}")
+            summary_lines.append(
+                "    "
+                f"{label}: render={paths.render} gemini={paths.sync_drive} codex={paths.sync_codex} "
+                f"claude-code={paths.sync_claude_code} chatgpt={paths.import_chatgpt} claude={paths.import_claude}"
+            )
     summary_lines.extend(
         [
             "",

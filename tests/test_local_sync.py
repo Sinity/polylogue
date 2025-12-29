@@ -4,6 +4,8 @@ from pathlib import Path
 
 from polylogue.importers.base import ImportResult
 from polylogue.local_sync import (
+    _list_chatgpt_exports,
+    _list_claude_exports,
     sync_chatgpt_exports,
     sync_claude_code_sessions,
     sync_claude_exports,
@@ -271,6 +273,25 @@ def test_sync_chatgpt_exports(monkeypatch, tmp_path):
     )
     assert not calls
     assert result_skip.skipped >= 2
+
+
+def test_list_export_targets_filters_provider(tmp_path):
+    base_dir = tmp_path / "exports"
+    chatgpt_dir = base_dir / "chatgpt"
+    claude_dir = base_dir / "claude"
+    chatgpt_dir.mkdir(parents=True, exist_ok=True)
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    (chatgpt_dir / "conversations.json").write_text(
+        json.dumps({"conversations": [{"mapping": {"root": {}}}]}),
+        encoding="utf-8",
+    )
+    (claude_dir / "conversations.json").write_text(json.dumps([{"title": "Claude"}]), encoding="utf-8")
+
+    chatgpt_targets = _list_chatgpt_exports(base_dir)
+    claude_targets = _list_claude_exports(base_dir)
+
+    assert chatgpt_targets == [chatgpt_dir]
+    assert claude_targets == [claude_dir]
 
 
 def test_sync_chatgpt_exports_normalizes_sessions(monkeypatch, tmp_path):
