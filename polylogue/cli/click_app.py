@@ -39,7 +39,9 @@ from .env_cli import run_env_cli
 
 
 def _build_env(plain: bool) -> CommandEnv:
-    return CommandEnv(ui=create_ui(plain))
+    env = CommandEnv(ui=create_ui(plain))
+    env.prefs = prefs_cmd.load_prefs()
+    return env
 
 _FORCE_PLAIN_VALUES = {"1", "true", "yes", "on"}
 _PLAIN_REASON_FLAG = "requested via --plain"
