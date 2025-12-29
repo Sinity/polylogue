@@ -28,6 +28,10 @@ def run_config_show(args: object, env: CommandEnv) -> None:
 
     if getattr(args, "json", False):
         roots_map = getattr(env.config.defaults, "roots", {}) or {}
+        roots_payload = {
+            label: {key: str(value) for key, value in vars(paths).items()}
+            for label, paths in roots_map.items()
+        }
         payload = stamp_payload(
             {
                 "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
@@ -55,7 +59,7 @@ def run_config_show(args: object, env: CommandEnv) -> None:
                     "claude_code": str(defaults.output_dirs.sync_claude_code),
                     "chatgpt": str(defaults.output_dirs.import_chatgpt),
                     "claude": str(defaults.output_dirs.import_claude),
-                    "roots": {label: vars(paths) for label, paths in roots_map.items()},
+                    "roots": roots_payload,
                 },
                 "inputs": {
                     "chatgpt": str(exports.chatgpt),

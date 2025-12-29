@@ -289,6 +289,33 @@ def test_config_dispatcher_handles_show(monkeypatch, tmp_path, capsys):
     assert "outputs" in parsed
 
 
+def test_config_show_serializes_labeled_roots(monkeypatch, tmp_path, capsys):
+    _configure_isolated_state(monkeypatch, tmp_path)
+    from polylogue.config import OutputDirs
+
+    ui = DummyUI()
+    env = CommandEnv(ui=ui)
+    alt_root = tmp_path / "alt"
+    env.config.defaults.roots = {
+        "alt": OutputDirs(
+            render=alt_root / "render",
+            sync_drive=alt_root / "gemini",
+            sync_codex=alt_root / "codex",
+            sync_claude_code=alt_root / "claude-code",
+            import_chatgpt=alt_root / "chatgpt",
+            import_claude=alt_root / "claude",
+        )
+    }
+    args = SimpleNamespace(json=True)
+    from polylogue.cli.config_cli import run_config_show
+
+    run_config_show(args, env)
+
+    parsed = json.loads(capsys.readouterr().out)
+    roots = parsed["outputs"]["roots"]
+    assert roots["alt"]["render"] == str(alt_root / "render")
+
+
 # ===== Integration Tests =====
 
 def test_browse_branches_integration(monkeypatch, tmp_path, capsys):
