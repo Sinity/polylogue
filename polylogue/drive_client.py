@@ -171,12 +171,6 @@ class DriveClient:
         candidates = [name]
         if folder_name is None:
             candidates.extend([c for c in FALLBACK_FOLDER_NAMES if c != name])
-        elif name in FALLBACK_FOLDER_NAMES:
-            if DEFAULT_FOLDER_NAME != name:
-                candidates.append(DEFAULT_FOLDER_NAME)
-            candidates.extend([c for c in FALLBACK_FOLDER_NAMES if c != name])
-        elif name == DEFAULT_FOLDER_NAME:
-            candidates.extend([c for c in FALLBACK_FOLDER_NAMES if c != name])
 
         for candidate in candidates:
             resolved = find_folder_id(svc, candidate, notifier=self._notify_retry)
