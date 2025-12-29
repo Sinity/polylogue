@@ -10,21 +10,17 @@ pkgs.mkShell {
     [ pythonEnv ]
     ++ [
       # CLI helpers used by Polylogue
-      pkgs.skim
-      pkgs.gum
-      pkgs.bat
-      pkgs.delta
       pkgs.fd
       pkgs.ripgrep
-      pkgs.glow
       pkgs.jq
+      pkgs.bat
+      pkgs.skim
+      pkgs.glow
+      pkgs.tesseract
     ];
   shellHook = ''
     export PYTHONPATH="$PWD:${PYTHONPATH:-}"
-    export SKIM_DEFAULT_COMMAND="rg --files"
-    export SKIM_DEFAULT_OPTIONS="--ansi"
-    export GUM_STYLE_FOREGROUND="#7fdbca"
-    export GUM_CONFIRM_PROMPT_BORDER_FOREGROUND="#ff9f1c"
+    export TESSDATA_PREFIX="${pkgs.tesseract}/share/tessdata"
     if [ -n "$BASH_VERSION" ]; then
       _polylogue_comp_file="$TMPDIR/polylogue-bash-completions"
       python3 polylogue.py completions --shell bash >"$_polylogue_comp_file" 2>/dev/null || true
