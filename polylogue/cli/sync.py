@@ -292,7 +292,7 @@ def _log_local_sync(
     if getattr(result, "ignored", 0):
         console.print(f"[yellow]{title}: skipped {result.ignored} path(s) via .polylogueignore.")
     run_payload = {
-        "cmd": title.lower().replace(" ", "-"),
+        "cmd": f"sync {provider}",
         "provider": provider,
         "count": len(result.written),
         "out": str(result.output_dir),
@@ -712,7 +712,12 @@ def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optiona
 def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) -> None:
     provider = get_local_provider(provider_name)
     ui = env.ui
-    previous_run_note = format_run_brief(latest_run(provider=provider.name, cmd=f"sync {provider.name}"))
+    cmd_name = f"sync {provider.name}"
+    previous = latest_run(provider=provider.name, cmd=cmd_name)
+    if previous is None:
+        legacy_cmd = provider.title.lower().replace(" ", "-")
+        previous = latest_run(provider=provider.name, cmd=legacy_cmd)
+    previous_run_note = format_run_brief(previous)
     if getattr(args, "diff", False) and not provider.supports_diff:
         ui.console.print(f"[red]{provider.title} does not support --diff output")
         raise SystemExit(1)
