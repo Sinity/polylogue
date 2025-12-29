@@ -193,6 +193,11 @@ class AppConfig(BaseSettings):
                         index_data["qdrant_vector_size"] = qdrant["vector_size"]
                 config_dict["index"] = IndexConfig(**index_data)
 
+            if "exports" in data:
+                exports_data = data.get("exports") or {}
+                if isinstance(exports_data, dict):
+                    config_dict["exports"] = ExportsConfig(**exports_data)
+
             # Store raw data for compatibility
             config_dict["raw"] = data
             config_dict["config_path"] = path

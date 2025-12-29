@@ -12,7 +12,6 @@ from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 
 from ..commands import CommandEnv
-from ..config import CONFIG
 from ..local_sync import _detect_export_provider
 from ..schema import stamp_payload
 
@@ -153,8 +152,8 @@ def run_inbox_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     if override_root:
         roots.append((None, Path(override_root).expanduser()))
     else:
-        roots.append(("chatgpt", CONFIG.exports.chatgpt))
-        roots.append(("claude", CONFIG.exports.claude))
+        roots.append(("chatgpt", env.config.exports.chatgpt))
+        roots.append(("claude", env.config.exports.claude))
 
     entries: List[Dict[str, object]] = []
     quarantined: List[str] = []

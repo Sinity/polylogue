@@ -61,6 +61,59 @@ def test_drive_client_respects_env_path(tmp_path, monkeypatch):
     assert client.token_path == tmp_path / "env-creds" / "token.json"
 
 
+def test_drive_client_explicit_paths_override_env(tmp_path, monkeypatch):
+    env_creds = tmp_path / "env-creds" / "credentials.json"
+    env_creds.parent.mkdir(parents=True, exist_ok=True)
+    env_creds.write_text(json.dumps({"installed": {"client_id": "env"}}), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_CREDENTIAL_PATH", str(env_creds))
+    monkeypatch.setenv("POLYLOGUE_TOKEN_PATH", str(tmp_path / "env-creds" / "token.json"))
+
+    explicit_creds = tmp_path / "explicit" / "credentials.json"
+    explicit_token = tmp_path / "explicit" / "token.json"
+    explicit_creds.parent.mkdir(parents=True, exist_ok=True)
+    explicit_creds.write_text(json.dumps({"installed": {"client_id": "explicit"}}), encoding="utf-8")
+    explicit_token.write_text(json.dumps({"token": "explicit"}), encoding="utf-8")
+
+    client = DriveClient(DummyUI(), credentials_path=explicit_creds, token_path=explicit_token)
+
+    assert client.credentials_path == explicit_creds
+    assert client.token_path == explicit_token
+
+
+def test_drive_client_uses_default_folder_name(monkeypatch):
+    client = DriveClient(DummyUI())
+    monkeypatch.setattr(client, "service", lambda: object())
+    seen: list[str] = []
+
+    def fake_find(_svc, name, notifier=None):
+        seen.append(name)
+        return "folder-123"
+
+    monkeypatch.setattr("polylogue.drive_client.find_folder_id", fake_find)
+
+    resolved = client.resolve_folder_id(None, None)
+
+    assert resolved == "folder-123"
+    assert seen == ["Google AI Studio"]
+
+
+def test_drive_client_uses_explicit_folder_name(monkeypatch):
+    client = DriveClient(DummyUI())
+    monkeypatch.setattr(client, "service", lambda: object())
+    seen: list[str] = []
+
+    def fake_find(_svc, name, notifier=None):
+        seen.append(name)
+        return "folder-456"
+
+    monkeypatch.setattr("polylogue.drive_client.find_folder_id", fake_find)
+
+    resolved = client.resolve_folder_id("AI Studio", None)
+
+    assert resolved == "folder-456"
+    assert seen == ["AI Studio"]
+
+
 def test_run_console_flow_assigns_redirect(monkeypatch):
     class DummySession:
         def __init__(self):

@@ -32,6 +32,20 @@ def _resolve_path(env_var: str, home_default: Path, xdg_default: Path) -> Path:
 
 DEFAULT_CODEX_HOME = Path.home() / ".codex" / "sessions"
 DEFAULT_CLAUDE_CODE_HOME = Path.home() / ".claude" / "projects"
+DEFAULT_CLAUDE_CODE_CONFIG_HOME = Path.home() / ".config" / "claude" / "projects"
+
+
+def resolve_claude_code_project_root() -> Path:
+    env_value = os.environ.get("POLYLOGUE_CLAUDE_CODE_PROJECTS")
+    if env_value:
+        return Path(env_value).expanduser()
+    for candidate in (
+        Path.home() / ".claude" / "projects",
+        Path.home() / ".config" / "claude" / "projects",
+    ):
+        if candidate.exists():
+            return candidate
+    return DATA_HOME / "claude" / "projects"
 
 
 CODEX_SESSIONS_ROOT = _resolve_path(
@@ -41,11 +55,7 @@ CODEX_SESSIONS_ROOT = _resolve_path(
 )
 
 
-CLAUDE_CODE_PROJECT_ROOT = _resolve_path(
-    "POLYLOGUE_CLAUDE_CODE_PROJECTS",
-    DEFAULT_CLAUDE_CODE_HOME,
-    DATA_HOME / "claude" / "projects",
-)
+CLAUDE_CODE_PROJECT_ROOT = resolve_claude_code_project_root()
 
 
 def colorize(text: str, color: str) -> str:
