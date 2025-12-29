@@ -178,6 +178,19 @@ def test_sync_claude_code_sessions_merges_agent_logs(tmp_path):
     assert "alpha" in body
     assert "beta" in body
 
+    result_skip = sync_claude_code_sessions(
+        base_dir=base_dir,
+        output_dir=out_dir,
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+        prune=False,
+        sessions=[summary_path],
+    )
+    assert result_skip.skipped >= 1
+    assert result_skip.skip_reasons.get("up-to-date", 0) >= 1
+
 
 def test_sync_claude_code_sessions_skips_summary_only(tmp_path):
     base_dir = tmp_path / "claude_code"
