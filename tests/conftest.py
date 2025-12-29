@@ -126,3 +126,10 @@ if __name__ == "__main__":
 
 
 _install_tool_shims()
+
+
+@pytest.fixture(autouse=True)
+def _disable_browser_launch(monkeypatch):
+    monkeypatch.delenv("POLYLOGUE_BROWSER", raising=False)
+    monkeypatch.delenv("BROWSER", raising=False)
+    monkeypatch.setattr("polylogue.cli.editor.webbrowser.open", lambda *_a, **_k: False)

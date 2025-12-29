@@ -14,7 +14,7 @@ def _run_polylogue(args: list[str], *, cwd: Path, env: dict[str, str]) -> subpro
 
 
 def _common_env(tmp_path: Path, force_plain: bool = True) -> dict[str, str]:
-    env = os.environ.copy()
+    env = {key: value for key, value in os.environ.items() if not key.startswith("POLYLOGUE_")}
     if force_plain:
         env["POLYLOGUE_FORCE_PLAIN"] = "1"
     else:
