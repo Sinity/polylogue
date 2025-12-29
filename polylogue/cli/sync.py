@@ -8,8 +8,7 @@ from typing import Dict, List, Optional
 import shutil
 
 from ..cli_common import filter_chats, sk_select
-from ..commands import CommandEnv, list_command, sync_command
-from ..drive_client import DriveClient
+from ..commands import CommandEnv, build_drive_client, list_command, sync_command
 from ..drive import snapshot_drive_metrics
 from ..local_sync import (
     LocalSyncResult,
@@ -137,7 +136,7 @@ def _retry_drive_attachments_only(
     force: bool,
 ) -> dict:
     ui = env.ui
-    drive = env.drive or DriveClient(ui)
+    drive = env.drive or build_drive_client(env)
     env.drive = drive
 
     failed_attachments = run.get("failedAttachments")
@@ -293,7 +292,7 @@ def _log_local_sync(
     if getattr(result, "ignored", 0):
         console.print(f"[yellow]{title}: skipped {result.ignored} path(s) via .polylogueignore.")
     run_payload = {
-        "cmd": title.lower().replace(" ", "-"),
+        "cmd": f"sync {provider}",
         "provider": provider,
         "count": len(result.written),
         "out": str(result.output_dir),
@@ -388,18 +387,6 @@ def run_sync_cli(args: SimpleNamespace, env: CommandEnv) -> None:
             raise SystemExit(f"Unknown root label '{label}'. Define it in config or use a known label.")
         env.config.defaults.output_dirs = paths
 
-    if provider == "drive":
-        from ..drive_client import DEFAULT_CREDENTIALS
-
-        cred_path = DEFAULT_CREDENTIALS
-        if env.config.drive and env.config.drive.credentials_path:
-            cred_path = env.config.drive.credentials_path
-        if not cred_path.exists():
-            raise SystemExit(
-                f"Drive sync requires credentials.json at {cred_path} "
-                f"(set drive.credentials_path in config)."
-            )
-
     if provider in {"chatgpt", "claude"}:
         if getattr(args, "base_dir", None):
             exports_root = Path(getattr(args, "base_dir")).expanduser()
@@ -470,7 +457,7 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
         drive_retries = retries_override if retries_override is not None else getattr(drive_cfg, "retries", None)
         drive_retry_base = retry_base_override if retry_base_override is not None else getattr(drive_cfg, "retry_base", None)
 
-        env.drive = env.drive or DriveClient(ui, retries=drive_retries, retry_base=drive_retry_base)
+        env.drive = env.drive or build_drive_client(env, retries=drive_retries, retry_base=drive_retry_base)
         result_payload = _retry_drive_attachments_only(
             run=run,
             env=env,
@@ -499,7 +486,7 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
     drive_retries = retries_override if retries_override is not None else getattr(drive_cfg, "retries", None)
     drive_retry_base = retry_base_override if retry_base_override is not None else getattr(drive_cfg, "retry_base", None)
 
-    drive = env.drive or DriveClient(ui, retries=drive_retries, retry_base=drive_retry_base)
+    drive = env.drive or build_drive_client(env, retries=drive_retries, retry_base=drive_retry_base)
     env.drive = drive
     folder_id = drive.resolve_folder_id(args.folder_name, args.folder_id)
     raw_chats = drive.list_chats(args.folder_name, folder_id)
@@ -713,11 +700,23 @@ def _collect_session_selection(ui, sessions: List[Path], header: str) -> Optiona
 def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) -> None:
     provider = get_local_provider(provider_name)
     ui = env.ui
-    previous_run_note = format_run_brief(latest_run(provider=provider.name, cmd=f"sync {provider.name}"))
+    cmd_name = f"sync {provider.name}"
+    previous = latest_run(provider=provider.name, cmd=cmd_name)
+    if previous is None:
+        legacy_cmd = provider.title.lower().replace(" ", "-")
+        previous = latest_run(provider=provider.name, cmd=legacy_cmd)
+    previous_run_note = format_run_brief(previous)
     if getattr(args, "diff", False) and not provider.supports_diff:
         ui.console.print(f"[red]{provider.title} does not support --diff output")
         raise SystemExit(1)
-    base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base.expanduser()
+    if args.base_dir:
+        base_dir = Path(args.base_dir).expanduser()
+    elif provider.name == "chatgpt":
+        base_dir = env.config.exports.chatgpt
+    elif provider.name == "claude":
+        base_dir = env.config.exports.claude
+    else:
+        base_dir = provider.default_base.expanduser()
     out_dir = resolve_output_path(args.out, _resolve_default_output(provider.name, env))
     settings = env.settings
     collapse_thresholds = resolve_collapse_thresholds(args, settings)
@@ -740,17 +739,31 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             raise SystemExit(1)
 
     selected_paths: Optional[List[Path]] = None
+    available_sessions: Optional[List[Path]] = None
+
+    def _load_sessions() -> List[Path]:
+        nonlocal available_sessions
+        if available_sessions is None:
+            available_sessions = provider.list_sessions(base_dir)
+        return available_sessions
+
     cli_sessions = getattr(args, "sessions", None)
     if cli_sessions:
         selected_paths = [Path(path).expanduser() for path in cli_sessions if path]
     elif not args.all and not ui.plain:
-        sessions = provider.list_sessions(base_dir)
+        sessions = _load_sessions()
         selection = _collect_session_selection(ui, sessions, f"Select {provider.title} sessions")
         if selection is None:
             return
         if not selection:
             return
         selected_paths = selection
+    else:
+        sessions = _load_sessions()
+        if not sessions:
+            ui.console.print(f"No {provider.title} sessions found in {base_dir}.")
+            return
+        selected_paths = sessions
 
     disk_estimate = bool(getattr(args, "disk_estimate", False))
     max_disk = getattr(args, "max_disk", None)
@@ -760,7 +773,7 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
         if selected_paths is not None:
             session_count = len(selected_paths)
         else:
-            session_count = len(provider.list_sessions(base_dir))
+            session_count = len(_load_sessions())
         projected = 20 * 1024 * 1024 * max(1, session_count)
         disk_estimate_bytes = projected
         try:
@@ -888,6 +901,8 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
         footer_lines: List[str] = []
         if not result.written:
             footer_lines.append(f"Output dir: {result.output_dir}")
+            if result.failures:
+                footer_lines.append(f"Failures: {result.failures}")
         if previous_run_note:
             footer_lines.append(f"Previous run: {previous_run_note}")
         summarize_import(ui, f"{provider.title} Sync", result.written, extra_lines=footer_lines or None)

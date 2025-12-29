@@ -27,6 +27,7 @@ from .utils import (
     LINE_THRESHOLD,
     PREVIEW_LINES,
     estimate_token_count,
+    find_conversations_json,
     normalise_inline_footnotes,
     safe_extractall,
     store_large_text,
@@ -56,13 +57,21 @@ def _render_config_hash(
 
 def _load_bundle(path: Path) -> Tuple[Path, Optional[TemporaryDirectory]]:
     if path.is_dir():
-        return path, None
+        root = path
+        conv_path = find_conversations_json(root)
+        if conv_path is not None:
+            return conv_path.parent, None
+        return root, None
     if path.suffix.lower() != ".zip":
         raise FileNotFoundError(f"Unsupported Claude export: {path}")
     tmp = TemporaryDirectory(prefix="claude-export-")
     with zipfile.ZipFile(path) as zf:
         safe_extractall(zf, Path(tmp.name))
-    return Path(tmp.name), tmp
+    root = Path(tmp.name)
+    conv_path = find_conversations_json(root)
+    if conv_path is not None:
+        return conv_path.parent, tmp
+    return root, tmp
 
 
 def _iter_conversations(convo_path: Path):

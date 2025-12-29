@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Set
+import math
 import sys
+from typing import Iterable, List, Optional, Set
 from rich.progress import (
     BarColumn,
     Progress,
@@ -155,22 +156,38 @@ class _PlainProgressTracker:
     def __init__(self, console: ConsoleLike, description: str, total: Optional[int]) -> None:
         self._console = console
         self._description = description
-        self._total = float(total) if total is not None else None
-        self._completed = 0.0
+        self._total = self._coerce_int(total) if total is not None else None
+        if self._total is None and total is not None:
+            self._total = float(total)
+            self._completed: float | int = 0.0
+            self._use_float = True
+        else:
+            self._completed = 0
+            self._use_float = False
         self._console.print(f"{description}...")
 
     def __enter__(self):
         return self
 
-    def advance(self, advance: float = 1.0) -> None:
-        self._completed += advance
+    def advance(self, advance: float = 1) -> None:
+        as_int = self._coerce_int(advance)
+        if as_int is not None and not self._use_float:
+            self._completed += as_int
+        else:
+            self._use_float = True
+            self._completed = float(self._completed) + float(advance)
 
     def update(self, *, total: Optional[int] = None, description: Optional[str] = None) -> None:
         if description and description != self._description:
             self._description = description
             self._console.print(f"{description}...")
         if total is not None:
-            self._total = float(total)
+            as_int = self._coerce_int(total)
+            if as_int is not None and not self._use_float:
+                self._total = as_int
+            else:
+                self._total = float(total)
+                self._use_float = True
 
     def __exit__(self, exc_type, exc, tb):
         status = "aborted" if exc_type else "complete"
@@ -180,11 +197,24 @@ class _PlainProgressTracker:
         self._console.print(f"{self._description} {status}{suffix}")
 
     @staticmethod
-    def _format_value(value: float) -> str:
-        rounded = round(value)
-        if abs(value - rounded) < 1e-9:
-            return str(int(rounded))
-        return f"{value:.2f}".rstrip("0").rstrip(".")
+    def _coerce_int(value: Optional[float]) -> Optional[int]:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            rounded = round(value)
+            if math.isclose(value, rounded, abs_tol=1e-4):
+                return int(rounded)
+        return None
+
+    @staticmethod
+    def _format_value(value: float | int) -> str:
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, float):
+            rounded = round(value)
+            if math.isclose(value, rounded, abs_tol=1e-4):
+                return str(int(rounded))
+        return f"{float(value):.2f}".rstrip("0").rstrip(".")
 
 
 class _RichProgressTracker:
@@ -196,7 +226,7 @@ class _RichProgressTracker:
         self._progress.__enter__()
         return self
 
-    def advance(self, advance: float = 1.0) -> None:
+    def advance(self, advance: float = 1) -> None:
         self._progress.advance(self._task_id, advance)
 
     def update(self, *, total: Optional[int] = None, description: Optional[str] = None) -> None:
