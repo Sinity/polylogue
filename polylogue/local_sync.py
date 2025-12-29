@@ -335,6 +335,11 @@ def _sync_sessions(
             except Exception:
                 existing_dirty = False
 
+        if not force and not existing_dirty and _is_up_to_date_multi(source_paths, md_path):
+            entry["skipped"] = True
+            entry["skip_reason"] = "up-to-date"
+            return entry
+
         if not force and not existing_dirty and provider != "claude-code":
             try:
                 from .importers.raw_storage import compute_hash
@@ -349,11 +354,6 @@ def _sync_sessions(
                     return entry
             except Exception:
                 pass
-
-        if not force and _is_up_to_date_multi(source_paths, md_path):
-            entry["skipped"] = True
-            entry["skip_reason"] = "up-to-date"
-            return entry
 
         diff_tracker = DiffTracker(md_path, diff)
         try:
