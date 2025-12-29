@@ -87,6 +87,53 @@ def _mtime_ns(path: Path) -> int:
     return getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000))
 
 
+def _latest_mtime_ns(paths: Iterable[Path]) -> Optional[int]:
+    latest: Optional[int] = None
+    for path in paths:
+        try:
+            value = _mtime_ns(path)
+        except OSError:
+            continue
+        if latest is None or value > latest:
+            latest = value
+    return latest
+
+
+def _resolve_source_paths(
+    provider: str,
+    session_path: Path,
+    state_entry: Optional[Dict[str, object]],
+) -> List[Path]:
+    if provider != "claude-code" or not isinstance(state_entry, dict):
+        return [session_path]
+    raw_files = state_entry.get("sessionFiles") or state_entry.get("sessionFile")
+    sources: List[Path] = []
+    if isinstance(raw_files, list):
+        for entry in raw_files:
+            if isinstance(entry, str) and entry.strip():
+                sources.append(Path(entry.strip()))
+    elif isinstance(raw_files, str) and raw_files.strip():
+        sources.append(Path(raw_files.strip()))
+    return sources or [session_path]
+
+
+def _is_up_to_date_multi(sources: Iterable[Path], target: Path) -> bool:
+    if not target.exists():
+        return False
+    try:
+        target_ns = _mtime_ns(target)
+    except OSError:
+        return False
+    source_ns = _latest_mtime_ns(sources)
+    if source_ns is None:
+        return False
+    # Allow for minor clock skew (≤5ms) to avoid unnecessary re-imports on equal times.
+    tolerance = 5_000_000
+    if target_ns + tolerance < source_ns:
+        return False
+    return True
+
+
 def _is_up_to_date(source: Path, target: Path) -> bool:
     if not target.exists():
         return False
@@ -248,6 +295,8 @@ def _sync_sessions(
                 if candidate_path.exists():
                     md_path = candidate_path
 
+        source_paths = _resolve_source_paths(provider, session_path, state_entry)
+
         slug_for_prune = slug_hint
         try:
             rel = md_path.parent.resolve().relative_to(output_root)
@@ -272,7 +321,7 @@ def _sync_sessions(
             except Exception:
                 existing_dirty = False
 
-        if not force and not existing_dirty:
+        if not force and not existing_dirty and provider != "claude-code":
             try:
                 from .importers.raw_storage import compute_hash
                 from .db import get_raw_import_by_conversation, open_connection
@@ -287,7 +336,7 @@ def _sync_sessions(
             except Exception:
                 pass
 
-        if not force and _is_up_to_date(session_path, md_path):
+        if not force and _is_up_to_date_multi(source_paths, md_path):
             entry["skipped"] = True
             entry["skip_reason"] = "up-to-date"
             return entry
@@ -318,7 +367,10 @@ def _sync_sessions(
         entry["diff"] = bool(result.diff_path)
 
         try:
-            session_ns = _mtime_ns(session_path)
+            if provider == "claude-code":
+                state_after = registrar.get_state(provider, conversation_id)
+                source_paths = _resolve_source_paths(provider, session_path, state_after)
+            session_ns = _latest_mtime_ns(source_paths) or _mtime_ns(session_path)
             result.markdown_path.parent.mkdir(parents=True, exist_ok=True)
             os.utime(result.markdown_path, ns=(session_ns, session_ns))
             if result.html_path:
