@@ -887,6 +887,8 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
         footer_lines: List[str] = []
         if not result.written:
             footer_lines.append(f"Output dir: {result.output_dir}")
+            if result.failures:
+                footer_lines.append(f"Failures: {result.failures}")
         if previous_run_note:
             footer_lines.append(f"Previous run: {previous_run_note}")
         summarize_import(ui, f"{provider.title} Sync", result.written, extra_lines=footer_lines or None)

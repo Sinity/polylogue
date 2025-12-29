@@ -53,6 +53,25 @@ def test_load_config_populates_labeled_roots(tmp_path: Path, monkeypatch) -> Non
     assert cfg.defaults.roots["work"].import_claude == work_root / "claude"
 
 
+def test_load_config_defaults_exports_to_input_root(tmp_path: Path, monkeypatch) -> None:
+    inbox = tmp_path / "inbox"
+    payload = {
+        "paths": {
+            "input_root": str(inbox),
+            "output_root": str(tmp_path / "archive"),
+        }
+    }
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
+    monkeypatch.delenv("POLYLOGUE_EXPORTS_CHATGPT", raising=False)
+    monkeypatch.delenv("POLYLOGUE_EXPORTS_CLAUDE", raising=False)
+
+    cfg = load_config()
+    assert cfg.exports.chatgpt == inbox
+    assert cfg.exports.claude == inbox
+
+
 def test_persist_config_includes_drive_settings(tmp_path: Path) -> None:
     input_root = tmp_path / "inbox"
     output_root = tmp_path / "archive"
