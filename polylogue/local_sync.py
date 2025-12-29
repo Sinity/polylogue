@@ -563,6 +563,27 @@ def _classify_conversation_entry(entry: object) -> Optional[str]:
     return None
 
 
+_CLASSIFY_JSON_MAX_BYTES = 32 * 1024 * 1024
+_CLASSIFY_SNIPPET_BYTES = 512 * 1024
+
+
+def _classify_conversations_snippet(data: bytes) -> Optional[str]:
+    if not data:
+        return None
+    lowered = data.lower()
+    if b'"chat_messages"' in lowered or b'"chatmessages"' in lowered:
+        return "claude"
+    if b'"mapping"' in lowered or b'"current_node"' in lowered:
+        return "chatgpt"
+    if b'"sender"' in lowered or b'"sender_id"' in lowered:
+        return "claude"
+    if b'"author"' in lowered or b'"role"' in lowered:
+        return "chatgpt"
+    if b'"uuid"' in lowered and b'"model"' in lowered:
+        return "claude"
+    return None
+
+
 def _classify_conversations_stream(handle, prefix: str, *, limit: int = 3) -> Optional[str]:
     try:
         import ijson
@@ -581,6 +602,11 @@ def _classify_conversations_stream(handle, prefix: str, *, limit: int = 3) -> Op
 
 
 def _classify_conversations_file(path: Path) -> Optional[str]:
+    size = None
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = None
     try:
         with path.open("rb") as fh:
             provider = _classify_conversations_stream(fh, "conversations.item")
@@ -593,6 +619,22 @@ def _classify_conversations_file(path: Path) -> Optional[str]:
             provider = _classify_conversations_stream(fh, "item")
             if provider:
                 return provider
+    except Exception:
+        pass
+    if size is not None and size <= _CLASSIFY_JSON_MAX_BYTES:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            provider = _classify_conversations_json(data)
+            if provider:
+                return provider
+        except Exception:
+            pass
+    try:
+        with path.open("rb") as fh:
+            snippet = fh.read(_CLASSIFY_SNIPPET_BYTES)
+        provider = _classify_conversations_snippet(snippet)
+        if provider:
+            return provider
     except Exception:
         pass
     return None
@@ -628,7 +670,29 @@ def _classify_conversations_zip(path: Path) -> Optional[str]:
                 if provider:
                     return provider
             except Exception:
-                return None
+                pass
+            try:
+                info = zf.getinfo(name)
+                size = info.file_size
+            except Exception:
+                size = None
+            if size is not None and size <= _CLASSIFY_JSON_MAX_BYTES:
+                try:
+                    with zf.open(name) as fh:
+                        data = json.load(fh)
+                    provider = _classify_conversations_json(data)
+                    if provider:
+                        return provider
+                except Exception:
+                    pass
+            try:
+                with zf.open(name) as fh:
+                    snippet = fh.read(_CLASSIFY_SNIPPET_BYTES)
+                provider = _classify_conversations_snippet(snippet)
+                if provider:
+                    return provider
+            except Exception:
+                pass
     except Exception:
         return None
     return None
