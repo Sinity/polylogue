@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from ..commands import CommandEnv
 from ..util import latest_run
 from ..schema import stamp_payload
-from .editor import open_in_editor, get_editor
+from .editor import open_in_editor, get_editor, open_in_browser
 
 
 def run_open_cli(args: SimpleNamespace, env: CommandEnv) -> None:
@@ -44,12 +44,18 @@ def run_open_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     if getattr(args, "print_only", False):
         ui.console.print(str(target))
         return
-    if not open_in_editor(target):
-        editor = get_editor()
-        if editor:
-            ui.console.print(f"[yellow]Could not open with {editor}; path: {target}")
-        else:
-            ui.console.print(f"[yellow]Set $EDITOR to open files automatically. Path: {target}")
+    if target.suffix.lower() == ".html":
+        if open_in_browser(target):
+            ui.console.print(f"[dim]Opened {target} in browser[/dim]")
+            return
+    if open_in_editor(target):
+        ui.console.print(f"[dim]Opened {target} in editor[/dim]")
+        return
+    editor = get_editor()
+    if editor:
+        ui.console.print(f"[yellow]Could not open with {editor}; path: {target}")
+    else:
+        ui.console.print(f"[yellow]Set $EDITOR to open files automatically. Path: {target}")
 
 
 __all__ = ["run_open_cli"]

@@ -17,11 +17,8 @@ from ..util import write_clipboard_text
 from .summaries import summarize_render
 from .failure_logging import record_failure
 from .context import (
-    DEFAULT_COLLAPSE,
-    DEFAULT_RENDER_OUT,
     parse_meta_items,
     resolve_collapse_thresholds,
-    resolve_collapse_value,
     resolve_html_enabled,
     resolve_output_path,
 )
@@ -39,12 +36,17 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
     if not inputs:
         console.print("No JSON files to render")
         return
-    output = resolve_output_path(args.out, DEFAULT_RENDER_OUT)
+    output = resolve_output_path(args.out, env.config.defaults.output_dirs.render)
     settings = env.settings
     collapse_thresholds = resolve_collapse_thresholds(args, settings)
     collapse = collapse_thresholds["message"]
     def _truthy(val: str) -> bool:
         return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+    if getattr(args, "attachment_ocr", None) is None:
+        args.attachment_ocr = True
+    if "--attachment-ocr" in render_prefs and not getattr(args, "_attachment_ocr_explicit", False):
+        args.attachment_ocr = _truthy(render_prefs["--attachment-ocr"])
 
     download_attachments = not args.links_only
     if not args.links_only and "--links-only" in render_prefs:
@@ -74,7 +76,7 @@ def run_render_cli(args: object, env: CommandEnv, json_output: bool) -> None:
         html=html_enabled,
         html_theme=html_theme,
         diff=getattr(args, "diff", False),
-        attachment_ocr=getattr(args, "attachment_ocr", False) or _truthy(render_prefs.get("--attachment-ocr", "false")) if render_prefs else getattr(args, "attachment_ocr", False),
+        attachment_ocr=getattr(args, "attachment_ocr", True),
         sanitize_html=getattr(args, "sanitize_html", False),
         meta=meta,
     )

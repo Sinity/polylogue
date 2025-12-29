@@ -9,12 +9,14 @@ from ..commands import CommandEnv
 def run_config_show(args: object, env: CommandEnv) -> None:
     """Show current configuration (combines env + settings)."""
     from ..config import CONFIG, CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN
+    from ..config import is_config_declarative
     from ..schema import stamp_payload
     from ..settings import SETTINGS_PATH
 
     ui = env.ui
     settings = env.settings
     defaults = CONFIG.defaults
+    declarative, decl_reason, decl_target = is_config_declarative(CONFIG_PATH)
 
     credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
@@ -28,6 +30,9 @@ def run_config_show(args: object, env: CommandEnv) -> None:
             {
                 "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
                 "settingsPath": str(SETTINGS_PATH),
+                "configDeclarative": declarative,
+                "configDeclarativeReason": decl_reason or None,
+                "configDeclarativeTarget": str(decl_target) if decl_target else None,
                 "ui": {
                     "html_previews": settings.html_previews,
                     "html_theme": settings.html_theme,
@@ -74,9 +79,18 @@ def run_config_show(args: object, env: CommandEnv) -> None:
         f"Config: {CONFIG_PATH or '(default)'}",
         f"Settings: {SETTINGS_PATH}",
         "",
-        f"HTML previews: {'on' if settings.html_previews else 'off'}",
-        f"HTML theme: {settings.html_theme}",
+        f"Config mutability: {'declarative' if declarative else 'mutable'}",
     ]
+    if declarative and decl_reason:
+        summary_lines.append(f"  Reason: {decl_reason}")
+        summary_lines.append("  Hint: edit your Nix/flake module; config init/set/edit are disabled.")
+    summary_lines.extend(
+        [
+            "",
+            f"HTML previews: {'on' if settings.html_previews else 'off'}",
+            f"HTML theme: {settings.html_theme}",
+        ]
+    )
     if settings.collapse_threshold is not None:
         summary_lines.append(f"Collapse threshold: {settings.collapse_threshold}")
 
@@ -117,4 +131,3 @@ def run_config_show(args: object, env: CommandEnv) -> None:
 
 
 __all__ = ["run_config_show"]
-

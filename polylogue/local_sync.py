@@ -5,6 +5,7 @@ import time
 import json
 import zipfile
 import fnmatch
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,7 @@ from .importers import (
 from .importers.base import ImportResult
 from .importers.claude_code import (
     DEFAULT_PROJECT_ROOT as CLAUDE_CODE_DEFAULT,
+    extract_claude_code_session_id,
     list_claude_code_sessions,
 )
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
@@ -46,6 +48,7 @@ class LocalSyncResult:
     duration: float = 0.0
     failures: int = 0
     failed: List[Dict[str, str]] = field(default_factory=list)
+    skip_reasons: Dict[str, int] = field(default_factory=dict)
 
 
 LocalSyncFn = Callable[..., LocalSyncResult]
@@ -65,6 +68,7 @@ class LocalSyncProvider:
     supports_watch: bool = True
     supports_diff: bool = True
     create_base_dir: bool = False
+    supports_jobs: bool = False
     watch_attachments: Tuple[str, ...] = ()
 
 
@@ -81,6 +85,61 @@ class _LocalSessionStage:
 def _mtime_ns(path: Path) -> int:
     stat_result = path.stat()
     return getattr(stat_result, "st_mtime_ns", int(stat_result.st_mtime * 1_000_000_000))
+
+
+def _latest_mtime_ns(paths: Iterable[Path]) -> Optional[int]:
+    latest: Optional[int] = None
+    for path in paths:
+        try:
+            value = _mtime_ns(path)
+        except OSError:
+            continue
+        if latest is None or value > latest:
+            latest = value
+    return latest
+
+
+def _resolve_source_paths(
+    provider: str,
+    session_path: Path,
+    state_entry: Optional[Dict[str, object]],
+    session_id: Optional[str],
+) -> List[Path]:
+    if provider != "claude-code":
+        return [session_path]
+    sources: List[Path] = []
+    if isinstance(state_entry, dict):
+        raw_files = state_entry.get("sessionFiles") or state_entry.get("sessionFile")
+        if isinstance(raw_files, list):
+            for entry in raw_files:
+                if isinstance(entry, str) and entry.strip():
+                    sources.append(Path(entry.strip()))
+        elif isinstance(raw_files, str) and raw_files.strip():
+            sources.append(Path(raw_files.strip()))
+    if session_id:
+        for candidate in session_path.parent.glob("*.jsonl"):
+            if candidate in sources:
+                continue
+            if extract_claude_code_session_id(candidate) == session_id:
+                sources.append(candidate)
+    return sources or [session_path]
+
+
+def _is_up_to_date_multi(sources: Iterable[Path], target: Path) -> bool:
+    if not target.exists():
+        return False
+    try:
+        target_ns = _mtime_ns(target)
+    except OSError:
+        return False
+    source_ns = _latest_mtime_ns(sources)
+    if source_ns is None:
+        return False
+    # Allow for minor clock skew (≤5ms) to avoid unnecessary re-imports on equal times.
+    tolerance = 5_000_000
+    if target_ns + tolerance < source_ns:
+        return False
+    return True
 
 
 def _is_up_to_date(source: Path, target: Path) -> bool:
@@ -131,7 +190,7 @@ def _sync_sessions(
     importer_kwargs: Optional[dict] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
-    attachment_ocr: bool = False,
+    attachment_ocr: bool = True,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
     jobs: int = 1,
@@ -144,6 +203,7 @@ def _sync_sessions(
     start_time = time.perf_counter()
     written: List[ImportResult] = []
     skipped = 0
+    skip_reasons: Counter[str] = Counter()
     wanted: set[str] = set()
     importer_kwargs = importer_kwargs or {}
     importer_kwargs = dict(importer_kwargs)
@@ -206,6 +266,7 @@ def _sync_sessions(
         entry: Dict[str, object] = {
             "session_path": session_path,
             "skipped": False,
+            "skip_reason": None,
             "result": None,
             "prune_slug": None,
             "diff": False,
@@ -213,9 +274,15 @@ def _sync_sessions(
         }
         if not session_path.is_file():
             entry["skipped"] = True
+            entry["skip_reason"] = "missing"
             return entry
 
         conversation_id = str(session_path)
+        session_id: Optional[str] = None
+        if provider == "claude-code":
+            session_id = extract_claude_code_session_id(session_path)
+            if session_id:
+                conversation_id = session_id
         state_entry = registrar.get_state(provider, conversation_id)
         state_slug = None
         if isinstance(state_entry, dict):
@@ -236,6 +303,8 @@ def _sync_sessions(
                 candidate_path = Path(raw_output)
                 if candidate_path.exists():
                     md_path = candidate_path
+
+        source_paths = _resolve_source_paths(provider, session_path, state_entry, session_id)
 
         slug_for_prune = slug_hint
         try:
@@ -261,7 +330,7 @@ def _sync_sessions(
             except Exception:
                 existing_dirty = False
 
-        if not force and not existing_dirty:
+        if not force and not existing_dirty and provider != "claude-code":
             try:
                 from .importers.raw_storage import compute_hash
                 from .db import get_raw_import_by_conversation, open_connection
@@ -271,12 +340,14 @@ def _sync_sessions(
                     raw_row = get_raw_import_by_conversation(conn, provider, conversation_id)
                 if raw_row and raw_row["hash"] == current_hash:
                     entry["skipped"] = True
+                    entry["skip_reason"] = "up-to-date"
                     return entry
             except Exception:
                 pass
 
-        if not force and _is_up_to_date(session_path, md_path):
+        if not force and _is_up_to_date_multi(source_paths, md_path):
             entry["skipped"] = True
+            entry["skip_reason"] = "up-to-date"
             return entry
 
         diff_tracker = DiffTracker(md_path, diff)
@@ -298,13 +369,17 @@ def _sync_sessions(
         if result.skipped:
             diff_tracker.cleanup()
             entry["skipped"] = True
+            entry["skip_reason"] = result.skip_reason or "skipped"
             return entry
 
         result.diff_path = diff_tracker.finalize(result.markdown_path)
         entry["diff"] = bool(result.diff_path)
 
         try:
-            session_ns = _mtime_ns(session_path)
+            if provider == "claude-code":
+                state_after = registrar.get_state(provider, conversation_id)
+                source_paths = _resolve_source_paths(provider, session_path, state_after, session_id)
+            session_ns = _latest_mtime_ns(source_paths) or _mtime_ns(session_path)
             result.markdown_path.parent.mkdir(parents=True, exist_ok=True)
             os.utime(result.markdown_path, ns=(session_ns, session_ns))
             if result.html_path:
@@ -336,6 +411,8 @@ def _sync_sessions(
                     wanted.add(prune_slug)
 
                 if session_output.get("skipped"):
+                    reason = session_output.get("skip_reason") or "skipped"
+                    skip_reasons[reason] += 1
                     skipped += 1
                     tracker.advance()
                     done += 1
@@ -388,6 +465,8 @@ def _sync_sessions(
                     wanted.add(prune_slug)
 
                 if session_output.get("skipped"):
+                    reason = session_output.get("skip_reason") or "skipped"
+                    skip_reasons[reason] += 1
                     skipped += 1
                     continue
 
@@ -441,6 +520,7 @@ def _sync_sessions(
         duration=duration,
         failures=len(failures),
         failed=failures,
+        skip_reasons=dict(skip_reasons),
     )
 
 
@@ -585,7 +665,7 @@ def _sync_export_bundles(
     import_fn: Callable[..., Sequence[ImportResult] | ImportResult | None],
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
-    attachment_ocr: bool = False,
+    attachment_ocr: bool = True,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
 ) -> LocalSyncResult:
@@ -769,14 +849,14 @@ def sync_codex_sessions(
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
-    attachment_ocr: bool = False,
+    attachment_ocr: bool = True,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
     jobs: int = 1,
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
-        sessions = base_dir.rglob("*.jsonl")
+        sessions = _list_claude_code_paths(base_dir)
     return _sync_sessions(
         sessions,
         output_dir=output_dir,
@@ -817,7 +897,7 @@ def sync_claude_code_sessions(
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
-    attachment_ocr: bool = False,
+    attachment_ocr: bool = True,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
     jobs: int = 1,
@@ -887,7 +967,7 @@ def sync_chatgpt_exports(
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
-    attachment_ocr: bool = False,
+    attachment_ocr: bool = True,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
 ) -> LocalSyncResult:
@@ -943,7 +1023,7 @@ def sync_claude_exports(
     sessions: Optional[Iterable[Path]] = None,
     registrar: Optional[ConversationRegistrar] = None,
     ui: Optional[UI] = None,
-    attachment_ocr: bool = False,
+    attachment_ocr: bool = True,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
 ) -> LocalSyncResult:
@@ -996,6 +1076,7 @@ LOCAL_SYNC_PROVIDERS: Dict[str, LocalSyncProvider] = {
         watch_banner="Watching Codex sessions",
         watch_log_title="Codex Watch",
         watch_suffixes=(".jsonl",),
+        supports_jobs=True,
     ),
     "claude-code": LocalSyncProvider(
         name="claude-code",
@@ -1007,6 +1088,7 @@ LOCAL_SYNC_PROVIDERS: Dict[str, LocalSyncProvider] = {
         watch_banner="Watching Claude Code sessions",
         watch_log_title="Claude Code Watch",
         watch_suffixes=(".jsonl",),
+        supports_jobs=True,
     ),
     "chatgpt": LocalSyncProvider(
         name="chatgpt",
