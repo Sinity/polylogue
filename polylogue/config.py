@@ -36,6 +36,7 @@ class DriveConfig:
     token_path: Path = DEFAULT_TOKEN
     retries: int = 3
     retry_base: float = 0.5
+    from_config: bool = False
 
 CONFIG_DIR = CONFIG_HOME
 DEFAULT_PATHS = list(DEFAULT_CONFIG_LOCATIONS)
@@ -159,6 +160,7 @@ def persist_config(
     html_theme: str,
     index: Optional[IndexConfig] = None,
     roots: Optional[Dict[str, object]] = None,
+    drive: Optional[DriveConfig] = None,
     path: Optional[Path] = None,
 ) -> Path:
     """Write a config.json that mirrors the sample schema.
@@ -206,6 +208,21 @@ def persist_config(
                 "import_claude": str(root_path / "claude"),
             }
         payload["paths"]["roots"] = mapped
+    if drive is not None:
+        defaults = DriveConfig()
+        include_drive = drive.from_config or (
+            drive.credentials_path != defaults.credentials_path
+            or drive.token_path != defaults.token_path
+            or drive.retries != defaults.retries
+            or drive.retry_base != defaults.retry_base
+        )
+        if include_drive:
+            payload["drive"] = {
+                "credentials_path": str(drive.credentials_path),
+                "token_path": str(drive.token_path),
+                "retries": drive.retries,
+                "retry_base": drive.retry_base,
+            }
     target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return target
 
@@ -262,6 +279,26 @@ def _convert_exports(core: CoreExportsConfig) -> ExportsConfig:
     return ExportsConfig(chatgpt=core.chatgpt, claude=core.claude)
 
 
+def _convert_drive(raw: Optional[dict]) -> DriveConfig:
+    drive_cfg = DriveConfig()
+    if not isinstance(raw, dict):
+        return drive_cfg
+    drive_cfg.from_config = True
+    credentials = raw.get("credentials_path") or raw.get("credentialsPath") or raw.get("credential_path")
+    token = raw.get("token_path") or raw.get("tokenPath")
+    retries = raw.get("retries")
+    retry_base = raw.get("retry_base") or raw.get("retryBase")
+    if isinstance(credentials, str) and credentials.strip():
+        drive_cfg.credentials_path = Path(credentials).expanduser()
+    if isinstance(token, str) and token.strip():
+        drive_cfg.token_path = Path(token).expanduser()
+    if isinstance(retries, int):
+        drive_cfg.retries = retries
+    if isinstance(retry_base, (int, float)):
+        drive_cfg.retry_base = float(retry_base)
+    return drive_cfg
+
+
 def load_config() -> Config:
     global CONFIG_PATH
     app_config: CoreAppConfig = load_configuration()
@@ -279,11 +316,12 @@ def load_config() -> Config:
         for label, paths in root_map.items():
             labeled_roots[label] = _convert_output_dirs(paths)
 
+    raw = getattr(app_config, "raw", {}) or {}
     return Config(
         defaults=_convert_defaults(app_config.defaults, output_paths_config, labeled_roots),
         index=_convert_index(app_config.index),
         exports=_convert_exports(exports_config),
-        drive=DriveConfig(),
+        drive=_convert_drive(raw.get("drive") if isinstance(raw, dict) else None),
     )
 
 

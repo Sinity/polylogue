@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List, Optional
@@ -390,13 +391,14 @@ def run_sync_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     if provider == "drive":
         from ..drive_client import DEFAULT_CREDENTIALS
 
-        cred_path = DEFAULT_CREDENTIALS
+        cred_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+        cred_path = Path(cred_env).expanduser() if cred_env else DEFAULT_CREDENTIALS
         if env.config.drive and env.config.drive.credentials_path:
             cred_path = env.config.drive.credentials_path
         if not cred_path.exists():
             raise SystemExit(
                 f"Drive sync requires credentials.json at {cred_path} "
-                f"(set drive.credentials_path in config)."
+                " (set POLYLOGUE_CREDENTIAL_PATH or drive.credentials_path in config)."
             )
 
     if provider in {"chatgpt", "claude"}:

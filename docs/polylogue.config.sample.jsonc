@@ -19,5 +19,12 @@
       "collection": "polylogue",
       "vector_size": null
     }
+  },
+  // Optional: Drive sync settings (env vars still take precedence)
+  "drive": {
+    "credentials_path": "~/.config/polylogue/credentials.json",
+    "token_path": "~/.config/polylogue/token.json",
+    "retries": 3,
+    "retry_base": 0.5
   }
 }
