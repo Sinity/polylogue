@@ -739,17 +739,31 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             raise SystemExit(1)
 
     selected_paths: Optional[List[Path]] = None
+    available_sessions: Optional[List[Path]] = None
+
+    def _load_sessions() -> List[Path]:
+        nonlocal available_sessions
+        if available_sessions is None:
+            available_sessions = provider.list_sessions(base_dir)
+        return available_sessions
+
     cli_sessions = getattr(args, "sessions", None)
     if cli_sessions:
         selected_paths = [Path(path).expanduser() for path in cli_sessions if path]
     elif not args.all and not ui.plain:
-        sessions = provider.list_sessions(base_dir)
+        sessions = _load_sessions()
         selection = _collect_session_selection(ui, sessions, f"Select {provider.title} sessions")
         if selection is None:
             return
         if not selection:
             return
         selected_paths = selection
+    else:
+        sessions = _load_sessions()
+        if not sessions:
+            ui.console.print(f"No {provider.title} sessions found in {base_dir}.")
+            return
+        selected_paths = sessions
 
     disk_estimate = bool(getattr(args, "disk_estimate", False))
     max_disk = getattr(args, "max_disk", None)
@@ -759,7 +773,7 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
         if selected_paths is not None:
             session_count = len(selected_paths)
         else:
-            session_count = len(provider.list_sessions(base_dir))
+            session_count = len(_load_sessions())
         projected = 20 * 1024 * 1024 * max(1, session_count)
         disk_estimate_bytes = projected
         try:

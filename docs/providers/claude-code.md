@@ -1,6 +1,6 @@
 # Claude Code Session Imports
 
-Claude Code stores IDE transcripts beneath `~/.claude/projects/`. Polylogue mirrors those JSONL streams into Markdown while preserving workspace context, shell snapshots, and tool outputs.
+Claude Code stores IDE transcripts beneath `~/.claude/projects/` (or `~/.config/claude/projects/` on some systems). Set `POLYLOGUE_CLAUDE_CODE_PROJECTS` if you need to override the default. Polylogue mirrors those JSONL streams into Markdown while preserving workspace context, shell snapshots, and tool outputs.
 
 ## Project Layout
 

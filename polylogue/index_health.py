@@ -8,14 +8,21 @@ from typing import List
 from .db import default_db_path
 
 
-def verify_sqlite_indexes(db_path: Path | None = None, *, attempt_rebuild: bool = True) -> List[str]:
+def verify_sqlite_indexes(
+    db_path: Path | None = None,
+    *,
+    attempt_rebuild: bool = True,
+    full: bool = True,
+) -> List[str]:
     db_path = db_path or default_db_path()
     issues: List[str] = []
     conn = sqlite3.connect(db_path)
     try:
-        status = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        pragma = "integrity_check" if full else "quick_check"
+        status = conn.execute(f"PRAGMA {pragma}").fetchone()[0]
         if status != "ok":
-            raise RuntimeError(f"SQLite integrity check failed: {status}")
+            label = "integrity" if full else "quick"
+            raise RuntimeError(f"SQLite {label} check failed: {status}")
         try:
             conn.execute("SELECT count(*) FROM messages_fts")
         except sqlite3.OperationalError as exc:

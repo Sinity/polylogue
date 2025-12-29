@@ -516,9 +516,9 @@ def run_doctor(
     issues.extend(_credential_issues(credential_path, token_path))
     issues.extend(_drive_failure_issues())
     if not skip_index:
-        _status("Checking SQLite index health (may take a while on large archives)")
+        _status("Checking SQLite index health (quick check; use `polylogue doctor index check` for full scan)")
         try:
-            sqlite_notes = verify_sqlite_indexes(default_db_path())
+            sqlite_notes = verify_sqlite_indexes(default_db_path(), full=False)
             if sqlite_notes:
                 counts["indexes"] = counts.get("indexes", 0) + len(sqlite_notes)
                 for note in sqlite_notes:

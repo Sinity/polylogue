@@ -117,3 +117,10 @@ def test_ui_input_interactive_uses_questionary(monkeypatch):
     view = UI(plain=False)
     assert view.input("Enter", default="fallback") == "value"
     assert calls and calls[0] == ("Enter", "fallback")
+
+
+def test_plain_progress_formats_integerish_values():
+    tracker = ui_module._PlainProgressTracker
+    assert tracker._coerce_int(5.0000001) == 5
+    assert tracker._format_value(12.0000001) == "12"
+    assert tracker._format_value(12.5) == "12.5"

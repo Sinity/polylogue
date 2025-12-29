@@ -199,16 +199,20 @@ class _PlainProgressTracker:
     def _coerce_int(value: Optional[float]) -> Optional[int]:
         if isinstance(value, int):
             return value
-        if isinstance(value, float) and value.is_integer():
-            return int(value)
+        if isinstance(value, float):
+            rounded = round(value)
+            if abs(value - rounded) < 1e-6:
+                return int(rounded)
         return None
 
     @staticmethod
     def _format_value(value: float | int) -> str:
         if isinstance(value, int):
             return str(value)
-        if isinstance(value, float) and value.is_integer():
-            return str(int(value))
+        if isinstance(value, float):
+            rounded = round(value)
+            if abs(value - rounded) < 1e-6:
+                return str(int(rounded))
         return f"{float(value):.2f}".rstrip("0").rstrip(".")
 
 
