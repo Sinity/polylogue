@@ -174,6 +174,17 @@ class _NoopProgress:
         return None
 
 
+def _ensure_output_dir(output_dir: Path, *, provider: str) -> None:
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"{provider} output directory could not be created: {output_dir} ({exc})"
+        ) from exc
+    if not os.access(output_dir, os.W_OK | os.X_OK):
+        raise RuntimeError(f"{provider} output directory is not writable: {output_dir}")
+
+
 def _sync_sessions(
     sessions: Iterable[Path],
     *,
@@ -196,11 +207,11 @@ def _sync_sessions(
     meta: Optional[Dict[str, str]] = None,
     jobs: int = 1,
 ) -> LocalSyncResult:
+    _ensure_output_dir(output_dir, provider=provider)
     if registrar is None:
         state_dir = output_dir / ".polylogue-state"
-        state_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_output_dir(state_dir, provider=f"{provider} state")
         registrar = create_default_registrar(database_path=state_dir / "polylogue.db")
-    output_dir.mkdir(parents=True, exist_ok=True)
     start_time = time.perf_counter()
     written: List[ImportResult] = []
     skipped = 0
@@ -260,7 +271,7 @@ def _sync_sessions(
         eta = ((total - done) / rate) if rate > 0 else None
         pct = (done / total) * 100.0
         ui.console.print(
-            f"[dim]{provider} progress: {done}/{total} ({pct:.1f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
+            f"[dim]{provider} progress: {done}/{total} ({pct:.0f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
         )
 
     def _process_single(session_path: Path) -> Dict[str, object]:
@@ -765,7 +776,7 @@ def _sync_export_bundles(
     meta: Optional[Dict[str, str]] = None,
 ) -> LocalSyncResult:
     registrar = registrar or create_default_registrar()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_output_dir(output_dir, provider=provider)
     start_time = time.perf_counter()
     written: List[ImportResult] = []
     skipped_exports = 0
@@ -806,7 +817,7 @@ def _sync_export_bundles(
         eta = ((total - done) / rate) if rate > 0 else None
         pct = (done / total) * 100.0
         ui.console.print(
-            f"[dim]{provider} progress: {done}/{total} ({pct:.1f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
+            f"[dim]{provider} progress: {done}/{total} ({pct:.0f}%) elapsed={format_duration(elapsed)} eta={format_duration(eta)}[/dim]"
         )
 
     with progress_ctx as tracker:
