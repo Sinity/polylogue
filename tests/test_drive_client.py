@@ -80,6 +80,25 @@ def test_drive_client_explicit_paths_override_env(tmp_path, monkeypatch):
     assert client.token_path == explicit_token
 
 
+def test_drive_client_falls_back_from_legacy_folder_name(monkeypatch):
+    client = DriveClient(DummyUI())
+    monkeypatch.setattr(client, "service", lambda: object())
+    seen: list[str] = []
+
+    def fake_find(_svc, name, notifier=None):
+        seen.append(name)
+        if name == "Google AI Studio":
+            return "folder-123"
+        return None
+
+    monkeypatch.setattr("polylogue.drive_client.find_folder_id", fake_find)
+
+    resolved = client.resolve_folder_id("AI Studio", None)
+
+    assert resolved == "folder-123"
+    assert seen == ["AI Studio", "Google AI Studio"]
+
+
 def test_run_console_flow_assigns_redirect(monkeypatch):
     class DummySession:
         def __init__(self):
