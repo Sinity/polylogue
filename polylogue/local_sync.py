@@ -946,11 +946,11 @@ def _list_claude_code_paths(base_dir: Path) -> List[Path]:
 
 
 def _list_chatgpt_exports(base_dir: Path) -> List[Path]:
-    return _discover_export_targets(base_dir)
+    return _discover_export_targets(base_dir, provider="chatgpt")
 
 
 def _list_claude_exports(base_dir: Path) -> List[Path]:
-    return _discover_export_targets(base_dir)
+    return _discover_export_targets(base_dir, provider="claude")
 
 
 def sync_chatgpt_exports(
