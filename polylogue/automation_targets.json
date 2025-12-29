@@ -25,7 +25,7 @@
     "command": ["sync", "drive", "--json"],
     "defaults": {
       "collapseThreshold": 16,
-      "extraArgs": ["--folder-name", "AI Studio"],
+      "extraArgs": ["--folder-name", "Google AI Studio"],
       "html": false
     }
   },
