@@ -21,7 +21,6 @@ from ..util import add_run, format_run_brief, latest_run, path_order_key, get_ru
 from ..schema import stamp_payload
 from .context import (
     DEFAULT_COLLAPSE,
-    DEFAULT_SYNC_OUT,
     default_sync_namespace,
     resolve_collapse_thresholds,
     resolve_html_enabled,
@@ -35,6 +34,18 @@ from .failure_logging import record_failure
 
 def _truthy(val: str) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_default_output(provider_name: str, env: CommandEnv) -> Path:
+    outputs = env.config.defaults.output_dirs
+    mapping = {
+        "drive": outputs.sync_drive,
+        "codex": outputs.sync_codex,
+        "claude-code": outputs.sync_claude_code,
+        "chatgpt": outputs.import_chatgpt,
+        "claude": outputs.import_claude,
+    }
+    return mapping.get(provider_name, outputs.render)
 
 
 def _apply_resume_from(args: SimpleNamespace, env: CommandEnv, *, run_id: int) -> None:
@@ -271,7 +282,11 @@ def _log_local_sync(
         if footer:
             for line in footer:
                 console.print(line)
-    if result.skipped:
+    skip_reasons = getattr(result, "skip_reasons", None) or {}
+    if skip_reasons:
+        for reason, count in sorted(skip_reasons.items()):
+            console.print(f"[cyan]{title}: skipped ({reason}) {count} item(s).")
+    elif result.skipped:
         console.print(f"[cyan]{title}: skipped {result.skipped} up-to-date item(s).")
     if result.pruned:
         console.print(f"[cyan]{title}: pruned {result.pruned} path(s).")
@@ -291,6 +306,8 @@ def _log_local_sync(
         "pruned": result.pruned,
         "duration": getattr(result, "duration", 0.0),
     }
+    if skip_reasons:
+        run_payload["skipReasons"] = dict(skip_reasons)
     failed_items = getattr(result, "failed", None)
     if isinstance(failed_items, list) and failed_items:
         run_payload["failedPaths"] = failed_items
@@ -444,7 +461,7 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
             stored = run.get("out")
             if isinstance(stored, str) and stored.strip():
                 out = stored.strip()
-        output_dir = resolve_output_path(out, DEFAULT_SYNC_OUT)
+        output_dir = resolve_output_path(out, _resolve_default_output("drive", env))
         output_dir.mkdir(parents=True, exist_ok=True)
 
         retries_override = getattr(args, "drive_retries", None)
@@ -520,7 +537,7 @@ def _run_sync_drive(args: SimpleNamespace, env: CommandEnv) -> None:
     options = SyncOptions(
         folder_name=args.folder_name,
         folder_id=folder_id,
-        output_dir=resolve_output_path(args.out, DEFAULT_SYNC_OUT),
+        output_dir=resolve_output_path(args.out, _resolve_default_output("drive", env)),
         collapse_threshold=collapse_thresholds["message"],
         collapse_thresholds=collapse_thresholds,
         download_attachments=download_attachments,
@@ -697,12 +714,11 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
     provider = get_local_provider(provider_name)
     ui = env.ui
     previous_run_note = format_run_brief(latest_run(provider=provider.name, cmd=f"sync {provider.name}"))
-    footer_lines = [f"Previous run: {previous_run_note}"] if previous_run_note else None
     if getattr(args, "diff", False) and not provider.supports_diff:
         ui.console.print(f"[red]{provider.title} does not support --diff output")
         raise SystemExit(1)
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else provider.default_base.expanduser()
-    out_dir = resolve_output_path(args.out, provider.default_output)
+    out_dir = resolve_output_path(args.out, _resolve_default_output(provider.name, env))
     settings = env.settings
     collapse_thresholds = resolve_collapse_thresholds(args, settings)
     collapse = collapse_thresholds["message"]
@@ -832,12 +848,14 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
                     "diff": str(item.diff_path) if item.diff_path else None,
                 }
             )
+        skip_reasons = getattr(result, "skip_reasons", None)
         payload = {
             "cmd": f"sync {provider.name}",
             "provider": provider.name,
             "count": len(result.written),
             "out": str(result.output_dir),
             "skipped": result.skipped,
+            "skipReasons": dict(skip_reasons or {}),
             "pruned": result.pruned,
             "attachments": attachments,
             "attachmentBytes": attachment_bytes,
@@ -867,12 +885,34 @@ def _run_local_sync(provider_name: str, args: SimpleNamespace, env: CommandEnv) 
             payload["previousRun"] = previous_run_note
         print(json.dumps(stamp_payload(payload), indent=2, sort_keys=True))
     else:
-        summarize_import(ui, f"{provider.title} Sync", result.written, extra_lines=footer_lines)
+        footer_lines: List[str] = []
+        if not result.written:
+            footer_lines.append(f"Output dir: {result.output_dir}")
+        if previous_run_note:
+            footer_lines.append(f"Previous run: {previous_run_note}")
+        summarize_import(ui, f"{provider.title} Sync", result.written, extra_lines=footer_lines or None)
         console = ui.console
-        if result.skipped:
-            console.print(f"Skipped {result.skipped} up-to-date item(s).")
+        skip_reasons = getattr(result, "skip_reasons", None) or {}
+        if skip_reasons:
+            for reason, count in sorted(skip_reasons.items()):
+                console.print(f"Skipped ({reason}): {count}")
+        elif result.skipped:
+            console.print(f"Skipped {result.skipped} item(s).")
         if result.pruned:
             console.print(f"Pruned {result.pruned} stale path(s).")
+        if result.failures:
+            prefix = "[red]Failures" if not ui.plain else "Failures"
+            console.print(f"{prefix}: {result.failures}[/red]" if not ui.plain else f"{prefix}: {result.failures}")
+            if isinstance(result.failed, list) and result.failed:
+                for entry in result.failed[:5]:
+                    path = entry.get("path") if isinstance(entry, dict) else None
+                    error = entry.get("error") if isinstance(entry, dict) else None
+                    if path and error:
+                        console.print(f"- {path}: {error}")
+                    elif path:
+                        console.print(f"- {path}")
+                if len(result.failed) > 5:
+                    console.print(f"... {len(result.failed) - 5} more (rerun with --json for details)")
 
     run_payload = {
         "cmd": f"sync {provider.name}",

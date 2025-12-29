@@ -76,7 +76,7 @@ def test_sync_drive_attachments_only_retries_failed_items(tmp_path: Path, state_
         drive_retry_base=None,
         dry_run=False,
         force=False,
-        folder_name="AI Studio",
+        folder_name="Google AI Studio",
         folder_id=None,
         since=None,
         until=None,
@@ -88,4 +88,3 @@ def test_sync_drive_attachments_only_retries_failed_items(tmp_path: Path, state_
     assert captured
     assert captured[0]["attachmentsOnly"] is True
     assert captured[0]["attachmentDownloads"] == 1
-

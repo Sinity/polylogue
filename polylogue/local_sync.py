@@ -5,6 +5,7 @@ import time
 import json
 import zipfile
 import fnmatch
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,7 @@ from .importers import (
 from .importers.base import ImportResult
 from .importers.claude_code import (
     DEFAULT_PROJECT_ROOT as CLAUDE_CODE_DEFAULT,
+    extract_claude_code_session_id,
     list_claude_code_sessions,
 )
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
@@ -46,6 +48,7 @@ class LocalSyncResult:
     duration: float = 0.0
     failures: int = 0
     failed: List[Dict[str, str]] = field(default_factory=list)
+    skip_reasons: Dict[str, int] = field(default_factory=dict)
 
 
 LocalSyncFn = Callable[..., LocalSyncResult]
@@ -145,6 +148,7 @@ def _sync_sessions(
     start_time = time.perf_counter()
     written: List[ImportResult] = []
     skipped = 0
+    skip_reasons: Counter[str] = Counter()
     wanted: set[str] = set()
     importer_kwargs = importer_kwargs or {}
     importer_kwargs = dict(importer_kwargs)
@@ -207,6 +211,7 @@ def _sync_sessions(
         entry: Dict[str, object] = {
             "session_path": session_path,
             "skipped": False,
+            "skip_reason": None,
             "result": None,
             "prune_slug": None,
             "diff": False,
@@ -214,9 +219,14 @@ def _sync_sessions(
         }
         if not session_path.is_file():
             entry["skipped"] = True
+            entry["skip_reason"] = "missing"
             return entry
 
         conversation_id = str(session_path)
+        if provider == "claude-code":
+            resolved_id = extract_claude_code_session_id(session_path)
+            if resolved_id:
+                conversation_id = resolved_id
         state_entry = registrar.get_state(provider, conversation_id)
         state_slug = None
         if isinstance(state_entry, dict):
@@ -272,12 +282,14 @@ def _sync_sessions(
                     raw_row = get_raw_import_by_conversation(conn, provider, conversation_id)
                 if raw_row and raw_row["hash"] == current_hash:
                     entry["skipped"] = True
+                    entry["skip_reason"] = "up-to-date"
                     return entry
             except Exception:
                 pass
 
         if not force and _is_up_to_date(session_path, md_path):
             entry["skipped"] = True
+            entry["skip_reason"] = "up-to-date"
             return entry
 
         diff_tracker = DiffTracker(md_path, diff)
@@ -299,6 +311,7 @@ def _sync_sessions(
         if result.skipped:
             diff_tracker.cleanup()
             entry["skipped"] = True
+            entry["skip_reason"] = result.skip_reason or "skipped"
             return entry
 
         result.diff_path = diff_tracker.finalize(result.markdown_path)
@@ -337,6 +350,8 @@ def _sync_sessions(
                     wanted.add(prune_slug)
 
                 if session_output.get("skipped"):
+                    reason = session_output.get("skip_reason") or "skipped"
+                    skip_reasons[reason] += 1
                     skipped += 1
                     tracker.advance()
                     done += 1
@@ -389,6 +404,8 @@ def _sync_sessions(
                     wanted.add(prune_slug)
 
                 if session_output.get("skipped"):
+                    reason = session_output.get("skip_reason") or "skipped"
+                    skip_reasons[reason] += 1
                     skipped += 1
                     continue
 
@@ -442,6 +459,7 @@ def _sync_sessions(
         duration=duration,
         failures=len(failures),
         failed=failures,
+        skip_reasons=dict(skip_reasons),
     )
 
 
@@ -777,7 +795,7 @@ def sync_codex_sessions(
 ) -> LocalSyncResult:
     base_dir = base_dir.expanduser()
     if sessions is None:
-        sessions = base_dir.rglob("*.jsonl")
+        sessions = _list_claude_code_paths(base_dir)
     return _sync_sessions(
         sessions,
         output_dir=output_dir,
