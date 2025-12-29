@@ -114,11 +114,12 @@ class UI:
     def progress(self, description: str, total: Optional[int] = None):
         if self.plain:
             return _PlainProgressTracker(self.console, description, total)
+        count_format = "{task.completed:.0f}/{task.total:.0f}" if total is not None else "{task.completed:.0f}"
         columns = (
             SpinnerColumn(),
             TextColumn("{task.description}"),
             BarColumn(),
-            TextColumn("{task.completed}/{task.total}" if total is not None else "{task.completed}"),
+            TextColumn(count_format),
             TimeElapsedColumn(),
             TimeRemainingColumn(),
         )
@@ -180,8 +181,9 @@ class _PlainProgressTracker:
 
     @staticmethod
     def _format_value(value: float) -> str:
-        if value.is_integer():
-            return str(int(value))
+        rounded = round(value)
+        if abs(value - rounded) < 1e-9:
+            return str(int(rounded))
         return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
