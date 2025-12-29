@@ -35,8 +35,17 @@ def run_env_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     credential_env = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
 
-    credential_path = Path(credential_env).expanduser() if credential_env else DEFAULT_CREDENTIALS
-    token_path = Path(token_env).expanduser() if token_env else DEFAULT_TOKEN
+    drive_cfg = getattr(env.config, "drive", None)
+    credential_path = (
+        Path(credential_env).expanduser()
+        if credential_env
+        else (drive_cfg.credentials_path if drive_cfg else DEFAULT_CREDENTIALS)
+    )
+    token_path = (
+        Path(token_env).expanduser()
+        if token_env
+        else (drive_cfg.token_path if drive_cfg else DEFAULT_TOKEN)
+    )
 
     checks.append(_path_status(paths_module.CONFIG_HOME, required=True, label="Config home"))
     checks.append(_path_status(paths_module.DATA_HOME, required=True, label="Data home"))
