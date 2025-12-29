@@ -22,12 +22,22 @@ def run_doctor_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     codex_dir = Path(args.codex_dir).expanduser() if args.codex_dir else CODEX_SESSIONS_ROOT
     claude_dir = Path(args.claude_code_dir).expanduser() if args.claude_code_dir else CLAUDE_CODE_PROJECT_ROOT
     progress_cb = None
+    status_cb = None
     if not getattr(args, "json", False):
         last_emit = 0.0
+        started = set()
 
         def progress_cb(provider: str, checked: int, total: Optional[int]) -> None:
             nonlocal last_emit
             if checked == 0:
+                if provider in started:
+                    return
+                started.add(provider)
+                label = f"Doctor check: {provider} scanning..."
+                if ui.plain:
+                    ui.console.print(label)
+                else:
+                    ui.console.print(f"[dim]{label}[/dim]")
                 return
             now = time.perf_counter()
             emit = checked == 1 or checked % 250 == 0 or (now - last_emit) > 10
@@ -43,6 +53,12 @@ def run_doctor_cli(args: SimpleNamespace, env: CommandEnv) -> None:
                     ui.console.print(label)
                 else:
                     ui.console.print(f"[dim]{label}[/dim]")
+        def status_cb(message: str) -> None:
+            label = f"Doctor check: {message}"
+            if ui.plain:
+                ui.console.print(label)
+            else:
+                ui.console.print(f"[dim]{label}[/dim]")
     report = doctor_run(
         codex_dir=codex_dir,
         claude_code_dir=claude_dir,
@@ -50,6 +66,9 @@ def run_doctor_cli(args: SimpleNamespace, env: CommandEnv) -> None:
         service=env.conversations,
         archive=env.archive,
         progress=progress_cb,
+        status=status_cb,
+        skip_index=bool(getattr(args, "skip_index", False)),
+        skip_qdrant=bool(getattr(args, "skip_qdrant", False)),
     )
     declarative, decl_reason, decl_target = is_config_declarative(CONFIG_PATH)
 

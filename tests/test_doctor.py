@@ -164,6 +164,34 @@ def test_doctor_reports_drive_failures(tmp_path, monkeypatch):
     assert any(issue.provider == "drive" and "failures" in issue.message for issue in report.issues)
 
 
+def test_doctor_skip_index_checks(tmp_path, monkeypatch):
+    _configure_state(monkeypatch, tmp_path)
+    codex_dir = tmp_path / "codex"
+    claude_dir = tmp_path / "claude"
+    codex_dir.mkdir()
+    claude_dir.mkdir()
+
+    def fail_sqlite(*_args, **_kwargs):
+        raise AssertionError("verify_sqlite_indexes should be skipped")
+
+    def fail_qdrant(*_args, **_kwargs):
+        raise AssertionError("verify_qdrant_collection should be skipped")
+
+    monkeypatch.setattr(doctor_module, "verify_sqlite_indexes", fail_sqlite)
+    monkeypatch.setattr(doctor_module, "verify_qdrant_collection", fail_qdrant)
+
+    report = run_doctor(
+        codex_dir=codex_dir,
+        claude_code_dir=claude_dir,
+        limit=0,
+        skip_index=True,
+        skip_qdrant=True,
+    )
+
+    assert report.checked.get("codex") == 0
+    assert report.checked.get("claude-code") == 0
+
+
 def test_doctor_uses_config_drive_paths(tmp_path, monkeypatch):
     defaults = _fake_defaults(tmp_path)
     cred_path = tmp_path / "drive" / "credentials.json"
