@@ -64,3 +64,30 @@ def test_interactive_browse_branches_uses_prompt_file(tmp_path: Path):
     result = _run_polylogue(["--interactive", "browse", "branches"], cwd=repo_root, env=env)
     assert result.returncode == 0, result.stderr
     assert "Provider: codex" in result.stdout
+
+
+def test_interactive_config_edit_updates_output_root(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[1]
+    env_plain = _common_env(tmp_path, force_plain=True)
+
+    init = _run_polylogue(["config", "init", "--force"], cwd=repo_root, env=env_plain)
+    assert init.returncode == 0, init.stderr
+
+    new_root = tmp_path / "custom-archive"
+    responses = [
+        {"type": "choose", "value": "Output root"},
+        {"type": "input", "value": str(new_root)},
+        {"type": "choose", "value": "Quit"},
+    ]
+    prompt_file = tmp_path / "prompts-edit.jsonl"
+    _write_prompt_file(prompt_file, responses)
+
+    env = _common_env(tmp_path, force_plain=False)
+    env["POLYLOGUE_TEST_PROMPT_FILE"] = str(prompt_file)
+
+    result = _run_polylogue(["--interactive", "config", "edit"], cwd=repo_root, env=env)
+    assert result.returncode == 0, result.stderr
+
+    config_home = Path(env["XDG_CONFIG_HOME"]) / "polylogue"
+    config_payload = json.loads((config_home / "config.json").read_text(encoding="utf-8"))
+    assert config_payload["paths"]["output_root"] == str(new_root)
