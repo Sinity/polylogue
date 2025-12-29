@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Set
+import math
 import sys
+from typing import Iterable, List, Optional, Set
 from rich.progress import (
     BarColumn,
     Progress,
@@ -168,7 +169,7 @@ class _PlainProgressTracker:
     def __enter__(self):
         return self
 
-    def advance(self, advance: float = 1.0) -> None:
+    def advance(self, advance: float = 1) -> None:
         as_int = self._coerce_int(advance)
         if as_int is not None and not self._use_float:
             self._completed += as_int
@@ -201,7 +202,7 @@ class _PlainProgressTracker:
             return value
         if isinstance(value, float):
             rounded = round(value)
-            if abs(value - rounded) < 1e-6:
+            if math.isclose(value, rounded, abs_tol=1e-4):
                 return int(rounded)
         return None
 
@@ -211,7 +212,7 @@ class _PlainProgressTracker:
             return str(value)
         if isinstance(value, float):
             rounded = round(value)
-            if abs(value - rounded) < 1e-6:
+            if math.isclose(value, rounded, abs_tol=1e-4):
                 return str(int(rounded))
         return f"{float(value):.2f}".rstrip("0").rstrip(".")
 
@@ -225,7 +226,7 @@ class _RichProgressTracker:
         self._progress.__enter__()
         return self
 
-    def advance(self, advance: float = 1.0) -> None:
+    def advance(self, advance: float = 1) -> None:
         self._progress.advance(self._task_id, advance)
 
     def update(self, *, total: Optional[int] = None, description: Optional[str] = None) -> None:
