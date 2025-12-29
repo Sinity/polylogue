@@ -1,6 +1,8 @@
 """Reprocess command for retrying failed imports."""
 from __future__ import annotations
 
+import json
+import tempfile
 from typing import Optional
 
 from ..importers.raw_storage import get_failed_imports, retrieve_raw_import, mark_parse_success, mark_parse_failed
@@ -58,6 +60,14 @@ def run_reprocess(
         data_hash = row["hash"]
         import_provider = row["provider"]
         source_path = row["source_path"] or "unknown"
+        conversation_id = row["conversation_id"] if "conversation_id" in row.keys() else None
+        metadata: dict = {}
+        raw_metadata = row["metadata_json"] if "metadata_json" in row.keys() else None
+        if isinstance(raw_metadata, str) and raw_metadata:
+            try:
+                metadata = json.loads(raw_metadata)
+            except json.JSONDecodeError:
+                metadata = {}
 
         console.print(f"\n[cyan]Processing:[/cyan] {import_provider} - {source_path}")
         console.print(f"  Hash: {data_hash[:16]}...")
@@ -71,7 +81,6 @@ def run_reprocess(
         if use_fallback:
             # Use fallback parser
             try:
-                import json
                 data = json.loads(raw_data.decode('utf-8'))
                 messages = extract_messages_heuristic(data)
 
@@ -88,48 +97,75 @@ def run_reprocess(
         else:
             # Try re-parsing with updated parser (strict mode)
             try:
-                import tempfile
-                import json
                 from pathlib import Path
 
-                # Write raw data to temp file
-                with tempfile.NamedTemporaryFile(mode='wb', suffix='.json', delete=False) as tmp:
-                    tmp.write(raw_data)
-                    tmp_path = Path(tmp.name)
+                export_root = metadata.get("export_root") or metadata.get("exportRoot")
+                if isinstance(export_root, str) and export_root.strip():
+                    export_root = Path(export_root)
+                else:
+                    export_root = None
+                temp_dir = None
+                tmp_path: Optional[Path] = None
+                resolved_source: Optional[Path] = None
+                if isinstance(source_path, str):
+                    candidate = Path(source_path)
+                    if candidate.exists() and candidate.is_file():
+                        resolved_source = candidate
 
                 try:
                     # Import using provider-specific parser
                     if import_provider == 'chatgpt':
-                        from ..importers.chatgpt import import_chatgpt_export
+                        from ..importers.chatgpt import _render_chatgpt_conversation
+                        conv = json.loads(raw_data.decode("utf-8"))
+                        if not isinstance(conv, dict):
+                            raise ValueError("ChatGPT raw import was not a conversation object.")
                         out_dir = _output_dir(import_provider)
-                        results = import_chatgpt_export(
-                            tmp_path,
-                            output_dir=out_dir,
-                            collapse_threshold=settings.collapse_threshold,
-                            html=settings.html_previews,
-                            html_theme=settings.html_theme,
-                            force=True,
-                            allow_dirty=True,
-                            attachment_ocr=True,
-                        )
+                        root = export_root if isinstance(export_root, Path) else Path(source_path).parent
+                        results = [
+                            _render_chatgpt_conversation(
+                                conv,
+                                root,
+                                out_dir,
+                                collapse_threshold=settings.collapse_threshold,
+                                html=settings.html_previews,
+                                html_theme=settings.html_theme,
+                                force=True,
+                                allow_dirty=True,
+                                registrar=env.registrar,
+                                attachment_ocr=True,
+                            )
+                        ]
                     elif import_provider in ('claude', 'claude.ai'):
-                        from ..importers.claude_ai import import_claude_export
+                        from ..importers.claude_ai import _render_claude_conversation
+                        conv = json.loads(raw_data.decode("utf-8"))
+                        if not isinstance(conv, dict):
+                            raise ValueError("Claude raw import was not a conversation object.")
                         out_dir = _output_dir(import_provider)
-                        results = import_claude_export(
-                            tmp_path,
-                            output_dir=out_dir,
-                            collapse_threshold=settings.collapse_threshold,
-                            html=settings.html_previews,
-                            html_theme=settings.html_theme,
-                            force=True,
-                            allow_dirty=True,
-                            attachment_ocr=True,
-                        )
+                        root = export_root if isinstance(export_root, Path) else Path(source_path).parent
+                        results = [
+                            _render_claude_conversation(
+                                conv,
+                                root,
+                                out_dir,
+                                collapse_threshold=settings.collapse_threshold,
+                                html=settings.html_previews,
+                                html_theme=settings.html_theme,
+                                force=True,
+                                allow_dirty=True,
+                                registrar=env.registrar,
+                                attachment_ocr=True,
+                            )
+                        ]
                     elif import_provider == 'codex':
                         from ..importers.codex import import_codex_session
                         out_dir = _output_dir(import_provider)
+                        if resolved_source is None:
+                            temp_dir = tempfile.TemporaryDirectory(prefix="polylogue-reprocess-")
+                            tmp_path = Path(temp_dir.name) / "session.jsonl"
+                            tmp_path.write_bytes(raw_data)
+                            resolved_source = tmp_path
                         results = [import_codex_session(
-                            session_id=str(tmp_path),
+                            session_id=str(resolved_source),
                             output_dir=out_dir,
                             collapse_threshold=settings.collapse_threshold,
                             html=settings.html_previews,
@@ -137,12 +173,18 @@ def run_reprocess(
                             force=True,
                             allow_dirty=True,
                             attachment_ocr=True,
+                            conversation_id_override=str(conversation_id) if conversation_id else None,
                         )]
                     elif import_provider in ('claude-code', 'claude_code'):
                         from ..importers.claude_code import import_claude_code_session
                         out_dir = _output_dir(import_provider)
+                        if resolved_source is None:
+                            temp_dir = tempfile.TemporaryDirectory(prefix="polylogue-reprocess-")
+                            tmp_path = Path(temp_dir.name) / "session.jsonl"
+                            tmp_path.write_bytes(raw_data)
+                            resolved_source = tmp_path
                         results = [import_claude_code_session(
-                            session_id=str(tmp_path),
+                            session_id=str(resolved_source),
                             output_dir=out_dir,
                             collapse_threshold=settings.collapse_threshold,
                             html=settings.html_previews,
@@ -150,6 +192,7 @@ def run_reprocess(
                             force=True,
                             allow_dirty=True,
                             attachment_ocr=True,
+                            conversation_id_override=str(conversation_id) if conversation_id else None,
                         )]
                     else:
                         console.print(f"  [red]✗[/red] Unknown provider: {import_provider}")
@@ -172,7 +215,8 @@ def run_reprocess(
 
                 finally:
                     # Clean up temp file
-                    tmp_path.unlink(missing_ok=True)
+                    if temp_dir is not None:
+                        temp_dir.cleanup()
 
             except Exception as e:
                 console.print(f"  [red]✗[/red] Reprocessing failed: {e}")

@@ -38,12 +38,14 @@ def import_codex_session(
     attachment_ocr: bool = True,
     sanitize_html: bool = False,
     meta: Optional[Dict[str, str]] = None,
+    conversation_id_override: Optional[str] = None,
 ) -> ImportResult:
     from .raw_storage import store_raw_import, mark_parse_success, mark_parse_failed
 
     cli_meta = dict(meta) if meta else None
     registrar = registrar or create_default_registrar()
     base_dir = base_dir.expanduser()
+    conversation_id = conversation_id_override or session_id
     candidate = Path(session_id)
     if candidate.exists() and candidate.is_file():
         session_path = candidate
@@ -60,11 +62,11 @@ def import_codex_session(
     data_hash = None
     if session_path.exists():
         raw_data = session_path.read_bytes()
-        # Use session_id as conversation_id (each session file = one conversation)
+        # Use the resolved conversation ID for raw import tracking.
         data_hash = store_raw_import(
             data=raw_data,
             provider="codex",
-            conversation_id=session_id,
+            conversation_id=conversation_id,
             source_path=session_path,
         )
 
@@ -79,7 +81,7 @@ def import_codex_session(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     title = session_path.stem
-    slug = assign_conversation_slug("codex", session_id, title, id_hint=title[:8])
+    slug = assign_conversation_slug("codex", conversation_id, title, id_hint=title[:8])
     conversation_dir = output_dir / slug
     conversation_dir.mkdir(parents=True, exist_ok=True)
     markdown_path = conversation_dir / "conversation.md"
@@ -299,7 +301,7 @@ def import_codex_session(
         message_records.append(
             build_message_record(
                 provider="codex",
-                conversation_id=session_id,
+                conversation_id=conversation_id,
                 chunk_index=idx,
                 chunk=chunk,
                 raw_metadata=chunk_meta.get("raw") if isinstance(chunk_meta, dict) else None,
@@ -319,7 +321,7 @@ def import_codex_session(
     try:
         result = process_conversation(
             provider="codex",
-            conversation_id=session_id,
+            conversation_id=conversation_id,
             slug=slug,
             title=title,
             message_records=message_records,
