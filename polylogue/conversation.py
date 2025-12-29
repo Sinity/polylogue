@@ -49,7 +49,7 @@ def _compute_branch_stats(
     return stats
 
 
-def _branch_map_snippet(branch_dir: Path, branch_ids: List[str]) -> Optional[str]:
+def _branch_map_snippet(_branch_dir: Path, branch_ids: List[str]) -> Optional[str]:
     if not branch_ids:
         return None
     lines: List[str] = []
@@ -330,7 +330,8 @@ def process_conversation(
     attachment_policy,
     force: bool,
     allow_dirty: bool = False,
-    attachment_ocr: bool = False,
+    sanitize_html: bool = False,
+    attachment_ocr: bool = True,
     registrar: Optional[ConversationRegistrar] = None,
     repository: Optional[ConversationRepository] = None,
     citations: Optional[List[Any]] = None,
@@ -469,6 +470,14 @@ def process_conversation(
         citations=citations,
     )
 
+    if len(plan.branches) > 1:
+        snippet = _branch_map_snippet(
+            (output_dir / slug) / "branches",
+            list(plan.branches.keys()),
+        )
+        if snippet:
+            document.body = f"{snippet}\n{document.body}"
+
     from .document_store import persist_document
 
     persisted = persist_document(
@@ -489,6 +498,7 @@ def process_conversation(
         attachment_policy=attachment_policy,
         force=force,
         allow_dirty=allow_dirty,
+        sanitize=sanitize_html,
     )
 
     # Write per-branch transcripts for the branch explorer / legacy workflows.

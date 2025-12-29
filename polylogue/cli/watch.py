@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import argparse
 import time
 import shutil
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Iterable, List, Optional, Set, Tuple
 
 try:
@@ -15,14 +15,14 @@ except ImportError:  # pragma: no cover - fallback for environments without watc
 from ..commands import CommandEnv
 from ..local_sync import get_local_provider
 from .context import resolve_collapse_thresholds, resolve_html_enabled, resolve_output_path
-from .sync import _log_local_sync
+from .sync import _log_local_sync, _resolve_default_output
 
 WatchChange = Tuple[Any, str]
 WatchBatch = Iterable[Set[WatchChange]]
 WatchDirectoryFn = Callable[..., WatchBatch]
 
 
-def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_watch_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     provider_name = getattr(args, "provider", None)
     provider = get_local_provider(provider_name)
     if not provider.supports_watch:
@@ -45,15 +45,19 @@ def run_watch_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             cmd.append("--diff")
         if getattr(args, "prune", False):
             cmd.append("--prune")
-        if getattr(args, "attachment_ocr", False):
+        if getattr(args, "attachment_ocr", True):
             cmd.append("--attachment-ocr")
+        else:
+            cmd.append("--no-attachment-ocr")
+        if getattr(args, "sanitize_html", False):
+            cmd.append("--sanitize-html")
         env.ui.console.print(" ".join(cmd))
         return
     _run_watch_sessions(args, env, provider)
 
 
 def _run_watch_sessions(
-    args: argparse.Namespace,
+    args: SimpleNamespace,
     env: CommandEnv,
     provider,
 ) -> None:
@@ -83,7 +87,7 @@ def _run_watch_sessions(
             if hint:
                 ui.console.print(f"[yellow]{hint}[/yellow]")
             raise SystemExit(1)
-    out_dir = resolve_output_path(args.out, provider.default_output)
+    out_dir = resolve_output_path(args.out, _resolve_default_output(provider.name, env))
     out_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir: Optional[Path] = None
     if getattr(args, "snapshot", False):
@@ -139,11 +143,19 @@ def _run_watch_sessions(
                 sessions=session_override,
                 registrar=env.registrar,
                 ui=ui,
+                attachment_ocr=getattr(args, "attachment_ocr", True),
+                sanitize_html=getattr(args, "sanitize_html", False),
             )
         except Exception as exc:  # pragma: no cover - defensive
             console.print(f"[red]{provider.watch_log_title} failed: {exc}")
         else:
-            _log_local_sync(ui, provider.watch_log_title, result, provider=provider.name)
+            _log_local_sync(
+                ui,
+                provider.watch_log_title,
+                result,
+                provider=provider.name,
+                redacted=getattr(args, "sanitize_html", False),
+            )
 
     sync_once()
     if getattr(args, "once", False):
@@ -173,12 +185,8 @@ def _run_watch_sessions(
                 console.print("[dim]Changes:[/dim]")
                 for path in relevant:
                     console.print(f"  {path}")
-            if now - last_run < debounce:
-                skipped_events.extend(relevant)
-                skipped_total += len(relevant)
-                continue
             elapsed = now - last_progress
-            if stall_seconds and elapsed > stall_seconds:
+            if stall_seconds and elapsed > stall_seconds and not stalled:
                 console.print(
                     f"[yellow]No sync progress for {stall_seconds}s; check watcher input or increase --stall-seconds."
                 )
@@ -188,9 +196,14 @@ def _run_watch_sessions(
 
                     os.environ["POLYLOGUE_EXIT_REASON"] = "partial"
                     raise SystemExit(2)
+            if now - last_run < debounce:
+                skipped_events.extend(relevant)
+                skipped_total += len(relevant)
+                continue
             sync_once(relevant)
             last_run = now
             last_progress = now
+            stalled = False
             if skipped_events:
                 total_skipped = len(skipped_events)
                 console.print(

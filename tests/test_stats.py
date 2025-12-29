@@ -1,12 +1,13 @@
 import json
-from argparse import Namespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from polylogue.commands import CommandEnv
+from polylogue.config import OutputDirs
 from polylogue.ui import UI
-from polylogue.cli import run_stats_cli
+from polylogue.cli.status import run_stats_cli
 
 
 def test_run_stats_json(tmp_path, capsys):
@@ -86,7 +87,7 @@ def test_run_stats_nested_provider_dirs(tmp_path, capsys):
         encoding="utf-8",
     )
 
-    args = Namespace(dir=archive_dir, json=True, since=None, until=None)
+    args = SimpleNamespace(dir=archive_dir, json=True, since=None, until=None)
     env = CommandEnv(ui=UI(plain=True))
     run_stats_cli(args, env)
 
@@ -95,7 +96,7 @@ def test_run_stats_nested_provider_dirs(tmp_path, capsys):
     assert payload["providers"]["codex"]["files"] == 1
 
 
-def test_run_stats_defaults_to_all_roots(monkeypatch, tmp_path, capsys):
+def test_run_stats_defaults_to_all_roots(tmp_path, capsys):
     render_dir = tmp_path / "render" / "chat1"
     render_dir.mkdir(parents=True)
     (render_dir / "conversation.md").write_text(
@@ -124,9 +125,16 @@ def test_run_stats_defaults_to_all_roots(monkeypatch, tmp_path, capsys):
         encoding="utf-8",
     )
 
-    monkeypatch.setattr("polylogue.cli.status.DEFAULT_OUTPUT_ROOTS", [render_dir.parent, codex_dir.parent])
-    args = Namespace(dir=None, json=True, since=None, until=None)
+    args = SimpleNamespace(dir=None, json=True, since=None, until=None)
     env = CommandEnv(ui=UI(plain=True))
+    env.config.defaults.output_dirs = OutputDirs(
+        render=render_dir.parent,
+        sync_drive=tmp_path / "gemini",
+        sync_codex=codex_dir.parent,
+        sync_claude_code=tmp_path / "claude-code",
+        import_chatgpt=tmp_path / "chatgpt",
+        import_claude=tmp_path / "claude",
+    )
     run_stats_cli(args, env)
     payload = json.loads(capsys.readouterr().out)
     assert payload["totals"]["files"] == 2
@@ -142,7 +150,7 @@ def test_run_stats_ignore_legacy(monkeypatch, tmp_path, capsys):
     (convo_dir / "conversation.md").write_text("---\nsourcePlatform: provider\n---\n", encoding="utf-8")
     (archive_dir / "legacy.md").write_text("legacy", encoding="utf-8")
 
-    args = Namespace(dir=archive_dir, json=True, since=None, until=None, ignore_legacy=True)
+    args = SimpleNamespace(dir=archive_dir, json=True, since=None, until=None, ignore_legacy=True)
     env = CommandEnv(ui=UI(plain=True))
 
     run_stats_cli(args, env)
@@ -154,7 +162,7 @@ def test_run_stats_ignore_legacy(monkeypatch, tmp_path, capsys):
 
 def test_run_stats_missing_dir_exits_nonzero_json(tmp_path, capsys):
     missing_dir = tmp_path / "missing"
-    args = Namespace(dir=missing_dir, json=True, since=None, until=None)
+    args = SimpleNamespace(dir=missing_dir, json=True, since=None, until=None)
     env = CommandEnv(ui=UI(plain=True))
 
     with pytest.raises(SystemExit) as excinfo:
@@ -166,10 +174,18 @@ def test_run_stats_missing_dir_exits_nonzero_json(tmp_path, capsys):
     assert payload["totals"]["files"] == 0
 
 
-def test_run_stats_missing_roots_exits_nonzero_plain(monkeypatch):
-    monkeypatch.setattr("polylogue.cli.status.DEFAULT_OUTPUT_ROOTS", [])
-    args = Namespace(dir=None, json=False, since=None, until=None)
+def test_run_stats_missing_roots_exits_nonzero_plain(tmp_path):
+    args = SimpleNamespace(dir=None, json=False, since=None, until=None)
     env = CommandEnv(ui=UI(plain=True))
+    missing_root = tmp_path / "missing"
+    env.config.defaults.output_dirs = OutputDirs(
+        render=missing_root / "render",
+        sync_drive=missing_root / "gemini",
+        sync_codex=missing_root / "codex",
+        sync_claude_code=missing_root / "claude-code",
+        import_chatgpt=missing_root / "chatgpt",
+        import_claude=missing_root / "claude",
+    )
 
     with pytest.raises(SystemExit) as excinfo:
         run_stats_cli(args, env)

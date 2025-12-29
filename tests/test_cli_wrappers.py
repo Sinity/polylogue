@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import json
-from argparse import Namespace
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Optional
 
 from polylogue.commands import CommandEnv
 from polylogue.cli.imports import run_import_chatgpt
+from polylogue.cli.imports import run_import_claude_code
 from polylogue.cli.render import run_render_cli
-from polylogue.cli.app import run_inspect_search
 from polylogue.cli.watch import run_watch_cli
+from polylogue.cli.search_cli import run_search_cli
 from polylogue.importers import ImportResult
 from polylogue.local_sync import LocalSyncResult, LocalSyncProvider
 
@@ -48,8 +49,8 @@ class RecordingUI:
         return None
 
 
-def _build_render_args(input_path: Path, out_dir: Path, *, json_mode: bool = False) -> Namespace:
-    return Namespace(
+def _build_render_args(input_path: Path, out_dir: Path, *, json_mode: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
         input=input_path,
         out=str(out_dir),
         collapse_threshold=None,
@@ -60,6 +61,8 @@ def _build_render_args(input_path: Path, out_dir: Path, *, json_mode: bool = Fal
         diff=False,
         to_clipboard=False,
         json=json_mode,
+        disk_estimate=False,
+        max_disk=None,
     )
 
 
@@ -88,6 +91,62 @@ def test_run_render_cli_json_output(tmp_path, capsys):
     assert payload["cmd"] == "render"
     assert payload["count"] == 1
     assert payload["files"][0]["slug"] == "sample"
+
+
+def test_run_render_cli_json_output_includes_disk_estimate(tmp_path, capsys):
+    src = tmp_path / "sample.json"
+    _write_render_input(src)
+    args = _build_render_args(src, tmp_path / "out", json_mode=True)
+    args.disk_estimate = True
+    ui = RecordingUI()
+
+    run_render_cli(args, CommandEnv(ui=ui), json_output=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert "diskEstimateBytes" in payload
+
+
+def test_run_render_cli_uses_config_output(monkeypatch, tmp_path):
+    src = tmp_path / "sample.json"
+    _write_render_input(src)
+    captured = {}
+
+    def fake_render_command(options, env):  # noqa: ARG001
+        captured["output_dir"] = options.output_dir
+
+        class Result:
+            count = 0
+            output_dir = options.output_dir
+            files = []
+            total_stats = {}
+
+        return Result()
+
+    monkeypatch.setattr("polylogue.cli.render.render_command", fake_render_command)
+    args = SimpleNamespace(
+        input=src,
+        out=None,
+        collapse_threshold=None,
+        links_only=True,
+        dry_run=True,
+        force=False,
+        html_mode="off",
+        diff=False,
+        to_clipboard=False,
+        json=True,
+        disk_estimate=False,
+        max_disk=None,
+        attachment_ocr=True,
+        _attachment_ocr_explicit=False,
+        sanitize_html=False,
+        meta=(),
+    )
+    env = CommandEnv(ui=RecordingUI())
+    env.config.defaults.output_dirs.render = tmp_path / "custom-render"
+
+    run_render_cli(args, env, json_output=True)
+
+    assert captured["output_dir"] == env.config.defaults.output_dirs.render
 
 
 def test_run_render_cli_plain_summary(tmp_path):
@@ -121,7 +180,7 @@ def test_run_import_chatgpt_invokes_summary(monkeypatch, tmp_path):
     ui = RecordingUI()
     export_path = tmp_path / "export.zip"
     export_path.write_text("stub", encoding="utf-8")
-    args = Namespace(
+    args = SimpleNamespace(
         export_path=export_path,
         out=str(tmp_path / "out"),
         collapse_threshold=None,
@@ -140,7 +199,95 @@ def test_run_import_chatgpt_invokes_summary(monkeypatch, tmp_path):
     assert title == "ChatGPT Import"
 
 
-def test_run_inspect_search_displays_summary(monkeypatch, tmp_path):
+def test_run_import_chatgpt_uses_config_output(monkeypatch, tmp_path):
+    markdown_path = tmp_path / "chat" / "conversation.md"
+    result = ImportResult(
+        markdown_path=markdown_path,
+        html_path=None,
+        attachments_dir=None,
+        document=None,
+        slug="chat-slug",
+    )
+    captured = {}
+
+    def fake_import_chatgpt_export(*args, **kwargs):
+        captured["output_dir"] = kwargs["output_dir"]
+        return [result]
+
+    monkeypatch.setattr("polylogue.cli.imports.import_chatgpt_export", fake_import_chatgpt_export)
+    ui = RecordingUI()
+    export_path = tmp_path / "export.zip"
+    export_path.write_text("stub", encoding="utf-8")
+    args = SimpleNamespace(
+        export_path=export_path,
+        out=None,
+        collapse_threshold=None,
+        html_mode="off",
+        force=False,
+        conversation_ids=[],
+        all=True,
+        json=True,
+        to_clipboard=False,
+        attachment_ocr=True,
+        _attachment_ocr_explicit=False,
+        sanitize_html=False,
+        meta=(),
+        print_paths=False,
+    )
+    env = CommandEnv(ui=ui)
+    env.config.defaults.output_dirs.import_chatgpt = tmp_path / "custom-chatgpt"
+
+    run_import_chatgpt(args, env)
+
+    assert captured["output_dir"] == env.config.defaults.output_dirs.import_chatgpt
+
+
+def test_run_import_claude_code_explicit_session(monkeypatch, tmp_path):
+    markdown_path = tmp_path / "claude" / "conversation.md"
+    result = ImportResult(
+        markdown_path=markdown_path,
+        html_path=None,
+        attachments_dir=None,
+        document=None,
+        slug="claude-slug",
+    )
+    captured = {}
+
+    def fake_import_claude_code_session(*args, **kwargs):
+        captured["session_id"] = kwargs["session_id"]
+        captured["output_dir"] = kwargs["output_dir"]
+        return result
+
+    monkeypatch.setattr("polylogue.cli.imports.import_claude_code_session", fake_import_claude_code_session)
+    ui = RecordingUI()
+    session_path = tmp_path / "session.jsonl"
+    session_path.write_text("{}", encoding="utf-8")
+    args = SimpleNamespace(
+        session_id=str(session_path),
+        base_dir=None,
+        out=None,
+        collapse_threshold=None,
+        collapse_thresholds=None,
+        html_mode="off",
+        force=False,
+        json=True,
+        to_clipboard=False,
+        attachment_ocr=True,
+        _attachment_ocr_explicit=False,
+        sanitize_html=False,
+        meta=(),
+        print_paths=False,
+    )
+    env = CommandEnv(ui=ui)
+    env.config.defaults.output_dirs.sync_claude_code = tmp_path / "custom-claude-code"
+
+    run_import_claude_code(args, env)
+
+    assert captured["session_id"] == str(session_path)
+    assert captured["output_dir"] == env.config.defaults.output_dirs.sync_claude_code
+
+
+def test_run_search_cli_displays_summary(monkeypatch, tmp_path):
     from polylogue.options import SearchHit, SearchResult
 
     hit = SearchHit(
@@ -164,9 +311,9 @@ def test_run_inspect_search_displays_summary(monkeypatch, tmp_path):
     def fake_search_command(options, env=None):  # pylint: disable=unused-argument
         return SearchResult(hits=[hit])
 
-    monkeypatch.setattr("polylogue.cli.app.search_command", fake_search_command)
+    monkeypatch.setattr("polylogue.cli.search_cli.search_command", fake_search_command)
 
-    args = Namespace(
+    args = SimpleNamespace(
         query="example",
         limit=10,
         provider=None,
@@ -184,7 +331,7 @@ def test_run_inspect_search_displays_summary(monkeypatch, tmp_path):
 
     ui = RecordingUI()
     env = CommandEnv(ui=ui)
-    run_inspect_search(args, env)
+    run_search_cli(args, env)
 
     assert ui.summaries, "expected inspect search to emit summary"
     title, lines = ui.summaries[0]
@@ -200,8 +347,8 @@ def test_run_watch_cli_dispatches_based_on_provider(monkeypatch):
 
     monkeypatch.setattr("polylogue.cli.watch._run_watch_sessions", recorder)
 
-    run_watch_cli(Namespace(provider="codex"), CommandEnv(ui=RecordingUI()))
-    run_watch_cli(Namespace(provider="claude-code"), CommandEnv(ui=RecordingUI()))
+    run_watch_cli(SimpleNamespace(provider="codex"), CommandEnv(ui=RecordingUI()))
+    run_watch_cli(SimpleNamespace(provider="claude-code"), CommandEnv(ui=RecordingUI()))
 
     assert markers == ["codex", "claude-code"], "watch CLI should delegate to provider-specific runners"
 
@@ -249,7 +396,7 @@ def test_watch_debounce_skips_fast_repeats(monkeypatch, tmp_path):
     )
 
     env = CommandEnv(ui=RecordingUI())
-    args = Namespace(
+    args = SimpleNamespace(
         provider="codex",
         base_dir=str(base_dir),
         out=str(out_dir),
@@ -307,7 +454,7 @@ def test_run_watch_sessions_once_triggers_sync(monkeypatch, tmp_path):
     monkeypatch.setattr("polylogue.cli.sync.add_run", lambda data: records.append(data))
 
     ui = RecordingUI()
-    args = Namespace(
+    args = SimpleNamespace(
         provider="codex",
         base_dir=str(tmp_path / "sessions"),
         out=str(tmp_path / "out"),

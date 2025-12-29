@@ -1,102 +1,196 @@
 from __future__ import annotations
 
-import argparse
 import json
+import os
 
-import pytest
+from click.testing import CliRunner
 
-from polylogue.cli.app import run_help_cli, run_completions_cli, run_complete_cli, _run_config_show
-from polylogue.cli import CommandEnv
-
-
-class DummyConsole:
-    def __init__(self):
-        self.lines: list[str] = []
-
-    def print(self, *args, **kwargs):  # noqa: ANN001, ARG002
-        text = " ".join(str(arg) for arg in args)
-        self.lines.append(text)
+from polylogue.cli.click_app import cli as click_cli
 
 
-class DummyUI:
-    plain = True
-
-    def __init__(self):
-        self.console = DummyConsole()
-
-
-def test_help_topic_outputs_details(capsys):
-    env = CommandEnv(ui=DummyUI())
-    run_help_cli(argparse.Namespace(topic="sync"), env)
-    out = capsys.readouterr().out
-    assert "Synchronize provider archives" in out
+def test_help_topic_outputs_details(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["help", "sync"])
+    assert result.exit_code == 0
+    assert "Synchronize provider archives" in result.output
 
 
-def test_help_examples_flag(capsys):
-    env = CommandEnv(ui=DummyUI())
-    run_help_cli(argparse.Namespace(topic=None, examples=True), env)
-    joined = "\n".join(env.ui.console.lines)
-    assert "EXAMPLES" in joined
-    assert "render" in joined
+def test_help_examples_flag(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["help", "--examples"])
+    assert result.exit_code == 0
+    assert "EXAMPLES" in result.output
+    assert "render" in result.output
 
 
-def test_help_unknown_command_reports_error():
-    ui = DummyUI()
-    env = CommandEnv(ui=ui)
-    with pytest.raises(SystemExit) as exc_info:
-        run_help_cli(argparse.Namespace(topic="nope"), env)
-    assert exc_info.value.code == 1
-    assert any("Unknown command" in line for line in ui.console.lines)
+def test_help_unknown_command_reports_error(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["help", "nope"])
+    assert result.exit_code == 1
+    assert "Unknown command" in result.output
 
 
-def test_help_lists_command_descriptions():
-    ui = DummyUI()
-    env = CommandEnv(ui=ui)
-    run_help_cli(argparse.Namespace(), env)
-    joined = "\n".join(ui.console.lines)
-    assert "sync" in joined
-    assert "Synchronize provider archives" in joined
+def test_help_lists_command_descriptions(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["help"])
+    assert result.exit_code == 0
+    assert "sync" in result.output
+    assert "Synchronize provider archives" in result.output
 
 
-def test_env_json(capsys):
-    """Test config show --json (renamed from env --json)."""
-    env = CommandEnv(ui=DummyUI())
-    _run_config_show(argparse.Namespace(json=True), env)
-    parsed = json.loads(capsys.readouterr().out)
+def test_config_show_json(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["config", "show", "--json"])
+    assert result.exit_code == 0
+    parsed = json.loads(result.output)
     assert "outputs" in parsed
     assert "statePath" in parsed
     assert "auth" in parsed
     assert "credentialPath" in parsed["auth"]
 
 
-def test_completions_emits_script(capsys):
-    env = CommandEnv(ui=DummyUI())
-    run_completions_cli(argparse.Namespace(shell="bash"), env)
-    script = capsys.readouterr().out
-    assert "polylogue" in script
-    assert "complete -F" in script
+def test_completions_emits_script(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["completions", "--shell", "bash"])
+    assert result.exit_code == 0
+    assert "polylogue" in result.output
+    assert "complete -F" in result.output
 
 
-def test_fish_completions_include_descriptions(capsys):
-    env = CommandEnv(ui=DummyUI())
-    run_completions_cli(argparse.Namespace(shell="fish"), env)
-    script = capsys.readouterr().out
-    assert '-d "Synchronize provider archives"' in script
+def test_zsh_completions_include_compdef(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["completions", "--shell", "zsh"])
+    assert result.exit_code == 0
+    assert "#compdef polylogue" in result.output
+    assert "compdef _polylogue_complete polylogue" in result.output
 
 
-def test_complete_top_level(capsys):
-    """Test top-level command completion (should include new consolidated commands)."""
-    env = CommandEnv(ui=DummyUI())
-    run_complete_cli(argparse.Namespace(shell="zsh", cword=1, words=["polylogue", ""]))
-    lines = capsys.readouterr().out.strip().splitlines()
-    # Check for new consolidated commands
-    assert any(line.startswith("browse") for line in lines)
-    assert any(line.startswith("maintain") for line in lines)
-    assert any(line.startswith("config") for line in lines)
+def test_fish_completions_include_descriptions(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["completions", "--shell", "fish"])
+    assert result.exit_code == 0
+    assert "Synchronize provider archives" in result.output
 
 
-def test_complete_sync_provider(capsys):
-    env = CommandEnv(ui=DummyUI())
-    run_complete_cli(argparse.Namespace(shell="zsh", cword=2, words=["polylogue", "sync", ""]))
-    output = capsys.readouterr().out
-    assert "drive" in output
+def test_completions_auto_detects_shell_from_env(state_env) -> None:
+    runner = CliRunner()
+    env = {**os.environ, "SHELL": "/bin/zsh"}
+    result = runner.invoke(click_cli, ["completions"], env=env)
+    assert result.exit_code == 0
+    assert "#compdef polylogue" in result.output
+
+
+def test_completions_detection_failure_is_friendly(state_env) -> None:
+    runner = CliRunner()
+    env = {**os.environ, "SHELL": "/bin/tcsh"}
+    result = runner.invoke(click_cli, ["completions"], env=env)
+    assert result.exit_code == 1
+    assert "Unable to detect shell" in result.output
+
+
+def test_complete_top_level(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "1", "polylogue", ""])
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "browse" in values
+    assert "config" in values
+    assert "doctor" in values
+    assert "import" in values
+    assert "verify" in values
+
+
+def test_complete_sync_provider(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "sync", ""])
+    assert result.exit_code == 0
+    assert "drive" in result.output
+
+
+def test_complete_browse_subcommands_include_recent_additions(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "browse", ""])
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "metrics" in values
+    assert "timeline" in values
+    assert "analytics" in values
+    assert "inbox" in values
+
+
+def test_complete_doctor_subcommands_include_restore(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "doctor", ""])
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "restore" in values
+
+
+def test_complete_config_subcommands_include_edit(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(click_cli, ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "config", ""])
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "edit" in values
+
+
+def test_complete_attachments_subcommands(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        click_cli,
+        ["_complete", "--shell", "zsh", "--cword", "3", "polylogue", "doctor", "attachments", ""],
+    )
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "stats" in values
+    assert "extract" in values
+
+
+def test_complete_prefs_subcommands(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        click_cli,
+        ["_complete", "--shell", "zsh", "--cword", "3", "polylogue", "config", "prefs", ""],
+    )
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "list" in values
+    assert "set" in values
+    assert "clear" in values
+
+
+def test_complete_browse_stats_sort_values(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        click_cli,
+        ["_complete", "--shell", "zsh", "--cword", "4", "--", "polylogue", "browse", "stats", "--sort", ""],
+    )
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "tokens" in values
+    assert "recent" in values
+
+
+def test_complete_sync_html_values(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        click_cli,
+        ["_complete", "--shell", "zsh", "--cword", "4", "--", "polylogue", "sync", "drive", "--html", ""],
+    )
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert "on" in values
+    assert "off" in values
+    assert "auto" in values
+
+
+def test_complete_render_path_values_trigger_path_mode(state_env) -> None:
+    runner = CliRunner()
+    result = runner.invoke(
+        click_cli,
+        ["_complete", "--shell", "zsh", "--cword", "2", "polylogue", "render", ""],
+    )
+    assert result.exit_code == 0
+    values = [line.split(":", 1)[0] for line in result.output.strip().splitlines() if line.strip()]
+    assert values
+    assert values[0] == "__PATH__"

@@ -1,31 +1,57 @@
 from __future__ import annotations
 
-import argparse
 import json
+import time
 from pathlib import Path
-from typing import Any, cast
+from types import SimpleNamespace
+from typing import Any, Optional, cast
 
 from rich.table import Table
+from rich.text import Text
 
 from ..commands import CommandEnv
-from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS
+from ..config import CONFIG_ENV, CONFIG_PATH, DEFAULT_PATHS, is_config_declarative
 from ..doctor import run_doctor as doctor_run
 from ..schema import stamp_payload
 from ..util import CLAUDE_CODE_PROJECT_ROOT, CODEX_SESSIONS_ROOT
 
 
-def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_doctor_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     console = cast(Any, ui.console)
     codex_dir = Path(args.codex_dir).expanduser() if args.codex_dir else CODEX_SESSIONS_ROOT
     claude_dir = Path(args.claude_code_dir).expanduser() if args.claude_code_dir else CLAUDE_CODE_PROJECT_ROOT
+    progress_cb = None
+    if not getattr(args, "json", False):
+        last_emit = 0.0
+
+        def progress_cb(provider: str, checked: int, total: Optional[int]) -> None:
+            nonlocal last_emit
+            if checked == 0:
+                return
+            now = time.perf_counter()
+            emit = checked == 1 or checked % 250 == 0 or (now - last_emit) > 10
+            if total:
+                emit = emit or checked == total
+            if emit:
+                last_emit = now
+                if total:
+                    label = f"Doctor check: {provider} {checked}/{total}"
+                else:
+                    label = f"Doctor check: {provider} {checked}"
+                if ui.plain:
+                    ui.console.print(label)
+                else:
+                    ui.console.print(f"[dim]{label}[/dim]")
     report = doctor_run(
         codex_dir=codex_dir,
         claude_code_dir=claude_dir,
         limit=args.limit,
         service=env.conversations,
         archive=env.archive,
+        progress=progress_cb,
     )
+    declarative, decl_reason, decl_target = is_config_declarative(CONFIG_PATH)
 
     sample_config = Path(__file__).resolve().parent.parent / "docs" / "polylogue.config.sample.jsonc"
     config_hint = {
@@ -42,6 +68,9 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             for issue in report.issues
         ],
         "configPath": str(CONFIG_PATH) if CONFIG_PATH else None,
+        "configDeclarative": declarative,
+        "configDeclarativeReason": decl_reason or None,
+        "configDeclarativeTarget": str(decl_target) if decl_target else None,
         "configEnv": CONFIG_ENV,
         "configCandidates": [str(p) for p in DEFAULT_PATHS],
         "configSample": str(sample_config),
@@ -55,7 +84,7 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
     if getattr(args, "json", False):
         payload = stamp_payload(config_hint)
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
     lines = [
@@ -64,6 +93,9 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
         f"Credentials: {'present' if report.credentials_present else 'missing'} ({report.credential_path})",
         f"Token: {'present' if report.token_present else 'missing'} ({report.token_path})",
     ]
+    if declarative:
+        reason = f" ({decl_reason})" if decl_reason else ""
+        lines.append(f"Config is declarative{reason}; edit your Nix/flake module for changes.")
     if report.credential_env or report.token_env:
         lines.append(f"Env overrides: cred={report.credential_env or '-'} token={report.token_env or '-'}")
     if CONFIG_PATH is None:
@@ -89,9 +121,9 @@ def run_doctor_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             table.add_row(
                 issue.provider,
                 issue.severity.upper(),
-                str(issue.path),
-                issue.message,
-                issue.hint or "",
+                Text(str(issue.path)),
+                Text(issue.message),
+                Text(issue.hint or ""),
                 style=style,
             )
         console.print(table)

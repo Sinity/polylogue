@@ -21,12 +21,15 @@ let
     pygments
     tenacity
     click
+    pillow
+    pytesseract
   ];
   devDeps = with pyPkgs; [
     pytest
     pytest-cov
     coverage
     mypy
+    pexpect
   ];
 in {
   inherit commonDeps devDeps;

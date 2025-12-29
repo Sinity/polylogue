@@ -29,5 +29,5 @@ Polylogue treats every provider through the same pipeline: adapters normalise ra
 
 - `markdown-it-py` renders Markdown previews, while `python-frontmatter` keeps YAML headers round-trippable.
 - `jinja2` powers the HTML shell today and can be extended for dashboards or richer templates.
-- Terminal UX relies on `rich`, `gum`, `skim`, `bat`, `glow`, and `delta`; watchers depend on `watchfiles`; clipboard helpers use `pyperclip`.
+- Terminal UX relies on `rich`, `questionary`, `pygments`, and other pure-Python helpers; watchers depend on `watchfiles`; clipboard helpers use `pyperclip`.
 - Downstream analysis works well with `ripgrep`, `jq`, and `sqlite-utils`, and the bundled SQLite FTS index keeps metadata queryable without reparsing Markdown.

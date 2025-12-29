@@ -34,6 +34,7 @@ class PersistenceOptions:
     attachment_policy: Optional[Dict[str, Any]] = field(default_factory=lambda: None)
     force: bool = False
     allow_dirty: bool = False
+    sanitize: bool = False
 
 from .render import AttachmentInfo, MarkdownDocument, build_markdown_from_chunks
 from .services.attachments import AttachmentManager
@@ -84,11 +85,34 @@ def _metadata_without_content_hash(metadata: Dict[str, Any]) -> Dict[str, Any]:
         serialised = json.loads(json.dumps(metadata, default=str))
     except Exception:
         serialised = json.loads(json.dumps({}, default=str))
+    # Content hashes should be stable across machines/paths; strip path-like
+    # metadata that depends on where the archive lives.
+    for key in (
+        "outputPath",
+        "htmlPath",
+        "attachmentsDir",
+        "sourceExportPath",
+        "sourceFile",
+        "sessionPath",
+        "sessionFile",
+        "bundle_path",
+        "export_root",
+    ):
+        serialised.pop(key, None)
     polylogue = serialised.get("polylogue")
     if isinstance(polylogue, dict):
         polylogue.pop("contentHash", None)
         polylogue.pop("lastImported", None)
         polylogue.pop("dirty", None)
+        polylogue.pop("attachmentsDir", None)
+        polylogue.pop("htmlPath", None)
+        polylogue.pop("sourceExportPath", None)
+        polylogue.pop("sourceFile", None)
+        polylogue.pop("sessionPath", None)
+        polylogue.pop("sessionFile", None)
+        polylogue.pop("sourceRawHash", None)
+        polylogue.pop("renderConfigHash", None)
+        polylogue.pop("sourceBundleHash", None)
     return serialised
 
 
@@ -220,6 +244,7 @@ def persist_document(
     attachment_policy: Optional[Dict[str, Any]] = None,
     force: Optional[bool] = None,
     allow_dirty: Optional[bool] = None,
+    sanitize: Optional[bool] = None,
 ) -> DocumentPersistenceResult:
     # registrar is a required parameter (not Optional), so no None check needed
     metadata = metadata or DocumentMetadata(
@@ -239,6 +264,7 @@ def persist_document(
         attachment_policy=attachment_policy,
         force=bool(force),
         allow_dirty=bool(allow_dirty),
+        sanitize=bool(sanitize),
     )
     # Extract metadata fields for readability
     provider = metadata.provider
@@ -257,6 +283,7 @@ def persist_document(
     attachment_policy = options.attachment_policy
     force = options.force
     allow_dirty = options.allow_dirty
+    sanitize_enabled = options.sanitize
 
     if slug_hint:
         slug = slug_hint
@@ -324,6 +351,12 @@ def persist_document(
                 polylogue_meta[key] = value
     polylogue_meta = _prune_empty_values(polylogue_meta)
     doc_metadata["polylogue"] = polylogue_meta
+
+    if sanitize_enabled:
+        from .redaction import sanitize_text
+
+        document.body = sanitize_text(document.body)
+        polylogue_meta["redacted"] = True
 
     content_hash = _compute_content_hash(document.body, doc_metadata)
     polylogue_meta["contentHash"] = content_hash

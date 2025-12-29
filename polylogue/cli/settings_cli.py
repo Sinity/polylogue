@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 from ..commands import CommandEnv
 from ..config import OutputDirs, is_config_declarative
@@ -26,7 +26,7 @@ def _settings_snapshot(settings) -> dict:
     }
 
 
-def run_settings_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_settings_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     immutable, reason, cfg_path = is_config_declarative()
     if immutable:
         env.ui.console.print(
@@ -103,7 +103,7 @@ def run_settings_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
     payload = _settings_snapshot(settings)
     if getattr(args, "json", False):
-        print(json.dumps(stamp_payload(payload), indent=2))
+        print(json.dumps(stamp_payload(payload), indent=2, sort_keys=True))
         return
 
     summary_lines = [

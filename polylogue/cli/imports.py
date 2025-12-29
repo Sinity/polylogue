@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Dict, List, Optional
 
 from ..cli_common import sk_select
@@ -21,33 +21,43 @@ from ..pipeline_runner import Pipeline, PipelineContext
 from ..util import CODEX_SESSIONS_ROOT, format_run_brief, latest_run, path_order_key
 from ..schema import stamp_payload
 from .context import (
-    DEFAULT_CLAUDE_CODE_SYNC_OUT,
-    DEFAULT_CHATGPT_OUT,
-    DEFAULT_CLAUDE_OUT,
-    DEFAULT_CODEX_SYNC_OUT,
-    DEFAULT_COLLAPSE,
+    parse_meta_items,
     resolve_collapse_thresholds,
-    resolve_collapse_value,
     resolve_html_enabled,
 )
 from .json_output import safe_json_handler
 from .render import copy_import_to_clipboard
 from .summaries import summarize_import
+from .failure_logging import record_failure
 
 
 def _truthy(val: str) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _apply_import_prefs(args: argparse.Namespace, env: CommandEnv) -> None:
+def _apply_import_prefs(args: object, env: CommandEnv) -> None:
     prefs = getattr(env, "prefs", {}) or {}
     import_prefs = prefs.get("import", {}) if isinstance(prefs, dict) else {}
     if not import_prefs:
         return
     if "--html" in import_prefs and getattr(args, "html_mode", "auto") == "auto":
         args.html_mode = "on" if _truthy(import_prefs["--html"]) else "off"
-    if "--attachment-ocr" in import_prefs and _truthy(import_prefs["--attachment-ocr"]):
-        setattr(args, "attachment_ocr", True)
+    if "--attachment-ocr" in import_prefs and not getattr(args, "_attachment_ocr_explicit", False):
+        setattr(args, "attachment_ocr", _truthy(import_prefs["--attachment-ocr"]))
+    if "--sanitize-html" in import_prefs and _truthy(import_prefs["--sanitize-html"]):
+        setattr(args, "sanitize_html", True)
+
+
+def _resolve_import_output(provider: str, env: CommandEnv) -> Path:
+    outputs = env.config.defaults.output_dirs
+    mapping = {
+        "chatgpt": outputs.import_chatgpt,
+        "claude": outputs.import_claude,
+        "codex": outputs.sync_codex,
+        "claude-code": outputs.sync_claude_code,
+        "claude_code": outputs.sync_claude_code,
+    }
+    return mapping.get(provider, outputs.render)
 
 
 class ImportExecuteStage:
@@ -60,12 +70,11 @@ class ImportExecuteStage:
             return
         kwargs: Dict[str, object] = context.get("import_kwargs", {})
         error_message = context.get("import_error_message", "Import failed")
-        from .app import _record_failure
         try:
             results = func(**kwargs)
         except Exception as exc:
             env.ui.console.print(f"[red]{error_message}: {exc}")
-            _record_failure(argparse.Namespace(**kwargs), exc, phase="import")
+            record_failure(SimpleNamespace(**kwargs), exc, phase="import")
             context.set("error", exc)
             context.abort()
             return
@@ -110,7 +119,7 @@ def _emit_import_json(results: List[ImportResult]) -> None:
             for res in results
         ],
     }
-    print(json.dumps(stamp_payload(payload), indent=2))
+    print(json.dumps(stamp_payload(payload), indent=2, sort_keys=True))
 
 
 def _emit_print_paths(results: List[ImportResult], ui) -> None:
@@ -126,11 +135,14 @@ def _build_summary_footer(provider: str, cmd: str) -> List[str]:
     return [f"Previous run: {note}"] if note else []
 
 
-def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_import_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     provider = getattr(args, "provider", None)
     sources = args.source or []
     _apply_import_prefs(args, env)
+    if getattr(args, "attachment_ocr", None) is None:
+        args.attachment_ocr = True
     collapse_thresholds = resolve_collapse_thresholds(args, env.settings)
+    meta = parse_meta_items(getattr(args, "meta", None)) or None
 
     def _ensure_path() -> Path:
         if not sources:
@@ -139,7 +151,7 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
     if provider == "chatgpt":
         export_path = _ensure_path()
-        ns = argparse.Namespace(
+        ns = SimpleNamespace(
             export_path=export_path,
             out=args.out,
             collapse_threshold=args.collapse_threshold,
@@ -151,11 +163,13 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             json=args.json,
             to_clipboard=args.to_clipboard,
             attachment_ocr=args.attachment_ocr,
+            sanitize_html=getattr(args, "sanitize_html", False),
+            meta=meta,
         )
         run_import_chatgpt(ns, env)
     elif provider == "claude":
         export_path = _ensure_path()
-        ns = argparse.Namespace(
+        ns = SimpleNamespace(
             export_path=export_path,
             out=args.out,
             collapse_threshold=args.collapse_threshold,
@@ -167,11 +181,13 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             json=args.json,
             to_clipboard=args.to_clipboard,
             attachment_ocr=args.attachment_ocr,
+            sanitize_html=getattr(args, "sanitize_html", False),
+            meta=meta,
         )
         run_import_claude(ns, env)
     elif provider == "claude-code":
         session_id = sources[0] if sources else "pick"
-        ns = argparse.Namespace(
+        ns = SimpleNamespace(
             session_id=session_id,
             base_dir=args.base_dir,
             out=args.out,
@@ -182,11 +198,13 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             json=args.json,
             to_clipboard=args.to_clipboard,
             attachment_ocr=args.attachment_ocr,
+            sanitize_html=getattr(args, "sanitize_html", False),
+            meta=meta,
         )
         run_import_claude_code(ns, env)
     elif provider == "codex":
         session_id = sources[0] if sources else "pick"
-        ns = argparse.Namespace(
+        ns = SimpleNamespace(
             session_id=session_id,
             base_dir=args.base_dir,
             out=args.out,
@@ -197,6 +215,8 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
             json=args.json,
             to_clipboard=args.to_clipboard,
             attachment_ocr=args.attachment_ocr,
+            sanitize_html=getattr(args, "sanitize_html", False),
+            meta=meta,
         )
         run_import_codex(ns, env)
     else:
@@ -204,11 +224,11 @@ def run_import_cli(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 @safe_json_handler
-def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_import_codex(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     console = ui.console
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else CODEX_SESSIONS_ROOT
-    out_dir = Path(args.out) if args.out else DEFAULT_CODEX_SYNC_OUT
+    out_dir = Path(args.out) if args.out else _resolve_import_output("codex", env)
     out_dir.mkdir(parents=True, exist_ok=True)
     settings = env.settings
     collapse_thresholds = getattr(args, "collapse_thresholds", None) or resolve_collapse_thresholds(args, settings)
@@ -263,7 +283,9 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
                 "force": getattr(args, "force", False),
                 "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
-                "attachment_ocr": getattr(args, "attachment_ocr", False),
+                "attachment_ocr": getattr(args, "attachment_ocr", True),
+                "sanitize_html": getattr(args, "sanitize_html", False),
+                "meta": getattr(args, "meta", None),
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
@@ -283,7 +305,7 @@ def run_import_codex(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 @safe_json_handler
-def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_import_chatgpt(args: SimpleNamespace, env: CommandEnv) -> None:
     from .json_output import JSONModeError
 
     ui = env.ui
@@ -302,7 +324,7 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
             console.print(f"[dim]Check that the path is correct and the file exists.")
             raise SystemExit(1)
 
-    out_dir = Path(args.out) if args.out else DEFAULT_CHATGPT_OUT
+    out_dir = Path(args.out) if args.out else _resolve_import_output("chatgpt", env)
     settings = env.settings
     collapse_thresholds = getattr(args, "collapse_thresholds", None) or resolve_collapse_thresholds(args, settings)
     collapse = collapse_thresholds["message"]
@@ -372,7 +394,9 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
                 "force": getattr(args, "force", False),
                 "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
-                "attachment_ocr": getattr(args, "attachment_ocr", False),
+                "attachment_ocr": getattr(args, "attachment_ocr", True),
+                "sanitize_html": getattr(args, "sanitize_html", False),
+                "meta": getattr(args, "meta", None),
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
@@ -393,7 +417,7 @@ def run_import_chatgpt(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 @safe_json_handler
-def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_import_claude(args: SimpleNamespace, env: CommandEnv) -> None:
     from .json_output import JSONModeError
 
     ui = env.ui
@@ -412,7 +436,7 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
             console.print(f"[dim]Check that the path is correct and the file exists.")
             raise SystemExit(1)
 
-    out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_OUT
+    out_dir = Path(args.out) if args.out else _resolve_import_output("claude", env)
     settings = env.settings
     collapse_thresholds = getattr(args, "collapse_thresholds", None) or resolve_collapse_thresholds(args, settings)
     collapse = collapse_thresholds["message"]
@@ -481,7 +505,9 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
                 "selected_ids": selected_ids,
                 "force": getattr(args, "force", False),
                 "registrar": env.registrar,
-                "attachment_ocr": getattr(args, "attachment_ocr", False),
+                "attachment_ocr": getattr(args, "attachment_ocr", True),
+                "sanitize_html": getattr(args, "sanitize_html", False),
+                "meta": getattr(args, "meta", None),
             },
             "import_error_message": "Import failed",
             "summary_footer": footer,
@@ -502,13 +528,15 @@ def run_import_claude(args: argparse.Namespace, env: CommandEnv) -> None:
 
 
 @safe_json_handler
-def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_import_claude_code(args: SimpleNamespace, env: CommandEnv) -> None:
     ui = env.ui
     console = ui.console
     base_dir = Path(args.base_dir).expanduser() if args.base_dir else DEFAULT_PROJECT_ROOT
     session_id = args.session_id
+    chosen = None
+    cancelled = False
 
-    if session_id in {"pick", "?"} or (session_id == "-" and not ui.plain):
+    if (session_id in {None, "", "pick", "?", "-"}) and not ui.plain:
         from ..cli_common import choose_single_entry
         entries = list_claude_code_sessions(base_dir)
         if not entries:
@@ -521,15 +549,18 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
         chosen, cancelled = choose_single_entry(
             ui, entries, format_line=_format_session, header="Select Claude Code session", prompt="session>"
         )
-    if cancelled:
-        console.print("[yellow]Import cancelled; no session selected.")
+        if cancelled:
+            console.print("[yellow]Import cancelled; no session selected.")
+            return
+        if chosen is None:
+            console.print("[yellow]No session selected.")
+            return
+        session_id = chosen["path"]
+    elif session_id in {None, "", "pick", "?", "-"}:
+        console.print("[yellow]Provide a Claude Code session file or run interactively.")
         return
-    if chosen is None:
-        console.print("[yellow]No session selected.")
-        return
-    session_id = chosen["path"]
 
-    out_dir = Path(args.out) if args.out else DEFAULT_CLAUDE_CODE_SYNC_OUT
+    out_dir = Path(args.out) if args.out else _resolve_import_output("claude-code", env)
     settings = env.settings
     collapse_thresholds = getattr(args, "collapse_thresholds", None) or resolve_collapse_thresholds(args, settings)
     collapse = collapse_thresholds["message"]
@@ -562,7 +593,9 @@ def run_import_claude_code(args: argparse.Namespace, env: CommandEnv) -> None:
                 "force": getattr(args, "force", False),
                 "allow_dirty": getattr(args, "allow_dirty", False),
                 "registrar": env.registrar,
-                "attachment_ocr": getattr(args, "attachment_ocr", False),
+                "attachment_ocr": getattr(args, "attachment_ocr", True),
+                "sanitize_html": getattr(args, "sanitize_html", False),
+                "meta": getattr(args, "meta", None),
                 **kwargs,
             },
             "import_error_message": "Import failed",

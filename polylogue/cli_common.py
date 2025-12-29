@@ -43,6 +43,13 @@ def filter_chats(
                 f"Skipped {dropped_missing_modified} chat(s) missing modifiedTime; unable to apply --since/--until.",
                 file=sys.stderr,
             )
+    out.sort(
+        key=lambda c: (
+            -(parse_rfc3339_to_epoch(c.get("modifiedTime")) or 0.0),
+            (c.get("name") or "").lower(),
+            str(c.get("id") or ""),
+        )
+    )
     return out
 
 
@@ -100,14 +107,11 @@ def sk_select(
             input="\n".join(lines).encode("utf-8"),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=True,
+            check=False,
         )
-    except FileNotFoundError as exc:
-        raise RuntimeError(
-            "Required command 'sk' (skim fuzzy finder) is not available in PATH. "
-            "Install it with: cargo install skim, or use --json mode for non-interactive operation."
-        ) from exc
     except subprocess.CalledProcessError:
+        return None
+    if proc.returncode != 0:
         return None
 
     output = proc.stdout.decode("utf-8").strip()

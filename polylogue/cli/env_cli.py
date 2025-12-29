@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import argparse
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import List, Dict, Any
 
 from ..config import CONFIG_PATH, DEFAULT_CREDENTIALS, DEFAULT_TOKEN, is_config_declarative
-from ..paths import CONFIG_HOME, DATA_HOME, STATE_HOME
+from .. import paths as paths_module
 from ..version import POLYLOGUE_VERSION, SCHEMA_VERSION
 from ..commands import CommandEnv
 
@@ -28,7 +28,7 @@ def _path_status(path: Path, *, required: bool = True, label: str | None = None)
     return EnvCheck(name=label or path.name, ok=exists or not required, detail=detail, severity=severity)
 
 
-def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
+def run_env_cli(args: SimpleNamespace, env: CommandEnv) -> None:
     checks: List[EnvCheck] = []
     drift_warnings: List[str] = []
 
@@ -38,9 +38,9 @@ def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     credential_path = Path(credential_env).expanduser() if credential_env else DEFAULT_CREDENTIALS
     token_path = Path(token_env).expanduser() if token_env else DEFAULT_TOKEN
 
-    checks.append(_path_status(CONFIG_HOME, required=True, label="Config home"))
-    checks.append(_path_status(DATA_HOME, required=True, label="Data home"))
-    checks.append(_path_status(STATE_HOME, required=True, label="State home"))
+    checks.append(_path_status(paths_module.CONFIG_HOME, required=True, label="Config home"))
+    checks.append(_path_status(paths_module.DATA_HOME, required=True, label="Data home"))
+    checks.append(_path_status(paths_module.STATE_HOME, required=True, label="State home"))
 
     checks.append(_path_status(credential_path, required=False, label="Credentials"))
     checks.append(_path_status(token_path, required=False, label="Token"))
@@ -49,7 +49,7 @@ def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     if token_env:
         checks.append(EnvCheck(name="POLYLOGUE_TOKEN_PATH", ok=True, detail=str(token_env)))
 
-    cfg_path = CONFIG_PATH if CONFIG_PATH else CONFIG_HOME / "config.json"
+    cfg_path = CONFIG_PATH if CONFIG_PATH else paths_module.CONFIG_HOME / "config.json"
     declarative, decl_reason, decl_target = is_config_declarative(cfg_path)
     checks.append(
         EnvCheck(
@@ -129,7 +129,7 @@ def run_env_cli(args: argparse.Namespace, env: CommandEnv) -> None:
     if getattr(args, "json", False):
         import json
 
-        print(json.dumps(payload, indent=2))
+        print(json.dumps(payload, indent=2, sort_keys=True))
     else:
         lines = [f"polylogue={POLYLOGUE_VERSION} schema={SCHEMA_VERSION}"]
         lines.append(f"Config: {cfg_path}")

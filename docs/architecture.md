@@ -2,15 +2,14 @@
 
 Polylogue now follows a modular structure that separates orchestration concerns from provider-specific logic. The key building blocks are:
 
-## Command Registry
+## CLI (Click)
 
-- `polylogue.cli.registry.CommandRegistry` maps CLI verbs to handlers.
-- `polylogue.cli.app` registers commands and uses the registry for dispatch.
-- Makes it easy to add new commands or reuse handlers across CLI/parsers/UI.
+- `polylogue.cli.click_app` defines the Click command tree and dispatches into `polylogue.cli.*` helpers.
+- This keeps parsing/help/examples in one place while leaving command logic in dedicated modules.
 
 ## Console Facade & UI
 
-- `polylogue/ui/facade.py` wraps Rich/gum functionality (the devshell ships these by default) and automatically drops to the plain console whenever stdout/stderr aren’t TTYs (or when `POLYLOGUE_FORCE_PLAIN=1` is set).
+- `polylogue/ui/facade.py` wraps the Rich/questionary UI stack and automatically drops to the plain console whenever stdout/stderr aren’t TTYs (or when `POLYLOGUE_FORCE_PLAIN=1` is set).
 - `polylogue.ui.UI` delegates to the facade but still provides interactive prompts (pickers, yes/no prompts, etc.) whenever the session is interactive (use `--interactive` to force prompts even in headless shells).
 
 ## Provider Sessions
@@ -57,10 +56,8 @@ Polylogue now follows a modular structure that separates orchestration concerns 
 
 - Extend the pipeline stages with richer validation (e.g., schema checks for provider exports) and tighten error reporting.
 - Build end-to-end snapshots for `sync`/`render` flows that assert both Markdown output and metadata side effects (state + SQLite) to guard against regressions.
-- Explore richer CLI ergonomics (completions, faceted status dashboards) on top of the existing registry/facade stack. Planned completion work includes:
-  - bringing the dynamic engine to bash/fish so every shell benefits from live suggestions;
-  - expanding suggestions beyond slugs/providers to include filtered Drive chats, recent session files, and constrained flag values discovered from argparse metadata;
-  - caching completions to stay snappy even on large archives;
+- Explore richer CLI ergonomics (completions, faceted status dashboards) on top of the existing registry/facade stack. Next completion improvements include:
+  - expanding suggestions further (e.g., more context-aware Drive chat IDs, additional derived filters);
   - rethinking annotation formats (e.g., structured JSON) so shells can render descriptions/tooltips cleanly.
 
 This structure makes it easier to add providers, surface richer UI, and build new tooling on top of Polylogue without duplicating plumbing code.

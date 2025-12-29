@@ -9,21 +9,18 @@ from ..util import CODEX_SESSIONS_ROOT, assign_conversation_slug
 from ..conversation import process_conversation
 from ..branching import MessageRecord
 from .base import ImportResult
-from .utils import CHAR_THRESHOLD, LINE_THRESHOLD, PREVIEW_LINES, estimate_token_count, normalise_inline_footnotes
+from .utils import (
+    CHAR_THRESHOLD,
+    LINE_THRESHOLD,
+    PREVIEW_LINES,
+    estimate_token_count,
+    normalise_inline_footnotes,
+    store_large_text,
+)
 from .normalizer import build_message_record
 from ..services.conversation_registrar import ConversationRegistrar, create_default_registrar
 
 _DEFAULT_BASE = CODEX_SESSIONS_ROOT
-
-
-def _truncate_with_preview(text: str, attachment_name: str) -> str:
-    lines = text.splitlines()
-    if len(lines) <= PREVIEW_LINES * 2 + 1:
-        return text
-    head = lines[:PREVIEW_LINES]
-    tail = lines[-PREVIEW_LINES:]
-    preview = "\n".join(head + ["…", "", f"(Full content saved to {attachment_name})", ""] + tail)
-    return preview
 
 
 def import_codex_session(
@@ -38,12 +35,17 @@ def import_codex_session(
     force: bool = False,
     allow_dirty: bool = False,
     registrar: Optional[ConversationRegistrar] = None,
-    attachment_ocr: bool = False,
+    attachment_ocr: bool = True,
+    sanitize_html: bool = False,
+    meta: Optional[Dict[str, str]] = None,
+    conversation_id_override: Optional[str] = None,
 ) -> ImportResult:
     from .raw_storage import store_raw_import, mark_parse_success, mark_parse_failed
 
+    cli_meta = dict(meta) if meta else None
     registrar = registrar or create_default_registrar()
     base_dir = base_dir.expanduser()
+    conversation_id = conversation_id_override or session_id
     candidate = Path(session_id)
     if candidate.exists() and candidate.is_file():
         session_path = candidate
@@ -60,11 +62,11 @@ def import_codex_session(
     data_hash = None
     if session_path.exists():
         raw_data = session_path.read_bytes()
-        # Use session_id as conversation_id (each session file = one conversation)
+        # Use the resolved conversation ID for raw import tracking.
         data_hash = store_raw_import(
             data=raw_data,
             provider="codex",
-            conversation_id=session_id,
+            conversation_id=conversation_id,
             source_path=session_path,
         )
 
@@ -75,10 +77,11 @@ def import_codex_session(
     call_index: Dict[str, int] = {}
     message_records: List[MessageRecord] = []
     seen_message_ids: Set[str] = set()
+    routing_stats: Dict[str, int] = {"routed": 0, "skipped": 0}
 
     output_dir.mkdir(parents=True, exist_ok=True)
     title = session_path.stem
-    slug = assign_conversation_slug("codex", session_id, title, id_hint=title[:8])
+    slug = assign_conversation_slug("codex", conversation_id, title, id_hint=title[:8])
     conversation_dir = output_dir / slug
     conversation_dir.mkdir(parents=True, exist_ok=True)
     markdown_path = conversation_dir / "conversation.md"
@@ -241,8 +244,8 @@ def import_codex_session(
                     if parent_id and "parentId" not in chunks[idx]:
                         chunks[idx]["parentId"] = parent_id
                         chunks[idx]["branchParent"] = parent_id
-                    meta = chunk_metadata[idx]
-                    calls = meta.setdefault("tool_calls", [])
+                    chunk_meta = chunk_metadata[idx]
+                    calls = chunk_meta.setdefault("tool_calls", [])
                     if calls:
                         calls[0]["output"] = output_text
                     else:
@@ -273,36 +276,37 @@ def import_codex_session(
                         chunks[-1]["parentId"] = parent_ref
                         chunks[-1]["branchParent"] = parent_ref
 
-    # attachment extraction pass
     for idx, chunk in enumerate(chunks):
-        text = chunk.get("text", "")
-        lines = text.count("\n") + 1
-        if lines <= LINE_THRESHOLD and len(text) <= CHAR_THRESHOLD:
-            continue
-        attachment_name = f"chunk{idx:03d}.txt"
-        attachment_path = attachments_dir / attachment_name
-        attachment_path.write_text(text, encoding="utf-8")
-        rel = attachment_path.relative_to(markdown_path.parent)
-        attachments.append(AttachmentInfo(attachment_name, str(rel), rel, attachment_path.stat().st_size, False))
-        per_chunk_links.setdefault(idx, []).append((attachment_name, rel))
-        chunk["text"] = _truncate_with_preview(text, attachment_name)
+        text = chunk.get("text", "") or ""
+        preview = store_large_text(
+            text,
+            chunk_index=idx,
+            attachments_dir=attachments_dir,
+            markdown_dir=markdown_path.parent,
+            attachments=attachments,
+            per_chunk_links=per_chunk_links,
+            prefix="chunk",
+            routing_stats=routing_stats,
+        )
+        if preview != text:
+            chunk["text"] = preview
 
     for idx, chunk in enumerate(chunks):
         parent_id = chunk.get("parentId") or (message_records[-1].message_id if message_records else None)
         if parent_id and "parentId" not in chunk:
             chunk["parentId"] = parent_id
             chunk["branchParent"] = parent_id
-        meta = chunk_metadata[idx] if idx < len(chunk_metadata) else {}
+        chunk_meta = chunk_metadata[idx] if idx < len(chunk_metadata) else {}
         links = list(per_chunk_links.get(idx, []))
         message_records.append(
             build_message_record(
                 provider="codex",
-                conversation_id=session_id,
+                conversation_id=conversation_id,
                 chunk_index=idx,
                 chunk=chunk,
-                raw_metadata=meta.get("raw") if isinstance(meta, dict) else None,
+                raw_metadata=chunk_meta.get("raw") if isinstance(chunk_meta, dict) else None,
                 attachments=links,
-                tool_calls=meta.get("tool_calls") if isinstance(meta, dict) else None,
+                tool_calls=chunk_meta.get("tool_calls") if isinstance(chunk_meta, dict) else None,
                 seen_ids=seen_message_ids,
                 fallback_prefix=slug,
             )
@@ -317,7 +321,7 @@ def import_codex_session(
     try:
         result = process_conversation(
             provider="codex",
-            conversation_id=session_id,
+            conversation_id=conversation_id,
             slug=slug,
             title=title,
             message_records=message_records,
@@ -331,6 +335,7 @@ def import_codex_session(
             extra_yaml=extra_yaml,
             extra_state={
                 "sessionPath": str(session_path),
+                "cliMeta": cli_meta,
             },
             source_file_id=session_id,
             modified_time=None,
@@ -342,10 +347,12 @@ def import_codex_session(
                 "previewLines": PREVIEW_LINES,
                 "lineThreshold": LINE_THRESHOLD,
                 "charThreshold": CHAR_THRESHOLD,
+                "routing": routing_stats,
             },
             force=force,
             allow_dirty=allow_dirty,
             attachment_ocr=attachment_ocr,
+            sanitize_html=sanitize_html,
             registrar=registrar,
         )
 

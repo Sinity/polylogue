@@ -1,5 +1,6 @@
 import datetime
 import difflib
+import hashlib
 import json
 import logging
 import os
@@ -100,6 +101,19 @@ def parse_rfc3339_to_epoch(ts: Optional[str]) -> Optional[float]:
         return None
 
 
+def format_duration(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "?"
+    seconds = max(0.0, float(seconds))
+    mins, sec = divmod(int(seconds + 0.5), 60)
+    hrs, mins = divmod(mins, 60)
+    if hrs:
+        return f"{hrs}h{mins:02d}m{sec:02d}s"
+    if mins:
+        return f"{mins}m{sec:02d}s"
+    return f"{sec}s"
+
+
 def parse_input_time_to_epoch(s: Optional[Union[str, float, int, datetime.date, datetime.datetime]]) -> Optional[float]:
     if s is None:
         return None
@@ -161,6 +175,30 @@ def _set_meta_value(key: str, value: str) -> None:
         conn.commit()
 
 
+def import_sync_state_key(provider: str, conversation_id: str) -> str:
+    material = f"{provider}:{conversation_id}".encode("utf-8")
+    digest = hashlib.sha256(material).hexdigest()
+    return f"import.sync.{digest}"
+
+
+def get_import_sync_state(provider: str, conversation_id: str) -> Optional[dict]:
+    raw = _get_meta_value(import_sync_state_key(provider, conversation_id))
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def set_import_sync_state(provider: str, conversation_id: str, payload: dict) -> None:
+    payload = dict(payload)
+    payload.setdefault("provider", provider)
+    payload.setdefault("conversationId", conversation_id)
+    _set_meta_value(import_sync_state_key(provider, conversation_id), json.dumps(payload, sort_keys=True, separators=(",", ":")))
+
+
 def load_runs(limit: Optional[int] = None) -> list[dict]:
     sql = "SELECT * FROM runs ORDER BY id DESC"
     params: Tuple[Any, ...] = ()
@@ -172,11 +210,13 @@ def load_runs(limit: Optional[int] = None) -> list[dict]:
     results: list[dict] = []
     for row in rows:
         payload = {
+            "id": row["id"],
             "timestamp": row["timestamp"],
             "cmd": row["cmd"],
             "count": row["count"],
             "attachments": row["attachments"],
             "attachment_bytes": row["attachment_bytes"],
+            "attachmentBytes": row["attachment_bytes"],
             "tokens": row["tokens"],
             "skipped": row["skipped"],
             "pruned": row["pruned"],
@@ -196,6 +236,40 @@ def load_runs(limit: Optional[int] = None) -> list[dict]:
         results.append(payload)
     results.reverse()  # restore chronological order
     return results
+
+
+def get_run_by_id(run_id: int) -> Optional[dict]:
+    if not isinstance(run_id, int) or run_id <= 0:
+        return None
+    with open_connection(None) as conn:
+        row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+    if not row:
+        return None
+    payload = {
+        "id": row["id"],
+        "timestamp": row["timestamp"],
+        "cmd": row["cmd"],
+        "count": row["count"],
+        "attachments": row["attachments"],
+        "attachment_bytes": row["attachment_bytes"],
+        "attachmentBytes": row["attachment_bytes"],
+        "tokens": row["tokens"],
+        "skipped": row["skipped"],
+        "pruned": row["pruned"],
+        "diffs": row["diffs"],
+        "duration": row["duration"],
+        "out": row["out"],
+        "provider": row["provider"],
+        "branch_id": row["branch_id"],
+    }
+    metadata = row["metadata_json"]
+    if metadata:
+        try:
+            payload.update(json.loads(metadata))
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to decode run metadata JSON (id=%s): %s", row["id"], exc)
+            payload["metadata_error"] = "invalid_json"
+    return payload
 
 
 def latest_run(provider: Optional[str] = None, cmd: Optional[str] = None) -> Optional[dict]:
@@ -405,7 +479,7 @@ def add_run(record: Dict[str, Any]) -> None:
     cmd = payload.get("cmd") or "unknown"
     count = int(payload.get("count") or 0)
     attachments = int(payload.get("attachments") or 0)
-    attachment_bytes = int(payload.get("attachment_bytes") or 0)
+    attachment_bytes = int(payload.get("attachment_bytes") or payload.get("attachmentBytes") or 0)
     tokens = int(payload.get("tokens") or 0)
     skipped = int(payload.get("skipped") or 0)
     pruned = int(payload.get("pruned") or 0)
@@ -426,6 +500,7 @@ def add_run(record: Dict[str, Any]) -> None:
             "count",
             "attachments",
             "attachment_bytes",
+            "attachmentBytes",
             "tokens",
             "skipped",
             "pruned",
@@ -535,6 +610,11 @@ def snapshot_for_diff(path: Path) -> Optional[Path]:
 
 
 def current_utc_timestamp() -> str:
+    fixed = os.environ.get("POLYLOGUE_FIXED_NOW")
+    if fixed:
+        fixed = fixed.strip()
+        if fixed:
+            return fixed
     return (
         datetime.datetime.now(datetime.timezone.utc)
         .replace(microsecond=0)
