@@ -155,3 +155,18 @@ def safe_extractall(archive, target: Path) -> None:
     """Safely extract the entire archive to ``target``."""
 
     safe_extract(archive, archive.namelist(), target)
+
+
+def find_conversations_json(root: Path) -> Optional[Path]:
+    """Locate conversations.json within a directory (preferring shallow paths)."""
+
+    candidate = root / "conversations.json"
+    if candidate.exists():
+        return candidate
+    try:
+        matches = list(root.rglob("conversations.json"))
+    except OSError:
+        return None
+    if not matches:
+        return None
+    return min(matches, key=lambda path: (len(path.relative_to(root).parts), str(path)))

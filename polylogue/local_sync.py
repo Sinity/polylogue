@@ -25,6 +25,7 @@ from .importers.claude_code import (
     list_claude_code_sessions,
 )
 from .importers.codex import _DEFAULT_BASE as CODEX_DEFAULT
+from .importers.utils import find_conversations_json
 from .paths import DATA_HOME
 from .util import DiffTracker, format_duration, path_order_key, sanitize_filename, slugify_title
 from .services.conversation_registrar import ConversationRegistrar, create_default_registrar
@@ -529,26 +530,115 @@ def _sync_sessions(
     )
 
 
+def _classify_conversation_entry(entry: object) -> Optional[str]:
+    if not isinstance(entry, dict):
+        return None
+    if "mapping" in entry or "current_node" in entry:
+        return "chatgpt"
+    if "chat_messages" in entry or "chatMessages" in entry:
+        return "claude"
+    if "create_time" in entry or "update_time" in entry:
+        return "chatgpt"
+    if "uuid" in entry and "model" in entry:
+        return "claude"
+    messages = entry.get("messages")
+    if isinstance(messages, list) and messages:
+        first = messages[0]
+        if isinstance(first, dict):
+            if "sender" in first or "sender_id" in first:
+                return "claude"
+            if "author" in first or "role" in first:
+                return "chatgpt"
+    return None
+
+
+def _classify_conversations_stream(handle, prefix: str, *, limit: int = 3) -> Optional[str]:
+    try:
+        import ijson
+    except Exception:
+        return None
+    try:
+        for idx, conv in enumerate(ijson.items(handle, prefix)):
+            provider = _classify_conversation_entry(conv)
+            if provider:
+                return provider
+            if idx + 1 >= limit:
+                break
+    except Exception:
+        return None
+    return None
+
+
+def _classify_conversations_file(path: Path) -> Optional[str]:
+    try:
+        with path.open("rb") as fh:
+            provider = _classify_conversations_stream(fh, "conversations.item")
+            if provider:
+                return provider
+    except Exception:
+        pass
+    try:
+        with path.open("rb") as fh:
+            provider = _classify_conversations_stream(fh, "item")
+            if provider:
+                return provider
+    except Exception:
+        pass
+    return None
+
+
+def _find_zip_conversations(zf: zipfile.ZipFile) -> Optional[str]:
+    candidates = [
+        name
+        for name in zf.namelist()
+        if name.lower().endswith("conversations.json")
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda name: (name.count("/"), len(name), name))
+
+
+def _classify_conversations_zip(path: Path) -> Optional[str]:
+    try:
+        with zipfile.ZipFile(path) as zf:
+            name = _find_zip_conversations(zf)
+            if not name:
+                return None
+            try:
+                with zf.open(name) as fh:
+                    provider = _classify_conversations_stream(fh, "conversations.item")
+                if provider:
+                    return provider
+            except Exception:
+                pass
+            try:
+                with zf.open(name) as fh:
+                    provider = _classify_conversations_stream(fh, "item")
+                if provider:
+                    return provider
+            except Exception:
+                return None
+    except Exception:
+        return None
+    return None
+
+
 def _detect_export_provider(path: Path) -> Optional[str]:
     conv_path: Optional[Path] = None
     suffix = path.suffix.lower()
     if path.is_dir():
-        candidate = path / "conversations.json"
-        if candidate.exists():
-            conv_path = candidate
+        conv_path = find_conversations_json(path)
     elif path.is_file() and path.name.lower() == "conversations.json":
         conv_path = path
     elif path.is_file() and suffix == ".zip" and zipfile.is_zipfile(path):
-        try:
-            with zipfile.ZipFile(path) as zf:
-                if "conversations.json" in zf.namelist():
-                    with zf.open("conversations.json") as fh:
-                        data = json.loads(fh.read().decode("utf-8"))
-                        return _classify_conversations_json(data)
-        except Exception:
-            return None
+        detected = _classify_conversations_zip(path)
+        if detected:
+            return detected
 
     if conv_path and conv_path.exists():
+        detected = _classify_conversations_file(conv_path)
+        if detected:
+            return detected
         try:
             data = json.loads(conv_path.read_text(encoding="utf-8"))
             return _classify_conversations_json(data)
@@ -570,12 +660,10 @@ def _classify_conversations_json(data: object) -> Optional[str]:
         if conversations:
             data = conversations
     if isinstance(data, list) and data:
-        first = data[0]
-        if isinstance(first, dict):
-            if "mapping" in first:
-                return "chatgpt"
-            # Claude exports typically lack mapping and include simple message lists
-            return "claude"
+        for entry in data[:3]:
+            provider = _classify_conversation_entry(entry)
+            if provider:
+                return provider
     return None
 
 
@@ -650,8 +738,10 @@ def _normalize_export_target(path: Path) -> Optional[Path]:
         return candidate
     if candidate.name.lower() == "conversations.json":
         return candidate.parent
-    if candidate.is_dir() and (candidate / "conversations.json").exists():
-        return candidate
+    if candidate.is_dir():
+        conv_path = find_conversations_json(candidate)
+        if conv_path:
+            return conv_path.parent
     return None
 
 

@@ -1,4 +1,5 @@
 import json
+import zipfile
 import pytest
 from pathlib import Path
 
@@ -336,6 +337,33 @@ def test_list_export_targets_filters_provider(tmp_path):
     assert claude_targets == [claude_dir]
 
 
+def test_list_export_targets_handles_nested_conversations(tmp_path):
+    base_dir = tmp_path / "exports"
+    nested_dir = base_dir / "bundle" / "payload"
+    nested_dir.mkdir(parents=True, exist_ok=True)
+    (nested_dir / "conversations.json").write_text(
+        json.dumps({"conversations": [{"mapping": {"root": {}}}]}),
+        encoding="utf-8",
+    )
+
+    chatgpt_targets = _list_chatgpt_exports(base_dir)
+
+    assert chatgpt_targets == [nested_dir]
+
+
+def test_list_export_targets_handles_nested_zip(tmp_path):
+    base_dir = tmp_path / "exports"
+    base_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = base_dir / "export.zip"
+    payload = json.dumps({"conversations": [{"mapping": {"root": {}}}]}).encode("utf-8")
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("nested/conversations.json", payload)
+
+    chatgpt_targets = _list_chatgpt_exports(base_dir)
+
+    assert chatgpt_targets == [zip_path]
+
+
 def test_sync_chatgpt_exports_normalizes_sessions(monkeypatch, tmp_path):
     base_dir = tmp_path / "chatgpt"
     bundle_dir = base_dir / "bundle"
@@ -376,6 +404,49 @@ def test_sync_chatgpt_exports_normalizes_sessions(monkeypatch, tmp_path):
 
     assert len(result.written) == 1
     assert invoked == [bundle_dir]
+
+
+def test_sync_chatgpt_exports_normalizes_nested_sessions(monkeypatch, tmp_path):
+    base_dir = tmp_path / "chatgpt"
+    bundle_dir = base_dir / "bundle"
+    nested_dir = bundle_dir / "payload"
+    nested_dir.mkdir(parents=True, exist_ok=True)
+    conv = nested_dir / "conversations.json"
+    conv.write_text("{}", encoding="utf-8")
+
+    invoked: list[Path] = []
+
+    def fake_import_chatgpt_export(*, export_path, **_kwargs):  # noqa: ANN001
+        invoked.append(Path(export_path))
+        slug = "chatgpt-bundle"
+        md_path = tmp_path / "out" / slug / "conversation.md"
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text("body", encoding="utf-8")
+        return [
+            ImportResult(
+                markdown_path=md_path,
+                html_path=None,
+                attachments_dir=None,
+                document=None,
+                slug=slug,
+            )
+        ]
+
+    monkeypatch.setattr("polylogue.local_sync.import_chatgpt_export", fake_import_chatgpt_export)
+
+    result = sync_chatgpt_exports(
+        base_dir=base_dir,
+        output_dir=tmp_path / "out",
+        collapse_threshold=10,
+        html=False,
+        html_theme="light",
+        force=False,
+        prune=False,
+        sessions=[bundle_dir],
+    )
+
+    assert len(result.written) == 1
+    assert invoked == [nested_dir]
 
 
 def test_sync_claude_exports_counts_skipped(monkeypatch, tmp_path):
