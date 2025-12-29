@@ -77,18 +77,18 @@ def run_render_force(
 
     # Determine output directory
     if output_dir is None:
-        from ..config import CONFIG
+        defaults = env.config.defaults.output_dirs
+        provider_dirs = {
+            "chatgpt": defaults.import_chatgpt,
+            "claude": defaults.import_claude,
+            "codex": defaults.sync_codex,
+            "claude-code": defaults.sync_claude_code,
+            "claude_code": defaults.sync_claude_code,
+        }
         if provider:
-            # Use provider-specific output directory
-            provider_dirs = {
-                "chatgpt": CONFIG.defaults.output_dirs.get("import_chatgpt"),
-                "claude": CONFIG.defaults.output_dirs.get("import_claude"),
-                "codex": CONFIG.defaults.output_dirs.get("sync_codex"),
-                "claude_code": CONFIG.defaults.output_dirs.get("sync_claude_code"),
-            }
-            output_dir = Path(provider_dirs.get(provider, CONFIG.defaults.output_dirs.get("render")))
+            output_dir = Path(provider_dirs.get(provider, defaults.render))
         else:
-            output_dir = Path(CONFIG.defaults.output_dirs.get("render"))
+            output_dir = Path(defaults.render)
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
