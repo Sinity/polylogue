@@ -15,7 +15,7 @@ except ImportError:  # pragma: no cover - fallback for environments without watc
 from ..commands import CommandEnv
 from ..local_sync import get_local_provider
 from .context import resolve_collapse_thresholds, resolve_html_enabled, resolve_output_path
-from .sync import _log_local_sync
+from .sync import _log_local_sync, _resolve_default_output
 
 WatchChange = Tuple[Any, str]
 WatchBatch = Iterable[Set[WatchChange]]
@@ -87,7 +87,7 @@ def _run_watch_sessions(
             if hint:
                 ui.console.print(f"[yellow]{hint}[/yellow]")
             raise SystemExit(1)
-    out_dir = resolve_output_path(args.out, provider.default_output)
+    out_dir = resolve_output_path(args.out, _resolve_default_output(provider.name, env))
     out_dir.mkdir(parents=True, exist_ok=True)
     snapshot_dir: Optional[Path] = None
     if getattr(args, "snapshot", False):
