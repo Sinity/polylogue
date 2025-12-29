@@ -1,7 +1,10 @@
 import json
 import zipfile
-import pytest
 from pathlib import Path
+
+import pytest
+
+import polylogue.local_sync as local_sync_module
 
 from polylogue.importers.base import ImportResult
 from polylogue.local_sync import (
@@ -147,6 +150,20 @@ def _write_claude_code_session(root: Path, name: str, lines: list[str]) -> Path:
     return path
 
 
+def _write_conversations_dir(tmp_path: Path, name: str, payload: object) -> Path:
+    export_dir = tmp_path / name
+    export_dir.mkdir()
+    (export_dir / "conversations.json").write_text(json.dumps(payload), encoding="utf-8")
+    return export_dir
+
+
+def _write_conversations_zip(tmp_path: Path, name: str, payload: object) -> Path:
+    zip_path = tmp_path / f"{name}.zip"
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("conversations.json", json.dumps(payload))
+    return zip_path
+
+
 def test_sync_claude_code_sessions(tmp_path):
     base_dir = tmp_path / "claude_code"
     session_path = _write_claude_code_session(
@@ -186,6 +203,28 @@ def test_sync_claude_code_sessions(tmp_path):
     )
     assert result_skip.skipped >= 1
     assert result_skip.skip_reasons.get("up-to-date", 0) >= 1
+
+
+def test_detect_export_provider_snippet_fallback_chatgpt(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_sync_module, "_classify_conversations_stream", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(local_sync_module, "_CLASSIFY_JSON_MAX_BYTES", 1)
+    export_dir = _write_conversations_dir(
+        tmp_path,
+        "chatgpt",
+        [{"id": "chat-1", "mapping": {}, "current_node": "root"}],
+    )
+    assert local_sync_module._detect_export_provider(export_dir) == "chatgpt"
+
+
+def test_detect_export_provider_snippet_fallback_claude_zip(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_sync_module, "_classify_conversations_stream", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(local_sync_module, "_CLASSIFY_JSON_MAX_BYTES", 1)
+    zip_path = _write_conversations_zip(
+        tmp_path,
+        "claude",
+        {"conversations": [{"uuid": "claude-1", "chat_messages": []}]},
+    )
+    assert local_sync_module._detect_export_provider(zip_path) == "claude"
 
 
 def test_sync_claude_code_sessions_merges_agent_logs(tmp_path):

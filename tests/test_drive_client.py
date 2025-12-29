@@ -97,6 +97,23 @@ def test_drive_client_uses_default_folder_name(monkeypatch):
     assert seen == ["Google AI Studio"]
 
 
+def test_drive_client_uses_explicit_folder_name(monkeypatch):
+    client = DriveClient(DummyUI())
+    monkeypatch.setattr(client, "service", lambda: object())
+    seen: list[str] = []
+
+    def fake_find(_svc, name, notifier=None):
+        seen.append(name)
+        return "folder-456"
+
+    monkeypatch.setattr("polylogue.drive_client.find_folder_id", fake_find)
+
+    resolved = client.resolve_folder_id("AI Studio", None)
+
+    assert resolved == "folder-456"
+    assert seen == ["AI Studio"]
+
+
 def test_run_console_flow_assigns_redirect(monkeypatch):
     class DummySession:
         def __init__(self):
