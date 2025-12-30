@@ -565,7 +565,7 @@ def detect_provider(payload: Any, path: Path) -> Optional[str]:
     return None
 
 
-def iter_source_conversations(source: Source) -> Iterable[ParsedConversation]:
+def iter_source_conversations(source: Source, *, cursor_state: Optional[dict] = None) -> Iterable[ParsedConversation]:
     paths: List[Path] = []
     if source.type == "drive":
         return []
@@ -578,6 +578,16 @@ def iter_source_conversations(source: Source) -> Iterable[ParsedConversation]:
         paths.extend(sorted(base.rglob("*.zip")))
     elif base.is_file():
         paths.append(base)
+
+    if cursor_state is not None:
+        cursor_state["file_count"] = len(paths)
+        if paths:
+            try:
+                latest = max(paths, key=lambda path: path.stat().st_mtime)
+                cursor_state["latest_mtime"] = latest.stat().st_mtime
+                cursor_state["latest_path"] = str(latest)
+            except OSError:
+                pass
 
     conversations: List[ParsedConversation] = []
     for path in paths:

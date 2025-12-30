@@ -24,7 +24,7 @@ def test_config_rejects_unknown_keys(workspace_env):
         "version": 1,
         "archive_root": str(workspace_env["archive_root"]),
         "sources": [],
-        "profiles": {"default": {"attachments": "download", "html": "auto", "index": True, "sanitize_html": False}},
+        "profiles": {"default": {"attachments": "download", "html": "auto", "index": True, "sanitize_html": True}},
         "extra": "nope",
     }
     workspace_env["config_path"].parent.mkdir(parents=True, exist_ok=True)

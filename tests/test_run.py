@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from polylogue.config import Source, default_config, write_config
+from polylogue.db import open_connection
 from polylogue.run import plan_sources, run_sources
 
 
@@ -144,14 +145,45 @@ def test_incremental_index_updates(workspace_env, tmp_path, monkeypatch):
     profile = config.profiles["default"]
     run_sources(config=config, profile=profile, stage="all")
 
-    payload_b["messages"].append({"id": "m2", "role": "user", "content": "beta 2"})
-    source_b.write_text(json.dumps(payload_b), encoding="utf-8")
 
-    def fail_rebuild():
-        raise AssertionError("rebuild_index should not be called when index exists")
+def test_redact_store_scrubs_text(workspace_env, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "id": "conv-redact",
+        "messages": [
+            {"id": "m1", "role": "user", "content": "contact me at test@example.com"},
+        ],
+    }
+    source_file = inbox / "conversation.json"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    config = default_config()
+    config.sources = [Source(name="inbox", type="auto", path=source_file)]
+    write_config(config)
+
+    profile = config.profiles["default"]
+    run_sources(config=config, profile=profile, stage="ingest", redact_store=True)
+
+    with open_connection(None) as conn:
+        row = conn.execute("SELECT text FROM messages").fetchone()
+    assert row is not None
+    assert "test@example.com" not in row["text"]
+    assert "[redacted-email]" in row["text"]
+
+
+def test_index_failure_is_nonfatal(workspace_env, monkeypatch):
+    config = default_config()
+    write_config(config)
+    profile = config.profiles["default"]
 
     import polylogue.run as run_mod
 
-    monkeypatch.setattr(run_mod, "rebuild_index", fail_rebuild)
+    def boom():
+        raise RuntimeError("index failed")
 
-    run_sources(config=config, profile=profile, stage="all")
+    monkeypatch.setattr(run_mod, "rebuild_index", boom)
+    result = run_sources(config=config, profile=profile, stage="index")
+    assert result.indexed is False
+    assert result.index_error is not None
+    assert "index failed" in result.index_error

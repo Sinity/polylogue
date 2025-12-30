@@ -18,7 +18,21 @@ def export_jsonl(*, archive_root: Path, output_path: Optional[Path] = None) -> P
                 (convo["conversation_id"],),
             ).fetchall()
             attachments = conn.execute(
-                "SELECT * FROM attachments WHERE conversation_id = ?",
+                """
+                SELECT
+                    attachment_refs.ref_id,
+                    attachment_refs.conversation_id,
+                    attachment_refs.message_id,
+                    attachment_refs.attachment_id,
+                    attachment_refs.provider_meta AS ref_meta,
+                    attachments.mime_type,
+                    attachments.size_bytes,
+                    attachments.path,
+                    attachments.provider_meta
+                FROM attachment_refs
+                JOIN attachments ON attachments.attachment_id = attachment_refs.attachment_id
+                WHERE attachment_refs.conversation_id = ?
+                """,
                 (convo["conversation_id"],),
             ).fetchall()
             payload = {
