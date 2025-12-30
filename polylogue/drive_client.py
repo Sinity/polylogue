@@ -47,10 +47,6 @@ def default_token_path() -> Path:
     return CONFIG_HOME / DEFAULT_TOKEN_NAME
 
 
-def drive_link(file_id: str) -> str:
-    return f"https://drive.google.com/file/d/{file_id}/view"
-
-
 def _parse_modified_time(raw: Optional[str]) -> Optional[float]:
     if not raw:
         return None
@@ -294,5 +290,4 @@ __all__ = [
     "DriveNotFoundError",
     "default_credentials_path",
     "default_token_path",
-    "drive_link",
 ]

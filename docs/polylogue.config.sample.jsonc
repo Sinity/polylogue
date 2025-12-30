@@ -1,26 +1,16 @@
 {
   // Copy this file to $XDG_CONFIG_HOME/polylogue/config.json and adjust as needed.
-  "version": 1,
+  "version": 2,
   "archive_root": "~/.local/share/polylogue/archive",
   "sources": [
     {
       "name": "gemini",
-      "type": "drive",
       "folder": "Google AI Studio"
     },
     {
-      // Local sources accept: auto, codex, claude, chatgpt, claude-code.
+      // Local sources use "path".
       "name": "inbox",
-      "type": "auto",
       "path": "~/.local/share/polylogue/inbox"
     }
-  ],
-  "profiles": {
-    "default": {
-      "attachments": "download",
-      "html": "auto",
-      "index": true,
-      "sanitize_html": true
-    }
-  }
+  ]
 }

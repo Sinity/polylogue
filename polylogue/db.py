@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _LOCAL = threading.local()
 
 
@@ -91,8 +91,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             counts_json TEXT,
             drift_json TEXT,
             indexed INTEGER,
-            duration_ms INTEGER,
-            profile TEXT
+            duration_ms INTEGER
         );
         """
     )
@@ -196,6 +195,50 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP TABLE attachment_refs_old")
+    conn.execute("PRAGMA user_version = 2")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.commit()
+
+
+def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("ALTER TABLE runs RENAME TO runs_old")
+    conn.executescript(
+        """
+        CREATE TABLE runs (
+            run_id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            plan_snapshot TEXT,
+            counts_json TEXT,
+            drift_json TEXT,
+            indexed INTEGER,
+            duration_ms INTEGER
+        );
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO runs (
+            run_id,
+            timestamp,
+            plan_snapshot,
+            counts_json,
+            drift_json,
+            indexed,
+            duration_ms
+        )
+        SELECT
+            run_id,
+            timestamp,
+            plan_snapshot,
+            counts_json,
+            drift_json,
+            indexed,
+            duration_ms
+        FROM runs_old
+        """
+    )
+    conn.execute("DROP TABLE runs_old")
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.commit()
@@ -209,6 +252,9 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         return
     if version == 1:
         _migrate_v1_to_v2(conn)
+        version = 2
+    if version == 2:
+        _migrate_v2_to_v3(conn)
         return
     if version != SCHEMA_VERSION:
         raise RuntimeError(f"Unsupported DB schema version {version} (expected {SCHEMA_VERSION})")

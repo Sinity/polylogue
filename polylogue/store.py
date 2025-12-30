@@ -54,7 +54,6 @@ class RunRecord:
     drift: Optional[dict]
     indexed: Optional[bool]
     duration_ms: Optional[int]
-    profile: Optional[str]
 
 
 def _json_or_none(value: Optional[dict]) -> Optional[str]:
@@ -222,9 +221,8 @@ def record_run(conn, record: RunRecord) -> None:
             counts_json,
             drift_json,
             indexed,
-            duration_ms,
-            profile
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            duration_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
             record.run_id,
@@ -234,7 +232,6 @@ def record_run(conn, record: RunRecord) -> None:
             _json_or_none(record.drift),
             int(record.indexed) if record.indexed is not None else None,
             record.duration_ms,
-            record.profile,
         ),
     )
 

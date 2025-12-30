@@ -45,26 +45,19 @@ Example:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "archive_root": "~/.local/share/polylogue/archive",
   "sources": [
-    {"name": "inbox", "type": "auto", "path": "~/.local/share/polylogue/inbox"},
-    {"name": "gemini", "type": "drive", "folder": "Google AI Studio"}
-  ],
-  "profiles": {
-    "default": {
-      "attachments": "download",
-      "html": "auto",
-      "index": true,
-      "sanitize_html": true
-    }
-  }
+    {"name": "inbox", "path": "~/.local/share/polylogue/inbox"},
+    {"name": "gemini", "folder": "Google AI Studio"}
+  ]
 }
 ```
 
 Notes:
 
 - `POLYLOGUE_ARCHIVE_ROOT` overrides `archive_root` at runtime.
+- Local sources use `path`; Drive sources use `folder`.
 - Use `polylogue config show --json` to inspect resolved paths.
 - `--source NAME` (repeatable) limits `plan/run/ingest/render` to selected sources.
 - `POLYLOGUE_FORCE_PLAIN=1` forces the non-interactive UI mode.
@@ -86,8 +79,6 @@ Notes:
 - `polylogue open` - open latest render
 - `polylogue health` - cached health checks
 - `polylogue config init/show/set` - manage config
-
-Redaction: renders redact common secrets by default; pass `--redact-store` to `run` or `ingest` to scrub the DB itself.
 
 ## Output layout
 

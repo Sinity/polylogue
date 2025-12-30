@@ -567,8 +567,6 @@ def detect_provider(payload: Any, path: Path) -> Optional[str]:
 
 def iter_source_conversations(source: Source, *, cursor_state: Optional[dict] = None) -> Iterable[ParsedConversation]:
     paths: List[Path] = []
-    if source.type == "drive":
-        return []
     if not source.path:
         return []
     base = source.path.expanduser()
@@ -599,8 +597,7 @@ def iter_source_conversations(source: Source, *, cursor_state: Optional[dict] = 
         except Exception:
             continue
         provider = source.name
-        if source.type == "auto":
-            provider = detect_provider(payload, path) or source.name
+        provider = detect_provider(payload, path) or source.name
         conversations.extend(_parse_json_payload(provider, payload, path.stem))
     return conversations
 

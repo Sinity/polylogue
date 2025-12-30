@@ -4,23 +4,17 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
 from .assets import asset_path
-from .config import Config, Profile, Source
+from .config import Config, Source
 from .db import open_connection
 from .drive_ingest import iter_drive_conversations
 from .index import index_status, rebuild_index, update_index_for_conversations
 from .ingest import IngestBundle, ingest_bundle
-from .redaction import sanitize_text
 from .render import render_conversation
-from .source_ingest import (
-    ParsedAttachment,
-    ParsedConversation,
-    ParsedMessage,
-    iter_source_conversations,
-)
+from .source_ingest import ParsedAttachment, ParsedConversation, iter_source_conversations
 from .store import ConversationRecord, MessageRecord, AttachmentRecord, RunRecord, record_run
 
 
@@ -56,12 +50,6 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             hasher.update(chunk)
     return hasher.hexdigest()
-
-
-def _maybe_redact(text: Optional[str], *, redact_store: bool) -> Optional[str]:
-    if not redact_store or text is None:
-        return text
-    return sanitize_text(text)
 
 
 def _attachment_seed(provider_name: str, attachment: ParsedAttachment) -> str:
@@ -146,21 +134,18 @@ def _select_sources(config: Config, source_names: Optional[Sequence[str]]) -> Li
 def plan_sources(
     config: Config,
     *,
-    profile: Optional[Profile] = None,
     ui: Optional[object] = None,
     source_names: Optional[Sequence[str]] = None,
 ) -> PlanResult:
     counts = {"conversations": 0, "messages": 0, "attachments": 0}
     sources = []
     cursors: Dict[str, dict] = {}
-    effective_profile = profile or Profile()
     for source in _select_sources(config, source_names):
         sources.append(source.name)
         cursor_state: Dict[str, object] = {}
-        if source.type == "drive":
+        if source.folder:
             conversations = iter_drive_conversations(
                 source=source,
-                profile=effective_profile,
                 archive_root=config.archive_root,
                 ui=ui,
                 download_assets=False,
@@ -181,21 +166,9 @@ def _ingest_conversation(
     convo: ParsedConversation,
     source_name: str,
     *,
-    redact_store: bool,
     archive_root: Path,
 ) -> Tuple[str, Dict[str, int], bool]:
-    redacted_messages: List[ParsedMessage] = []
-    for msg in convo.messages:
-        redacted_messages.append(
-            ParsedMessage(
-                provider_message_id=msg.provider_message_id,
-                role=msg.role,
-                text=_maybe_redact(msg.text, redact_store=redact_store) or "",
-                timestamp=msg.timestamp,
-                provider_meta=msg.provider_meta,
-            )
-        )
-    combined_text = "\n".join(msg.text for msg in redacted_messages)
+    combined_text = "\n".join(msg.text for msg in convo.messages)
     content_hash = _hash_text(combined_text)
     conversation_id = _conversation_id(convo.provider_conversation_id, content_hash)
     existing_hash = _lookup_existing_conversation(convo)
@@ -205,7 +178,7 @@ def _ingest_conversation(
         conversation_id=conversation_id,
         provider_name=convo.provider_name,
         provider_conversation_id=convo.provider_conversation_id,
-        title=_maybe_redact(convo.title, redact_store=redact_store),
+        title=convo.title,
         created_at=convo.created_at,
         updated_at=convo.updated_at,
         content_hash=content_hash,
@@ -214,7 +187,7 @@ def _ingest_conversation(
 
     messages: List[MessageRecord] = []
     message_ids: Dict[str, str] = {}
-    for idx, msg in enumerate(redacted_messages, start=1):
+    for idx, msg in enumerate(convo.messages, start=1):
         message_hash = _hash_text(msg.text)
         provider_message_id = msg.provider_message_id or f"msg-{idx}"
         message_id = _message_id(provider_message_id, message_hash)
@@ -303,13 +276,10 @@ def _write_run_json(archive_root: Path, payload: dict) -> Path:
 def run_sources(
     *,
     config: Config,
-    profile: Profile,
     stage: str = "all",
     plan: Optional[PlanResult] = None,
     ui: Optional[object] = None,
     source_names: Optional[Sequence[str]] = None,
-    profile_name: Optional[str] = None,
-    redact_store: bool = False,
 ) -> RunResult:
     start = time.perf_counter()
     counts = {
@@ -329,10 +299,9 @@ def run_sources(
 
     if stage in {"ingest", "all"}:
         for source in _select_sources(config, source_names):
-            if source.type == "drive":
+            if source.folder:
                 conversations = iter_drive_conversations(
                     source=source,
-                    profile=profile,
                     archive_root=config.archive_root,
                     ui=ui,
                     download_assets=True,
@@ -343,7 +312,6 @@ def run_sources(
                 convo_id, result_counts, content_changed = _ingest_conversation(
                     convo,
                     source.name,
-                    redact_store=redact_store,
                     archive_root=config.archive_root,
                 )
                 ingest_changed = (
@@ -367,28 +335,25 @@ def run_sources(
             render_conversation(
                 conversation_id=convo_id,
                 archive_root=config.archive_root,
-                html_mode=profile.html,
-                sanitize_html=profile.sanitize_html,
             )
 
     indexed = False
     index_error: Optional[str] = None
-    if profile.index:
-        try:
-            if stage == "index":
+    try:
+        if stage == "index":
+            rebuild_index()
+            indexed = True
+        elif stage == "all":
+            idx = index_status()
+            if not idx["exists"]:
                 rebuild_index()
                 indexed = True
-            elif stage == "all":
-                idx = index_status()
-                if not idx["exists"]:
-                    rebuild_index()
-                    indexed = True
-                elif processed_ids:
-                    update_index_for_conversations(processed_ids)
-                    indexed = True
-        except Exception as exc:
-            index_error = str(exc)
-            indexed = False
+            elif processed_ids:
+                update_index_for_conversations(processed_ids)
+                indexed = True
+    except Exception as exc:
+        index_error = str(exc)
+        indexed = False
 
     duration_ms = int((time.perf_counter() - start) * 1000)
     drift = {
@@ -423,7 +388,6 @@ def run_sources(
         "indexed": indexed,
         "index_error": index_error,
         "duration_ms": duration_ms,
-        "profile": profile_name,
     }
     _write_run_json(config.archive_root, run_payload)
     with open_connection(None) as conn:
@@ -437,7 +401,6 @@ def run_sources(
                 drift=drift,
                 indexed=indexed,
                 duration_ms=duration_ms,
-                profile=profile_name,
             ),
         )
         conn.commit()

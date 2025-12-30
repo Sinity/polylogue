@@ -67,7 +67,7 @@ def run_health(config: Config) -> dict:
         checks.append(HealthCheck("index", "warning", "index not built"))
 
     for source in config.sources:
-        if source.type == "drive":
+        if source.folder:
             cred_path = Path(os.environ.get("POLYLOGUE_CREDENTIAL_PATH", "")).expanduser() if os.environ.get(
                 "POLYLOGUE_CREDENTIAL_PATH"
             ) else default_credentials_path()

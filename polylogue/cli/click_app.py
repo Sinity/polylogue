@@ -18,9 +18,7 @@ from ..config import (
     Source,
     default_config,
     load_config,
-    resolve_profile,
     update_config,
-    update_profile,
     update_source,
     write_config,
 )
@@ -35,7 +33,6 @@ from .editor import open_in_browser, open_in_editor
 @dataclass
 class AppEnv:
     ui: object
-    profile: Optional[str] = None
     config_path: Optional[Path] = None
 
 
@@ -104,10 +101,8 @@ def _fail(command: str, message: str) -> None:
     raise SystemExit(f"{command}: {message}")
 
 
-def _load_effective_config(env: AppEnv) -> Tuple[Config, str]:
-    config = load_config(env.config_path)
-    profile_name, _ = resolve_profile(config, env.profile)
-    return config, profile_name
+def _load_effective_config(env: AppEnv) -> Config:
+    return load_config(env.config_path)
 
 
 def _resolve_sources(config: Config, sources: Tuple[str, ...], command: str) -> Optional[List[str]]:
@@ -124,7 +119,7 @@ def _resolve_sources(config: Config, sources: Tuple[str, ...], command: str) -> 
 def _print_summary(env: AppEnv) -> None:
     ui = env.ui
     try:
-        config, profile_name = _load_effective_config(env)
+        config = _load_effective_config(env)
     except ConfigError as exc:
         ui.console.print(f"[yellow]{exc}[/yellow]")
         ui.console.print("Run `polylogue config init` to create a config.")
@@ -139,7 +134,6 @@ def _print_summary(env: AppEnv) -> None:
         [
             f"Config: {config.path}",
             f"Archive root: {config.archive_root}",
-            f"Profile: {profile_name}",
             last_line,
             health_line,
         ],
@@ -159,13 +153,12 @@ def _latest_render_path(archive_root: Path) -> Optional[Path]:
 @click.group(context_settings={"help_option_names": ["-h", "--help"]}, invoke_without_command=True)
 @click.option("--plain", is_flag=True, help="Force non-interactive plain output")
 @click.option("--interactive", is_flag=True, help="Force interactive output")
-@click.option("--profile", help="Select a named profile")
 @click.option("--config", "config_path", type=click.Path(path_type=Path), help="Path to config.json")
 @click.pass_context
-def cli(ctx: click.Context, plain: bool, interactive: bool, profile: Optional[str], config_path: Optional[Path]) -> None:
+def cli(ctx: click.Context, plain: bool, interactive: bool, config_path: Optional[Path]) -> None:
     """Polylogue CLI."""
     use_plain = _should_use_plain(plain=plain, interactive=interactive)
-    env = AppEnv(ui=create_ui(use_plain), profile=profile, config_path=config_path)
+    env = AppEnv(ui=create_ui(use_plain), config_path=config_path)
     ctx.obj = env
     env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
     forced_plain = bool(env_force and env_force.lower() not in {"0", "false", "no"})
@@ -180,17 +173,15 @@ def cli(ctx: click.Context, plain: bool, interactive: bool, profile: Optional[st
 @click.pass_obj
 def plan(env: AppEnv, sources: Tuple[str, ...]) -> None:
     try:
-        config, profile_name = _load_effective_config(env)
+        config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("plan", str(exc))
-    profile = config.profiles[profile_name]
     selected_sources = _resolve_sources(config, sources, "plan")
     try:
-        plan_result = plan_sources(config, profile=profile, ui=env.ui, source_names=selected_sources)
+        plan_result = plan_sources(config, ui=env.ui, source_names=selected_sources)
     except DriveError as exc:
         _fail("plan", str(exc))
     lines = [
-        f"Profile: {profile_name}",
         f"Snapshot: {_format_timestamp(plan_result.timestamp)}",
         f"Conversations: {plan_result.counts['conversations']}",
         f"Messages: {plan_result.counts['messages']}",
@@ -212,7 +203,6 @@ def plan(env: AppEnv, sources: Tuple[str, ...]) -> None:
 @click.option("--strict-plan", is_flag=True, help="Fail if plan drift is detected")
 @click.option("--stage", type=click.Choice(["ingest", "render", "index", "all"]), default="all")
 @click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
-@click.option("--redact-store", is_flag=True, help="Redact secrets before writing to the DB")
 @click.pass_obj
 def run(
     env: AppEnv,
@@ -220,22 +210,19 @@ def run(
     strict_plan: bool,
     stage: str,
     sources: Tuple[str, ...],
-    redact_store: bool,
 ) -> None:
     try:
-        config, profile_name = _load_effective_config(env)
+        config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("run", str(exc))
-    profile = config.profiles[profile_name]
     selected_sources = _resolve_sources(config, sources, "run")
     plan_result = None
     if not no_plan:
         try:
-            plan_result = plan_sources(config, profile=profile, ui=env.ui, source_names=selected_sources)
+            plan_result = plan_sources(config, ui=env.ui, source_names=selected_sources)
         except DriveError as exc:
             _fail("run", str(exc))
         plan_lines = [
-            f"Profile: {profile_name}",
             f"Snapshot: {_format_timestamp(plan_result.timestamp)}",
             f"Conversations: {plan_result.counts['conversations']}",
             f"Messages: {plan_result.counts['messages']}",
@@ -254,13 +241,10 @@ def run(
     try:
         result = run_sources(
             config=config,
-            profile=profile,
             stage=stage,
             plan=plan_result,
             ui=env.ui,
             source_names=selected_sources,
-            profile_name=profile_name,
-            redact_store=redact_store,
         )
     except DriveError as exc:
         _fail("run", str(exc))
@@ -298,25 +282,20 @@ def run(
 
 @cli.command()
 @click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
-@click.option("--redact-store", is_flag=True, help="Redact secrets before writing to the DB")
 @click.pass_obj
-def ingest(env: AppEnv, sources: Tuple[str, ...], redact_store: bool) -> None:
+def ingest(env: AppEnv, sources: Tuple[str, ...]) -> None:
     try:
-        config, profile_name = _load_effective_config(env)
+        config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("ingest", str(exc))
-    profile = config.profiles[profile_name]
     selected_sources = _resolve_sources(config, sources, "ingest")
     try:
         result = run_sources(
             config=config,
-            profile=profile,
             stage="ingest",
             plan=None,
             ui=env.ui,
             source_names=selected_sources,
-            profile_name=profile_name,
-            redact_store=redact_store,
         )
     except DriveError as exc:
         _fail("ingest", str(exc))
@@ -337,19 +316,16 @@ def ingest(env: AppEnv, sources: Tuple[str, ...], redact_store: bool) -> None:
 @click.pass_obj
 def render(env: AppEnv, sources: Tuple[str, ...]) -> None:
     try:
-        config, profile_name = _load_effective_config(env)
+        config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("render", str(exc))
-    profile = config.profiles[profile_name]
     selected_sources = _resolve_sources(config, sources, "render")
     result = run_sources(
         config=config,
-        profile=profile,
         stage="render",
         plan=None,
         ui=env.ui,
         source_names=selected_sources,
-        profile_name=profile_name,
     )
     env.ui.summary(
         "Render",
@@ -380,7 +356,7 @@ def search(
     open_result: bool,
 ) -> None:
     try:
-        config, _ = _load_effective_config(env)
+        config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("search", str(exc))
     try:
@@ -478,7 +454,7 @@ def search(
 @click.pass_obj
 def open(env: AppEnv, open_result: bool) -> None:
     try:
-        config, _ = _load_effective_config(env)
+        config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("open", str(exc))
     target = _latest_render_path(config.archive_root)
@@ -501,7 +477,7 @@ def open(env: AppEnv, open_result: bool) -> None:
 @click.pass_obj
 def health(env: AppEnv) -> None:
     try:
-        config, _ = _load_effective_config(env)
+        config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("health", str(exc))
     payload = get_health(config)
@@ -523,7 +499,7 @@ def health(env: AppEnv) -> None:
 @click.pass_obj
 def export(env: AppEnv, out: Optional[Path]) -> None:
     try:
-        config, _ = _load_effective_config(env)
+        config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("export", str(exc))
     target = export_jsonl(archive_root=config.archive_root, output_path=out)
@@ -565,7 +541,7 @@ def config_init(
         if any(source.name == source_name for source in config.sources):
             env.ui.console.print(f"Source '{source_name}' already exists; skipping.")
         else:
-            config.sources.append(Source(name=source_name, type="drive", folder=folder_name))
+            config.sources.append(Source(name=source_name, folder=folder_name))
     write_config(config)
     env.ui.console.print(f"Config written to {config.path}")
 
@@ -574,11 +550,10 @@ def config_init(
 @click.pass_obj
 def config_show(env: AppEnv) -> None:
     try:
-        config, profile_name = _load_effective_config(env)
+        config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("config show", str(exc))
     payload = config.as_dict()
-    payload["active_profile"] = profile_name
     raw_root = None
     try:
         raw = json.loads(config.path.read_text(encoding="utf-8"))
@@ -590,7 +565,6 @@ def config_show(env: AppEnv) -> None:
     payload["configured_archive_root"] = raw_root
     payload["env_overrides"] = {
         "POLYLOGUE_CONFIG": os.environ.get("POLYLOGUE_CONFIG"),
-        "POLYLOGUE_PROFILE": os.environ.get("POLYLOGUE_PROFILE"),
         "POLYLOGUE_ARCHIVE_ROOT": os.environ.get("POLYLOGUE_ARCHIVE_ROOT"),
     }
     env.ui.console.print(json.dumps(payload, indent=2))
@@ -608,12 +582,6 @@ def config_set(env: AppEnv, key: str, value: str) -> None:
     try:
         if key == "archive_root":
             config = update_config(config, archive_root=Path(value))
-        elif key.startswith("profile."):
-            parts = key.split(".", 2)
-            if len(parts) != 3:
-                raise ConfigError("Profile updates require 'profile.<name>.<field>'")
-            _, profile_name, field = parts
-            config = update_profile(config, profile_name, field, value)
         elif key.startswith("source."):
             parts = key.split(".", 2)
             if len(parts) != 3:
