@@ -20,7 +20,7 @@
       "attachments": "download",
       "html": "auto",
       "index": true,
-      "sanitize_html": false
+      "sanitize_html": true
     }
   }
 }

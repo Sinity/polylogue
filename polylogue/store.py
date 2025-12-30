@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+import hashlib
 from typing import Optional
 
 from .db import open_connection
@@ -60,6 +61,12 @@ def _json_or_none(value: Optional[dict]) -> Optional[str]:
     if value is None:
         return None
     return json.dumps(value, sort_keys=True)
+
+
+def _make_ref_id(attachment_id: str, conversation_id: str, message_id: Optional[str]) -> str:
+    seed = f"{attachment_id}:{conversation_id}:{message_id or ''}"
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+    return f"ref-{digest}"
 
 
 def upsert_conversation(conn, record: ConversationRecord) -> bool:
@@ -136,40 +143,71 @@ def upsert_message(conn, record: MessageRecord) -> bool:
 
 def upsert_attachment(conn, record: AttachmentRecord) -> bool:
     row = conn.execute(
-        "SELECT ref_count, path FROM attachments WHERE attachment_id = ?",
+        "SELECT path, provider_meta FROM attachments WHERE attachment_id = ?",
         (record.attachment_id,),
     ).fetchone()
     if row:
         new_path = record.path or row["path"]
-        changed = new_path != row["path"]
+        if new_path != row["path"]:
+            conn.execute(
+                "UPDATE attachments SET path = ? WHERE attachment_id = ?",
+                (new_path, record.attachment_id),
+            )
+        if record.provider_meta is not None and row["provider_meta"] is None:
+            conn.execute(
+                "UPDATE attachments SET provider_meta = ? WHERE attachment_id = ?",
+                (_json_or_none(record.provider_meta), record.attachment_id),
+            )
+    else:
         conn.execute(
-            "UPDATE attachments SET ref_count = ref_count + 1, path = ? WHERE attachment_id = ?",
-            (new_path, record.attachment_id),
+            """
+            INSERT INTO attachments (
+                attachment_id,
+                mime_type,
+                size_bytes,
+                path,
+                ref_count,
+                provider_meta
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.attachment_id,
+                record.mime_type,
+                record.size_bytes,
+                record.path,
+                0,
+                _json_or_none(record.provider_meta),
+            ),
         )
-        return changed
+
+    ref_id = _make_ref_id(record.attachment_id, record.conversation_id, record.message_id)
+    existing_ref = conn.execute(
+        "SELECT 1 FROM attachment_refs WHERE ref_id = ?",
+        (ref_id,),
+    ).fetchone()
+    if existing_ref:
+        return False
     conn.execute(
         """
-        INSERT INTO attachments (
+        INSERT INTO attachment_refs (
+            ref_id,
             attachment_id,
             conversation_id,
             message_id,
-            mime_type,
-            size_bytes,
-            path,
-            ref_count,
             provider_meta
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?)
         """,
         (
+            ref_id,
             record.attachment_id,
             record.conversation_id,
             record.message_id,
-            record.mime_type,
-            record.size_bytes,
-            record.path,
-            1,
             _json_or_none(record.provider_meta),
         ),
+    )
+    conn.execute(
+        "UPDATE attachments SET ref_count = ref_count + 1 WHERE attachment_id = ?",
+        (record.attachment_id,),
     )
     return True
 
