@@ -48,7 +48,7 @@ class Profile:
     attachments: str = "download"
     html: str = "auto"
     index: bool = True
-    sanitize_html: bool = False
+    sanitize_html: bool = True
 
     def as_dict(self) -> dict:
         return {
