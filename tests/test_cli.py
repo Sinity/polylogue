@@ -22,10 +22,7 @@ def test_cli_config_init_interactive_adds_drive(tmp_path, monkeypatch):
     _write_prompt_file(
         prompt_file,
         [
-            {"type": "confirm", "use_default": True},
             {"type": "confirm", "value": True},
-            {"type": "input", "use_default": True},
-            {"type": "input", "use_default": True},
         ],
     )
 
@@ -73,7 +70,7 @@ def test_cli_run_and_export(tmp_path, monkeypatch):
                 "attachments": "download",
                 "html": "auto",
                 "index": True,
-                "sanitize_html": False,
+                "sanitize_html": True,
             }
         },
     }
@@ -115,7 +112,7 @@ def test_cli_search_csv_header(tmp_path, monkeypatch):
                 "attachments": "download",
                 "html": "auto",
                 "index": True,
-                "sanitize_html": False,
+                "sanitize_html": True,
             }
         },
     }
@@ -148,7 +145,7 @@ def test_cli_open_missing_render(tmp_path, monkeypatch):
                 "attachments": "download",
                 "html": "auto",
                 "index": True,
-                "sanitize_html": False,
+                "sanitize_html": True,
             }
         },
     }
@@ -182,7 +179,7 @@ def test_cli_search_open_prefers_html(tmp_path, monkeypatch):
                 "attachments": "download",
                 "html": "auto",
                 "index": True,
-                "sanitize_html": False,
+                "sanitize_html": True,
             }
         },
     }
@@ -228,7 +225,7 @@ def test_cli_open_html_disabled_uses_editor(tmp_path, monkeypatch):
                 "attachments": "download",
                 "html": "off",
                 "index": True,
-                "sanitize_html": False,
+                "sanitize_html": True,
             }
         },
     }
@@ -264,7 +261,7 @@ def test_cli_config_set_invalid(tmp_path, monkeypatch):
                 "attachments": "download",
                 "html": "auto",
                 "index": True,
-                "sanitize_html": False,
+                "sanitize_html": True,
             }
         },
     }
