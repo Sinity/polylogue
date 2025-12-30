@@ -3,6 +3,8 @@ let
   pyPkgs = pkgs.python3Packages;
   commonDeps = with pyPkgs; [
     google-auth-oauthlib
+    google-api-python-client
+    google-auth-httplib2
     httpx
     pathvalidate
     aiofiles
