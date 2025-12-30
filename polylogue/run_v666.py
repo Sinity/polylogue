@@ -10,7 +10,7 @@ from uuid import uuid4
 from .config import Config, Profile, Source
 from .db import open_connection
 from .drive_ingest import iter_drive_conversations
-from .index_v666 import rebuild_index
+from .index_v666 import index_status, rebuild_index, update_index_for_conversations
 from .ingest import IngestBundle, ingest_bundle
 from .render_v666 import render_conversation
 from .source_ingest import ParsedConversation, iter_source_conversations
@@ -248,9 +248,18 @@ def run_sources(
             )
 
     indexed = False
-    if stage in {"index", "all"} and profile.index:
-        rebuild_index()
-        indexed = True
+    if profile.index:
+        if stage == "index":
+            rebuild_index()
+            indexed = True
+        elif stage == "all":
+            idx = index_status()
+            if not idx["exists"]:
+                rebuild_index()
+                indexed = True
+            elif processed_ids:
+                update_index_for_conversations(processed_ids)
+                indexed = True
 
     duration_ms = int((time.perf_counter() - start) * 1000)
     drift = {"conversations": 0, "messages": 0, "attachments": 0}
