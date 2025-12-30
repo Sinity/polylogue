@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Iterable, Sequence
+
 from .db import open_connection
 
 
@@ -32,6 +34,35 @@ def rebuild_index() -> None:
         conn.commit()
 
 
+def update_index_for_conversations(conversation_ids: Sequence[str]) -> None:
+    if not conversation_ids:
+        return
+    with open_connection(None) as conn:
+        ensure_index(conn)
+        for chunk in _chunked(conversation_ids, size=200):
+            placeholders = ", ".join("?" for _ in chunk)
+            conn.execute(
+                f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
+                tuple(chunk),
+            )
+            conn.execute(
+                f"""
+                INSERT INTO messages_fts (message_id, conversation_id, provider_name, content)
+                SELECT messages.message_id, messages.conversation_id, conversations.provider_name, messages.text
+                FROM messages
+                JOIN conversations ON conversations.conversation_id = messages.conversation_id
+                WHERE messages.text IS NOT NULL AND messages.conversation_id IN ({placeholders})
+                """,
+                tuple(chunk),
+            )
+        conn.commit()
+
+
+def _chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
+    for idx in range(0, len(items), size):
+        yield items[idx : idx + size]
+
+
 def index_status() -> dict:
     with open_connection(None) as conn:
         row = conn.execute(
@@ -43,5 +74,9 @@ def index_status() -> dict:
             count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
         return {"exists": exists, "count": int(count)}
 
-
-__all__ = ["rebuild_index", "index_status", "ensure_index"]
+__all__ = [
+    "rebuild_index",
+    "update_index_for_conversations",
+    "index_status",
+    "ensure_index",
+]

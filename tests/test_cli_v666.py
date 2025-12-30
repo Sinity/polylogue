@@ -6,6 +6,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from polylogue.cli import cli
+import polylogue.cli.click_app as click_app
 from polylogue.config import load_config
 
 
@@ -134,3 +135,144 @@ def test_cli_search_csv_header(tmp_path, monkeypatch):
     assert result.exit_code == 0
     header = output.read_text(encoding="utf-8").splitlines()[0]
     assert header.startswith("provider,conversation_id,message_id")
+
+
+def test_cli_open_missing_render(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_payload = {
+        "version": 1,
+        "archive_root": str(tmp_path / "archive"),
+        "sources": [],
+        "profiles": {
+            "default": {
+                "attachments": "download",
+                "html": "auto",
+                "index": True,
+                "sanitize_html": False,
+            }
+        },
+    }
+    config_path.write_text(json.dumps(config_payload), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["open", "--open"])
+    assert result.exit_code != 0
+    assert "no rendered outputs found" in result.output
+
+
+def test_cli_search_open_prefers_html(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    archive_root = tmp_path / "archive"
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "id": "conv-html",
+        "messages": [
+            {"id": "m1", "role": "user", "content": "hello html"},
+        ],
+    }
+    (inbox / "conversation.json").write_text(json.dumps(payload), encoding="utf-8")
+    config_payload = {
+        "version": 1,
+        "archive_root": str(archive_root),
+        "sources": [{"name": "inbox", "type": "auto", "path": str(inbox)}],
+        "profiles": {
+            "default": {
+                "attachments": "download",
+                "html": "auto",
+                "index": True,
+                "sanitize_html": False,
+            }
+        },
+    }
+    config_path.write_text(json.dumps(config_payload), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    opened = {}
+
+    def fake_open_browser(path):
+        opened["path"] = path
+        return True
+
+    monkeypatch.setattr(click_app, "open_in_browser", fake_open_browser)
+    monkeypatch.setattr(click_app, "open_in_editor", lambda path: False)
+
+    runner = CliRunner()
+    run_result = runner.invoke(cli, ["run", "--stage", "all", "--no-plan"])
+    assert run_result.exit_code == 0
+    search_result = runner.invoke(cli, ["search", "hello", "--limit", "1", "--open"])
+    assert search_result.exit_code == 0
+    assert opened["path"].suffix == ".html"
+
+
+def test_cli_open_html_disabled_uses_editor(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    archive_root = tmp_path / "archive"
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "id": "conv-md",
+        "messages": [
+            {"id": "m1", "role": "user", "content": "hello md"},
+        ],
+    }
+    (inbox / "conversation.json").write_text(json.dumps(payload), encoding="utf-8")
+    config_payload = {
+        "version": 1,
+        "archive_root": str(archive_root),
+        "sources": [{"name": "inbox", "type": "auto", "path": str(inbox)}],
+        "profiles": {
+            "default": {
+                "attachments": "download",
+                "html": "off",
+                "index": True,
+                "sanitize_html": False,
+            }
+        },
+    }
+    config_path.write_text(json.dumps(config_payload), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    opened = {}
+
+    def fake_open_editor(path):
+        opened["path"] = path
+        return True
+
+    monkeypatch.setattr(click_app, "open_in_editor", fake_open_editor)
+    monkeypatch.setattr(click_app, "open_in_browser", lambda path: False)
+
+    runner = CliRunner()
+    run_result = runner.invoke(cli, ["run", "--stage", "all", "--no-plan"])
+    assert run_result.exit_code == 0
+    open_result = runner.invoke(cli, ["open", "--open"])
+    assert open_result.exit_code == 0
+    assert opened["path"].suffix == ".md"
+
+
+def test_cli_config_set_invalid(tmp_path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    config_payload = {
+        "version": 1,
+        "archive_root": str(tmp_path / "archive"),
+        "sources": [],
+        "profiles": {
+            "default": {
+                "attachments": "download",
+                "html": "auto",
+                "index": True,
+                "sanitize_html": False,
+            }
+        },
+    }
+    config_path.write_text(json.dumps(config_payload), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["config", "set", "unknown.key", "value"])
+    assert result.exit_code != 0
+    result = runner.invoke(cli, ["config", "set", "profile.default.html", "invalid"])
+    assert result.exit_code != 0
