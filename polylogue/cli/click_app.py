@@ -187,14 +187,15 @@ def run(env: AppEnv, no_plan: bool, strict_plan: bool, stage: str, sources: Tupl
                 env.ui.console.print("Run cancelled.")
                 return
     try:
-        result = run_sources(
-            config=config,
-            profile=profile,
-            stage=stage,
-            plan=plan_result,
-            ui=env.ui,
-            source_names=selected_sources,
-        )
+    result = run_sources(
+        config=config,
+        profile=profile,
+        stage=stage,
+        plan=plan_result,
+        ui=env.ui,
+        source_names=selected_sources,
+        profile_name=profile_name,
+    )
     except DriveError as exc:
         _fail("run", str(exc))
     drift_total = sum(abs(value) for value in result.drift.values())
@@ -225,14 +226,15 @@ def ingest(env: AppEnv, sources: Tuple[str, ...]) -> None:
     profile = config.profiles[profile_name]
     selected_sources = _resolve_sources(config, sources, "ingest")
     try:
-        result = run_sources(
-            config=config,
-            profile=profile,
-            stage="ingest",
-            plan=None,
-            ui=env.ui,
-            source_names=selected_sources,
-        )
+    result = run_sources(
+        config=config,
+        profile=profile,
+        stage="ingest",
+        plan=None,
+        ui=env.ui,
+        source_names=selected_sources,
+        profile_name=profile_name,
+    )
     except DriveError as exc:
         _fail("ingest", str(exc))
     env.ui.summary(
@@ -264,6 +266,7 @@ def render(env: AppEnv, sources: Tuple[str, ...]) -> None:
         plan=None,
         ui=env.ui,
         source_names=selected_sources,
+        profile_name=profile_name,
     )
     env.ui.summary(
         "Render",
@@ -414,14 +417,15 @@ def health(env: AppEnv) -> None:
 
 
 @cli.command()
+@click.option("--out", type=click.Path(path_type=Path), help="Write JSONL export to path")
 @click.pass_obj
-def export(env: AppEnv) -> None:
+def export(env: AppEnv, out: Optional[Path]) -> None:
     try:
         config, _ = _load_effective_config(env)
     except ConfigError as exc:
         _fail("export", str(exc))
-    out = export_jsonl(archive_root=config.archive_root)
-    env.ui.console.print(f"Exported {out}")
+    target = export_jsonl(archive_root=config.archive_root, output_path=out)
+    env.ui.console.print(f"Exported {target}")
 
 
 @cli.group()
@@ -463,6 +467,20 @@ def config_show(env: AppEnv) -> None:
         _fail("config show", str(exc))
     payload = config.as_dict()
     payload["active_profile"] = profile_name
+    raw_root = None
+    try:
+        raw = json.loads(config.path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            raw_root = raw.get("archive_root")
+    except Exception:
+        raw_root = None
+    payload["resolved_archive_root"] = str(config.archive_root)
+    payload["configured_archive_root"] = raw_root
+    payload["env_overrides"] = {
+        "POLYLOGUE_CONFIG": os.environ.get("POLYLOGUE_CONFIG"),
+        "POLYLOGUE_PROFILE": os.environ.get("POLYLOGUE_PROFILE"),
+        "POLYLOGUE_ARCHIVE_ROOT": os.environ.get("POLYLOGUE_ARCHIVE_ROOT"),
+    }
     env.ui.console.print(json.dumps(payload, indent=2))
 
 

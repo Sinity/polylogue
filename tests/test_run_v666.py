@@ -54,3 +54,35 @@ def test_run_sources_filtered(workspace_env, tmp_path):
     profile = config.profiles["default"]
     result = run_sources(config=config, profile=profile, stage="ingest", source_names=["source-a"])
     assert result.counts["conversations"] == 1
+
+
+def test_render_filtered_by_source_meta(workspace_env, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "id": "conv-chatgpt",
+        "mapping": {
+            "node-1": {
+                "id": "node-1",
+                "message": {
+                    "id": "msg-1",
+                    "author": {"role": "user"},
+                    "content": {"parts": ["hello"]},
+                    "create_time": 1,
+                },
+            }
+        },
+    }
+    source_file = inbox / "conversation.json"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    config = default_config()
+    config.sources = [Source(name="inbox", type="auto", path=source_file)]
+    write_config(config)
+
+    profile = config.profiles["default"]
+    run_sources(config=config, profile=profile, stage="ingest", source_names=["inbox"])
+    result = run_sources(config=config, profile=profile, stage="render", source_names=["inbox"])
+    assert result.counts["conversations"] == 0
+    render_root = workspace_env["archive_root"] / "render"
+    assert any(render_root.rglob("conversation.md"))

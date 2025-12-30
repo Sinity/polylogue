@@ -13,6 +13,7 @@ CONFIG_VERSION = 1
 DEFAULT_CONFIG_NAME = "config.json"
 DEFAULT_PROFILE_NAME = "default"
 DEFAULT_ARCHIVE_ROOT = DATA_HOME / "archive"
+DEFAULT_INBOX_ROOT = DATA_HOME / "inbox"
 
 _ALLOWED_TOP_LEVEL_KEYS = {"version", "archive_root", "sources", "profiles"}
 _ALLOWED_SOURCE_KEYS = {"name", "type", "path", "folder"}
@@ -153,10 +154,11 @@ def default_config(path: Optional[Path] = None, *, archive_root: Optional[Path] 
     else:
         root = DEFAULT_ARCHIVE_ROOT
     profiles = {DEFAULT_PROFILE_NAME: Profile()}
+    sources = [Source(name="inbox", type="auto", path=DEFAULT_INBOX_ROOT)]
     return Config(
         version=CONFIG_VERSION,
         archive_root=root,
-        sources=[],
+        sources=sources,
         profiles=profiles,
         path=config_path,
     )

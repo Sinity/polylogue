@@ -83,7 +83,7 @@ def plan_sources(
     return PlanResult(timestamp=int(time.time()), counts=counts, sources=sources)
 
 
-def _ingest_conversation(convo: ParsedConversation) -> Tuple[str, Dict[str, int]]:
+def _ingest_conversation(convo: ParsedConversation, source_name: str) -> Tuple[str, Dict[str, int]]:
     combined_text = "\n".join(msg.text for msg in convo.messages)
     content_hash = _hash_text(combined_text)
     conversation_id = _conversation_id(convo.provider_conversation_id, content_hash)
@@ -96,7 +96,7 @@ def _ingest_conversation(convo: ParsedConversation) -> Tuple[str, Dict[str, int]
         created_at=convo.created_at,
         updated_at=convo.updated_at,
         content_hash=content_hash,
-        provider_meta=None,
+        provider_meta={"source": source_name},
     )
 
     messages: List[MessageRecord] = []
@@ -153,17 +153,29 @@ def _ingest_conversation(convo: ParsedConversation) -> Tuple[str, Dict[str, int]
     }
 
 
-def _all_conversation_ids(provider_names: Optional[Sequence[str]] = None) -> List[str]:
+def _all_conversation_ids(source_names: Optional[Sequence[str]] = None) -> List[str]:
     with open_connection(None) as conn:
-        if provider_names:
-            placeholders = ", ".join("?" for _ in provider_names)
-            rows = conn.execute(
-                f"SELECT conversation_id FROM conversations WHERE provider_name IN ({placeholders})",
-                tuple(provider_names),
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT conversation_id FROM conversations").fetchall()
-    return [row["conversation_id"] for row in rows]
+        rows = conn.execute(
+            "SELECT conversation_id, provider_name, provider_meta FROM conversations"
+        ).fetchall()
+    if not source_names:
+        return [row["conversation_id"] for row in rows]
+    selected: List[str] = []
+    name_set = set(source_names)
+    for row in rows:
+        if row["provider_name"] in name_set:
+            selected.append(row["conversation_id"])
+            continue
+        meta = row["provider_meta"]
+        if not meta:
+            continue
+        try:
+            payload = json.loads(meta)
+        except Exception:
+            continue
+        if isinstance(payload, dict) and payload.get("source") in name_set:
+            selected.append(row["conversation_id"])
+    return selected
 
 
 def _write_run_json(archive_root: Path, payload: dict) -> Path:
@@ -182,6 +194,7 @@ def run_sources(
     plan: Optional[PlanResult] = None,
     ui: Optional[object] = None,
     source_names: Optional[Sequence[str]] = None,
+    profile_name: Optional[str] = None,
 ) -> RunResult:
     start = time.perf_counter()
     counts = {
@@ -207,7 +220,7 @@ def run_sources(
             else:
                 conversations = iter_source_conversations(source)
             for convo in conversations:
-                convo_id, result_counts = _ingest_conversation(convo)
+                convo_id, result_counts = _ingest_conversation(convo, source.name)
                 processed_ids.append(convo_id)
                 for key, value in result_counts.items():
                     counts[key] += value
@@ -242,7 +255,7 @@ def run_sources(
         "drift": drift,
         "indexed": indexed,
         "duration_ms": duration_ms,
-        "profile": None,
+        "profile": profile_name,
     }
     _write_run_json(config.archive_root, run_payload)
     with open_connection(None) as conn:
@@ -256,7 +269,7 @@ def run_sources(
                 drift=drift,
                 indexed=indexed,
                 duration_ms=duration_ms,
-                profile=None,
+                profile=profile_name,
             ),
         )
         conn.commit()

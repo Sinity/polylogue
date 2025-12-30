@@ -17,9 +17,14 @@ def export_jsonl(*, archive_root: Path, output_path: Optional[Path] = None) -> P
                 "SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp, message_id",
                 (convo["conversation_id"],),
             ).fetchall()
+            attachments = conn.execute(
+                "SELECT * FROM attachments WHERE conversation_id = ?",
+                (convo["conversation_id"],),
+            ).fetchall()
             payload = {
                 "conversation": dict(convo),
                 "messages": [dict(msg) for msg in messages],
+                "attachments": [dict(att) for att in attachments],
             }
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
     return target
