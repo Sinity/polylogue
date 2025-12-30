@@ -1,4 +1,4 @@
-"""v666 CLI entrypoint (clean surface, adaptive UI)."""
+"""CLI entrypoint (clean surface, adaptive UI)."""
 from __future__ import annotations
 
 import json
@@ -23,11 +23,11 @@ from ..config import (
     update_source,
     write_config,
 )
-from ..export_v666 import export_jsonl
+from ..export import export_jsonl
 from ..health import cached_health_summary, get_health
 from ..drive_client import DriveError
-from ..run_v666 import latest_run, plan_sources, run_sources
-from ..search_v666 import search_messages
+from ..run import latest_run, plan_sources, run_sources
+from ..search import search_messages
 from .editor import open_in_browser, open_in_editor
 
 
@@ -116,7 +116,7 @@ def _latest_render_path(archive_root: Path) -> Optional[Path]:
 @click.option("--config", "config_path", type=click.Path(path_type=Path), help="Path to config.json")
 @click.pass_context
 def cli(ctx: click.Context, plain: bool, interactive: bool, profile: Optional[str], config_path: Optional[Path]) -> None:
-    """Polylogue v666 CLI."""
+    """Polylogue CLI."""
     use_plain = _should_use_plain(plain=plain, interactive=interactive)
     env = AppEnv(ui=create_ui(use_plain), profile=profile, config_path=config_path)
     ctx.obj = env

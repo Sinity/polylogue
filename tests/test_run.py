@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from polylogue.config import Source, default_config, write_config
-from polylogue.run_v666 import plan_sources, run_sources
+from polylogue.run import plan_sources, run_sources
 
 
 def test_plan_and_run_sources(workspace_env, tmp_path):
@@ -150,7 +150,7 @@ def test_incremental_index_updates(workspace_env, tmp_path, monkeypatch):
     def fail_rebuild():
         raise AssertionError("rebuild_index should not be called when index exists")
 
-    import polylogue.run_v666 as run_mod
+    import polylogue.run as run_mod
 
     monkeypatch.setattr(run_mod, "rebuild_index", fail_rebuild)
 
