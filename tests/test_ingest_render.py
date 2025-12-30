@@ -77,8 +77,9 @@ def test_render_writes_markdown(workspace_env):
     )
     ingest_bundle(bundle)
 
-    result = render_conversation(conversation_id="conv:hash", archive_root=archive_root, html_mode="off")
+    result = render_conversation(conversation_id="conv:hash", archive_root=archive_root)
     assert result.markdown_path.exists()
+    assert result.html_path.exists()
     assert "hello" in result.markdown_path.read_text(encoding="utf-8")
 
 

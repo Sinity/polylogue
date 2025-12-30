@@ -5,31 +5,22 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from .assets import asset_path
-from .config import Profile, Source
-from .drive_client import DriveClient, drive_link
+from .config import Source
+from .drive_client import DriveClient
 from .source_ingest import ParsedConversation, parse_drive_payload
 
 
-def _apply_attachment_policy(
+def _apply_drive_attachments(
     *,
     convo: ParsedConversation,
-    policy: str,
     client: DriveClient,
     archive_root: Path,
     download_assets: bool,
 ) -> None:
-    if policy == "skip":
-        convo.attachments = []
+    if not download_assets:
         return
     for attachment in convo.attachments:
         if not attachment.provider_attachment_id:
-            continue
-        if policy == "link":
-            attachment.path = drive_link(attachment.provider_attachment_id)
-            continue
-        if policy != "download":
-            continue
-        if not download_assets:
             continue
         dest = asset_path(archive_root, attachment.provider_attachment_id)
         meta = client.download_to_path(attachment.provider_attachment_id, dest)
@@ -51,7 +42,6 @@ def _apply_attachment_policy(
 def iter_drive_conversations(
     *,
     source: Source,
-    profile: Profile,
     archive_root: Path,
     ui: Optional[object] = None,
     client: Optional[DriveClient] = None,
@@ -80,9 +70,8 @@ def iter_drive_conversations(
             continue
         conversations = parse_drive_payload(source.name, payload, file_meta.file_id)
         for convo in conversations:
-            _apply_attachment_policy(
+            _apply_drive_attachments(
                 convo=convo,
-                policy=profile.attachments,
                 client=drive_client,
                 archive_root=archive_root,
                 download_assets=download_assets,
