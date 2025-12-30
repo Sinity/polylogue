@@ -32,3 +32,25 @@ def test_plan_and_run_sources(workspace_env, tmp_path):
     assert result.counts["conversations"] == 1
     run_dir = workspace_env["archive_root"] / "runs"
     assert any(run_dir.iterdir())
+
+
+def test_run_sources_filtered(workspace_env, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    payload_a = {"id": "conv-a", "messages": [{"id": "m1", "role": "user", "content": "hello"}]}
+    payload_b = {"id": "conv-b", "messages": [{"id": "m1", "role": "user", "content": "world"}]}
+    source_a = inbox / "a.json"
+    source_b = inbox / "b.json"
+    source_a.write_text(json.dumps(payload_a), encoding="utf-8")
+    source_b.write_text(json.dumps(payload_b), encoding="utf-8")
+
+    config = default_config()
+    config.sources = [
+        Source(name="source-a", type="codex", path=source_a),
+        Source(name="source-b", type="codex", path=source_b),
+    ]
+    write_config(config)
+
+    profile = config.profiles["default"]
+    result = run_sources(config=config, profile=profile, stage="ingest", source_names=["source-a"])
+    assert result.counts["conversations"] == 1

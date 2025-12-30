@@ -5,7 +5,7 @@ import zipfile
 from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Iterable, List, Optional, Tuple
 
 from .config import Source
 
@@ -80,9 +80,20 @@ def _load_json_from_zip(path: Path) -> Any:
     raise RuntimeError(f"No supported JSON payload in {path}")
 
 
+def _coerce_float(value: object) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
 def _extract_messages_from_mapping(mapping: dict) -> List[ParsedMessage]:
-    nodes = []
-    for node in mapping.values():
+    entries: List[Tuple[Optional[float], int, ParsedMessage]] = []
+    for idx, node in enumerate(mapping.values(), start=1):
         if not isinstance(node, dict):
             continue
         msg = node.get("message")
@@ -95,21 +106,22 @@ def _extract_messages_from_mapping(mapping: dict) -> List[ParsedMessage]:
         if not isinstance(parts, list):
             continue
         text = "\n".join(str(part) for part in parts if part)
-        role = msg.get("author", {}).get("role") or "user"
+        role = _normalize_role(msg.get("author", {}).get("role") or "user")
         timestamp = msg.get("create_time")
         msg_id = msg.get("id") or node.get("id") or ""
         if not msg_id:
-            msg_id = f"msg-{len(nodes) + 1}"
-        nodes.append(
-            ParsedMessage(
-                provider_message_id=str(msg_id),
-                role=str(role),
-                text=text,
-                timestamp=str(timestamp) if timestamp is not None else None,
-                provider_meta={"raw": msg},
-            )
+            msg_id = f"msg-{idx}"
+        parsed = ParsedMessage(
+            provider_message_id=str(msg_id),
+            role=role,
+            text=text,
+            timestamp=str(timestamp) if timestamp is not None else None,
+            provider_meta={"raw": msg},
         )
-    return nodes
+        entries.append((_coerce_float(timestamp), idx, parsed))
+    if any(value is not None for value, _, _ in entries):
+        entries.sort(key=lambda item: (item[0] is None, item[0] or 0.0, item[1]))
+    return [entry[2] for entry in entries]
 
 
 def _extract_messages_from_list(items: list) -> List[ParsedMessage]:
@@ -118,7 +130,7 @@ def _extract_messages_from_list(items: list) -> List[ParsedMessage]:
         if not isinstance(item, dict):
             continue
         text = None
-        role = None
+        role = item.get("role") or item.get("sender") or item.get("author")
         timestamp = item.get("timestamp") or item.get("created_at") or item.get("create_time")
         if "text" in item and isinstance(item["text"], str):
             text = item["text"]
@@ -130,13 +142,15 @@ def _extract_messages_from_list(items: list) -> List[ParsedMessage]:
                 parts = content.get("parts")
                 if isinstance(parts, list):
                     text = "\n".join(str(part) for part in parts)
-        if "role" in item:
-            role = item.get("role")
+                elif "text" in content and isinstance(content["text"], str):
+                    text = content["text"]
+            elif isinstance(content, list):
+                text = _extract_text_from_segments(content)
         if text:
             messages.append(
                 ParsedMessage(
-                    provider_message_id=str(item.get("id") or f"msg-{idx}"),
-                    role=str(role or "message"),
+                    provider_message_id=str(item.get("id") or item.get("uuid") or f"msg-{idx}"),
+                    role=_normalize_role(role),
                     text=text,
                     timestamp=str(timestamp) if timestamp is not None else None,
                     provider_meta={"raw": item},
@@ -156,6 +170,99 @@ def _normalize_role(role: Optional[str]) -> str:
     if lowered in {"system"}:
         return "system"
     return lowered
+
+
+def _extract_text_from_segments(segments: list) -> Optional[str]:
+    lines: List[str] = []
+    for segment in segments:
+        if isinstance(segment, str):
+            if segment:
+                lines.append(segment)
+            continue
+        if not isinstance(segment, dict):
+            continue
+        seg_text = segment.get("text")
+        if isinstance(seg_text, str):
+            lines.append(seg_text)
+            continue
+        seg_content = segment.get("content")
+        if isinstance(seg_content, str):
+            lines.append(seg_content)
+            continue
+        seg_type = segment.get("type")
+        if seg_type in {"tool_use", "tool_result"}:
+            lines.append(json.dumps(segment, sort_keys=True))
+    combined = "\n".join(line for line in lines if line)
+    return combined or None
+
+
+def _make_attachment_id(seed: str) -> str:
+    return f"att-{_hash_text(seed)[:12]}"
+
+
+def _attachment_from_meta(meta: object, message_id: Optional[str], index: int) -> Optional[ParsedAttachment]:
+    if not isinstance(meta, dict):
+        return None
+    attachment_id = meta.get("id") or meta.get("file_id") or meta.get("fileId") or meta.get("uuid")
+    name = meta.get("name") or meta.get("filename")
+    if not attachment_id:
+        if not name:
+            return None
+        seed = f"{message_id or 'msg'}:{name}:{index}"
+        attachment_id = _make_attachment_id(seed)
+    size_raw = meta.get("size") or meta.get("size_bytes") or meta.get("sizeBytes")
+    size_bytes = None
+    if isinstance(size_raw, (int, str)):
+        try:
+            size_bytes = int(size_raw)
+        except ValueError:
+            size_bytes = None
+    mime_type = meta.get("mimeType") or meta.get("mime_type") or meta.get("content_type")
+    return ParsedAttachment(
+        provider_attachment_id=str(attachment_id),
+        message_provider_id=message_id,
+        name=name,
+        mime_type=mime_type if isinstance(mime_type, str) else None,
+        size_bytes=size_bytes,
+        path=None,
+        provider_meta=meta,
+    )
+
+
+def _extract_messages_from_chat_messages(chat_messages: list) -> Tuple[List[ParsedMessage], List[ParsedAttachment]]:
+    messages: List[ParsedMessage] = []
+    attachments: List[ParsedAttachment] = []
+    for idx, item in enumerate(chat_messages, start=1):
+        if not isinstance(item, dict):
+            continue
+        message_id = str(item.get("uuid") or item.get("id") or item.get("message_id") or f"msg-{idx}")
+        role = _normalize_role(item.get("sender") or item.get("role"))
+        timestamp = item.get("created_at") or item.get("create_time") or item.get("timestamp")
+        content = item.get("content")
+        text = None
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = _extract_text_from_segments(content)
+        elif isinstance(content, dict):
+            text = content.get("text") if isinstance(content.get("text"), str) else None
+            if text is None and isinstance(content.get("parts"), list):
+                text = "\n".join(str(part) for part in content["parts"] if part)
+        if text:
+            messages.append(
+                ParsedMessage(
+                    provider_message_id=message_id,
+                    role=role,
+                    text=text,
+                    timestamp=str(timestamp) if timestamp is not None else None,
+                    provider_meta={"raw": item},
+                )
+            )
+        for att_idx, meta in enumerate(item.get("attachments") or item.get("files") or [], start=1):
+            attachment = _attachment_from_meta(meta, message_id, att_idx)
+            if attachment:
+                attachments.append(attachment)
+    return messages, attachments
 
 
 def _extract_text_from_chunk(chunk: dict) -> Optional[str]:
@@ -292,6 +399,22 @@ def _parse_chunked_prompt(provider: str, payload: dict, fallback_id: str) -> Par
 
 
 def _parse_conversation_obj(provider: str, obj: dict, fallback_id: str) -> ParsedConversation:
+    chat_messages = obj.get("chat_messages") or obj.get("chatMessages")
+    if isinstance(chat_messages, list):
+        messages, attachments = _extract_messages_from_chat_messages(chat_messages)
+        title = obj.get("title") or obj.get("name") or fallback_id
+        conv_id = obj.get("id") or obj.get("uuid") or obj.get("conversation_id")
+        created_at = obj.get("created_at") or obj.get("create_time")
+        updated_at = obj.get("updated_at") or obj.get("update_time")
+        return ParsedConversation(
+            provider_name=provider,
+            provider_conversation_id=str(conv_id or fallback_id),
+            title=str(title),
+            created_at=str(created_at) if created_at else None,
+            updated_at=str(updated_at) if updated_at else None,
+            messages=messages,
+            attachments=attachments,
+        )
     mapping = obj.get("mapping") if isinstance(obj, dict) else None
     if isinstance(mapping, dict):
         messages = _extract_messages_from_mapping(mapping)
@@ -302,7 +425,11 @@ def _parse_conversation_obj(provider: str, obj: dict, fallback_id: str) -> Parse
         else:
             messages = _extract_messages_from_list([obj])
     title = obj.get("title") if isinstance(obj, dict) else None
+    if not title and isinstance(obj, dict):
+        title = obj.get("name")
     conv_id = obj.get("id") if isinstance(obj, dict) else None
+    if not conv_id and isinstance(obj, dict):
+        conv_id = obj.get("uuid") or obj.get("conversation_id")
     return ParsedConversation(
         provider_name=provider,
         provider_conversation_id=str(conv_id or fallback_id),
@@ -363,6 +490,81 @@ def parse_drive_payload(provider: str, payload: Any, fallback_id: str) -> List[P
     return conversations
 
 
+def _iter_dict_payloads(payload: Any) -> Iterable[dict]:
+    if isinstance(payload, dict):
+        yield payload
+        conversations = payload.get("conversations")
+        if isinstance(conversations, list):
+            for item in conversations:
+                if isinstance(item, dict):
+                    yield item
+    elif isinstance(payload, list):
+        for item in payload:
+            if isinstance(item, dict):
+                yield item
+
+
+def _looks_like_chatgpt(payload: Any) -> bool:
+    for item in _iter_dict_payloads(payload):
+        mapping = item.get("mapping")
+        if isinstance(mapping, dict):
+            return True
+    return False
+
+
+def _looks_like_claude_ai(payload: Any) -> bool:
+    for item in _iter_dict_payloads(payload):
+        if isinstance(item.get("chat_messages"), list):
+            return True
+    return False
+
+
+def _looks_like_claude_code(payload: Any) -> bool:
+    if not isinstance(payload, list):
+        return False
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        if any(key in item for key in ("parentUuid", "leafUuid", "sessionId", "session_id")):
+            return True
+        item_type = item.get("type")
+        if item_type in {"tool_use", "tool_result", "summary"}:
+            return True
+    return False
+
+
+def _looks_like_codex(payload: Any) -> bool:
+    if not isinstance(payload, list):
+        return False
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        if "prompt" in item and "completion" in item:
+            return True
+    return False
+
+
+def detect_provider(payload: Any, path: Path) -> Optional[str]:
+    if _looks_like_chatgpt(payload):
+        return "chatgpt"
+    if _looks_like_claude_ai(payload):
+        return "claude"
+    if _looks_like_claude_code(payload):
+        return "claude-code"
+    if _looks_like_codex(payload):
+        return "codex"
+    name = path.name.lower()
+    if "chatgpt" in name:
+        return "chatgpt"
+    if "claude-code" in name or "claude_code" in name:
+        return "claude-code"
+    if "claude" in name:
+        return "claude"
+    if "codex" in name:
+        return "codex"
+    return None
+
+
 def iter_source_conversations(source: Source) -> Iterable[ParsedConversation]:
     paths: List[Path] = []
     if source.type == "drive":
@@ -386,7 +588,8 @@ def iter_source_conversations(source: Source) -> Iterable[ParsedConversation]:
                 payload = _load_json_from_path(path)
         except Exception:
             continue
-        conversations.extend(_parse_json_payload(source.name, payload, path.stem))
+        provider = detect_provider(payload, path) or source.name
+        conversations.extend(_parse_json_payload(provider, payload, path.stem))
     return conversations
 
 __all__ = [

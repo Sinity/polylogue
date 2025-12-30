@@ -1,30 +1,26 @@
 {
   // Copy this file to $XDG_CONFIG_HOME/polylogue/config.json and adjust as needed.
-  // Paths: single input inbox + single output root; provider subdirs are fixed.
-  "paths": {
-    "input_root": "~/.local/share/polylogue/inbox",
-    "output_root": "~/.local/share/polylogue/archive"
-  },
-  "ui": {
-    "collapse_threshold": 25,
-    "html": true,
-    "theme": "dark"
-  },
-  "index": {
-    // backend: "sqlite" (default), "qdrant", or "none"
-    "backend": "sqlite",
-    "qdrant": {
-      "url": "http://localhost:6333",
-      "api_key": null,
-      "collection": "polylogue",
-      "vector_size": null
+  "version": 1,
+  "archive_root": "~/.local/share/polylogue/archive",
+  "sources": [
+    {
+      "name": "gemini",
+      "type": "drive",
+      "folder": "Google AI Studio"
+    },
+    {
+      // Local sources accept: auto, codex, claude, chatgpt, claude-code.
+      "name": "inbox",
+      "type": "auto",
+      "path": "~/.local/share/polylogue/inbox"
     }
-  },
-  // Optional: Drive sync settings (env vars still take precedence)
-  "drive": {
-    "credentials_path": "~/.config/polylogue/credentials.json",
-    "token_path": "~/.config/polylogue/token.json",
-    "retries": 3,
-    "retry_base": 0.5
+  ],
+  "profiles": {
+    "default": {
+      "attachments": "download",
+      "html": "auto",
+      "index": true,
+      "sanitize_html": false
+    }
   }
 }

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -8,12 +7,6 @@ from .assets import asset_path
 from .config import Profile, Source
 from .drive_client import DriveClient, drive_link
 from .source_ingest import ParsedConversation, parse_drive_payload
-
-
-@dataclass
-class DriveIngestResult:
-    conversations: int
-    attachments: int
 
 
 def _apply_attachment_policy(
@@ -84,4 +77,4 @@ def iter_drive_conversations(
             yield convo
 
 
-__all__ = ["iter_drive_conversations", "DriveIngestResult"]
+__all__ = ["iter_drive_conversations"]
