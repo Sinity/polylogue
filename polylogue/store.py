@@ -141,11 +141,12 @@ def upsert_attachment(conn, record: AttachmentRecord) -> bool:
     ).fetchone()
     if row:
         new_path = record.path or row["path"]
+        changed = new_path != row["path"]
         conn.execute(
             "UPDATE attachments SET ref_count = ref_count + 1, path = ? WHERE attachment_id = ?",
             (new_path, record.attachment_id),
         )
-        return False
+        return changed
     conn.execute(
         """
         INSERT INTO attachments (

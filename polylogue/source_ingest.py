@@ -588,7 +588,9 @@ def iter_source_conversations(source: Source) -> Iterable[ParsedConversation]:
                 payload = _load_json_from_path(path)
         except Exception:
             continue
-        provider = detect_provider(payload, path) or source.name
+        provider = source.name
+        if source.type == "auto":
+            provider = detect_provider(payload, path) or source.name
         conversations.extend(_parse_json_payload(provider, payload, path.stem))
     return conversations
 
