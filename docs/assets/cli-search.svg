@@ -1,0 +1,29 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='1184' height='348' viewBox='0 0 1184 348'>
+<defs>
+<style><![CDATA[
+.terminal-bg { fill: #0f172a; }
+.terminal-bar { fill: #111827; }
+.terminal-text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #e2e8f0; }
+.terminal-dim { fill: #94a3b8; }
+]]></style>
+</defs>
+<rect class='terminal-bg' x='0' y='0' width='1184' height='348' rx='12' />
+<rect class='terminal-bar' x='0' y='0' width='1184' height='28' rx='12' />
+<circle cx='20' cy='14' r='6' fill='#f87171' />
+<circle cx='40' cy='14' r='6' fill='#fbbf24' />
+<circle cx='60' cy='14' r='6' fill='#34d399' />
+<text class='terminal-text terminal-dim' x='24' y='62' xml:space='preserve'>$ polylogue search "latency" --limit 2</text>
+<text class='terminal-text' x='24' y='82' xml:space='preserve'></text>
+<text class='terminal-text' x='24' y='102' xml:space='preserve'>-- Search --</text>
+<text class='terminal-text' x='24' y='122' xml:space='preserve'>Results: 2</text>
+<text class='terminal-text' x='24' y='142' xml:space='preserve'>Query: latency</text>
+<text class='terminal-text' x='24' y='162' xml:space='preserve'>1. Launch Plan (inbox)</text>
+<text class='terminal-text' x='24' y='182' xml:space='preserve'>   Draft the launch checklist for the [latency] review.</text>
+<text class='terminal-text' x='24' y='202' xml:space='preserve'>   /tmp/polylogue-readme-3h6jn5rf/archive/render/inbox/demo-1:47098fa6371e76602593a81c5ba417d8f4a712bf8640b188d71e0b25e6ceae2b/conversation.md</text>
+<text class='terminal-text' x='24' y='222' xml:space='preserve'>2. Launch Plan (inbox)</text>
+<text class='terminal-text' x='24' y='242' xml:space='preserve'>   Checklist:</text>
+<text class='terminal-text' x='24' y='262' xml:space='preserve'>- establish baseline [latency]</text>
+<text class='terminal-text' x='24' y='282' xml:space='preserve'>- capture p95/p99</text>
+<text class='terminal-text' x='24' y='302' xml:space='preserve'>- rollback plan</text>
+<text class='terminal-text' x='24' y='322' xml:space='preserve'>   /tmp/polylogue-readme-3h6jn5rf/archive/render/inbox/demo-1:47098fa6371e76602593a81c5ba417d8f4a712bf8640b188d71e0b25e6ceae2b/conversation.md</text>
+</svg>
