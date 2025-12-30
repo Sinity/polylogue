@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from polylogue.config import Profile, Source
-from polylogue.drive_client import DriveFile, drive_link
+from polylogue.config import Source
+from polylogue.drive_client import DriveFile
 from polylogue.drive_ingest import iter_drive_conversations
 
 
@@ -27,10 +27,10 @@ class StubDriveClient:
         return self.payload
 
     def download_to_path(self, file_id, dest):
-        raise AssertionError("download_to_path should not be called for link-only policy")
+        raise AssertionError("download_to_path should not be called when download_assets=False")
 
 
-def test_drive_ingest_chunked_prompt_link_policy(tmp_path):
+def test_drive_ingest_chunked_prompt_no_download(tmp_path):
     payload = {
         "title": "Drive Chat",
         "chunkedPrompt": {
@@ -44,14 +44,12 @@ def test_drive_ingest_chunked_prompt_link_policy(tmp_path):
             ]
         },
     }
-    source = Source(name="gemini", type="drive", folder="Google AI Studio")
-    profile = Profile(attachments="link")
+    source = Source(name="gemini", folder="Google AI Studio")
     client = StubDriveClient(payload=payload)
 
     conversations = list(
         iter_drive_conversations(
             source=source,
-            profile=profile,
             archive_root=tmp_path,
             client=client,
             download_assets=False,
@@ -64,4 +62,4 @@ def test_drive_ingest_chunked_prompt_link_policy(tmp_path):
     attachment = convo.attachments[0]
     assert attachment.provider_attachment_id == "att-1"
     assert attachment.message_provider_id == "chunk-2"
-    assert attachment.path == drive_link("att-1")
+    assert attachment.path is None

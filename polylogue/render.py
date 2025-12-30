@@ -3,20 +3,18 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Optional
 
 from markdown_it import MarkdownIt
 
 from .assets import asset_path
 from .db import open_connection
-from .redaction import sanitize_text
 
 
 @dataclass
 class RenderResult:
     conversation_id: str
     markdown_path: Path
-    html_path: Optional[Path]
+    html_path: Path
 
 
 def _render_html(markdown_text: str, *, title: str) -> str:
@@ -41,8 +39,6 @@ def render_conversation(
     *,
     conversation_id: str,
     archive_root: Path,
-    html_mode: str = "auto",
-    sanitize_html: bool = False,
 ) -> RenderResult:
     with open_connection(None) as conn:
         convo = conn.execute(
@@ -83,8 +79,6 @@ def render_conversation(
         role = msg["role"] or "message"
         text = msg["text"] or ""
         timestamp = msg["timestamp"]
-        if sanitize_html:
-            text = sanitize_text(text)
         lines.append(f"## {role}")
         if timestamp:
             lines.append(f"_Timestamp: {timestamp}_")
@@ -112,10 +106,8 @@ def render_conversation(
     md_path = render_root / "conversation.md"
     md_path.write_text(markdown_text, encoding="utf-8")
 
-    html_path: Optional[Path] = None
-    if html_mode != "off":
-        html_path = render_root / "conversation.html"
-        html_path.write_text(_render_html(markdown_text, title=title), encoding="utf-8")
+    html_path = render_root / "conversation.html"
+    html_path.write_text(_render_html(markdown_text, title=title), encoding="utf-8")
 
     return RenderResult(conversation_id=conversation_id, markdown_path=md_path, html_path=html_path)
 
