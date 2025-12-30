@@ -1,0 +1,22 @@
+<svg xmlns='http://www.w3.org/2000/svg' width='520' height='208' viewBox='0 0 520 208'>
+<defs>
+<style><![CDATA[
+.terminal-bg { fill: #0f172a; }
+.terminal-bar { fill: #111827; }
+.terminal-text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #e2e8f0; }
+.terminal-dim { fill: #94a3b8; }
+]]></style>
+</defs>
+<rect class='terminal-bg' x='0' y='0' width='520' height='208' rx='12' />
+<rect class='terminal-bar' x='0' y='0' width='520' height='28' rx='12' />
+<circle cx='20' cy='14' r='6' fill='#f87171' />
+<circle cx='40' cy='14' r='6' fill='#fbbf24' />
+<circle cx='60' cy='14' r='6' fill='#34d399' />
+<text class='terminal-text terminal-dim' x='24' y='62' xml:space='preserve'>$ polylogue plan</text>
+<text class='terminal-text' x='24' y='82' xml:space='preserve'></text>
+<text class='terminal-text' x='24' y='102' xml:space='preserve'>-- Plan --</text>
+<text class='terminal-text' x='24' y='122' xml:space='preserve'>Profile: default</text>
+<text class='terminal-text' x='24' y='142' xml:space='preserve'>Conversations: 2</text>
+<text class='terminal-text' x='24' y='162' xml:space='preserve'>Messages: 4</text>
+<text class='terminal-text' x='24' y='182' xml:space='preserve'>Attachments: 0</text>
+</svg>
