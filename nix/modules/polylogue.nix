@@ -12,12 +12,26 @@ let
 
   configPath = cfg.configHome + "/config.json";
 
+  tessdataDir = "${cfg.ocr.tessdataPackage}/share/tessdata";
+  driveCredentialsPath = if cfg.drive.credentialsPath != null
+    then cfg.drive.credentialsPath
+    else cfg.configHome + "/credentials.json";
+  driveTokenPath = if cfg.drive.tokenPath != null
+    then cfg.drive.tokenPath
+    else cfg.configHome + "/token.json";
+
   envVars = cfg.environment // {
     XDG_CONFIG_HOME = toString cfg.configHome;
     XDG_DATA_HOME = toString cfg.dataHome;
     XDG_STATE_HOME = toString cfg.stateDir;
     POLYLOGUE_FORCE_PLAIN = "1";
-  };
+    POLYLOGUE_DECLARATIVE = "1";
+    TESSDATA_PREFIX = tessdataDir;
+  }
+  // optionalAttrs (cfg.drive.credentialsPath != null) { POLYLOGUE_CREDENTIAL_PATH = toString cfg.drive.credentialsPath; }
+  // optionalAttrs (cfg.drive.tokenPath != null) { POLYLOGUE_TOKEN_PATH = toString cfg.drive.tokenPath; };
+
+  missingOcrLangs = lib.filter (lang: !(builtins.pathExists "${tessdataDir}/${lang}.traineddata")) cfg.ocr.languages;
 
   configJson = builtins.toJSON {
     paths = {
@@ -38,6 +52,12 @@ let
         vector_size = cfg.index.qdrant.vectorSize;
       };
     };
+    drive = {
+      credentials_path = toString driveCredentialsPath;
+      token_path = toString driveTokenPath;
+      retries = cfg.drive.retries;
+      retry_base = cfg.drive.retryBase;
+    };
   };
 
   outputDir = cfg.paths.outputRoot;
@@ -56,20 +76,24 @@ let
     claude = inboxDir + "/claude";
   };
 
-  mkWatchService = name: args: {
-    systemd.services."polylogue-watch-${name}" = {
-      description = "Polylogue ${name} watcher";
-      wantedBy = [ "multi-user.target" ];
-      after = [ "network-online.target" ];
-      environment = envVars;
-      serviceConfig = {
-        Type = "simple";
-        WorkingDirectory = cfg.workingDir;
-        ExecStart = lib.escapeShellArgs ([ "${cfg.package}/bin/polylogue" ] ++ args);
-        Restart = "always";
+  mkWatchService = name: args:
+    let
+      cliArgs = args ++ lib.optionals (!cfg.ocr.enable) [ "--no-attachment-ocr" ];
+    in {
+      systemd.services."polylogue-watch-${name}" = {
+        description = "Polylogue ${name} watcher";
+        wantedBy = [ "multi-user.target" ];
+        after = [ "network-online.target" ];
+        path = cfg.helperPackages ++ [ cfg.package ];
+        environment = envVars;
+        serviceConfig = {
+          Type = "simple";
+          WorkingDirectory = cfg.workingDir;
+          ExecStart = lib.escapeShellArgs ([ "${cfg.package}/bin/polylogue" ] ++ cliArgs);
+          Restart = "always";
+        } // optionalAttrs (cfg.user != null) { User = cfg.user; };
       };
     };
-  };
 
   watchServices = lib.mkMerge (
     []
@@ -183,10 +207,62 @@ in {
       default = {};
       description = "Extra environment variables for all services.";
     };
+
+    helperPackages = mkOption {
+      type = types.listOf types.package;
+      default = with pkgs; [ skim bat glow fd ripgrep jq tesseract ];
+      description = "Packages exposed on PATH for Polylogue services (skim/bat/glow pickers plus OCR dependencies).";
+    };
+
+    ocr = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Enable attachment OCR (image text extraction runs by default).";
+      };
+      languages = mkOption {
+        type = types.listOf types.str;
+        default = [ "eng" "pol" ];
+        description = "Language codes that must be available inside the tessdata directory.";
+      };
+      tessdataPackage = mkOption {
+        type = types.package;
+        default = pkgs.tesseract;
+        description = "Package providing Tesseract OCR binary + tessdata (share/tessdata is exported via TESSDATA_PREFIX).";
+      };
+    };
+
+    drive = {
+      credentialsPath = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = "Path to Drive OAuth client JSON (defaults to configHome/credentials.json).";
+      };
+      tokenPath = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        description = "Path to Drive OAuth token JSON (defaults to configHome/token.json).";
+      };
+      retries = mkOption {
+        type = types.int;
+        default = 3;
+        description = "Drive retry attempts for sync requests.";
+      };
+      retryBase = mkOption {
+        type = types.float;
+        default = 0.5;
+        description = "Base delay (seconds) for Drive retry backoff.";
+      };
+    };
   };
 
   config = mkIf cfg.enable (
     {
+      assertions = lib.optional (cfg.ocr.enable && missingOcrLangs != []) {
+        assertion = missingOcrLangs == [];
+        message = "Polylogue OCR enabled but tessdata package ${cfg.ocr.tessdataPackage} is missing languages: ${lib.concatStringsSep ", " missingOcrLangs}";
+      };
+
       system.activationScripts.polylogue-config = ''
         install -d -m 0755 ${cfg.configHome}
         cat > ${configPath} <<'EOF'

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Optional, Set
+import math
 import sys
-
-import shutil as _shutil
-import subprocess as _subprocess
+from typing import Iterable, List, Optional, Set
 from rich.progress import (
     BarColumn,
     Progress,
@@ -17,17 +15,12 @@ from rich.progress import (
 
 from .facade import Console, ConsoleFacade, ConsoleLike, create_console_facade
 
-shutil = _shutil
-subprocess = _subprocess
-
 __all__ = [
     "UI",
     "create_ui",
     "ConsoleFacade",
     "ConsoleLike",
     "Console",
-    "shutil",
-    "subprocess",
 ]
 
 
@@ -59,6 +52,15 @@ class UI:
 
     def summary(self, title: str, lines: Iterable[str]) -> None:
         self._facade.summary(title, lines)
+
+    def render_markdown(self, content: str) -> None:
+        self._facade.render_markdown(content)
+
+    def render_code(self, code: str, language: str = "python") -> None:
+        self._facade.render_code(code, language)
+
+    def render_diff(self, old_text: str, new_text: str, filename: str = "file") -> None:
+        self._facade.render_diff(old_text, new_text, filename)
 
     # Prompting ------------------------------------------------------------
     def confirm(self, prompt: str, *, default: bool = True) -> bool:
@@ -93,7 +95,7 @@ class UI:
                     value = int(response)
                     if 1 <= value <= len(options):
                         return options[value - 1]
-                self.console.print("[yellow]Enter a number corresponding to your choice.")
+                self._print_notice("Enter a number corresponding to your choice.")
             return None
         return self._facade.choose(prompt, options)
 
@@ -112,12 +114,13 @@ class UI:
     # Progress -------------------------------------------------------------
     def progress(self, description: str, total: Optional[int] = None):
         if self.plain:
-            return _NullProgressTracker()
+            return _PlainProgressTracker(self.console, description, total)
+        count_format = "{task.completed:.0f}/{task.total:.0f}" if total is not None else "{task.completed:.0f}"
         columns = (
             SpinnerColumn(),
             TextColumn("{task.description}"),
             BarColumn(),
-            TextColumn("{task.completed}/{task.total}" if total is not None else "{task.completed}"),
+            TextColumn(count_format),
             TimeElapsedColumn(),
             TimeRemainingColumn(),
         )
@@ -130,29 +133,88 @@ class UI:
         if topic in self._plain_warnings:
             return
         self._plain_warnings.add(topic)
-        self.console.print(f"[yellow]Plain mode cannot prompt for {topic}; rerun with --interactive or pass explicit flags.")
+        self._print_notice(
+            f"Plain mode cannot prompt for {topic}; rerun with --interactive or pass explicit flags."
+        )
 
     def _abort_plain_prompt(self, topic: str) -> None:
         self._warn_plain(topic)
         raise SystemExit(1)
+
+    def _print_notice(self, text: str) -> None:
+        if self.plain:
+            self.console.print(text)
+        else:
+            self.console.print(f"[yellow]{text}[/yellow]")
 
 
 def create_ui(plain: bool) -> UI:
     return UI(plain=plain)
 
 
-class _NullProgressTracker:
+class _PlainProgressTracker:
+    def __init__(self, console: ConsoleLike, description: str, total: Optional[int]) -> None:
+        self._console = console
+        self._description = description
+        self._total = self._coerce_int(total) if total is not None else None
+        if self._total is None and total is not None:
+            self._total = float(total)
+            self._completed: float | int = 0.0
+            self._use_float = True
+        else:
+            self._completed = 0
+            self._use_float = False
+        self._console.print(f"{description}...")
+
     def __enter__(self):
         return self
 
-    def advance(self, *_args, **_kwargs) -> None:
+    def advance(self, advance: float = 1) -> None:
+        as_int = self._coerce_int(advance)
+        if as_int is not None and not self._use_float:
+            self._completed += as_int
+        else:
+            self._use_float = True
+            self._completed = float(self._completed) + float(advance)
+
+    def update(self, *, total: Optional[int] = None, description: Optional[str] = None) -> None:
+        if description and description != self._description:
+            self._description = description
+            self._console.print(f"{description}...")
+        if total is not None:
+            as_int = self._coerce_int(total)
+            if as_int is not None and not self._use_float:
+                self._total = as_int
+            else:
+                self._total = float(total)
+                self._use_float = True
+
+    def __exit__(self, exc_type, exc, tb):
+        status = "aborted" if exc_type else "complete"
+        suffix = ""
+        if self._total is not None:
+            suffix = f" ({self._format_value(self._completed)}/{self._format_value(self._total)})"
+        self._console.print(f"{self._description} {status}{suffix}")
+
+    @staticmethod
+    def _coerce_int(value: Optional[float]) -> Optional[int]:
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            rounded = round(value)
+            if math.isclose(value, rounded, abs_tol=1e-4):
+                return int(rounded)
         return None
 
-    def update(self, *_args, **_kwargs) -> None:
-        return None
-
-    def __exit__(self, *_exc) -> None:
-        return None
+    @staticmethod
+    def _format_value(value: float | int) -> str:
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, float):
+            rounded = round(value)
+            if math.isclose(value, rounded, abs_tol=1e-4):
+                return str(int(rounded))
+        return f"{float(value):.2f}".rstrip("0").rstrip(".")
 
 
 class _RichProgressTracker:
@@ -164,7 +226,7 @@ class _RichProgressTracker:
         self._progress.__enter__()
         return self
 
-    def advance(self, advance: float = 1.0) -> None:
+    def advance(self, advance: float = 1) -> None:
         self._progress.advance(self._task_id, advance)
 
     def update(self, *, total: Optional[int] = None, description: Optional[str] = None) -> None:

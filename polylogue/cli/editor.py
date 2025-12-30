@@ -1,9 +1,11 @@
-"""Editor integration utilities."""
+"""Editor/browser integration utilities."""
 
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
+import webbrowser
 from pathlib import Path
 from typing import Optional
 
@@ -38,12 +40,16 @@ def open_in_editor(path: Path, line: Optional[int] = None) -> bool:
     if not path.exists():
         return False
 
-    # Build editor command with line number if applicable
-    cmd = [editor]
+    try:
+        cmd = shlex.split(editor)
+    except ValueError:
+        cmd = [editor]
+    if not cmd:
+        return False
 
     if line:
         # Different editors have different line jump syntax
-        editor_lower = editor.lower()
+        editor_lower = " ".join(cmd).lower()
         if "vim" in editor_lower or "nvim" in editor_lower:
             cmd.append(f"+{line}")
         elif "code" in editor_lower or "subl" in editor_lower or "atom" in editor_lower:
@@ -71,4 +77,35 @@ def _run_editor(cmd: list[str]) -> bool:
         subprocess.run(cmd, check=False)
         return True
     except (FileNotFoundError, subprocess.SubprocessError, OSError):
+        return False
+
+
+def open_in_browser(path: Path, anchor: Optional[str] = None) -> bool:
+    """Open a file in the system browser/HTML handler."""
+
+    resolved = path.resolve()
+    try:
+        target = resolved.as_uri()
+    except ValueError:
+        return False
+
+    if anchor:
+        target = f"{target}#{anchor}"
+
+    custom_browser = os.environ.get("POLYLOGUE_BROWSER")
+    if custom_browser:
+        try:
+            cmd = shlex.split(custom_browser)
+        except ValueError:
+            cmd = [custom_browser]
+        cmd.append(target)
+        try:
+            subprocess.Popen(cmd)
+            return True
+        except Exception:
+            return False
+
+    try:
+        return webbrowser.open(target)
+    except Exception:
         return False
