@@ -1,342 +1,262 @@
 from __future__ import annotations
 
-import os
 import json
-import stat
-from dataclasses import dataclass, field
+import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
-from .core.configuration import (
-    CONFIG_ENV,
-    DEFAULT_CONFIG_LOCATIONS,
-    AppConfig as CoreAppConfig,
-    Defaults as CoreDefaults,
-    OutputPaths as CoreOutputPaths,
-    IndexConfig as CoreIndexConfig,
-    ExportsConfig as CoreExportsConfig,
-    load_configuration,
-)
 from .paths import CONFIG_HOME, DATA_HOME
 
-# Public aliases for config dataclasses used outside the core configuration module.
-IndexConfig = CoreIndexConfig
-ExportsConfig = CoreExportsConfig
 
-_ENV_CREDENTIAL_PATH = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
-_ENV_TOKEN_PATH = os.environ.get("POLYLOGUE_TOKEN_PATH")
+CONFIG_VERSION = 1
+DEFAULT_CONFIG_NAME = "config.json"
+DEFAULT_PROFILE_NAME = "default"
+DEFAULT_ARCHIVE_ROOT = DATA_HOME / "archive"
 
-DEFAULT_CREDENTIALS = Path(_ENV_CREDENTIAL_PATH).expanduser() if _ENV_CREDENTIAL_PATH else CONFIG_HOME / "credentials.json"
-DEFAULT_TOKEN = Path(_ENV_TOKEN_PATH).expanduser() if _ENV_TOKEN_PATH else CONFIG_HOME / "token.json"
+_ALLOWED_TOP_LEVEL_KEYS = {"version", "archive_root", "sources", "profiles"}
+_ALLOWED_SOURCE_KEYS = {"name", "type", "path", "folder"}
+_ALLOWED_PROFILE_KEYS = {"attachments", "html", "index", "sanitize_html"}
+_ALLOWED_SOURCE_TYPES = {"drive", "codex", "claude", "chatgpt", "claude-code"}
+_ALLOWED_ATTACHMENTS = {"download", "link", "skip"}
+_ALLOWED_HTML = {"auto", "on", "off"}
 
 
-@dataclass
-class DriveConfig:
-    credentials_path: Path = DEFAULT_CREDENTIALS
-    token_path: Path = DEFAULT_TOKEN
-    retries: int = 3
-    retry_base: float = 0.5
-    from_config: bool = False
-
-CONFIG_DIR = CONFIG_HOME
-DEFAULT_PATHS = list(DEFAULT_CONFIG_LOCATIONS)
-
-DEFAULT_INPUT_ROOT = DATA_HOME / "inbox"
-DEFAULT_OUTPUT_ROOT = DATA_HOME / "archive"
-DEFAULT_EXPORTS_CHATGPT = DEFAULT_INPUT_ROOT
-DEFAULT_EXPORTS_CLAUDE = DEFAULT_INPUT_ROOT
-_DECLARATIVE_FLAG = os.environ.get("POLYLOGUE_DECLARATIVE")
+class ConfigError(RuntimeError):
+    pass
 
 
 @dataclass
-class OutputDirs:
-    render: Path = DEFAULT_OUTPUT_ROOT / "render"
-    sync_drive: Path = DEFAULT_OUTPUT_ROOT / "gemini"
-    sync_codex: Path = DEFAULT_OUTPUT_ROOT / "codex"
-    sync_claude_code: Path = DEFAULT_OUTPUT_ROOT / "claude-code"
-    import_chatgpt: Path = DEFAULT_OUTPUT_ROOT / "chatgpt"
-    import_claude: Path = DEFAULT_OUTPUT_ROOT / "claude"
+class Source:
+    name: str
+    type: str
+    path: Optional[Path] = None
+    folder: Optional[str] = None
+
+    def as_dict(self) -> dict:
+        payload = {"name": self.name, "type": self.type}
+        if self.path is not None:
+            payload["path"] = str(self.path)
+        if self.folder is not None:
+            payload["folder"] = self.folder
+        return payload
 
 
 @dataclass
-class Defaults:
-    collapse_threshold: int = 25
-    html_previews: bool = True
-    html_theme: str = "dark"
-    output_dirs: OutputDirs = field(default_factory=OutputDirs)
-    roots: dict[str, OutputDirs] = field(default_factory=dict)
+class Profile:
+    attachments: str = "download"
+    html: str = "auto"
+    index: bool = True
+    sanitize_html: bool = False
 
-    @property
-    def render(self) -> Path:
-        return self.output_dirs.render
-
-    @property
-    def sync_drive(self) -> Path:
-        return self.output_dirs.sync_drive
-
-    @property
-    def sync_codex(self) -> Path:
-        return self.output_dirs.sync_codex
-
-    @property
-    def sync_claude_code(self) -> Path:
-        return self.output_dirs.sync_claude_code
-
-    @property
-    def import_chatgpt(self) -> Path:
-        return self.output_dirs.import_chatgpt
-
-    @property
-    def import_claude(self) -> Path:
-        return self.output_dirs.import_claude
+    def as_dict(self) -> dict:
+        return {
+            "attachments": self.attachments,
+            "html": self.html,
+            "index": self.index,
+            "sanitize_html": self.sanitize_html,
+        }
 
 
 @dataclass
 class Config:
-    defaults: Defaults = field(default_factory=Defaults)
-    index: Optional[IndexConfig] = None
-    exports: ExportsConfig = field(default_factory=lambda: ExportsConfig(chatgpt=DEFAULT_EXPORTS_CHATGPT, claude=DEFAULT_EXPORTS_CLAUDE))
-    drive: DriveConfig = field(default_factory=DriveConfig)
+    version: int
+    archive_root: Path
+    sources: List[Source]
+    profiles: Dict[str, Profile]
+    path: Path
+
+    def as_dict(self) -> dict:
+        return {
+            "version": self.version,
+            "archive_root": str(self.archive_root),
+            "sources": [source.as_dict() for source in self.sources],
+            "profiles": {name: profile.as_dict() for name, profile in self.profiles.items()},
+        }
 
 
-CONFIG_PATH: Optional[Path] = None
+def _config_path(explicit: Optional[Path] = None) -> Path:
+    env_path = os.environ.get("POLYLOGUE_CONFIG")
+    if env_path:
+        return Path(env_path).expanduser()
+    if explicit:
+        return explicit.expanduser()
+    return CONFIG_HOME / DEFAULT_CONFIG_NAME
 
 
-def _truthy(val: Optional[str]) -> bool:
-    return bool(val) and str(val).strip().lower() in {"1", "true", "yes", "on"}
+def _ensure_keys(data: dict, *, allowed: Iterable[str], context: str) -> None:
+    unknown = set(data.keys()) - set(allowed)
+    if unknown:
+        keys = ", ".join(sorted(unknown))
+        raise ConfigError(f"Unknown {context} key(s): {keys}")
 
 
-def _exports_overridden(raw: object) -> bool:
-    if isinstance(raw, dict) and raw.get("exports") is not None:
-        return True
-    if os.environ.get("POLYLOGUE_EXPORTS_CHATGPT"):
-        return True
-    if os.environ.get("POLYLOGUE_EXPORTS_CLAUDE"):
-        return True
-    return False
-
-
-def is_config_declarative(path: Optional[Path] = None) -> Tuple[bool, str, Path]:
-    """Detect declarative/immutable configs (e.g., NixOS module) to avoid runtime edits."""
-    target = path or CONFIG_PATH or (CONFIG_HOME / "config.json")
-    resolved = target
-    try:
-        resolved = target.resolve()
-    except Exception:
-        pass
-
-    if _truthy(_DECLARATIVE_FLAG):
-        return True, "POLYLOGUE_DECLARATIVE is set", target
-
-    if str(resolved).startswith("/nix/store/"):
-        return True, f"config file is in nix store ({resolved})", target
-
-    # If file exists but is not writable, treat as declarative
-    if target.exists():
-        writable = os.access(target, os.W_OK)
-        try:
-            mode = target.stat().st_mode
-            writable = writable and bool(mode & stat.S_IWUSR)
-        except Exception:
-            pass
-        if not writable:
-            return True, "config file is read-only", target
+def _parse_source(raw: dict) -> Source:
+    _ensure_keys(raw, allowed=_ALLOWED_SOURCE_KEYS, context="source")
+    name = raw.get("name")
+    source_type = raw.get("type")
+    if not isinstance(name, str) or not name.strip():
+        raise ConfigError("Source 'name' must be a non-empty string")
+    if not isinstance(source_type, str) or source_type not in _ALLOWED_SOURCE_TYPES:
+        raise ConfigError(f"Source '{name}' has invalid type '{source_type}'")
+    path = raw.get("path")
+    folder = raw.get("folder")
+    if source_type == "drive":
+        if not isinstance(folder, str) or not folder.strip():
+            raise ConfigError(f"Drive source '{name}' requires 'folder'")
+        if path is not None:
+            raise ConfigError(f"Drive source '{name}' must not set 'path'")
     else:
-        parent = target.parent
-        existing_parent = parent
-        try:
-            while not existing_parent.exists() and existing_parent != existing_parent.parent:
-                existing_parent = existing_parent.parent
-        except Exception:
-            existing_parent = parent
-        try:
-            parent_resolved = existing_parent.resolve()
-        except Exception:
-            parent_resolved = existing_parent
-        if str(parent_resolved).startswith("/nix/store/"):
-            return True, f"config parent is in nix store ({parent_resolved})", target
-        if existing_parent.exists() and not os.access(existing_parent, os.W_OK):
-            return True, "config parent directory is read-only", target
-
-    return False, "", target
-
-
-def persist_config(
-    *,
-    input_root: Path,
-    output_root: Path,
-    collapse_threshold: int,
-    html_previews: bool,
-    html_theme: str,
-    index: Optional[IndexConfig] = None,
-    roots: Optional[Dict[str, object]] = None,
-    drive: Optional[DriveConfig] = None,
-    path: Optional[Path] = None,
-) -> Path:
-    """Write a config.json that mirrors the sample schema.
-
-    Existing index settings are preserved via the supplied IndexConfig to avoid
-    silently dropping Qdrant settings when re-initializing.
-    """
-    target = path or CONFIG_HOME / "config.json"
-    target.parent.mkdir(parents=True, exist_ok=True)
-
-    index_cfg = index or IndexConfig()
-    payload = {
-        "paths": {
-            "input_root": str(input_root.expanduser()),
-            "output_root": str(output_root.expanduser()),
-        },
-        "ui": {
-            "collapse_threshold": collapse_threshold,
-            "html": bool(html_previews),
-            "theme": html_theme,
-        },
-        "index": {
-            "backend": index_cfg.backend,
-            "qdrant": {
-                "url": index_cfg.qdrant_url,
-                "api_key": index_cfg.qdrant_api_key,
-                "collection": index_cfg.qdrant_collection,
-                "vector_size": index_cfg.qdrant_vector_size,
-            },
-        },
-    }
-    if roots:
-        mapped: Dict[str, Dict[str, str]] = {}
-        for label, base in roots.items():
-            if isinstance(base, OutputDirs):
-                root_path = base.render.parent.expanduser()
-            else:
-                root_path = Path(base).expanduser()
-            mapped[label] = {
-                "render": str(root_path / "render"),
-                "sync_drive": str(root_path / "gemini"),
-                "sync_codex": str(root_path / "codex"),
-                "sync_claude_code": str(root_path / "claude-code"),
-                "import_chatgpt": str(root_path / "chatgpt"),
-                "import_claude": str(root_path / "claude"),
-            }
-        payload["paths"]["roots"] = mapped
-    if drive is not None:
-        defaults = DriveConfig()
-        include_drive = drive.from_config or (
-            drive.credentials_path != defaults.credentials_path
-            or drive.token_path != defaults.token_path
-            or drive.retries != defaults.retries
-            or drive.retry_base != defaults.retry_base
-        )
-        if include_drive:
-            payload["drive"] = {
-                "credentials_path": str(drive.credentials_path),
-                "token_path": str(drive.token_path),
-                "retries": drive.retries,
-                "retry_base": drive.retry_base,
-            }
-    target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return target
-
-
-def _convert_output_dirs(paths: CoreOutputPaths) -> OutputDirs:
-    return OutputDirs(
-        render=paths.render,
-        sync_drive=paths.sync_drive,
-        sync_codex=paths.sync_codex,
-        sync_claude_code=paths.sync_claude_code,
-        import_chatgpt=paths.import_chatgpt,
-        import_claude=paths.import_claude,
+        if not isinstance(path, str) or not path.strip():
+            raise ConfigError(f"Source '{name}' requires 'path'")
+        if folder is not None:
+            raise ConfigError(f"Source '{name}' must not set 'folder'")
+    return Source(
+        name=name.strip(),
+        type=source_type,
+        path=Path(path).expanduser() if isinstance(path, str) else None,
+        folder=folder.strip() if isinstance(folder, str) else None,
     )
 
 
-def _convert_defaults(
-    core: CoreDefaults,
-    output_paths: CoreOutputPaths,
-    labeled_roots: Optional[dict[str, OutputDirs]] = None,
-) -> Defaults:
-    roots: dict[str, OutputDirs] = {}
-    if getattr(core, "roots", None):
-        for label, paths in getattr(core, "roots", {}).items():
-            roots[label] = _convert_output_dirs(paths)
-    if labeled_roots:
-        roots.update(labeled_roots)
-    return Defaults(
-        collapse_threshold=core.collapse_threshold,
-        html_previews=core.html_previews,
-        html_theme=core.html_theme,
-        output_dirs=_convert_output_dirs(output_paths),
-        roots=roots,
-    )
-
-
-def _convert_index(core: Optional[CoreIndexConfig]) -> Optional[IndexConfig]:
-    if not core:
-        return None
-    from .core.configuration import IndexConfig as CoreIndex
-    if isinstance(core, IndexConfig):
-        return core
-    if isinstance(core, CoreIndex):
-        return IndexConfig(
-            backend=core.backend,
-            qdrant_url=core.qdrant_url,
-            qdrant_api_key=core.qdrant_api_key,
-            qdrant_collection=core.qdrant_collection,
-            qdrant_vector_size=core.qdrant_vector_size,
-        )
-    return None
-
-
-def _convert_exports(core: CoreExportsConfig) -> ExportsConfig:
-    return ExportsConfig(chatgpt=core.chatgpt, claude=core.claude)
-
-
-def _convert_drive(raw: Optional[dict]) -> DriveConfig:
-    drive_cfg = DriveConfig()
+def _parse_profile(name: str, raw: dict) -> Profile:
     if not isinstance(raw, dict):
-        return drive_cfg
-    drive_cfg.from_config = True
-    credentials = raw.get("credentials_path") or raw.get("credentialsPath") or raw.get("credential_path")
-    token = raw.get("token_path") or raw.get("tokenPath")
-    retries = raw.get("retries")
-    retry_base = raw.get("retry_base") or raw.get("retryBase")
-    if isinstance(credentials, str) and credentials.strip():
-        drive_cfg.credentials_path = Path(credentials).expanduser()
-    if isinstance(token, str) and token.strip():
-        drive_cfg.token_path = Path(token).expanduser()
-    if isinstance(retries, int):
-        drive_cfg.retries = retries
-    if isinstance(retry_base, (int, float)):
-        drive_cfg.retry_base = float(retry_base)
-    return drive_cfg
-
-
-def load_config() -> Config:
-    global CONFIG_PATH
-    app_config: CoreAppConfig = load_configuration()
-    CONFIG_PATH = app_config.config_path
-
-    # Get exports, use default if not present
-    from .core.configuration import ExportsConfig as CoreExports
-    exports_config = getattr(app_config, "exports", None) or CoreExports()
-
-    # Get output paths from app config
-    output_paths_config = app_config.get_output_paths()
-    labeled_roots: dict[str, OutputDirs] = {}
-    if getattr(app_config, "paths", None):
-        root_map = getattr(app_config.paths, "roots", {}) or {}
-        for label, paths in root_map.items():
-            labeled_roots[label] = _convert_output_dirs(paths)
-
-    raw = getattr(app_config, "raw", {}) or {}
-    if not _exports_overridden(raw):
-        input_root = getattr(getattr(app_config, "paths", None), "input_root", None)
-        if input_root:
-            exports_config = CoreExports(chatgpt=input_root, claude=input_root)
-    return Config(
-        defaults=_convert_defaults(app_config.defaults, output_paths_config, labeled_roots),
-        index=_convert_index(app_config.index),
-        exports=_convert_exports(exports_config),
-        drive=_convert_drive(raw.get("drive") if isinstance(raw, dict) else None),
+        raise ConfigError(f"Profile '{name}' must be a mapping")
+    _ensure_keys(raw, allowed=_ALLOWED_PROFILE_KEYS, context=f"profile '{name}'")
+    attachments = raw.get("attachments", "download")
+    html = raw.get("html", "auto")
+    index = raw.get("index", True)
+    sanitize_html = raw.get("sanitize_html", False)
+    if attachments not in _ALLOWED_ATTACHMENTS:
+        raise ConfigError(f"Profile '{name}' has invalid attachments policy '{attachments}'")
+    if html not in _ALLOWED_HTML:
+        raise ConfigError(f"Profile '{name}' has invalid html mode '{html}'")
+    if not isinstance(index, bool):
+        raise ConfigError(f"Profile '{name}' has invalid index flag")
+    if not isinstance(sanitize_html, bool):
+        raise ConfigError(f"Profile '{name}' has invalid sanitize_html flag")
+    return Profile(
+        attachments=attachments,
+        html=html,
+        index=index,
+        sanitize_html=sanitize_html,
     )
 
 
-CONFIG = load_config()
+def default_config(path: Optional[Path] = None, *, archive_root: Optional[Path] = None) -> Config:
+    config_path = _config_path(path)
+    env_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
+    if archive_root:
+        root = archive_root.expanduser()
+    elif env_root:
+        root = Path(env_root).expanduser()
+    else:
+        root = DEFAULT_ARCHIVE_ROOT
+    profiles = {DEFAULT_PROFILE_NAME: Profile()}
+    return Config(
+        version=CONFIG_VERSION,
+        archive_root=root,
+        sources=[],
+        profiles=profiles,
+        path=config_path,
+    )
+
+
+def load_config(path: Optional[Path] = None) -> Config:
+    config_path = _config_path(path)
+    if not config_path.exists():
+        raise ConfigError(f"Config not found: {config_path}. Run 'polylogue config init'.")
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ConfigError("Config payload must be a JSON object")
+    _ensure_keys(raw, allowed=_ALLOWED_TOP_LEVEL_KEYS, context="config")
+    version = raw.get("version")
+    if version != CONFIG_VERSION:
+        raise ConfigError(f"Unsupported config version '{version}', expected {CONFIG_VERSION}")
+    archive_root = raw.get("archive_root")
+    if not isinstance(archive_root, str) or not archive_root.strip():
+        raise ConfigError("Config 'archive_root' must be a non-empty string")
+    sources_raw = raw.get("sources")
+    if not isinstance(sources_raw, list):
+        raise ConfigError("Config 'sources' must be a list")
+    sources = [_parse_source(entry) for entry in sources_raw]
+    profiles_raw = raw.get("profiles")
+    if not isinstance(profiles_raw, dict) or not profiles_raw:
+        raise ConfigError("Config 'profiles' must be a non-empty object")
+    profiles = {name: _parse_profile(name, payload) for name, payload in profiles_raw.items()}
+
+    env_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
+    root = Path(env_root).expanduser() if env_root else Path(archive_root).expanduser()
+
+    return Config(
+        version=CONFIG_VERSION,
+        archive_root=root,
+        sources=sources,
+        profiles=profiles,
+        path=config_path,
+    )
+
+
+def resolve_profile(config: Config, override: Optional[str] = None) -> Tuple[str, Profile]:
+    name = override or os.environ.get("POLYLOGUE_PROFILE") or DEFAULT_PROFILE_NAME
+    if name not in config.profiles:
+        raise ConfigError(f"Profile '{name}' not found in config")
+    return name, config.profiles[name]
+
+
+def write_config(config: Config) -> None:
+    config.path.parent.mkdir(parents=True, exist_ok=True)
+    config.path.write_text(json.dumps(config.as_dict(), indent=2), encoding="utf-8")
+
+
+def update_config(config: Config, *, archive_root: Optional[Path] = None) -> Config:
+    if archive_root is not None:
+        config.archive_root = archive_root.expanduser()
+    return config
+
+
+def update_profile(config: Config, profile_name: str, field: str, value: str) -> Config:
+    if profile_name not in config.profiles:
+        raise ConfigError(f"Profile '{profile_name}' not found in config")
+    profile = config.profiles[profile_name]
+    if field == "attachments":
+        if value not in _ALLOWED_ATTACHMENTS:
+            raise ConfigError(f"Invalid attachments policy '{value}'")
+        profile.attachments = value
+    elif field == "html":
+        if value not in _ALLOWED_HTML:
+            raise ConfigError(f"Invalid html mode '{value}'")
+        profile.html = value
+    elif field == "index":
+        if value.lower() not in {"true", "false"}:
+            raise ConfigError("Index must be true/false")
+        profile.index = value.lower() == "true"
+    elif field == "sanitize_html":
+        if value.lower() not in {"true", "false"}:
+            raise ConfigError("sanitize_html must be true/false")
+        profile.sanitize_html = value.lower() == "true"
+    else:
+        raise ConfigError(f"Unknown profile field '{field}'")
+    return config
+
+
+def update_source(config: Config, source_name: str, field: str, value: str) -> Config:
+    matches = [source for source in config.sources if source.name == source_name]
+    if not matches:
+        raise ConfigError(f"Source '{source_name}' not found")
+    source = matches[0]
+    if field == "path":
+        if source.type == "drive":
+            raise ConfigError("Drive sources do not accept 'path'")
+        source.path = Path(value).expanduser()
+    elif field == "folder":
+        if source.type != "drive":
+            raise ConfigError("Non-drive sources do not accept 'folder'")
+        source.folder = value
+    elif field == "type":
+        if value not in _ALLOWED_SOURCE_TYPES:
+            raise ConfigError(f"Invalid source type '{value}'")
+        source.type = value
+    else:
+        raise ConfigError(f"Unknown source field '{field}'")
+    return config
