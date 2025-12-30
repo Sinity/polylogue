@@ -48,9 +48,8 @@ def _seed_inbox(inbox: Path) -> None:
         path.write_text(json.dumps(convo, indent=2), encoding="utf-8")
 
 
-def _plan_lines(profile_name: str, counts: dict, sources: List[str], timestamp: int, cursors: dict) -> List[str]:
+def _plan_lines(counts: dict, sources: List[str], timestamp: int, cursors: dict) -> List[str]:
     lines = [
-        f"Profile: {profile_name}",
         f"Snapshot: {datetime.fromtimestamp(timestamp).isoformat(timespec='seconds')}",
         f"Conversations: {counts['conversations']}",
         f"Messages: {counts['messages']}",
@@ -78,7 +77,7 @@ def _plan_lines(profile_name: str, counts: dict, sources: List[str], timestamp: 
     return lines
 
 
-def _run_lines(profile_name: str, run_result: object) -> List[str]:
+def _run_lines(run_result: object) -> List[str]:
     counts = run_result.counts
     drift = run_result.drift
     def format_bucket(label: str, bucket: dict) -> str:
@@ -97,7 +96,6 @@ def _run_lines(profile_name: str, run_result: object) -> List[str]:
         format_bucket("New", drift.get("new", {})),
         format_bucket("Removed", drift.get("removed", {})),
         format_bucket("Changed", drift.get("changed", {})),
-        f"Profile: {profile_name}",
     ]
 
 
@@ -114,7 +112,7 @@ def main() -> None:
     from rich.console import Console
     from rich.text import Text
 
-    from polylogue.config import Config, Profile, Source
+    from polylogue.config import Config, Source
     from polylogue.run import plan_sources, run_sources
     from polylogue.search import search_messages
     from polylogue.ui.facade import ConsoleFacade
@@ -123,16 +121,14 @@ def main() -> None:
     archive_root = demo_root / "archive"
     _seed_inbox(inbox)
 
-    profile = Profile(attachments="download", html="auto", index=True, sanitize_html=True)
     config = Config(
-        version=1,
+        version=2,
         archive_root=archive_root,
-        sources=[Source(name="inbox", type="auto", path=inbox)],
-        profiles={"default": profile},
+        sources=[Source(name="inbox", path=inbox)],
         path=demo_root / "config.json",
     )
 
-    plan_result = plan_sources(config, profile=profile)
+    plan_result = plan_sources(config)
 
     import polylogue.run as run_mod
     import uuid
@@ -143,12 +139,10 @@ def main() -> None:
 
     run_result = run_sources(
         config=config,
-        profile=profile,
         stage="all",
         plan=None,
         ui=None,
         source_names=None,
-        profile_name="default",
     )
 
     search_result = search_messages("pipeline", archive_root=archive_root, limit=2)
@@ -175,7 +169,6 @@ def main() -> None:
         facade.summary(
             "Plan",
             _plan_lines(
-                "default",
                 plan_result.counts,
                 plan_result.sources,
                 plan_result.timestamp,
@@ -189,7 +182,7 @@ def main() -> None:
         console = new_console(facade)
         console.print(Text("$ polylogue run", style="bold #94a3b8"))
         console.print()
-        facade.summary("Run", _run_lines("default", run_result))
+        facade.summary("Run", _run_lines(run_result))
         console.save_svg(str(path))
 
     def render_search(path: Path) -> None:

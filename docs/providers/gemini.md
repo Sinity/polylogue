@@ -10,7 +10,7 @@ Polylogue ingests Gemini chats through the Drive API.
 
 - Reads `chunkedPrompt.chunks` in order and renders user/assistant turns.
 - Captures `driveDocument` references as attachments.
-- Attachment policy is controlled by the profile: `download`, `link`, or `skip`.
+- Downloads Drive attachments into the archive assets folder during ingest.
 
 ## Defaults
 
