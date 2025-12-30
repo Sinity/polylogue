@@ -6,8 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
+import os
+
 from .config import Config
 from .db import open_connection
+from .drive_client import default_credentials_path, default_token_path
 from .index_v666 import index_status
 
 HEALTH_TTL_SECONDS = 600
@@ -65,11 +68,28 @@ def run_health(config: Config) -> dict:
 
     for source in config.sources:
         if source.type == "drive":
-            folder = Path(source.folder) if source.folder else None
-            if folder and folder.exists():
-                checks.append(HealthCheck(f"source:{source.name}", "ok", str(folder)))
-            else:
-                checks.append(HealthCheck(f"source:{source.name}", "warning", f"missing folder: {source.folder}"))
+            cred_path = Path(os.environ.get("POLYLOGUE_CREDENTIAL_PATH", "")).expanduser() if os.environ.get(
+                "POLYLOGUE_CREDENTIAL_PATH"
+            ) else default_credentials_path()
+            token_path = Path(os.environ.get("POLYLOGUE_TOKEN_PATH", "")).expanduser() if os.environ.get(
+                "POLYLOGUE_TOKEN_PATH"
+            ) else default_token_path()
+            cred_status = "ok" if cred_path.exists() else "warning"
+            token_status = "ok" if token_path.exists() else "warning"
+            checks.append(
+                HealthCheck(
+                    f"source:{source.name}",
+                    cred_status,
+                    f"drive folder '{source.folder}' credentials: {cred_path}",
+                )
+            )
+            checks.append(
+                HealthCheck(
+                    f"source:{source.name}:token",
+                    token_status,
+                    f"drive token: {token_path}",
+                )
+            )
         else:
             if source.path and source.path.exists():
                 checks.append(HealthCheck(f"source:{source.name}", "ok", str(source.path)))
