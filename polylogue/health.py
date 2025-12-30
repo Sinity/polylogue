@@ -99,4 +99,15 @@ def get_health(config: Config) -> dict:
     return payload
 
 
-__all__ = ["get_health", "run_health", "HealthCheck", "HEALTH_TTL_SECONDS"]
+def cached_health_summary(archive_root: Path) -> str:
+    cached = _load_cached(archive_root)
+    if not cached:
+        return "not run"
+    timestamp = cached.get("timestamp")
+    if not isinstance(timestamp, int):
+        return "unknown"
+    age = int(time.time()) - timestamp
+    return f"cached {age}s ago"
+
+
+__all__ = ["get_health", "run_health", "HealthCheck", "HEALTH_TTL_SECONDS", "cached_health_summary"]

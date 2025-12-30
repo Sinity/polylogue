@@ -22,8 +22,8 @@ from ..config import (
     write_config,
 )
 from ..export_v666 import export_jsonl
-from ..health import get_health
-from ..run_v666 import plan_sources, run_sources
+from ..health import cached_health_summary, get_health
+from ..run_v666 import latest_run, plan_sources, run_sources
 from ..search_v666 import search_messages
 from .editor import open_in_browser, open_in_editor
 
@@ -65,14 +65,19 @@ def _print_summary(env: AppEnv) -> None:
         ui.console.print(f"[yellow]{exc}[/yellow]")
         ui.console.print("Run `polylogue config init` to create a config.")
         return
+    last_run = latest_run()
+    last_line = "Last run: none"
+    if last_run:
+        last_line = f"Last run: {last_run.get('run_id')} ({last_run.get('timestamp')})"
+    health_line = f"Health: {cached_health_summary(config.archive_root)}"
     ui.summary(
         "Polylogue",
         [
             f"Config: {config.path}",
             f"Archive root: {config.archive_root}",
             f"Profile: {profile_name}",
-            "Last run: unavailable (run ledger not implemented yet)",
-            "Health: unavailable (health checks not implemented yet)",
+            last_line,
+            health_line,
         ],
     )
 
