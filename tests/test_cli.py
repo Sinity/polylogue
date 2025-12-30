@@ -36,7 +36,7 @@ def test_cli_config_init_interactive_adds_drive(tmp_path, monkeypatch):
     assert result.exit_code == 0
 
     config = load_config(config_path)
-    drive_sources = [source for source in config.sources if source.type == "drive"]
+    drive_sources = [source for source in config.sources if source.folder]
     assert drive_sources
     assert drive_sources[0].folder == "Google AI Studio"
 
@@ -60,19 +60,11 @@ def test_cli_run_and_export(tmp_path, monkeypatch):
 
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_payload = {
-        "version": 1,
+        "version": 2,
         "archive_root": str(archive_root),
         "sources": [
-            {"name": "inbox", "type": "auto", "path": str(inbox)}
+            {"name": "inbox", "path": str(inbox)}
         ],
-        "profiles": {
-            "default": {
-                "attachments": "download",
-                "html": "auto",
-                "index": True,
-                "sanitize_html": True,
-            }
-        },
     }
     config_path.write_text(json.dumps(config_payload), encoding="utf-8")
 
@@ -104,17 +96,9 @@ def test_cli_search_csv_header(tmp_path, monkeypatch):
     config_path.parent.mkdir(parents=True, exist_ok=True)
     state_root = tmp_path / "state"
     config_payload = {
-        "version": 1,
+        "version": 2,
         "archive_root": str(tmp_path / "archive"),
         "sources": [],
-        "profiles": {
-            "default": {
-                "attachments": "download",
-                "html": "auto",
-                "index": True,
-                "sanitize_html": True,
-            }
-        },
     }
     config_path.write_text(json.dumps(config_payload), encoding="utf-8")
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
@@ -137,17 +121,9 @@ def test_cli_search_csv_header(tmp_path, monkeypatch):
 def test_cli_open_missing_render(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
     config_payload = {
-        "version": 1,
+        "version": 2,
         "archive_root": str(tmp_path / "archive"),
         "sources": [],
-        "profiles": {
-            "default": {
-                "attachments": "download",
-                "html": "auto",
-                "index": True,
-                "sanitize_html": True,
-            }
-        },
     }
     config_path.write_text(json.dumps(config_payload), encoding="utf-8")
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
@@ -171,17 +147,9 @@ def test_cli_search_open_prefers_html(tmp_path, monkeypatch):
     }
     (inbox / "conversation.json").write_text(json.dumps(payload), encoding="utf-8")
     config_payload = {
-        "version": 1,
+        "version": 2,
         "archive_root": str(archive_root),
-        "sources": [{"name": "inbox", "type": "auto", "path": str(inbox)}],
-        "profiles": {
-            "default": {
-                "attachments": "download",
-                "html": "auto",
-                "index": True,
-                "sanitize_html": True,
-            }
-        },
+        "sources": [{"name": "inbox", "path": str(inbox)}],
     }
     config_path.write_text(json.dumps(config_payload), encoding="utf-8")
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
@@ -204,66 +172,12 @@ def test_cli_search_open_prefers_html(tmp_path, monkeypatch):
     assert opened["path"].suffix == ".html"
 
 
-def test_cli_open_html_disabled_uses_editor(tmp_path, monkeypatch):
-    config_path = tmp_path / "config.json"
-    archive_root = tmp_path / "archive"
-    inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "id": "conv-md",
-        "messages": [
-            {"id": "m1", "role": "user", "content": "hello md"},
-        ],
-    }
-    (inbox / "conversation.json").write_text(json.dumps(payload), encoding="utf-8")
-    config_payload = {
-        "version": 1,
-        "archive_root": str(archive_root),
-        "sources": [{"name": "inbox", "type": "auto", "path": str(inbox)}],
-        "profiles": {
-            "default": {
-                "attachments": "download",
-                "html": "off",
-                "index": True,
-                "sanitize_html": True,
-            }
-        },
-    }
-    config_path.write_text(json.dumps(config_payload), encoding="utf-8")
-    monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
-
-    opened = {}
-
-    def fake_open_editor(path):
-        opened["path"] = path
-        return True
-
-    monkeypatch.setattr(click_app, "open_in_editor", fake_open_editor)
-    monkeypatch.setattr(click_app, "open_in_browser", lambda path: False)
-
-    runner = CliRunner()
-    run_result = runner.invoke(cli, ["run", "--stage", "all", "--no-plan"])
-    assert run_result.exit_code == 0
-    open_result = runner.invoke(cli, ["open", "--open"])
-    assert open_result.exit_code == 0
-    assert opened["path"].suffix == ".md"
-
-
 def test_cli_config_set_invalid(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
     config_payload = {
-        "version": 1,
+        "version": 2,
         "archive_root": str(tmp_path / "archive"),
         "sources": [],
-        "profiles": {
-            "default": {
-                "attachments": "download",
-                "html": "auto",
-                "index": True,
-                "sanitize_html": True,
-            }
-        },
     }
     config_path.write_text(json.dumps(config_payload), encoding="utf-8")
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
@@ -271,5 +185,5 @@ def test_cli_config_set_invalid(tmp_path, monkeypatch):
     runner = CliRunner()
     result = runner.invoke(cli, ["config", "set", "unknown.key", "value"])
     assert result.exit_code != 0
-    result = runner.invoke(cli, ["config", "set", "profile.default.html", "invalid"])
+    result = runner.invoke(cli, ["config", "set", "source.missing.type", "auto"])
     assert result.exit_code != 0
