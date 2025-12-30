@@ -13,6 +13,7 @@ from ..ui import create_ui
 from ..config import (
     Config,
     ConfigError,
+    Source,
     default_config,
     load_config,
     resolve_profile,
@@ -393,6 +394,15 @@ def config_init(env: AppEnv, interactive: bool) -> None:
         if not env.ui.confirm(f"Write config to {config.path}?", default=True):
             env.ui.console.print("Init cancelled.")
             return
+        if env.ui.confirm("Add a Drive source for Google AI Studio?", default=True):
+            source_name = env.ui.input("Drive source name", default="gemini") or "gemini"
+            source_name = source_name.strip() or "gemini"
+            folder_name = env.ui.input("Drive folder name", default="Google AI Studio") or "Google AI Studio"
+            folder_name = folder_name.strip() or "Google AI Studio"
+            if any(source.name == source_name for source in config.sources):
+                env.ui.console.print(f"Source '{source_name}' already exists; skipping.")
+            else:
+                config.sources.append(Source(name=source_name, type="drive", folder=folder_name))
     write_config(config)
     env.ui.console.print(f"Config written to {config.path}")
 
