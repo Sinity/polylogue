@@ -182,20 +182,20 @@ def run(env: AppEnv, no_plan: bool, strict_plan: bool, stage: str, sources: Tupl
         if selected_sources:
             plan_lines.insert(1, f"Sources: {', '.join(selected_sources)}")
         env.ui.summary("Plan", plan_lines)
-        if not env.ui.plain:
-            if not env.ui.confirm("Proceed with run?", default=True):
-                env.ui.console.print("Run cancelled.")
-                return
+    if not env.ui.plain:
+        if not env.ui.confirm("Proceed with run?", default=True):
+            env.ui.console.print("Run cancelled.")
+            return
     try:
-    result = run_sources(
-        config=config,
-        profile=profile,
-        stage=stage,
-        plan=plan_result,
-        ui=env.ui,
-        source_names=selected_sources,
-        profile_name=profile_name,
-    )
+        result = run_sources(
+            config=config,
+            profile=profile,
+            stage=stage,
+            plan=plan_result,
+            ui=env.ui,
+            source_names=selected_sources,
+            profile_name=profile_name,
+        )
     except DriveError as exc:
         _fail("run", str(exc))
     drift_total = sum(abs(value) for value in result.drift.values())
