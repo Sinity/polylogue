@@ -235,7 +235,10 @@ def run_sources(
                     counts[key] += value
 
     if stage in {"render", "all"}:
-        ids = processed_ids or _all_conversation_ids(source_names)
+        if stage == "render":
+            ids = _all_conversation_ids(source_names)
+        else:
+            ids = processed_ids
         for convo_id in ids:
             render_conversation(
                 conversation_id=convo_id,
