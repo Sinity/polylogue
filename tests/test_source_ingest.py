@@ -39,7 +39,7 @@ def test_auto_detect_chatgpt_and_claude(tmp_path):
     (tmp_path / "chatgpt.json").write_text(json.dumps(chatgpt_payload), encoding="utf-8")
     (tmp_path / "claude.json").write_text(json.dumps(claude_payload), encoding="utf-8")
 
-    source = Source(name="inbox", type="auto", path=tmp_path)
+    source = Source(name="inbox", path=tmp_path)
     conversations = list(iter_source_conversations(source))
     providers = {convo.provider_name for convo in conversations}
     assert "chatgpt" in providers
@@ -62,7 +62,7 @@ def test_claude_chat_messages_attachments(tmp_path):
     source_file = tmp_path / "claude.json"
     source_file.write_text(json.dumps(payload), encoding="utf-8")
 
-    source = Source(name="inbox", type="auto", path=source_file)
+    source = Source(name="inbox", path=source_file)
     conversations = list(iter_source_conversations(source))
     assert conversations
     convo = conversations[0]
