@@ -1,29 +1,130 @@
-<svg xmlns='http://www.w3.org/2000/svg' width='1184' height='348' viewBox='0 0 1184 348'>
-<defs>
-<style><![CDATA[
-.terminal-bg { fill: #0f172a; }
-.terminal-bar { fill: #111827; }
-.terminal-text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 14px; fill: #e2e8f0; }
-.terminal-dim { fill: #94a3b8; }
-]]></style>
-</defs>
-<rect class='terminal-bg' x='0' y='0' width='1184' height='348' rx='12' />
-<rect class='terminal-bar' x='0' y='0' width='1184' height='28' rx='12' />
-<circle cx='20' cy='14' r='6' fill='#f87171' />
-<circle cx='40' cy='14' r='6' fill='#fbbf24' />
-<circle cx='60' cy='14' r='6' fill='#34d399' />
-<text class='terminal-text terminal-dim' x='24' y='62' xml:space='preserve'>$ polylogue search "latency" --limit 2</text>
-<text class='terminal-text' x='24' y='82' xml:space='preserve'></text>
-<text class='terminal-text' x='24' y='102' xml:space='preserve'>-- Search --</text>
-<text class='terminal-text' x='24' y='122' xml:space='preserve'>Results: 2</text>
-<text class='terminal-text' x='24' y='142' xml:space='preserve'>Query: latency</text>
-<text class='terminal-text' x='24' y='162' xml:space='preserve'>1. Launch Plan (inbox)</text>
-<text class='terminal-text' x='24' y='182' xml:space='preserve'>   Draft the launch checklist for the [latency] review.</text>
-<text class='terminal-text' x='24' y='202' xml:space='preserve'>   /tmp/polylogue-readme-3h6jn5rf/archive/render/inbox/demo-1:47098fa6371e76602593a81c5ba417d8f4a712bf8640b188d71e0b25e6ceae2b/conversation.md</text>
-<text class='terminal-text' x='24' y='222' xml:space='preserve'>2. Launch Plan (inbox)</text>
-<text class='terminal-text' x='24' y='242' xml:space='preserve'>   Checklist:</text>
-<text class='terminal-text' x='24' y='262' xml:space='preserve'>- establish baseline [latency]</text>
-<text class='terminal-text' x='24' y='282' xml:space='preserve'>- capture p95/p99</text>
-<text class='terminal-text' x='24' y='302' xml:space='preserve'>- rollback plan</text>
-<text class='terminal-text' x='24' y='322' xml:space='preserve'>   /tmp/polylogue-readme-3h6jn5rf/archive/render/inbox/demo-1:47098fa6371e76602593a81c5ba417d8f4a712bf8640b188d71e0b25e6ceae2b/conversation.md</text>
+<svg class="rich-terminal" viewBox="0 0 1190 464.79999999999995" xmlns="http://www.w3.org/2000/svg">
+    <!-- Generated with Rich https://www.textualize.io -->
+    <style>
+
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Regular"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Regular.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Regular.woff") format("woff");
+        font-style: normal;
+        font-weight: 400;
+    }
+    @font-face {
+        font-family: "Fira Code";
+        src: local("FiraCode-Bold"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff2/FiraCode-Bold.woff2") format("woff2"),
+                url("https://cdnjs.cloudflare.com/ajax/libs/firacode/6.2.0/woff/FiraCode-Bold.woff") format("woff");
+        font-style: bold;
+        font-weight: 700;
+    }
+
+    .terminal-3046759891-matrix {
+        font-family: Fira Code, monospace;
+        font-size: 20px;
+        line-height: 24.4px;
+        font-variant-east-asian: full-width;
+    }
+
+    .terminal-3046759891-title {
+        font-size: 18px;
+        font-weight: bold;
+        font-family: arial;
+    }
+
+    .terminal-3046759891-r1 { fill: #94a3b8;font-weight: bold }
+.terminal-3046759891-r2 { fill: #c5c8c6 }
+.terminal-3046759891-r3 { fill: #3b82f6 }
+.terminal-3046759891-r4 { fill: #34d399;font-weight: bold }
+.terminal-3046759891-r5 { fill: #d6dee8 }
+.terminal-3046759891-r6 { fill: #68a0b3;font-weight: bold }
+.terminal-3046759891-r7 { fill: #c5c8c6;font-weight: bold }
+.terminal-3046759891-r8 { fill: #98729f }
+.terminal-3046759891-r9 { fill: #ff2c7a }
+    </style>
+
+    <defs>
+    <clipPath id="terminal-3046759891-clip-terminal">
+      <rect x="0" y="0" width="1170.1999999999998" height="413.79999999999995" />
+    </clipPath>
+    <clipPath id="terminal-3046759891-line-0">
+    <rect x="0" y="1.5" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-1">
+    <rect x="0" y="25.9" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-2">
+    <rect x="0" y="50.3" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-3">
+    <rect x="0" y="74.7" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-4">
+    <rect x="0" y="99.1" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-5">
+    <rect x="0" y="123.5" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-6">
+    <rect x="0" y="147.9" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-7">
+    <rect x="0" y="172.3" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-8">
+    <rect x="0" y="196.7" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-9">
+    <rect x="0" y="221.1" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-10">
+    <rect x="0" y="245.5" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-11">
+    <rect x="0" y="269.9" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-12">
+    <rect x="0" y="294.3" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-13">
+    <rect x="0" y="318.7" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-14">
+    <rect x="0" y="343.1" width="1171.2" height="24.65"/>
+            </clipPath>
+<clipPath id="terminal-3046759891-line-15">
+    <rect x="0" y="367.5" width="1171.2" height="24.65"/>
+            </clipPath>
+    </defs>
+
+    <rect fill="#292929" stroke="rgba(255,255,255,0.35)" stroke-width="1" x="1" y="1" width="1188" height="462.8" rx="8"/><text class="terminal-3046759891-title" fill="#c5c8c6" text-anchor="middle" x="594" y="27">Rich</text>
+            <g transform="translate(26,22)">
+            <circle cx="0" cy="0" r="7" fill="#ff5f57"/>
+            <circle cx="22" cy="0" r="7" fill="#febc2e"/>
+            <circle cx="44" cy="0" r="7" fill="#28c840"/>
+            </g>
+        
+    <g transform="translate(9, 41)" clip-path="url(#terminal-3046759891-clip-terminal)">
+    
+    <g class="terminal-3046759891-matrix">
+    <text class="terminal-3046759891-r1" x="0" y="20" textLength="475.8" clip-path="url(#terminal-3046759891-line-0)">$&#160;polylogue&#160;search&#160;&quot;pipeline&quot;&#160;--limit&#160;2</text><text class="terminal-3046759891-r2" x="1171.2" y="20" textLength="12.2" clip-path="url(#terminal-3046759891-line-0)">
+</text><text class="terminal-3046759891-r2" x="1171.2" y="44.4" textLength="12.2" clip-path="url(#terminal-3046759891-line-1)">
+</text><text class="terminal-3046759891-r3" x="0" y="68.8" textLength="24.4" clip-path="url(#terminal-3046759891-line-2)">╭─</text><text class="terminal-3046759891-r3" x="24.4" y="68.8" textLength="146.4" clip-path="url(#terminal-3046759891-line-2)">&#160;&#160;&#160;Search&#160;&#160;&#160;</text><text class="terminal-3046759891-r3" x="170.8" y="68.8" textLength="976" clip-path="url(#terminal-3046759891-line-2)">────────────────────────────────────────────────────────────────────────────────</text><text class="terminal-3046759891-r3" x="1146.8" y="68.8" textLength="24.4" clip-path="url(#terminal-3046759891-line-2)">─╮</text><text class="terminal-3046759891-r2" x="1171.2" y="68.8" textLength="12.2" clip-path="url(#terminal-3046759891-line-2)">
+</text><text class="terminal-3046759891-r3" x="0" y="93.2" textLength="12.2" clip-path="url(#terminal-3046759891-line-3)">│</text><text class="terminal-3046759891-r3" x="1159" y="93.2" textLength="12.2" clip-path="url(#terminal-3046759891-line-3)">│</text><text class="terminal-3046759891-r2" x="1171.2" y="93.2" textLength="12.2" clip-path="url(#terminal-3046759891-line-3)">
+</text><text class="terminal-3046759891-r3" x="0" y="117.6" textLength="12.2" clip-path="url(#terminal-3046759891-line-4)">│</text><text class="terminal-3046759891-r4" x="36.6" y="117.6" textLength="24.4" clip-path="url(#terminal-3046759891-line-4)">•&#160;</text><text class="terminal-3046759891-r5" x="61" y="117.6" textLength="122" clip-path="url(#terminal-3046759891-line-4)">Results:&#160;2</text><text class="terminal-3046759891-r3" x="1159" y="117.6" textLength="12.2" clip-path="url(#terminal-3046759891-line-4)">│</text><text class="terminal-3046759891-r2" x="1171.2" y="117.6" textLength="12.2" clip-path="url(#terminal-3046759891-line-4)">
+</text><text class="terminal-3046759891-r3" x="0" y="142" textLength="12.2" clip-path="url(#terminal-3046759891-line-5)">│</text><text class="terminal-3046759891-r4" x="36.6" y="142" textLength="24.4" clip-path="url(#terminal-3046759891-line-5)">•&#160;</text><text class="terminal-3046759891-r5" x="61" y="142" textLength="183" clip-path="url(#terminal-3046759891-line-5)">Query:&#160;pipeline</text><text class="terminal-3046759891-r3" x="1159" y="142" textLength="12.2" clip-path="url(#terminal-3046759891-line-5)">│</text><text class="terminal-3046759891-r2" x="1171.2" y="142" textLength="12.2" clip-path="url(#terminal-3046759891-line-5)">
+</text><text class="terminal-3046759891-r3" x="0" y="166.4" textLength="12.2" clip-path="url(#terminal-3046759891-line-6)">│</text><text class="terminal-3046759891-r3" x="1159" y="166.4" textLength="12.2" clip-path="url(#terminal-3046759891-line-6)">│</text><text class="terminal-3046759891-r2" x="1171.2" y="166.4" textLength="12.2" clip-path="url(#terminal-3046759891-line-6)">
+</text><text class="terminal-3046759891-r3" x="0" y="190.8" textLength="12.2" clip-path="url(#terminal-3046759891-line-7)">│</text><text class="terminal-3046759891-r3" x="1159" y="190.8" textLength="12.2" clip-path="url(#terminal-3046759891-line-7)">│</text><text class="terminal-3046759891-r2" x="1171.2" y="190.8" textLength="12.2" clip-path="url(#terminal-3046759891-line-7)">
+</text><text class="terminal-3046759891-r3" x="0" y="215.2" textLength="1171.2" clip-path="url(#terminal-3046759891-line-8)">╰──────────────────────────────────────────────────────────────────────────────────────────────╯</text><text class="terminal-3046759891-r2" x="1171.2" y="215.2" textLength="12.2" clip-path="url(#terminal-3046759891-line-8)">
+</text><text class="terminal-3046759891-r6" x="0" y="239.6" textLength="12.2" clip-path="url(#terminal-3046759891-line-9)">1</text><text class="terminal-3046759891-r2" x="12.2" y="239.6" textLength="170.8" clip-path="url(#terminal-3046759891-line-9)">.&#160;Launch&#160;Plan&#160;</text><text class="terminal-3046759891-r7" x="183" y="239.6" textLength="12.2" clip-path="url(#terminal-3046759891-line-9)">(</text><text class="terminal-3046759891-r2" x="195.2" y="239.6" textLength="61" clip-path="url(#terminal-3046759891-line-9)">inbox</text><text class="terminal-3046759891-r7" x="256.2" y="239.6" textLength="12.2" clip-path="url(#terminal-3046759891-line-9)">)</text><text class="terminal-3046759891-r2" x="1171.2" y="239.6" textLength="12.2" clip-path="url(#terminal-3046759891-line-9)">
+</text><text class="terminal-3046759891-r2" x="0" y="264" textLength="463.6" clip-path="url(#terminal-3046759891-line-10)">&#160;&#160;&#160;Draft&#160;the&#160;launch&#160;checklist&#160;for&#160;the&#160;</text><text class="terminal-3046759891-r2" x="463.6" y="264" textLength="97.6" clip-path="url(#terminal-3046759891-line-10)">&#160;review.</text><text class="terminal-3046759891-r2" x="1171.2" y="264" textLength="12.2" clip-path="url(#terminal-3046759891-line-10)">
+</text><text class="terminal-3046759891-r2" x="0" y="288.4" textLength="48.8" clip-path="url(#terminal-3046759891-line-11)">&#160;&#160;&#160;~</text><text class="terminal-3046759891-r8" x="48.8" y="288.4" textLength="549" clip-path="url(#terminal-3046759891-line-11)">/.local/share/polylogue/archive/render/inbox/</text><text class="terminal-3046759891-r9" x="597.8" y="288.4" textLength="73.2" clip-path="url(#terminal-3046759891-line-11)">demo-1</text><text class="terminal-3046759891-r2" x="671" y="288.4" textLength="500.2" clip-path="url(#terminal-3046759891-line-11)">:600d5780a66751543ab54f991d21f3e999ca1470</text><text class="terminal-3046759891-r2" x="1171.2" y="288.4" textLength="12.2" clip-path="url(#terminal-3046759891-line-11)">
+</text><text class="terminal-3046759891-r2" x="0" y="312.8" textLength="488" clip-path="url(#terminal-3046759891-line-12)">b2823b0699d4ce041dade02f/conversation.md</text><text class="terminal-3046759891-r2" x="1171.2" y="312.8" textLength="12.2" clip-path="url(#terminal-3046759891-line-12)">
+</text><text class="terminal-3046759891-r6" x="0" y="337.2" textLength="12.2" clip-path="url(#terminal-3046759891-line-13)">2</text><text class="terminal-3046759891-r2" x="12.2" y="337.2" textLength="207.4" clip-path="url(#terminal-3046759891-line-13)">.&#160;Search&#160;Tune-up&#160;</text><text class="terminal-3046759891-r7" x="219.6" y="337.2" textLength="12.2" clip-path="url(#terminal-3046759891-line-13)">(</text><text class="terminal-3046759891-r2" x="231.8" y="337.2" textLength="61" clip-path="url(#terminal-3046759891-line-13)">inbox</text><text class="terminal-3046759891-r7" x="292.8" y="337.2" textLength="12.2" clip-path="url(#terminal-3046759891-line-13)">)</text><text class="terminal-3046759891-r2" x="1171.2" y="337.2" textLength="12.2" clip-path="url(#terminal-3046759891-line-13)">
+</text><text class="terminal-3046759891-r2" x="0" y="361.6" textLength="170.8" clip-path="url(#terminal-3046759891-line-14)">&#160;&#160;&#160;Update&#160;the&#160;</text><text class="terminal-3046759891-r2" x="170.8" y="361.6" textLength="353.8" clip-path="url(#terminal-3046759891-line-14)">&#160;to&#160;use&#160;incremental&#160;indexing.</text><text class="terminal-3046759891-r2" x="1171.2" y="361.6" textLength="12.2" clip-path="url(#terminal-3046759891-line-14)">
+</text><text class="terminal-3046759891-r2" x="0" y="386" textLength="48.8" clip-path="url(#terminal-3046759891-line-15)">&#160;&#160;&#160;~</text><text class="terminal-3046759891-r8" x="48.8" y="386" textLength="549" clip-path="url(#terminal-3046759891-line-15)">/.local/share/polylogue/archive/render/inbox/</text><text class="terminal-3046759891-r9" x="597.8" y="386" textLength="73.2" clip-path="url(#terminal-3046759891-line-15)">demo-2</text><text class="terminal-3046759891-r2" x="671" y="386" textLength="500.2" clip-path="url(#terminal-3046759891-line-15)">:9e7cf2a1ba5980836a91264467966df7f2292f45</text><text class="terminal-3046759891-r2" x="1171.2" y="386" textLength="12.2" clip-path="url(#terminal-3046759891-line-15)">
+</text><text class="terminal-3046759891-r2" x="0" y="410.4" textLength="488" clip-path="url(#terminal-3046759891-line-16)">cb4146d7489396327805ef16/conversation.md</text><text class="terminal-3046759891-r2" x="1171.2" y="410.4" textLength="12.2" clip-path="url(#terminal-3046759891-line-16)">
+</text>
+    </g>
+    </g>
 </svg>
