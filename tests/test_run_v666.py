@@ -86,3 +86,32 @@ def test_render_filtered_by_source_meta(workspace_env, tmp_path):
     assert result.counts["conversations"] == 0
     render_root = workspace_env["archive_root"] / "render"
     assert any(render_root.rglob("conversation.md"))
+
+
+def test_run_all_skips_render_when_unchanged(workspace_env, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "id": "conv1",
+        "messages": [
+            {"id": "m1", "role": "user", "content": "hello"},
+            {"id": "m2", "role": "assistant", "content": "world"},
+        ],
+    }
+    source_file = inbox / "conversation.json"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    config = default_config()
+    config.sources = [Source(name="inbox", type="auto", path=source_file)]
+    write_config(config)
+
+    profile = config.profiles["default"]
+    run_sources(config=config, profile=profile, stage="all")
+
+    render_root = workspace_env["archive_root"] / "render"
+    convo_path = next(render_root.rglob("conversation.md"))
+    first_mtime = convo_path.stat().st_mtime
+
+    run_sources(config=config, profile=profile, stage="all")
+    second_mtime = convo_path.stat().st_mtime
+    assert first_mtime == second_mtime
