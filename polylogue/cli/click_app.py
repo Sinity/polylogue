@@ -23,6 +23,7 @@ from ..config import (
 )
 from ..export_v666 import export_jsonl
 from ..health import cached_health_summary, get_health
+from ..drive_client import DriveError
 from ..run_v666 import latest_run, plan_sources, run_sources
 from ..search_v666 import search_messages
 from .editor import open_in_browser, open_in_editor
@@ -116,7 +117,11 @@ def plan(env: AppEnv) -> None:
         config, profile_name = _load_effective_config(env)
     except ConfigError as exc:
         _fail("plan", str(exc))
-    plan_result = plan_sources(config)
+    profile = config.profiles[profile_name]
+    try:
+        plan_result = plan_sources(config, profile=profile, ui=env.ui)
+    except DriveError as exc:
+        _fail("plan", str(exc))
     env.ui.summary(
         "Plan",
         [
@@ -141,7 +146,10 @@ def run(env: AppEnv, no_plan: bool, strict_plan: bool, stage: str) -> None:
     profile = config.profiles[profile_name]
     plan_result = None
     if not no_plan:
-        plan_result = plan_sources(config)
+        try:
+            plan_result = plan_sources(config, profile=profile, ui=env.ui)
+        except DriveError as exc:
+            _fail("run", str(exc))
         env.ui.summary(
             "Plan",
             [
@@ -155,7 +163,10 @@ def run(env: AppEnv, no_plan: bool, strict_plan: bool, stage: str) -> None:
             if not env.ui.confirm("Proceed with run?", default=True):
                 env.ui.console.print("Run cancelled.")
                 return
-    result = run_sources(config=config, profile=profile, stage=stage, plan=plan_result)
+    try:
+        result = run_sources(config=config, profile=profile, stage=stage, plan=plan_result, ui=env.ui)
+    except DriveError as exc:
+        _fail("run", str(exc))
     drift_total = sum(abs(value) for value in result.drift.values())
     env.ui.summary(
         "Run",
@@ -181,7 +192,10 @@ def ingest(env: AppEnv) -> None:
     except ConfigError as exc:
         _fail("ingest", str(exc))
     profile = config.profiles[profile_name]
-    result = run_sources(config=config, profile=profile, stage="ingest", plan=None)
+    try:
+        result = run_sources(config=config, profile=profile, stage="ingest", plan=None, ui=env.ui)
+    except DriveError as exc:
+        _fail("ingest", str(exc))
     env.ui.summary(
         "Ingest",
         [
@@ -202,7 +216,7 @@ def render(env: AppEnv) -> None:
     except ConfigError as exc:
         _fail("render", str(exc))
     profile = config.profiles[profile_name]
-    result = run_sources(config=config, profile=profile, stage="render", plan=None)
+    result = run_sources(config=config, profile=profile, stage="render", plan=None, ui=env.ui)
     env.ui.summary(
         "Render",
         [

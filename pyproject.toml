@@ -11,6 +11,8 @@ authors = [{ name = "Polylogue Maintainers" }]
 requires-python = ">=3.10"
 dependencies = [
   "google-auth-oauthlib",
+  "google-api-python-client",
+  "google-auth-httplib2",
   "httpx[http2]>=0.25.0",
   "pathvalidate",
   "aiofiles",

@@ -9,10 +9,11 @@ from uuid import uuid4
 
 from .config import Config, Profile
 from .db import open_connection
+from .drive_ingest import iter_drive_conversations
 from .index_v666 import rebuild_index
 from .ingest import IngestBundle, ingest_bundle
 from .render_v666 import render_conversation
-from .source_ingest import iter_source_conversations
+from .source_ingest import ParsedConversation, iter_source_conversations
 from .store import ConversationRecord, MessageRecord, AttachmentRecord, RunRecord, record_run
 
 
@@ -46,19 +47,30 @@ def _message_id(provider_message_id: str, content_hash: str) -> str:
     return f"{provider_message_id}:{content_hash}"
 
 
-def plan_sources(config: Config) -> PlanResult:
+def plan_sources(config: Config, *, profile: Optional[Profile] = None, ui: Optional[object] = None) -> PlanResult:
     counts = {"conversations": 0, "messages": 0, "attachments": 0}
     sources = []
+    effective_profile = profile or Profile()
     for source in config.sources:
         sources.append(source.name)
-        conversations = iter_source_conversations(source)
+        if source.type == "drive":
+            conversations = iter_drive_conversations(
+                source=source,
+                profile=effective_profile,
+                archive_root=config.archive_root,
+                ui=ui,
+                download_assets=False,
+            )
+        else:
+            conversations = iter_source_conversations(source)
         for convo in conversations:
             counts["conversations"] += 1
             counts["messages"] += len(convo.messages)
+            counts["attachments"] += len(convo.attachments)
     return PlanResult(timestamp=int(time.time()), counts=counts, sources=sources)
 
 
-def _ingest_conversation(convo) -> Tuple[str, Dict[str, int]]:
+def _ingest_conversation(convo: ParsedConversation) -> Tuple[str, Dict[str, int]]:
     combined_text = "\n".join(msg.text for msg in convo.messages)
     content_hash = _hash_text(combined_text)
     conversation_id = _conversation_id(convo.provider_conversation_id, content_hash)
@@ -75,12 +87,15 @@ def _ingest_conversation(convo) -> Tuple[str, Dict[str, int]]:
     )
 
     messages: List[MessageRecord] = []
+    message_ids: Dict[str, str] = {}
     for idx, msg in enumerate(convo.messages, start=1):
         message_hash = _hash_text(msg.text)
         provider_message_id = msg.provider_message_id or f"msg-{idx}"
+        message_id = _message_id(provider_message_id, message_hash)
+        message_ids[str(provider_message_id)] = message_id
         messages.append(
             MessageRecord(
-                message_id=_message_id(provider_message_id, message_hash),
+                message_id=message_id,
                 conversation_id=conversation_id,
                 provider_message_id=provider_message_id,
                 role=msg.role,
@@ -91,11 +106,28 @@ def _ingest_conversation(convo) -> Tuple[str, Dict[str, int]]:
             )
         )
 
+    attachments: List[AttachmentRecord] = []
+    for att in convo.attachments:
+        attachment_id = att.provider_attachment_id
+        if not attachment_id:
+            continue
+        attachments.append(
+            AttachmentRecord(
+                attachment_id=attachment_id,
+                conversation_id=conversation_id,
+                message_id=message_ids.get(att.message_provider_id or ""),
+                mime_type=att.mime_type,
+                size_bytes=att.size_bytes,
+                path=att.path,
+                provider_meta=att.provider_meta,
+            )
+        )
+
     result = ingest_bundle(
         IngestBundle(
             conversation=conversation_record,
             messages=messages,
-            attachments=[],
+            attachments=attachments,
         )
     )
     return conversation_id, {
@@ -128,6 +160,7 @@ def run_sources(
     profile: Profile,
     stage: str = "all",
     plan: Optional[PlanResult] = None,
+    ui: Optional[object] = None,
 ) -> RunResult:
     start = time.perf_counter()
     counts = {
@@ -143,8 +176,16 @@ def run_sources(
     if stage in {"ingest", "all"}:
         for source in config.sources:
             if source.type == "drive":
-                continue
-            for convo in iter_source_conversations(source):
+                conversations = iter_drive_conversations(
+                    source=source,
+                    profile=profile,
+                    archive_root=config.archive_root,
+                    ui=ui,
+                    download_assets=True,
+                )
+            else:
+                conversations = iter_source_conversations(source)
+            for convo in conversations:
                 convo_id, result_counts = _ingest_conversation(convo)
                 processed_ids.append(convo_id)
                 for key, value in result_counts.items():
