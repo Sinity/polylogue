@@ -22,7 +22,7 @@ Polylogue is built for Nix-first development, but you can run it directly from t
 
 ```bash
 polylogue config init --interactive
-polylogue plan
+polylogue run --dry-run
 polylogue run
 polylogue search "your query"
 ```
@@ -31,7 +31,7 @@ Drop local exports under `~/.local/share/polylogue/inbox` (default), or add cust
 
 ## Preview
 
-![Plan output](docs/assets/cli-plan.svg)
+![Dry run output](docs/assets/cli-plan.svg)
 ![Run output](docs/assets/cli-run.svg)
 ![Search output](docs/assets/cli-search.svg)
 
@@ -58,8 +58,8 @@ Notes:
 
 - `POLYLOGUE_ARCHIVE_ROOT` overrides `archive_root` at runtime.
 - Local sources use `path`; Drive sources use `folder`.
-- Use `polylogue config show --json` to inspect resolved paths.
-- `--source NAME` (repeatable) limits `plan/run/ingest/render` to selected sources.
+- Use `polylogue config show` to inspect resolved paths.
+- `--source NAME` (repeatable) limits `run` to selected sources.
 - `POLYLOGUE_FORCE_PLAIN=1` forces the non-interactive UI mode.
 
 ## Drive auth
@@ -70,10 +70,9 @@ Notes:
 
 ## Commands
 
-- `polylogue plan` - show planned counts
 - `polylogue run` - ingest, render, and index
-- `polylogue ingest` - ingest only
-- `polylogue render` - render only
+- `polylogue run --dry-run` - preview counts without writing
+- `polylogue run --stage ingest|render|index` - run one stage
 - `polylogue search QUERY` - full-text search (FTS)
 - `polylogue export` - export DB to JSONL
 - `polylogue open` - open latest render
