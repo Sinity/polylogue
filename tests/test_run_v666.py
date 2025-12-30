@@ -115,3 +115,43 @@ def test_run_all_skips_render_when_unchanged(workspace_env, tmp_path):
     run_sources(config=config, profile=profile, stage="all")
     second_mtime = convo_path.stat().st_mtime
     assert first_mtime == second_mtime
+
+
+def test_incremental_index_updates(workspace_env, tmp_path, monkeypatch):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    payload_a = {
+        "id": "conv-a",
+        "messages": [
+            {"id": "m1", "role": "user", "content": "alpha"},
+        ],
+    }
+    payload_b = {
+        "id": "conv-b",
+        "messages": [
+            {"id": "m1", "role": "user", "content": "beta"},
+        ],
+    }
+    source_a = inbox / "a.json"
+    source_b = inbox / "b.json"
+    source_a.write_text(json.dumps(payload_a), encoding="utf-8")
+    source_b.write_text(json.dumps(payload_b), encoding="utf-8")
+
+    config = default_config()
+    config.sources = [Source(name="inbox", type="auto", path=inbox)]
+    write_config(config)
+
+    profile = config.profiles["default"]
+    run_sources(config=config, profile=profile, stage="all")
+
+    payload_b["messages"].append({"id": "m2", "role": "user", "content": "beta 2"})
+    source_b.write_text(json.dumps(payload_b), encoding="utf-8")
+
+    def fail_rebuild():
+        raise AssertionError("rebuild_index should not be called when index exists")
+
+    import polylogue.run_v666 as run_mod
+
+    monkeypatch.setattr(run_mod, "rebuild_index", fail_rebuild)
+
+    run_sources(config=config, profile=profile, stage="all")
