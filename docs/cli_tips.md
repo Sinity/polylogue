@@ -10,8 +10,12 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 
 ## Source scoping
 
-- Use `--source NAME` (repeatable) on `plan`, `run`, `ingest`, and `render` to avoid reprocessing everything.
+- Use `--source NAME` (repeatable) on `run` to avoid reprocessing everything.
 - Example: `polylogue run --source gemini --stage ingest`.
+
+## Dry run
+
+- Use `polylogue run --dry-run` to preview counts without writing.
 
 ## Index rebuild
 

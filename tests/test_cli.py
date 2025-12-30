@@ -74,7 +74,7 @@ def test_cli_run_and_export(tmp_path, monkeypatch):
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
 
     runner = CliRunner()
-    run_result = runner.invoke(cli, ["run", "--stage", "all", "--no-plan"])
+    run_result = runner.invoke(cli, ["run", "--stage", "all"])
     assert run_result.exit_code == 0
 
     render_root = archive_root / "render"
@@ -111,11 +111,11 @@ def test_cli_search_csv_header(tmp_path, monkeypatch):
 
     # create index and retry with no hits
     runner.invoke(cli, ["--plain", "config", "show"])
-    runner.invoke(cli, ["--plain", "run", "--stage", "index", "--no-plan"])
+    runner.invoke(cli, ["--plain", "run", "--stage", "index"])
     result = runner.invoke(cli, ["--plain", "search", "missing", "--csv", str(output)])
     assert result.exit_code == 0
     header = output.read_text(encoding="utf-8").splitlines()[0]
-    assert header.startswith("provider,conversation_id,message_id")
+    assert header.startswith("source,provider,conversation_id,message_id")
 
 
 def test_cli_open_missing_render(tmp_path, monkeypatch):
@@ -165,7 +165,7 @@ def test_cli_search_open_prefers_html(tmp_path, monkeypatch):
     monkeypatch.setattr(click_app, "open_in_editor", lambda path: False)
 
     runner = CliRunner()
-    run_result = runner.invoke(cli, ["run", "--stage", "all", "--no-plan"])
+    run_result = runner.invoke(cli, ["run", "--stage", "all"])
     assert run_result.exit_code == 0
     search_result = runner.invoke(cli, ["search", "hello", "--limit", "1", "--open"])
     assert search_result.exit_code == 0

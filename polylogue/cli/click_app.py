@@ -97,6 +97,42 @@ def _format_drift(drift: dict) -> List[str]:
     ]
 
 
+def _format_counts(counts: dict) -> str:
+    return (
+        f"{counts.get('conversations', 0)} conv, "
+        f"{counts.get('messages', 0)} msg"
+    )
+
+
+def _format_attachments(counts: dict) -> str:
+    return f"{counts.get('attachments', 0)} att"
+
+
+def _format_skipped(counts: dict) -> str:
+    return (
+        f"{counts.get('skipped_conversations', 0)} conv, "
+        f"{counts.get('skipped_messages', 0)} msg, "
+        f"{counts.get('skipped_attachments', 0)} att"
+    )
+
+
+def _format_index_status(stage: str, indexed: bool, index_error: Optional[str]) -> str:
+    if stage in {"ingest", "render"}:
+        return "Index: skipped"
+    if index_error:
+        return "Index: error"
+    if indexed:
+        return "Index: ok"
+    return "Index: up-to-date"
+
+
+def _format_source_label(source_name: Optional[str], provider_name: str) -> str:
+    if source_name and source_name != provider_name:
+        return f"{source_name}/{provider_name}"
+    return source_name or provider_name
+
+
+
 def _fail(command: str, message: str) -> None:
     raise SystemExit(f"{command}: {message}")
 
@@ -169,45 +205,15 @@ def cli(ctx: click.Context, plain: bool, interactive: bool, config_path: Optiona
 
 
 @cli.command()
-@click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
-@click.pass_obj
-def plan(env: AppEnv, sources: Tuple[str, ...]) -> None:
-    try:
-        config = _load_effective_config(env)
-    except ConfigError as exc:
-        _fail("plan", str(exc))
-    selected_sources = _resolve_sources(config, sources, "plan")
-    try:
-        plan_result = plan_sources(config, ui=env.ui, source_names=selected_sources)
-    except DriveError as exc:
-        _fail("plan", str(exc))
-    lines = [
-        f"Snapshot: {_format_timestamp(plan_result.timestamp)}",
-        f"Conversations: {plan_result.counts['conversations']}",
-        f"Messages: {plan_result.counts['messages']}",
-        f"Attachments: {plan_result.counts['attachments']}",
-    ]
-    if selected_sources:
-        lines.insert(1, f"Sources: {', '.join(selected_sources)}")
-    cursor_line = _format_cursors(plan_result.cursors)
-    if cursor_line:
-        lines.append(f"Cursors: {cursor_line}")
-    env.ui.summary(
-        "Plan",
-        lines,
-    )
-
-
-@cli.command()
-@click.option("--no-plan", is_flag=True, help="Skip plan preview")
-@click.option("--strict-plan", is_flag=True, help="Fail if plan drift is detected")
+@click.option("--dry-run", is_flag=True, help="Preview work without writing")
+@click.option("--verbose", is_flag=True, help="Show detailed counts and drift")
 @click.option("--stage", type=click.Choice(["ingest", "render", "index", "all"]), default="all")
 @click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
 @click.pass_obj
 def run(
     env: AppEnv,
-    no_plan: bool,
-    strict_plan: bool,
+    dry_run: bool,
+    verbose: bool,
     stage: str,
     sources: Tuple[str, ...],
 ) -> None:
@@ -216,24 +222,23 @@ def run(
     except ConfigError as exc:
         _fail("run", str(exc))
     selected_sources = _resolve_sources(config, sources, "run")
-    plan_result = None
-    if not no_plan:
+    if dry_run:
         try:
             plan_result = plan_sources(config, ui=env.ui, source_names=selected_sources)
         except DriveError as exc:
             _fail("run", str(exc))
-        plan_lines = [
-            f"Snapshot: {_format_timestamp(plan_result.timestamp)}",
-            f"Conversations: {plan_result.counts['conversations']}",
-            f"Messages: {plan_result.counts['messages']}",
-            f"Attachments: {plan_result.counts['attachments']}",
-        ]
+        plan_lines = []
         if selected_sources:
-            plan_lines.insert(1, f"Sources: {', '.join(selected_sources)}")
+            plan_lines.append(f"Sources: {', '.join(selected_sources)}")
+        plan_lines.append(f"Counts: {_format_counts(plan_result.counts)}")
         cursor_line = _format_cursors(plan_result.cursors)
         if cursor_line:
             plan_lines.append(f"Cursors: {cursor_line}")
-        env.ui.summary("Plan", plan_lines)
+        if verbose:
+            plan_lines.append(f"Attachments: {_format_attachments(plan_result.counts)}")
+            plan_lines.append(f"Snapshot: {_format_timestamp(plan_result.timestamp)}")
+        env.ui.summary("Dry Run", plan_lines)
+        return
     if not env.ui.plain:
         if not env.ui.confirm("Proceed with run?", default=True):
             env.ui.console.print("Run cancelled.")
@@ -242,30 +247,27 @@ def run(
         result = run_sources(
             config=config,
             stage=stage,
-            plan=plan_result,
+            plan=None,
             ui=env.ui,
             source_names=selected_sources,
         )
     except DriveError as exc:
         _fail("run", str(exc))
-    drift_total = 0
-    if plan_result is not None:
-        drift_total = sum(
-            abs(value)
-            for bucket in result.drift.values()
-            for value in bucket.values()
-        )
+    run_lines = [
+        f"Counts: {_format_counts(result.counts)}",
+        _format_index_status(stage, result.indexed, result.index_error),
+        f"Duration: {result.duration_ms}ms",
+    ]
+    if verbose:
+        if selected_sources:
+            run_lines.insert(0, f"Sources: {', '.join(selected_sources)}")
+        run_lines.append(f"Attachments: {_format_attachments(result.counts)}")
+        run_lines.append(f"Skipped: {_format_skipped(result.counts)}")
+        run_lines.append(f"Run ID: {result.run_id}")
+        run_lines.extend(_format_drift(result.drift))
     env.ui.summary(
-        "Run",
-        [
-            f"Run ID: {result.run_id}",
-            f"Conversations: {result.counts['conversations']} (skipped {result.counts['skipped_conversations']})",
-            f"Messages: {result.counts['messages']} (skipped {result.counts['skipped_messages']})",
-            f"Attachments: {result.counts['attachments']} (skipped {result.counts['skipped_attachments']})",
-            f"Indexed: {result.indexed}",
-            f"Duration: {result.duration_ms}ms",
-            *_format_drift(result.drift),
-        ],
+        f"Run ({stage})" if stage != "all" else "Run",
+        run_lines,
     )
     if result.index_error:
         error_line = f"Index error: {result.index_error}"
@@ -276,64 +278,6 @@ def run(
         else:
             env.ui.console.print(f"[yellow]{error_line}[/yellow]")
             env.ui.console.print(f"[yellow]{hint_line}[/yellow]")
-    if strict_plan and drift_total != 0:
-        _fail("run", f"plan drift detected: {result.drift}")
-
-
-@cli.command()
-@click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
-@click.pass_obj
-def ingest(env: AppEnv, sources: Tuple[str, ...]) -> None:
-    try:
-        config = _load_effective_config(env)
-    except ConfigError as exc:
-        _fail("ingest", str(exc))
-    selected_sources = _resolve_sources(config, sources, "ingest")
-    try:
-        result = run_sources(
-            config=config,
-            stage="ingest",
-            plan=None,
-            ui=env.ui,
-            source_names=selected_sources,
-        )
-    except DriveError as exc:
-        _fail("ingest", str(exc))
-    env.ui.summary(
-        "Ingest",
-        [
-            f"Run ID: {result.run_id}",
-            f"Conversations: {result.counts['conversations']} (skipped {result.counts['skipped_conversations']})",
-            f"Messages: {result.counts['messages']} (skipped {result.counts['skipped_messages']})",
-            f"Attachments: {result.counts['attachments']} (skipped {result.counts['skipped_attachments']})",
-            f"Duration: {result.duration_ms}ms",
-        ],
-    )
-
-
-@cli.command()
-@click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
-@click.pass_obj
-def render(env: AppEnv, sources: Tuple[str, ...]) -> None:
-    try:
-        config = _load_effective_config(env)
-    except ConfigError as exc:
-        _fail("render", str(exc))
-    selected_sources = _resolve_sources(config, sources, "render")
-    result = run_sources(
-        config=config,
-        stage="render",
-        plan=None,
-        ui=env.ui,
-        source_names=selected_sources,
-    )
-    env.ui.summary(
-        "Render",
-        [
-            f"Run ID: {result.run_id}",
-            f"Duration: {result.duration_ms}ms",
-        ],
-    )
 
 
 @cli.command()
@@ -366,23 +310,23 @@ def search(
     hits = result.hits
 
     if json_output:
-        payload = [
-            {
-                **hit.__dict__,
-                "conversation_path": str(hit.conversation_path),
-            }
-            for hit in hits
-        ]
+        payload = []
+        for hit in hits:
+            row = {**hit.__dict__, "conversation_path": str(hit.conversation_path)}
+            row["source"] = row.pop("source_name")
+            payload.append(row)
         env.ui.console.print(json.dumps(payload, indent=2))
         return
     if json_lines:
         for hit in hits:
-            payload = {**hit.__dict__, "conversation_path": str(hit.conversation_path)}
-            env.ui.console.print(json.dumps(payload))
+            row = {**hit.__dict__, "conversation_path": str(hit.conversation_path)}
+            row["source"] = row.pop("source_name")
+            env.ui.console.print(json.dumps(row))
         return
     if csv:
         rows = [
             {
+                "source": hit.source_name or "",
                 "provider": hit.provider_name,
                 "conversation_id": hit.conversation_id,
                 "message_id": hit.message_id,
@@ -398,6 +342,7 @@ def search(
             import csv as csv_module
 
             fieldnames = list(rows[0].keys()) if rows else [
+                "source",
                 "provider",
                 "conversation_id",
                 "message_id",
@@ -416,7 +361,8 @@ def search(
     env.ui.summary("Search", [f"Results: {len(hits)}", f"Query: {query}"])
     for idx, hit in enumerate(hits, start=1):
         title = hit.title or hit.conversation_id
-        env.ui.console.print(f"{idx}. {title} ({hit.provider_name})")
+        source_label = _format_source_label(hit.source_name, hit.provider_name)
+        env.ui.console.print(f"{idx}. {title} ({source_label})")
         env.ui.console.print(f"   {hit.snippet}")
         env.ui.console.print(f"   {hit.conversation_path}")
 
@@ -430,6 +376,9 @@ def search(
                 selected = [hits[index]]
             except Exception:
                 selected = hits
+
+    if pick and not open_result and not env.ui.plain:
+        open_result = True
 
     if open_result:
         if len(selected) != 1:
@@ -547,12 +496,33 @@ def config_init(
 
 
 @config.command("show")
+@click.option("--pretty", is_flag=True, help="Show a human-readable summary (interactive only)")
 @click.pass_obj
-def config_show(env: AppEnv) -> None:
+def config_show(env: AppEnv, pretty: bool) -> None:
     try:
         config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("config show", str(exc))
+    if pretty:
+        if env.ui.plain:
+            _fail("config show", "pretty output requires interactive mode")
+        sources = []
+        for source in config.sources:
+            if source.folder:
+                sources.append(f"{source.name}: drive folder '{source.folder}'")
+            elif source.path:
+                sources.append(f"{source.name}: {source.path}")
+            else:
+                sources.append(f"{source.name}: (missing path)")
+        env.ui.summary(
+            "Config",
+            [
+                f"Path: {config.path}",
+                f"Archive root: {config.archive_root}",
+                f"Sources: {', '.join(sources) if sources else 'none'}",
+            ],
+        )
+        return
     payload = config.as_dict()
     raw_root = None
     try:

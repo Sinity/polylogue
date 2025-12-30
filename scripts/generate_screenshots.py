@@ -48,15 +48,12 @@ def _seed_inbox(inbox: Path) -> None:
         path.write_text(json.dumps(convo, indent=2), encoding="utf-8")
 
 
-def _plan_lines(counts: dict, sources: List[str], timestamp: int, cursors: dict) -> List[str]:
+def _dry_run_lines(counts: dict, sources: List[str], timestamp: int, cursors: dict) -> List[str]:
     lines = [
-        f"Snapshot: {datetime.fromtimestamp(timestamp).isoformat(timespec='seconds')}",
-        f"Conversations: {counts['conversations']}",
-        f"Messages: {counts['messages']}",
-        f"Attachments: {counts['attachments']}",
+        f"Counts: {counts['conversations']} conv, {counts['messages']} msg",
     ]
     if sources:
-        lines.insert(1, f"Sources: {', '.join(sources)}")
+        lines.insert(0, f"Sources: {', '.join(sources)}")
     if cursors:
         parts = []
         for name, cursor in cursors.items():
@@ -79,23 +76,10 @@ def _plan_lines(counts: dict, sources: List[str], timestamp: int, cursors: dict)
 
 def _run_lines(run_result: object) -> List[str]:
     counts = run_result.counts
-    drift = run_result.drift
-    def format_bucket(label: str, bucket: dict) -> str:
-        return (
-            f"{label}: {bucket.get('conversations', 0)} conv, "
-            f"{bucket.get('messages', 0)} msg, "
-            f"{bucket.get('attachments', 0)} att"
-        )
     return [
-        f"Run ID: {run_result.run_id}",
-        f"Conversations: {counts['conversations']} (skipped {counts['skipped_conversations']})",
-        f"Messages: {counts['messages']} (skipped {counts['skipped_messages']})",
-        f"Attachments: {counts['attachments']} (skipped {counts['skipped_attachments']})",
-        f"Indexed: {run_result.indexed}",
+        f"Counts: {counts['conversations']} conv, {counts['messages']} msg",
+        f"Index: {'ok' if run_result.indexed else 'up-to-date'}",
         f"Duration: {run_result.duration_ms}ms",
-        format_bucket("New", drift.get("new", {})),
-        format_bucket("Removed", drift.get("removed", {})),
-        format_bucket("Changed", drift.get("changed", {})),
     ]
 
 
@@ -164,11 +148,11 @@ def main() -> None:
     def render_plan(path: Path) -> None:
         facade = ConsoleFacade(plain=False)
         console = new_console(facade)
-        console.print(Text("$ polylogue plan", style="bold #94a3b8"))
+        console.print(Text("$ polylogue run --dry-run", style="bold #94a3b8"))
         console.print()
         facade.summary(
-            "Plan",
-            _plan_lines(
+            "Dry Run",
+            _dry_run_lines(
                 plan_result.counts,
                 plan_result.sources,
                 plan_result.timestamp,
@@ -194,7 +178,12 @@ def main() -> None:
         display_root = Path("~/.local/share/polylogue/archive")
         for idx, hit in enumerate(search_result.hits, start=1):
             title = hit.title or hit.conversation_id
-            console.print(f"{idx}. {title} ({hit.provider_name})")
+            source_label = hit.provider_name
+            if hit.source_name and hit.source_name != hit.provider_name:
+                source_label = f"{hit.source_name}/{hit.provider_name}"
+            elif hit.source_name:
+                source_label = hit.source_name
+            console.print(f"{idx}. {title} ({source_label})")
             console.print(f"   {hit.snippet}")
             display_path = (
                 display_root / "render" / hit.provider_name / hit.conversation_id / "conversation.md"

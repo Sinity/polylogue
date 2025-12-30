@@ -6,7 +6,7 @@ Polylogue is a small pipeline that ingests chat exports into SQLite, renders Mar
 
 - `polylogue/config.py` and `polylogue/paths.py` define config schema, defaults, and XDG paths.
 - `polylogue/cli/click_app.py` is the CLI entrypoint and routes commands to the pipeline.
-- `polylogue/run.py` coordinates planning, ingesting, rendering, and indexing.
+- `polylogue/run.py` coordinates dry-run planning, ingesting, rendering, and indexing.
 - `polylogue/source_ingest.py` loads local JSON/JSONL/ZIP exports and auto-detects provider formats.
 - `polylogue/drive_client.py` handles Google Drive OAuth + downloads; `polylogue/drive_ingest.py` turns Drive payloads into conversations.
 - `polylogue/store.py` and `polylogue/db.py` handle SQLite storage for conversations, messages, attachments, and runs.

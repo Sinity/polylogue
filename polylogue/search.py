@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 from typing import List, Optional
 
@@ -11,6 +12,7 @@ from .db import open_connection
 class SearchHit:
     conversation_id: str
     provider_name: str
+    source_name: Optional[str]
     message_id: str
     title: Optional[str]
     timestamp: Optional[str]
@@ -36,6 +38,7 @@ def search_messages(query: str, *, archive_root: Path, limit: int = 20) -> Searc
                 messages_fts.message_id,
                 messages_fts.conversation_id,
                 messages_fts.provider_name,
+                conversations.provider_meta,
                 conversations.title,
                 messages.timestamp,
                 snippet(messages_fts, 3, '[', ']', '…', 12) AS snippet
@@ -53,10 +56,20 @@ def search_messages(query: str, *, archive_root: Path, limit: int = 20) -> Searc
         conversation_path = (
             archive_root / "render" / row["provider_name"] / row["conversation_id"] / "conversation.md"
         )
+        source_name = None
+        meta = row["provider_meta"]
+        if isinstance(meta, str) and meta:
+            try:
+                payload = json.loads(meta)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                source_name = payload.get("source")
         hits.append(
             SearchHit(
                 conversation_id=row["conversation_id"],
                 provider_name=row["provider_name"],
+                source_name=source_name,
                 message_id=row["message_id"],
                 title=row["title"],
                 timestamp=row["timestamp"],
