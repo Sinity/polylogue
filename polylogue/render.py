@@ -56,7 +56,18 @@ def render_conversation(
             (conversation_id,),
         ).fetchall()
         attachments = conn.execute(
-            "SELECT * FROM attachments WHERE conversation_id = ?",
+            """
+            SELECT
+                attachment_refs.message_id,
+                attachments.attachment_id,
+                attachments.mime_type,
+                attachments.size_bytes,
+                attachments.path,
+                attachments.provider_meta
+            FROM attachment_refs
+            JOIN attachments ON attachments.attachment_id = attachment_refs.attachment_id
+            WHERE attachment_refs.conversation_id = ?
+            """,
             (conversation_id,),
         ).fetchall()
 

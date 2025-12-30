@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -51,6 +52,52 @@ def _should_use_plain(*, plain: bool, interactive: bool) -> bool:
 
 def _announce_plain_mode() -> None:
     sys.stderr.write("Plain output active (non-TTY). Use --interactive from a TTY to re-enable prompts.\n")
+
+
+def _format_timestamp(ts: int) -> str:
+    return datetime.fromtimestamp(ts).isoformat(timespec="seconds")
+
+
+def _format_cursors(cursors: dict) -> Optional[str]:
+    if not cursors:
+        return None
+    parts: List[str] = []
+    for name, cursor in cursors.items():
+        detail_bits: List[str] = []
+        file_count = cursor.get("file_count")
+        if isinstance(file_count, int):
+            detail_bits.append(f"{file_count} files")
+        latest_mtime = cursor.get("latest_mtime")
+        latest_label = None
+        if isinstance(latest_mtime, (int, float)):
+            latest_label = _format_timestamp(int(latest_mtime))
+        else:
+            latest_name = cursor.get("latest_file_name")
+            latest_path = cursor.get("latest_path")
+            if isinstance(latest_name, str):
+                latest_label = latest_name
+            elif isinstance(latest_path, str):
+                latest_label = Path(latest_path).name
+        if latest_label:
+            detail_bits.append(f"latest {latest_label}")
+        detail = ", ".join(detail_bits) if detail_bits else "unknown"
+        parts.append(f"{name} ({detail})")
+    return "; ".join(parts)
+
+
+def _format_drift(drift: dict) -> List[str]:
+    def _counts(label: str, payload: dict) -> str:
+        return (
+            f"{label}: {payload.get('conversations', 0)} conv, "
+            f"{payload.get('messages', 0)} msg, "
+            f"{payload.get('attachments', 0)} att"
+        )
+
+    return [
+        _counts("New", drift.get("new", {})),
+        _counts("Removed", drift.get("removed", {})),
+        _counts("Changed", drift.get("changed", {})),
+    ]
 
 
 def _fail(command: str, message: str) -> None:
@@ -144,12 +191,16 @@ def plan(env: AppEnv, sources: Tuple[str, ...]) -> None:
         _fail("plan", str(exc))
     lines = [
         f"Profile: {profile_name}",
+        f"Snapshot: {_format_timestamp(plan_result.timestamp)}",
         f"Conversations: {plan_result.counts['conversations']}",
         f"Messages: {plan_result.counts['messages']}",
         f"Attachments: {plan_result.counts['attachments']}",
     ]
     if selected_sources:
         lines.insert(1, f"Sources: {', '.join(selected_sources)}")
+    cursor_line = _format_cursors(plan_result.cursors)
+    if cursor_line:
+        lines.append(f"Cursors: {cursor_line}")
     env.ui.summary(
         "Plan",
         lines,
@@ -161,8 +212,16 @@ def plan(env: AppEnv, sources: Tuple[str, ...]) -> None:
 @click.option("--strict-plan", is_flag=True, help="Fail if plan drift is detected")
 @click.option("--stage", type=click.Choice(["ingest", "render", "index", "all"]), default="all")
 @click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
+@click.option("--redact-store", is_flag=True, help="Redact secrets before writing to the DB")
 @click.pass_obj
-def run(env: AppEnv, no_plan: bool, strict_plan: bool, stage: str, sources: Tuple[str, ...]) -> None:
+def run(
+    env: AppEnv,
+    no_plan: bool,
+    strict_plan: bool,
+    stage: str,
+    sources: Tuple[str, ...],
+    redact_store: bool,
+) -> None:
     try:
         config, profile_name = _load_effective_config(env)
     except ConfigError as exc:
@@ -177,12 +236,16 @@ def run(env: AppEnv, no_plan: bool, strict_plan: bool, stage: str, sources: Tupl
             _fail("run", str(exc))
         plan_lines = [
             f"Profile: {profile_name}",
+            f"Snapshot: {_format_timestamp(plan_result.timestamp)}",
             f"Conversations: {plan_result.counts['conversations']}",
             f"Messages: {plan_result.counts['messages']}",
             f"Attachments: {plan_result.counts['attachments']}",
         ]
         if selected_sources:
             plan_lines.insert(1, f"Sources: {', '.join(selected_sources)}")
+        cursor_line = _format_cursors(plan_result.cursors)
+        if cursor_line:
+            plan_lines.append(f"Cursors: {cursor_line}")
         env.ui.summary("Plan", plan_lines)
     if not env.ui.plain:
         if not env.ui.confirm("Proceed with run?", default=True):
@@ -197,10 +260,17 @@ def run(env: AppEnv, no_plan: bool, strict_plan: bool, stage: str, sources: Tupl
             ui=env.ui,
             source_names=selected_sources,
             profile_name=profile_name,
+            redact_store=redact_store,
         )
     except DriveError as exc:
         _fail("run", str(exc))
-    drift_total = sum(abs(value) for value in result.drift.values())
+    drift_total = 0
+    if plan_result is not None:
+        drift_total = sum(
+            abs(value)
+            for bucket in result.drift.values()
+            for value in bucket.values()
+        )
     env.ui.summary(
         "Run",
         [
@@ -210,17 +280,27 @@ def run(env: AppEnv, no_plan: bool, strict_plan: bool, stage: str, sources: Tupl
             f"Attachments: {result.counts['attachments']} (skipped {result.counts['skipped_attachments']})",
             f"Indexed: {result.indexed}",
             f"Duration: {result.duration_ms}ms",
-            f"Drift: {result.drift}",
+            *_format_drift(result.drift),
         ],
     )
+    if result.index_error:
+        error_line = f"Index error: {result.index_error}"
+        hint_line = "Hint: run `polylogue run --stage index` to rebuild the index."
+        if env.ui.plain:
+            env.ui.console.print(error_line)
+            env.ui.console.print(hint_line)
+        else:
+            env.ui.console.print(f"[yellow]{error_line}[/yellow]")
+            env.ui.console.print(f"[yellow]{hint_line}[/yellow]")
     if strict_plan and drift_total != 0:
         _fail("run", f"plan drift detected: {result.drift}")
 
 
 @cli.command()
 @click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
+@click.option("--redact-store", is_flag=True, help="Redact secrets before writing to the DB")
 @click.pass_obj
-def ingest(env: AppEnv, sources: Tuple[str, ...]) -> None:
+def ingest(env: AppEnv, sources: Tuple[str, ...], redact_store: bool) -> None:
     try:
         config, profile_name = _load_effective_config(env)
     except ConfigError as exc:
@@ -236,6 +316,7 @@ def ingest(env: AppEnv, sources: Tuple[str, ...]) -> None:
             ui=env.ui,
             source_names=selected_sources,
             profile_name=profile_name,
+            redact_store=redact_store,
         )
     except DriveError as exc:
         _fail("ingest", str(exc))
@@ -456,25 +537,35 @@ def config() -> None:
 
 @config.command("init")
 @click.option("--interactive", "interactive", is_flag=True, help="Run interactive config init")
+@click.option("--with-drive", is_flag=True, help="Include a Drive source without prompting")
+@click.option("--drive-name", default="gemini", show_default=True, help="Drive source name")
+@click.option("--drive-folder", default="Google AI Studio", show_default=True, help="Drive folder name")
 @click.pass_obj
-def config_init(env: AppEnv, interactive: bool) -> None:
+def config_init(
+    env: AppEnv,
+    interactive: bool,
+    with_drive: bool,
+    drive_name: str,
+    drive_folder: str,
+) -> None:
     target = env.config_path
     config = default_config(target)
     if config.path.exists():
         _fail("config init", f"config already exists at {config.path}")
+    add_drive = with_drive
     if interactive and not env.ui.plain:
-        if not env.ui.confirm(f"Write config to {config.path}?", default=True):
-            env.ui.console.print("Init cancelled.")
-            return
-        if env.ui.confirm("Add a Drive source for Google AI Studio?", default=True):
-            source_name = env.ui.input("Drive source name", default="gemini") or "gemini"
-            source_name = source_name.strip() or "gemini"
-            folder_name = env.ui.input("Drive folder name", default="Google AI Studio") or "Google AI Studio"
-            folder_name = folder_name.strip() or "Google AI Studio"
-            if any(source.name == source_name for source in config.sources):
-                env.ui.console.print(f"Source '{source_name}' already exists; skipping.")
-            else:
-                config.sources.append(Source(name=source_name, type="drive", folder=folder_name))
+        prompt = (
+            f"Add Drive source '{drive_name}' (folder '{drive_folder}') "
+            f"when writing {config.path}?"
+        )
+        add_drive = env.ui.confirm(prompt, default=True)
+    if add_drive:
+        source_name = drive_name.strip() or "gemini"
+        folder_name = drive_folder.strip() or "Google AI Studio"
+        if any(source.name == source_name for source in config.sources):
+            env.ui.console.print(f"Source '{source_name}' already exists; skipping.")
+        else:
+            config.sources.append(Source(name=source_name, type="drive", folder=folder_name))
     write_config(config)
     env.ui.console.print(f"Config written to {config.path}")
 
