@@ -65,7 +65,11 @@ def run_health(config: Config) -> dict:
 
     for source in config.sources:
         if source.type == "drive":
-            checks.append(HealthCheck(f"source:{source.name}", "ok", f"drive folder: {source.folder}"))
+            folder = Path(source.folder) if source.folder else None
+            if folder and folder.exists():
+                checks.append(HealthCheck(f"source:{source.name}", "ok", str(folder)))
+            else:
+                checks.append(HealthCheck(f"source:{source.name}", "warning", f"missing folder: {source.folder}"))
         else:
             if source.path and source.path.exists():
                 checks.append(HealthCheck(f"source:{source.name}", "ok", str(source.path)))

@@ -189,12 +189,15 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str) -> List[P
 
 
 def iter_source_conversations(source: Source) -> Iterable[ParsedConversation]:
-    if source.type == "drive":
-        return []
-    if not source.path:
-        return []
     paths: List[Path] = []
-    base = source.path.expanduser()
+    if source.type == "drive":
+        if not source.folder:
+            return []
+        base = Path(source.folder).expanduser()
+    else:
+        if not source.path:
+            return []
+        base = source.path.expanduser()
     if base.is_dir():
         paths.extend(sorted(base.rglob("*.json")))
         paths.extend(sorted(base.rglob("*.jsonl")))
