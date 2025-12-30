@@ -21,7 +21,9 @@ from ..config import (
     update_source,
     write_config,
 )
+from ..export_v666 import export_jsonl
 from ..health import get_health
+from ..run_v666 import plan_sources, run_sources
 from ..search_v666 import search_messages
 from .editor import open_in_browser, open_in_editor
 
@@ -75,6 +77,16 @@ def _print_summary(env: AppEnv) -> None:
     )
 
 
+def _latest_render_path(archive_root: Path) -> Optional[Path]:
+    render_root = archive_root / "render"
+    if not render_root.exists():
+        return None
+    candidates = list(render_root.rglob("conversation.md")) + list(render_root.rglob("conversation.html"))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
 @click.group(context_settings={"help_option_names": ["-h", "--help"]}, invoke_without_command=True)
 @click.option("--plain", is_flag=True, help="Force non-interactive plain output")
 @click.option("--interactive", is_flag=True, help="Force interactive output")
@@ -95,7 +107,20 @@ def cli(ctx: click.Context, plain: bool, interactive: bool, profile: Optional[st
 @cli.command()
 @click.pass_obj
 def plan(env: AppEnv) -> None:
-    _fail("plan", "not implemented yet in the v666 rewrite")
+    try:
+        config, profile_name = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("plan", str(exc))
+    plan_result = plan_sources(config)
+    env.ui.summary(
+        "Plan",
+        [
+            f"Profile: {profile_name}",
+            f"Conversations: {plan_result.counts['conversations']}",
+            f"Messages: {plan_result.counts['messages']}",
+            f"Attachments: {plan_result.counts['attachments']}",
+        ],
+    )
 
 
 @cli.command()
@@ -104,19 +129,82 @@ def plan(env: AppEnv) -> None:
 @click.option("--stage", type=click.Choice(["ingest", "render", "index", "all"]), default="all")
 @click.pass_obj
 def run(env: AppEnv, no_plan: bool, strict_plan: bool, stage: str) -> None:
-    _fail("run", "not implemented yet in the v666 rewrite")
+    try:
+        config, profile_name = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("run", str(exc))
+    profile = config.profiles[profile_name]
+    plan_result = None
+    if not no_plan:
+        plan_result = plan_sources(config)
+        env.ui.summary(
+            "Plan",
+            [
+                f"Profile: {profile_name}",
+                f"Conversations: {plan_result.counts['conversations']}",
+                f"Messages: {plan_result.counts['messages']}",
+                f"Attachments: {plan_result.counts['attachments']}",
+            ],
+        )
+        if not env.ui.plain:
+            if not env.ui.confirm("Proceed with run?", default=True):
+                env.ui.console.print("Run cancelled.")
+                return
+    result = run_sources(config=config, profile=profile, stage=stage, plan=plan_result)
+    drift_total = sum(abs(value) for value in result.drift.values())
+    env.ui.summary(
+        "Run",
+        [
+            f"Run ID: {result.run_id}",
+            f"Conversations: {result.counts['conversations']} (skipped {result.counts['skipped_conversations']})",
+            f"Messages: {result.counts['messages']} (skipped {result.counts['skipped_messages']})",
+            f"Attachments: {result.counts['attachments']} (skipped {result.counts['skipped_attachments']})",
+            f"Indexed: {result.indexed}",
+            f"Duration: {result.duration_ms}ms",
+            f"Drift: {result.drift}",
+        ],
+    )
+    if strict_plan and drift_total != 0:
+        _fail("run", f"plan drift detected: {result.drift}")
 
 
 @cli.command()
 @click.pass_obj
 def ingest(env: AppEnv) -> None:
-    _fail("ingest", "not implemented yet in the v666 rewrite")
+    try:
+        config, profile_name = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("ingest", str(exc))
+    profile = config.profiles[profile_name]
+    result = run_sources(config=config, profile=profile, stage="ingest", plan=None)
+    env.ui.summary(
+        "Ingest",
+        [
+            f"Run ID: {result.run_id}",
+            f"Conversations: {result.counts['conversations']} (skipped {result.counts['skipped_conversations']})",
+            f"Messages: {result.counts['messages']} (skipped {result.counts['skipped_messages']})",
+            f"Attachments: {result.counts['attachments']} (skipped {result.counts['skipped_attachments']})",
+            f"Duration: {result.duration_ms}ms",
+        ],
+    )
 
 
 @cli.command()
 @click.pass_obj
 def render(env: AppEnv) -> None:
-    _fail("render", "not implemented yet in the v666 rewrite")
+    try:
+        config, profile_name = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("render", str(exc))
+    profile = config.profiles[profile_name]
+    result = run_sources(config=config, profile=profile, stage="render", plan=None)
+    env.ui.summary(
+        "Render",
+        [
+            f"Run ID: {result.run_id}",
+            f"Duration: {result.duration_ms}ms",
+        ],
+    )
 
 
 @cli.command()
@@ -217,7 +305,24 @@ def search(
 @click.option("--open", "open_result", is_flag=True, help="Open path in browser/editor")
 @click.pass_obj
 def open(env: AppEnv, open_result: bool) -> None:
-    _fail("open", "not implemented yet in the v666 rewrite")
+    try:
+        config, _ = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("open", str(exc))
+    target = _latest_render_path(config.archive_root)
+    if not target:
+        _fail("open", "no rendered outputs found")
+    if not open_result:
+        env.ui.console.print(str(target))
+        return
+    if target.suffix.lower() == ".html":
+        if open_in_browser(target):
+            env.ui.console.print(f"Opened {target} in browser")
+            return
+    if open_in_editor(target):
+        env.ui.console.print(f"Opened {target} in editor")
+    else:
+        env.ui.console.print(f"[yellow]Could not open {target}[/yellow]")
 
 
 @cli.command()
@@ -244,7 +349,12 @@ def health(env: AppEnv) -> None:
 @cli.command()
 @click.pass_obj
 def export(env: AppEnv) -> None:
-    _fail("export", "not implemented yet in the v666 rewrite")
+    try:
+        config, _ = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("export", str(exc))
+    out = export_jsonl(archive_root=config.archive_root)
+    env.ui.console.print(f"Exported {out}")
 
 
 @cli.group()
