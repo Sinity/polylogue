@@ -226,15 +226,15 @@ def ingest(env: AppEnv, sources: Tuple[str, ...]) -> None:
     profile = config.profiles[profile_name]
     selected_sources = _resolve_sources(config, sources, "ingest")
     try:
-    result = run_sources(
-        config=config,
-        profile=profile,
-        stage="ingest",
-        plan=None,
-        ui=env.ui,
-        source_names=selected_sources,
-        profile_name=profile_name,
-    )
+        result = run_sources(
+            config=config,
+            profile=profile,
+            stage="ingest",
+            plan=None,
+            ui=env.ui,
+            source_names=selected_sources,
+            profile_name=profile_name,
+        )
     except DriveError as exc:
         _fail("ingest", str(exc))
     env.ui.summary(
