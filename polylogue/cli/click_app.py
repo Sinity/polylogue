@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 import click
 
@@ -42,6 +43,9 @@ def _should_use_plain(*, plain: bool, interactive: bool) -> bool:
         return True
     if interactive:
         return False
+    env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
+    if env_force and env_force.lower() not in {"0", "false", "no"}:
+        return True
     return not (sys.stdout.isatty() and sys.stderr.isatty())
 
 
@@ -57,6 +61,17 @@ def _load_effective_config(env: AppEnv) -> Tuple[Config, str]:
     config = load_config(env.config_path)
     profile_name, _ = resolve_profile(config, env.profile)
     return config, profile_name
+
+
+def _resolve_sources(config: Config, sources: Tuple[str, ...], command: str) -> Optional[List[str]]:
+    if not sources:
+        return None
+    defined = {source.name for source in config.sources}
+    requested = list(dict.fromkeys(sources))
+    missing = sorted(set(requested) - defined)
+    if missing:
+        _fail(command, f"Unknown source(s): {', '.join(missing)}")
+    return requested
 
 
 def _print_summary(env: AppEnv) -> None:
@@ -112,25 +127,30 @@ def cli(ctx: click.Context, plain: bool, interactive: bool, profile: Optional[st
 
 
 @cli.command()
+@click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
 @click.pass_obj
-def plan(env: AppEnv) -> None:
+def plan(env: AppEnv, sources: Tuple[str, ...]) -> None:
     try:
         config, profile_name = _load_effective_config(env)
     except ConfigError as exc:
         _fail("plan", str(exc))
     profile = config.profiles[profile_name]
+    selected_sources = _resolve_sources(config, sources, "plan")
     try:
-        plan_result = plan_sources(config, profile=profile, ui=env.ui)
+        plan_result = plan_sources(config, profile=profile, ui=env.ui, source_names=selected_sources)
     except DriveError as exc:
         _fail("plan", str(exc))
+    lines = [
+        f"Profile: {profile_name}",
+        f"Conversations: {plan_result.counts['conversations']}",
+        f"Messages: {plan_result.counts['messages']}",
+        f"Attachments: {plan_result.counts['attachments']}",
+    ]
+    if selected_sources:
+        lines.insert(1, f"Sources: {', '.join(selected_sources)}")
     env.ui.summary(
         "Plan",
-        [
-            f"Profile: {profile_name}",
-            f"Conversations: {plan_result.counts['conversations']}",
-            f"Messages: {plan_result.counts['messages']}",
-            f"Attachments: {plan_result.counts['attachments']}",
-        ],
+        lines,
     )
 
 
@@ -138,34 +158,43 @@ def plan(env: AppEnv) -> None:
 @click.option("--no-plan", is_flag=True, help="Skip plan preview")
 @click.option("--strict-plan", is_flag=True, help="Fail if plan drift is detected")
 @click.option("--stage", type=click.Choice(["ingest", "render", "index", "all"]), default="all")
+@click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
 @click.pass_obj
-def run(env: AppEnv, no_plan: bool, strict_plan: bool, stage: str) -> None:
+def run(env: AppEnv, no_plan: bool, strict_plan: bool, stage: str, sources: Tuple[str, ...]) -> None:
     try:
         config, profile_name = _load_effective_config(env)
     except ConfigError as exc:
         _fail("run", str(exc))
     profile = config.profiles[profile_name]
+    selected_sources = _resolve_sources(config, sources, "run")
     plan_result = None
     if not no_plan:
         try:
-            plan_result = plan_sources(config, profile=profile, ui=env.ui)
+            plan_result = plan_sources(config, profile=profile, ui=env.ui, source_names=selected_sources)
         except DriveError as exc:
             _fail("run", str(exc))
-        env.ui.summary(
-            "Plan",
-            [
-                f"Profile: {profile_name}",
-                f"Conversations: {plan_result.counts['conversations']}",
-                f"Messages: {plan_result.counts['messages']}",
-                f"Attachments: {plan_result.counts['attachments']}",
-            ],
-        )
+        plan_lines = [
+            f"Profile: {profile_name}",
+            f"Conversations: {plan_result.counts['conversations']}",
+            f"Messages: {plan_result.counts['messages']}",
+            f"Attachments: {plan_result.counts['attachments']}",
+        ]
+        if selected_sources:
+            plan_lines.insert(1, f"Sources: {', '.join(selected_sources)}")
+        env.ui.summary("Plan", plan_lines)
         if not env.ui.plain:
             if not env.ui.confirm("Proceed with run?", default=True):
                 env.ui.console.print("Run cancelled.")
                 return
     try:
-        result = run_sources(config=config, profile=profile, stage=stage, plan=plan_result, ui=env.ui)
+        result = run_sources(
+            config=config,
+            profile=profile,
+            stage=stage,
+            plan=plan_result,
+            ui=env.ui,
+            source_names=selected_sources,
+        )
     except DriveError as exc:
         _fail("run", str(exc))
     drift_total = sum(abs(value) for value in result.drift.values())
@@ -186,15 +215,24 @@ def run(env: AppEnv, no_plan: bool, strict_plan: bool, stage: str) -> None:
 
 
 @cli.command()
+@click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
 @click.pass_obj
-def ingest(env: AppEnv) -> None:
+def ingest(env: AppEnv, sources: Tuple[str, ...]) -> None:
     try:
         config, profile_name = _load_effective_config(env)
     except ConfigError as exc:
         _fail("ingest", str(exc))
     profile = config.profiles[profile_name]
+    selected_sources = _resolve_sources(config, sources, "ingest")
     try:
-        result = run_sources(config=config, profile=profile, stage="ingest", plan=None, ui=env.ui)
+        result = run_sources(
+            config=config,
+            profile=profile,
+            stage="ingest",
+            plan=None,
+            ui=env.ui,
+            source_names=selected_sources,
+        )
     except DriveError as exc:
         _fail("ingest", str(exc))
     env.ui.summary(
@@ -210,14 +248,23 @@ def ingest(env: AppEnv) -> None:
 
 
 @cli.command()
+@click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
 @click.pass_obj
-def render(env: AppEnv) -> None:
+def render(env: AppEnv, sources: Tuple[str, ...]) -> None:
     try:
         config, profile_name = _load_effective_config(env)
     except ConfigError as exc:
         _fail("render", str(exc))
     profile = config.profiles[profile_name]
-    result = run_sources(config=config, profile=profile, stage="render", plan=None, ui=env.ui)
+    selected_sources = _resolve_sources(config, sources, "render")
+    result = run_sources(
+        config=config,
+        profile=profile,
+        stage="render",
+        plan=None,
+        ui=env.ui,
+        source_names=selected_sources,
+    )
     env.ui.summary(
         "Render",
         [

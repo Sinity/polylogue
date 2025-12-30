@@ -17,7 +17,7 @@ DEFAULT_ARCHIVE_ROOT = DATA_HOME / "archive"
 _ALLOWED_TOP_LEVEL_KEYS = {"version", "archive_root", "sources", "profiles"}
 _ALLOWED_SOURCE_KEYS = {"name", "type", "path", "folder"}
 _ALLOWED_PROFILE_KEYS = {"attachments", "html", "index", "sanitize_html"}
-_ALLOWED_SOURCE_TYPES = {"drive", "codex", "claude", "chatgpt", "claude-code"}
+_ALLOWED_SOURCE_TYPES = {"drive", "auto", "codex", "claude", "chatgpt", "claude-code"}
 _ALLOWED_ATTACHMENTS = {"download", "link", "skip"}
 _ALLOWED_HTML = {"auto", "on", "off"}
 

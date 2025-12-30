@@ -4,10 +4,10 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
-from .config import Config, Profile
+from .config import Config, Profile, Source
 from .db import open_connection
 from .drive_ingest import iter_drive_conversations
 from .index_v666 import rebuild_index
@@ -47,11 +47,24 @@ def _message_id(provider_message_id: str, content_hash: str) -> str:
     return f"{provider_message_id}:{content_hash}"
 
 
-def plan_sources(config: Config, *, profile: Optional[Profile] = None, ui: Optional[object] = None) -> PlanResult:
+def _select_sources(config: Config, source_names: Optional[Sequence[str]]) -> List[Source]:
+    if not source_names:
+        return list(config.sources)
+    name_set = set(source_names)
+    return [source for source in config.sources if source.name in name_set]
+
+
+def plan_sources(
+    config: Config,
+    *,
+    profile: Optional[Profile] = None,
+    ui: Optional[object] = None,
+    source_names: Optional[Sequence[str]] = None,
+) -> PlanResult:
     counts = {"conversations": 0, "messages": 0, "attachments": 0}
     sources = []
     effective_profile = profile or Profile()
-    for source in config.sources:
+    for source in _select_sources(config, source_names):
         sources.append(source.name)
         if source.type == "drive":
             conversations = iter_drive_conversations(
@@ -140,9 +153,16 @@ def _ingest_conversation(convo: ParsedConversation) -> Tuple[str, Dict[str, int]
     }
 
 
-def _all_conversation_ids() -> List[str]:
+def _all_conversation_ids(provider_names: Optional[Sequence[str]] = None) -> List[str]:
     with open_connection(None) as conn:
-        rows = conn.execute("SELECT conversation_id FROM conversations").fetchall()
+        if provider_names:
+            placeholders = ", ".join("?" for _ in provider_names)
+            rows = conn.execute(
+                f"SELECT conversation_id FROM conversations WHERE provider_name IN ({placeholders})",
+                tuple(provider_names),
+            ).fetchall()
+        else:
+            rows = conn.execute("SELECT conversation_id FROM conversations").fetchall()
     return [row["conversation_id"] for row in rows]
 
 
@@ -161,6 +181,7 @@ def run_sources(
     stage: str = "all",
     plan: Optional[PlanResult] = None,
     ui: Optional[object] = None,
+    source_names: Optional[Sequence[str]] = None,
 ) -> RunResult:
     start = time.perf_counter()
     counts = {
@@ -174,7 +195,7 @@ def run_sources(
     processed_ids: List[str] = []
 
     if stage in {"ingest", "all"}:
-        for source in config.sources:
+        for source in _select_sources(config, source_names):
             if source.type == "drive":
                 conversations = iter_drive_conversations(
                     source=source,
@@ -192,7 +213,7 @@ def run_sources(
                     counts[key] += value
 
     if stage in {"render", "all"}:
-        ids = processed_ids or _all_conversation_ids()
+        ids = processed_ids or _all_conversation_ids(source_names)
         for convo_id in ids:
             render_conversation(
                 conversation_id=convo_id,
