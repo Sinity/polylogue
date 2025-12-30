@@ -1,63 +1,29 @@
-# Polylogue Architecture (Nov 2024)
+# Architecture
 
-Polylogue now follows a modular structure that separates orchestration concerns from provider-specific logic. The key building blocks are:
+Polylogue v666 is a small pipeline that ingests chat exports into SQLite, renders Markdown/HTML, and builds an FTS index.
 
-## CLI (Click)
+## Core modules
 
-- `polylogue.cli.click_app` defines the Click command tree and dispatches into `polylogue.cli.*` helpers.
-- This keeps parsing/help/examples in one place while leaving command logic in dedicated modules.
+- `polylogue/config.py` and `polylogue/paths.py` define config schema, defaults, and XDG paths.
+- `polylogue/cli/click_app.py` is the CLI entrypoint and routes commands to the pipeline.
+- `polylogue/run_v666.py` coordinates planning, ingesting, rendering, and indexing.
+- `polylogue/source_ingest.py` loads local JSON/JSONL/ZIP exports and auto-detects provider formats.
+- `polylogue/drive_client.py` handles Google Drive OAuth + downloads; `polylogue/drive_ingest.py` turns Drive payloads into conversations.
+- `polylogue/store.py` and `polylogue/db.py` handle SQLite storage for conversations, messages, attachments, and runs.
+- `polylogue/render_v666.py` writes Markdown/HTML; `polylogue/assets.py` defines attachment paths.
+- `polylogue/index_v666.py` builds the SQLite FTS index; `polylogue/search_v666.py` performs queries.
+- `polylogue/health.py` runs cached health checks.
 
-## Console Facade & UI
+## Data flow
 
-- `polylogue/ui/facade.py` wraps the Rich/questionary UI stack and automatically drops to the plain console whenever stdout/stderr aren’t TTYs (or when `POLYLOGUE_FORCE_PLAIN=1` is set).
-- `polylogue.ui.UI` delegates to the facade but still provides interactive prompts (pickers, yes/no prompts, etc.) whenever the session is interactive (use `--interactive` to force prompts even in headless shells).
+1. Inputs are read from local sources (JSON/JSONL/ZIP) or Drive folders.
+2. Parsed conversations are stored in SQLite with idempotent upserts.
+3. Render uses the DB to write Markdown/HTML per conversation.
+4. Index builds FTS records for `polylogue search`.
 
-## Provider Sessions
+## Data locations
 
-- `polylogue/providers/registry.ProviderRegistry` registers instantiated provider SDKs (currently Google Drive) behind a small protocol so commands can fetch consistent sessions without knowing the underlying client implementation.
-- `polylogue.providers.drive.DriveProviderSession` wraps `DriveClient` and ensures retry instrumentation/telemetry stay consistent, while still presenting the familiar Drive API to pipelines and CLI helpers.
-
-## Persistence Layer
-
-- `polylogue/persistence/state.py` exposes `ConversationStateRepository` backed entirely by SQLite metadata (no more JSON cache files).
-- `polylogue/persistence/database.py` provides `ConversationDatabase`, a thin wrapper around the archive database as well as helper queries for doctor/status/search.
-- `polylogue/services/conversation_registrar.ConversationRegistrar` coordinates writes across the SQLite metadata tables and the on-disk archive. Imports, sync, render, and branching now funnel persistence through the registrar so branch/message tables stay consistent.
-- `polylogue/services/conversation_service.ConversationService` presents a read-only facade (state iterators, conversation listings, deletes) so doctor/status/search no longer poke at repositories directly.
-- Doctor, status, and search use the service instead of touching JSON/SQLite directly.
-
-## Pipeline Framework
-
-- `polylogue/pipeline_runner.py` introduces a simple `Pipeline` + `PipelineContext` abstraction.
-- Render and Drive sync flows now compose stages:
-  - SourceReader (`RenderReadStage` / `DriveDownloadStage`)
-  - Normaliser (`RenderNormalizeStage` / `DriveNormalizeStage`)
-  - Transformer (`RenderDocumentStage`)
-  - Persistence (`RenderPersistStage`)
-- Pipelines handle aborts and context sharing, making it straightforward to extend or reuse stages across providers.
-- Each run records per-stage telemetry (name, status, and duration) in the `PipelineContext.history`, so callers and tests can assert on the exact execution path and surface meaningful errors.
-
-## Schema Validation
-
-- `polylogue/validation.py` provides reusable helpers (currently `ensure_chunked_prompt`) that guard against malformed provider payloads.
-- Normalisation stages call these helpers before sanitising chunks, so users see clear error messages instead of silent skips when exports are incomplete.
-
-## Domain & Configuration
-
-- `polylogue/domain/models.py` defines provider-independent dataclasses (Conversation, Branch, Message, Attachment).
-- `polylogue/core/configuration.py` loads layered configuration (defaults, file, env). `polylogue/config.py` keeps the previous API but delegates to the new loader.
-- `polylogue/archive/service.py` centralises archive path resolution via the configuration defaults.
-
-## Testing
-
-- Integration tests cover the CLI (including the new plain-mode prompts).
-- Dedicated tests exercise the pipeline runner and the new facade logic.
-
-## Next Steps
-
-- Extend the pipeline stages with richer validation (e.g., schema checks for provider exports) and tighten error reporting.
-- Build end-to-end snapshots for `sync`/`render` flows that assert both Markdown output and metadata side effects (state + SQLite) to guard against regressions.
-- Explore richer CLI ergonomics (completions, faceted status dashboards) on top of the existing registry/facade stack. Next completion improvements include:
-  - expanding suggestions further (e.g., more context-aware Drive chat IDs, additional derived filters);
-  - rethinking annotation formats (e.g., structured JSON) so shells can render descriptions/tooltips cleanly.
-
-This structure makes it easier to add providers, surface richer UI, and build new tooling on top of Polylogue without duplicating plumbing code.
+- Runs: `archive_root/runs/run-<timestamp>.json`
+- Renders: `archive_root/render/<provider>/<conversation_id>/conversation.md`
+- Assets: `archive_root/assets/<prefix>/<attachment_id>`
+- DB: `$XDG_STATE_HOME/polylogue/polylogue.db`
