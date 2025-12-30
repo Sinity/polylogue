@@ -21,6 +21,9 @@ from ..config import (
     update_source,
     write_config,
 )
+from ..health import get_health
+from ..search_v666 import search_messages
+from .editor import open_in_browser, open_in_editor
 
 
 @dataclass
@@ -117,14 +120,97 @@ def render(env: AppEnv) -> None:
 
 
 @cli.command()
+@click.argument("query")
+@click.option("--limit", type=int, default=20, show_default=True)
 @click.option("--json", "json_output", is_flag=True, help="Output JSON")
 @click.option("--json-lines", is_flag=True, help="Output JSON Lines")
 @click.option("--csv", type=click.Path(path_type=Path), help="Write CSV to file")
 @click.option("--pick", is_flag=True, help="Interactive picker for results")
 @click.option("--open", "open_result", is_flag=True, help="Open result path after selection")
 @click.pass_obj
-def search(env: AppEnv, json_output: bool, json_lines: bool, csv: Optional[Path], pick: bool, open_result: bool) -> None:
-    _fail("search", "not implemented yet in the v666 rewrite")
+def search(
+    env: AppEnv,
+    query: str,
+    limit: int,
+    json_output: bool,
+    json_lines: bool,
+    csv: Optional[Path],
+    pick: bool,
+    open_result: bool,
+) -> None:
+    try:
+        config, _ = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("search", str(exc))
+    try:
+        result = search_messages(query, archive_root=config.archive_root, limit=limit)
+    except RuntimeError as exc:
+        _fail("search", str(exc))
+    hits = result.hits
+
+    if json_output:
+        payload = [hit.__dict__ for hit in hits]
+        env.ui.console.print(json.dumps(payload, indent=2))
+        return
+    if json_lines:
+        for hit in hits:
+            env.ui.console.print(json.dumps(hit.__dict__))
+        return
+    if csv:
+        rows = [
+            {
+                "provider": hit.provider_name,
+                "conversation_id": hit.conversation_id,
+                "message_id": hit.message_id,
+                "title": hit.title or "",
+                "timestamp": hit.timestamp or "",
+                "snippet": hit.snippet,
+                "path": str(hit.conversation_path),
+            }
+            for hit in hits
+        ]
+        csv.parent.mkdir(parents=True, exist_ok=True)
+        with csv.open("w", encoding="utf-8", newline="") as handle:
+            if rows:
+                import csv as csv_module
+
+                writer = csv_module.DictWriter(handle, fieldnames=rows[0].keys())
+                writer.writeheader()
+                writer.writerows(rows)
+        env.ui.console.print(f"Wrote {len(rows)} rows to {csv}")
+        return
+
+    env.ui.summary("Search", [f"Results: {len(hits)}", f"Query: {query}"])
+    for idx, hit in enumerate(hits, start=1):
+        title = hit.title or hit.conversation_id
+        env.ui.console.print(f"{idx}. {title} ({hit.provider_name})")
+        env.ui.console.print(f"   {hit.snippet}")
+        env.ui.console.print(f"   {hit.conversation_path}")
+
+    selected = hits
+    if pick and not env.ui.plain and len(hits) > 1:
+        options = [f"{idx}: {hit.title or hit.conversation_id}" for idx, hit in enumerate(hits, start=1)]
+        choice = env.ui.choose("Select result", options)
+        if choice:
+            try:
+                index = int(choice.split(":", 1)[0]) - 1
+                selected = [hits[index]]
+            except Exception:
+                selected = hits
+
+    if open_result:
+        if len(selected) != 1:
+            env.ui.console.print("[yellow]--open requires a single result. Use --limit 1 or --pick.[/yellow]")
+            return
+        target = selected[0].conversation_path
+        if target.suffix.lower() == ".html":
+            if open_in_browser(target):
+                env.ui.console.print(f"Opened {target} in browser")
+                return
+        if open_in_editor(target):
+            env.ui.console.print(f"Opened {target} in editor")
+        else:
+            env.ui.console.print(f"[yellow]Could not open {target}[/yellow]")
 
 
 @cli.command()
@@ -137,7 +223,22 @@ def open(env: AppEnv, open_result: bool) -> None:
 @cli.command()
 @click.pass_obj
 def health(env: AppEnv) -> None:
-    _fail("health", "not implemented yet in the v666 rewrite")
+    try:
+        config, _ = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("health", str(exc))
+    payload = get_health(config)
+    cached = payload.get("cached")
+    age = payload.get("age_seconds")
+    header = f"Health (cached={cached}, age={age}s)" if cached is not None else "Health"
+    checks = payload.get("checks", [])
+    lines = []
+    for check in checks:
+        name = check.get("name")
+        status = check.get("status")
+        detail = check.get("detail")
+        lines.append(f"{name}: {status} - {detail}")
+    env.ui.summary(header, lines)
 
 
 @cli.command()
