@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from polylogue.export_v666 import export_jsonl
 from polylogue.ingest import IngestBundle, ingest_bundle
 from polylogue.render_v666 import render_conversation
 from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord
@@ -79,3 +80,25 @@ def test_render_writes_markdown(workspace_env):
     result = render_conversation(conversation_id="conv:hash", archive_root=archive_root, html_mode="off")
     assert result.markdown_path.exists()
     assert "hello" in result.markdown_path.read_text(encoding="utf-8")
+
+
+def test_export_includes_attachments(workspace_env, tmp_path):
+    bundle = IngestBundle(
+        conversation=_conversation_record(),
+        messages=[],
+        attachments=[
+            AttachmentRecord(
+                attachment_id="att-1",
+                conversation_id="conv:hash",
+                message_id=None,
+                mime_type="text/plain",
+                size_bytes=12,
+                path="/tmp/att.txt",
+                provider_meta=None,
+            )
+        ],
+    )
+    ingest_bundle(bundle)
+    output = export_jsonl(archive_root=workspace_env["archive_root"], output_path=tmp_path / "export.jsonl")
+    payload = output.read_text(encoding="utf-8").strip().splitlines()[0]
+    assert "\"attachments\"" in payload
