@@ -56,7 +56,7 @@ Example:
       "attachments": "download",
       "html": "auto",
       "index": true,
-      "sanitize_html": false
+      "sanitize_html": true
     }
   }
 }
@@ -86,6 +86,8 @@ Notes:
 - `polylogue open` - open latest render
 - `polylogue health` - cached health checks
 - `polylogue config init/show/set` - manage config
+
+Redaction: renders redact common secrets by default; pass `--redact-store` to `run` or `ingest` to scrub the DB itself.
 
 ## Output layout
 
