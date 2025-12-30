@@ -2,220 +2,297 @@ from __future__ import annotations
 
 import json
 import os
+import io
 import shutil
-import webbrowser
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, Iterable, Optional
 
-from .drive import (
-    download_file,
-    download_to_path,
-    find_folder_id,
-    get_drive_service,
-    get_file_meta,
-    list_children,
-    set_retry_defaults,
-)
 from .paths import CONFIG_HOME
-from .util import parse_rfc3339_to_epoch, read_clipboard_text
-from .ui import UI
-GDRIVE_INSTRUCTIONS = "https://developers.google.com/drive/api/quickstart/python"
-CONFIG_DIR = CONFIG_HOME
-DEFAULT_CREDENTIALS = CONFIG_DIR / "credentials.json"
-_ENV_TOKEN_PATH = os.environ.get("POLYLOGUE_TOKEN_PATH")
-DEFAULT_TOKEN = Path(_ENV_TOKEN_PATH).expanduser() if _ENV_TOKEN_PATH else CONFIG_DIR / "token.json"
-DEFAULT_FOLDER_NAME = "Google AI Studio"
+
+
+SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+DEFAULT_CREDENTIALS_NAME = "credentials.json"
+DEFAULT_TOKEN_NAME = "token.json"
+
+
+class DriveError(RuntimeError):
+    pass
+
+
+class DriveAuthError(DriveError):
+    pass
+
+
+class DriveNotFoundError(DriveError):
+    pass
+
+
+@dataclass
+class DriveFile:
+    file_id: str
+    name: str
+    mime_type: str
+    modified_time: Optional[str]
+    size_bytes: Optional[int]
+
+
+def default_credentials_path() -> Path:
+    return CONFIG_HOME / DEFAULT_CREDENTIALS_NAME
+
+
+def default_token_path() -> Path:
+    return CONFIG_HOME / DEFAULT_TOKEN_NAME
+
+
+def drive_link(file_id: str) -> str:
+    return f"https://drive.google.com/file/d/{file_id}/view"
+
+
+def _parse_modified_time(raw: Optional[str]) -> Optional[float]:
+    if not raw:
+        return None
+    try:
+        if raw.endswith("Z"):
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        return datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        return None
+
+
+def _parse_size(raw: Optional[str | int]) -> Optional[int]:
+    if raw is None:
+        return None
+    if isinstance(raw, int):
+        return raw
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _looks_like_id(value: str) -> bool:
+    if not value or " " in value:
+        return False
+    return all(ch.isalnum() or ch in "-_" for ch in value)
+
+
+def _resolve_credentials_path(ui: Optional[object]) -> Path:
+    env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+    if env_path:
+        return Path(env_path).expanduser()
+    default_path = default_credentials_path()
+    if default_path.exists():
+        return default_path
+    if ui is not None and not getattr(ui, "plain", True):
+        prompt = f"Path to Google OAuth client JSON (default {default_path}):"
+        response = ui.input(prompt, default=str(default_path))
+        if response:
+            candidate = Path(response).expanduser()
+            if candidate.exists():
+                default_path.parent.mkdir(parents=True, exist_ok=True)
+                if candidate != default_path:
+                    shutil.copy(candidate, default_path)
+                return default_path
+    raise DriveAuthError(
+        f"Drive credentials not found. Set POLYLOGUE_CREDENTIAL_PATH or place a client JSON at {default_path}."
+    )
+
+
+def _resolve_token_path() -> Path:
+    env_path = os.environ.get("POLYLOGUE_TOKEN_PATH")
+    if env_path:
+        return Path(env_path).expanduser()
+    return default_token_path()
 
 
 class DriveClient:
-    """Wrapper that manages credentials and Drive service access."""
-
     def __init__(
         self,
-        ui: UI,
         *,
-        retries: Optional[int] = None,
-        retry_base: Optional[float] = None,
+        ui: Optional[object] = None,
         credentials_path: Optional[Path] = None,
         token_path: Optional[Path] = None,
-    ):
-        self.ui = ui
-        if credentials_path is None:
-            env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
-            self._credentials_path = Path(env_path).expanduser() if env_path else DEFAULT_CREDENTIALS
-        else:
-            self._credentials_path = Path(credentials_path).expanduser()
-        if token_path is None:
-            token_env = os.environ.get("POLYLOGUE_TOKEN_PATH")
-            self._token_path = Path(token_env).expanduser() if token_env else DEFAULT_TOKEN
-        else:
-            self._token_path = Path(token_path).expanduser()
+    ) -> None:
+        self._ui = ui
+        self._credentials_path = credentials_path
+        self._token_path = token_path
         self._service = None
-        if retries is not None or retry_base is not None:
-            set_retry_defaults(retries=retries, base_delay=retry_base)
+        self._meta_cache: Dict[str, DriveFile] = {}
 
-    @property
-    def credentials_path(self) -> Path:
-        return self._credentials_path
+    def _load_credentials(self):
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
 
-    @property
-    def token_path(self) -> Path:
-        return self._token_path
+        token_path = self._token_path or _resolve_token_path()
+        creds = None
+        if token_path.exists():
+            creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        if creds and creds.valid:
+            self._persist_token(creds, token_path)
+            return creds
 
-    def ensure_credentials(self) -> Path:
-        cred_path = self._credentials_path
-        if cred_path.exists():
-            return cred_path
-        if self.ui.plain:
-            raise SystemExit(
-                "Missing credentials.json. Download a Google OAuth client secret and place it at "
-                f"{cred_path} or set POLYLOGUE_CREDENTIAL_PATH/POLYLOGUE_TOKEN_PATH "
-                "or drive.credentials_path/token_path in config.json."
+        credentials_path = self._credentials_path or _resolve_credentials_path(self._ui)
+        if not credentials_path.exists():
+            raise DriveAuthError(f"Drive credentials not found: {credentials_path}")
+        if self._ui is None or getattr(self._ui, "plain", True):
+            raise DriveAuthError(
+                "Drive authorization required but no interactive UI is available. "
+                "Run with --interactive or set POLYLOGUE_TOKEN_PATH with a valid token."
             )
-        return self._prompt_for_credentials()
+        flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
+        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+        self._ui.console.print("Open this URL in your browser to authorize Drive access:")
+        self._ui.console.print(auth_url)
+        code = self._ui.input("Paste the authorization code")
+        if not code:
+            raise DriveAuthError("Drive authorization cancelled.")
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        self._persist_token(creds, token_path)
+        return creds
 
-    def _copy_credentials_from_path(self, src: Path) -> Path:
-        cred_path = self._credentials_path
-        try:
-            cred_path.parent.mkdir(parents=True, exist_ok=True)
-            if src.resolve() != cred_path.resolve():
-                shutil.copyfile(src, cred_path)
-        except shutil.SameFileError:
-            pass
-        except Exception as exc:
-            raise RuntimeError(f"Failed to copy credentials: {exc}") from exc
-        return cred_path
+    def _persist_token(self, creds, token_path: Path) -> None:
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token_path.write_text(creds.to_json(), encoding="utf-8")
 
-    def _prompt_for_credentials(self) -> Path:
-        self.ui.banner("Google Drive access needs credentials", "Download OAuth client for Desktop app")
-        clipboard_checked = False
-        # Try clipboard first (user will be prompted for confirmation)
-        while True:
-            if not clipboard_checked:
-                clipboard_checked = True
-                clip_path = self._try_clipboard_credentials()
-                if clip_path:
-                    return clip_path
-            choice = self.ui.choose(
-                "Provide credentials",
-                ["Paste path to credentials.json", "Open setup guide", "Cancel"],
-            )
-            if choice is None or choice == "Cancel":
-                raise SystemExit("Drive features require credentials.json")
-            if choice == "Open setup guide":
-                webbrowser.open(GDRIVE_INSTRUCTIONS)
-                continue
-            value = self.ui.input("Path to OAuth client JSON", default=str(Path.cwd()))
-            if not value:
-                continue
-            src = Path(value).expanduser()
-            if src.is_dir():
-                potential = src / "credentials.json"
-                if potential.exists():
-                    src = potential
-            if not src.exists():
-                self.ui.banner("File not found", str(src))
-                continue
-            try:
-                cred_path = self._copy_credentials_from_path(src)
-            except RuntimeError as exc:
-                self.ui.banner("Failed to copy credentials", str(exc))
-                continue
-            self.ui.banner("Saved credentials", f"Copied to {cred_path}")
-            return cred_path
+    def _service_handle(self):
+        if self._service is not None:
+            return self._service
+        from googleapiclient.discovery import build
 
-    def _try_clipboard_credentials(self) -> Optional[Path]:
-        clip_text = read_clipboard_text()
-        if not clip_text:
-            return None
-        try:
-            parsed = json.loads(clip_text)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(parsed, dict) or not (set(parsed.keys()) & {"installed", "web"}):
-            return None
-        if not self.ui.confirm("Use OAuth client JSON from clipboard?", default=True):
-            return None
-        try:
-            self._credentials_path.parent.mkdir(parents=True, exist_ok=True)
-            self._credentials_path.write_text(clip_text, encoding="utf-8")
-            self.ui.banner("Saved credentials", f"Captured from clipboard → {self._credentials_path}")
-            return self._credentials_path
-        except Exception as exc:  # pragma: no cover - I/O failures are rare
-            self.ui.banner("Failed to write credentials", str(exc))
-            return None
-
-    def service(self):
-        if self._service is None:
-            cred_path = self.ensure_credentials()
-            try:
-                svc = get_drive_service(cred_path, token_path=self._token_path, verbose=not self.ui.plain)
-            except RuntimeError as exc:
-                message = str(exc)
-                if self.ui.plain:
-                    raise SystemExit(message) from exc
-                self.ui.banner("Drive dependencies missing", message)
-                raise SystemExit(message) from exc
-            if not svc:
-                raise SystemExit("Drive auth failed")
-            self._service = svc
+        creds = self._load_credentials()
+        self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
         return self._service
 
-    # Convenience wrappers -------------------------------------------------
-    def resolve_folder_id(self, folder_name: Optional[str], folder_id: Optional[str]) -> str:
-        if folder_id:
-            return folder_id
-        name = folder_name or DEFAULT_FOLDER_NAME
-        svc = self.service()
-        resolved = find_folder_id(svc, name, notifier=self._notify_retry)
-        if resolved:
-            return resolved
-        raise SystemExit(f"Folder not found: {name}")
+    def resolve_folder_id(self, folder_ref: str) -> str:
+        service = self._service_handle()
+        if _looks_like_id(folder_ref):
+            try:
+                file_meta = (
+                    service.files()
+                    .get(fileId=folder_ref, fields="id,name,mimeType")
+                    .execute()
+                )
+                if file_meta and file_meta.get("mimeType") == FOLDER_MIME_TYPE:
+                    return file_meta["id"]
+            except Exception:
+                pass
+        escaped = folder_ref.replace("'", "\\'")
+        query = f"name = '{escaped}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
+        response = service.files().list(q=query, fields="files(id,name)").execute()
+        matches = response.get("files", [])
+        if not matches:
+            raise DriveNotFoundError(f"Folder not found: {folder_ref}")
+        return matches[0]["id"]
 
-    def list_chats(
-        self,
-        folder_name: Optional[str],
-        folder_id: Optional[str],
-    ) -> List[Dict[str, Any]]:
-        svc = self.service()
-        fid = self.resolve_folder_id(folder_name, folder_id)
-        children = list_children(svc, fid, notifier=self._notify_retry)
-        chats = [
-            c
-            for c in children
-            if not c.get("mimeType", "").startswith("application/vnd.google-apps.")
-        ]
-        return chats
+    def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:
+        service = self._service_handle()
+        page_token = None
+        query = f"'{folder_id}' in parents and trashed = false"
+        fields = "nextPageToken, files(id,name,mimeType,modifiedTime,size)"
+        while True:
+            response = (
+                service.files()
+                .list(q=query, fields=fields, pageToken=page_token, pageSize=1000)
+                .execute()
+            )
+            for item in response.get("files", []):
+                name = item.get("name") or ""
+                if not name.lower().endswith((".json", ".jsonl")):
+                    continue
+                file_obj = DriveFile(
+                    file_id=item.get("id", ""),
+                    name=name,
+                    mime_type=item.get("mimeType") or "",
+                    modified_time=item.get("modifiedTime"),
+                    size_bytes=_parse_size(item.get("size")),
+                )
+                if file_obj.file_id:
+                    self._meta_cache[file_obj.file_id] = file_obj
+                    yield file_obj
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
 
-    def download_chat_bytes(self, file_id: str) -> Optional[bytes]:
-        svc = self.service()
-        return download_file(svc, file_id, operation="chat", notifier=self._notify_retry)
+    def download_bytes(self, file_id: str) -> bytes:
+        from googleapiclient.http import MediaIoBaseDownload
 
-    def attachment_meta(self, file_id: str) -> Optional[Dict[str, Any]]:
-        svc = self.service()
-        return get_file_meta(svc, file_id, notifier=self._notify_retry)
+        service = self._service_handle()
+        request = service.files().get_media(fileId=file_id)
+        buffer = io.BytesIO()
+        downloader = MediaIoBaseDownload(buffer, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buffer.getvalue()
 
-    def download_attachment(self, file_id: str, path: Path) -> bool:
-        svc = self.service()
-        ok = download_to_path(svc, file_id, path, operation="attachment", notifier=self._notify_retry)
-        if not ok:
-            return False
-        return True
+    def get_metadata(self, file_id: str) -> DriveFile:
+        if file_id in self._meta_cache:
+            return self._meta_cache[file_id]
+        service = self._service_handle()
+        meta = (
+            service.files()
+            .get(fileId=file_id, fields="id,name,mimeType,modifiedTime,size")
+            .execute()
+        )
+        file_obj = DriveFile(
+            file_id=meta.get("id", file_id),
+            name=meta.get("name") or file_id,
+            mime_type=meta.get("mimeType") or "",
+            modified_time=meta.get("modifiedTime"),
+            size_bytes=_parse_size(meta.get("size")),
+        )
+        self._meta_cache[file_id] = file_obj
+        return file_obj
 
-    def touch_mtime(self, path: Path, iso_time: Optional[str]) -> None:
-        mtime = parse_rfc3339_to_epoch(iso_time)
-        if mtime is None:
-            return
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if not path.exists():
-                path.touch()
-            os.utime(path, (mtime, mtime))
-        except Exception:
-            pass
+    def download_to_path(self, file_id: str, dest: Path) -> DriveFile:
+        from googleapiclient.http import MediaIoBaseDownload
 
-    def _notify_retry(self, *, operation: str, attempt: int, total: int, error: Exception, delay: float) -> None:
-        if self.ui.plain:
-            return
-        message = f"[yellow]Drive {operation} retry {attempt}/{total}: {error} (waiting {delay:.1f}s)"
-        self.ui.console.print(message)
+        meta = self.get_metadata(file_id)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.exists():
+            service = self._service_handle()
+            request = service.files().get_media(fileId=file_id)
+            with dest.open("wb") as handle:
+                downloader = MediaIoBaseDownload(handle, request)
+                done = False
+                while not done:
+                    _, done = downloader.next_chunk()
+        modified_timestamp = _parse_modified_time(meta.modified_time)
+        if modified_timestamp is not None:
+            os.utime(dest, (modified_timestamp, modified_timestamp))
+        return meta
+
+    def download_json_payload(self, file_id: str, *, name: str) -> object:
+        raw = self.download_bytes(file_id)
+        text = raw.decode("utf-8", errors="replace")
+        if name.lower().endswith(".jsonl"):
+            items = []
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    items.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+            return items
+        return json.loads(text)
+
+
+__all__ = [
+    "DriveClient",
+    "DriveFile",
+    "DriveError",
+    "DriveAuthError",
+    "DriveNotFoundError",
+    "default_credentials_path",
+    "default_token_path",
+    "drive_link",
+]
