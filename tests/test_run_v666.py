@@ -24,7 +24,7 @@ def test_plan_and_run_sources(workspace_env, tmp_path):
     config.sources = [Source(name="codex", type="codex", path=source_file)]
     write_config(config)
 
-    plan = plan_sources(config)
+    plan = plan_sources(config, profile=config.profiles["default"])
     assert plan.counts["conversations"] == 1
 
     profile = config.profiles["default"]

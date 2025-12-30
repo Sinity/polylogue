@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -20,6 +20,17 @@ class ParsedMessage:
 
 
 @dataclass
+class ParsedAttachment:
+    provider_attachment_id: str
+    message_provider_id: Optional[str]
+    name: Optional[str]
+    mime_type: Optional[str]
+    size_bytes: Optional[int]
+    path: Optional[str]
+    provider_meta: Optional[dict]
+
+
+@dataclass
 class ParsedConversation:
     provider_name: str
     provider_conversation_id: str
@@ -27,6 +38,7 @@ class ParsedConversation:
     created_at: Optional[str]
     updated_at: Optional[str]
     messages: List[ParsedMessage]
+    attachments: List[ParsedAttachment] = field(default_factory=list)
 
 
 def _hash_text(text: str) -> str:
@@ -133,6 +145,152 @@ def _extract_messages_from_list(items: list) -> List[ParsedMessage]:
     return messages
 
 
+def _normalize_role(role: Optional[str]) -> str:
+    if not role:
+        return "message"
+    lowered = str(role).strip().lower()
+    if lowered in {"assistant", "model"}:
+        return "assistant"
+    if lowered in {"user", "human"}:
+        return "user"
+    if lowered in {"system"}:
+        return "system"
+    return lowered
+
+
+def _extract_text_from_chunk(chunk: dict) -> Optional[str]:
+    for key in ("text", "content", "message", "markdown", "data"):
+        value = chunk.get(key)
+        if isinstance(value, str):
+            return value
+    parts = chunk.get("parts")
+    if isinstance(parts, list):
+        return "\n".join(str(part) for part in parts if part)
+    return None
+
+
+def _collect_drive_docs(payload: object) -> List[dict | str]:
+    docs: List[dict | str] = []
+    if not isinstance(payload, dict):
+        return docs
+    for key in ("driveDocument", "driveDocuments", "drive_document"):
+        value = payload.get(key)
+        if isinstance(value, (dict, str)):
+            docs.append(value)
+        elif isinstance(value, list):
+            docs.extend([item for item in value if isinstance(item, (dict, str))])
+    nested = payload.get("metadata")
+    if isinstance(nested, dict):
+        docs.extend(_collect_drive_docs(nested))
+    return docs
+
+
+def _attachment_from_doc(doc: dict | str, message_id: Optional[str]) -> Optional[ParsedAttachment]:
+    if isinstance(doc, str):
+        doc_id = doc
+        meta = {"id": doc_id}
+        return ParsedAttachment(
+            provider_attachment_id=doc_id,
+            message_provider_id=message_id,
+            name=None,
+            mime_type=None,
+            size_bytes=None,
+            path=None,
+            provider_meta=meta,
+        )
+    if not isinstance(doc, dict):
+        return None
+    doc_id = doc.get("id") or doc.get("fileId") or doc.get("driveId")
+    if not isinstance(doc_id, str) or not doc_id:
+        return None
+    size_raw = doc.get("sizeBytes") or doc.get("size")
+    size_bytes = None
+    if isinstance(size_raw, (int, str)):
+        try:
+            size_bytes = int(size_raw)
+        except ValueError:
+            size_bytes = None
+    return ParsedAttachment(
+        provider_attachment_id=doc_id,
+        message_provider_id=message_id,
+        name=doc.get("name") or doc.get("title"),
+        mime_type=doc.get("mimeType") or doc.get("mime_type"),
+        size_bytes=size_bytes,
+        path=None,
+        provider_meta=doc,
+    )
+
+
+def _parse_chunked_prompt(provider: str, payload: dict, fallback_id: str) -> ParsedConversation:
+    prompt = payload.get("chunkedPrompt")
+    chunks = []
+    if isinstance(prompt, dict):
+        chunks = prompt.get("chunks") or []
+    elif isinstance(payload.get("chunks"), list):
+        chunks = payload.get("chunks")  # type: ignore[assignment]
+    messages: List[ParsedMessage] = []
+    attachments: List[ParsedAttachment] = []
+    for idx, chunk in enumerate(chunks, start=1):
+        if isinstance(chunk, str):
+            chunk_obj = {"text": chunk}
+        elif isinstance(chunk, dict):
+            chunk_obj = chunk
+        else:
+            continue
+        text = _extract_text_from_chunk(chunk_obj)
+        if not text:
+            continue
+        role = _normalize_role(chunk_obj.get("role") or chunk_obj.get("author") or chunk_obj.get("speaker"))
+        msg_id = chunk_obj.get("id") or chunk_obj.get("messageId") or f"chunk-{idx}"
+        msg_id = str(msg_id)
+        messages.append(
+            ParsedMessage(
+                provider_message_id=msg_id,
+                role=role,
+                text=text,
+                timestamp=None,
+                provider_meta={"raw": chunk_obj},
+            )
+        )
+        for doc in _collect_drive_docs(chunk_obj):
+            attachment = _attachment_from_doc(doc, msg_id)
+            if attachment:
+                attachments.append(attachment)
+    if not messages:
+        input_text = payload.get("inputText") or payload.get("prompt")
+        output_text = payload.get("outputText") or payload.get("response")
+        if isinstance(input_text, str) and input_text:
+            messages.append(
+                ParsedMessage(
+                    provider_message_id="chunk-1",
+                    role="user",
+                    text=input_text,
+                    timestamp=None,
+                    provider_meta=None,
+                )
+            )
+        if isinstance(output_text, str) and output_text:
+            messages.append(
+                ParsedMessage(
+                    provider_message_id="chunk-2",
+                    role="assistant",
+                    text=output_text,
+                    timestamp=None,
+                    provider_meta=None,
+                )
+            )
+    title = payload.get("title") or payload.get("displayName") or payload.get("name") or fallback_id
+    return ParsedConversation(
+        provider_name=provider,
+        provider_conversation_id=str(payload.get("id") or payload.get("name") or fallback_id),
+        title=str(title),
+        created_at=str(payload.get("createTime")) if payload.get("createTime") else None,
+        updated_at=str(payload.get("updateTime")) if payload.get("updateTime") else None,
+        messages=messages,
+        attachments=attachments,
+    )
+
+
 def _parse_conversation_obj(provider: str, obj: dict, fallback_id: str) -> ParsedConversation:
     mapping = obj.get("mapping") if isinstance(obj, dict) else None
     if isinstance(mapping, dict):
@@ -152,6 +310,7 @@ def _parse_conversation_obj(provider: str, obj: dict, fallback_id: str) -> Parse
         created_at=str(obj.get("create_time")) if isinstance(obj, dict) and obj.get("create_time") else None,
         updated_at=str(obj.get("update_time")) if isinstance(obj, dict) and obj.get("update_time") else None,
         messages=messages,
+        attachments=[],
     )
 
 
@@ -188,16 +347,29 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str) -> List[P
     return conversations
 
 
+def parse_drive_payload(provider: str, payload: Any, fallback_id: str) -> List[ParsedConversation]:
+    conversations: List[ParsedConversation] = []
+    if isinstance(payload, list):
+        for idx, obj in enumerate(payload, start=1):
+            if isinstance(obj, dict) and ("chunkedPrompt" in obj or "chunks" in obj):
+                conversations.append(_parse_chunked_prompt(provider, obj, f"{fallback_id}-{idx}"))
+            elif isinstance(obj, dict):
+                conversations.append(_parse_conversation_obj(provider, obj, f"{fallback_id}-{idx}"))
+    elif isinstance(payload, dict):
+        if "chunkedPrompt" in payload or "chunks" in payload:
+            conversations.append(_parse_chunked_prompt(provider, payload, fallback_id))
+        else:
+            conversations.append(_parse_conversation_obj(provider, payload, fallback_id))
+    return conversations
+
+
 def iter_source_conversations(source: Source) -> Iterable[ParsedConversation]:
     paths: List[Path] = []
     if source.type == "drive":
-        if not source.folder:
-            return []
-        base = Path(source.folder).expanduser()
-    else:
-        if not source.path:
-            return []
-        base = source.path.expanduser()
+        return []
+    if not source.path:
+        return []
+    base = source.path.expanduser()
     if base.is_dir():
         paths.extend(sorted(base.rglob("*.json")))
         paths.extend(sorted(base.rglob("*.jsonl")))
@@ -214,8 +386,13 @@ def iter_source_conversations(source: Source) -> Iterable[ParsedConversation]:
                 payload = _load_json_from_path(path)
         except Exception:
             continue
-        conversations.extend(_parse_json_payload(source.type, payload, path.stem))
+        conversations.extend(_parse_json_payload(source.name, payload, path.stem))
     return conversations
 
-
-__all__ = ["ParsedConversation", "ParsedMessage", "iter_source_conversations"]
+__all__ = [
+    "ParsedConversation",
+    "ParsedMessage",
+    "ParsedAttachment",
+    "iter_source_conversations",
+    "parse_drive_payload",
+]
