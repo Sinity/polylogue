@@ -90,6 +90,11 @@ def test_cli_run_and_export(tmp_path, monkeypatch):
     render_root = archive_root / "render"
     assert any(render_root.rglob("conversation.md"))
 
+    search_result = runner.invoke(cli, ["--plain", "search", "hello", "--limit", "1", "--json"])
+    assert search_result.exit_code == 0
+    payload = json.loads(search_result.output.strip())
+    assert payload and isinstance(payload[0].get("conversation_path"), str)
+
     export_path = tmp_path / "export.jsonl"
     export_result = runner.invoke(cli, ["export", "--out", str(export_path)])
     assert export_result.exit_code == 0

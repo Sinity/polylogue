@@ -120,7 +120,9 @@ def cli(ctx: click.Context, plain: bool, interactive: bool, profile: Optional[st
     use_plain = _should_use_plain(plain=plain, interactive=interactive)
     env = AppEnv(ui=create_ui(use_plain), profile=profile, config_path=config_path)
     ctx.obj = env
-    if use_plain and not plain and not interactive:
+    env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
+    forced_plain = bool(env_force and env_force.lower() not in {"0", "false", "no"})
+    if use_plain and not plain and not interactive and not forced_plain:
         _announce_plain_mode()
     if ctx.invoked_subcommand is None:
         _print_summary(env)
@@ -307,12 +309,19 @@ def search(
     hits = result.hits
 
     if json_output:
-        payload = [hit.__dict__ for hit in hits]
+        payload = [
+            {
+                **hit.__dict__,
+                "conversation_path": str(hit.conversation_path),
+            }
+            for hit in hits
+        ]
         env.ui.console.print(json.dumps(payload, indent=2))
         return
     if json_lines:
         for hit in hits:
-            env.ui.console.print(json.dumps(hit.__dict__))
+            payload = {**hit.__dict__, "conversation_path": str(hit.conversation_path)}
+            env.ui.console.print(json.dumps(payload))
         return
     if csv:
         rows = [
