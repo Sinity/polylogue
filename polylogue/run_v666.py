@@ -208,4 +208,12 @@ def run_sources(
     )
 
 
-__all__ = ["plan_sources", "run_sources", "PlanResult", "RunResult"]
+def latest_run() -> Optional[dict]:
+    with open_connection(None) as conn:
+        row = conn.execute(
+            "SELECT * FROM runs ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+    return dict(row) if row else None
+
+
+__all__ = ["plan_sources", "run_sources", "PlanResult", "RunResult", "latest_run"]
