@@ -338,11 +338,20 @@ def search(
         ]
         csv.parent.mkdir(parents=True, exist_ok=True)
         with csv.open("w", encoding="utf-8", newline="") as handle:
-            if rows:
-                import csv as csv_module
+            import csv as csv_module
 
-                writer = csv_module.DictWriter(handle, fieldnames=rows[0].keys())
-                writer.writeheader()
+            fieldnames = list(rows[0].keys()) if rows else [
+                "provider",
+                "conversation_id",
+                "message_id",
+                "title",
+                "timestamp",
+                "snippet",
+                "path",
+            ]
+            writer = csv_module.DictWriter(handle, fieldnames=fieldnames)
+            writer.writeheader()
+            if rows:
                 writer.writerows(rows)
         env.ui.console.print(f"Wrote {len(rows)} rows to {csv}")
         return
@@ -370,6 +379,9 @@ def search(
             env.ui.console.print("[yellow]--open requires a single result. Use --limit 1 or --pick.[/yellow]")
             return
         target = selected[0].conversation_path
+        html_target = target.with_suffix(".html")
+        if html_target.exists():
+            target = html_target
         if target.suffix.lower() == ".html":
             if open_in_browser(target):
                 env.ui.console.print(f"Opened {target} in browser")

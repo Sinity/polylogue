@@ -40,12 +40,16 @@ def open_in_editor(path: Path, line: Optional[int] = None) -> bool:
     if not path.exists():
         return False
 
-    # Build editor command with line number if applicable
-    cmd = [editor]
+    try:
+        cmd = shlex.split(editor)
+    except ValueError:
+        cmd = [editor]
+    if not cmd:
+        return False
 
     if line:
         # Different editors have different line jump syntax
-        editor_lower = editor.lower()
+        editor_lower = " ".join(cmd).lower()
         if "vim" in editor_lower or "nvim" in editor_lower:
             cmd.append(f"+{line}")
         elif "code" in editor_lower or "subl" in editor_lower or "atom" in editor_lower:

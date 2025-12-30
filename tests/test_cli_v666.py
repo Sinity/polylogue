@@ -99,3 +99,38 @@ def test_cli_run_and_export(tmp_path, monkeypatch):
     export_result = runner.invoke(cli, ["export", "--out", str(export_path)])
     assert export_result.exit_code == 0
     assert export_path.exists()
+
+
+def test_cli_search_csv_header(tmp_path, monkeypatch):
+    config_path = tmp_path / "config" / "config.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    state_root = tmp_path / "state"
+    config_payload = {
+        "version": 1,
+        "archive_root": str(tmp_path / "archive"),
+        "sources": [],
+        "profiles": {
+            "default": {
+                "attachments": "download",
+                "html": "auto",
+                "index": True,
+                "sanitize_html": False,
+            }
+        },
+    }
+    config_path.write_text(json.dumps(config_payload), encoding="utf-8")
+    monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
+
+    runner = CliRunner()
+    output = tmp_path / "out.csv"
+    result = runner.invoke(cli, ["--plain", "search", "missing", "--csv", str(output)])
+    assert result.exit_code != 0
+
+    # create index and retry with no hits
+    runner.invoke(cli, ["--plain", "config", "show"])
+    runner.invoke(cli, ["--plain", "run", "--stage", "index", "--no-plan"])
+    result = runner.invoke(cli, ["--plain", "search", "missing", "--csv", str(output)])
+    assert result.exit_code == 0
+    header = output.read_text(encoding="utf-8").splitlines()[0]
+    assert header.startswith("provider,conversation_id,message_id")
