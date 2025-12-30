@@ -29,12 +29,13 @@ polylogue search "your query"
 
 Drop local exports under `~/.local/share/polylogue/inbox` (default), or add custom sources in the config.
 
-## Screenshots
+## Preview
 
 ![Plan output](docs/assets/cli-plan.svg)
+![Run output](docs/assets/cli-run.svg)
 ![Search output](docs/assets/cli-search.svg)
 
-Screenshots show plain-mode terminal output (`POLYLOGUE_FORCE_PLAIN=1`).
+Screenshots are captured from the interactive UI theme.
 
 ## Configuration
 
@@ -98,6 +99,7 @@ Notes:
 ## Development
 
 - Tests: `pytest -q`
+- Refresh screenshots: `python3 scripts/generate_screenshots.py`
 - See `docs/` for provider walkthroughs and pipeline details.
 
 See `AGENTS.md` for additional development guidelines.
