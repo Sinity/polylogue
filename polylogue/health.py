@@ -11,7 +11,7 @@ import os
 from .config import Config
 from .db import open_connection
 from .drive_client import default_credentials_path, default_token_path
-from .index_v666 import index_status
+from .index import index_status
 
 HEALTH_TTL_SECONDS = 600
 

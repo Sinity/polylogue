@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.export_v666 import export_jsonl
+from polylogue.export import export_jsonl
 from polylogue.ingest import IngestBundle, ingest_bundle
-from polylogue.render_v666 import render_conversation
+from polylogue.render import render_conversation
 from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 
