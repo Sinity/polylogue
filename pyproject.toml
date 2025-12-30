@@ -78,14 +78,7 @@ disallow_untyped_defs = false
 plugins = []
 exclude = ["tests/"]
 files = [
-  "polylogue/pipeline.py",
-  "polylogue/results.py",
-  "polylogue/repository.py",
-  "polylogue/cli/render.py",
-  "polylogue/cli/sync.py",
-  "polylogue/cli/imports.py",
-  "polylogue/cli/status.py",
-  "polylogue/cli/watch.py",
+  "polylogue",
 ]
 ignore_missing_imports = true
 

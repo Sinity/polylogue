@@ -124,15 +124,18 @@ def _ingest_conversation(convo: ParsedConversation, source_name: str) -> Tuple[s
         attachment_id = att.provider_attachment_id
         if not attachment_id:
             continue
+        attachment_key = f"{conversation_id}:{attachment_id}"
+        meta = dict(att.provider_meta or {})
+        meta.setdefault("provider_id", attachment_id)
         attachments.append(
             AttachmentRecord(
-                attachment_id=attachment_id,
+                attachment_id=attachment_key,
                 conversation_id=conversation_id,
                 message_id=message_ids.get(att.message_provider_id or ""),
                 mime_type=att.mime_type,
                 size_bytes=att.size_bytes,
                 path=att.path,
-                provider_meta=att.provider_meta,
+                provider_meta=meta,
             )
         )
 
@@ -221,7 +224,13 @@ def run_sources(
                 conversations = iter_source_conversations(source)
             for convo in conversations:
                 convo_id, result_counts = _ingest_conversation(convo, source.name)
-                processed_ids.append(convo_id)
+                changed = (
+                    result_counts["conversations"]
+                    + result_counts["messages"]
+                    + result_counts["attachments"]
+                ) > 0
+                if changed:
+                    processed_ids.append(convo_id)
                 for key, value in result_counts.items():
                     counts[key] += value
 
@@ -243,9 +252,12 @@ def run_sources(
     duration_ms = int((time.perf_counter() - start) * 1000)
     drift = {"conversations": 0, "messages": 0, "attachments": 0}
     if plan:
-        drift["conversations"] = counts["conversations"] - plan.counts.get("conversations", 0)
-        drift["messages"] = counts["messages"] - plan.counts.get("messages", 0)
-        drift["attachments"] = counts["attachments"] - plan.counts.get("attachments", 0)
+        processed_conversations = counts["conversations"] + counts["skipped_conversations"]
+        processed_messages = counts["messages"] + counts["skipped_messages"]
+        processed_attachments = counts["attachments"] + counts["skipped_attachments"]
+        drift["conversations"] = processed_conversations - plan.counts.get("conversations", 0)
+        drift["messages"] = processed_messages - plan.counts.get("messages", 0)
+        drift["attachments"] = processed_attachments - plan.counts.get("attachments", 0)
 
     run_id = uuid4().hex
     run_payload = {

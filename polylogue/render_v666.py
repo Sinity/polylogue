@@ -86,7 +86,7 @@ def render_conversation(
             if meta:
                 try:
                     meta_dict = json.loads(meta)
-                    name = meta_dict.get("name")
+                    name = meta_dict.get("name") or meta_dict.get("provider_id") or meta_dict.get("drive_id")
                 except Exception:
                     name = None
             label = name or att["attachment_id"]
