@@ -10,9 +10,9 @@ from uuid import uuid4
 from .config import Config, Profile, Source
 from .db import open_connection
 from .drive_ingest import iter_drive_conversations
-from .index_v666 import index_status, rebuild_index, update_index_for_conversations
+from .index import index_status, rebuild_index, update_index_for_conversations
 from .ingest import IngestBundle, ingest_bundle
-from .render_v666 import render_conversation
+from .render import render_conversation
 from .source_ingest import ParsedConversation, iter_source_conversations
 from .store import ConversationRecord, MessageRecord, AttachmentRecord, RunRecord, record_run
 

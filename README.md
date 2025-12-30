@@ -1,6 +1,6 @@
 # Polylogue
 
-Polylogue v666 is a CLI for ingesting AI chat exports into a local SQLite store and rendering clean Markdown/HTML views. It supports Google Drive (Google AI Studio) plus local exports from ChatGPT, Claude, Claude Code, and Codex via a generic parser.
+Polylogue is a CLI for ingesting AI chat exports into a local SQLite store and rendering clean Markdown/HTML views. It supports Google Drive (Google AI Studio) plus local exports from ChatGPT, Claude, Claude Code, and Codex via a generic parser.
 
 ## Quick Start
 

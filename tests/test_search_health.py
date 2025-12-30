@@ -5,8 +5,8 @@ from pathlib import Path
 
 from polylogue.config import default_config, load_config, write_config
 from polylogue.health import get_health
-from polylogue.index_v666 import rebuild_index
-from polylogue.search_v666 import search_messages
+from polylogue.index import rebuild_index
+from polylogue.search import search_messages
 from polylogue.ingest import IngestBundle, ingest_bundle
 from polylogue.store import ConversationRecord, MessageRecord
 

@@ -22,8 +22,8 @@ Polylogue uses a simple ingest pipeline that feeds a SQLite store, renders Markd
 
 ## Rendering
 
-- `polylogue/render_v666.py` writes Markdown (and optional HTML) into `archive_root/render/<provider>/<conversation_id>/`.
+- `polylogue/render.py` writes Markdown (and optional HTML) into `archive_root/render/<provider>/<conversation_id>/`.
 
 ## Indexing
 
-- `polylogue/index_v666.py` builds the SQLite FTS index for `polylogue search`.
+- `polylogue/index.py` builds the SQLite FTS index for `polylogue search`.
