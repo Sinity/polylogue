@@ -6,6 +6,7 @@ import io
 import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import List
 
@@ -47,21 +48,45 @@ def _seed_inbox(inbox: Path) -> None:
         path.write_text(json.dumps(convo, indent=2), encoding="utf-8")
 
 
-def _plan_lines(profile_name: str, counts: dict, sources: List[str]) -> List[str]:
+def _plan_lines(profile_name: str, counts: dict, sources: List[str], timestamp: int, cursors: dict) -> List[str]:
     lines = [
         f"Profile: {profile_name}",
+        f"Snapshot: {datetime.fromtimestamp(timestamp).isoformat(timespec='seconds')}",
         f"Conversations: {counts['conversations']}",
         f"Messages: {counts['messages']}",
         f"Attachments: {counts['attachments']}",
     ]
     if sources:
         lines.insert(1, f"Sources: {', '.join(sources)}")
+    if cursors:
+        parts = []
+        for name, cursor in cursors.items():
+            file_count = cursor.get("file_count")
+            latest = None
+            latest_mtime = cursor.get("latest_mtime")
+            if isinstance(latest_mtime, (int, float)):
+                latest = datetime.fromtimestamp(int(latest_mtime)).isoformat(timespec="seconds")
+            else:
+                latest = cursor.get("latest_path") or cursor.get("latest_file_name")
+            detail = []
+            if isinstance(file_count, int):
+                detail.append(f"{file_count} files")
+            if isinstance(latest, str):
+                detail.append(f"latest {Path(latest).name if '/' in latest else latest}")
+            parts.append(f"{name} ({', '.join(detail)})")
+        lines.append(f"Cursors: {'; '.join(parts)}")
     return lines
 
 
 def _run_lines(profile_name: str, run_result: object) -> List[str]:
     counts = run_result.counts
     drift = run_result.drift
+    def format_bucket(label: str, bucket: dict) -> str:
+        return (
+            f"{label}: {bucket.get('conversations', 0)} conv, "
+            f"{bucket.get('messages', 0)} msg, "
+            f"{bucket.get('attachments', 0)} att"
+        )
     return [
         f"Run ID: {run_result.run_id}",
         f"Conversations: {counts['conversations']} (skipped {counts['skipped_conversations']})",
@@ -69,7 +94,9 @@ def _run_lines(profile_name: str, run_result: object) -> List[str]:
         f"Attachments: {counts['attachments']} (skipped {counts['skipped_attachments']})",
         f"Indexed: {run_result.indexed}",
         f"Duration: {run_result.duration_ms}ms",
-        f"Drift: {drift}",
+        format_bucket("New", drift.get("new", {})),
+        format_bucket("Removed", drift.get("removed", {})),
+        format_bucket("Changed", drift.get("changed", {})),
         f"Profile: {profile_name}",
     ]
 
@@ -96,7 +123,7 @@ def main() -> None:
     archive_root = demo_root / "archive"
     _seed_inbox(inbox)
 
-    profile = Profile(attachments="download", html="auto", index=True, sanitize_html=False)
+    profile = Profile(attachments="download", html="auto", index=True, sanitize_html=True)
     config = Config(
         version=1,
         archive_root=archive_root,
@@ -145,7 +172,16 @@ def main() -> None:
         console = new_console(facade)
         console.print(Text("$ polylogue plan", style="bold #94a3b8"))
         console.print()
-        facade.summary("Plan", _plan_lines("default", plan_result.counts, plan_result.sources))
+        facade.summary(
+            "Plan",
+            _plan_lines(
+                "default",
+                plan_result.counts,
+                plan_result.sources,
+                plan_result.timestamp,
+                plan_result.cursors,
+            ),
+        )
         console.save_svg(str(path))
 
     def render_run(path: Path) -> None:
