@@ -11,11 +11,12 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 ## Source scoping
 
 - Use `--source NAME` (repeatable) on `run` to avoid reprocessing everything.
+- Use `--source last` to reuse the previous interactive selection.
 - Example: `polylogue run --source gemini --stage ingest`.
 
-## Dry run
+## Preview
 
-- Use `polylogue run --dry-run` to preview counts without writing.
+- Use `polylogue run --preview` to preview counts without writing.
 
 ## Search defaults
 
@@ -23,10 +24,16 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 - Omitting the query prints the latest render path.
 - Use `--list` to force the full list output (no picker).
 - Use `--open` to open the newest render without searching.
+- Use `--verbose` if you need snippets in the interactive view.
+
+## Config editing
+
+- Use `polylogue config edit` (interactive) to add or change sources.
+- `config set` only supports `archive_root` now.
 
 ## Index rebuild
 
-- If search reports a missing index, run `polylogue run --stage index`.
+- Search automatically rebuilds the index if it is missing.
 
 ## Exports
 
