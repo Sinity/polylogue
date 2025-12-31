@@ -19,4 +19,4 @@ Polylogue writes run metadata to disk and keeps a SQLite history so automation c
 
 ## Path inspection
 
-- `polylogue config show` prints the resolved config, env overrides, and archive paths.
+- `polylogue config show` prints a short summary; use `polylogue config show --json` for raw config values and env overrides.
