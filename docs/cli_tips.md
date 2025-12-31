@@ -20,11 +20,11 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 
 ## Search defaults
 
-- Interactive runs open a picker when multiple results are returned.
-- Omitting the query prints the latest render path.
-- Use `--list` to force the full list output (no picker).
+- Interactive runs open a picker when multiple results are returned, then open the selection.
+- Omitting the query opens the latest render in interactive mode and prints the path in plain mode.
+- Use `--list` to force the full list output (no picker or auto-open).
 - Use `--open` to open the newest render without searching.
-- Use `--verbose` if you need snippets in the interactive view.
+- Use `--verbose` to include snippets in list output.
 
 ## Config editing
 
