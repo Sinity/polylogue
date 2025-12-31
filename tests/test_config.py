@@ -29,3 +29,18 @@ def test_config_rejects_unknown_keys(workspace_env):
     workspace_env["config_path"].write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ConfigError):
         load_config()
+
+
+def test_config_rejects_duplicate_sources(workspace_env):
+    payload = {
+        "version": 2,
+        "archive_root": str(workspace_env["archive_root"]),
+        "sources": [
+            {"name": "inbox", "path": str(workspace_env["archive_root"])},
+            {"name": "inbox", "path": str(workspace_env["archive_root"])},
+        ],
+    }
+    workspace_env["config_path"].parent.mkdir(parents=True, exist_ok=True)
+    workspace_env["config_path"].write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config()
