@@ -175,7 +175,15 @@ def _conversation_content_hash(convo: ParsedConversation) -> str:
             item.get("name") or "",
         ),
     )
-    return _hash_payload({"messages": messages_payload, "attachments": attachments_payload})
+    return _hash_payload(
+        {
+            "title": convo.title,
+            "created_at": convo.created_at,
+            "updated_at": convo.updated_at,
+            "messages": messages_payload,
+            "attachments": attachments_payload,
+        }
+    )
 
 
 def _existing_message_map(conversation_id: str) -> Dict[str, str]:

@@ -154,6 +154,41 @@ def test_render_sanitizes_paths(workspace_env):
     assert is_within_root(result.markdown_path, render_root)
 
 
+def test_render_includes_orphan_attachments(workspace_env):
+    archive_root = workspace_env["archive_root"]
+    bundle = IngestBundle(
+        conversation=_conversation_record(),
+        messages=[
+            MessageRecord(
+                message_id="msg:hash",
+                conversation_id="conv:hash",
+                provider_message_id="msg",
+                role="user",
+                text="hello",
+                timestamp=None,
+                content_hash="hash",
+                provider_meta=None,
+            )
+        ],
+        attachments=[
+            AttachmentRecord(
+                attachment_id="att-orphan",
+                conversation_id="conv:hash",
+                message_id=None,
+                mime_type="text/plain",
+                size_bytes=12,
+                path="/tmp/att.txt",
+                provider_meta={"name": "notes.txt"},
+            )
+        ],
+    )
+    ingest_bundle(bundle)
+
+    result = render_conversation(conversation_id="conv:hash", archive_root=archive_root)
+    markdown = result.markdown_path.read_text(encoding="utf-8")
+    assert "- Attachment: notes.txt" in markdown
+
+
 def test_export_includes_attachments(workspace_env, tmp_path):
     bundle = IngestBundle(
         conversation=_conversation_record(),

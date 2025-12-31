@@ -143,6 +143,37 @@ def test_run_rerenders_when_content_changes(workspace_env, tmp_path):
     assert second_mtime > first_mtime
 
 
+def test_run_rerenders_when_title_changes(workspace_env, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "id": "conv-title",
+        "title": "Old title",
+        "messages": [
+            {"id": "m1", "role": "user", "content": "hello"},
+        ],
+    }
+    source_file = inbox / "conversation.json"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    config = default_config()
+    config.sources = [Source(name="inbox", path=source_file)]
+    write_config(config)
+
+    run_sources(config=config, stage="all")
+    render_root = workspace_env["archive_root"] / "render"
+    convo_path = next(render_root.rglob("conversation.md"))
+    original = convo_path.read_text(encoding="utf-8")
+
+    payload["title"] = "New title"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+    run_sources(config=config, stage="all")
+
+    updated = convo_path.read_text(encoding="utf-8")
+    assert "# New title" in updated
+    assert original != updated
+
+
 def test_incremental_index_updates(workspace_env, tmp_path, monkeypatch):
     inbox = tmp_path / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
