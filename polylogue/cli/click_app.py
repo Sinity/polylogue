@@ -395,6 +395,8 @@ def search(
         target = _latest_render_path(config.archive_root)
         if not target:
             _fail("search", "no rendered outputs found")
+        if not env.ui.plain and not open_result:
+            open_result = True
         if not open_result:
             env.ui.console.print(str(target))
             return
@@ -503,14 +505,6 @@ def search(
             if show_snippet:
                 env.ui.console.print(f"   {hit.snippet}")
             env.ui.console.print(f"   {hit.conversation_path}")
-    elif selected:
-        hit = selected[0]
-        title = hit.title or hit.conversation_id
-        source_label = _format_source_label(hit.source_name, hit.provider_name)
-        env.ui.console.print(f"1. {title} ({source_label})")
-        if show_snippet:
-            env.ui.console.print(f"   {hit.snippet}")
-        env.ui.console.print(f"   {hit.conversation_path}")
 
     if not env.ui.plain and not list_mode:
         open_result = True

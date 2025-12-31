@@ -2,7 +2,7 @@
 
 ## Project Structure & Modules
 
-- `polylogue.py`: CLI entrypoint for rendering AI chat exports and syncing provider archives.
+- `polylogue.py`: CLI entrypoint for ingesting and rendering AI chat exports.
 - `polylogue/`: implementation modules (commands, importers, rendering, UI utilities).
 - `nix/devshell.nix`: dev shell defining the Python dependencies and common CLI helpers.
 - Provider walkthroughs and sample workflows live under `docs/` (see `docs/providers/`).
@@ -12,7 +12,7 @@
 - Enter the dev environment with `direnv allow` (preferred) or `nix develop`; the shell wires PATH, PYTHONPATH, and the project’s Python dependencies.
 - Tests: `nix develop -c pytest -q` (uses in-tree PYTHONPATH). CI parity: `nix flake check` builds + runs the packaged test suite.
 - Package/build: `nix build .#polylogue` (produces the wrapped CLI; no external TUI binaries are required).
-- Quick smoke: `nix develop -c POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync codex --dry-run`.
+- Quick smoke: `nix develop -c POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py run --preview`.
 - Run `python3 polylogue.py --help` (or a specific subcommand) directly; every workflow is exposed via the CLI with the built-in pure Python prompts, enabling identical behaviour on macOS/Linux/Windows without extra binaries.
 - The first Drive action requests a Google OAuth client JSON and stores credentials/tokens under `$XDG_CONFIG_HOME/polylogue/`.
 
@@ -23,14 +23,14 @@
 ## Automation & Testing
 
 - Non-interactive paths automatically drop into a plain UI when stdout/stderr aren’t TTYs. Set `POLYLOGUE_FORCE_PLAIN=1` when you need deterministic plain mode in CI, use `--plain` to force it, or pass `--interactive` to re-enable the interactive prompts even without a TTY.
-- Smoke test with `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync codex --dry-run` and `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py sync claude-code --dry-run`.
+- Smoke test with `POLYLOGUE_FORCE_PLAIN=1 python3 polylogue.py run --preview --source inbox` (or any configured source).
 - Run `pytest` regularly; new tests should live under `tests/`.
 - Use `polylogue config show --json` to confirm resolved config/output paths while debugging CI or support issues.
 
 ## Style & Naming
 
 - Python code follows PEP 8, 4-space indentation, snake_case identifiers.
-- CLI flags are kebab-case (e.g., `--links-only`, `--dry-run`).
+- CLI flags are kebab-case (e.g., `--links-only`, `--preview`).
 - Keep inline comments concise and purposeful.
 
 ## Credentials & Security
@@ -49,7 +49,7 @@ This project uses **merge commits with clean feature branches**. Before creating
 
 ```bash
 # ✅ Good commits (keep these)
-git commit -m "feat: add progress bars to sync operations"
+git commit -m "feat: add progress bars to run operations"
 git commit -m "test: add tests for progress tracking"
 git commit -m "docs: update README with progress bars"
 
@@ -99,7 +99,7 @@ Format: `type: description`
 **Examples:**
 
 ```
-feat: add progress bars to sync operations
+feat: add progress bars to run operations
 fix: resolve JSONModeError in import commands
 test: add coverage for config validation
 docs: update README with new --json-lines flag
