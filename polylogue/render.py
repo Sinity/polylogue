@@ -85,11 +85,26 @@ def render_conversation(
     for att in attachments:
         attachments_by_message.setdefault(att["message_id"], []).append(att)
 
+    def _append_attachment(att) -> None:
+        name = None
+        meta = att["provider_meta"]
+        if meta:
+            try:
+                meta_dict = json.loads(meta)
+                name = meta_dict.get("name") or meta_dict.get("provider_id") or meta_dict.get("drive_id")
+            except Exception:
+                name = None
+        label = name or att["attachment_id"]
+        path_value = att["path"] or str(asset_path(archive_root, att["attachment_id"]))
+        lines.append(f"- Attachment: {label} ({path_value})")
+
     title = convo["title"] or conversation_id
     provider = convo["provider_name"]
 
     lines = [f"# {title}", "", f"Provider: {provider}", f"Conversation ID: {conversation_id}", ""]
+    message_ids = set()
     for msg in messages:
+        message_ids.add(msg["message_id"])
         role = msg["role"] or "message"
         text = msg["text"] or ""
         timestamp = msg["timestamp"]
@@ -100,17 +115,16 @@ def render_conversation(
         lines.append(text)
         lines.append("")
         for att in attachments_by_message.get(msg["message_id"], []):
-            name = None
-            meta = att["provider_meta"]
-            if meta:
-                try:
-                    meta_dict = json.loads(meta)
-                    name = meta_dict.get("name") or meta_dict.get("provider_id") or meta_dict.get("drive_id")
-                except Exception:
-                    name = None
-            label = name or att["attachment_id"]
-            path_value = att["path"] or str(asset_path(archive_root, att["attachment_id"]))
-            lines.append(f"- Attachment: {label} ({path_value})")
+            _append_attachment(att)
+        lines.append("")
+
+    orphan_keys = [key for key in attachments_by_message.keys() if key not in message_ids]
+    if orphan_keys:
+        lines.append("## attachments")
+        lines.append("")
+        for key in sorted(orphan_keys, key=lambda item: "" if item is None else str(item)):
+            for att in attachments_by_message.get(key, []):
+                _append_attachment(att)
         lines.append("")
 
     markdown_text = "\n".join(lines).strip() + "\n"
