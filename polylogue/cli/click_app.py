@@ -12,7 +12,6 @@ from typing import List, Optional, Tuple
 import click
 
 from ..ui import create_ui
-from ..paths import STATE_HOME
 from ..config import (
     Config,
     ConfigError,
@@ -25,6 +24,7 @@ from ..config import (
 )
 from ..export import export_jsonl
 from ..health import cached_health_summary, get_health
+from ..db import default_db_path, open_connection
 from ..drive_client import DriveError
 from ..index import rebuild_index
 from ..run import latest_run, plan_sources, run_sources
@@ -66,6 +66,9 @@ def _format_cursors(cursors: dict) -> Optional[str]:
         file_count = cursor.get("file_count")
         if isinstance(file_count, int):
             detail_bits.append(f"{file_count} files")
+        error_count = cursor.get("error_count")
+        if isinstance(error_count, int) and error_count:
+            detail_bits.append(f"{error_count} errors")
         latest_mtime = cursor.get("latest_mtime")
         latest_label = None
         if isinstance(latest_mtime, (int, float)):
@@ -120,7 +123,9 @@ def _is_declarative() -> bool:
 
 
 def _source_state_path() -> Path:
-    return STATE_HOME / "last-source.json"
+    raw_state_root = os.environ.get("XDG_STATE_HOME")
+    state_root = Path(raw_state_root).expanduser() if raw_state_root else Path.home() / ".local/state"
+    return state_root / "polylogue" / "last-source.json"
 
 
 def _load_last_source() -> Optional[str]:
@@ -527,6 +532,16 @@ def search(
             env.ui.console.print(f"[yellow]Could not open {target}[/yellow]")
 
 
+@cli.command()
+@click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True)
+def completions(shell: str) -> None:
+    """Generate shell completion scripts."""
+    from click.shell_completion import get_completion_script
+
+    script = get_completion_script("polylogue", "_POLYLOGUE_COMPLETE", shell)
+    click.echo(script)
+
+
 
 
 @cli.command()
@@ -560,6 +575,51 @@ def export(env: AppEnv, out: Optional[Path]) -> None:
         _fail("export", str(exc))
     target = export_jsonl(archive_root=config.archive_root, output_path=out)
     env.ui.console.print(f"Exported {target}")
+
+
+@cli.group()
+def state() -> None:
+    """State management commands."""
+
+
+@state.command("reset")
+@click.option("--db/--no-db", "reset_db", default=True, show_default=True, help="Reset the local SQLite DB")
+@click.option("--last-source", is_flag=True, help="Clear the stored last-source selection")
+@click.option("--all", "reset_all", is_flag=True, help="Reset DB and last-source state")
+@click.option("--force", is_flag=True, help="Skip confirmation prompts")
+@click.pass_obj
+def state_reset(
+    env: AppEnv,
+    reset_db: bool,
+    last_source: bool,
+    reset_all: bool,
+    force: bool,
+) -> None:
+    if reset_all:
+        reset_db = True
+        last_source = True
+    if not reset_db and not last_source:
+        _fail("state reset", "Nothing to reset; use --db, --last-source, or --all.")
+    if env.ui.plain and not force:
+        _fail("state reset", "--force is required in plain mode.")
+    if not force and not env.ui.plain:
+        prompt = "Reset local state? This removes the SQLite DB and/or last-source selection."
+        if not env.ui.confirm(prompt, default=False):
+            env.ui.console.print("Reset cancelled.")
+            return
+
+    if reset_db:
+        db_path = default_db_path()
+        if db_path.exists():
+            db_path.unlink()
+        with open_connection(db_path):
+            pass
+        env.ui.console.print(f"Reset DB: {db_path}")
+    if last_source:
+        state_path = _source_state_path()
+        if state_path.exists():
+            state_path.unlink()
+        env.ui.console.print("Cleared last-source selection.")
 
 
 @cli.group()

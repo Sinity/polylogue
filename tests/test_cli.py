@@ -8,6 +8,7 @@ from click.testing import CliRunner
 from polylogue.cli import cli
 import polylogue.cli.click_app as click_app
 from polylogue.config import load_config
+from polylogue.db import default_db_path
 
 
 def _write_prompt_file(path: Path, entries: list[dict]) -> None:
@@ -186,3 +187,22 @@ def test_cli_config_set_invalid(tmp_path, monkeypatch):
     assert result.exit_code != 0
     result = runner.invoke(cli, ["config", "set", "source.missing.type", "auto"])
     assert result.exit_code != 0
+
+
+def test_cli_state_reset_clears_db_and_last_source(tmp_path, monkeypatch):
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
+
+    db_path = default_db_path()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db_path.write_text("junk", encoding="utf-8")
+
+    last_source = state_root / "polylogue" / "last-source.json"
+    last_source.parent.mkdir(parents=True, exist_ok=True)
+    last_source.write_text("{\"source\": \"inbox\"}", encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--plain", "state", "reset", "--all", "--force"])
+    assert result.exit_code == 0
+    assert db_path.exists()
+    assert not last_source.exists()
