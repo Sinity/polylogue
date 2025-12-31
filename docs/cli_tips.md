@@ -41,4 +41,4 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 
 ## Path debugging
 
-- `polylogue config show` prints the resolved config plus env overrides so you can confirm where data is landing.
+- `polylogue config show` prints a summary; `polylogue config show --json` shows raw values and env overrides.
