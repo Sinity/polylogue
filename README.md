@@ -59,7 +59,7 @@ Notes:
 - `POLYLOGUE_ARCHIVE_ROOT` overrides `archive_root` at runtime.
 - Local sources use `path`; Drive sources use `folder`.
 - `--source last` reuses the previous interactive source selection.
-- Use `polylogue config show` to inspect resolved paths.
+- Use `polylogue config show` for a quick summary, or `polylogue config show --json` for raw output.
 - `--source NAME` (repeatable) limits `run` to selected sources.
 - `POLYLOGUE_FORCE_PLAIN=1` forces the non-interactive UI mode.
 

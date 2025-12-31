@@ -78,7 +78,6 @@ def _run_lines(run_result: object) -> List[str]:
     counts = run_result.counts
     return [
         f"Counts: {counts['conversations']} conv, {counts['messages']} msg",
-        f"Index: {'ok' if run_result.indexed else 'up-to-date'}",
         f"Duration: {run_result.duration_ms}ms",
     ]
 

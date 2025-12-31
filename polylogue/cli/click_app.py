@@ -289,13 +289,23 @@ def run(
         _fail("run", str(exc))
     run_lines = [
         f"Counts: {_format_counts(result.counts)}",
-        _format_index_status(stage, result.indexed, result.index_error),
         f"Duration: {result.duration_ms}ms",
     ]
+    title_parts: List[str] = []
+    if stage != "all":
+        title_parts.append(stage)
     if selected_sources:
-        run_lines.insert(0, f"Sources: {', '.join(selected_sources)}")
+        title_parts.append(", ".join(selected_sources))
+    title = f"Run ({'; '.join(title_parts)})" if title_parts else "Run"
+    if stage == "index":
+        run_lines = [
+            _format_index_status(stage, result.indexed, result.index_error),
+            f"Duration: {result.duration_ms}ms",
+        ]
+    elif result.index_error:
+        run_lines.insert(1, _format_index_status(stage, result.indexed, result.index_error))
     env.ui.summary(
-        f"Run ({stage})" if stage != "all" else "Run",
+        title,
         run_lines,
     )
     if stage in {"render", "all"}:
@@ -599,48 +609,46 @@ def config_init(
 
 
 @config.command("show")
-@click.option("--pretty", is_flag=True, help="Show a human-readable summary (interactive only)")
+@click.option("--json", "json_output", is_flag=True, help="Output JSON")
 @click.pass_obj
-def config_show(env: AppEnv, pretty: bool) -> None:
+def config_show(env: AppEnv, json_output: bool) -> None:
     try:
         config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("config show", str(exc))
-    if pretty:
-        if env.ui.plain:
-            _fail("config show", "pretty output requires interactive mode")
-        sources = []
-        for source in config.sources:
-            if source.folder:
-                sources.append(f"{source.name}: drive folder '{source.folder}'")
-            elif source.path:
-                sources.append(f"{source.name}: {source.path}")
-            else:
-                sources.append(f"{source.name}: (missing path)")
-        env.ui.summary(
-            "Config",
-            [
-                f"Path: {config.path}",
-                f"Archive root: {config.archive_root}",
-                f"Sources: {', '.join(sources) if sources else 'none'}",
-            ],
-        )
-        return
-    payload = config.as_dict()
-    raw_root = None
-    try:
-        raw = json.loads(config.path.read_text(encoding="utf-8"))
-        if isinstance(raw, dict):
-            raw_root = raw.get("archive_root")
-    except Exception:
+    if json_output:
+        payload = config.as_dict()
         raw_root = None
-    payload["resolved_archive_root"] = str(config.archive_root)
-    payload["configured_archive_root"] = raw_root
-    payload["env_overrides"] = {
-        "POLYLOGUE_CONFIG": os.environ.get("POLYLOGUE_CONFIG"),
-        "POLYLOGUE_ARCHIVE_ROOT": os.environ.get("POLYLOGUE_ARCHIVE_ROOT"),
-    }
-    env.ui.console.print(json.dumps(payload, indent=2))
+        try:
+            raw = json.loads(config.path.read_text(encoding="utf-8"))
+            if isinstance(raw, dict):
+                raw_root = raw.get("archive_root")
+        except Exception:
+            raw_root = None
+        payload["resolved_archive_root"] = str(config.archive_root)
+        payload["configured_archive_root"] = raw_root
+        payload["env_overrides"] = {
+            "POLYLOGUE_CONFIG": os.environ.get("POLYLOGUE_CONFIG"),
+            "POLYLOGUE_ARCHIVE_ROOT": os.environ.get("POLYLOGUE_ARCHIVE_ROOT"),
+        }
+        env.ui.console.print(json.dumps(payload, indent=2))
+        return
+    sources = []
+    for source in config.sources:
+        if source.folder:
+            sources.append(f"{source.name}: drive folder '{source.folder}'")
+        elif source.path:
+            sources.append(f"{source.name}: {source.path}")
+        else:
+            sources.append(f"{source.name}: (missing path)")
+    env.ui.summary(
+        "Config",
+        [
+            f"Path: {config.path}",
+            f"Archive root: {config.archive_root}",
+            f"Sources: {', '.join(sources) if sources else 'none'}",
+        ],
+    )
 
 
 @config.command("set")
