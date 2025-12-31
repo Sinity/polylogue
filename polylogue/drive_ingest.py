@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import logging
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -8,6 +9,8 @@ from .assets import asset_path
 from .config import Source
 from .drive_client import DriveClient
 from .source_ingest import ParsedConversation, parse_drive_payload
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _apply_drive_attachments(
@@ -66,7 +69,17 @@ def iter_drive_conversations(
                     cursor_state["latest_file_name"] = file_meta.name
         try:
             payload = drive_client.download_json_payload(file_meta.file_id, name=file_meta.name)
-        except Exception:
+        except Exception as exc:
+            if cursor_state is not None:
+                cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
+                cursor_state["latest_error"] = str(exc)
+                cursor_state["latest_error_file"] = file_meta.name
+            LOGGER.warning(
+                "Failed to download Drive payload for %s (%s): %s",
+                file_meta.name,
+                file_meta.file_id,
+                exc,
+            )
             continue
         conversations = parse_drive_payload(source.name, payload, file_meta.file_id)
         for convo in conversations:
