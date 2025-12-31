@@ -334,6 +334,10 @@ def run(
         f"Run ({stage})" if stage != "all" else "Run",
         run_lines,
     )
+    if stage in {"render", "all"}:
+        latest = _latest_render_path(config.archive_root)
+        if latest:
+            env.ui.console.print(f"Latest render: {latest}")
     if result.index_error:
         error_line = f"Index error: {result.index_error}"
         hint_line = "Hint: run `polylogue run --stage index` to rebuild the index."
