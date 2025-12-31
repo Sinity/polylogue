@@ -84,37 +84,10 @@ def _format_cursors(cursors: dict) -> Optional[str]:
     return "; ".join(parts)
 
 
-def _format_drift(drift: dict) -> List[str]:
-    def _counts(label: str, payload: dict) -> str:
-        return (
-            f"{label}: {payload.get('conversations', 0)} conv, "
-            f"{payload.get('messages', 0)} msg, "
-            f"{payload.get('attachments', 0)} att"
-        )
-
-    return [
-        _counts("New", drift.get("new", {})),
-        _counts("Removed", drift.get("removed", {})),
-        _counts("Changed", drift.get("changed", {})),
-    ]
-
-
 def _format_counts(counts: dict) -> str:
     return (
         f"{counts.get('conversations', 0)} conv, "
         f"{counts.get('messages', 0)} msg"
-    )
-
-
-def _format_attachments(counts: dict) -> str:
-    return f"{counts.get('attachments', 0)} att"
-
-
-def _format_skipped(counts: dict) -> str:
-    return (
-        f"{counts.get('skipped_conversations', 0)} conv, "
-        f"{counts.get('skipped_messages', 0)} msg, "
-        f"{counts.get('skipped_attachments', 0)} att"
     )
 
 
@@ -270,14 +243,12 @@ def cli(ctx: click.Context, plain: bool, interactive: bool, config_path: Optiona
 
 @cli.command()
 @click.option("--preview", is_flag=True, help="Preview work without writing")
-@click.option("--verbose", is_flag=True, help="Show detailed counts and drift")
 @click.option("--stage", type=click.Choice(["ingest", "render", "index", "all"]), default="all", show_default=True)
 @click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable, or 'last')")
 @click.pass_obj
 def run(
     env: AppEnv,
     preview: bool,
-    verbose: bool,
     stage: str,
     sources: Tuple[str, ...],
 ) -> None:
@@ -299,9 +270,7 @@ def run(
         cursor_line = _format_cursors(plan_result.cursors)
         if cursor_line:
             plan_lines.append(f"Cursors: {cursor_line}")
-        if verbose:
-            plan_lines.append(f"Attachments: {_format_attachments(plan_result.counts)}")
-            plan_lines.append(f"Snapshot: {_format_timestamp(plan_result.timestamp)}")
+        plan_lines.append(f"Snapshot: {_format_timestamp(plan_result.timestamp)}")
         env.ui.summary("Preview", plan_lines)
         return
     if not env.ui.plain:
@@ -323,13 +292,8 @@ def run(
         _format_index_status(stage, result.indexed, result.index_error),
         f"Duration: {result.duration_ms}ms",
     ]
-    if verbose:
-        if selected_sources:
-            run_lines.insert(0, f"Sources: {', '.join(selected_sources)}")
-        run_lines.append(f"Attachments: {_format_attachments(result.counts)}")
-        run_lines.append(f"Skipped: {_format_skipped(result.counts)}")
-        run_lines.append(f"Run ID: {result.run_id}")
-        run_lines.extend(_format_drift(result.drift))
+    if selected_sources:
+        run_lines.insert(0, f"Sources: {', '.join(selected_sources)}")
     env.ui.summary(
         f"Run ({stage})" if stage != "all" else "Run",
         run_lines,
