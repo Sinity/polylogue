@@ -65,6 +65,7 @@
               $out/bin/polylogue completions --shell fish > $out/share/fish/vendor_completions.d/polylogue.fish
             '';
           };
+          polylogueChecks = polylogueApp.overridePythonAttrs (_: { doCheck = true; });
 
           defaultDevShell = import ./nix/devshell.nix {
             inherit pkgs;
@@ -100,7 +101,7 @@
             };
           };
 
-          checks.default = polylogueApp;
+          checks.default = polylogueChecks;
         }
       );
     in
