@@ -14,7 +14,7 @@ from .drive_ingest import iter_drive_conversations
 from .index import index_status, rebuild_index, update_index_for_conversations
 from .ingest import IngestBundle, ingest_bundle
 from .render import render_conversation
-from .source_ingest import ParsedAttachment, ParsedConversation, iter_source_conversations
+from .source_ingest import ParsedAttachment, ParsedConversation, ParsedMessage, iter_source_conversations
 from .store import ConversationRecord, MessageRecord, AttachmentRecord, RunRecord, record_run
 
 
@@ -40,6 +40,10 @@ def _hash_text(text: str) -> str:
     import hashlib
 
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _hash_payload(payload: object) -> str:
+    return _hash_text(json.dumps(payload, sort_keys=True))
 
 
 def _hash_file(path: Path) -> str:
@@ -101,27 +105,94 @@ def _attachment_content_id(
     return _hash_text(seed)
 
 
-def _lookup_existing_conversation(convo: ParsedConversation) -> Optional[str]:
+@dataclass
+class ExistingConversation:
+    conversation_id: str
+    content_hash: str
+
+
+def _lookup_existing_conversation(convo: ParsedConversation) -> Optional[ExistingConversation]:
     with open_connection(None) as conn:
         row = conn.execute(
             """
-            SELECT content_hash
+            SELECT conversation_id, content_hash
             FROM conversations
             WHERE provider_name = ? AND provider_conversation_id = ?
-            ORDER BY updated_at DESC
+            ORDER BY updated_at DESC, rowid DESC
             LIMIT 1
             """,
             (convo.provider_name, convo.provider_conversation_id),
         ).fetchone()
-    return row["content_hash"] if row else None
+    if not row:
+        return None
+    return ExistingConversation(conversation_id=row["conversation_id"], content_hash=row["content_hash"])
 
 
-def _conversation_id(provider_id: str, content_hash: str) -> str:
-    return f"{provider_id}:{content_hash}"
+def _conversation_id(provider_name: str, provider_conversation_id: str) -> str:
+    return f"{provider_name}:{provider_conversation_id}"
 
 
-def _message_id(provider_message_id: str, content_hash: str) -> str:
-    return f"{provider_message_id}:{content_hash}"
+def _message_id(conversation_id: str, provider_message_id: str) -> str:
+    return f"{conversation_id}:{provider_message_id}"
+
+
+def _message_content_hash(message: ParsedMessage, provider_message_id: str) -> str:
+    payload = {
+        "id": provider_message_id,
+        "role": message.role,
+        "text": message.text,
+        "timestamp": message.timestamp,
+    }
+    return _hash_payload(payload)
+
+
+def _conversation_content_hash(convo: ParsedConversation) -> str:
+    messages_payload = []
+    for idx, msg in enumerate(convo.messages, start=1):
+        message_id = msg.provider_message_id or f"msg-{idx}"
+        messages_payload.append(
+            {
+                "id": message_id,
+                "role": msg.role,
+                "text": msg.text,
+                "timestamp": msg.timestamp,
+            }
+        )
+    attachments_payload = sorted(
+        [
+            {
+                "id": att.provider_attachment_id,
+                "message_id": att.message_provider_id,
+                "name": att.name,
+                "mime_type": att.mime_type,
+                "size_bytes": att.size_bytes,
+            }
+            for att in convo.attachments
+        ],
+        key=lambda item: (
+            item.get("message_id") or "",
+            item.get("id") or "",
+            item.get("name") or "",
+        ),
+    )
+    return _hash_payload({"messages": messages_payload, "attachments": attachments_payload})
+
+
+def _existing_message_map(conversation_id: str) -> Dict[str, str]:
+    with open_connection(None) as conn:
+        rows = conn.execute(
+            """
+            SELECT provider_message_id, message_id
+            FROM messages
+            WHERE conversation_id = ? AND provider_message_id IS NOT NULL
+            """,
+            (conversation_id,),
+        ).fetchall()
+    return {
+        str(row["provider_message_id"]): row["message_id"]
+        for row in rows
+        if row["provider_message_id"]
+    }
 
 
 def _select_sources(config: Config, source_names: Optional[Sequence[str]]) -> List[Source]:
@@ -168,11 +239,14 @@ def _ingest_conversation(
     *,
     archive_root: Path,
 ) -> Tuple[str, Dict[str, int], bool]:
-    combined_text = "\n".join(msg.text for msg in convo.messages)
-    content_hash = _hash_text(combined_text)
-    conversation_id = _conversation_id(convo.provider_conversation_id, content_hash)
-    existing_hash = _lookup_existing_conversation(convo)
-    changed = existing_hash is not None and existing_hash != content_hash
+    content_hash = _conversation_content_hash(convo)
+    existing = _lookup_existing_conversation(convo)
+    if existing:
+        conversation_id = existing.conversation_id
+        changed = existing.content_hash != content_hash
+    else:
+        conversation_id = _conversation_id(convo.provider_name, convo.provider_conversation_id)
+        changed = False
 
     conversation_record = ConversationRecord(
         conversation_id=conversation_id,
@@ -187,10 +261,13 @@ def _ingest_conversation(
 
     messages: List[MessageRecord] = []
     message_ids: Dict[str, str] = {}
+    existing_message_ids = _existing_message_map(conversation_id)
     for idx, msg in enumerate(convo.messages, start=1):
-        message_hash = _hash_text(msg.text)
         provider_message_id = msg.provider_message_id or f"msg-{idx}"
-        message_id = _message_id(provider_message_id, message_hash)
+        message_id = existing_message_ids.get(provider_message_id) or _message_id(
+            conversation_id, provider_message_id
+        )
+        message_hash = _message_content_hash(msg, provider_message_id)
         message_ids[str(provider_message_id)] = message_id
         messages.append(
             MessageRecord(
@@ -268,7 +345,8 @@ def _all_conversation_ids(source_names: Optional[Sequence[str]] = None) -> List[
 def _write_run_json(archive_root: Path, payload: dict) -> Path:
     runs_dir = archive_root / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
-    run_path = runs_dir / f"run-{payload['timestamp']}.json"
+    run_id = payload.get("run_id", "unknown")
+    run_path = runs_dir / f"run-{payload['timestamp']}-{run_id}.json"
     run_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return run_path
 
@@ -295,7 +373,7 @@ def run_sources(
         "messages": 0,
         "attachments": 0,
     }
-    processed_ids: List[str] = []
+    processed_ids: set[str] = set()
 
     if stage in {"ingest", "all"}:
         for source in _select_sources(config, source_names):
@@ -319,8 +397,8 @@ def run_sources(
                     + result_counts["messages"]
                     + result_counts["attachments"]
                 ) > 0
-                if ingest_changed:
-                    processed_ids.append(convo_id)
+                if ingest_changed or content_changed:
+                    processed_ids.add(convo_id)
                 if content_changed:
                     changed_counts["conversations"] += 1
                 for key, value in result_counts.items():
@@ -330,7 +408,7 @@ def run_sources(
         if stage == "render":
             ids = _all_conversation_ids(source_names)
         else:
-            ids = processed_ids
+            ids = list(processed_ids)
         for convo_id in ids:
             render_conversation(
                 conversation_id=convo_id,
@@ -349,7 +427,7 @@ def run_sources(
                 rebuild_index()
                 indexed = True
             elif processed_ids:
-                update_index_for_conversations(processed_ids)
+                update_index_for_conversations(list(processed_ids))
                 indexed = True
     except Exception as exc:
         index_error = str(exc)
