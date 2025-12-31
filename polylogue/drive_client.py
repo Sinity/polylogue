@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import importlib
+import io
 import json
 import os
-import io
 import shutil
 from dataclasses import dataclass
 from datetime import datetime
@@ -45,6 +46,17 @@ def default_credentials_path() -> Path:
 
 def default_token_path() -> Path:
     return CONFIG_HOME / DEFAULT_TOKEN_NAME
+
+
+def _import_module(name: str):
+    try:
+        return importlib.import_module(name)
+    except ModuleNotFoundError as exc:
+        raise DriveAuthError(
+            "Drive dependencies are not available. "
+            "Install google-api-python-client + google-auth-oauthlib "
+            "or run Polylogue from a Nix build/dev shell."
+        ) from exc
 
 
 def _parse_modified_time(raw: Optional[str]) -> Optional[float]:
@@ -119,9 +131,9 @@ class DriveClient:
         self._meta_cache: Dict[str, DriveFile] = {}
 
     def _load_credentials(self):
-        from google.auth.transport.requests import Request
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
+        Request = _import_module("google.auth.transport.requests").Request
+        Credentials = _import_module("google.oauth2.credentials").Credentials
+        InstalledAppFlow = _import_module("google_auth_oauthlib.flow").InstalledAppFlow
 
         token_path = self._token_path or _resolve_token_path()
         creds = None
@@ -160,7 +172,7 @@ class DriveClient:
     def _service_handle(self):
         if self._service is not None:
             return self._service
-        from googleapiclient.discovery import build
+        build = _import_module("googleapiclient.discovery").build
 
         creds = self._load_credentials()
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
@@ -217,7 +229,7 @@ class DriveClient:
                 break
 
     def download_bytes(self, file_id: str) -> bytes:
-        from googleapiclient.http import MediaIoBaseDownload
+        MediaIoBaseDownload = _import_module("googleapiclient.http").MediaIoBaseDownload
 
         service = self._service_handle()
         request = service.files().get_media(fileId=file_id)
@@ -248,11 +260,24 @@ class DriveClient:
         return file_obj
 
     def download_to_path(self, file_id: str, dest: Path) -> DriveFile:
-        from googleapiclient.http import MediaIoBaseDownload
+        MediaIoBaseDownload = _import_module("googleapiclient.http").MediaIoBaseDownload
 
         meta = self.get_metadata(file_id)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        if not dest.exists():
+        needs_download = True
+        if dest.exists():
+            needs_download = False
+            try:
+                stat = dest.stat()
+            except OSError:
+                needs_download = True
+            else:
+                if meta.size_bytes is not None and stat.st_size != meta.size_bytes:
+                    needs_download = True
+                modified_timestamp = _parse_modified_time(meta.modified_time)
+                if modified_timestamp is not None and abs(stat.st_mtime - modified_timestamp) > 1:
+                    needs_download = True
+        if needs_download:
             service = self._service_handle()
             request = service.files().get_media(fileId=file_id)
             with dest.open("wb") as handle:
