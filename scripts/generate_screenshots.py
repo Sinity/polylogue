@@ -148,10 +148,10 @@ def main() -> None:
     def render_plan(path: Path) -> None:
         facade = ConsoleFacade(plain=False)
         console = new_console(facade)
-        console.print(Text("$ polylogue run --dry-run", style="bold #94a3b8"))
+        console.print(Text("$ polylogue run --preview", style="bold #94a3b8"))
         console.print()
         facade.summary(
-            "Dry Run",
+            "Preview",
             _dry_run_lines(
                 plan_result.counts,
                 plan_result.sources,
