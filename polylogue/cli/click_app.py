@@ -12,6 +12,7 @@ from typing import List, Optional, Tuple
 import click
 
 from ..ui import create_ui
+from ..paths import STATE_HOME
 from ..config import (
     Config,
     ConfigError,
@@ -137,6 +138,54 @@ def _fail(command: str, message: str) -> None:
     raise SystemExit(f"{command}: {message}")
 
 
+def _source_state_path() -> Path:
+    return STATE_HOME / "last-source.json"
+
+
+def _load_last_source() -> Optional[str]:
+    path = _source_state_path()
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    if isinstance(payload, dict) and isinstance(payload.get("source"), str):
+        return payload["source"]
+    return None
+
+
+def _save_last_source(source_name: str) -> None:
+    path = _source_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"source": source_name}), encoding="utf-8")
+
+
+def _maybe_prompt_sources(
+    env: AppEnv,
+    config: Config,
+    selected_sources: Optional[List[str]],
+    command: str,
+) -> Optional[List[str]]:
+    if selected_sources is not None or env.ui.plain:
+        return selected_sources
+    names = [source.name for source in config.sources]
+    if len(names) <= 1:
+        return selected_sources
+    options = ["all"] + names
+    last_choice = _load_last_source()
+    if last_choice in options:
+        options.remove(last_choice)
+        options.insert(0, last_choice)
+    choice = env.ui.choose(f"Select source for {command}", options)
+    if not choice:
+        return selected_sources
+    _save_last_source(choice)
+    if choice == "all":
+        return None
+    return [choice]
+
+
 def _load_effective_config(env: AppEnv) -> Config:
     return load_config(env.config_path)
 
@@ -206,13 +255,15 @@ def cli(ctx: click.Context, plain: bool, interactive: bool, config_path: Optiona
 
 @cli.command()
 @click.option("--dry-run", is_flag=True, help="Preview work without writing")
+@click.option("--preview", is_flag=True, help="Alias for --dry-run")
 @click.option("--verbose", is_flag=True, help="Show detailed counts and drift")
-@click.option("--stage", type=click.Choice(["ingest", "render", "index", "all"]), default="all")
+@click.option("--stage", type=click.Choice(["ingest", "render", "index", "all"]), default="all", show_default=True)
 @click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable)")
 @click.pass_obj
 def run(
     env: AppEnv,
     dry_run: bool,
+    preview: bool,
     verbose: bool,
     stage: str,
     sources: Tuple[str, ...],
@@ -221,7 +272,9 @@ def run(
         config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("run", str(exc))
+    dry_run = dry_run or preview
     selected_sources = _resolve_sources(config, sources, "run")
+    selected_sources = _maybe_prompt_sources(env, config, selected_sources, "run")
     if dry_run:
         try:
             plan_result = plan_sources(config, ui=env.ui, source_names=selected_sources)
@@ -281,28 +334,52 @@ def run(
 
 
 @cli.command()
-@click.argument("query")
+@click.argument("query", required=False)
 @click.option("--limit", type=int, default=20, show_default=True)
+@click.option("--latest", is_flag=True, help="Open the latest render instead of searching")
+@click.option("--list", "list_mode", is_flag=True, help="Print all hits (skip interactive picker)")
 @click.option("--json", "json_output", is_flag=True, help="Output JSON")
 @click.option("--json-lines", is_flag=True, help="Output JSON Lines")
 @click.option("--csv", type=click.Path(path_type=Path), help="Write CSV to file")
-@click.option("--pick", is_flag=True, help="Interactive picker for results")
 @click.option("--open", "open_result", is_flag=True, help="Open result path after selection")
 @click.pass_obj
 def search(
     env: AppEnv,
-    query: str,
+    query: Optional[str],
     limit: int,
+    latest: bool,
+    list_mode: bool,
     json_output: bool,
     json_lines: bool,
     csv: Optional[Path],
-    pick: bool,
     open_result: bool,
 ) -> None:
     try:
         config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("search", str(exc))
+    if latest:
+        if query:
+            _fail("search", "--latest cannot be combined with a query")
+        if json_output or json_lines or csv:
+            _fail("search", "--latest cannot be combined with JSON/CSV output")
+        target = _latest_render_path(config.archive_root)
+        if not target:
+            _fail("search", "no rendered outputs found")
+        if not open_result:
+            env.ui.console.print(str(target))
+            return
+        if target.suffix.lower() == ".html":
+            if open_in_browser(target):
+                env.ui.console.print(f"Opened {target} in browser")
+                return
+        if open_in_editor(target):
+            env.ui.console.print(f"Opened {target} in editor")
+        else:
+            env.ui.console.print(f"[yellow]Could not open {target}[/yellow]")
+        return
+    if not query:
+        _fail("search", "Query required (or use --latest).")
     try:
         result = search_messages(query, archive_root=config.archive_root, limit=limit)
     except RuntimeError as exc:
@@ -359,30 +436,42 @@ def search(
         return
 
     env.ui.summary("Search", [f"Results: {len(hits)}", f"Query: {query}"])
-    for idx, hit in enumerate(hits, start=1):
-        title = hit.title or hit.conversation_id
-        source_label = _format_source_label(hit.source_name, hit.provider_name)
-        env.ui.console.print(f"{idx}. {title} ({source_label})")
-        env.ui.console.print(f"   {hit.snippet}")
-        env.ui.console.print(f"   {hit.conversation_path}")
 
     selected = hits
-    if pick and not env.ui.plain and len(hits) > 1:
-        options = [f"{idx}: {hit.title or hit.conversation_id}" for idx, hit in enumerate(hits, start=1)]
+    interactive_pick = not env.ui.plain and not list_mode and len(hits) > 1
+    if interactive_pick:
+        options = [
+            f"{idx}: {hit.title or hit.conversation_id}"
+            for idx, hit in enumerate(hits, start=1)
+        ]
         choice = env.ui.choose("Select result", options)
         if choice:
             try:
                 index = int(choice.split(":", 1)[0]) - 1
                 selected = [hits[index]]
             except Exception:
-                selected = hits
+                selected = [hits[0]]
+        elif hits:
+            selected = [hits[0]]
 
-    if pick and not open_result and not env.ui.plain:
-        open_result = True
+    if env.ui.plain or list_mode:
+        for idx, hit in enumerate(hits, start=1):
+            title = hit.title or hit.conversation_id
+            source_label = _format_source_label(hit.source_name, hit.provider_name)
+            env.ui.console.print(f"{idx}. {title} ({source_label})")
+            env.ui.console.print(f"   {hit.snippet}")
+            env.ui.console.print(f"   {hit.conversation_path}")
+    elif selected:
+        hit = selected[0]
+        title = hit.title or hit.conversation_id
+        source_label = _format_source_label(hit.source_name, hit.provider_name)
+        env.ui.console.print(f"1. {title} ({source_label})")
+        env.ui.console.print(f"   {hit.snippet}")
+        env.ui.console.print(f"   {hit.conversation_path}")
 
     if open_result:
         if len(selected) != 1:
-            env.ui.console.print("[yellow]--open requires a single result. Use --limit 1 or --pick.[/yellow]")
+            env.ui.console.print("[yellow]--open requires a single result. Use --limit 1 or --list.[/yellow]")
             return
         target = selected[0].conversation_path
         html_target = target.with_suffix(".html")
@@ -398,28 +487,6 @@ def search(
             env.ui.console.print(f"[yellow]Could not open {target}[/yellow]")
 
 
-@cli.command()
-@click.option("--open", "open_result", is_flag=True, help="Open path in browser/editor")
-@click.pass_obj
-def open(env: AppEnv, open_result: bool) -> None:
-    try:
-        config = _load_effective_config(env)
-    except ConfigError as exc:
-        _fail("open", str(exc))
-    target = _latest_render_path(config.archive_root)
-    if not target:
-        _fail("open", "no rendered outputs found")
-    if not open_result:
-        env.ui.console.print(str(target))
-        return
-    if target.suffix.lower() == ".html":
-        if open_in_browser(target):
-            env.ui.console.print(f"Opened {target} in browser")
-            return
-    if open_in_editor(target):
-        env.ui.console.print(f"Opened {target} in editor")
-    else:
-        env.ui.console.print(f"[yellow]Could not open {target}[/yellow]")
 
 
 @cli.command()

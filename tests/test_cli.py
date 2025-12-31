@@ -118,7 +118,7 @@ def test_cli_search_csv_header(tmp_path, monkeypatch):
     assert header.startswith("source,provider,conversation_id,message_id")
 
 
-def test_cli_open_missing_render(tmp_path, monkeypatch):
+def test_cli_search_latest_missing_render(tmp_path, monkeypatch):
     config_path = tmp_path / "config.json"
     config_payload = {
         "version": 2,
@@ -129,7 +129,7 @@ def test_cli_open_missing_render(tmp_path, monkeypatch):
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["open", "--open"])
+    result = runner.invoke(cli, ["search", "--latest", "--open"])
     assert result.exit_code != 0
     assert "no rendered outputs found" in result.output
 

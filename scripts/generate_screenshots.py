@@ -172,7 +172,7 @@ def main() -> None:
     def render_search(path: Path) -> None:
         facade = ConsoleFacade(plain=False)
         console = new_console(facade)
-        console.print(Text("$ polylogue search \"pipeline\" --limit 2", style="bold #94a3b8"))
+        console.print(Text("$ polylogue search \"pipeline\" --limit 2 --list", style="bold #94a3b8"))
         console.print()
         facade.summary("Search", ["Results: 2", "Query: pipeline"])
         display_root = Path("~/.local/share/polylogue/archive")
