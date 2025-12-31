@@ -5,10 +5,10 @@ Polylogue turns AI chat exports into a local, searchable archive. It ingests exp
 ## What it does
 
 - Import ChatGPT, Claude, Claude Code, Codex, and generic JSON/JSONL/ZIP exports
-- Sync Google AI Studio chats from Drive (OAuth, optional)
+- Ingest Google AI Studio chats from Drive (OAuth, optional)
 - Idempotent ingest with incremental index updates (safe to re-run)
 - Render Markdown/HTML per conversation and export JSONL
-- Search conversations with FTS and open the latest render
+- Search conversations with FTS and open the latest render when no query is provided
 
 ## Install
 
@@ -25,6 +25,7 @@ polylogue config init --interactive
 polylogue run --preview
 polylogue run
 polylogue search "your query"
+polylogue search
 ```
 
 Drop local exports under `~/.local/share/polylogue/inbox` (default), or add custom sources in the config.
@@ -75,7 +76,7 @@ Notes:
 - `polylogue run --preview` - preview counts without writing
 - `polylogue run --stage ingest|render|index` - run one stage
 - `polylogue index` - rebuild the FTS index
-- `polylogue search [QUERY]` - full-text search (omit QUERY to show latest render)
+- `polylogue search [QUERY]` - full-text search (omit QUERY to open latest render in interactive mode or print it in plain mode)
 - `polylogue search --open` - open the most recent render
 - `polylogue export` - export DB to JSONL
 - `polylogue health` - cached health checks
