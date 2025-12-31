@@ -5,6 +5,8 @@ import io
 import json
 import os
 import shutil
+import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +19,10 @@ SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 DEFAULT_CREDENTIALS_NAME = "credentials.json"
 DEFAULT_TOKEN_NAME = "token.json"
+DEFAULT_DRIVE_RETRIES = 3
+DEFAULT_DRIVE_RETRY_BASE = 0.5
+ENV_DRIVE_RETRIES = "POLYLOGUE_DRIVE_RETRIES"
+ENV_DRIVE_RETRY_BASE = "POLYLOGUE_DRIVE_RETRY_BASE"
 
 
 class DriveError(RuntimeError):
@@ -116,6 +122,30 @@ def _resolve_token_path() -> Path:
     return default_token_path()
 
 
+def _resolve_retries(value: Optional[int]) -> int:
+    if value is not None:
+        return max(0, int(value))
+    env_value = os.environ.get(ENV_DRIVE_RETRIES)
+    if env_value:
+        try:
+            return max(0, int(env_value))
+        except ValueError:
+            pass
+    return DEFAULT_DRIVE_RETRIES
+
+
+def _resolve_retry_base(value: Optional[float]) -> float:
+    if value is not None:
+        return max(0.0, float(value))
+    env_value = os.environ.get(ENV_DRIVE_RETRY_BASE)
+    if env_value:
+        try:
+            return max(0.0, float(env_value))
+        except ValueError:
+            pass
+    return DEFAULT_DRIVE_RETRY_BASE
+
+
 class DriveClient:
     def __init__(
         self,
@@ -123,12 +153,33 @@ class DriveClient:
         ui: Optional[object] = None,
         credentials_path: Optional[Path] = None,
         token_path: Optional[Path] = None,
+        retries: Optional[int] = None,
+        retry_base: Optional[float] = None,
     ) -> None:
         self._ui = ui
         self._credentials_path = credentials_path
         self._token_path = token_path
         self._service = None
         self._meta_cache: Dict[str, DriveFile] = {}
+        self._retries = _resolve_retries(retries)
+        self._retry_base = _resolve_retry_base(retry_base)
+
+    def _with_retries(self, label: str, action):
+        attempts = max(self._retries, 0) + 1
+        last_exc = None
+        for attempt in range(1, attempts + 1):
+            try:
+                return action()
+            except (DriveAuthError, DriveNotFoundError):
+                raise
+            except Exception as exc:
+                last_exc = exc
+                if attempt >= attempts:
+                    raise
+                time.sleep(self._retry_base * (2 ** (attempt - 1)))
+        if last_exc is not None:
+            raise last_exc
+        raise DriveError(f"Drive operation '{label}' failed unexpectedly")
 
     def _load_credentials(self):
         Request = _import_module("google.auth.transport.requests").Request
@@ -138,12 +189,23 @@ class DriveClient:
         token_path = self._token_path or _resolve_token_path()
         creds = None
         if token_path.exists():
-            creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+            try:
+                creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+            except Exception:
+                creds = None
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except Exception:
+                creds = None
         if creds and creds.valid:
             self._persist_token(creds, token_path)
             return creds
+        if creds is None and token_path.exists() and (self._ui is None or getattr(self._ui, "plain", True)):
+            raise DriveAuthError(
+                f"Drive token at {token_path} is invalid or expired. "
+                "Delete it and re-run with --interactive to re-authorize."
+            )
 
         credentials_path = self._credentials_path or _resolve_credentials_path(self._ui)
         if not credentials_path.exists():
@@ -182,10 +244,11 @@ class DriveClient:
         service = self._service_handle()
         if _looks_like_id(folder_ref):
             try:
-                file_meta = (
-                    service.files()
+                file_meta = self._with_retries(
+                    "drive.get-folder",
+                    lambda: service.files()
                     .get(fileId=folder_ref, fields="id,name,mimeType")
-                    .execute()
+                    .execute(),
                 )
                 if file_meta and file_meta.get("mimeType") == FOLDER_MIME_TYPE:
                     return file_meta["id"]
@@ -193,7 +256,10 @@ class DriveClient:
                 pass
         escaped = folder_ref.replace("'", "\\'")
         query = f"name = '{escaped}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
-        response = service.files().list(q=query, fields="files(id,name)").execute()
+        response = self._with_retries(
+            "drive.list-folders",
+            lambda: service.files().list(q=query, fields="files(id,name)").execute(),
+        )
         matches = response.get("files", [])
         if not matches:
             raise DriveNotFoundError(f"Folder not found: {folder_ref}")
@@ -205,10 +271,11 @@ class DriveClient:
         query = f"'{folder_id}' in parents and trashed = false"
         fields = "nextPageToken, files(id,name,mimeType,modifiedTime,size)"
         while True:
-            response = (
-                service.files()
+            response = self._with_retries(
+                "drive.list-files",
+                lambda: service.files()
                 .list(q=query, fields=fields, pageToken=page_token, pageSize=1000)
-                .execute()
+                .execute(),
             )
             for item in response.get("files", []):
                 name = item.get("name") or ""
@@ -231,23 +298,27 @@ class DriveClient:
     def download_bytes(self, file_id: str) -> bytes:
         MediaIoBaseDownload = _import_module("googleapiclient.http").MediaIoBaseDownload
 
-        service = self._service_handle()
-        request = service.files().get_media(fileId=file_id)
-        buffer = io.BytesIO()
-        downloader = MediaIoBaseDownload(buffer, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-        return buffer.getvalue()
+        def _download():
+            service = self._service_handle()
+            request = service.files().get_media(fileId=file_id)
+            buffer = io.BytesIO()
+            downloader = MediaIoBaseDownload(buffer, request)
+            done = False
+            while not done:
+                _, done = downloader.next_chunk()
+            return buffer.getvalue()
+
+        return self._with_retries("drive.download-bytes", _download)
 
     def get_metadata(self, file_id: str) -> DriveFile:
         if file_id in self._meta_cache:
             return self._meta_cache[file_id]
         service = self._service_handle()
-        meta = (
-            service.files()
+        meta = self._with_retries(
+            "drive.get-metadata",
+            lambda: service.files()
             .get(fileId=file_id, fields="id,name,mimeType,modifiedTime,size")
-            .execute()
+            .execute(),
         )
         file_obj = DriveFile(
             file_id=meta.get("id", file_id),
@@ -278,13 +349,27 @@ class DriveClient:
                 if modified_timestamp is not None and abs(stat.st_mtime - modified_timestamp) > 1:
                     needs_download = True
         if needs_download:
-            service = self._service_handle()
-            request = service.files().get_media(fileId=file_id)
-            with dest.open("wb") as handle:
-                downloader = MediaIoBaseDownload(handle, request)
-                done = False
-                while not done:
-                    _, done = downloader.next_chunk()
+            def _download_once():
+                tmp_path = None
+                try:
+                    service = self._service_handle()
+                    request = service.files().get_media(fileId=file_id)
+                    with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as handle:
+                        tmp_path = Path(handle.name)
+                        downloader = MediaIoBaseDownload(handle, request)
+                        done = False
+                        while not done:
+                            _, done = downloader.next_chunk()
+                    tmp_path.replace(dest)
+                except Exception:
+                    if tmp_path is not None:
+                        try:
+                            tmp_path.unlink()
+                        except OSError:
+                            pass
+                    raise
+
+            self._with_retries("drive.download-file", _download_once)
         modified_timestamp = _parse_modified_time(meta.modified_time)
         if modified_timestamp is not None:
             os.utime(dest, (modified_timestamp, modified_timestamp))
