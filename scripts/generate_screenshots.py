@@ -167,6 +167,8 @@ def main() -> None:
         console.print(Text("$ polylogue run", style="bold #94a3b8"))
         console.print()
         facade.summary("Run", _run_lines(run_result))
+        latest = max((archive_root / "render").rglob("conversation.html"), key=lambda p: p.stat().st_mtime)
+        console.print(f"Latest render: {latest}")
         console.save_svg(str(path))
 
     def render_search(path: Path) -> None:
