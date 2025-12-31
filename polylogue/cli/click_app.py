@@ -358,6 +358,8 @@ def search(
         config = _load_effective_config(env)
     except ConfigError as exc:
         _fail("search", str(exc))
+    if query is None and not latest:
+        latest = True
     if latest:
         if query:
             _fail("search", "--latest cannot be combined with a query")
@@ -379,7 +381,7 @@ def search(
             env.ui.console.print(f"[yellow]Could not open {target}[/yellow]")
         return
     if not query:
-        _fail("search", "Query required (or use --latest).")
+        _fail("search", "Query required.")
     try:
         result = search_messages(query, archive_root=config.archive_root, limit=limit)
     except RuntimeError as exc:
