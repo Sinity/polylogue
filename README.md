@@ -74,8 +74,8 @@ Notes:
 - `polylogue run --dry-run` - preview counts without writing
 - `polylogue run --stage ingest|render|index` - run one stage
 - `polylogue search QUERY` - full-text search (FTS)
+- `polylogue search --latest --open` - open the most recent render
 - `polylogue export` - export DB to JSONL
-- `polylogue open` - open latest render
 - `polylogue health` - cached health checks
 - `polylogue config init/show/set` - manage config
 
