@@ -53,9 +53,7 @@ def test_claude_chat_messages_attachments(tmp_path):
                 "id": "msg-1",
                 "sender": "assistant",
                 "content": [{"type": "text", "text": "Files"}],
-                "attachments": [
-                    {"id": "file-1", "name": "notes.txt", "size": 12, "mimeType": "text/plain"}
-                ],
+                "attachments": [{"id": "file-1", "name": "notes.txt", "size": 12, "mimeType": "text/plain"}],
             }
         ]
     }

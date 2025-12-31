@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Generate README screenshots for the CLI."""
+
 from __future__ import annotations
 
 import io
@@ -8,7 +9,6 @@ import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import List
 
 
 def _seed_inbox(inbox: Path) -> None:
@@ -48,7 +48,7 @@ def _seed_inbox(inbox: Path) -> None:
         path.write_text(json.dumps(convo, indent=2), encoding="utf-8")
 
 
-def _dry_run_lines(counts: dict, sources: List[str], timestamp: int, cursors: dict) -> List[str]:
+def _dry_run_lines(counts: dict, sources: list[str], timestamp: int, cursors: dict) -> list[str]:
     lines = [
         f"Counts: {counts['conversations']} conv, {counts['messages']} msg",
     ]
@@ -74,7 +74,7 @@ def _dry_run_lines(counts: dict, sources: List[str], timestamp: int, cursors: di
     return lines
 
 
-def _run_lines(run_result: object) -> List[str]:
+def _run_lines(run_result: object) -> list[str]:
     counts = run_result.counts
     return [
         f"Counts: {counts['conversations']} conv, {counts['messages']} msg",
@@ -102,19 +102,22 @@ def main() -> None:
 
     inbox = demo_root / "inbox"
     archive_root = demo_root / "archive"
+    render_root = archive_root / "render"
     _seed_inbox(inbox)
 
     config = Config(
         version=2,
         archive_root=archive_root,
+        render_root=render_root,
         sources=[Source(name="inbox", path=inbox)],
         path=demo_root / "config.json",
     )
 
     plan_result = plan_sources(config)
 
-    import polylogue.run as run_mod
     import uuid
+
+    import polylogue.run as run_mod
 
     run_mod.uuid4 = lambda: uuid.UUID("12345678-1234-5678-1234-567812345678")
     perf_values = iter([1.0, 1.234])
@@ -128,7 +131,12 @@ def main() -> None:
         source_names=None,
     )
 
-    search_result = search_messages("pipeline", archive_root=archive_root, limit=2)
+    search_result = search_messages(
+        "pipeline",
+        archive_root=archive_root,
+        render_root_path=render_root,
+        limit=2,
+    )
 
     def new_console(facade: ConsoleFacade) -> Console:
         console = Console(
@@ -166,17 +174,17 @@ def main() -> None:
         console.print(Text("$ polylogue run", style="bold #94a3b8"))
         console.print()
         facade.summary("Run", _run_lines(run_result))
-        latest = max((archive_root / "render").rglob("conversation.html"), key=lambda p: p.stat().st_mtime)
+        latest = max(render_root.rglob("conversation.html"), key=lambda p: p.stat().st_mtime)
         console.print(f"Latest render: {latest}")
         console.save_svg(str(path))
 
     def render_search(path: Path) -> None:
         facade = ConsoleFacade(plain=False)
         console = new_console(facade)
-        console.print(Text("$ polylogue search \"pipeline\" --limit 2 --list", style="bold #94a3b8"))
+        console.print(Text('$ polylogue search "pipeline" --limit 2 --list', style="bold #94a3b8"))
         console.print()
         facade.summary("Search", ["Results: 2", "Query: pipeline"])
-        display_root = Path("~/.local/share/polylogue/archive")
+        display_root = Path("~/.local/share/polylogue/archive/render")
         for idx, hit in enumerate(search_result.hits, start=1):
             title = hit.title or hit.conversation_id
             source_label = hit.provider_name
@@ -186,9 +194,7 @@ def main() -> None:
                 source_label = hit.source_name
             console.print(f"{idx}. {title} ({source_label})")
             console.print(f"   {hit.snippet}")
-            display_path = (
-                display_root / "render" / hit.provider_name / hit.conversation_id / "conversation.md"
-            )
+            display_path = display_root / hit.provider_name / hit.conversation_id / "conversation.md"
             console.print(f"   {display_path}")
         console.save_svg(str(path))
 

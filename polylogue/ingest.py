@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List
+import sqlite3
+
+from pydantic import BaseModel
 
 from .store import AttachmentRecord, ConversationRecord, MessageRecord, store_records
 
 
-@dataclass
-class IngestBundle:
+class IngestBundle(BaseModel):
     conversation: ConversationRecord
-    messages: List[MessageRecord]
-    attachments: List[AttachmentRecord]
+    messages: list[MessageRecord]
+    attachments: list[AttachmentRecord]
 
 
-@dataclass
-class IngestResult:
+class IngestResult(BaseModel):
     conversations: int
     messages: int
     attachments: int
@@ -23,11 +22,12 @@ class IngestResult:
     skipped_attachments: int
 
 
-def ingest_bundle(bundle: IngestBundle) -> IngestResult:
+def ingest_bundle(bundle: IngestBundle, *, conn: sqlite3.Connection | None = None) -> IngestResult:
     counts = store_records(
         conversation=bundle.conversation,
         messages=bundle.messages,
         attachments=bundle.attachments,
+        conn=conn,
     )
     return IngestResult(
         conversations=counts["conversations"],

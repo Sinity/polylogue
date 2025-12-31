@@ -5,9 +5,9 @@ import shutil
 import sqlite3
 import sys
 import types
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -15,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
 
 
 FIXED_NOW = "2000-01-01T00:00:00Z"
+
 
 class _SimpleEncoding:
     def __init__(self, name: str):
@@ -79,10 +80,10 @@ class DummyUI:
 @dataclass(frozen=True)
 class GoldenCase:
     name: str
-    run: Callable[[Path], Tuple[str, str]]  # returns (slug, provider)
+    run: Callable[[Path], tuple[str, str]]  # returns (slug, provider)
 
 
-def _render_slug(db_path: Path, output_dir: Path, slug: str) -> Tuple[str, str]:
+def _render_slug(db_path: Path, output_dir: Path, slug: str) -> tuple[str, str]:
     conn = sqlite3.connect(db_path)
     try:
         conn.row_factory = sqlite3.Row
@@ -123,6 +124,8 @@ def main() -> None:
         shutil.rmtree(tmp_root)
     tmp_root.mkdir(parents=True, exist_ok=True)
 
+    import frontmatter
+
     from polylogue.commands import CommandEnv
     from polylogue.frontmatter_canonical import canonicalize_markdown
     from polylogue.html import HtmlRenderOptions, render_html
@@ -131,14 +134,13 @@ def main() -> None:
     from polylogue.importers.claude_code import import_claude_code_session
     from polylogue.importers.codex import import_codex_session
     from polylogue.render import MarkdownDocument
-    import frontmatter
 
     env = CommandEnv(ui=DummyUI())
     db_path = env.database.resolve_path()
     if db_path is None:
         raise RuntimeError("Database path unavailable.")
 
-    def run_chatgpt(output_dir: Path) -> Tuple[str, str]:
+    def run_chatgpt(output_dir: Path) -> tuple[str, str]:
         results = import_chatgpt_export(
             Path("tests/fixtures/golden/chatgpt"),
             output_dir=output_dir,
@@ -153,7 +155,7 @@ def main() -> None:
         _render_slug(db_path, output_dir, slug)
         return slug, "chatgpt"
 
-    def run_chatgpt_tool(output_dir: Path) -> Tuple[str, str]:
+    def run_chatgpt_tool(output_dir: Path) -> tuple[str, str]:
         results = import_chatgpt_export(
             Path("tests/fixtures/golden/chatgpt_tool"),
             output_dir=output_dir,
@@ -168,7 +170,7 @@ def main() -> None:
         _render_slug(db_path, output_dir, slug)
         return slug, "chatgpt"
 
-    def run_claude(output_dir: Path) -> Tuple[str, str]:
+    def run_claude(output_dir: Path) -> tuple[str, str]:
         results = import_claude_export(
             Path("tests/fixtures/golden/claude"),
             output_dir=output_dir,
@@ -183,7 +185,7 @@ def main() -> None:
         _render_slug(db_path, output_dir, slug)
         return slug, "claude"
 
-    def run_claude_tool(output_dir: Path) -> Tuple[str, str]:
+    def run_claude_tool(output_dir: Path) -> tuple[str, str]:
         results = import_claude_export(
             Path("tests/fixtures/golden/claude_tool"),
             output_dir=output_dir,
@@ -198,7 +200,7 @@ def main() -> None:
         _render_slug(db_path, output_dir, slug)
         return slug, "claude"
 
-    def run_codex(output_dir: Path) -> Tuple[str, str]:
+    def run_codex(output_dir: Path) -> tuple[str, str]:
         result = import_codex_session(
             "tests/fixtures/golden/codex/codex-golden.jsonl",
             base_dir=repo_root,
@@ -211,7 +213,7 @@ def main() -> None:
         _render_slug(db_path, output_dir, slug)
         return slug, "codex"
 
-    def run_claude_code(output_dir: Path) -> Tuple[str, str]:
+    def run_claude_code(output_dir: Path) -> tuple[str, str]:
         result = import_claude_code_session(
             "tests/fixtures/golden/claude_code/claude-code-golden.jsonl",
             base_dir=Path("."),
@@ -225,7 +227,7 @@ def main() -> None:
         _render_slug(db_path, output_dir, slug)
         return slug, "claude-code"
 
-    cases: List[GoldenCase] = [
+    cases: list[GoldenCase] = [
         GoldenCase("chatgpt-basic.md", run_chatgpt),
         GoldenCase("chatgpt-tool.md", run_chatgpt_tool),
         GoldenCase("claude-basic.md", run_claude),

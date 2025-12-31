@@ -13,6 +13,7 @@ def test_config_roundtrip(workspace_env):
 
     loaded = load_config()
     assert loaded.archive_root == workspace_env["archive_root"]
+    assert loaded.render_root == workspace_env["archive_root"] / "render"
     assert loaded.version == config.version
     assert loaded.sources
     assert loaded.sources[0].path is not None
