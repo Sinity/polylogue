@@ -80,6 +80,7 @@ Notes:
 - `polylogue search --open` - open the most recent render
 - `polylogue export` - export DB to JSONL
 - `polylogue health` - cached health checks
+- `polylogue state reset` - reset local state (DB + last-source)
 - `polylogue config init/show/set/edit` - manage config
 
 ## Output layout
