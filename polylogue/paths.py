@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+from hashlib import sha256
 from pathlib import Path
 
 
@@ -24,6 +26,36 @@ DATA_HOME = DATA_ROOT / "polylogue"
 CACHE_HOME = CACHE_ROOT / "polylogue"
 STATE_HOME = STATE_ROOT / "polylogue"
 
+_SAFE_PATH_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def safe_path_component(raw: str, *, fallback: str = "item") -> str:
+    """Return a filesystem-safe path component derived from raw input."""
+    if raw is None:
+        raw = ""
+    value = str(raw).strip()
+    if not value:
+        value = fallback
+    has_sep = any(sep in value for sep in (os.sep, os.altsep) if sep)
+    safe = _SAFE_PATH_COMPONENT_RE.sub("_", value)
+    if safe in {"", ".", ".."}:
+        safe = fallback
+    if has_sep or safe != value:
+        digest = sha256(value.encode("utf-8")).hexdigest()[:32]
+        prefix = safe.strip("._-") or fallback
+        prefix = prefix[:12]
+        return f"{prefix}-{digest}"
+    return safe
+
+
+def is_within_root(path: Path, root: Path) -> bool:
+    """Return True if path resolves within root."""
+    try:
+        path.resolve(strict=False).relative_to(root.resolve(strict=False))
+    except ValueError:
+        return False
+    return True
+
 
 __all__ = [
     "CONFIG_HOME",
@@ -34,4 +66,6 @@ __all__ = [
     "DATA_ROOT",
     "CACHE_ROOT",
     "STATE_ROOT",
+    "safe_path_component",
+    "is_within_root",
 ]

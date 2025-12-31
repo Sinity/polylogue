@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import html
 import json
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from markdown_it import MarkdownIt
 
 from .assets import asset_path
 from .db import open_connection
+from .render_paths import render_root
 
 
 @dataclass
@@ -18,14 +20,15 @@ class RenderResult:
 
 
 def _render_html(markdown_text: str, *, title: str) -> str:
-    md = MarkdownIt("commonmark", {"html": True, "linkify": True})
+    md = MarkdownIt("commonmark", {"html": False, "linkify": True})
     body = md.render(markdown_text)
+    safe_title = html.escape(title, quote=True)
     return (
         "<!doctype html>\n"
         "<html lang=\"en\">\n"
         "<head>\n"
         "  <meta charset=\"utf-8\" />\n"
-        f"  <title>{title}</title>\n"
+        f"  <title>{safe_title}</title>\n"
         "  <style>body{font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:960px;margin:2rem auto;line-height:1.6;padding:0 1rem;}pre{white-space:pre-wrap;}code{font-family:ui-monospace,Menlo,monospace;}</style>\n"
         "</head>\n"
         "<body>\n"
@@ -48,7 +51,18 @@ def render_conversation(
         if not convo:
             raise RuntimeError(f"Conversation not found: {conversation_id}")
         messages = conn.execute(
-            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp, message_id",
+            """
+            SELECT * FROM messages
+            WHERE conversation_id = ?
+            ORDER BY
+                (timestamp IS NULL),
+                CASE
+                    WHEN timestamp IS NULL THEN NULL
+                    WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS INTEGER)
+                    ELSE CAST(timestamp AS REAL)
+                END,
+                message_id
+            """,
             (conversation_id,),
         ).fetchall()
         attachments = conn.execute(
@@ -101,12 +115,12 @@ def render_conversation(
 
     markdown_text = "\n".join(lines).strip() + "\n"
 
-    render_root = archive_root / "render" / provider / conversation_id
-    render_root.mkdir(parents=True, exist_ok=True)
-    md_path = render_root / "conversation.md"
+    render_root_path = render_root(archive_root, provider, conversation_id)
+    render_root_path.mkdir(parents=True, exist_ok=True)
+    md_path = render_root_path / "conversation.md"
     md_path.write_text(markdown_text, encoding="utf-8")
 
-    html_path = render_root / "conversation.html"
+    html_path = render_root_path / "conversation.html"
     html_path.write_text(_render_html(markdown_text, title=title), encoding="utf-8")
 
     return RenderResult(conversation_id=conversation_id, markdown_path=md_path, html_path=html_path)

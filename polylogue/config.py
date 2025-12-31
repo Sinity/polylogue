@@ -130,6 +130,11 @@ def load_config(path: Optional[Path] = None) -> Config:
     if not isinstance(sources_raw, list):
         raise ConfigError("Config 'sources' must be a list")
     sources = [_parse_source(entry) for entry in sources_raw]
+    names = [source.name for source in sources]
+    duplicates = {name for name in names if names.count(name) > 1}
+    if duplicates:
+        dup_list = ", ".join(sorted(duplicates))
+        raise ConfigError(f"Duplicate source name(s): {dup_list}")
 
     env_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
     root = Path(env_root).expanduser() if env_root else Path(archive_root).expanduser()

@@ -113,6 +113,36 @@ def test_run_all_skips_render_when_unchanged(workspace_env, tmp_path):
     assert first_mtime == second_mtime
 
 
+def test_run_rerenders_when_content_changes(workspace_env, tmp_path):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "id": "conv1",
+        "messages": [
+            {"id": "m1", "role": "user", "content": "hello"},
+        ],
+    }
+    source_file = inbox / "conversation.json"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    config = default_config()
+    config.sources = [Source(name="inbox", path=source_file)]
+    write_config(config)
+
+    run_sources(config=config, stage="all")
+
+    render_root = workspace_env["archive_root"] / "render"
+    convo_path = next(render_root.rglob("conversation.md"))
+    first_mtime = convo_path.stat().st_mtime
+
+    payload["messages"][0]["content"] = "hello world"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+    run_sources(config=config, stage="all")
+
+    second_mtime = convo_path.stat().st_mtime
+    assert second_mtime > first_mtime
+
+
 def test_incremental_index_updates(workspace_env, tmp_path, monkeypatch):
     inbox = tmp_path / "inbox"
     inbox.mkdir(parents=True, exist_ok=True)
@@ -154,3 +184,33 @@ def test_index_failure_is_nonfatal(workspace_env, monkeypatch):
     assert result.indexed is False
     assert result.index_error is not None
     assert "index failed" in result.index_error
+
+
+def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypatch):
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "id": "conv1",
+        "messages": [
+            {"id": "m1", "role": "user", "content": "hello"},
+        ],
+    }
+    source_file = inbox / "conversation.json"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    config = default_config()
+    config.sources = [Source(name="inbox", path=source_file)]
+    write_config(config)
+
+    import polylogue.run as run_mod
+
+    fixed_time = 1_700_000_000
+    monkeypatch.setattr(run_mod.time, "time", lambda: fixed_time)
+    monkeypatch.setattr(run_mod.time, "perf_counter", lambda: 0.0)
+
+    run_sources(config=config, stage="all")
+    run_sources(config=config, stage="all")
+
+    run_dir = workspace_env["archive_root"] / "runs"
+    runs = list(run_dir.glob(f"run-{fixed_time}-*.json"))
+    assert len(runs) == 2

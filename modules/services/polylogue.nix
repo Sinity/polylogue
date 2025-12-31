@@ -17,7 +17,7 @@ in
       stateDir = "/realm/data/chatlog/state";
       workingDir = "/realm/data/chatlog";
       paths.inputRoot = "/realm/data/chatlog/inbox";
-      paths.outputRoot = "/realm/data/chatlog/markdown";
+      paths.outputRoot = "/realm/data/chatlog/archive";
       ui = {
         html = true;
         theme = "dark";

@@ -88,7 +88,7 @@ Notes:
 - HTML: `archive_root/render/<provider>/<conversation_id>/conversation.html`
 - Assets: `archive_root/assets/<prefix>/<attachment_id>`
 - Exports: `archive_root/exports/conversations.jsonl`
-- Runs: `archive_root/runs/run-<timestamp>.json`
+- Runs: `archive_root/runs/run-<timestamp>-<run_id>.json`
 - Database: `$XDG_STATE_HOME/polylogue/polylogue.db`
 
 ## Development

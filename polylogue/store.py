@@ -69,11 +69,33 @@ def _make_ref_id(attachment_id: str, conversation_id: str, message_id: Optional[
 
 
 def upsert_conversation(conn, record: ConversationRecord) -> bool:
-    existing = conn.execute(
-        "SELECT 1 FROM conversations WHERE conversation_id = ?",
+    row = conn.execute(
+        """
+        SELECT title, created_at, updated_at, content_hash, provider_meta
+        FROM conversations
+        WHERE conversation_id = ?
+        """,
         (record.conversation_id,),
     ).fetchone()
-    if existing:
+    if row:
+        updates = {}
+        if record.title is not None and record.title != row["title"]:
+            updates["title"] = record.title
+        if record.created_at is not None and record.created_at != row["created_at"]:
+            updates["created_at"] = record.created_at
+        if record.updated_at is not None and record.updated_at != row["updated_at"]:
+            updates["updated_at"] = record.updated_at
+        if record.content_hash != row["content_hash"]:
+            updates["content_hash"] = record.content_hash
+        new_meta = _json_or_none(record.provider_meta)
+        if new_meta is not None and new_meta != row["provider_meta"]:
+            updates["provider_meta"] = new_meta
+        if updates:
+            assignments = ", ".join(f"{key} = ?" for key in updates)
+            conn.execute(
+                f"UPDATE conversations SET {assignments} WHERE conversation_id = ?",
+                (*updates.values(), record.conversation_id),
+            )
         return False
     conn.execute(
         """
@@ -105,11 +127,35 @@ def upsert_conversation(conn, record: ConversationRecord) -> bool:
 
 
 def upsert_message(conn, record: MessageRecord) -> bool:
-    existing = conn.execute(
-        "SELECT 1 FROM messages WHERE message_id = ?",
+    row = conn.execute(
+        """
+        SELECT provider_message_id, role, text, timestamp, content_hash, provider_meta
+        FROM messages
+        WHERE message_id = ?
+        """,
         (record.message_id,),
     ).fetchone()
-    if existing:
+    if row:
+        updates = {}
+        if record.provider_message_id is not None and record.provider_message_id != row["provider_message_id"]:
+            updates["provider_message_id"] = record.provider_message_id
+        if record.role is not None and record.role != row["role"]:
+            updates["role"] = record.role
+        if record.text is not None and record.text != row["text"]:
+            updates["text"] = record.text
+        if record.timestamp is not None and record.timestamp != row["timestamp"]:
+            updates["timestamp"] = record.timestamp
+        if record.content_hash != row["content_hash"]:
+            updates["content_hash"] = record.content_hash
+        new_meta = _json_or_none(record.provider_meta)
+        if new_meta is not None and new_meta != row["provider_meta"]:
+            updates["provider_meta"] = new_meta
+        if updates:
+            assignments = ", ".join(f"{key} = ?" for key in updates)
+            conn.execute(
+                f"UPDATE messages SET {assignments} WHERE message_id = ?",
+                (*updates.values(), record.message_id),
+            )
         return False
     conn.execute(
         """
@@ -142,20 +188,26 @@ def upsert_message(conn, record: MessageRecord) -> bool:
 
 def upsert_attachment(conn, record: AttachmentRecord) -> bool:
     row = conn.execute(
-        "SELECT path, provider_meta FROM attachments WHERE attachment_id = ?",
+        "SELECT mime_type, size_bytes, path, provider_meta FROM attachments WHERE attachment_id = ?",
         (record.attachment_id,),
     ).fetchone()
     if row:
+        updates = {}
+        if record.mime_type is not None and record.mime_type != row["mime_type"]:
+            updates["mime_type"] = record.mime_type
+        if record.size_bytes is not None and record.size_bytes != row["size_bytes"]:
+            updates["size_bytes"] = record.size_bytes
         new_path = record.path or row["path"]
         if new_path != row["path"]:
+            updates["path"] = new_path
+        new_meta = _json_or_none(record.provider_meta)
+        if new_meta is not None and new_meta != row["provider_meta"]:
+            updates["provider_meta"] = new_meta
+        if updates:
+            assignments = ", ".join(f"{key} = ?" for key in updates)
             conn.execute(
-                "UPDATE attachments SET path = ? WHERE attachment_id = ?",
-                (new_path, record.attachment_id),
-            )
-        if record.provider_meta is not None and row["provider_meta"] is None:
-            conn.execute(
-                "UPDATE attachments SET provider_meta = ? WHERE attachment_id = ?",
-                (_json_or_none(record.provider_meta), record.attachment_id),
+                f"UPDATE attachments SET {assignments} WHERE attachment_id = ?",
+                (*updates.values(), record.attachment_id),
             )
     else:
         conn.execute(

@@ -24,6 +24,7 @@ let
     XDG_CONFIG_HOME = toString cfg.configHome;
     XDG_DATA_HOME = toString cfg.dataHome;
     XDG_STATE_HOME = toString cfg.stateDir;
+    POLYLOGUE_CONFIG = toString configPath;
     POLYLOGUE_FORCE_PLAIN = "1";
     POLYLOGUE_DECLARATIVE = "1";
     TESSDATA_PREFIX = tessdataDir;
@@ -33,31 +34,39 @@ let
 
   missingOcrLangs = lib.filter (lang: !(builtins.pathExists "${tessdataDir}/${lang}.traineddata")) cfg.ocr.languages;
 
+  localWatchSources = []
+    ++ lib.optional cfg.watch.chatgpt { name = "chatgpt"; path = inboxPaths.chatgpt; }
+    ++ lib.optional cfg.watch.claude { name = "claude"; path = inboxPaths.claude; }
+    ++ lib.optional cfg.watch.codex { name = "codex"; path = inboxDir + "/codex"; }
+    ++ lib.optional cfg.watch.claudeCode { name = "claude-code"; path = inboxDir + "/claude-code"; };
+
+  driveSources = lib.optional cfg.watch.gemini {
+    name = "gemini";
+    folder = cfg.drive.folderName;
+  };
+
+  defaultSources = [
+    {
+      name = "inbox";
+      path = inboxDir;
+    }
+  ];
+
+  resolvedSources = if cfg.sources != [] then cfg.sources
+    else if localWatchSources != [] then localWatchSources
+    else defaultSources;
+
+  sourcesForConfig = resolvedSources ++ driveSources;
+
+  sourceToJson = source:
+    { name = source.name; }
+    // optionalAttrs (source.path != null) { path = toString source.path; }
+    // optionalAttrs (source.folder != null) { folder = source.folder; };
+
   configJson = builtins.toJSON {
-    paths = {
-      input_root = toString cfg.paths.inputRoot;
-      output_root = toString cfg.paths.outputRoot;
-    };
-    ui = {
-      collapse_threshold = cfg.ui.collapseThreshold;
-      html = cfg.ui.html;
-      theme = cfg.ui.theme;
-    };
-    index = {
-      backend = cfg.index.backend;
-      qdrant = {
-        url = cfg.index.qdrant.url;
-        api_key = cfg.index.qdrant.apiKey;
-        collection = cfg.index.qdrant.collection;
-        vector_size = cfg.index.qdrant.vectorSize;
-      };
-    };
-    drive = {
-      credentials_path = toString driveCredentialsPath;
-      token_path = toString driveTokenPath;
-      retries = cfg.drive.retries;
-      retry_base = cfg.drive.retryBase;
-    };
+    version = 2;
+    archive_root = toString cfg.paths.outputRoot;
+    sources = map sourceToJson sourcesForConfig;
   };
 
   outputDir = cfg.paths.outputRoot;
@@ -95,14 +104,31 @@ let
       };
     };
 
-  watchServices = lib.mkMerge (
-    []
-    ++ lib.optional cfg.watch.gemini (mkWatchService "gemini" [ "sync" "drive" "--watch" "--out" providerPaths.gemini ])
-    ++ lib.optional cfg.watch.codex (mkWatchService "codex" [ "sync" "codex" "--watch" "--out" providerPaths.codex ])
-    ++ lib.optional cfg.watch.claudeCode (mkWatchService "claude-code" [ "sync" "claude-code" "--watch" "--out" providerPaths.claudeCode ])
-    ++ lib.optional cfg.watch.chatgpt (mkWatchService "chatgpt" [ "sync" "chatgpt" "--watch" "--base-dir" inboxPaths.chatgpt "--out" providerPaths.chatgpt ])
-    ++ lib.optional cfg.watch.claude (mkWatchService "claude" [ "sync" "claude" "--watch" "--base-dir" inboxPaths.claude "--out" providerPaths.claude ])
-  );
+  runArgs = [ "--plain" "run" ];
+  runEnabled = cfg.run.enable || cfg.watch.gemini || cfg.watch.codex || cfg.watch.claudeCode || cfg.watch.chatgpt || cfg.watch.claude;
+  runService = mkIf runEnabled {
+    systemd.services.polylogue-run = {
+      description = "Polylogue ingest/render/index";
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      path = cfg.helperPackages ++ [ cfg.package ];
+      environment = envVars;
+      serviceConfig = {
+        Type = "oneshot";
+        WorkingDirectory = cfg.workingDir;
+        ExecStart = lib.escapeShellArgs ([ "${cfg.package}/bin/polylogue" ] ++ runArgs);
+      } // optionalAttrs (cfg.user != null) { User = cfg.user; };
+    };
+    systemd.timers.polylogue-run = {
+      description = "Schedule Polylogue runs";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnStartupSec = cfg.run.onStartupSec;
+        OnUnitActiveSec = cfg.run.onUnitActiveSec;
+        Unit = "polylogue-run.service";
+      };
+    };
+  };
 
   dirs = [ cfg.workingDir cfg.configHome cfg.dataHome cfg.stateDir outputDir inboxDir ]
     ++ lib.attrValues providerPaths
@@ -214,6 +240,36 @@ in {
       description = "Packages exposed on PATH for Polylogue services (skim/bat/glow pickers plus OCR dependencies).";
     };
 
+    sources = mkOption {
+      type = types.listOf (types.submodule {
+        options = {
+          name = mkOption { type = types.str; };
+          path = mkOption { type = types.nullOr types.path; default = null; };
+          folder = mkOption { type = types.nullOr types.str; default = null; };
+        };
+      });
+      default = [];
+      description = "Explicit source list for config.json (name + path or folder). Overrides defaults when non-empty.";
+    };
+
+    run = {
+      enable = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Enable scheduled polylogue runs via systemd timer.";
+      };
+      onStartupSec = mkOption {
+        type = types.str;
+        default = "2min";
+        description = "systemd timer OnStartupSec value for polylogue-run.";
+      };
+      onUnitActiveSec = mkOption {
+        type = types.str;
+        default = "15min";
+        description = "systemd timer OnUnitActiveSec value for polylogue-run.";
+      };
+    };
+
     ocr = {
       enable = mkOption {
         type = types.bool;
@@ -233,6 +289,11 @@ in {
     };
 
     drive = {
+      folderName = mkOption {
+        type = types.str;
+        default = "Google AI Studio";
+        description = "Drive folder name to ingest when Drive source is enabled.";
+      };
       credentialsPath = mkOption {
         type = types.nullOr types.path;
         default = null;
@@ -272,6 +333,6 @@ EOF
 
       systemd.tmpfiles.rules = tmpfilesRules;
     }
-    // watchServices
+    // runService
   );
 }
