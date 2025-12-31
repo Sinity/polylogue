@@ -80,6 +80,11 @@ def test_cli_run_and_export(tmp_path, monkeypatch):
     render_root = archive_root / "render"
     assert any(render_root.rglob("conversation.md"))
 
+    latest_result = runner.invoke(cli, ["search"])
+    assert latest_result.exit_code == 0
+    latest_path = latest_result.output.strip()
+    assert latest_path.endswith("conversation.html") or latest_path.endswith("conversation.md")
+
     search_result = runner.invoke(cli, ["--plain", "search", "hello", "--limit", "1", "--json"])
     assert search_result.exit_code == 0
     payload = json.loads(search_result.output.strip())
