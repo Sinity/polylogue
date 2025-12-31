@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import zipfile
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Any, Iterable, List, Optional, Tuple
 
 from .config import Source
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -568,7 +571,7 @@ def detect_provider(payload: Any, path: Path) -> Optional[str]:
 def iter_source_conversations(source: Source, *, cursor_state: Optional[dict] = None) -> Iterable[ParsedConversation]:
     paths: List[Path] = []
     if not source.path:
-        return []
+        return
     base = source.path.expanduser()
     if base.is_dir():
         paths.extend(sorted(base.rglob("*.json")))
@@ -587,19 +590,18 @@ def iter_source_conversations(source: Source, *, cursor_state: Optional[dict] = 
             except OSError:
                 pass
 
-    conversations: List[ParsedConversation] = []
     for path in paths:
         try:
             if path.suffix.lower() == ".zip":
                 payload = _load_json_from_zip(path)
             else:
                 payload = _load_json_from_path(path)
-        except Exception:
+        except Exception as exc:
+            LOGGER.warning("Failed to parse %s: %s", path, exc)
             continue
-        provider = source.name
         provider = detect_provider(payload, path) or source.name
-        conversations.extend(_parse_json_payload(provider, payload, path.stem))
-    return conversations
+        for convo in _parse_json_payload(provider, payload, path.stem):
+            yield convo
 
 __all__ = [
     "ParsedConversation",
