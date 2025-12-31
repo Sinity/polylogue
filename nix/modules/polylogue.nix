@@ -28,6 +28,8 @@ let
     POLYLOGUE_FORCE_PLAIN = "1";
     POLYLOGUE_DECLARATIVE = "1";
     TESSDATA_PREFIX = tessdataDir;
+    POLYLOGUE_DRIVE_RETRIES = toString cfg.drive.retries;
+    POLYLOGUE_DRIVE_RETRY_BASE = toString cfg.drive.retryBase;
   }
   // optionalAttrs (cfg.drive.credentialsPath != null) { POLYLOGUE_CREDENTIAL_PATH = toString cfg.drive.credentialsPath; }
   // optionalAttrs (cfg.drive.tokenPath != null) { POLYLOGUE_TOKEN_PATH = toString cfg.drive.tokenPath; };
