@@ -17,6 +17,12 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 
 - Use `polylogue run --dry-run` to preview counts without writing.
 
+## Search defaults
+
+- Interactive runs open a picker when multiple results are returned.
+- Use `--list` to force the full list output (no picker).
+- Use `--latest --open` to open the newest render without searching.
+
 ## Index rebuild
 
 - If search reports a missing index, run `polylogue run --stage index`.
