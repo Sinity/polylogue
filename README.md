@@ -22,7 +22,7 @@ Polylogue is built for Nix-first development, but you can run it directly from t
 
 ```bash
 polylogue config init --interactive
-polylogue run --dry-run
+polylogue run --preview
 polylogue run
 polylogue search "your query"
 ```
@@ -31,7 +31,7 @@ Drop local exports under `~/.local/share/polylogue/inbox` (default), or add cust
 
 ## Preview
 
-![Dry run output](docs/assets/cli-plan.svg)
+![Preview output](docs/assets/cli-plan.svg)
 ![Run output](docs/assets/cli-run.svg)
 ![Search output](docs/assets/cli-search.svg)
 
@@ -58,6 +58,7 @@ Notes:
 
 - `POLYLOGUE_ARCHIVE_ROOT` overrides `archive_root` at runtime.
 - Local sources use `path`; Drive sources use `folder`.
+- `--source last` reuses the previous interactive source selection.
 - Use `polylogue config show` to inspect resolved paths.
 - `--source NAME` (repeatable) limits `run` to selected sources.
 - `POLYLOGUE_FORCE_PLAIN=1` forces the non-interactive UI mode.
@@ -71,13 +72,14 @@ Notes:
 ## Commands
 
 - `polylogue run` - ingest, render, and index
-- `polylogue run --dry-run` - preview counts without writing
+- `polylogue run --preview` - preview counts without writing
 - `polylogue run --stage ingest|render|index` - run one stage
+- `polylogue index` - rebuild the FTS index
 - `polylogue search [QUERY]` - full-text search (omit QUERY to show latest render)
 - `polylogue search --open` - open the most recent render
 - `polylogue export` - export DB to JSONL
 - `polylogue health` - cached health checks
-- `polylogue config init/show/set` - manage config
+- `polylogue config init/show/set/edit` - manage config
 
 ## Output layout
 

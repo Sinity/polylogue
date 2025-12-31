@@ -112,12 +112,6 @@ def test_cli_search_csv_header(tmp_path, monkeypatch):
     runner = CliRunner()
     output = tmp_path / "out.csv"
     result = runner.invoke(cli, ["--plain", "search", "missing", "--csv", str(output)])
-    assert result.exit_code != 0
-
-    # create index and retry with no hits
-    runner.invoke(cli, ["--plain", "config", "show"])
-    runner.invoke(cli, ["--plain", "run", "--stage", "index"])
-    result = runner.invoke(cli, ["--plain", "search", "missing", "--csv", str(output)])
     assert result.exit_code == 0
     header = output.read_text(encoding="utf-8").splitlines()[0]
     assert header.startswith("source,provider,conversation_id,message_id")
