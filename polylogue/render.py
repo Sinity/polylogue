@@ -42,6 +42,7 @@ def render_conversation(
     *,
     conversation_id: str,
     archive_root: Path,
+    render_root_path: Path | None = None,
 ) -> RenderResult:
     with open_connection(None) as conn:
         convo = conn.execute(
@@ -129,7 +130,8 @@ def render_conversation(
 
     markdown_text = "\n".join(lines).strip() + "\n"
 
-    render_root_path = render_root(archive_root, provider, conversation_id)
+    output_root = render_root_path or (archive_root / "render")
+    render_root_path = render_root(output_root, provider, conversation_id)
     render_root_path.mkdir(parents=True, exist_ok=True)
     md_path = render_root_path / "conversation.md"
     md_path.write_text(markdown_text, encoding="utf-8")

@@ -102,11 +102,13 @@ def main() -> None:
 
     inbox = demo_root / "inbox"
     archive_root = demo_root / "archive"
+    render_root = archive_root / "render"
     _seed_inbox(inbox)
 
     config = Config(
         version=2,
         archive_root=archive_root,
+        render_root=render_root,
         sources=[Source(name="inbox", path=inbox)],
         path=demo_root / "config.json",
     )
@@ -128,7 +130,12 @@ def main() -> None:
         source_names=None,
     )
 
-    search_result = search_messages("pipeline", archive_root=archive_root, limit=2)
+    search_result = search_messages(
+        "pipeline",
+        archive_root=archive_root,
+        render_root_path=render_root,
+        limit=2,
+    )
 
     def new_console(facade: ConsoleFacade) -> Console:
         console = Console(
@@ -166,7 +173,7 @@ def main() -> None:
         console.print(Text("$ polylogue run", style="bold #94a3b8"))
         console.print()
         facade.summary("Run", _run_lines(run_result))
-        latest = max((archive_root / "render").rglob("conversation.html"), key=lambda p: p.stat().st_mtime)
+        latest = max(render_root.rglob("conversation.html"), key=lambda p: p.stat().st_mtime)
         console.print(f"Latest render: {latest}")
         console.save_svg(str(path))
 
@@ -176,7 +183,7 @@ def main() -> None:
         console.print(Text("$ polylogue search \"pipeline\" --limit 2 --list", style="bold #94a3b8"))
         console.print()
         facade.summary("Search", ["Results: 2", "Query: pipeline"])
-        display_root = Path("~/.local/share/polylogue/archive")
+        display_root = Path("~/.local/share/polylogue/archive/render")
         for idx, hit in enumerate(search_result.hits, start=1):
             title = hit.title or hit.conversation_id
             source_label = hit.provider_name
@@ -186,9 +193,7 @@ def main() -> None:
                 source_label = hit.source_name
             console.print(f"{idx}. {title} ({source_label})")
             console.print(f"   {hit.snippet}")
-            display_path = (
-                display_root / "render" / hit.provider_name / hit.conversation_id / "conversation.md"
-            )
+            display_path = display_root / hit.provider_name / hit.conversation_id / "conversation.md"
             console.print(f"   {display_path}")
         console.save_svg(str(path))
 

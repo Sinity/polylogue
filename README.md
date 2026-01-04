@@ -48,6 +48,7 @@ Example:
 {
   "version": 2,
   "archive_root": "~/.local/share/polylogue/archive",
+  "render_root": "~/.local/share/polylogue/archive/render",
   "sources": [
     {"name": "inbox", "path": "~/.local/share/polylogue/inbox"},
     {"name": "gemini", "folder": "Google AI Studio"}
@@ -58,6 +59,7 @@ Example:
 Notes:
 
 - `POLYLOGUE_ARCHIVE_ROOT` overrides `archive_root` at runtime.
+- `POLYLOGUE_RENDER_ROOT` overrides `render_root` at runtime (defaults to `archive_root/render`).
 - Local sources use `path`; Drive sources use `folder`.
 - `--source last` reuses the previous interactive source selection.
 - Use `polylogue config show` for a quick summary, or `polylogue config show --json` for raw output.
@@ -85,8 +87,8 @@ Notes:
 
 ## Output layout
 
-- Renders: `archive_root/render/<provider>/<conversation_id>/conversation.md`
-- HTML: `archive_root/render/<provider>/<conversation_id>/conversation.html`
+- Renders: `render_root/<provider>/<conversation_id>/conversation.md`
+- HTML: `render_root/<provider>/<conversation_id>/conversation.html`
 - Assets: `archive_root/assets/<prefix>/<attachment_id>`
 - Exports: `archive_root/exports/conversations.jsonl`
 - Runs: `archive_root/runs/run-<timestamp>-<run_id>.json`
