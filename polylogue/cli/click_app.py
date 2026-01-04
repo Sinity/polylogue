@@ -212,14 +212,14 @@ def _print_summary(env: AppEnv) -> None:
         [
             f"Config: {config.path}",
             f"Archive root: {config.archive_root}",
+            f"Render root: {config.render_root}",
             last_line,
             health_line,
         ],
     )
 
 
-def _latest_render_path(archive_root: Path) -> Optional[Path]:
-    render_root = archive_root / "render"
+def _latest_render_path(render_root: Path) -> Optional[Path]:
     if not render_root.exists():
         return None
     candidates = list(render_root.rglob("conversation.md")) + list(render_root.rglob("conversation.html"))
@@ -314,7 +314,7 @@ def run(
         run_lines,
     )
     if stage in {"render", "all"}:
-        latest = _latest_render_path(config.archive_root)
+        latest = _latest_render_path(config.render_root)
         if latest:
             env.ui.console.print(f"Latest render: {latest}")
     if result.index_error:
@@ -397,7 +397,7 @@ def search(
             _fail("search", "--latest cannot be combined with a query")
         if json_output or json_lines or csv:
             _fail("search", "--latest cannot be combined with JSON/CSV output")
-        target = _latest_render_path(config.archive_root)
+        target = _latest_render_path(config.render_root)
         if not target:
             _fail("search", "no rendered outputs found")
         if not env.ui.plain and not open_result:
@@ -417,7 +417,12 @@ def search(
     if not query:
         _fail("search", "Query required.")
     try:
-        result = search_messages(query, archive_root=config.archive_root, limit=limit)
+        result = search_messages(
+            query,
+            archive_root=config.archive_root,
+            render_root_path=config.render_root,
+            limit=limit,
+        )
     except RuntimeError as exc:
         message = str(exc)
         if "Search index not built" in message:
@@ -426,7 +431,12 @@ def search(
                 rebuild_index()
             except Exception as build_exc:
                 _fail("search", f"Index rebuild failed: {build_exc}")
-            result = search_messages(query, archive_root=config.archive_root, limit=limit)
+            result = search_messages(
+                query,
+                archive_root=config.archive_root,
+                render_root_path=config.render_root,
+                limit=limit,
+            )
         else:
             _fail("search", message)
     hits = result.hits
@@ -673,17 +683,23 @@ def config_show(env: AppEnv, json_output: bool) -> None:
     if json_output:
         payload = config.as_dict()
         raw_root = None
+        raw_render_root = None
         try:
             raw = json.loads(config.path.read_text(encoding="utf-8"))
             if isinstance(raw, dict):
                 raw_root = raw.get("archive_root")
+                raw_render_root = raw.get("render_root")
         except Exception:
             raw_root = None
+            raw_render_root = None
         payload["resolved_archive_root"] = str(config.archive_root)
         payload["configured_archive_root"] = raw_root
+        payload["resolved_render_root"] = str(config.render_root)
+        payload["configured_render_root"] = raw_render_root
         payload["env_overrides"] = {
             "POLYLOGUE_CONFIG": os.environ.get("POLYLOGUE_CONFIG"),
             "POLYLOGUE_ARCHIVE_ROOT": os.environ.get("POLYLOGUE_ARCHIVE_ROOT"),
+            "POLYLOGUE_RENDER_ROOT": os.environ.get("POLYLOGUE_RENDER_ROOT"),
         }
         env.ui.console.print(json.dumps(payload, indent=2))
         return
@@ -700,6 +716,7 @@ def config_show(env: AppEnv, json_output: bool) -> None:
         [
             f"Path: {config.path}",
             f"Archive root: {config.archive_root}",
+            f"Render root: {config.render_root}",
             f"Sources: {', '.join(sources) if sources else 'none'}",
         ],
     )
@@ -719,6 +736,8 @@ def config_set(env: AppEnv, key: str, value: str) -> None:
     try:
         if key == "archive_root":
             config = update_config(config, archive_root=Path(value))
+        elif key == "render_root":
+            config = update_config(config, render_root=Path(value))
         elif key.startswith("source."):
             raise ConfigError("Use `polylogue config edit` to manage sources.")
         else:
@@ -745,7 +764,7 @@ def config_edit(env: AppEnv) -> None:
     while True:
         choice = env.ui.choose(
             "Config edit",
-            ["Add source", "Edit source", "Remove source", "Set archive root", "Done"],
+            ["Add source", "Edit source", "Remove source", "Set archive root", "Set render root", "Done"],
         )
         if not choice or choice == "Done":
             break
@@ -819,6 +838,12 @@ def config_edit(env: AppEnv) -> None:
             if not new_root:
                 continue
             config.archive_root = Path(new_root).expanduser()
+            changed = True
+        elif choice == "Set render root":
+            new_root = env.ui.input("Render root", default=str(config.render_root))
+            if not new_root:
+                continue
+            config.render_root = Path(new_root).expanduser()
             changed = True
 
     if changed:

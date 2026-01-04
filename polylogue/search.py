@@ -29,14 +29,16 @@ class SearchResult:
 
 def _resolve_conversation_path(
     archive_root: Path,
+    render_root_path: Optional[Path],
     provider_name: str,
     conversation_id: str,
 ) -> Path:
-    safe_root = render_root(archive_root, provider_name, conversation_id)
+    output_root = render_root_path or (archive_root / "render")
+    safe_root = render_root(output_root, provider_name, conversation_id)
     safe_md = safe_root / "conversation.md"
     if safe_md.exists():
         return safe_md
-    legacy_root = legacy_render_root(archive_root, provider_name, conversation_id)
+    legacy_root = legacy_render_root(output_root, provider_name, conversation_id)
     if legacy_root:
         legacy_md = legacy_root / "conversation.md"
         if legacy_md.exists():
@@ -44,7 +46,13 @@ def _resolve_conversation_path(
     return safe_md
 
 
-def search_messages(query: str, *, archive_root: Path, limit: int = 20) -> SearchResult:
+def search_messages(
+    query: str,
+    *,
+    archive_root: Path,
+    render_root_path: Optional[Path] = None,
+    limit: int = 20,
+) -> SearchResult:
     with open_connection(None) as conn:
         exists = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
@@ -77,6 +85,7 @@ def search_messages(query: str, *, archive_root: Path, limit: int = 20) -> Searc
     for row in rows:
         conversation_path = _resolve_conversation_path(
             archive_root,
+            render_root_path,
             row["provider_name"],
             row["conversation_id"],
         )

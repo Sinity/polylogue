@@ -24,6 +24,6 @@ Polylogue is a small pipeline that ingests chat exports into SQLite, renders Mar
 ## Data locations
 
 - Runs: `archive_root/runs/run-<timestamp>-<run_id>.json`
-- Renders: `archive_root/render/<provider>/<conversation_id>/conversation.md`
+- Renders: `render_root/<provider>/<conversation_id>/conversation.md`
 - Assets: `archive_root/assets/<prefix>/<attachment_id>`
 - DB: `$XDG_STATE_HOME/polylogue/polylogue.db`

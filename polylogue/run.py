@@ -421,6 +421,7 @@ def run_sources(
             render_conversation(
                 conversation_id=convo_id,
                 archive_root=config.archive_root,
+                render_root_path=config.render_root,
             )
 
     indexed = False
