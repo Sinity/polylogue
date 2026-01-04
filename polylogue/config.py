@@ -14,7 +14,7 @@ DEFAULT_CONFIG_NAME = "config.json"
 DEFAULT_ARCHIVE_ROOT = DATA_HOME / "archive"
 DEFAULT_INBOX_ROOT = DATA_HOME / "inbox"
 
-_ALLOWED_TOP_LEVEL_KEYS = {"version", "archive_root", "sources"}
+_ALLOWED_TOP_LEVEL_KEYS = {"version", "archive_root", "render_root", "sources"}
 _ALLOWED_SOURCE_KEYS = {"name", "path", "folder"}
 
 
@@ -45,6 +45,7 @@ class Source:
 class Config:
     version: int
     archive_root: Path
+    render_root: Path
     sources: List[Source]
     path: Path
 
@@ -52,6 +53,7 @@ class Config:
         return {
             "version": self.version,
             "archive_root": str(self.archive_root),
+            "render_root": str(self.render_root),
             "sources": [source.as_dict() for source in self.sources],
         }
 
@@ -94,19 +96,32 @@ def _parse_source(raw: dict) -> Source:
     )
 
 
-def default_config(path: Optional[Path] = None, *, archive_root: Optional[Path] = None) -> Config:
+def default_config(
+    path: Optional[Path] = None,
+    *,
+    archive_root: Optional[Path] = None,
+    render_root: Optional[Path] = None,
+) -> Config:
     config_path = _config_path(path)
     env_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
+    env_render_root = os.environ.get("POLYLOGUE_RENDER_ROOT")
     if archive_root:
         root = archive_root.expanduser()
     elif env_root:
         root = Path(env_root).expanduser()
     else:
         root = DEFAULT_ARCHIVE_ROOT
+    if render_root:
+        resolved_render_root = render_root.expanduser()
+    elif env_render_root:
+        resolved_render_root = Path(env_render_root).expanduser()
+    else:
+        resolved_render_root = root / "render"
     sources = [Source(name="inbox", path=DEFAULT_INBOX_ROOT)]
     return Config(
         version=CONFIG_VERSION,
         archive_root=root,
+        render_root=resolved_render_root,
         sources=sources,
         path=config_path,
     )
@@ -126,6 +141,9 @@ def load_config(path: Optional[Path] = None) -> Config:
     archive_root = raw.get("archive_root")
     if not isinstance(archive_root, str) or not archive_root.strip():
         raise ConfigError("Config 'archive_root' must be a non-empty string")
+    render_root = raw.get("render_root")
+    if render_root is not None and (not isinstance(render_root, str) or not render_root.strip()):
+        raise ConfigError("Config 'render_root' must be a non-empty string when provided")
     sources_raw = raw.get("sources")
     if not isinstance(sources_raw, list):
         raise ConfigError("Config 'sources' must be a list")
@@ -138,10 +156,18 @@ def load_config(path: Optional[Path] = None) -> Config:
 
     env_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
     root = Path(env_root).expanduser() if env_root else Path(archive_root).expanduser()
+    env_render_root = os.environ.get("POLYLOGUE_RENDER_ROOT")
+    if env_render_root:
+        resolved_render_root = Path(env_render_root).expanduser()
+    elif isinstance(render_root, str) and render_root.strip():
+        resolved_render_root = Path(render_root).expanduser()
+    else:
+        resolved_render_root = root / "render"
 
     return Config(
         version=CONFIG_VERSION,
         archive_root=root,
+        render_root=resolved_render_root,
         sources=sources,
         path=config_path,
     )
@@ -152,9 +178,16 @@ def write_config(config: Config) -> None:
     config.path.write_text(json.dumps(config.as_dict(), indent=2), encoding="utf-8")
 
 
-def update_config(config: Config, *, archive_root: Optional[Path] = None) -> Config:
+def update_config(
+    config: Config,
+    *,
+    archive_root: Optional[Path] = None,
+    render_root: Optional[Path] = None,
+) -> Config:
     if archive_root is not None:
         config.archive_root = archive_root.expanduser()
+    if render_root is not None:
+        config.render_root = render_root.expanduser()
     return config
 
 
