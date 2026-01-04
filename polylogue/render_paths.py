@@ -6,15 +6,15 @@ from typing import Optional
 from .paths import is_within_root, safe_path_component
 
 
-def render_root(archive_root: Path, provider: str, conversation_id: str) -> Path:
+def render_root(render_root: Path, provider: str, conversation_id: str) -> Path:
     safe_provider = safe_path_component(provider, fallback="provider")
     safe_conversation = safe_path_component(conversation_id, fallback="conversation")
-    return archive_root / "render" / safe_provider / safe_conversation
+    return render_root / safe_provider / safe_conversation
 
 
-def legacy_render_root(archive_root: Path, provider: str, conversation_id: str) -> Optional[Path]:
-    base = archive_root / "render"
-    candidate = archive_root / "render" / provider / conversation_id
+def legacy_render_root(render_root: Path, provider: str, conversation_id: str) -> Optional[Path]:
+    base = render_root
+    candidate = render_root / provider / conversation_id
     if is_within_root(candidate, base):
         return candidate
     return None
