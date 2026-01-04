@@ -132,13 +132,21 @@ def _extract_messages_from_list(items: list) -> List[ParsedMessage]:
     for idx, item in enumerate(items, start=1):
         if not isinstance(item, dict):
             continue
+        payload = item.get("message") if isinstance(item.get("message"), dict) else item
         text = None
-        role = item.get("role") or item.get("sender") or item.get("author")
-        timestamp = item.get("timestamp") or item.get("created_at") or item.get("create_time")
-        if "text" in item and isinstance(item["text"], str):
-            text = item["text"]
-        elif "content" in item:
-            content = item["content"]
+        role = payload.get("role") or item.get("role") or payload.get("sender") or item.get("sender") or payload.get("author") or item.get("author")
+        timestamp = (
+            item.get("timestamp")
+            or payload.get("timestamp")
+            or payload.get("created_at")
+            or item.get("created_at")
+            or payload.get("create_time")
+            or item.get("create_time")
+        )
+        if "text" in payload and isinstance(payload["text"], str):
+            text = payload["text"]
+        elif "content" in payload:
+            content = payload["content"]
             if isinstance(content, str):
                 text = content
             elif isinstance(content, dict):
@@ -152,7 +160,13 @@ def _extract_messages_from_list(items: list) -> List[ParsedMessage]:
         if text:
             messages.append(
                 ParsedMessage(
-                    provider_message_id=str(item.get("id") or item.get("uuid") or f"msg-{idx}"),
+                    provider_message_id=str(
+                        payload.get("id")
+                        or payload.get("uuid")
+                        or item.get("uuid")
+                        or item.get("id")
+                        or f"msg-{idx}"
+                    ),
                     role=_normalize_role(role),
                     text=text,
                     timestamp=str(timestamp) if timestamp is not None else None,

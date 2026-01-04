@@ -54,6 +54,11 @@ def run_health(config: Config) -> dict:
     else:
         checks.append(HealthCheck("archive_root", "warning", f"Missing {config.archive_root}"))
 
+    if config.render_root.exists():
+        checks.append(HealthCheck("render_root", "ok", str(config.render_root)))
+    else:
+        checks.append(HealthCheck("render_root", "warning", f"Missing {config.render_root}"))
+
     try:
         with open_connection(None):
             checks.append(HealthCheck("database", "ok", "DB reachable"))

@@ -27,6 +27,8 @@ let
     POLYLOGUE_CONFIG = toString configPath;
     POLYLOGUE_FORCE_PLAIN = "1";
     POLYLOGUE_DECLARATIVE = "1";
+    POLYLOGUE_ARCHIVE_ROOT = toString cfg.paths.outputRoot;
+    POLYLOGUE_RENDER_ROOT = toString cfg.paths.renderRoot;
     TESSDATA_PREFIX = tessdataDir;
     POLYLOGUE_DRIVE_RETRIES = toString cfg.drive.retries;
     POLYLOGUE_DRIVE_RETRY_BASE = toString cfg.drive.retryBase;
@@ -68,18 +70,20 @@ let
   configJson = builtins.toJSON {
     version = 2;
     archive_root = toString cfg.paths.outputRoot;
+    render_root = toString cfg.paths.renderRoot;
     sources = map sourceToJson sourcesForConfig;
   };
 
   outputDir = cfg.paths.outputRoot;
   inboxDir = cfg.paths.inputRoot;
+  renderDir = cfg.paths.renderRoot;
 
   providerPaths = {
-    gemini = outputDir + "/gemini";
-    codex = outputDir + "/codex";
-    claudeCode = outputDir + "/claude-code";
-    chatgpt = outputDir + "/chatgpt";
-    claude = outputDir + "/claude";
+    gemini = renderDir + "/gemini";
+    codex = renderDir + "/codex";
+    claudeCode = renderDir + "/claude-code";
+    chatgpt = renderDir + "/chatgpt";
+    claude = renderDir + "/claude";
   };
 
   inboxPaths = {
@@ -132,7 +136,7 @@ let
     };
   };
 
-  dirs = [ cfg.workingDir cfg.configHome cfg.dataHome cfg.stateDir outputDir inboxDir ]
+  dirs = [ cfg.workingDir cfg.configHome cfg.dataHome cfg.stateDir outputDir inboxDir renderDir ]
     ++ lib.attrValues providerPaths
     ++ lib.attrValues inboxPaths;
 
@@ -187,6 +191,11 @@ in {
         type = types.path;
         default = "/var/lib/polylogue/archive";
         description = "Root archive for provider outputs (subdirs are fixed per provider).";
+      };
+      renderRoot = mkOption {
+        type = types.path;
+        default = cfg.paths.outputRoot + "/render";
+        description = "Root render output for Markdown/HTML exports.";
       };
     };
 
