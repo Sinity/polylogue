@@ -110,6 +110,23 @@ def _format_source_label(source_name: Optional[str], provider_name: str) -> str:
     return source_name or provider_name
 
 
+def _format_sources_summary(sources: List[Source]) -> str:
+    if not sources:
+        return "none"
+    labels: List[str] = []
+    for source in sources:
+        if source.folder:
+            labels.append(f"{source.name} (drive)")
+        elif source.path:
+            labels.append(source.name)
+        else:
+            labels.append(f"{source.name} (missing)")
+    if len(labels) > 8:
+        extra = len(labels) - 8
+        labels = labels[:8] + [f"+{extra} more"]
+    return ", ".join(labels)
+
+
 
 def _fail(command: str, message: str) -> None:
     raise SystemExit(f"{command}: {message}")
@@ -190,7 +207,8 @@ def _resolve_sources(config: Config, sources: Tuple[str, ...], command: str) -> 
     defined = {source.name for source in config.sources}
     missing = sorted(set(requested) - defined)
     if missing:
-        _fail(command, f"Unknown source(s): {', '.join(missing)}")
+        known = ", ".join(sorted(defined)) or "none"
+        _fail(command, f"Unknown source(s): {', '.join(missing)}. Known sources: {known}")
     return requested
 
 
@@ -213,6 +231,7 @@ def _print_summary(env: AppEnv) -> None:
             f"Config: {config.path}",
             f"Archive root: {config.archive_root}",
             f"Render root: {config.render_root}",
+            f"Sources: {_format_sources_summary(config.sources)}",
             last_line,
             health_line,
         ],
@@ -249,7 +268,12 @@ def cli(ctx: click.Context, plain: bool, interactive: bool, config_path: Optiona
 @cli.command()
 @click.option("--preview", is_flag=True, help="Preview work without writing")
 @click.option("--stage", type=click.Choice(["ingest", "render", "index", "all"]), default="all", show_default=True)
-@click.option("--source", "sources", multiple=True, help="Limit to source name (repeatable, or 'last')")
+@click.option(
+    "--source",
+    "sources",
+    multiple=True,
+    help="Limit to source name (repeatable, or 'last'). Use `polylogue sources` to list.",
+)
 @click.pass_obj
 def run(
     env: AppEnv,
@@ -326,6 +350,37 @@ def run(
         else:
             env.ui.console.print(f"[yellow]{error_line}[/yellow]")
             env.ui.console.print(f"[yellow]{hint_line}[/yellow]")
+
+
+@cli.command()
+@click.option("--json", "json_output", is_flag=True, help="Output JSON")
+@click.pass_obj
+def sources(env: AppEnv, json_output: bool) -> None:
+    try:
+        config = _load_effective_config(env)
+    except ConfigError as exc:
+        _fail("sources", str(exc))
+    if json_output:
+        payload = [
+            {
+                "name": source.name,
+                "path": str(source.path) if source.path else None,
+                "folder": source.folder,
+                "kind": "drive" if source.folder else "path",
+            }
+            for source in config.sources
+        ]
+        env.ui.console.print(json.dumps(payload, indent=2))
+        return
+    lines = []
+    for source in config.sources:
+        if source.folder:
+            lines.append(f"{source.name}: drive folder '{source.folder}'")
+        elif source.path:
+            lines.append(f"{source.name}: {source.path}")
+        else:
+            lines.append(f"{source.name}: (missing path)")
+    env.ui.summary("Sources", lines)
 
 
 @cli.command()

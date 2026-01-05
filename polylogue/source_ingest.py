@@ -49,7 +49,7 @@ def _hash_text(text: str) -> str:
 
 
 def _load_json_from_path(path: Path) -> Any:
-    if path.suffix.lower() == ".jsonl":
+    if path.suffix.lower() == ".jsonl" or path.name.lower().endswith(".jsonl.txt"):
         items = []
         with path.open(encoding="utf-8") as handle:
             for line in handle:
@@ -590,6 +590,7 @@ def iter_source_conversations(source: Source, *, cursor_state: Optional[dict] = 
     if base.is_dir():
         paths.extend(sorted(base.rglob("*.json")))
         paths.extend(sorted(base.rglob("*.jsonl")))
+        paths.extend(sorted(base.rglob("*.jsonl.txt")))
         paths.extend(sorted(base.rglob("*.zip")))
     elif base.is_file():
         paths.append(base)
