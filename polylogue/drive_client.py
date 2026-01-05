@@ -216,14 +216,20 @@ class DriveClient:
                 "Run with --interactive or set POLYLOGUE_TOKEN_PATH with a valid token."
             )
         flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
-        auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-        self._ui.console.print("Open this URL in your browser to authorize Drive access:")
-        self._ui.console.print(auth_url)
-        code = self._ui.input("Paste the authorization code")
-        if not code:
-            raise DriveAuthError("Drive authorization cancelled.")
-        flow.fetch_token(code=code)
-        creds = flow.credentials
+        try:
+            creds = flow.run_local_server(open_browser=False, port=0)
+        except Exception:
+            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+            self._ui.console.print("Open this URL in your browser to authorize Drive access:")
+            self._ui.console.print(auth_url)
+            code = self._ui.input("Paste the authorization code")
+            if not code:
+                raise DriveAuthError("Drive authorization cancelled.")
+            try:
+                flow.fetch_token(code=code)
+            except Exception as exc:
+                raise DriveAuthError(f"Drive authorization failed: {exc}") from exc
+            creds = flow.credentials
         self._persist_token(creds, token_path)
         return creds
 

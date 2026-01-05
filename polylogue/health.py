@@ -132,6 +132,23 @@ def cached_health_summary(archive_root: Path) -> str:
     if not isinstance(timestamp, int):
         return "unknown"
     age = int(time.time()) - timestamp
+    checks = cached.get("checks")
+    if isinstance(checks, list):
+        counts = {}
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            status = check.get("status")
+            if isinstance(status, str):
+                counts[status] = counts.get(status, 0) + 1
+        if counts:
+            parts = []
+            for key in ("ok", "warning", "error"):
+                if key in counts:
+                    parts.append(f"{key}={counts[key]}")
+            extras = [f"{key}={value}" for key, value in counts.items() if key not in {"ok", "warning", "error"}]
+            summary = ", ".join(parts + extras)
+            return f"cached {age}s ago ({summary})"
     return f"cached {age}s ago"
 
 
