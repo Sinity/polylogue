@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from polylogue.config import Source, default_config, write_config
 from polylogue.run import plan_sources, run_sources
@@ -135,6 +136,7 @@ def test_run_rerenders_when_content_changes(workspace_env, tmp_path):
     convo_path = next(render_root.rglob("conversation.md"))
     first_mtime = convo_path.stat().st_mtime
 
+    time.sleep(0.01)  # Ensure fs timestamp resolution
     payload["messages"][0]["content"] = "hello world"
     source_file.write_text(json.dumps(payload), encoding="utf-8")
     run_sources(config=config, stage="all")
@@ -207,7 +209,7 @@ def test_index_failure_is_nonfatal(workspace_env, monkeypatch):
 
     import polylogue.run as run_mod
 
-    def boom():
+    def boom(conn=None):
         raise RuntimeError("index failed")
 
     monkeypatch.setattr(run_mod, "rebuild_index", boom)

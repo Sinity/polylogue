@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-import html
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 from markdown_it import MarkdownIt
@@ -19,7 +18,7 @@ class RenderResult:
     html_path: Path
 
 
-from jinja2 import Environment, DictLoader
+from jinja2 import DictLoader, Environment
 
 DEFAULT_HTML_TEMPLATE = """
 <!doctype html>
@@ -59,11 +58,12 @@ DEFAULT_HTML_TEMPLATE = """
 </html>
 """
 
+
 def _render_html(markdown_text: str, *, title: str) -> str:
     md = MarkdownIt("commonmark", {"html": False, "linkify": True})
     body_html = md.render(markdown_text)
-    
-    env = Environment(loader=DictLoader({"index.html": DEFAULT_HTML_TEMPLATE}))
+
+    env = Environment(loader=DictLoader({"index.html": DEFAULT_HTML_TEMPLATE}), autoescape=True)
     template = env.get_template("index.html")
     return template.render(title=title, body=body_html)
 
@@ -149,7 +149,7 @@ def render_conversation(
             _append_attachment(att)
         lines.append("")
 
-    orphan_keys = [key for key in attachments_by_message.keys() if key not in message_ids]
+    orphan_keys = [key for key in attachments_by_message if key not in message_ids]
     if orphan_keys:
         lines.append("## attachments")
         lines.append("")

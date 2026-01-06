@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
 from uuid import uuid4
+from collections.abc import Sequence
 
 from .assets import asset_path
 from .config import Config, Source
@@ -15,24 +16,24 @@ from .index import index_status, rebuild_index, update_index_for_conversations
 from .ingest import IngestBundle, ingest_bundle
 from .render import render_conversation
 from .source_ingest import ParsedAttachment, ParsedConversation, ParsedMessage, iter_source_conversations
-from .store import ConversationRecord, MessageRecord, AttachmentRecord, RunRecord, record_run
+from .store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord, record_run
 
 
 @dataclass
 class PlanResult:
     timestamp: int
-    counts: Dict[str, int]
-    sources: List[str]
-    cursors: Dict[str, dict]
+    counts: dict[str, int]
+    sources: list[str]
+    cursors: dict[str, dict]
 
 
 @dataclass
 class RunResult:
     run_id: str
-    counts: Dict[str, int]
-    drift: Dict[str, dict]
+    counts: dict[str, int]
+    drift: dict[str, dict]
     indexed: bool
-    index_error: Optional[str]
+    index_error: str | None
     duration_ms: int
 
 
@@ -111,7 +112,7 @@ class ExistingConversation:
     content_hash: str
 
 
-def _lookup_existing_conversation(convo: ParsedConversation) -> Optional[ExistingConversation]:
+def _lookup_existing_conversation(convo: ParsedConversation) -> ExistingConversation | None:
     with open_connection(None) as conn:
         row = conn.execute(
             """
@@ -186,7 +187,7 @@ def _conversation_content_hash(convo: ParsedConversation) -> str:
     )
 
 
-def _existing_message_map(conversation_id: str) -> Dict[str, str]:
+def _existing_message_map(conversation_id: str) -> dict[str, str]:
     with open_connection(None) as conn:
         rows = conn.execute(
             """
@@ -196,14 +197,10 @@ def _existing_message_map(conversation_id: str) -> Dict[str, str]:
             """,
             (conversation_id,),
         ).fetchall()
-    return {
-        str(row["provider_message_id"]): row["message_id"]
-        for row in rows
-        if row["provider_message_id"]
-    }
+    return {str(row["provider_message_id"]): row["message_id"] for row in rows if row["provider_message_id"]}
 
 
-def _select_sources(config: Config, source_names: Optional[Sequence[str]]) -> List[Source]:
+def _select_sources(config: Config, source_names: Sequence[str] | None) -> list[Source]:
     if not source_names:
         return list(config.sources)
     name_set = set(source_names)
@@ -213,15 +210,15 @@ def _select_sources(config: Config, source_names: Optional[Sequence[str]]) -> Li
 def plan_sources(
     config: Config,
     *,
-    ui: Optional[object] = None,
-    source_names: Optional[Sequence[str]] = None,
+    ui: object | None = None,
+    source_names: Sequence[str] | None = None,
 ) -> PlanResult:
     counts = {"conversations": 0, "messages": 0, "attachments": 0}
     sources = []
-    cursors: Dict[str, dict] = {}
+    cursors: dict[str, dict] = {}
     for source in _select_sources(config, source_names):
         sources.append(source.name)
-        cursor_state: Dict[str, object] = {}
+        cursor_state: dict[str, object] = {}
         if source.folder:
             conversations = iter_drive_conversations(
                 source=source,
@@ -246,8 +243,8 @@ def _ingest_conversation(
     source_name: str,
     *,
     archive_root: Path,
-    conn: Optional[sqlite3.Connection] = None,
-) -> Tuple[str, Dict[str, int], bool]:
+    conn: sqlite3.Connection | None = None,
+) -> tuple[str, dict[str, int], bool]:
     content_hash = _conversation_content_hash(convo)
     existing = _lookup_existing_conversation(convo)
     if existing:
@@ -268,14 +265,12 @@ def _ingest_conversation(
         provider_meta={"source": source_name},
     )
 
-    messages: List[MessageRecord] = []
-    message_ids: Dict[str, str] = {}
+    messages: list[MessageRecord] = []
+    message_ids: dict[str, str] = {}
     existing_message_ids = _existing_message_map(conversation_id)
     for idx, msg in enumerate(convo.messages, start=1):
         provider_message_id = msg.provider_message_id or f"msg-{idx}"
-        message_id = existing_message_ids.get(provider_message_id) or _message_id(
-            conversation_id, provider_message_id
-        )
+        message_id = existing_message_ids.get(provider_message_id) or _message_id(conversation_id, provider_message_id)
         message_hash = _message_content_hash(msg, provider_message_id)
         message_ids[str(provider_message_id)] = message_id
         messages.append(
@@ -291,7 +286,7 @@ def _ingest_conversation(
             )
         )
 
-    attachments: List[AttachmentRecord] = []
+    attachments: list[AttachmentRecord] = []
     for att in convo.attachments:
         attachment_id = _attachment_content_id(convo.provider_name, att, archive_root=archive_root)
         meta = dict(att.provider_meta or {})
@@ -317,24 +312,26 @@ def _ingest_conversation(
         ),
         conn=conn,
     )
-    return conversation_id, {
-        "conversations": result.conversations,
-        "messages": result.messages,
-        "attachments": result.attachments,
-        "skipped_conversations": result.skipped_conversations,
-        "skipped_messages": result.skipped_messages,
-        "skipped_attachments": result.skipped_attachments,
-    }, changed
+    return (
+        conversation_id,
+        {
+            "conversations": result.conversations,
+            "messages": result.messages,
+            "attachments": result.attachments,
+            "skipped_conversations": result.skipped_conversations,
+            "skipped_messages": result.skipped_messages,
+            "skipped_attachments": result.skipped_attachments,
+        },
+        changed,
+    )
 
 
-def _all_conversation_ids(source_names: Optional[Sequence[str]] = None) -> List[str]:
+def _all_conversation_ids(source_names: Sequence[str] | None = None) -> list[str]:
     with open_connection(None) as conn:
-        rows = conn.execute(
-            "SELECT conversation_id, provider_name, provider_meta FROM conversations"
-        ).fetchall()
+        rows = conn.execute("SELECT conversation_id, provider_name, provider_meta FROM conversations").fetchall()
     if not source_names:
         return [row["conversation_id"] for row in rows]
-    selected: List[str] = []
+    selected: list[str] = []
     name_set = set(source_names)
     for row in rows:
         if row["provider_name"] in name_set:
@@ -365,9 +362,9 @@ def run_sources(
     *,
     config: Config,
     stage: str = "all",
-    plan: Optional[PlanResult] = None,
-    ui: Optional[object] = None,
-    source_names: Optional[Sequence[str]] = None,
+    plan: PlanResult | None = None,
+    ui: object | None = None,
+    source_names: Sequence[str] | None = None,
 ) -> RunResult:
     start = time.perf_counter()
     counts = {
@@ -406,9 +403,7 @@ def run_sources(
                         conn=conn,
                     )
                     ingest_changed = (
-                        result_counts["conversations"]
-                        + result_counts["messages"]
-                        + result_counts["attachments"]
+                        result_counts["conversations"] + result_counts["messages"] + result_counts["attachments"]
                     ) > 0
                     if ingest_changed or content_changed:
                         processed_ids.add(convo_id)
@@ -431,18 +426,18 @@ def run_sources(
                 counts["rendered"] += 1
 
         indexed = False
-        index_error: Optional[str] = None
+        index_error: str | None = None
         try:
             if stage == "index":
-                rebuild_index()
+                rebuild_index(conn)
                 indexed = True
             elif stage == "all":
                 idx = index_status()
                 if not idx["exists"]:
-                    rebuild_index()
+                    rebuild_index(conn)
                     indexed = True
                 elif processed_ids:
-                    update_index_for_conversations(list(processed_ids))
+                    update_index_for_conversations(list(processed_ids), conn)
                     indexed = True
         except Exception as exc:
             index_error = str(exc)
@@ -507,11 +502,9 @@ def run_sources(
     )
 
 
-def latest_run() -> Optional[dict]:
+def latest_run() -> dict | None:
     with open_connection(None) as conn:
-        row = conn.execute(
-            "SELECT * FROM runs ORDER BY timestamp DESC LIMIT 1"
-        ).fetchone()
+        row = conn.execute("SELECT * FROM runs ORDER BY timestamp DESC LIMIT 1").fetchone()
     return dict(row) if row else None
 
 

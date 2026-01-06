@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-from typing import List, Tuple, Optional
-from .base import ParsedMessage, ParsedAttachment, ParsedConversation, normalize_role
 
-def extract_text_from_segments(segments: list) -> Optional[str]:
-    lines: List[str] = []
+from .base import ParsedAttachment, ParsedConversation, ParsedMessage, attachment_from_meta, normalize_role
+
+
+def extract_text_from_segments(segments: list) -> str | None:
+    lines: list[str] = []
     for segment in segments:
         if isinstance(segment, str):
             if segment:
@@ -27,9 +28,10 @@ def extract_text_from_segments(segments: list) -> Optional[str]:
     combined = "\n".join(line for line in lines if line)
     return combined or None
 
-def extract_messages_from_chat_messages(chat_messages: list) -> Tuple[List[ParsedMessage], List[ParsedAttachment]]:
-    messages: List[ParsedMessage] = []
-    attachments: List[ParsedAttachment] = []
+
+def extract_messages_from_chat_messages(chat_messages: list) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
+    messages: list[ParsedMessage] = []
+    attachments: list[ParsedAttachment] = []
     for idx, item in enumerate(chat_messages, start=1):
         if not isinstance(item, dict):
             continue
@@ -56,10 +58,16 @@ def extract_messages_from_chat_messages(chat_messages: list) -> Tuple[List[Parse
                     provider_meta={"raw": item},
                 )
             )
+        for att_idx, meta in enumerate(item.get("attachments") or item.get("files") or [], start=1):
+            attachment = attachment_from_meta(meta, message_id, att_idx)
+            if attachment:
+                attachments.append(attachment)
     return messages, attachments
+
 
 def looks_like_ai(payload: dict) -> bool:
     return isinstance(payload.get("chat_messages"), list)
+
 
 def looks_like_code(payload: list) -> bool:
     if not isinstance(payload, list):
@@ -70,6 +78,7 @@ def looks_like_code(payload: list) -> bool:
         if any(key in item for key in ("parentUuid", "leafUuid", "sessionId", "session_id")):
             return True
     return False
+
 
 def parse_ai(payload: dict, fallback_id: str) -> ParsedConversation:
     messages, attachments = extract_messages_from_chat_messages(payload.get("chat_messages", []))
