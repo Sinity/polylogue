@@ -384,11 +384,13 @@ class DriveClient:
         return meta
 
     def download_json_payload(self, file_id: str, *, name: str) -> object:
+        import ijson
         raw = self.download_bytes(file_id)
-        text = raw.decode("utf-8", errors="replace")
+        handle = io.BytesIO(raw)
+        
         if name.lower().endswith(".jsonl"):
             items = []
-            for line in text.splitlines():
+            for line in handle:
                 line = line.strip()
                 if not line:
                     continue
@@ -397,7 +399,16 @@ class DriveClient:
                 except json.JSONDecodeError:
                     continue
             return items
-        return json.loads(text)
+
+        # Return the whole object but use ijson for potentially better memory handling
+        # (though for standard json.load it won't matter much unless we refactor 
+        # higher up to handle generators, which we will do in source_ingest).
+        try:
+            return json.load(handle)
+        except json.JSONDecodeError:
+            handle.seek(0)
+            text = handle.read().decode("utf-8", errors="replace")
+            return json.loads(text)
 
 
 __all__ = [
