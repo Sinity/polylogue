@@ -88,10 +88,14 @@ def _format_cursors(cursors: dict) -> Optional[str]:
 
 
 def _format_counts(counts: dict) -> str:
-    return (
-        f"{counts.get('conversations', 0)} conv, "
-        f"{counts.get('messages', 0)} msg"
-    )
+    parts = [
+        f"{counts.get('conversations', 0)} conv",
+        f"{counts.get('messages', 0)} msg",
+    ]
+    rendered = counts.get("rendered", 0)
+    if rendered:
+        parts.append(f"{rendered} rendered")
+    return ", ".join(parts)
 
 
 def _format_index_status(stage: str, indexed: bool, index_error: Optional[str]) -> str:
