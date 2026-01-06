@@ -31,6 +31,14 @@ def rebuild_index() -> None:
             WHERE messages.text IS NOT NULL
             """
         )
+        
+        # Optional Qdrant support
+        if os.environ.get("QDRANT_URL") or os.environ.get("QDRANT_API_KEY"):
+            from .index_qdrant import update_qdrant_for_conversations
+            rows = conn.execute("SELECT conversation_id FROM conversations").fetchall()
+            ids = [row["conversation_id"] for row in rows]
+            update_qdrant_for_conversations(ids, conn)
+            
         conn.commit()
 
 
@@ -39,6 +47,8 @@ def update_index_for_conversations(conversation_ids: Sequence[str]) -> None:
         return
     with open_connection(None) as conn:
         ensure_index(conn)
+        
+        # SQLite FTS Update
         for chunk in _chunked(conversation_ids, size=200):
             placeholders = ", ".join("?" for _ in chunk)
             conn.execute(
@@ -55,7 +65,15 @@ def update_index_for_conversations(conversation_ids: Sequence[str]) -> None:
                 """,
                 tuple(chunk),
             )
+            
+        # Optional Qdrant support
+        if os.environ.get("QDRANT_URL") or os.environ.get("QDRANT_API_KEY"):
+            from .index_qdrant import update_qdrant_for_conversations
+            update_qdrant_for_conversations(conversation_ids, conn)
+            
         conn.commit()
+
+import os
 
 
 def _chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
