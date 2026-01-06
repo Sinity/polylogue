@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
-from typing import List, Tuple, Optional
-from .base import ParsedMessage, ParsedAttachment, ParsedConversation, normalize_role
+from .base import ParsedConversation, ParsedMessage, normalize_role
 
-def _coerce_float(value: object) -> Optional[float]:
+
+def _coerce_float(value: object) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     if isinstance(value, str):
@@ -14,8 +13,9 @@ def _coerce_float(value: object) -> Optional[float]:
             return None
     return None
 
-def extract_messages_from_mapping(mapping: dict) -> List[ParsedMessage]:
-    entries: List[Tuple[Optional[float], int, ParsedMessage]] = []
+
+def extract_messages_from_mapping(mapping: dict) -> list[ParsedMessage]:
+    entries: list[tuple[float | None, int, ParsedMessage]] = []
     for idx, node in enumerate(mapping.values(), start=1):
         if not isinstance(node, dict):
             continue
@@ -29,7 +29,7 @@ def extract_messages_from_mapping(mapping: dict) -> List[ParsedMessage]:
         if not isinstance(parts, list):
             continue
         text = "\n".join(str(part) for part in parts if part)
-        role = normalize_role(msg.get("author", {{}}).get("role") or "user")
+        role = normalize_role(msg.get("author", {}).get("role") or "user")
         timestamp = msg.get("create_time")
         msg_id = msg.get("id") or node.get("id") or ""
         if not msg_id:
@@ -46,11 +46,13 @@ def extract_messages_from_mapping(mapping: dict) -> List[ParsedMessage]:
         entries.sort(key=lambda item: (item[0] is None, item[0] or 0.0, item[1]))
     return [entry[2] for entry in entries]
 
+
 def looks_like(payload: dict) -> bool:
     return isinstance(payload.get("mapping"), dict)
 
+
 def parse(payload: dict, fallback_id: str) -> ParsedConversation:
-    messages = extract_messages_from_mapping(payload.get("mapping", {{}}))
+    messages = extract_messages_from_mapping(payload.get("mapping", {}))
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
     return ParsedConversation(

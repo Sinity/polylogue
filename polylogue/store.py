@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 import hashlib
-from typing import Optional
 
 from .db import open_connection
 
@@ -13,11 +13,11 @@ class ConversationRecord:
     conversation_id: str
     provider_name: str
     provider_conversation_id: str
-    title: Optional[str]
-    created_at: Optional[str]
-    updated_at: Optional[str]
+    title: str | None
+    created_at: str | None
+    updated_at: str | None
     content_hash: str
-    provider_meta: Optional[dict]
+    provider_meta: dict | None
     version: int = 1
 
 
@@ -25,12 +25,12 @@ class ConversationRecord:
 class MessageRecord:
     message_id: str
     conversation_id: str
-    provider_message_id: Optional[str]
-    role: Optional[str]
-    text: Optional[str]
-    timestamp: Optional[str]
+    provider_message_id: str | None
+    role: str | None
+    text: str | None
+    timestamp: str | None
     content_hash: str
-    provider_meta: Optional[dict]
+    provider_meta: dict | None
     version: int = 1
 
 
@@ -38,31 +38,31 @@ class MessageRecord:
 class AttachmentRecord:
     attachment_id: str
     conversation_id: str
-    message_id: Optional[str]
-    mime_type: Optional[str]
-    size_bytes: Optional[int]
-    path: Optional[str]
-    provider_meta: Optional[dict]
+    message_id: str | None
+    mime_type: str | None
+    size_bytes: int | None
+    path: str | None
+    provider_meta: dict | None
 
 
 @dataclass
 class RunRecord:
     run_id: str
     timestamp: str
-    plan_snapshot: Optional[dict]
-    counts: Optional[dict]
-    drift: Optional[dict]
-    indexed: Optional[bool]
-    duration_ms: Optional[int]
+    plan_snapshot: dict | None
+    counts: dict | None
+    drift: dict | None
+    indexed: bool | None
+    duration_ms: int | None
 
 
-def _json_or_none(value: Optional[dict]) -> Optional[str]:
+def _json_or_none(value: dict | None) -> str | None:
     if value is None:
         return None
     return json.dumps(value, sort_keys=True)
 
 
-def _make_ref_id(attachment_id: str, conversation_id: str, message_id: Optional[str]) -> str:
+def _make_ref_id(attachment_id: str, conversation_id: str, message_id: str | None) -> str:
     seed = f"{attachment_id}:{conversation_id}:{message_id or ''}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"ref-{digest}"
@@ -227,7 +227,7 @@ def store_records(
     conversation: ConversationRecord,
     messages: list[MessageRecord],
     attachments: list[AttachmentRecord],
-    conn: Optional[sqlite3.Connection] = None,
+    conn: sqlite3.Connection | None = None,
 ) -> dict:
     counts = {
         "conversations": 0,
@@ -237,7 +237,7 @@ def store_records(
         "skipped_messages": 0,
         "skipped_attachments": 0,
     }
-    
+
     def _run(db_conn):
         if upsert_conversation(db_conn, conversation):
             counts["conversations"] += 1
@@ -260,7 +260,7 @@ def store_records(
         with open_connection(None) as new_conn:
             _run(new_conn)
             new_conn.commit()
-            
+
     return counts
 
 
