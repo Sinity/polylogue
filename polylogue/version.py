@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from importlib.metadata import PackageNotFoundError, version as metadata_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as metadata_version
 from pathlib import Path
 
 

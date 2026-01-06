@@ -4,15 +4,17 @@ Polylogue ships with a small UI layer. Interactive mode relies entirely on the
 bundled Python stack (questionary + Rich) so it works anywhere without external
 CLI binaries, while plain mode falls back to basic stdout prompting.
 """
+
 from __future__ import annotations
 
 import difflib
 import json
 import os
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Deque, Dict, Iterable, List, Optional, Protocol
+from typing import Protocol
 
 import questionary
 from pygments import highlight
@@ -29,8 +31,7 @@ from rich.theme import Theme
 
 
 class ConsoleLike(Protocol):
-    def print(self, *objects: object, **kwargs: object) -> None:
-        ...
+    def print(self, *objects: object, **kwargs: object) -> None: ...
 
 
 class PlainConsole:
@@ -52,7 +53,7 @@ class ConsoleFacade:
     console: ConsoleLike = field(init=False)
 
     theme: Theme = field(init=False, repr=False)
-    _prompt_responses: Deque[Dict[str, object]] = field(init=False, repr=False)
+    _prompt_responses: deque[dict[str, object]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.theme = Theme(
@@ -83,11 +84,11 @@ class ConsoleFacade:
         self._banner_box = box.DOUBLE
         self._prompt_responses = self._load_prompt_responses()
 
-    def _load_prompt_responses(self) -> Deque[Dict[str, object]]:
+    def _load_prompt_responses(self) -> deque[dict[str, object]]:
         prompt_file = os.environ.get("POLYLOGUE_TEST_PROMPT_FILE")
         if not prompt_file:
             return deque()
-        entries: Deque[Dict[str, object]] = deque()
+        entries: deque[dict[str, object]] = deque()
         for line in Path(prompt_file).read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
@@ -100,7 +101,7 @@ class ConsoleFacade:
                 raise RuntimeError(f"Invalid prompt stub entry: {line}") from exc
         return entries
 
-    def _pop_prompt_response(self, kind: str) -> Optional[Dict[str, object]]:
+    def _pop_prompt_response(self, kind: str) -> dict[str, object] | None:
         if not self._prompt_responses:
             return None
         entry = self._prompt_responses.popleft()
@@ -109,7 +110,7 @@ class ConsoleFacade:
             raise RuntimeError(f"Prompt stub expected '{expected}' but got '{kind}'")
         return entry
 
-    def banner(self, title: str, subtitle: Optional[str] = None) -> None:
+    def banner(self, title: str, subtitle: str | None = None) -> None:
         """Display a banner message."""
         if self.plain:
             self.console.print(f"== {title} ==")
@@ -173,7 +174,7 @@ class ConsoleFacade:
         result = questionary.confirm(prompt, default=default).ask()
         return default if result is None else result
 
-    def choose(self, prompt: str, options: List[str]) -> Optional[str]:
+    def choose(self, prompt: str, options: list[str]) -> str | None:
         """Choose from a list of options."""
         if not options:
             return None
@@ -200,7 +201,7 @@ class ConsoleFacade:
             result = questionary.select(prompt, choices=options).ask()
         return result
 
-    def input(self, prompt: str, *, default: Optional[str] = None) -> Optional[str]:
+    def input(self, prompt: str, *, default: str | None = None) -> str | None:
         """Get text input from user."""
         if self.plain:
             return default
@@ -249,13 +250,7 @@ class ConsoleFacade:
         old_lines = old_text.splitlines(keepends=True)
         new_lines = new_text.splitlines(keepends=True)
 
-        diff = difflib.unified_diff(
-            old_lines,
-            new_lines,
-            fromfile=f"a/{filename}",
-            tofile=f"b/{filename}",
-            lineterm=""
-        )
+        diff = difflib.unified_diff(old_lines, new_lines, fromfile=f"a/{filename}", tofile=f"b/{filename}", lineterm="")
 
         diff_text = "".join(diff)
 

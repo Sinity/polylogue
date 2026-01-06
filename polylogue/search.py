@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
-import json
 from pathlib import Path
-import sqlite3
-from typing import List, Optional
 
 from .db import open_connection
 from .render_paths import legacy_render_root, render_root
@@ -15,22 +14,22 @@ from .render_paths import legacy_render_root, render_root
 class SearchHit:
     conversation_id: str
     provider_name: str
-    source_name: Optional[str]
+    source_name: str | None
     message_id: str
-    title: Optional[str]
-    timestamp: Optional[str]
+    title: str | None
+    timestamp: str | None
     snippet: str
     conversation_path: Path
 
 
 @dataclass
 class SearchResult:
-    hits: List[SearchHit]
+    hits: list[SearchHit]
 
 
 def _resolve_conversation_path(
     archive_root: Path,
-    render_root_path: Optional[Path],
+    render_root_path: Path | None,
     provider_name: str,
     conversation_id: str,
 ) -> Path:
@@ -51,18 +50,16 @@ def search_messages(
     query: str,
     *,
     archive_root: Path,
-    render_root_path: Optional[Path] = None,
+    render_root_path: Path | None = None,
     limit: int = 20,
-    source: Optional[str] = None,
-    since: Optional[str] = None,
+    source: str | None = None,
+    since: str | None = None,
 ) -> SearchResult:
     with open_connection(None) as conn:
-        exists = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-        ).fetchone()
+        exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         if not exists:
             raise RuntimeError("Search index not built. Run `polylogue run` with index enabled.")
-        
+
         sql = """
             SELECT
                 messages_fts.message_id,
@@ -77,8 +74,8 @@ def search_messages(
             JOIN messages ON messages.message_id = messages_fts.message_id
             WHERE messages_fts MATCH ?
         """
-        params: List[object] = [query]
-        
+        params: list[object] = [query]
+
         if source:
             # We filter by provider_name OR source in metadata
             # Note: exact match on provider_name is fast, metadata check is slower
@@ -88,17 +85,17 @@ def search_messages(
             # To support 'source' properly we need to check provider_meta.
             sql += " AND (messages_fts.provider_name = ? OR json_extract(conversations.provider_meta, '$.source') = ?)"
             params.extend([source, source])
-            
+
         if since:
             try:
-                dt = datetime.fromisoformat(since)
+                datetime.fromisoformat(since)
                 # messages.timestamp can be ISO string or float-like string.
                 # Standardize on string comparison if ISO, or basic string compare.
                 # Assuming timestamp is ISO string in DB.
                 sql += " AND messages.timestamp >= ?"
                 params.append(since)
             except ValueError:
-                pass # Ignore invalid date
+                pass  # Ignore invalid date
 
         sql += " LIMIT ?"
         params.append(limit)
@@ -108,7 +105,7 @@ def search_messages(
         except sqlite3.Error as exc:
             raise RuntimeError(f"Invalid search query: {exc}") from exc
 
-    hits: List[SearchHit] = []
+    hits: list[SearchHit] = []
     for row in rows:
         conversation_path = _resolve_conversation_path(
             archive_root,

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from datetime import datetime
 import logging
+from collections.abc import Iterable
+from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional
 
 from .assets import asset_path
 from .config import Source
@@ -46,10 +46,10 @@ def iter_drive_conversations(
     *,
     source: Source,
     archive_root: Path,
-    ui: Optional[object] = None,
-    client: Optional[DriveClient] = None,
+    ui: object | None = None,
+    client: DriveClient | None = None,
     download_assets: bool = True,
-    cursor_state: Optional[dict] = None,
+    cursor_state: dict | None = None,
 ) -> Iterable[ParsedConversation]:
     if not source.folder:
         return
@@ -92,7 +92,7 @@ def iter_drive_conversations(
             yield convo
 
 
-def _parse_modified_time(raw: Optional[str]) -> Optional[float]:
+def _parse_modified_time(raw: str | None) -> float | None:
     if not raw:
         return None
     try:

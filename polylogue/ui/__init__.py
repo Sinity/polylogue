@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import math
 import sys
-from typing import Iterable, List, Optional, Set
+from collections.abc import Iterable
+
 from rich.progress import (
     BarColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
-    TaskID,
 )
 
 from .facade import Console, ConsoleFacade, ConsoleLike, create_console_facade
@@ -32,7 +33,7 @@ class UI:
             self._facade: ConsoleFacade = create_console_facade(plain)
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
-        self._plain_warnings: Set[str] = set()
+        self._plain_warnings: set[str] = set()
 
     @property
     def plain(self) -> bool:
@@ -47,7 +48,7 @@ class UI:
         self._facade.console = value
 
     # Presentation helpers -------------------------------------------------
-    def banner(self, title: str, subtitle: Optional[str] = None) -> None:
+    def banner(self, title: str, subtitle: str | None = None) -> None:
         self._facade.banner(title, subtitle)
 
     def summary(self, title: str, lines: Iterable[str]) -> None:
@@ -76,7 +77,7 @@ class UI:
             return response.lower() in {"y", "yes"}
         return self._facade.confirm(prompt, default=default)
 
-    def choose(self, prompt: str, options: List[str]) -> Optional[str]:
+    def choose(self, prompt: str, options: list[str]) -> str | None:
         if not options:
             return None
         if self.plain:
@@ -99,7 +100,7 @@ class UI:
             return None
         return self._facade.choose(prompt, options)
 
-    def input(self, prompt: str, *, default: Optional[str] = None) -> Optional[str]:
+    def input(self, prompt: str, *, default: str | None = None) -> str | None:
         if self.plain:
             if not sys.stdin.isatty():
                 self._abort_plain_prompt("text input")
@@ -112,7 +113,7 @@ class UI:
         return self._facade.input(prompt, default=default)
 
     # Progress -------------------------------------------------------------
-    def progress(self, description: str, total: Optional[int] = None):
+    def progress(self, description: str, total: int | None = None):
         if self.plain:
             return _PlainProgressTracker(self.console, description, total)
         count_format = "{task.completed:.0f}/{task.total:.0f}" if total is not None else "{task.completed:.0f}"
@@ -124,7 +125,9 @@ class UI:
             TimeElapsedColumn(),
             TimeRemainingColumn(),
         )
-        progress = Progress(*columns, console=self.console if isinstance(self.console, Console) else None, transient=True)
+        progress = Progress(
+            *columns, console=self.console if isinstance(self.console, Console) else None, transient=True
+        )
         task_id: TaskID = progress.add_task(description, total=total)
         return _RichProgressTracker(progress, task_id)
 
@@ -133,9 +136,7 @@ class UI:
         if topic in self._plain_warnings:
             return
         self._plain_warnings.add(topic)
-        self._print_notice(
-            f"Plain mode cannot prompt for {topic}; rerun with --interactive or pass explicit flags."
-        )
+        self._print_notice(f"Plain mode cannot prompt for {topic}; rerun with --interactive or pass explicit flags.")
 
     def _abort_plain_prompt(self, topic: str) -> None:
         self._warn_plain(topic)
@@ -153,7 +154,7 @@ def create_ui(plain: bool) -> UI:
 
 
 class _PlainProgressTracker:
-    def __init__(self, console: ConsoleLike, description: str, total: Optional[int]) -> None:
+    def __init__(self, console: ConsoleLike, description: str, total: int | None) -> None:
         self._console = console
         self._description = description
         self._total = self._coerce_int(total) if total is not None else None
@@ -177,7 +178,7 @@ class _PlainProgressTracker:
             self._use_float = True
             self._completed = float(self._completed) + float(advance)
 
-    def update(self, *, total: Optional[int] = None, description: Optional[str] = None) -> None:
+    def update(self, *, total: int | None = None, description: str | None = None) -> None:
         if description and description != self._description:
             self._description = description
             self._console.print(f"{description}...")
@@ -197,7 +198,7 @@ class _PlainProgressTracker:
         self._console.print(f"{self._description} {status}{suffix}")
 
     @staticmethod
-    def _coerce_int(value: Optional[float]) -> Optional[int]:
+    def _coerce_int(value: float | None) -> int | None:
         if isinstance(value, int):
             return value
         if isinstance(value, float):
@@ -229,7 +230,7 @@ class _RichProgressTracker:
     def advance(self, advance: float = 1) -> None:
         self._progress.advance(self._task_id, advance)
 
-    def update(self, *, total: Optional[int] = None, description: Optional[str] = None) -> None:
+    def update(self, *, total: int | None = None, description: str | None = None) -> None:
         kwargs = {}
         if total is not None:
             kwargs["total"] = total
