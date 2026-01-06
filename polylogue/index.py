@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Iterable, Sequence
+import os
+import sqlite3
+from collections.abc import Iterable, Sequence
 
 from .db import open_connection
 
@@ -18,11 +20,14 @@ def ensure_index(conn) -> None:
     )
 
 
-def rebuild_index() -> None:
-    with open_connection(None) as conn:
-        ensure_index(conn)
-        conn.execute("DELETE FROM messages_fts")
-        conn.execute(
+import sqlite3
+
+
+def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
+    def _do(db_conn):
+        ensure_index(db_conn)
+        db_conn.execute("DELETE FROM messages_fts")
+        db_conn.execute(
             """
             INSERT INTO messages_fts (message_id, conversation_id, provider_name, content)
             SELECT messages.message_id, messages.conversation_id, conversations.provider_name, messages.text
@@ -31,31 +36,36 @@ def rebuild_index() -> None:
             WHERE messages.text IS NOT NULL
             """
         )
-        
         # Optional Qdrant support
         if os.environ.get("QDRANT_URL") or os.environ.get("QDRANT_API_KEY"):
             from .index_qdrant import update_qdrant_for_conversations
-            rows = conn.execute("SELECT conversation_id FROM conversations").fetchall()
+
+            rows = db_conn.execute("SELECT conversation_id FROM conversations").fetchall()
             ids = [row["conversation_id"] for row in rows]
-            update_qdrant_for_conversations(ids, conn)
-            
-        conn.commit()
+            update_qdrant_for_conversations(ids, db_conn)
+        db_conn.commit()
+
+    if conn:
+        _do(conn)
+    else:
+        with open_connection(None) as new_conn:
+            _do(new_conn)
 
 
-def update_index_for_conversations(conversation_ids: Sequence[str]) -> None:
+def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite3.Connection | None = None) -> None:
     if not conversation_ids:
         return
-    with open_connection(None) as conn:
-        ensure_index(conn)
-        
+
+    def _do(db_conn):
+        ensure_index(db_conn)
         # SQLite FTS Update
         for chunk in _chunked(conversation_ids, size=200):
             placeholders = ", ".join("?" for _ in chunk)
-            conn.execute(
+            db_conn.execute(
                 f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
                 tuple(chunk),
             )
-            conn.execute(
+            db_conn.execute(
                 f"""
                 INSERT INTO messages_fts (message_id, conversation_id, provider_name, content)
                 SELECT messages.message_id, messages.conversation_id, conversations.provider_name, messages.text
@@ -65,15 +75,18 @@ def update_index_for_conversations(conversation_ids: Sequence[str]) -> None:
                 """,
                 tuple(chunk),
             )
-            
         # Optional Qdrant support
         if os.environ.get("QDRANT_URL") or os.environ.get("QDRANT_API_KEY"):
             from .index_qdrant import update_qdrant_for_conversations
-            update_qdrant_for_conversations(conversation_ids, conn)
-            
-        conn.commit()
 
-import os
+            update_qdrant_for_conversations(conversation_ids, db_conn)
+        db_conn.commit()
+
+    if conn:
+        _do(conn)
+    else:
+        with open_connection(None) as new_conn:
+            _do(new_conn)
 
 
 def _chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
@@ -83,14 +96,13 @@ def _chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
 
 def index_status() -> dict:
     with open_connection(None) as conn:
-        row = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-        ).fetchone()
+        row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         exists = bool(row)
         count = 0
         if exists:
             count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
         return {"exists": exists, "count": int(count)}
+
 
 __all__ = [
     "rebuild_index",

@@ -7,10 +7,9 @@ import shlex
 import subprocess
 import webbrowser
 from pathlib import Path
-from typing import Optional
 
 
-def get_editor() -> Optional[str]:
+def get_editor() -> str | None:
     """Get user's preferred editor from environment.
 
     Checks $EDITOR then $VISUAL environment variables.
@@ -21,7 +20,7 @@ def get_editor() -> Optional[str]:
     return os.environ.get("EDITOR") or os.environ.get("VISUAL")
 
 
-def open_in_editor(path: Path, line: Optional[int] = None) -> bool:
+def open_in_editor(path: Path, line: int | None = None) -> bool:
     """Open file in user's preferred editor.
 
     Supports line number jumps for editors that support it (vim, nvim, code, subl).
@@ -80,7 +79,7 @@ def _run_editor(cmd: list[str]) -> bool:
         return False
 
 
-def open_in_browser(path: Path, anchor: Optional[str] = None) -> bool:
+def open_in_browser(path: Path, anchor: str | None = None) -> bool:
     """Open a file in the system browser/HTML handler."""
 
     resolved = path.resolve()
