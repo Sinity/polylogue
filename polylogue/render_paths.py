@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 from .paths import is_within_root, safe_path_component
 
@@ -12,7 +11,7 @@ def render_root(render_root: Path, provider: str, conversation_id: str) -> Path:
     return render_root / safe_provider / safe_conversation
 
 
-def legacy_render_root(render_root: Path, provider: str, conversation_id: str) -> Optional[Path]:
+def legacy_render_root(render_root: Path, provider: str, conversation_id: str) -> Path | None:
     base = render_root
     candidate = render_root / provider / conversation_id
     if is_within_root(candidate, base):

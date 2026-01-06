@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
-
-import os
 
 from .config import Config
 from .db import open_connection
@@ -45,7 +43,7 @@ def _write_cache(archive_root: Path, payload: dict) -> None:
 
 
 def run_health(config: Config) -> dict:
-    checks: List[HealthCheck] = []
+    checks: list[HealthCheck] = []
 
     checks.append(HealthCheck("config", "ok", f"Loaded {config.path}"))
 
@@ -73,12 +71,16 @@ def run_health(config: Config) -> dict:
 
     for source in config.sources:
         if source.folder:
-            cred_path = Path(os.environ.get("POLYLOGUE_CREDENTIAL_PATH", "")).expanduser() if os.environ.get(
-                "POLYLOGUE_CREDENTIAL_PATH"
-            ) else default_credentials_path()
-            token_path = Path(os.environ.get("POLYLOGUE_TOKEN_PATH", "")).expanduser() if os.environ.get(
-                "POLYLOGUE_TOKEN_PATH"
-            ) else default_token_path()
+            cred_path = (
+                Path(os.environ.get("POLYLOGUE_CREDENTIAL_PATH", "")).expanduser()
+                if os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+                else default_credentials_path()
+            )
+            token_path = (
+                Path(os.environ.get("POLYLOGUE_TOKEN_PATH", "")).expanduser()
+                if os.environ.get("POLYLOGUE_TOKEN_PATH")
+                else default_token_path()
+            )
             cred_status = "ok" if cred_path.exists() else "warning"
             token_status = "ok" if token_path.exists() else "warning"
             checks.append(

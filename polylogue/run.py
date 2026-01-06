@@ -3,10 +3,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
-from collections.abc import Sequence
 
 from .assets import asset_path
 from .config import Config, Source
@@ -413,15 +413,13 @@ def run_sources(
                         counts[key] += value
 
         if stage in {"render", "all"}:
-            if stage == "render":
-                ids = _all_conversation_ids(source_names)
-            else:
-                ids = list(processed_ids)
+            ids = _all_conversation_ids(source_names) if stage == "render" else list(processed_ids)
             for convo_id in ids:
                 render_conversation(
                     conversation_id=convo_id,
                     archive_root=config.archive_root,
                     render_root_path=config.render_root,
+                    template_path=config.template_path,
                 )
                 counts["rendered"] += 1
 

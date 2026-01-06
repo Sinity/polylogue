@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import sqlite3
-from typing import List, Optional
+from dataclasses import dataclass
 
 from .store import AttachmentRecord, ConversationRecord, MessageRecord, store_records
 
@@ -10,8 +9,8 @@ from .store import AttachmentRecord, ConversationRecord, MessageRecord, store_re
 @dataclass
 class IngestBundle:
     conversation: ConversationRecord
-    messages: List[MessageRecord]
-    attachments: List[AttachmentRecord]
+    messages: list[MessageRecord]
+    attachments: list[AttachmentRecord]
 
 
 @dataclass
@@ -24,7 +23,7 @@ class IngestResult:
     skipped_attachments: int
 
 
-def ingest_bundle(bundle: IngestBundle, *, conn: Optional[sqlite3.Connection] = None) -> IngestResult:
+def ingest_bundle(bundle: IngestBundle, *, conn: sqlite3.Connection | None = None) -> IngestResult:
     counts = store_records(
         conversation=bundle.conversation,
         messages=bundle.messages,

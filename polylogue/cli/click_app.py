@@ -1,41 +1,41 @@
 """CLI entrypoint (clean surface, adaptive UI)."""
+
 from __future__ import annotations
 
 import json
 import os
 import sys
-from datetime import datetime
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 import click
 
-from ..ui import create_ui
 from ..config import (
+    DEFAULT_INBOX_ROOT,
     Config,
     ConfigError,
     Source,
-    DEFAULT_INBOX_ROOT,
     default_config,
     load_config,
     update_config,
     write_config,
 )
-from ..export import export_jsonl
-from ..health import cached_health_summary, get_health
 from ..db import default_db_path, open_connection
 from ..drive_client import DriveError
+from ..export import export_jsonl
+from ..health import cached_health_summary, get_health
 from ..index import rebuild_index
 from ..run import latest_run, plan_sources, run_sources
 from ..search import search_messages
+from ..ui import create_ui
 from .editor import open_in_browser, open_in_editor
 
 
 @dataclass
 class AppEnv:
     ui: object
-    config_path: Optional[Path] = None
+    config_path: Path | None = None
 
 
 def _should_use_plain(*, plain: bool, interactive: bool) -> bool:
@@ -57,12 +57,12 @@ def _format_timestamp(ts: int) -> str:
     return datetime.fromtimestamp(ts).isoformat(timespec="seconds")
 
 
-def _format_cursors(cursors: dict) -> Optional[str]:
+def _format_cursors(cursors: dict) -> str | None:
     if not cursors:
         return None
-    parts: List[str] = []
+    parts: list[str] = []
     for name, cursor in cursors.items():
-        detail_bits: List[str] = []
+        detail_bits: list[str] = []
         file_count = cursor.get("file_count")
         if isinstance(file_count, int):
             detail_bits.append(f"{file_count} files")
@@ -98,7 +98,7 @@ def _format_counts(counts: dict) -> str:
     return ", ".join(parts)
 
 
-def _format_index_status(stage: str, indexed: bool, index_error: Optional[str]) -> str:
+def _format_index_status(stage: str, indexed: bool, index_error: str | None) -> str:
     if stage in {"ingest", "render"}:
         return "Index: skipped"
     if index_error:
@@ -108,16 +108,16 @@ def _format_index_status(stage: str, indexed: bool, index_error: Optional[str]) 
     return "Index: up-to-date"
 
 
-def _format_source_label(source_name: Optional[str], provider_name: str) -> str:
+def _format_source_label(source_name: str | None, provider_name: str) -> str:
     if source_name and source_name != provider_name:
         return f"{source_name}/{provider_name}"
     return source_name or provider_name
 
 
-def _format_sources_summary(sources: List[Source]) -> str:
+def _format_sources_summary(sources: list[Source]) -> str:
     if not sources:
         return "none"
-    labels: List[str] = []
+    labels: list[str] = []
     for source in sources:
         if source.folder:
             labels.append(f"{source.name} (drive)")
@@ -129,7 +129,6 @@ def _format_sources_summary(sources: List[Source]) -> str:
         extra = len(labels) - 8
         labels = labels[:8] + [f"+{extra} more"]
     return ", ".join(labels)
-
 
 
 def _fail(command: str, message: str) -> None:
@@ -149,7 +148,7 @@ def _source_state_path() -> Path:
     return state_root / "polylogue" / "last-source.json"
 
 
-def _load_last_source() -> Optional[str]:
+def _load_last_source() -> str | None:
     path = _source_state_path()
     if not path.exists():
         return None
@@ -171,9 +170,9 @@ def _save_last_source(source_name: str) -> None:
 def _maybe_prompt_sources(
     env: AppEnv,
     config: Config,
-    selected_sources: Optional[List[str]],
+    selected_sources: list[str] | None,
     command: str,
-) -> Optional[List[str]]:
+) -> list[str] | None:
     if selected_sources is not None or env.ui.plain:
         return selected_sources
     names = [source.name for source in config.sources]
@@ -197,7 +196,7 @@ def _load_effective_config(env: AppEnv) -> Config:
     return load_config(env.config_path)
 
 
-def _resolve_sources(config: Config, sources: Tuple[str, ...], command: str) -> Optional[List[str]]:
+def _resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> list[str] | None:
     if not sources:
         return None
     requested = list(dict.fromkeys(sources))
@@ -242,7 +241,7 @@ def _print_summary(env: AppEnv) -> None:
     )
 
 
-def _latest_render_path(render_root: Path) -> Optional[Path]:
+def _latest_render_path(render_root: Path) -> Path | None:
     if not render_root.exists():
         return None
     candidates = list(render_root.rglob("conversation.md")) + list(render_root.rglob("conversation.html"))
@@ -256,7 +255,7 @@ def _latest_render_path(render_root: Path) -> Optional[Path]:
 @click.option("--interactive", is_flag=True, help="Force interactive output")
 @click.option("--config", "config_path", type=click.Path(path_type=Path), help="Path to config.json")
 @click.pass_context
-def cli(ctx: click.Context, plain: bool, interactive: bool, config_path: Optional[Path]) -> None:
+def cli(ctx: click.Context, plain: bool, interactive: bool, config_path: Path | None) -> None:
     """Polylogue CLI."""
     use_plain = _should_use_plain(plain=plain, interactive=interactive)
     env = AppEnv(ui=create_ui(use_plain), config_path=config_path)
@@ -283,7 +282,7 @@ def run(
     env: AppEnv,
     preview: bool,
     stage: str,
-    sources: Tuple[str, ...],
+    sources: tuple[str, ...],
 ) -> None:
     try:
         config = _load_effective_config(env)
@@ -306,10 +305,9 @@ def run(
         plan_lines.append(f"Snapshot: {_format_timestamp(plan_result.timestamp)}")
         env.ui.summary("Preview", plan_lines)
         return
-    if not env.ui.plain:
-        if not env.ui.confirm("Proceed with run?", default=True):
-            env.ui.console.print("Run cancelled.")
-            return
+    if not env.ui.plain and not env.ui.confirm("Proceed with run?", default=True):
+        env.ui.console.print("Run cancelled.")
+        return
     try:
         result = run_sources(
             config=config,
@@ -324,7 +322,7 @@ def run(
         f"Counts: {_format_counts(result.counts)}",
         f"Duration: {result.duration_ms}ms",
     ]
-    title_parts: List[str] = []
+    title_parts: list[str] = []
     if stage != "all":
         title_parts.append(stage)
     if selected_sources:
@@ -437,16 +435,16 @@ def index(env: AppEnv) -> None:
 @click.pass_obj
 def search(
     env: AppEnv,
-    query: Optional[str],
+    query: str | None,
     limit: int,
-    source: Optional[str],
-    since: Optional[str],
+    source: str | None,
+    since: str | None,
     latest: bool,
     list_mode: bool,
     verbose: bool,
     json_output: bool,
     json_lines: bool,
-    csv: Optional[Path],
+    csv: Path | None,
     open_result: bool,
 ) -> None:
     try:
@@ -468,10 +466,9 @@ def search(
         if not open_result:
             env.ui.console.print(str(target))
             return
-        if target.suffix.lower() == ".html":
-            if open_in_browser(target):
-                env.ui.console.print(f"Opened {target} in browser")
-                return
+        if target.suffix.lower() == ".html" and open_in_browser(target):
+            env.ui.console.print(f"Opened {target} in browser")
+            return
         if open_in_editor(target):
             env.ui.console.print(f"Opened {target} in editor")
         else:
@@ -540,16 +537,20 @@ def search(
         with csv.open("w", encoding="utf-8", newline="") as handle:
             import csv as csv_module
 
-            fieldnames = list(rows[0].keys()) if rows else [
-                "source",
-                "provider",
-                "conversation_id",
-                "message_id",
-                "title",
-                "timestamp",
-                "snippet",
-                "path",
-            ]
+            fieldnames = (
+                list(rows[0].keys())
+                if rows
+                else [
+                    "source",
+                    "provider",
+                    "conversation_id",
+                    "message_id",
+                    "title",
+                    "timestamp",
+                    "snippet",
+                    "path",
+                ]
+            )
             writer = csv_module.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
             if rows:
@@ -565,10 +566,7 @@ def search(
     show_snippet = list_mode or verbose
     interactive_pick = not env.ui.plain and not list_mode and len(hits) > 1
     if interactive_pick:
-        options = [
-            f"{idx}: {hit.title or hit.conversation_id}"
-            for idx, hit in enumerate(hits, start=1)
-        ]
+        options = [f"{idx}: {hit.title or hit.conversation_id}" for idx, hit in enumerate(hits, start=1)]
         choice = env.ui.choose("Select result", options)
         if not choice:
             env.ui.console.print("Search cancelled.")
@@ -599,10 +597,9 @@ def search(
         html_target = target.with_suffix(".html")
         if html_target.exists():
             target = html_target
-        if target.suffix.lower() == ".html":
-            if open_in_browser(target):
-                env.ui.console.print(f"Opened {target} in browser")
-                return
+        if target.suffix.lower() == ".html" and open_in_browser(target):
+            env.ui.console.print(f"Opened {target} in browser")
+            return
         if open_in_editor(target):
             env.ui.console.print(f"Opened {target} in editor")
         else:
@@ -617,8 +614,6 @@ def completions(shell: str) -> None:
 
     script = get_completion_script("polylogue", "_POLYLOGUE_COMPLETE", shell)
     click.echo(script)
-
-
 
 
 @cli.command()
@@ -645,7 +640,7 @@ def health(env: AppEnv) -> None:
 @cli.command()
 @click.option("--out", type=click.Path(path_type=Path), help="Write JSONL export to path")
 @click.pass_obj
-def export(env: AppEnv, out: Optional[Path]) -> None:
+def export(env: AppEnv, out: Path | None) -> None:
     try:
         config = _load_effective_config(env)
     except ConfigError as exc:
@@ -723,10 +718,7 @@ def config_init(
         _fail("config init", f"config already exists at {config.path}")
     add_drive = with_drive
     if interactive and not env.ui.plain:
-        prompt = (
-            f"Add Drive source '{drive_name}' (folder '{drive_folder}') "
-            f"when writing {config.path}?"
-        )
+        prompt = f"Add Drive source '{drive_name}' (folder '{drive_folder}') when writing {config.path}?"
         add_drive = env.ui.confirm(prompt, default=True)
     if add_drive:
         source_name = drive_name.strip() or "gemini"

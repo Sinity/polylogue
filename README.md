@@ -4,11 +4,11 @@ Polylogue turns AI chat exports into a local, searchable archive. It ingests exp
 
 ## What it does
 
-- Import ChatGPT, Claude, Claude Code, Codex, and generic JSON/JSONL/ZIP exports
-- Ingest Google AI Studio chats from Drive (OAuth, optional)
+- Import ChatGPT, Claude, Claude Code, Codex, and generic JSON/JSONL/ZIP exports (streaming ingestion via `ijson`)
+- Ingest Google AI Studio chats from Drive (OAuth, optional, with robust retries)
 - Idempotent ingest with incremental index updates (safe to re-run)
-- Render Markdown/HTML per conversation and export JSONL
-- Search conversations with FTS and open the latest render when no query is provided
+- Render Markdown/HTML per conversation with customizable Jinja2 templates
+- Search conversations with FTS (SQLite) or Vector Search (Qdrant + Voyage AI) and open results directly
 
 ## Install
 
@@ -52,14 +52,16 @@ Example:
   "sources": [
     {"name": "inbox", "path": "~/.local/share/polylogue/inbox"},
     {"name": "gemini", "folder": "Google AI Studio"}
-  ]
+  ],
+  "template_path": "~/.config/polylogue/template.html"
 }
 ```
 
 Notes:
 
 - `POLYLOGUE_ARCHIVE_ROOT` overrides `archive_root` at runtime.
-- `POLYLOGUE_RENDER_ROOT` overrides `render_root` at runtime (defaults to `archive_root/render`).
+- `POLYLOGUE_RENDER_ROOT` overrides `render_root` at runtime.
+- `POLYLOGUE_TEMPLATE_PATH` overrides `template_path`.
 - Local sources use `path`; Drive sources use `folder`.
 - `--source last` reuses the previous interactive source selection.
 - Use `polylogue config show` for a quick summary, or `polylogue config show --json` for raw output.
@@ -72,14 +74,28 @@ Notes:
 - Run any command with `--interactive` to complete auth. Tokens are stored at `~/.config/polylogue/token.json` (or `POLYLOGUE_TOKEN_PATH`).
 - The default Drive folder is `Google AI Studio`.
 
+## Vector Search (Qdrant)
+
+Polylogue supports optional vector search using Qdrant and Voyage AI embeddings.
+
+1. Set environment variables:
+   ```bash
+   export QDRANT_URL="http://localhost:6333"
+   export QDRANT_API_KEY="your-key" # Optional
+   export VOYAGE_API_KEY="your-voyage-api-key"
+   ```
+2. Run `polylogue run --stage index` to build/update the vector index.
+
 ## Commands
 
 - `polylogue run` - ingest, render, and index
 - `polylogue run --preview` - preview counts without writing
 - `polylogue run --stage ingest|render|index` - run one stage
-- `polylogue index` - rebuild the FTS index
-- `polylogue search [QUERY]` - full-text search (omit QUERY to open latest render in interactive mode or print it in plain mode)
-- `polylogue search --open` - open the most recent render
+- `polylogue index` - rebuild the FTS (and vector) index
+- `polylogue search [QUERY]` - full-text search
+  - `--source NAME` - filter by source/provider
+  - `--since DATE` - filter by date (ISO format)
+  - `--open` - open the selected result
 - `polylogue export` - export DB to JSONL
 - `polylogue health` - cached health checks
 - `polylogue state reset` - reset local state (DB + last-source)

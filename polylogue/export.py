@@ -3,12 +3,11 @@ from __future__ import annotations
 import json
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
 
 from .db import open_connection
 
 
-def export_jsonl(*, archive_root: Path, output_path: Optional[Path] = None) -> Path:
+def export_jsonl(*, archive_root: Path, output_path: Path | None = None) -> Path:
     target = output_path or (archive_root / "exports" / "conversations.jsonl")
     target.parent.mkdir(parents=True, exist_ok=True)
     with open_connection(None) as conn, target.open("w", encoding="utf-8") as handle:

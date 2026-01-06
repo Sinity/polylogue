@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass
-import hashlib
 
 from .db import open_connection
 

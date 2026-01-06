@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import json
-from contextlib import contextmanager
-from pathlib import Path
 import sqlite3
+from contextlib import contextmanager
 
 import pytest
 
 from polylogue.config import default_config, load_config, write_config
 from polylogue.health import get_health
 from polylogue.index import rebuild_index
-from polylogue.search import search_messages
 from polylogue.ingest import IngestBundle, ingest_bundle
+from polylogue.search import search_messages
 from polylogue.store import ConversationRecord, MessageRecord
 
 
@@ -57,7 +55,7 @@ def test_health_cached(workspace_env):
     config = default_config()
     write_config(config)
     loaded = load_config()
-    first = get_health(loaded)
+    get_health(loaded)
     second = get_health(loaded)
     assert second.get("cached") is True
     assert second.get("age_seconds") is not None

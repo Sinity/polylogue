@@ -5,8 +5,8 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-from polylogue.cli import cli
 import polylogue.cli.click_app as click_app
+from polylogue.cli import cli
 from polylogue.config import load_config
 from polylogue.db import default_db_path
 
@@ -63,9 +63,7 @@ def test_cli_run_and_export(tmp_path, monkeypatch):
     config_payload = {
         "version": 2,
         "archive_root": str(archive_root),
-        "sources": [
-            {"name": "inbox", "path": str(inbox)}
-        ],
+        "sources": [{"name": "inbox", "path": str(inbox)}],
     }
     config_path.write_text(json.dumps(config_payload), encoding="utf-8")
 
@@ -199,7 +197,7 @@ def test_cli_state_reset_clears_db_and_last_source(tmp_path, monkeypatch):
 
     last_source = state_root / "polylogue" / "last-source.json"
     last_source.parent.mkdir(parents=True, exist_ok=True)
-    last_source.write_text("{\"source\": \"inbox\"}", encoding="utf-8")
+    last_source.write_text('{"source": "inbox"}', encoding="utf-8")
 
     runner = CliRunner()
     result = runner.invoke(cli, ["--plain", "state", "reset", "--all", "--force"])

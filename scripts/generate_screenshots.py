@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Generate README screenshots for the CLI."""
+
 from __future__ import annotations
 
 import io
@@ -8,7 +9,6 @@ import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import List
 
 
 def _seed_inbox(inbox: Path) -> None:
@@ -48,7 +48,7 @@ def _seed_inbox(inbox: Path) -> None:
         path.write_text(json.dumps(convo, indent=2), encoding="utf-8")
 
 
-def _dry_run_lines(counts: dict, sources: List[str], timestamp: int, cursors: dict) -> List[str]:
+def _dry_run_lines(counts: dict, sources: list[str], timestamp: int, cursors: dict) -> list[str]:
     lines = [
         f"Counts: {counts['conversations']} conv, {counts['messages']} msg",
     ]
@@ -74,7 +74,7 @@ def _dry_run_lines(counts: dict, sources: List[str], timestamp: int, cursors: di
     return lines
 
 
-def _run_lines(run_result: object) -> List[str]:
+def _run_lines(run_result: object) -> list[str]:
     counts = run_result.counts
     return [
         f"Counts: {counts['conversations']} conv, {counts['messages']} msg",
@@ -115,8 +115,9 @@ def main() -> None:
 
     plan_result = plan_sources(config)
 
-    import polylogue.run as run_mod
     import uuid
+
+    import polylogue.run as run_mod
 
     run_mod.uuid4 = lambda: uuid.UUID("12345678-1234-5678-1234-567812345678")
     perf_values = iter([1.0, 1.234])
@@ -180,7 +181,7 @@ def main() -> None:
     def render_search(path: Path) -> None:
         facade = ConsoleFacade(plain=False)
         console = new_console(facade)
-        console.print(Text("$ polylogue search \"pipeline\" --limit 2 --list", style="bold #94a3b8"))
+        console.print(Text('$ polylogue search "pipeline" --limit 2 --list', style="bold #94a3b8"))
         console.print()
         facade.summary("Search", ["Results: 2", "Query: pipeline"])
         display_root = Path("~/.local/share/polylogue/archive/render")
