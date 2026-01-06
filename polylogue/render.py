@@ -19,23 +19,53 @@ class RenderResult:
     html_path: Path
 
 
+from jinja2 import Environment, DictLoader
+
+DEFAULT_HTML_TEMPLATE = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{{ title }}</title>
+  <style>
+    body {
+      font-family: system-ui, Segoe UI, Roboto, sans-serif;
+      max-width: 960px;
+      margin: 2rem auto;
+      line-height: 1.6;
+      padding: 0 1rem;
+      background-color: #f9fafb;
+      color: #111827;
+    }
+    pre {
+      white-space: pre-wrap;
+      background: #f3f4f6;
+      padding: 1rem;
+      border-radius: 0.5rem;
+      border: 1px solid #e5e7eb;
+    }
+    code {
+      font-family: ui-monospace, Menlo, monospace;
+    }
+    h1 { border-bottom: 2px solid #e5e7eb; padding-bottom: 0.5rem; }
+    h2 { margin-top: 2rem; color: #374151; }
+    .metadata { color: #6b7280; font-size: 0.875rem; margin-bottom: 2rem; }
+    .attachment { font-size: 0.875rem; color: #2563eb; }
+  </style>
+</head>
+<body>
+  {{ body }}
+</body>
+</html>
+"""
+
 def _render_html(markdown_text: str, *, title: str) -> str:
     md = MarkdownIt("commonmark", {"html": False, "linkify": True})
-    body = md.render(markdown_text)
-    safe_title = html.escape(title, quote=True)
-    return (
-        "<!doctype html>\n"
-        "<html lang=\"en\">\n"
-        "<head>\n"
-        "  <meta charset=\"utf-8\" />\n"
-        f"  <title>{safe_title}</title>\n"
-        "  <style>body{font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:960px;margin:2rem auto;line-height:1.6;padding:0 1rem;}pre{white-space:pre-wrap;}code{font-family:ui-monospace,Menlo,monospace;}</style>\n"
-        "</head>\n"
-        "<body>\n"
-        f"{body}\n"
-        "</body>\n"
-        "</html>\n"
-    )
+    body_html = md.render(markdown_text)
+    
+    env = Environment(loader=DictLoader({"index.html": DEFAULT_HTML_TEMPLATE}))
+    template = env.get_template("index.html")
+    return template.render(title=title, body=body_html)
 
 
 def render_conversation(
