@@ -6,11 +6,17 @@ import json
 import os
 import shutil
 import tempfile
-import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, Optional
+
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 
 from .paths import CONFIG_HOME
 
@@ -146,6 +152,12 @@ def _resolve_retry_base(value: Optional[float]) -> float:
     return DEFAULT_DRIVE_RETRY_BASE
 
 
+def _is_retryable_error(exc: Exception) -> bool:
+    if isinstance(exc, (DriveAuthError, DriveNotFoundError)):
+        return False
+    return True
+
+
 class DriveClient:
     def __init__(
         self,
@@ -164,22 +176,16 @@ class DriveClient:
         self._retries = _resolve_retries(retries)
         self._retry_base = _resolve_retry_base(retry_base)
 
-    def _with_retries(self, label: str, action):
-        attempts = max(self._retries, 0) + 1
-        last_exc = None
-        for attempt in range(1, attempts + 1):
-            try:
-                return action()
-            except (DriveAuthError, DriveNotFoundError):
-                raise
-            except Exception as exc:
-                last_exc = exc
-                if attempt >= attempts:
-                    raise
-                time.sleep(self._retry_base * (2 ** (attempt - 1)))
-        if last_exc is not None:
-            raise last_exc
-        raise DriveError(f"Drive operation '{label}' failed unexpectedly")
+    def _call_with_retry(self, func, *args, **kwargs):
+        from tenacity import Retrying, stop_after_attempt, wait_exponential, retry_if_exception_type
+        
+        retryer = Retrying(
+            stop=stop_after_attempt(max(self._retries, 0) + 1),
+            wait=wait_exponential(multiplier=self._retry_base, min=self._retry_base, max=10),
+            retry=retry_if_exception_type(Exception) & ~retry_if_exception_type((DriveAuthError, DriveNotFoundError)),
+            reraise=True,
+        )
+        return retryer(func, *args, **kwargs)
 
     def _load_credentials(self):
         Request = _import_module("google.auth.transport.requests").Request
@@ -250,11 +256,10 @@ class DriveClient:
         service = self._service_handle()
         if _looks_like_id(folder_ref):
             try:
-                file_meta = self._with_retries(
-                    "drive.get-folder",
+                file_meta = self._call_with_retry(
                     lambda: service.files()
                     .get(fileId=folder_ref, fields="id,name,mimeType")
-                    .execute(),
+                    .execute()
                 )
                 if file_meta and file_meta.get("mimeType") == FOLDER_MIME_TYPE:
                     return file_meta["id"]
@@ -262,9 +267,8 @@ class DriveClient:
                 pass
         escaped = folder_ref.replace("'", "\\'")
         query = f"name = '{escaped}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
-        response = self._with_retries(
-            "drive.list-folders",
-            lambda: service.files().list(q=query, fields="files(id,name)").execute(),
+        response = self._call_with_retry(
+            lambda: service.files().list(q=query, fields="files(id,name)").execute()
         )
         matches = response.get("files", [])
         if not matches:
@@ -277,11 +281,10 @@ class DriveClient:
         query = f"'{folder_id}' in parents and trashed = false"
         fields = "nextPageToken, files(id,name,mimeType,modifiedTime,size)"
         while True:
-            response = self._with_retries(
-                "drive.list-files",
+            response = self._call_with_retry(
                 lambda: service.files()
                 .list(q=query, fields=fields, pageToken=page_token, pageSize=1000)
-                .execute(),
+                .execute()
             )
             for item in response.get("files", []):
                 name = item.get("name") or ""
@@ -314,17 +317,16 @@ class DriveClient:
                 _, done = downloader.next_chunk()
             return buffer.getvalue()
 
-        return self._with_retries("drive.download-bytes", _download)
+        return self._call_with_retry(_download)
 
     def get_metadata(self, file_id: str) -> DriveFile:
         if file_id in self._meta_cache:
             return self._meta_cache[file_id]
         service = self._service_handle()
-        meta = self._with_retries(
-            "drive.get-metadata",
+        meta = self._call_with_retry(
             lambda: service.files()
             .get(fileId=file_id, fields="id,name,mimeType,modifiedTime,size")
-            .execute(),
+            .execute()
         )
         file_obj = DriveFile(
             file_id=meta.get("id", file_id),
@@ -375,7 +377,7 @@ class DriveClient:
                             pass
                     raise
 
-            self._with_retries("drive.download-file", _download_once)
+            self._call_with_retry(_download_once)
         modified_timestamp = _parse_modified_time(meta.modified_time)
         if modified_timestamp is not None:
             os.utime(dest, (modified_timestamp, modified_timestamp))
