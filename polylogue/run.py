@@ -375,6 +375,7 @@ def run_sources(
         "skipped_conversations": 0,
         "skipped_messages": 0,
         "skipped_attachments": 0,
+        "rendered": 0,
     }
     changed_counts = {
         "conversations": 0,
@@ -423,6 +424,7 @@ def run_sources(
                 archive_root=config.archive_root,
                 render_root_path=config.render_root,
             )
+            counts["rendered"] += 1
 
     indexed = False
     index_error: Optional[str] = None
