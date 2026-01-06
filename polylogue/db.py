@@ -5,8 +5,6 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional
-
 
 SCHEMA_VERSION = 3
 _LOCAL = threading.local()
@@ -99,7 +97,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def _make_ref_id(attachment_id: str, conversation_id: str, message_id: Optional[str]) -> str:
+def _make_ref_id(attachment_id: str, conversation_id: str, message_id: str | None) -> str:
     import hashlib
 
     seed = f"{attachment_id}:{conversation_id}:{message_id or ''}"
@@ -269,7 +267,7 @@ def _get_state() -> dict:
 
 
 @contextmanager
-def open_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
+def open_connection(db_path: Path | None = None) -> sqlite3.Connection:
     target_path = Path(db_path) if db_path is not None else default_db_path()
     target_path.parent.mkdir(parents=True, exist_ok=True)
     state = _get_state()
@@ -291,17 +289,16 @@ def open_connection(db_path: Optional[Path] = None) -> sqlite3.Connection:
         yield state["conn"]
     finally:
         state["depth"] -= 1
-        if state["depth"] <= 0:
-            if created_here:
+        if state["depth"] <= 0 and created_here:
+            try:
+                state["conn"].commit()
+            finally:
                 try:
-                    state["conn"].commit()
+                    state["conn"].close()
                 finally:
-                    try:
-                        state["conn"].close()
-                    finally:
-                        state["conn"] = None
-                        state["path"] = None
-                        state["depth"] = 0
+                    state["conn"] = None
+                    state["path"] = None
+                    state["depth"] = 0
 
 
 __all__ = ["open_connection", "default_db_path", "SCHEMA_VERSION"]

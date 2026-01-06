@@ -1,9 +1,8 @@
 from __future__ import annotations
 
+import re
 from hashlib import sha256
 from pathlib import Path
-import re
-
 
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]")
 

@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from jinja2 import DictLoader, Environment, FileSystemLoader
 from markdown_it import MarkdownIt
 
 from .assets import asset_path
@@ -17,8 +18,6 @@ class RenderResult:
     markdown_path: Path
     html_path: Path
 
-
-from jinja2 import DictLoader, Environment
 
 DEFAULT_HTML_TEMPLATE = """
 <!doctype html>
@@ -59,12 +58,19 @@ DEFAULT_HTML_TEMPLATE = """
 """
 
 
-def _render_html(markdown_text: str, *, title: str) -> str:
+def _render_html(markdown_text: str, *, title: str, template_path: Path | None = None) -> str:
     md = MarkdownIt("commonmark", {"html": False, "linkify": True})
     body_html = md.render(markdown_text)
 
-    env = Environment(loader=DictLoader({"index.html": DEFAULT_HTML_TEMPLATE}), autoescape=True)
-    template = env.get_template("index.html")
+    if template_path and template_path.exists():
+        loader = FileSystemLoader(template_path.parent)
+        template_name = template_path.name
+    else:
+        loader = DictLoader({"index.html": DEFAULT_HTML_TEMPLATE})
+        template_name = "index.html"
+
+    env = Environment(loader=loader, autoescape=True)
+    template = env.get_template(template_name)
     return template.render(title=title, body=body_html)
 
 
@@ -73,6 +79,7 @@ def render_conversation(
     conversation_id: str,
     archive_root: Path,
     render_root_path: Path | None = None,
+    template_path: Path | None = None,
 ) -> RenderResult:
     with open_connection(None) as conn:
         convo = conn.execute(
@@ -167,7 +174,9 @@ def render_conversation(
     md_path.write_text(markdown_text, encoding="utf-8")
 
     html_path = render_root_path / "conversation.html"
-    html_path.write_text(_render_html(markdown_text, title=title), encoding="utf-8")
+    html_path.write_text(
+        _render_html(markdown_text, title=title, template_path=template_path), encoding="utf-8"
+    )
 
     return RenderResult(conversation_id=conversation_id, markdown_path=md_path, html_path=html_path)
 

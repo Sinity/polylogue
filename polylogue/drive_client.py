@@ -1,25 +1,24 @@
 from __future__ import annotations
 
+import contextlib
 import importlib
 import io
 import json
 import os
 import shutil
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, Optional
 
 from tenacity import (
-    retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
 )
 
 from .paths import CONFIG_HOME
-
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
@@ -48,8 +47,8 @@ class DriveFile:
     file_id: str
     name: str
     mime_type: str
-    modified_time: Optional[str]
-    size_bytes: Optional[int]
+    modified_time: str | None
+    size_bytes: int | None
 
 
 def default_credentials_path() -> Path:
@@ -71,7 +70,7 @@ def _import_module(name: str):
         ) from exc
 
 
-def _parse_modified_time(raw: Optional[str]) -> Optional[float]:
+def _parse_modified_time(raw: str | None) -> float | None:
     if not raw:
         return None
     try:
@@ -82,7 +81,7 @@ def _parse_modified_time(raw: Optional[str]) -> Optional[float]:
         return None
 
 
-def _parse_size(raw: Optional[str | int]) -> Optional[int]:
+def _parse_size(raw: str | int | None) -> int | None:
     if raw is None:
         return None
     if isinstance(raw, int):
@@ -99,7 +98,7 @@ def _looks_like_id(value: str) -> bool:
     return all(ch.isalnum() or ch in "-_" for ch in value)
 
 
-def _resolve_credentials_path(ui: Optional[object]) -> Path:
+def _resolve_credentials_path(ui: object | None) -> Path:
     env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     if env_path:
         return Path(env_path).expanduser()
@@ -128,7 +127,7 @@ def _resolve_token_path() -> Path:
     return default_token_path()
 
 
-def _resolve_retries(value: Optional[int]) -> int:
+def _resolve_retries(value: int | None) -> int:
     if value is not None:
         return max(0, int(value))
     env_value = os.environ.get(ENV_DRIVE_RETRIES)
@@ -140,7 +139,7 @@ def _resolve_retries(value: Optional[int]) -> int:
     return DEFAULT_DRIVE_RETRIES
 
 
-def _resolve_retry_base(value: Optional[float]) -> float:
+def _resolve_retry_base(value: float | None) -> float:
     if value is not None:
         return max(0.0, float(value))
     env_value = os.environ.get(ENV_DRIVE_RETRY_BASE)
@@ -153,55 +152,54 @@ def _resolve_retry_base(value: Optional[float]) -> float:
 
 
 def _is_retryable_error(exc: Exception) -> bool:
-    if isinstance(exc, (DriveAuthError, DriveNotFoundError)):
-        return False
-    return True
+    return not isinstance(exc, (DriveAuthError, DriveNotFoundError))
 
 
 class DriveClient:
     def __init__(
         self,
         *,
-        ui: Optional[object] = None,
-        credentials_path: Optional[Path] = None,
-        token_path: Optional[Path] = None,
-        retries: Optional[int] = None,
-        retry_base: Optional[float] = None,
+        ui: object | None = None,
+        credentials_path: Path | None = None,
+        token_path: Path | None = None,
+        retries: int | None = None,
+        retry_base: float | None = None,
     ) -> None:
         self._ui = ui
         self._credentials_path = credentials_path
         self._token_path = token_path
         self._service = None
-        self._meta_cache: Dict[str, DriveFile] = {}
+        self._meta_cache: dict[str, DriveFile] = {}
         self._retries = _resolve_retries(retries)
         self._retry_base = _resolve_retry_base(retry_base)
 
     def _call_with_retry(self, func, *args, **kwargs):
-        from tenacity import Retrying, stop_after_attempt, wait_exponential, retry_if_exception_type
-        
+        from tenacity import Retrying, retry_if_not_exception_type
+
         retryer = Retrying(
             stop=stop_after_attempt(max(self._retries, 0) + 1),
             wait=wait_exponential(multiplier=self._retry_base, min=self._retry_base, max=10),
-            retry=retry_if_exception_type(Exception) & ~retry_if_exception_type((DriveAuthError, DriveNotFoundError)),
+            retry=retry_if_exception_type(Exception)
+            & retry_if_not_exception_type((DriveAuthError, DriveNotFoundError)),
             reraise=True,
         )
         return retryer(func, *args, **kwargs)
 
     def _load_credentials(self):
-        Request = _import_module("google.auth.transport.requests").Request
-        Credentials = _import_module("google.oauth2.credentials").Credentials
-        InstalledAppFlow = _import_module("google_auth_oauthlib.flow").InstalledAppFlow
+        request_cls = _import_module("google.auth.transport.requests").Request
+        credentials_cls = _import_module("google.oauth2.credentials").Credentials
+        installed_app_flow_cls = _import_module("google_auth_oauthlib.flow").InstalledAppFlow
 
         token_path = self._token_path or _resolve_token_path()
         creds = None
         if token_path.exists():
             try:
-                creds = Credentials.from_authorized_user_file(str(token_path), SCOPES)
+                creds = credentials_cls.from_authorized_user_file(str(token_path), SCOPES)
             except Exception:
                 creds = None
         if creds and creds.expired and creds.refresh_token:
             try:
-                creds.refresh(Request())
+                creds.refresh(request_cls())
             except Exception:
                 creds = None
         if creds and creds.valid:
@@ -221,7 +219,7 @@ class DriveClient:
                 "Drive authorization required but no interactive UI is available. "
                 "Run with --interactive or set POLYLOGUE_TOKEN_PATH with a valid token."
             )
-        flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
+        flow = installed_app_flow_cls.from_client_secrets_file(str(credentials_path), SCOPES)
         try:
             creds = flow.run_local_server(open_browser=False, port=0)
         except Exception:
@@ -230,7 +228,7 @@ class DriveClient:
             self._ui.console.print(auth_url)
             code = self._ui.input("Paste the authorization code")
             if not code:
-                raise DriveAuthError("Drive authorization cancelled.")
+                raise DriveAuthError("Drive authorization cancelled.") from None
             try:
                 flow.fetch_token(code=code)
             except Exception as exc:
@@ -257,9 +255,7 @@ class DriveClient:
         if _looks_like_id(folder_ref):
             try:
                 file_meta = self._call_with_retry(
-                    lambda: service.files()
-                    .get(fileId=folder_ref, fields="id,name,mimeType")
-                    .execute()
+                    lambda: service.files().get(fileId=folder_ref, fields="id,name,mimeType").execute()
                 )
                 if file_meta and file_meta.get("mimeType") == FOLDER_MIME_TYPE:
                     return file_meta["id"]
@@ -267,9 +263,7 @@ class DriveClient:
                 pass
         escaped = folder_ref.replace("'", "\\'")
         query = f"name = '{escaped}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
-        response = self._call_with_retry(
-            lambda: service.files().list(q=query, fields="files(id,name)").execute()
-        )
+        response = self._call_with_retry(lambda: service.files().list(q=query, fields="files(id,name)").execute())
         matches = response.get("files", [])
         if not matches:
             raise DriveNotFoundError(f"Folder not found: {folder_ref}")
@@ -282,9 +276,7 @@ class DriveClient:
         fields = "nextPageToken, files(id,name,mimeType,modifiedTime,size)"
         while True:
             response = self._call_with_retry(
-                lambda: service.files()
-                .list(q=query, fields=fields, pageToken=page_token, pageSize=1000)
-                .execute()
+                lambda t=page_token: service.files().list(q=query, fields=fields, pageToken=t, pageSize=1000).execute()
             )
             for item in response.get("files", []):
                 name = item.get("name") or ""
@@ -305,13 +297,13 @@ class DriveClient:
                 break
 
     def download_bytes(self, file_id: str) -> bytes:
-        MediaIoBaseDownload = _import_module("googleapiclient.http").MediaIoBaseDownload
+        media_io_base_download_cls = _import_module("googleapiclient.http").MediaIoBaseDownload
 
         def _download():
             service = self._service_handle()
             request = service.files().get_media(fileId=file_id)
             buffer = io.BytesIO()
-            downloader = MediaIoBaseDownload(buffer, request)
+            downloader = media_io_base_download_cls(buffer, request)
             done = False
             while not done:
                 _, done = downloader.next_chunk()
@@ -324,9 +316,7 @@ class DriveClient:
             return self._meta_cache[file_id]
         service = self._service_handle()
         meta = self._call_with_retry(
-            lambda: service.files()
-            .get(fileId=file_id, fields="id,name,mimeType,modifiedTime,size")
-            .execute()
+            lambda: service.files().get(fileId=file_id, fields="id,name,mimeType,modifiedTime,size").execute()
         )
         file_obj = DriveFile(
             file_id=meta.get("id", file_id),
@@ -339,7 +329,7 @@ class DriveClient:
         return file_obj
 
     def download_to_path(self, file_id: str, dest: Path) -> DriveFile:
-        MediaIoBaseDownload = _import_module("googleapiclient.http").MediaIoBaseDownload
+        media_io_base_download_cls = _import_module("googleapiclient.http").MediaIoBaseDownload
 
         meta = self.get_metadata(file_id)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -357,6 +347,7 @@ class DriveClient:
                 if modified_timestamp is not None and abs(stat.st_mtime - modified_timestamp) > 1:
                     needs_download = True
         if needs_download:
+
             def _download_once():
                 tmp_path = None
                 try:
@@ -364,18 +355,16 @@ class DriveClient:
                     request = service.files().get_media(fileId=file_id)
                     with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as handle:
                         tmp_path = Path(handle.name)
-                        downloader = MediaIoBaseDownload(handle, request)
+                        downloader = media_io_base_download_cls(handle, request)
                         done = False
                         while not done:
                             _, done = downloader.next_chunk()
                     tmp_path.replace(dest)
-                except Exception:
+                except Exception as e:
                     if tmp_path is not None:
-                        try:
+                        with contextlib.suppress(OSError):
                             tmp_path.unlink()
-                        except OSError:
-                            pass
-                    raise
+                    raise e from None
 
             self._call_with_retry(_download_once)
         modified_timestamp = _parse_modified_time(meta.modified_time)
@@ -384,10 +373,9 @@ class DriveClient:
         return meta
 
     def download_json_payload(self, file_id: str, *, name: str) -> object:
-        import ijson
         raw = self.download_bytes(file_id)
         handle = io.BytesIO(raw)
-        
+
         if name.lower().endswith(".jsonl"):
             items = []
             for line in handle:
@@ -401,7 +389,7 @@ class DriveClient:
             return items
 
         # Return the whole object but use ijson for potentially better memory handling
-        # (though for standard json.load it won't matter much unless we refactor 
+        # (though for standard json.load it won't matter much unless we refactor
         # higher up to handle generators, which we will do in source_ingest).
         try:
             return json.load(handle)
