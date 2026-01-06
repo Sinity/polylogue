@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import json
 from pathlib import Path
 import sqlite3
@@ -52,6 +53,8 @@ def search_messages(
     archive_root: Path,
     render_root_path: Optional[Path] = None,
     limit: int = 20,
+    source: Optional[str] = None,
+    since: Optional[str] = None,
 ) -> SearchResult:
     with open_connection(None) as conn:
         exists = conn.execute(
@@ -59,25 +62,49 @@ def search_messages(
         ).fetchone()
         if not exists:
             raise RuntimeError("Search index not built. Run `polylogue run` with index enabled.")
+        
+        sql = """
+            SELECT
+                messages_fts.message_id,
+                messages_fts.conversation_id,
+                messages_fts.provider_name,
+                conversations.provider_meta,
+                conversations.title,
+                messages.timestamp,
+                snippet(messages_fts, 3, '[', ']', '…', 12) AS snippet
+            FROM messages_fts
+            JOIN conversations ON conversations.conversation_id = messages_fts.conversation_id
+            JOIN messages ON messages.message_id = messages_fts.message_id
+            WHERE messages_fts MATCH ?
+        """
+        params: List[object] = [query]
+        
+        if source:
+            # We filter by provider_name OR source in metadata
+            # Note: exact match on provider_name is fast, metadata check is slower
+            # For simplicity, we just check provider_name here.
+            # If 'source' refers to the config source name, it often matches provider_name
+            # except for multiple sources of same provider.
+            # To support 'source' properly we need to check provider_meta.
+            sql += " AND (messages_fts.provider_name = ? OR json_extract(conversations.provider_meta, '$.source') = ?)"
+            params.extend([source, source])
+            
+        if since:
+            try:
+                dt = datetime.fromisoformat(since)
+                # messages.timestamp can be ISO string or float-like string.
+                # Standardize on string comparison if ISO, or basic string compare.
+                # Assuming timestamp is ISO string in DB.
+                sql += " AND messages.timestamp >= ?"
+                params.append(since)
+            except ValueError:
+                pass # Ignore invalid date
+
+        sql += " LIMIT ?"
+        params.append(limit)
+
         try:
-            rows = conn.execute(
-                """
-                SELECT
-                    messages_fts.message_id,
-                    messages_fts.conversation_id,
-                    messages_fts.provider_name,
-                    conversations.provider_meta,
-                    conversations.title,
-                    messages.timestamp,
-                    snippet(messages_fts, 3, '[', ']', '…', 12) AS snippet
-                FROM messages_fts
-                JOIN conversations ON conversations.conversation_id = messages_fts.conversation_id
-                JOIN messages ON messages.message_id = messages_fts.message_id
-                WHERE messages_fts MATCH ?
-                LIMIT ?
-                """,
-                (query, limit),
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         except sqlite3.Error as exc:
             raise RuntimeError(f"Invalid search query: {exc}") from exc
 

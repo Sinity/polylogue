@@ -425,6 +425,8 @@ def index(env: AppEnv) -> None:
 @cli.command()
 @click.argument("query", required=False)
 @click.option("--limit", type=int, default=20, show_default=True)
+@click.option("--source", help="Filter by source/provider name")
+@click.option("--since", help="Filter by date (ISO format, e.g. 2023-01-01)")
 @click.option("--latest", is_flag=True, help="Open the latest render instead of searching")
 @click.option("--list", "list_mode", is_flag=True, help="Print all hits (skip interactive picker)")
 @click.option("--verbose", is_flag=True, help="Show snippets alongside hits")
@@ -437,6 +439,8 @@ def search(
     env: AppEnv,
     query: Optional[str],
     limit: int,
+    source: Optional[str],
+    since: Optional[str],
     latest: bool,
     list_mode: bool,
     verbose: bool,
@@ -481,6 +485,8 @@ def search(
             archive_root=config.archive_root,
             render_root_path=config.render_root,
             limit=limit,
+            source=source,
+            since=since,
         )
     except RuntimeError as exc:
         message = str(exc)
@@ -495,6 +501,8 @@ def search(
                 archive_root=config.archive_root,
                 render_root_path=config.render_root,
                 limit=limit,
+                source=source,
+                since=since,
             )
         else:
             _fail("search", message)
