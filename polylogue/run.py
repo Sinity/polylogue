@@ -246,6 +246,7 @@ def _ingest_conversation(
     source_name: str,
     *,
     archive_root: Path,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> Tuple[str, Dict[str, int], bool]:
     content_hash = _conversation_content_hash(convo)
     existing = _lookup_existing_conversation(convo)
@@ -313,7 +314,8 @@ def _ingest_conversation(
             conversation=conversation_record,
             messages=messages,
             attachments=attachments,
-        )
+        ),
+        conn=conn,
     )
     return conversation_id, {
         "conversations": result.conversations,
@@ -384,102 +386,103 @@ def run_sources(
     }
     processed_ids: set[str] = set()
 
-    if stage in {"ingest", "all"}:
-        for source in _select_sources(config, source_names):
-            if source.folder:
-                conversations = iter_drive_conversations(
-                    source=source,
-                    archive_root=config.archive_root,
-                    ui=ui,
-                    download_assets=True,
-                )
+    with open_connection(None) as conn:
+        if stage in {"ingest", "all"}:
+            for source in _select_sources(config, source_names):
+                if source.folder:
+                    conversations = iter_drive_conversations(
+                        source=source,
+                        archive_root=config.archive_root,
+                        ui=ui,
+                        download_assets=True,
+                    )
+                else:
+                    conversations = iter_source_conversations(source)
+                for convo in conversations:
+                    convo_id, result_counts, content_changed = _ingest_conversation(
+                        convo,
+                        source.name,
+                        archive_root=config.archive_root,
+                        conn=conn,
+                    )
+                    ingest_changed = (
+                        result_counts["conversations"]
+                        + result_counts["messages"]
+                        + result_counts["attachments"]
+                    ) > 0
+                    if ingest_changed or content_changed:
+                        processed_ids.add(convo_id)
+                    if content_changed:
+                        changed_counts["conversations"] += 1
+                    for key, value in result_counts.items():
+                        counts[key] += value
+
+        if stage in {"render", "all"}:
+            if stage == "render":
+                ids = _all_conversation_ids(source_names)
             else:
-                conversations = iter_source_conversations(source)
-            for convo in conversations:
-                convo_id, result_counts, content_changed = _ingest_conversation(
-                    convo,
-                    source.name,
+                ids = list(processed_ids)
+            for convo_id in ids:
+                render_conversation(
+                    conversation_id=convo_id,
                     archive_root=config.archive_root,
+                    render_root_path=config.render_root,
                 )
-                ingest_changed = (
-                    result_counts["conversations"]
-                    + result_counts["messages"]
-                    + result_counts["attachments"]
-                ) > 0
-                if ingest_changed or content_changed:
-                    processed_ids.add(convo_id)
-                if content_changed:
-                    changed_counts["conversations"] += 1
-                for key, value in result_counts.items():
-                    counts[key] += value
+                counts["rendered"] += 1
 
-    if stage in {"render", "all"}:
-        if stage == "render":
-            ids = _all_conversation_ids(source_names)
-        else:
-            ids = list(processed_ids)
-        for convo_id in ids:
-            render_conversation(
-                conversation_id=convo_id,
-                archive_root=config.archive_root,
-                render_root_path=config.render_root,
-            )
-            counts["rendered"] += 1
-
-    indexed = False
-    index_error: Optional[str] = None
-    try:
-        if stage == "index":
-            rebuild_index()
-            indexed = True
-        elif stage == "all":
-            idx = index_status()
-            if not idx["exists"]:
+        indexed = False
+        index_error: Optional[str] = None
+        try:
+            if stage == "index":
                 rebuild_index()
                 indexed = True
-            elif processed_ids:
-                update_index_for_conversations(list(processed_ids))
-                indexed = True
-    except Exception as exc:
-        index_error = str(exc)
-        indexed = False
+            elif stage == "all":
+                idx = index_status()
+                if not idx["exists"]:
+                    rebuild_index()
+                    indexed = True
+                elif processed_ids:
+                    update_index_for_conversations(list(processed_ids))
+                    indexed = True
+        except Exception as exc:
+            index_error = str(exc)
+            indexed = False
 
-    duration_ms = int((time.perf_counter() - start) * 1000)
-    drift = {
-        "new": {"conversations": 0, "messages": 0, "attachments": 0},
-        "removed": {"conversations": 0, "messages": 0, "attachments": 0},
-        "changed": dict(changed_counts),
-    }
-    processed_conversations = counts["conversations"] + counts["skipped_conversations"]
-    processed_messages = counts["messages"] + counts["skipped_messages"]
-    processed_attachments = counts["attachments"] + counts["skipped_attachments"]
-    if plan:
-        expected_conversations = plan.counts.get("conversations", 0)
-        expected_messages = plan.counts.get("messages", 0)
-        expected_attachments = plan.counts.get("attachments", 0)
-        drift["new"]["conversations"] = max(processed_conversations - expected_conversations, 0)
-        drift["new"]["messages"] = max(processed_messages - expected_messages, 0)
-        drift["new"]["attachments"] = max(processed_attachments - expected_attachments, 0)
-        drift["removed"]["conversations"] = max(expected_conversations - processed_conversations, 0)
-        drift["removed"]["messages"] = max(expected_messages - processed_messages, 0)
-        drift["removed"]["attachments"] = max(expected_attachments - processed_attachments, 0)
-    else:
-        drift["new"]["conversations"] = counts["conversations"]
-        drift["new"]["messages"] = counts["messages"]
-        drift["new"]["attachments"] = counts["attachments"]
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        drift = {
+            "new": {"conversations": 0, "messages": 0, "attachments": 0},
+            "removed": {"conversations": 0, "messages": 0, "attachments": 0},
+            "changed": dict(changed_counts),
+        }
+        processed_conversations = counts["conversations"] + counts["skipped_conversations"]
+        processed_messages = counts["messages"] + counts["skipped_messages"]
+        processed_attachments = counts["attachments"] + counts["skipped_attachments"]
+        if plan:
+            expected_conversations = plan.counts.get("conversations", 0)
+            expected_messages = plan.counts.get("messages", 0)
+            expected_attachments = plan.counts.get("attachments", 0)
+            drift["new"]["conversations"] = max(processed_conversations - expected_conversations, 0)
+            drift["new"]["messages"] = max(processed_messages - expected_messages, 0)
+            drift["new"]["attachments"] = max(processed_attachments - expected_attachments, 0)
+            drift["removed"]["conversations"] = max(expected_conversations - processed_conversations, 0)
+            drift["removed"]["messages"] = max(expected_messages - processed_messages, 0)
+            drift["removed"]["attachments"] = max(expected_attachments - processed_attachments, 0)
+        else:
+            drift["new"]["conversations"] = counts["conversations"]
+            drift["new"]["messages"] = counts["messages"]
+            drift["new"]["attachments"] = counts["attachments"]
 
-    run_id = uuid4().hex
-    run_payload = {
-        "run_id": run_id,
-        "timestamp": int(time.time()),
-        "counts": counts,
-        "drift": drift,
-        "indexed": indexed,
-        "index_error": index_error,
-        "duration_ms": duration_ms,
-    }
-    _write_run_json(config.archive_root, run_payload)
-    with open_connection(None) as conn:
+        run_id = uuid4().hex
+        run_payload = {
+            "run_id": run_id,
+            "timestamp": int(time.time()),
+            "counts": counts,
+            "drift": drift,
+            "indexed": indexed,
+            "index_error": index_error,
+            "duration_ms": duration_ms,
+        }
+        _write_run_json(config.archive_root, run_payload)
         record_run(
             conn,
             RunRecord(
