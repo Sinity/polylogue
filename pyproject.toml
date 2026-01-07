@@ -29,6 +29,8 @@ dependencies = [
   "questionary>=2.0.0",
   "click>=8.1.0",
   "tenacity>=8.0.0",
+  "fastapi>=0.100.0",
+  "uvicorn>=0.20.0",
 ]
 
 [project.optional-dependencies]
