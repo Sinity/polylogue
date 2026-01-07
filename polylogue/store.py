@@ -57,12 +57,22 @@ class RunRecord:
 
 
 def _json_or_none(value: dict | None) -> str | None:
+    import decimal
+
+    class DecimalEncoder(json.JSONEncoder):
+        def default(self, o):
+            if isinstance(o, decimal.Decimal):
+                return int(o) if o % 1 == 0 else float(o)
+            return super().default(o)
+
     if value is None:
         return None
-    return json.dumps(value, sort_keys=True)
+    return json.dumps(value, sort_keys=True, cls=DecimalEncoder)
 
 
-def _make_ref_id(attachment_id: str, conversation_id: str, message_id: str | None) -> str:
+def _make_ref_id(
+    attachment_id: str, conversation_id: str, message_id: str | None
+) -> str:
     seed = f"{attachment_id}:{conversation_id}:{message_id or ''}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"ref-{digest}"
@@ -169,7 +179,9 @@ def upsert_attachment(conn, record: AttachmentRecord) -> bool:
         ),
     )
 
-    ref_id = _make_ref_id(record.attachment_id, record.conversation_id, record.message_id)
+    ref_id = _make_ref_id(
+        record.attachment_id, record.conversation_id, record.message_id
+    )
     res = conn.execute(
         """
         INSERT OR IGNORE INTO attachment_refs (

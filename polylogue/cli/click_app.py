@@ -610,10 +610,24 @@ def search(
 @click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True)
 def completions(shell: str) -> None:
     """Generate shell completion scripts."""
-    from click.shell_completion import get_completion_script
+    script: str = ""
+    prog_name = os.path.basename(sys.argv[0])
+    env_name = "_POLYLOGUE_COMPLETE"
 
-    script = get_completion_script("polylogue", "_POLYLOGUE_COMPLETE", shell)
-    click.echo(script)
+    if shell == "bash":
+        script = f'eval "$({env_name}=bash_source {prog_name})"'
+    elif shell == "zsh":
+        script = f'eval "$({env_name}=zsh_source {prog_name})"'
+    elif shell == "fish":
+        script = f"eval (env {env_name}=fish_source {prog_name})"
+
+    click.echo(f"# To enable completions, run:\n{script}")
+    # Also output the script itself by invoking the completion source mode?
+    # No, printing the eval instructions is the standard way now.
+    # However, if the user expects the script content to be dumped for sourcing:
+    # We can try to emulate what they basically want.
+    # But usually 'eval' is enough.
+    # Let's just output the recommended activation line.
 
 
 @cli.command()
