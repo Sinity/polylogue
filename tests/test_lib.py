@@ -1,10 +1,8 @@
-from datetime import datetime
-import sqlite3
 import pytest
-from polylogue.lib.models import Conversation, Message, Attachment
-from polylogue.lib.repository import ConversationRepository
-from polylogue.store import ConversationRecord, MessageRecord, AttachmentRecord
+
 from polylogue.db import open_connection
+from polylogue.lib.models import Conversation, Message
+from polylogue.lib.repository import ConversationRepository
 
 
 @pytest.fixture
@@ -35,22 +33,13 @@ def test_semantic_models():
 def test_repository(mock_db):
     repo = ConversationRepository(mock_db)
 
-    # Seed data manually via SQL to avoid circular dependency on Store/Ingest for this unit test
-    # (Or helper if available)
-    with sqlite3.connect(mock_db) as conn:
-        conn.execute(
-            """
-            INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, content_hash, version) 
-            VALUES ('c1', 'chatgpt', 'ext-1', 'hash', 1)
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version) 
-            VALUES ('m1', 'c1', 'user', 'hello world', 'hash1', 1)
-            """
-        )
-        conn.commit()
+    # Seed data
+    from tests.factories import DbFactory
+
+    factory = DbFactory(mock_db)
+    factory.create_conversation(
+        id="c1", provider="chatgpt", messages=[{"id": "m1", "role": "user", "text": "hello world"}]
+    )
 
     # Test get
     conv = repo.get("c1")
