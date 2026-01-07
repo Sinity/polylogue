@@ -6,7 +6,6 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-import polylogue.cli.click_app as click_app
 from polylogue.config import load_config
 from polylogue.db import default_db_path
 
@@ -63,9 +62,7 @@ def test_cli_run_and_export(tmp_path, monkeypatch):
     config_payload = {
         "version": 2,
         "archive_root": str(archive_root),
-        "sources": [
-            {"name": "inbox", "path": str(inbox)}
-        ],
+        "sources": [{"name": "inbox", "path": str(inbox)}],
     }
     config_path.write_text(json.dumps(config_payload), encoding="utf-8")
 
@@ -161,8 +158,10 @@ def test_cli_search_open_prefers_html(tmp_path, monkeypatch):
         opened["path"] = path
         return True
 
-    monkeypatch.setattr(click_app, "open_in_browser", fake_open_browser)
-    monkeypatch.setattr(click_app, "open_in_editor", lambda path: False)
+    import polylogue.cli.commands.search as search_mod
+
+    monkeypatch.setattr(search_mod, "open_in_browser", fake_open_browser)
+    monkeypatch.setattr(search_mod, "open_in_editor", lambda path: False)
 
     runner = CliRunner()
     run_result = runner.invoke(cli, ["run", "--stage", "all"])
@@ -199,7 +198,7 @@ def test_cli_state_reset_clears_db_and_last_source(tmp_path, monkeypatch):
 
     last_source = state_root / "polylogue" / "last-source.json"
     last_source.parent.mkdir(parents=True, exist_ok=True)
-    last_source.write_text("{\"source\": \"inbox\"}", encoding="utf-8")
+    last_source.write_text('{"source": "inbox"}', encoding="utf-8")
 
     runner = CliRunner()
     result = runner.invoke(cli, ["--plain", "state", "reset", "--all", "--force"])

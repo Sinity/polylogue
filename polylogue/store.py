@@ -1,103 +1,70 @@
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass
 import hashlib
-from typing import Optional
+import json
+import sqlite3
 
-from .db import open_connection
+from pydantic import BaseModel
 
 
-@dataclass
-class ConversationRecord:
+class ConversationRecord(BaseModel):
     conversation_id: str
     provider_name: str
     provider_conversation_id: str
-    title: Optional[str]
-    created_at: Optional[str]
-    updated_at: Optional[str]
+    title: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
     content_hash: str
-    provider_meta: Optional[dict]
+    provider_meta: dict | None = None
     version: int = 1
 
 
-@dataclass
-class MessageRecord:
+class MessageRecord(BaseModel):
     message_id: str
     conversation_id: str
-    provider_message_id: Optional[str]
-    role: Optional[str]
-    text: Optional[str]
-    timestamp: Optional[str]
+    provider_message_id: str | None = None
+    role: str | None = None
+    text: str | None = None
+    timestamp: str | None = None
     content_hash: str
-    provider_meta: Optional[dict]
+    provider_meta: dict | None = None
     version: int = 1
 
 
-@dataclass
-class AttachmentRecord:
+class AttachmentRecord(BaseModel):
     attachment_id: str
     conversation_id: str
-    message_id: Optional[str]
-    mime_type: Optional[str]
-    size_bytes: Optional[int]
-    path: Optional[str]
-    provider_meta: Optional[dict]
+    message_id: str | None = None
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    path: str | None = None
+    provider_meta: dict | None = None
 
 
-@dataclass
-class RunRecord:
+class RunRecord(BaseModel):
     run_id: str
     timestamp: str
-    plan_snapshot: Optional[dict]
-    counts: Optional[dict]
-    drift: Optional[dict]
-    indexed: Optional[bool]
-    duration_ms: Optional[int]
+    plan_snapshot: dict | None = None
+    counts: dict | None = None
+    drift: dict | None = None
+    indexed: bool | None = None
+    duration_ms: int | None = None
 
 
-def _json_or_none(value: Optional[dict]) -> Optional[str]:
+def _json_or_none(value: dict | None) -> str | None:
     if value is None:
         return None
     return json.dumps(value, sort_keys=True)
 
 
-def _make_ref_id(attachment_id: str, conversation_id: str, message_id: Optional[str]) -> str:
+def _make_ref_id(attachment_id: str, conversation_id: str, message_id: str | None) -> str:
     seed = f"{attachment_id}:{conversation_id}:{message_id or ''}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"ref-{digest}"
 
 
 def upsert_conversation(conn, record: ConversationRecord) -> bool:
-    row = conn.execute(
-        """
-        SELECT title, created_at, updated_at, content_hash, provider_meta
-        FROM conversations
-        WHERE conversation_id = ?
-        """,
-        (record.conversation_id,),
-    ).fetchone()
-    if row:
-        updates = {}
-        if record.title is not None and record.title != row["title"]:
-            updates["title"] = record.title
-        if record.created_at is not None and record.created_at != row["created_at"]:
-            updates["created_at"] = record.created_at
-        if record.updated_at is not None and record.updated_at != row["updated_at"]:
-            updates["updated_at"] = record.updated_at
-        if record.content_hash != row["content_hash"]:
-            updates["content_hash"] = record.content_hash
-        new_meta = _json_or_none(record.provider_meta)
-        if new_meta is not None and new_meta != row["provider_meta"]:
-            updates["provider_meta"] = new_meta
-        if updates:
-            assignments = ", ".join(f"{key} = ?" for key in updates)
-            conn.execute(
-                f"UPDATE conversations SET {assignments} WHERE conversation_id = ?",
-                (*updates.values(), record.conversation_id),
-            )
-        return False
-    conn.execute(
+    res = conn.execute(
         """
         INSERT INTO conversations (
             conversation_id,
@@ -110,6 +77,13 @@ def upsert_conversation(conn, record: ConversationRecord) -> bool:
             provider_meta,
             version
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(conversation_id) DO UPDATE SET
+            title = excluded.title,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            content_hash = excluded.content_hash,
+            provider_meta = excluded.provider_meta
+        WHERE content_hash != excluded.content_hash OR title != excluded.title
         """,
         (
             record.conversation_id,
@@ -123,41 +97,11 @@ def upsert_conversation(conn, record: ConversationRecord) -> bool:
             record.version,
         ),
     )
-    return True
+    return res.rowcount > 0
 
 
 def upsert_message(conn, record: MessageRecord) -> bool:
-    row = conn.execute(
-        """
-        SELECT provider_message_id, role, text, timestamp, content_hash, provider_meta
-        FROM messages
-        WHERE message_id = ?
-        """,
-        (record.message_id,),
-    ).fetchone()
-    if row:
-        updates = {}
-        if record.provider_message_id is not None and record.provider_message_id != row["provider_message_id"]:
-            updates["provider_message_id"] = record.provider_message_id
-        if record.role is not None and record.role != row["role"]:
-            updates["role"] = record.role
-        if record.text is not None and record.text != row["text"]:
-            updates["text"] = record.text
-        if record.timestamp is not None and record.timestamp != row["timestamp"]:
-            updates["timestamp"] = record.timestamp
-        if record.content_hash != row["content_hash"]:
-            updates["content_hash"] = record.content_hash
-        new_meta = _json_or_none(record.provider_meta)
-        if new_meta is not None and new_meta != row["provider_meta"]:
-            updates["provider_meta"] = new_meta
-        if updates:
-            assignments = ", ".join(f"{key} = ?" for key in updates)
-            conn.execute(
-                f"UPDATE messages SET {assignments} WHERE message_id = ?",
-                (*updates.values(), record.message_id),
-            )
-        return False
-    conn.execute(
+    res = conn.execute(
         """
         INSERT INTO messages (
             message_id,
@@ -170,6 +114,13 @@ def upsert_message(conn, record: MessageRecord) -> bool:
             provider_meta,
             version
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(message_id) DO UPDATE SET
+            role = excluded.role,
+            text = excluded.text,
+            timestamp = excluded.timestamp,
+            content_hash = excluded.content_hash,
+            provider_meta = excluded.provider_meta
+        WHERE content_hash != excluded.content_hash
         """,
         (
             record.message_id,
@@ -183,64 +134,40 @@ def upsert_message(conn, record: MessageRecord) -> bool:
             record.version,
         ),
     )
-    return True
+    return res.rowcount > 0
 
 
 def upsert_attachment(conn, record: AttachmentRecord) -> bool:
-    row = conn.execute(
-        "SELECT mime_type, size_bytes, path, provider_meta FROM attachments WHERE attachment_id = ?",
-        (record.attachment_id,),
-    ).fetchone()
-    if row:
-        updates = {}
-        if record.mime_type is not None and record.mime_type != row["mime_type"]:
-            updates["mime_type"] = record.mime_type
-        if record.size_bytes is not None and record.size_bytes != row["size_bytes"]:
-            updates["size_bytes"] = record.size_bytes
-        new_path = record.path or row["path"]
-        if new_path != row["path"]:
-            updates["path"] = new_path
-        new_meta = _json_or_none(record.provider_meta)
-        if new_meta is not None and new_meta != row["provider_meta"]:
-            updates["provider_meta"] = new_meta
-        if updates:
-            assignments = ", ".join(f"{key} = ?" for key in updates)
-            conn.execute(
-                f"UPDATE attachments SET {assignments} WHERE attachment_id = ?",
-                (*updates.values(), record.attachment_id),
-            )
-    else:
-        conn.execute(
-            """
-            INSERT INTO attachments (
-                attachment_id,
-                mime_type,
-                size_bytes,
-                path,
-                ref_count,
-                provider_meta
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record.attachment_id,
-                record.mime_type,
-                record.size_bytes,
-                record.path,
-                0,
-                _json_or_none(record.provider_meta),
-            ),
-        )
-
-    ref_id = _make_ref_id(record.attachment_id, record.conversation_id, record.message_id)
-    existing_ref = conn.execute(
-        "SELECT 1 FROM attachment_refs WHERE ref_id = ?",
-        (ref_id,),
-    ).fetchone()
-    if existing_ref:
-        return False
     conn.execute(
         """
-        INSERT INTO attachment_refs (
+        INSERT INTO attachments (
+            attachment_id,
+            mime_type,
+            size_bytes,
+            path,
+            ref_count,
+            provider_meta
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(attachment_id) DO UPDATE SET
+            mime_type = excluded.mime_type,
+            size_bytes = excluded.size_bytes,
+            path = COALESCE(excluded.path, path),
+            provider_meta = excluded.provider_meta
+        """,
+        (
+            record.attachment_id,
+            record.mime_type,
+            record.size_bytes,
+            record.path,
+            0,
+            _json_or_none(record.provider_meta),
+        ),
+    )
+
+    ref_id = _make_ref_id(record.attachment_id, record.conversation_id, record.message_id)
+    res = conn.execute(
+        """
+        INSERT OR IGNORE INTO attachment_refs (
             ref_id,
             attachment_id,
             conversation_id,
@@ -256,11 +183,13 @@ def upsert_attachment(conn, record: AttachmentRecord) -> bool:
             _json_or_none(record.provider_meta),
         ),
     )
-    conn.execute(
-        "UPDATE attachments SET ref_count = ref_count + 1 WHERE attachment_id = ?",
-        (record.attachment_id,),
-    )
-    return True
+    if res.rowcount > 0:
+        conn.execute(
+            "UPDATE attachments SET ref_count = ref_count + 1 WHERE attachment_id = ?",
+            (record.attachment_id,),
+        )
+        return True
+    return False
 
 
 def record_run(conn, record: RunRecord) -> None:
@@ -293,6 +222,7 @@ def store_records(
     conversation: ConversationRecord,
     messages: list[MessageRecord],
     attachments: list[AttachmentRecord],
+    conn: sqlite3.Connection | None = None,
 ) -> dict:
     counts = {
         "conversations": 0,
@@ -302,22 +232,25 @@ def store_records(
         "skipped_messages": 0,
         "skipped_attachments": 0,
     }
-    with open_connection(None) as conn:
-        if upsert_conversation(conn, conversation):
+
+    from .db import connection_context
+
+    with connection_context(conn) as db_conn:
+        if upsert_conversation(db_conn, conversation):
             counts["conversations"] += 1
         else:
             counts["skipped_conversations"] += 1
         for message in messages:
-            if upsert_message(conn, message):
+            if upsert_message(db_conn, message):
                 counts["messages"] += 1
             else:
                 counts["skipped_messages"] += 1
         for attachment in attachments:
-            if upsert_attachment(conn, attachment):
+            if upsert_attachment(db_conn, attachment):
                 counts["attachments"] += 1
             else:
                 counts["skipped_attachments"] += 1
-        conn.commit()
+
     return counts
 
 

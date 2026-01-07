@@ -22,7 +22,7 @@ Polylogue uses a simple ingest pipeline that feeds a SQLite store, renders Markd
 
 ## Rendering
 
-- `polylogue/render.py` writes Markdown and HTML into `archive_root/render/<provider>/<conversation_id>/`.
+- `polylogue/render.py` writes Markdown and HTML into `render_root/<provider>/<conversation_id>/`.
 
 ## Indexing
 
