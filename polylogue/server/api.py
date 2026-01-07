@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
-from polylogue.lib.repository import ConversationRepository
+from fastapi import APIRouter, Depends, HTTPException, Query
+
 from polylogue.lib.models import Conversation
+from polylogue.lib.repository import ConversationRepository
 from polylogue.server.deps import get_repository
 
 router = APIRouter()
