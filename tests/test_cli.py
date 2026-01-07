@@ -5,7 +5,6 @@ from pathlib import Path
 
 from click.testing import CliRunner
 
-import polylogue.cli.click_app as click_app
 from polylogue.cli import cli
 from polylogue.config import load_config
 from polylogue.db import default_db_path
@@ -159,8 +158,10 @@ def test_cli_search_open_prefers_html(tmp_path, monkeypatch):
         opened["path"] = path
         return True
 
-    monkeypatch.setattr(click_app, "open_in_browser", fake_open_browser)
-    monkeypatch.setattr(click_app, "open_in_editor", lambda path: False)
+    import polylogue.cli.commands.search as search_mod
+
+    monkeypatch.setattr(search_mod, "open_in_browser", fake_open_browser)
+    monkeypatch.setattr(search_mod, "open_in_editor", lambda path: False)
 
     runner = CliRunner()
     run_result = runner.invoke(cli, ["run", "--stage", "all"])
