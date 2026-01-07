@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-from pathlib import Path
-
+from polylogue.db import open_connection
 from polylogue.export import export_jsonl
 from polylogue.ingest import IngestBundle, ingest_bundle
-from polylogue.render import render_conversation
 from polylogue.paths import is_within_root
-from polylogue.db import open_connection
+from polylogue.render import render_conversation
 from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 
@@ -208,7 +206,7 @@ def test_export_includes_attachments(workspace_env, tmp_path):
     ingest_bundle(bundle)
     output = export_jsonl(archive_root=workspace_env["archive_root"], output_path=tmp_path / "export.jsonl")
     payload = output.read_text(encoding="utf-8").strip().splitlines()[0]
-    assert "\"attachments\"" in payload
+    assert '"attachments"' in payload
 
 
 def test_ingest_updates_metadata(workspace_env):

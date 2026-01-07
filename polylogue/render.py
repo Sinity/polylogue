@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-import html
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
+from jinja2 import DictLoader, Environment, FileSystemLoader
 from markdown_it import MarkdownIt
 
 from .assets import asset_path
@@ -19,29 +19,67 @@ class RenderResult:
     html_path: Path
 
 
-def _render_html(markdown_text: str, *, title: str) -> str:
+DEFAULT_HTML_TEMPLATE = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>{{ title }}</title>
+  <style>
+    body {
+      font-family: system-ui, Segoe UI, Roboto, sans-serif;
+      max-width: 960px;
+      margin: 2rem auto;
+      line-height: 1.6;
+      padding: 0 1rem;
+      background-color: #f9fafb;
+      color: #111827;
+    }
+    pre {
+      white-space: pre-wrap;
+      background: #f3f4f6;
+      padding: 1rem;
+      border-radius: 0.5rem;
+      border: 1px solid #e5e7eb;
+    }
+    code {
+      font-family: ui-monospace, Menlo, monospace;
+    }
+    h1 { border-bottom: 2px solid #e5e7eb; padding-bottom: 0.5rem; }
+    h2 { margin-top: 2rem; color: #374151; }
+    .metadata { color: #6b7280; font-size: 0.875rem; margin-bottom: 2rem; }
+    .attachment { font-size: 0.875rem; color: #2563eb; }
+  </style>
+</head>
+<body>
+  {{ body }}
+</body>
+</html>
+"""
+
+
+def _render_html(markdown_text: str, *, title: str, template_path: Path | None = None) -> str:
     md = MarkdownIt("commonmark", {"html": False, "linkify": True})
-    body = md.render(markdown_text)
-    safe_title = html.escape(title, quote=True)
-    return (
-        "<!doctype html>\n"
-        "<html lang=\"en\">\n"
-        "<head>\n"
-        "  <meta charset=\"utf-8\" />\n"
-        f"  <title>{safe_title}</title>\n"
-        "  <style>body{font-family:system-ui,Segoe UI,Roboto,sans-serif;max-width:960px;margin:2rem auto;line-height:1.6;padding:0 1rem;}pre{white-space:pre-wrap;}code{font-family:ui-monospace,Menlo,monospace;}</style>\n"
-        "</head>\n"
-        "<body>\n"
-        f"{body}\n"
-        "</body>\n"
-        "</html>\n"
-    )
+    body_html = md.render(markdown_text)
+
+    if template_path and template_path.exists():
+        loader = FileSystemLoader(template_path.parent)
+        template_name = template_path.name
+    else:
+        loader = DictLoader({"index.html": DEFAULT_HTML_TEMPLATE})
+        template_name = "index.html"
+
+    env = Environment(loader=loader, autoescape=True)
+    template = env.get_template(template_name)
+    return template.render(title=title, body=body_html)
 
 
 def render_conversation(
     *,
     conversation_id: str,
     archive_root: Path,
+    render_root_path: Path | None = None,
+    template_path: Path | None = None,
 ) -> RenderResult:
     with open_connection(None) as conn:
         convo = conn.execute(
@@ -118,7 +156,7 @@ def render_conversation(
             _append_attachment(att)
         lines.append("")
 
-    orphan_keys = [key for key in attachments_by_message.keys() if key not in message_ids]
+    orphan_keys = [key for key in attachments_by_message if key not in message_ids]
     if orphan_keys:
         lines.append("## attachments")
         lines.append("")
@@ -129,13 +167,16 @@ def render_conversation(
 
     markdown_text = "\n".join(lines).strip() + "\n"
 
-    render_root_path = render_root(archive_root, provider, conversation_id)
+    output_root = render_root_path or (archive_root / "render")
+    render_root_path = render_root(output_root, provider, conversation_id)
     render_root_path.mkdir(parents=True, exist_ok=True)
     md_path = render_root_path / "conversation.md"
     md_path.write_text(markdown_text, encoding="utf-8")
 
     html_path = render_root_path / "conversation.html"
-    html_path.write_text(_render_html(markdown_text, title=title), encoding="utf-8")
+    html_path.write_text(
+        _render_html(markdown_text, title=title, template_path=template_path), encoding="utf-8"
+    )
 
     return RenderResult(conversation_id=conversation_id, markdown_path=md_path, html_path=html_path)
 
