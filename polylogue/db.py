@@ -301,4 +301,14 @@ def open_connection(db_path: Path | None = None) -> sqlite3.Connection:
                     state["depth"] = 0
 
 
-__all__ = ["open_connection", "default_db_path", "SCHEMA_VERSION"]
+@contextmanager
+def connection_context(conn: sqlite3.Connection | None = None, db_path: Path | None = None) -> sqlite3.Connection:
+    """Use an provided connection or open a new one via open_connection."""
+    if conn:
+        yield conn
+    else:
+        with open_connection(db_path) as new_conn:
+            yield new_conn
+
+
+__all__ = ["open_connection", "default_db_path", "SCHEMA_VERSION", "connection_context"]
