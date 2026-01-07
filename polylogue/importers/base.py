@@ -1,38 +1,36 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from hashlib import sha256
 
+from pydantic import BaseModel, Field
 
-@dataclass
-class ParsedMessage:
+
+class ParsedMessage(BaseModel):
     provider_message_id: str
     role: str
-    text: str
-    timestamp: str | None
+    text: str | None = None
+    timestamp: str | None = None
     provider_meta: dict | None = None
 
 
-@dataclass
-class ParsedAttachment:
+class ParsedAttachment(BaseModel):
     provider_attachment_id: str
-    message_provider_id: str | None
-    name: str | None
-    mime_type: str | None
-    size_bytes: int | None
-    path: str | None
+    message_provider_id: str | None = None
+    name: str | None = None
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    path: str | None = None
     provider_meta: dict | None = None
 
 
-@dataclass
-class ParsedConversation:
+class ParsedConversation(BaseModel):
     provider_name: str
     provider_conversation_id: str
-    title: str
-    created_at: str | None
-    updated_at: str | None
+    title: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
     messages: list[ParsedMessage]
-    attachments: list[ParsedAttachment] = field(default_factory=list)
+    attachments: list[ParsedAttachment] = Field(default_factory=list)
 
 
 def hash_text(text: str) -> str:
