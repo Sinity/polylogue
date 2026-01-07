@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from hashlib import sha256
-
 from pydantic import BaseModel, Field
+
+from polylogue.core.hashing import hash_text
 
 
 class ParsedMessage(BaseModel):
@@ -33,8 +33,7 @@ class ParsedConversation(BaseModel):
     attachments: list[ParsedAttachment] = Field(default_factory=list)
 
 
-def hash_text(text: str) -> str:
-    return sha256(text.encode("utf-8")).hexdigest()
+# hash_text is now imported from core.hashing
 
 
 def normalize_role(role: str | None) -> str:

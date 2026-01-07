@@ -4,7 +4,7 @@ import os
 import sqlite3
 from collections.abc import Iterable, Sequence
 
-from .db import open_connection
+from .db import connection_context, open_connection
 
 
 def ensure_index(conn) -> None:
@@ -18,9 +18,6 @@ def ensure_index(conn) -> None:
         );
         """
     )
-
-
-import sqlite3
 
 
 def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
@@ -45,11 +42,8 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
             update_qdrant_for_conversations(ids, db_conn)
         db_conn.commit()
 
-    if conn:
-        _do(conn)
-    else:
-        with open_connection(None) as new_conn:
-            _do(new_conn)
+    with connection_context(conn) as db_conn:
+        _do(db_conn)
 
 
 def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite3.Connection | None = None) -> None:
@@ -82,11 +76,8 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
             update_qdrant_for_conversations(conversation_ids, db_conn)
         db_conn.commit()
 
-    if conn:
-        _do(conn)
-    else:
-        with open_connection(None) as new_conn:
-            _do(new_conn)
+    with connection_context(conn) as db_conn:
+        _do(db_conn)
 
 
 def _chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
