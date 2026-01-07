@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from pydantic import BaseModel
 from collections.abc import Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -19,16 +19,14 @@ from .source_ingest import ParsedAttachment, ParsedConversation, ParsedMessage, 
 from .store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord, record_run
 
 
-@dataclass
-class PlanResult:
+class PlanResult(BaseModel):
     timestamp: int
     counts: dict[str, int]
     sources: list[str]
     cursors: dict[str, dict]
 
 
-@dataclass
-class RunResult:
+class RunResult(BaseModel):
     run_id: str
     counts: dict[str, int]
     drift: dict[str, dict]
@@ -106,8 +104,7 @@ def _attachment_content_id(
     return _hash_text(seed)
 
 
-@dataclass
-class ExistingConversation:
+class ExistingConversation(BaseModel):
     conversation_id: str
     content_hash: str
 
@@ -238,7 +235,7 @@ def plan_sources(
     return PlanResult(timestamp=int(time.time()), counts=counts, sources=sources, cursors=cursors)
 
 
-def _ingest_conversation(
+def _prepare_ingest(
     convo: ParsedConversation,
     source_name: str,
     *,
@@ -246,7 +243,27 @@ def _ingest_conversation(
     conn: sqlite3.Connection | None = None,
 ) -> tuple[str, dict[str, int], bool]:
     content_hash = _conversation_content_hash(convo)
-    existing = _lookup_existing_conversation(convo)
+
+    # Use the passed connection for lookups
+    # Note: caller responsible for isolation/transaction if needed
+    existing = None
+    if conn:
+        row = conn.execute(
+            """
+            SELECT conversation_id, content_hash
+            FROM conversations
+            WHERE provider_name = ? AND provider_conversation_id = ?
+            ORDER BY updated_at DESC, rowid DESC
+            LIMIT 1
+            """,
+            (convo.provider_name, convo.provider_conversation_id),
+        ).fetchone()
+        if row:
+            existing = ExistingConversation(conversation_id=row["conversation_id"], content_hash=row["content_hash"])
+
+    # If we didn't get a connection (logic error for this flow), we'd fail or rely on _lookup_existing_conversation creating one
+    # But let's inline logic for efficiency as we have conn.
+
     if existing:
         conversation_id = existing.conversation_id
         changed = existing.content_hash != content_hash
@@ -267,7 +284,22 @@ def _ingest_conversation(
 
     messages: list[MessageRecord] = []
     message_ids: dict[str, str] = {}
-    existing_message_ids = _existing_message_map(conversation_id)
+
+    # Retrieve existing message ID mapping using the same connection
+    existing_message_ids = {}
+    if conn:
+        rows = conn.execute(
+            """
+            SELECT provider_message_id, message_id
+            FROM messages
+            WHERE conversation_id = ? AND provider_message_id IS NOT NULL
+            """,
+            (conversation_id,),
+        ).fetchall()
+        existing_message_ids = {
+            str(row["provider_message_id"]): row["message_id"] for row in rows if row["provider_message_id"]
+        }
+
     for idx, msg in enumerate(convo.messages, start=1):
         provider_message_id = msg.provider_message_id or f"msg-{idx}"
         message_id = existing_message_ids.get(provider_message_id) or _message_id(conversation_id, provider_message_id)
@@ -383,34 +415,78 @@ def run_sources(
     }
     processed_ids: set[str] = set()
 
+    import concurrent.futures
+
     with open_connection(None) as conn:
-        if stage in {"ingest", "all"}:
-            for source in _select_sources(config, source_names):
-                if source.folder:
-                    conversations = iter_drive_conversations(
-                        source=source,
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {}
+
+            def _process_one(convo_item, source_name_item):
+                # Run preparation in a separate thread with its own connection for reads
+                with open_connection(None) as thread_conn:
+                    return _prepare_ingest(
+                        convo_item,
+                        source_name_item,
                         archive_root=config.archive_root,
-                        ui=ui,
-                        download_assets=True,
+                        conn=thread_conn,
                     )
-                else:
-                    conversations = iter_source_conversations(source)
-                for convo in conversations:
-                    convo_id, result_counts, content_changed = _ingest_conversation(
-                        convo,
-                        source.name,
-                        archive_root=config.archive_root,
-                        conn=conn,
-                    )
-                    ingest_changed = (
-                        result_counts["conversations"] + result_counts["messages"] + result_counts["attachments"]
-                    ) > 0
-                    if ingest_changed or content_changed:
-                        processed_ids.add(convo_id)
-                    if content_changed:
-                        changed_counts["conversations"] += 1
-                    for key, value in result_counts.items():
-                        counts[key] += value
+
+            if stage in {"ingest", "all"}:
+                for source in _select_sources(config, source_names):
+                    if source.folder:
+                        conversations = iter_drive_conversations(
+                            source=source,
+                            archive_root=config.archive_root,
+                            ui=ui,
+                            download_assets=True,
+                        )
+                    else:
+                        conversations = iter_source_conversations(source)
+
+                    for convo in conversations:
+                        # Bounded submission to prevent memory explosion
+                        while len(futures) > 16:
+                            done, _ = concurrent.futures.wait(
+                                futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED
+                            )
+                            for fut in done:
+                                try:
+                                    convo_id, result_counts, content_changed = fut.result()
+                                    ingest_changed = (
+                                        result_counts["conversations"]
+                                        + result_counts["messages"]
+                                        + result_counts["attachments"]
+                                    ) > 0
+                                    if ingest_changed or content_changed:
+                                        processed_ids.add(convo_id)
+                                    if content_changed:
+                                        changed_counts["conversations"] += 1
+                                    for key, value in result_counts.items():
+                                        counts[key] += value
+                                finally:
+                                    del futures[fut]
+
+                        future = executor.submit(_process_one, convo, source.name)
+                        futures[future] = convo.provider_conversation_id
+
+                # Drain remaining
+                for fut in concurrent.futures.as_completed(futures):
+                    try:
+                        convo_id, result_counts, content_changed = fut.result()
+                        ingest_changed = (
+                            result_counts["conversations"] + result_counts["messages"] + result_counts["attachments"]
+                        ) > 0
+                        if ingest_changed or content_changed:
+                            processed_ids.add(convo_id)
+                        if content_changed:
+                            changed_counts["conversations"] += 1
+                        for key, value in result_counts.items():
+                            counts[key] += value
+                    except Exception as exc:
+                        # Log error but continue? Or raise?
+                        # Using print/log here might be tricky if not set up
+                        print(f"Error processing conversation: {exc}")
+                        raise
 
         if stage in {"render", "all"}:
             ids = _all_conversation_ids(source_names) if stage == "render" else list(processed_ids)

@@ -1,20 +1,18 @@
 from __future__ import annotations
 
 import sqlite3
-from dataclasses import dataclass
+from pydantic import BaseModel
 
 from .store import AttachmentRecord, ConversationRecord, MessageRecord, store_records
 
 
-@dataclass
-class IngestBundle:
+class IngestBundle(BaseModel):
     conversation: ConversationRecord
     messages: list[MessageRecord]
     attachments: list[AttachmentRecord]
 
 
-@dataclass
-class IngestResult:
+class IngestResult(BaseModel):
     conversations: int
     messages: int
     attachments: int

@@ -3,76 +3,63 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from dataclasses import dataclass
+
+from pydantic import BaseModel
 
 from .db import open_connection
 
 
-@dataclass
-class ConversationRecord:
+class ConversationRecord(BaseModel):
     conversation_id: str
     provider_name: str
     provider_conversation_id: str
-    title: str | None
-    created_at: str | None
-    updated_at: str | None
+    title: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
     content_hash: str
-    provider_meta: dict | None
+    provider_meta: dict | None = None
     version: int = 1
 
 
-@dataclass
-class MessageRecord:
+class MessageRecord(BaseModel):
     message_id: str
     conversation_id: str
-    provider_message_id: str | None
-    role: str | None
-    text: str | None
-    timestamp: str | None
+    provider_message_id: str | None = None
+    role: str | None = None
+    text: str | None = None
+    timestamp: str | None = None
     content_hash: str
-    provider_meta: dict | None
+    provider_meta: dict | None = None
     version: int = 1
 
 
-@dataclass
-class AttachmentRecord:
+class AttachmentRecord(BaseModel):
     attachment_id: str
     conversation_id: str
-    message_id: str | None
-    mime_type: str | None
-    size_bytes: int | None
-    path: str | None
-    provider_meta: dict | None
+    message_id: str | None = None
+    mime_type: str | None = None
+    size_bytes: int | None = None
+    path: str | None = None
+    provider_meta: dict | None = None
 
 
-@dataclass
-class RunRecord:
+class RunRecord(BaseModel):
     run_id: str
     timestamp: str
-    plan_snapshot: dict | None
-    counts: dict | None
-    drift: dict | None
-    indexed: bool | None
-    duration_ms: int | None
+    plan_snapshot: dict | None = None
+    counts: dict | None = None
+    drift: dict | None = None
+    indexed: bool | None = None
+    duration_ms: int | None = None
 
 
 def _json_or_none(value: dict | None) -> str | None:
-    import decimal
-
-    class DecimalEncoder(json.JSONEncoder):
-        def default(self, o):
-            if isinstance(o, decimal.Decimal):
-                return int(o) if o % 1 == 0 else float(o)
-            return super().default(o)
-
     if value is None:
         return None
-    return json.dumps(value, sort_keys=True, cls=DecimalEncoder)
+    return json.dumps(value, sort_keys=True)
 
 
-def _make_ref_id(
-    attachment_id: str, conversation_id: str, message_id: str | None
-) -> str:
+def _make_ref_id(attachment_id: str, conversation_id: str, message_id: str | None) -> str:
     seed = f"{attachment_id}:{conversation_id}:{message_id or ''}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"ref-{digest}"
@@ -179,9 +166,7 @@ def upsert_attachment(conn, record: AttachmentRecord) -> bool:
         ),
     )
 
-    ref_id = _make_ref_id(
-        record.attachment_id, record.conversation_id, record.message_id
-    )
+    ref_id = _make_ref_id(record.attachment_id, record.conversation_id, record.message_id)
     res = conn.execute(
         """
         INSERT OR IGNORE INTO attachment_refs (

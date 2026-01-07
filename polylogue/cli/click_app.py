@@ -28,13 +28,13 @@ from ..health import cached_health_summary, get_health
 from ..index import rebuild_index
 from ..run import latest_run, plan_sources, run_sources
 from ..search import search_messages
-from ..ui import create_ui
+from ..ui import UI, create_ui
 from .editor import open_in_browser, open_in_editor
 
 
 @dataclass
 class AppEnv:
-    ui: object
+    ui: UI
     config_path: Path | None = None
 
 
@@ -793,6 +793,30 @@ def config_show(env: AppEnv, json_output: bool) -> None:
             f"Sources: {', '.join(sources) if sources else 'none'}",
         ],
     )
+
+
+@cli.command()
+@click.option("--host", default="127.0.0.1", help="Host to bind")
+@click.option("--port", default=8000, help="Port to bind")
+@click.pass_obj
+def serve(env: AppEnv, host: str, port: int) -> None:
+    """Start the Semantic API server."""
+    try:
+        import uvicorn
+    except ImportError:
+        _fail("serve", "uvicorn not installed. Run with [server] extras.")
+
+    try:
+        config = _load_effective_config(env)
+        # Ensure server process sees the correct paths
+        if config.archive_root:
+            os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(config.archive_root)
+
+        ui = env.ui
+        ui.console.print(f"Starting server at http://{host}:{port}/api/docs")
+        uvicorn.run("polylogue.server.app:app", host=host, port=port)
+    except Exception as exc:
+        _fail("serve", str(exc))
 
 
 @config.command("set")
