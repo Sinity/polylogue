@@ -6,8 +6,6 @@ import sqlite3
 
 from pydantic import BaseModel
 
-from .db import open_connection
-
 
 class ConversationRecord(BaseModel):
     conversation_id: str
@@ -235,7 +233,9 @@ def store_records(
         "skipped_attachments": 0,
     }
 
-    def _run(db_conn):
+    from .db import connection_context
+
+    with connection_context(conn) as db_conn:
         if upsert_conversation(db_conn, conversation):
             counts["conversations"] += 1
         else:
@@ -250,13 +250,6 @@ def store_records(
                 counts["attachments"] += 1
             else:
                 counts["skipped_attachments"] += 1
-
-    if conn is not None:
-        _run(conn)
-    else:
-        with open_connection(None) as new_conn:
-            _run(new_conn)
-            new_conn.commit()
 
     return counts
 
