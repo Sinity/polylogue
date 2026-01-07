@@ -1,0 +1,129 @@
+[
+    {
+        "id": "complex-chatgpt-1",
+        "title": "Complex Conversation With Markdown",
+        "create_time": 1700000000.0,
+        "update_time": 1700003600.0,
+        "mapping": {
+            "StartNode": {
+                "id": "StartNode",
+                "message": null,
+                "parent": null,
+                "children": [
+                    "UserNode1"
+                ]
+            },
+            "UserNode1": {
+                "id": "UserNode1",
+                "parent": "StartNode",
+                "children": [
+                    "AssistantNode1"
+                ],
+                "message": {
+                    "id": "msg-u1",
+                    "author": {
+                        "role": "user",
+                        "name": null,
+                        "metadata": {}
+                    },
+                    "create_time": 1700000100.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": [
+                            "Can you explain how *quick sort* works? Please provide python code."
+                        ]
+                    },
+                    "status": "finished_successfully",
+                    "end_turn": true,
+                    "weight": 1.0,
+                    "metadata": {}
+                }
+            },
+            "AssistantNode1": {
+                "id": "AssistantNode1",
+                "parent": "UserNode1",
+                "children": [
+                    "UserNode2"
+                ],
+                "message": {
+                    "id": "msg-a1",
+                    "author": {
+                        "role": "assistant",
+                        "name": null,
+                        "metadata": {}
+                    },
+                    "create_time": 1700000200.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": [
+                            "Certainly! Quick sort is a divide-and-conquer algorithm.\n\n### Complexity\n| Case | Time |\n| --- | --- |\n| Best | O(n log n) |\n| Worst | O(n^2) |\n\n```python\ndef quick_sort(arr):\n    if len(arr) <= 1:\n        return arr\n    pivot = arr[len(arr) // 2]\n    left = [x for x in arr if x < pivot]\n    middle = [x for x in arr if x == pivot]\n    right = [x for x in arr if x > pivot]\n    return quick_sort(left) + middle + quick_sort(right)\n```"
+                        ]
+                    },
+                    "status": "finished_successfully",
+                    "end_turn": true,
+                    "weight": 1.0,
+                    "metadata": {}
+                }
+            },
+            "UserNode2": {
+                "id": "UserNode2",
+                "parent": "AssistantNode1",
+                "children": [
+                    "AssistantNode2"
+                ],
+                "message": {
+                    "id": "msg-u2",
+                    "author": {
+                        "role": "user",
+                        "name": null,
+                        "metadata": {}
+                    },
+                    "create_time": 1700000300.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": [
+                            "Thanks! What about this file?"
+                        ]
+                    },
+                    "status": "finished_successfully",
+                    "end_turn": true,
+                    "weight": 1.0,
+                    "metadata": {
+                        "attachments": [
+                            {
+                                "id": "file-123",
+                                "name": "data.csv",
+                                "size": 1024,
+                                "mime_type": "text/csv"
+                            }
+                        ]
+                    }
+                }
+            },
+            "AssistantNode2": {
+                "id": "AssistantNode2",
+                "parent": "UserNode2",
+                "children": [],
+                "message": {
+                    "id": "msg-a2",
+                    "author": {
+                        "role": "assistant",
+                        "name": null,
+                        "metadata": {}
+                    },
+                    "create_time": 1700000400.0,
+                    "content": {
+                        "content_type": "text",
+                        "parts": [
+                            "I see `data.csv`. It seems to contain tabular data."
+                        ]
+                    },
+                    "status": "finished_successfully",
+                    "end_turn": true,
+                    "weight": 1.0,
+                    "metadata": {}
+                }
+            }
+        }
+    }
+]

@@ -1,12 +1,12 @@
 import pytest
-import sqlite3
-from polylogue.db import open_connection
+
 from polylogue.lib.repository import ConversationRepository
 from polylogue.server.deps import get_repository
 
 pytest.importorskip("fastapi")
-from polylogue.server.app import app
 from fastapi.testclient import TestClient
+
+from polylogue.server.app import app
 
 
 @pytest.fixture
@@ -15,19 +15,12 @@ def test_client(tmp_path):
     db_path = tmp_path / "server_test.db"
 
     # Init DB
-    with open_connection(db_path) as conn:
-        conn.execute(
-            """
-            INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, content_hash, version) 
-            VALUES ('c1', 'chatgpt', 'ext-1', 'hash', 1)
-            """
-        )
-        conn.execute(
-            """
-            INSERT INTO messages (message_id, conversation_id, role, text, content_hash, version) 
-            VALUES ('m1', 'c1', 'user', 'hello server', 'hash1', 1)
-            """
-        )
+    from tests.factories import DbFactory
+
+    factory = DbFactory(db_path)
+    factory.create_conversation(
+        id="c1", provider="chatgpt", title="Test Conv", messages=[{"id": "m1", "role": "user", "text": "hello server"}]
+    )
 
     def override_repo():
         return ConversationRepository(db_path)

@@ -207,12 +207,12 @@ def test_index_failure_is_nonfatal(workspace_env, monkeypatch):
     config = default_config()
     write_config(config)
 
-    import polylogue.run as run_mod
+    import polylogue.pipeline.runner as runner_mod
 
     def boom(conn=None):
         raise RuntimeError("index failed")
 
-    monkeypatch.setattr(run_mod, "rebuild_index", boom)
+    monkeypatch.setattr(runner_mod, "rebuild_index", boom)
     result = run_sources(config=config, stage="index")
     assert result.indexed is False
     assert result.index_error is not None
@@ -235,11 +235,11 @@ def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypatch):
     config.sources = [Source(name="inbox", path=source_file)]
     write_config(config)
 
-    import polylogue.run as run_mod
+    import polylogue.pipeline.runner as runner_mod
 
     fixed_time = 1_700_000_000
-    monkeypatch.setattr(run_mod.time, "time", lambda: fixed_time)
-    monkeypatch.setattr(run_mod.time, "perf_counter", lambda: 0.0)
+    monkeypatch.setattr(runner_mod.time, "time", lambda: fixed_time)
+    monkeypatch.setattr(runner_mod.time, "perf_counter", lambda: 0.0)
 
     run_sources(config=config, stage="all")
     run_sources(config=config, stage="all")
