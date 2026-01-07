@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+
 from pydantic import BaseModel
 
 from .store import AttachmentRecord, ConversationRecord, MessageRecord, store_records
