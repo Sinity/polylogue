@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -11,6 +12,60 @@ from .drive_client import DriveClient
 from .source_ingest import ParsedConversation, parse_drive_payload
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class DriveDownloadResult:
+    """Result of Drive file download operation."""
+
+    downloaded_files: list[Path]
+    failed_files: list[dict]
+    total_files: int
+
+
+def download_drive_files(
+    client: DriveClient,
+    folder_id: str,
+    dest_dir: Path,
+) -> DriveDownloadResult:
+    """Download files from Drive folder with failure tracking.
+
+    Args:
+        client: DriveClient instance
+        folder_id: Drive folder ID to download from
+        dest_dir: Destination directory for downloaded files
+
+    Returns:
+        DriveDownloadResult with lists of downloaded/failed files and counts
+    """
+    files = client.list_files(folder_id)
+    downloaded = []
+    failed = []
+
+    for file_info in files:
+        file_id = file_info["id"]
+        name = file_info["name"]
+        dest_path = dest_dir / name
+
+        try:
+            client.download_file(file_id, dest_path)
+            downloaded.append(dest_path)
+        except Exception as exc:
+            LOGGER.warning("Failed to download %s (%s): %s", name, file_id, exc)
+            failed.append(
+                {
+                    "file_id": file_id,
+                    "name": name,
+                    "error": str(exc),
+                }
+            )
+            continue
+
+    return DriveDownloadResult(
+        downloaded_files=downloaded,
+        failed_files=failed,
+        total_files=len(files),
+    )
 
 
 def _apply_drive_attachments(
@@ -103,4 +158,4 @@ def _parse_modified_time(raw: str | None) -> float | None:
         return None
 
 
-__all__ = ["iter_drive_conversations"]
+__all__ = ["iter_drive_conversations", "download_drive_files", "DriveDownloadResult"]

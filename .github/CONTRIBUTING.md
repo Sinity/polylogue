@@ -273,7 +273,7 @@ pytest
 pytest tests/test_my_feature.py -v
 
 # Test CLI commands
-python3 polylogue.py <command> --dry-run
+uv run polylogue <command> --dry-run
 
 # Enter dev shell first if needed
 nix develop

@@ -40,6 +40,7 @@ def run_command(
     stage: str,
     sources: tuple[str, ...],
 ) -> None:
+    plan_snapshot = None
     try:
         config = load_effective_config(env)
     except ConfigError as exc:
@@ -48,27 +49,52 @@ def run_command(
     selected_sources = maybe_prompt_sources(env, config, selected_sources, "run")
     if preview:
         try:
-            plan_result = plan_sources(config, ui=env.ui, source_names=selected_sources)
+            plan_snapshot = plan_sources(config, ui=env.ui, source_names=selected_sources)
         except DriveError as exc:
             fail("run", str(exc))
         plan_lines = []
         if selected_sources:
             plan_lines.append(f"Sources: {', '.join(selected_sources)}")
-        plan_lines.append(f"Counts: {format_counts(plan_result.counts)}")
-        cursor_line = format_cursors(plan_result.cursors)
+        plan_lines.append(f"Counts: {format_counts(plan_snapshot.counts)}")
+        cursor_line = format_cursors(plan_snapshot.cursors)
         if cursor_line:
             plan_lines.append(f"Cursors: {cursor_line}")
-        plan_lines.append(f"Snapshot: {format_timestamp(plan_result.timestamp)}")
+        plan_lines.append(f"Snapshot: {format_timestamp(plan_snapshot.timestamp)}")
         env.ui.summary("Preview", plan_lines)
-        return
-    if not env.ui.plain and not env.ui.confirm("Proceed with run?", default=True):
+        if env.ui.plain or not env.ui.confirm("Run now using this snapshot?", default=False):
+            return
+    if not plan_snapshot and not env.ui.plain and not env.ui.confirm("Proceed with run?", default=True):
         env.ui.console.print("Run cancelled.")
         return
     try:
-        from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
+        import time as _time
 
-        with (
-            Progress(
+        # In plain mode, show periodic progress updates
+        if env.ui.plain:
+            print("Running...", flush=True)
+            last_update = [_time.time()]
+            processed = [0]
+
+            def plain_progress(amount: int, desc: str | None = None) -> None:
+                processed[0] += amount
+                now = _time.time()
+                # Print progress every 5 seconds
+                if now - last_update[0] >= 5:
+                    print(f"  {desc or 'Processing'}: {processed[0]:,} items...", flush=True)
+                    last_update[0] = now
+
+            result = run_sources(
+                config=config,
+                stage=stage,
+                plan=plan_snapshot,
+                ui=env.ui,
+                source_names=selected_sources,
+                progress_callback=plain_progress,
+            )
+        else:
+            from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
+
+            with Progress(
                 SpinnerColumn(),
                 TextColumn("[progress.description]{task.description}"),
                 BarColumn(),
@@ -76,31 +102,22 @@ def run_command(
                 TimeRemainingColumn(),
                 console=env.ui.console,
                 transient=True,
-            )
-            if not env.ui.plain
-            else click.progressbar(length=100, label="Running", show_percent=True, show_pos=False) as progress
-        ):
-            task_id = None
-            if not env.ui.plain:
+            ) as progress:
                 task_id = progress.add_task("Running sources...", total=None)
 
-            def progress_callback(amount: int, desc: str | None = None) -> None:
-                if env.ui.plain:
-                    # click progressbar is simple
-                    progress.update(amount)
-                else:
+                def progress_callback(amount: int, desc: str | None = None) -> None:
                     if desc:
                         progress.update(task_id, description=desc)
                     progress.update(task_id, advance=amount)
 
-            result = run_sources(
-                config=config,
-                stage=stage,
-                plan=None,
-                ui=env.ui,
-                source_names=selected_sources,
-                progress_callback=progress_callback,
-            )
+                result = run_sources(
+                    config=config,
+                    stage=stage,
+                    plan=plan_snapshot,
+                    ui=env.ui,
+                    source_names=selected_sources,
+                    progress_callback=progress_callback,
+                )
     except DriveError as exc:
         fail("run", str(exc))
     run_lines = [

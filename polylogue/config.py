@@ -27,6 +27,26 @@ class Source:
     path: Path | None = None
     folder: str | None = None
 
+    def __post_init__(self):
+        """Validate source configuration."""
+        # Name validation
+        if not self.name or not self.name.strip():
+            raise ValueError("Source name cannot be empty")
+        self.name = self.name.strip()
+
+        # Path/folder validation
+        has_path = self.path is not None
+        has_folder = self.folder is not None and self.folder.strip()
+
+        if not has_path and not has_folder:
+            raise ValueError(f"Source '{self.name}' must have either 'path' or 'folder'")
+        if has_path and has_folder:
+            raise ValueError(f"Source '{self.name}' cannot have both 'path' and 'folder' (ambiguous)")
+
+        # Normalize folder
+        if self.folder:
+            self.folder = self.folder.strip()
+
     def as_dict(self) -> dict:
         payload = {"name": self.name}
         if self.path is not None:
@@ -48,6 +68,15 @@ class Config:
     sources: list[Source]
     path: Path
     template_path: Path | None = None
+
+    def __post_init__(self):
+        """Validate config invariants."""
+        # Check for duplicate source names
+        names = [s.name for s in self.sources]
+        duplicates = {name for name in names if names.count(name) > 1}
+        if duplicates:
+            dup_list = ", ".join(sorted(duplicates))
+            raise ConfigError(f"Duplicate source name(s): {dup_list}")
 
     def as_dict(self) -> dict:
         payload = {
@@ -147,7 +176,10 @@ def load_config(path: Path | None = None) -> Config:
     config_path = _config_path(path)
     if not config_path.exists():
         raise ConfigError(f"Config not found: {config_path}. Run 'polylogue config init'.")
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"Invalid JSON in config file {config_path}: {exc}") from exc
     if not isinstance(raw, dict):
         raise ConfigError("Config payload must be a JSON object")
     _ensure_keys(raw, allowed=_ALLOWED_TOP_LEVEL_KEYS, context="config")
@@ -214,14 +246,50 @@ def update_config(
     archive_root: Path | None = None,
     render_root: Path | None = None,
 ) -> Config:
+    """Update config paths, returning a new Config instance.
+
+    This function returns a new Config object with updated values rather than
+    mutating the input config in place. This makes the API more predictable
+    and prevents unintended side effects.
+
+    Args:
+        config: The config to update (not modified).
+        archive_root: If provided, set as the new archive_root (will be expanded).
+        render_root: If provided, set as the new render_root (will be expanded).
+
+    Returns:
+        A new Config object with the updated values. The original config is unchanged.
+    """
+    from dataclasses import replace
+
+    updates = {}
     if archive_root is not None:
-        config.archive_root = archive_root.expanduser()
+        updates["archive_root"] = archive_root.expanduser()
     if render_root is not None:
-        config.render_root = render_root.expanduser()
-    return config
+        updates["render_root"] = render_root.expanduser()
+
+    return replace(config, **updates) if updates else config
 
 
 def update_source(config: Config, source_name: str, field: str, value: str) -> Config:
+    """Update a source's field by mutating the config.sources list in place.
+
+    WARNING: Unlike update_config(), this function mutates the config object's sources
+    list by modifying the matching Source object in place. The config parameter is
+    returned for convenience, but it has been modified.
+
+    Args:
+        config: The config to update (WILL BE MUTATED - sources list modified in place).
+        source_name: Name of the source to update.
+        field: Field to update ('path' or 'folder').
+        value: New value for the field.
+
+    Returns:
+        The same config object that was passed in (now mutated).
+
+    Raises:
+        ConfigError: If source_name is not found or field is unknown.
+    """
     matches = [source for source in config.sources if source.name == source_name]
     if not matches:
         raise ConfigError(f"Source '{source_name}' not found")
