@@ -6,23 +6,13 @@ import logging
 import sys
 from typing import Any
 
-try:
-    import structlog
-    from structlog.types import Processor
-except ImportError:
-    structlog = None  # type: ignore
-    Processor = Any  # type: ignore
-    import warnings
-
-    warnings.warn("structlog not installed, falling back to standard logging", RuntimeWarning, stacklevel=2)
+import structlog
+from structlog.types import Processor
 
 
 # Configure structlog
 def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
     level = logging.DEBUG if verbose else logging.INFO
-    if not structlog:
-        logging.basicConfig(level=level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-        return
 
     processors: list[Processor] = [
         structlog.contextvars.merge_contextvars,
@@ -51,6 +41,4 @@ def configure_logging(verbose: bool = False, json_logs: bool = False) -> None:
 
 
 def get_logger(name: str | None = None) -> Any:
-    if structlog:
-        return structlog.get_logger(name)
-    return logging.getLogger(name)
+    return structlog.get_logger(name)

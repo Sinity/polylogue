@@ -2,14 +2,11 @@ import shutil
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from polylogue.config import Source, default_config, write_config
 from polylogue.lib.repository import ConversationRepository
 from polylogue.run import run_sources
-
-pytest.importorskip("fastapi")
-from fastapi.testclient import TestClient
-
 from polylogue.server.app import app
 from polylogue.server.deps import get_repository
 

@@ -1,12 +1,9 @@
 import pytest
-
-from polylogue.lib.repository import ConversationRepository
-from polylogue.server.deps import get_repository
-
-pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
+from polylogue.lib.repository import ConversationRepository
 from polylogue.server.app import app
+from polylogue.server.deps import get_repository
 
 
 @pytest.fixture
