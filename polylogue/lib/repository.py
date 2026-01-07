@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterable
+from contextlib import AbstractContextManager as ContextManager
 from pathlib import Path
 
 from polylogue.db import open_connection
-from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord
 from polylogue.lib.models import Conversation
+from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 
 class ConversationRepository:
     def __init__(self, db_path: Path | None = None) -> None:
         self._db_path = db_path
 
-    def _get_conn(self) -> sqlite3.Connection:
+    def _get_conn(self) -> ContextManager[sqlite3.Connection]:
         # open_connection context manager handles setup
         # But here we need a raw connection or a context manager we can use?
         # polylogue.db.open_connection returns a context manager that strictly yields conn.
@@ -86,15 +86,78 @@ class ConversationRepository:
 
             return Conversation.from_records(conv_record, msg_records, att_records)
 
+    def _get_many(self, conversation_ids: list[str]) -> list[Conversation]:
+        """Bulk fetch full conversation objects."""
+        if not conversation_ids:
+            return []
+
+        with self._get_conn() as conn:
+            # 1. Fetch Conversations
+            placeholders = ", ".join("?" for _ in conversation_ids)
+            conv_rows = conn.execute(
+                f"SELECT * FROM conversations WHERE conversation_id IN ({placeholders})",
+                tuple(conversation_ids),
+            ).fetchall()
+
+            # Map by ID to maintain order or easier lookup
+            conv_map = {r["conversation_id"]: ConversationRecord(**dict(r)) for r in conv_rows}
+
+            # 2. Fetch Messages
+            msg_rows = conn.execute(
+                f"""
+                SELECT * FROM messages 
+                WHERE conversation_id IN ({placeholders})
+                ORDER BY 
+                    (timestamp IS NULL),
+                    CASE 
+                        WHEN timestamp IS NULL THEN NULL
+                        WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS INTEGER)
+                        ELSE CAST(timestamp AS REAL)
+                    END,
+                    message_id
+                """,
+                tuple(conversation_ids),
+            ).fetchall()
+
+            msg_map: dict[str, list[MessageRecord]] = {}
+            for r in msg_rows:
+                cid = r["conversation_id"]
+                msg_map.setdefault(cid, []).append(MessageRecord(**dict(r)))
+
+            # 3. Fetch Attachments
+            att_rows = conn.execute(
+                f"""
+                SELECT 
+                    attachment_refs.message_id, 
+                    attachment_refs.conversation_id,
+                    attachments.*
+                FROM attachment_refs
+                JOIN attachments ON attachments.attachment_id = attachment_refs.attachment_id
+                WHERE attachment_refs.conversation_id IN ({placeholders})
+                """,
+                tuple(conversation_ids),
+            ).fetchall()
+
+            att_map: dict[str, list[AttachmentRecord]] = {}
+            for r in att_rows:
+                cid = r["conversation_id"]
+                data = dict(r)
+                data["message_id"] = r["message_id"]
+                att_map.setdefault(cid, []).append(AttachmentRecord(**data))
+
+        results = []
+        for cid in conversation_ids:
+            if cid in conv_map:
+                results.append(
+                    Conversation.from_records(
+                        conv_map[cid],
+                        msg_map.get(cid, []),
+                        att_map.get(cid, []),
+                    )
+                )
+        return results
+
     def list(self, limit: int = 50, offset: int = 0) -> list[Conversation]:
-        # This is expensive if we do full fetch for lists.
-        # Ideally we return a lightweight ConversationSummary model for lists.
-        # For MVP, full fetch is safest (but slow).
-        # Let's optimize: List usually needs Title, Date, ID, Provider.
-        # But our return type says List[Conversation].
-        # We'll fetch basic data and empty messages list?
-        # Or just IDs and call get()?
-        # Let's fetch IDs first.
         with self._get_conn() as conn:
             rows = conn.execute(
                 """
@@ -107,34 +170,20 @@ class ConversationRepository:
             ).fetchall()
             ids = [r["conversation_id"] for r in rows]
 
-        # This N+1 is bad for 50 items.
-        # But for an MVP "Library" it works.
-        # Optimization: Bulk fetch messages?
-        results = []
-        for cid in ids:
-            c = self.get(cid)
-            if c:
-                results.append(c)
-        return results
+        return self._get_many(ids)
 
     def search(self, query: str) -> list[Conversation]:
-        # FTS search
+        # FTS search using messages_fts (the actual FTS index)
         with self._get_conn() as conn:
             rows = conn.execute(
                 """
-                SELECT conversation_id 
-                FROM conversations_fts 
-                WHERE conversations_fts MATCH ? 
-                ORDER BY rank 
+                SELECT DISTINCT conversation_id 
+                FROM messages_fts 
+                WHERE messages_fts MATCH ? 
                 LIMIT 20
                 """,
                 (query,),
             ).fetchall()
             ids = [r["conversation_id"] for r in rows]
 
-        results = []
-        for cid in ids:
-            c = self.get(cid)
-            if c:
-                results.append(c)
-        return results
+        return self._get_many(ids)
