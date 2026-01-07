@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from polylogue.core.timestamps import parse_timestamp
 from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 
@@ -40,20 +40,7 @@ class Message(BaseModel):
 
     @classmethod
     def from_record(cls, record: MessageRecord, attachments: list[AttachmentRecord]) -> Message:
-        ts = None
-        if record.timestamp:
-            try:
-                # Polylogue stores variable formats; robust parsing needed eventually
-                # For now, treat as raw or attempt partial parse?
-                # For this MVP, let's keep it as string in DB but models might want datetime.
-                # Let's relax model to str | datetime for now or parse.
-                # If timestamp is a float (epoch)
-                if isinstance(record.timestamp, (int, float)):
-                    ts = datetime.fromtimestamp(float(record.timestamp))
-                elif isinstance(record.timestamp, str) and record.timestamp.replace(".", "").isdigit():
-                    ts = datetime.fromtimestamp(float(record.timestamp))
-            except Exception:
-                pass
+        ts = parse_timestamp(record.timestamp)
 
         return cls(
             id=record.message_id,
