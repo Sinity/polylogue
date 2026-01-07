@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
-
-import os
 
 from .config import Config
 from .db import open_connection
@@ -45,7 +43,7 @@ def _write_cache(archive_root: Path, payload: dict) -> None:
 
 
 def run_health(config: Config) -> dict:
-    checks: List[HealthCheck] = []
+    checks: list[HealthCheck] = []
 
     checks.append(HealthCheck("config", "ok", f"Loaded {config.path}"))
 
@@ -53,6 +51,11 @@ def run_health(config: Config) -> dict:
         checks.append(HealthCheck("archive_root", "ok", str(config.archive_root)))
     else:
         checks.append(HealthCheck("archive_root", "warning", f"Missing {config.archive_root}"))
+
+    if config.render_root.exists():
+        checks.append(HealthCheck("render_root", "ok", str(config.render_root)))
+    else:
+        checks.append(HealthCheck("render_root", "warning", f"Missing {config.render_root}"))
 
     try:
         with open_connection(None):
@@ -68,12 +71,16 @@ def run_health(config: Config) -> dict:
 
     for source in config.sources:
         if source.folder:
-            cred_path = Path(os.environ.get("POLYLOGUE_CREDENTIAL_PATH", "")).expanduser() if os.environ.get(
-                "POLYLOGUE_CREDENTIAL_PATH"
-            ) else default_credentials_path()
-            token_path = Path(os.environ.get("POLYLOGUE_TOKEN_PATH", "")).expanduser() if os.environ.get(
-                "POLYLOGUE_TOKEN_PATH"
-            ) else default_token_path()
+            cred_path = (
+                Path(os.environ.get("POLYLOGUE_CREDENTIAL_PATH", "")).expanduser()
+                if os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+                else default_credentials_path()
+            )
+            token_path = (
+                Path(os.environ.get("POLYLOGUE_TOKEN_PATH", "")).expanduser()
+                if os.environ.get("POLYLOGUE_TOKEN_PATH")
+                else default_token_path()
+            )
             cred_status = "ok" if cred_path.exists() else "warning"
             token_status = "ok" if token_path.exists() else "warning"
             checks.append(
@@ -127,6 +134,23 @@ def cached_health_summary(archive_root: Path) -> str:
     if not isinstance(timestamp, int):
         return "unknown"
     age = int(time.time()) - timestamp
+    checks = cached.get("checks")
+    if isinstance(checks, list):
+        counts = {}
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            status = check.get("status")
+            if isinstance(status, str):
+                counts[status] = counts.get(status, 0) + 1
+        if counts:
+            parts = []
+            for key in ("ok", "warning", "error"):
+                if key in counts:
+                    parts.append(f"{key}={counts[key]}")
+            extras = [f"{key}={value}" for key, value in counts.items() if key not in {"ok", "warning", "error"}]
+            summary = ", ".join(parts + extras)
+            return f"cached {age}s ago ({summary})"
     return f"cached {age}s ago"
 
 
