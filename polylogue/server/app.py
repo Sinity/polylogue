@@ -1,5 +1,8 @@
-from fastapi import FastAPI
 from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from . import api, web  # Import routes
 
 
 @asynccontextmanager
@@ -15,8 +18,6 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
-
-from . import api, web  # Import routes
 
 app.include_router(api.router, prefix="/api")
 app.include_router(web.router)
