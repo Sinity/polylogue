@@ -79,7 +79,9 @@ class ConsoleFacade:
         if self.plain:
             self.console = PlainConsole()
         else:
-            self.console = Console(no_color=False, force_terminal=True, theme=self.theme)
+            self.console = Console(
+                no_color=False, force_terminal=True, theme=self.theme
+            )
         self._panel_box = box.ROUNDED
         self._banner_box = box.DOUBLE
         self._prompt_responses = self._load_prompt_responses()
@@ -195,7 +197,7 @@ class ConsoleFacade:
                     pass
         if len(options) > 12:
             result = questionary.autocomplete(
-                prompt, choices=options, match_middle=True, instruction="Type to filter"
+                prompt, choices=options, match_middle=True
             ).ask()
         else:
             result = questionary.select(prompt, choices=options).ask()
@@ -250,7 +252,13 @@ class ConsoleFacade:
         old_lines = old_text.splitlines(keepends=True)
         new_lines = new_text.splitlines(keepends=True)
 
-        diff = difflib.unified_diff(old_lines, new_lines, fromfile=f"a/{filename}", tofile=f"b/{filename}", lineterm="")
+        diff = difflib.unified_diff(
+            old_lines,
+            new_lines,
+            fromfile=f"a/{filename}",
+            tofile=f"b/{filename}",
+            lineterm="",
+        )
 
         diff_text = "".join(diff)
 
