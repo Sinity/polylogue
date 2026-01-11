@@ -100,6 +100,23 @@
             font-size: 0.9em;
         }
 
+        .content table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+        }
+
+        .content th,
+        .content td {
+            border: 1px solid var(--border);
+            padding: 0.5rem;
+            text-align: left;
+        }
+
+        .content tr:nth-child(even) {
+            background-color: var(--bg-secondary);
+        }
+
         .attachment {
             display: inline-flex;
             align-items: center;
@@ -132,9 +149,7 @@
                 <div class="bubble">
                     <div class="role-label">{{ msg.role }}</div>
                     <div class="content">
-                        {# Very basic rendering for now; ideally we use marked.js or server-side markdown #}
-                        {# For this MVP, we just preserve whitespace #}
-                        <pre style="background:transparent; border:none; padding:0; font-family:inherit; white-space: pre-wrap;">{{ msg.text }}</pre>
+                        {{ msg.text | render_markdown | safe }}
                         
                         {% for att in msg.attachments %}
                         <div class="attachments">

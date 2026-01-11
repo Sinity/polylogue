@@ -5,8 +5,20 @@ from contextlib import AbstractContextManager as ContextManager
 from pathlib import Path
 
 from polylogue.db import open_connection
+from polylogue.core import json as json_utils
 from polylogue.lib.models import Conversation
 from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord
+
+
+def _decode_meta(payload: dict) -> None:
+    raw = payload.get("provider_meta")
+    if isinstance(raw, str) and raw:
+        try:
+            payload["provider_meta"] = json_utils.loads(raw)
+        except Exception:
+            payload["provider_meta"] = None
+    elif raw is None:
+        payload["provider_meta"] = None
 
 
 class ConversationRepository:
@@ -34,7 +46,9 @@ class ConversationRepository:
 
             # Map row to Record (Pydantic models need dicts or kwargs)
             # RowObkect is dict-like
-            conv_record = ConversationRecord(**dict(row))
+            conv_data = dict(row)
+            _decode_meta(conv_data)
+            conv_record = ConversationRecord(**conv_data)
 
             # 2. Fetch Messages
             msg_rows = conn.execute(
@@ -52,7 +66,11 @@ class ConversationRepository:
                 """,
                 (conversation_id,),
             ).fetchall()
-            msg_records = [MessageRecord(**dict(r)) for r in msg_rows]
+            msg_records = []
+            for record in msg_rows:
+                data = dict(record)
+                _decode_meta(data)
+                msg_records.append(MessageRecord(**data))
 
             # 3. Fetch Attachments
             # Attachments are linked via attachment_refs
@@ -82,6 +100,7 @@ class ConversationRepository:
                 # In DB, 'attachments' table doesn't have message_id (it's in refs).
                 # So we synthesize the record.
                 data["message_id"] = r["message_id"]
+                _decode_meta(data)
                 att_records.append(AttachmentRecord(**data))
 
             return Conversation.from_records(conv_record, msg_records, att_records)
@@ -100,7 +119,11 @@ class ConversationRepository:
             ).fetchall()
 
             # Map by ID to maintain order or easier lookup
-            conv_map = {r["conversation_id"]: ConversationRecord(**dict(r)) for r in conv_rows}
+            conv_map = {}
+            for conv in conv_rows:
+                conv_data = dict(conv)
+                _decode_meta(conv_data)
+                conv_map[conv_data["conversation_id"]] = ConversationRecord(**conv_data)
 
             # 2. Fetch Messages
             msg_rows = conn.execute(
@@ -122,7 +145,9 @@ class ConversationRepository:
             msg_map: dict[str, list[MessageRecord]] = {}
             for r in msg_rows:
                 cid = r["conversation_id"]
-                msg_map.setdefault(cid, []).append(MessageRecord(**dict(r)))
+                data = dict(r)
+                _decode_meta(data)
+                msg_map.setdefault(cid, []).append(MessageRecord(**data))
 
             # 3. Fetch Attachments
             att_rows = conn.execute(
@@ -143,6 +168,7 @@ class ConversationRepository:
                 cid = r["conversation_id"]
                 data = dict(r)
                 data["message_id"] = r["message_id"]
+                _decode_meta(data)
                 att_map.setdefault(cid, []).append(AttachmentRecord(**data))
 
         results = []

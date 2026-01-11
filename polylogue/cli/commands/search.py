@@ -57,8 +57,6 @@ def search_command(
         target = latest_render_path(config.render_root)
         if not target:
             fail("search", "no rendered outputs found")
-        if not env.ui.plain and not open_result:
-            open_result = True
         if not open_result:
             env.ui.console.print(str(target))
             return
@@ -181,9 +179,6 @@ def search_command(
             if show_snippet:
                 env.ui.console.print(f"   {hit.snippet}")
             env.ui.console.print(f"   {hit.conversation_path}")
-
-    if not env.ui.plain and not list_mode:
-        open_result = True
 
     if open_result:
         if len(selected) != 1:

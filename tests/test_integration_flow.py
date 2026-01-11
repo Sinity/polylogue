@@ -39,7 +39,7 @@ def test_end_to_end_flow(workspace_env, tmp_path, sample_data):
     run_sources(config=config, stage="all")
 
     # 3. Verify Store & Index
-    db_path = workspace_env["state_root"] / "polylogue.db"
+    db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
     assert db_path.exists()
 
     repo = ConversationRepository(db_path)

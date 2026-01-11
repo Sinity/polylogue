@@ -52,14 +52,14 @@ DEFAULT_HTML_TEMPLATE = """
   </style>
 </head>
 <body>
-  {{ body }}
+  {{ body|safe }}
 </body>
 </html>
 """
 
 
 def _render_html(markdown_text: str, *, title: str, template_path: Path | None = None) -> str:
-    md = MarkdownIt("commonmark", {"html": False, "linkify": True})
+    md = MarkdownIt("commonmark", {"html": False, "linkify": True}).enable("table")
     body_html = md.render(markdown_text)
 
     if template_path and template_path.exists():
