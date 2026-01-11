@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import sqlite3
 
 from pydantic import BaseModel
+
+from polylogue.core.json import dumps as json_dumps
 
 
 class ConversationRecord(BaseModel):
@@ -54,7 +55,7 @@ class RunRecord(BaseModel):
 def _json_or_none(value: dict | None) -> str | None:
     if value is None:
         return None
-    return json.dumps(value, sort_keys=True)
+    return json_dumps(value)
 
 
 def _make_ref_id(attachment_id: str, conversation_id: str, message_id: str | None) -> str:
