@@ -43,6 +43,11 @@
             color: var(--text-primary);
         }
 
+        .subtitle {
+            margin: 0.25rem 0 0;
+            color: var(--text-secondary);
+        }
+
         .conversation-list {
             list-style: none;
             padding: 0;
@@ -110,7 +115,8 @@
 <body>
     <div class="container">
         <header>
-            <h1>Recent Conversations</h1>
+            <h1>Polylogue</h1>
+            <p class="subtitle">Recent Conversations</p>
         </header>
 
         {% if convs %}

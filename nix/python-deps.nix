@@ -25,6 +25,10 @@ let
     click
     pillow
     pytesseract
+    fastapi
+    uvicorn
+    structlog
+    orjson
   ];
   devDeps = with pyPkgs; [
     pytest
