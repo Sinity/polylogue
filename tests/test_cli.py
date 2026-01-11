@@ -70,6 +70,7 @@ def test_cli_run_and_export(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(data_root))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+    monkeypatch.setenv("POLYLOGUE_RENDER_ROOT", str(archive_root / "render"))
 
     runner = CliRunner()
     run_result = runner.invoke(cli, ["run", "--stage", "all"])
@@ -105,6 +106,7 @@ def test_cli_search_csv_header(tmp_path, monkeypatch):
     }
     config_path.write_text(json.dumps(config_payload), encoding="utf-8")
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
+    monkeypatch.setenv("POLYLOGUE_RENDER_ROOT", str((tmp_path / "archive") / "render"))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
 
     runner = CliRunner()
