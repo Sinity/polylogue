@@ -68,3 +68,49 @@ def test_claude_chat_messages_attachments(tmp_path):
     attachment = convo.attachments[0]
     assert attachment.provider_attachment_id == "file-1"
     assert attachment.name == "notes.txt"
+
+
+def test_iter_source_conversations_handles_utf32_jsonl(tmp_path):
+    payload = {
+        "id": "utf32-conv",
+        "messages": [
+            {
+                "id": "msg-1",
+                "role": "user",
+                "text": "Hello UTF32",
+            },
+            {
+                "id": "msg-2",
+                "role": "assistant",
+                "text": "Hi there!",
+            },
+        ],
+    }
+    source_file = tmp_path / "custom.jsonl"
+    source_file.write_text(json.dumps(payload), encoding="utf-32-be")
+
+    source = Source(name="custom", path=source_file)
+    conversations = list(iter_source_conversations(source))
+    assert conversations
+    assert [msg.text for msg in conversations[0].messages] == ["Hello UTF32", "Hi there!"]
+
+
+def test_iter_source_conversations_strips_null_bytes(tmp_path):
+    payload = {
+        "id": "null-conv",
+        "messages": [
+            {
+                "id": "msg-1",
+                "role": "user",
+                "text": "Hello",
+            }
+        ],
+    }
+    source_file = tmp_path / "custom.jsonl"
+    line = json.dumps(payload).encode("utf-8")
+    source_file.write_bytes(line + b"\x00\n")
+
+    source = Source(name="custom", path=source_file)
+    conversations = list(iter_source_conversations(source))
+    assert conversations
+    assert [msg.text for msg in conversations[0].messages] == ["Hello"]

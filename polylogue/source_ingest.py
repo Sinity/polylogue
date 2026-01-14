@@ -14,6 +14,35 @@ from .importers import chatgpt, claude, codex, drive
 from .importers.base import ParsedAttachment, ParsedConversation, ParsedMessage, extract_messages_from_list
 
 LOGGER = logging.getLogger(__name__)
+_ENCODING_GUESSES: tuple[str, ...] = (
+    "utf-8",
+    "utf-8-sig",
+    "utf-16",
+    "utf-16-le",
+    "utf-16-be",
+    "utf-32",
+    "utf-32-le",
+    "utf-32-be",
+)
+
+
+def _decode_json_bytes(blob: bytes) -> str | None:
+    """Decode a JSON payload from bytes, trying multiple encodings."""
+
+    for encoding in _ENCODING_GUESSES:
+        try:
+            decoded = blob.decode(encoding)
+        except UnicodeError:
+            continue
+        cleaned = decoded.replace("\x00", "")
+        if cleaned:
+            return cleaned
+    try:
+        decoded = blob.decode("utf-8", errors="ignore").replace("\x00", "")
+        return decoded if decoded else None
+    except Exception:
+        LOGGER.debug("Failed to coerce JSON bytes after fallbacks.")
+        return None
 
 
 def detect_provider(payload: Any, path: Path) -> str | None:
@@ -98,11 +127,18 @@ def parse_drive_payload(provider: str, payload: Any, fallback_id: str) -> list[P
 def _iter_json_stream(handle: BinaryIO, path_name: str) -> Iterable[dict]:
     if path_name.lower().endswith((".jsonl", ".jsonl.txt")):
         for line in handle:
-            line = line.strip()
-            if not line:
+            raw = line.strip()
+            if not raw:
                 continue
+            if isinstance(raw, bytes):
+                decoded = _decode_json_bytes(raw)
+                if not decoded:
+                    LOGGER.warning("Skipping undecodable line from %s", path_name)
+                    continue
+            else:
+                decoded = raw
             try:
-                yield json.loads(line)
+                yield json.loads(decoded)
             except json.JSONDecodeError:
                 continue
         return

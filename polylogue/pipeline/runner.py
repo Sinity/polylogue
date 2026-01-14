@@ -13,6 +13,7 @@ from polylogue.config import Config, Source
 from polylogue.core.json import dumps, loads
 from polylogue.core.log import get_logger
 from polylogue.db import connection_context
+from polylogue.drive_client import DriveAuthError
 from polylogue.drive_ingest import iter_drive_conversations
 from polylogue.index import index_status, rebuild_index, update_index_for_conversations
 from polylogue.pipeline.ingest import prepare_ingest
@@ -31,6 +32,34 @@ def _select_sources(config: Config, source_names: Sequence[str] | None) -> list[
     return [source for source in config.sources if source.name in name_set]
 
 
+def _iter_source_conversations_safe(
+    *,
+    source: Source,
+    archive_root: Path,
+    ui: object | None,
+    download_assets: bool,
+    cursor_state: dict | None = None,
+):
+    if source.folder:
+        try:
+            yield from iter_drive_conversations(
+                source=source,
+                archive_root=archive_root,
+                ui=ui,
+                download_assets=download_assets,
+                cursor_state=cursor_state,
+            )
+        except DriveAuthError as exc:
+            logger.warning("Skipping Drive source %s: %s", source.name, exc)
+            if cursor_state is not None:
+                cursor_state["error_count"] = cursor_state.get("error_count", 0) + 1
+                cursor_state["latest_error"] = str(exc)
+                cursor_state["latest_error_source"] = source.name
+            return
+    else:
+        yield from iter_source_conversations(source, cursor_state=cursor_state)
+
+
 def plan_sources(
     config: Config,
     *,
@@ -43,16 +72,13 @@ def plan_sources(
     for source in _select_sources(config, source_names):
         sources.append(source.name)
         cursor_state: dict[str, object] = {}
-        if source.folder:
-            conversations = iter_drive_conversations(
-                source=source,
-                archive_root=config.archive_root,
-                ui=ui,
-                download_assets=False,
-                cursor_state=cursor_state,
-            )
-        else:
-            conversations = iter_source_conversations(source, cursor_state=cursor_state)
+        conversations = _iter_source_conversations_safe(
+            source=source,
+            archive_root=config.archive_root,
+            ui=ui,
+            download_assets=False,
+            cursor_state=cursor_state,
+        )
         for convo in conversations:
             counts["conversations"] += 1
             counts["messages"] += len(convo.messages)
@@ -136,15 +162,12 @@ def run_sources(
 
             if stage in {"ingest", "all"}:
                 for source in _select_sources(config, source_names):
-                    if source.folder:
-                        conversations = iter_drive_conversations(
-                            source=source,
-                            archive_root=config.archive_root,
-                            ui=ui,
-                            download_assets=True,
-                        )
-                    else:
-                        conversations = iter_source_conversations(source)
+                    conversations = _iter_source_conversations_safe(
+                        source=source,
+                        archive_root=config.archive_root,
+                        ui=ui,
+                        download_assets=True,
+                    )
 
                     for convo in conversations:
                         # Bounded submission to prevent memory explosion
