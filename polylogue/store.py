@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import sqlite3
+import threading
 
 from pydantic import BaseModel
 
 from polylogue.core.json import dumps as json_dumps
+
+_WRITE_LOCK = threading.Lock()
 
 
 class ConversationRecord(BaseModel):
@@ -237,20 +240,21 @@ def store_records(
     from .db import connection_context
 
     with connection_context(conn) as db_conn:
-        if upsert_conversation(db_conn, conversation):
-            counts["conversations"] += 1
-        else:
-            counts["skipped_conversations"] += 1
-        for message in messages:
-            if upsert_message(db_conn, message):
-                counts["messages"] += 1
+        with _WRITE_LOCK:
+            if upsert_conversation(db_conn, conversation):
+                counts["conversations"] += 1
             else:
-                counts["skipped_messages"] += 1
-        for attachment in attachments:
-            if upsert_attachment(db_conn, attachment):
-                counts["attachments"] += 1
-            else:
-                counts["skipped_attachments"] += 1
+                counts["skipped_conversations"] += 1
+            for message in messages:
+                if upsert_message(db_conn, message):
+                    counts["messages"] += 1
+                else:
+                    counts["skipped_messages"] += 1
+            for attachment in attachments:
+                if upsert_attachment(db_conn, attachment):
+                    counts["attachments"] += 1
+                else:
+                    counts["skipped_attachments"] += 1
 
     return counts
 
