@@ -88,20 +88,52 @@ class Message(BaseModel):
     @property
     def is_tool_use(self) -> bool:
         """Message contains tool/function calls or results."""
+        # Check role first (ChatGPT explicit tool role)
+        if self.role.lower() == "tool":
+            return True
+        # Check provider_meta for Claude-code sidechain
+        if self.provider_meta:
+            raw = self.provider_meta.get("raw", {})
+            if isinstance(raw, dict):
+                if raw.get("isSidechain"):
+                    return True
+                if raw.get("isMeta"):
+                    return True
         if not self.text:
             return False
+        # Text-based detection (fallback)
         text_lower = self.text.lower()
         return any(marker in text_lower for marker in _TOOL_MARKERS)
 
     @property
     def is_thinking(self) -> bool:
         """Message contains reasoning/thinking traces."""
-        if self.provider_meta and self.provider_meta.get("isThought"):
-            return True
+        # Check provider_meta first (Gemini isThought)
+        if self.provider_meta:
+            if self.provider_meta.get("isThought"):
+                return True
+            raw = self.provider_meta.get("raw", {})
+            if isinstance(raw, dict) and raw.get("isThought"):
+                return True
         if not self.text:
             return False
-        text_lower = self.text.lower()
-        return any(marker in text_lower for marker in _THINKING_MARKERS)
+        text = self.text
+        # Gemini thinking pattern 1: Bold action header (e.g., "**Analyzing...**\n\nI'm...")
+        if text.startswith("**"):
+            lines = text.split("\n", 2)
+            if len(lines) >= 1:
+                first_line = lines[0]
+                if first_line.endswith("**"):
+                    action_words = ["analyzing", "considering", "examining", "reviewing", 
+                                    "processing", "thinking", "assessing", "exploring",
+                                    "evaluating", "framing", "synthesizing", "formulating",
+                                    "pinpointing", "refining", "clarifying", "mapping"]
+                    if any(w in first_line.lower() for w in action_words):
+                        return True
+        # Gemini thinking pattern 2: Explicit thinking preface
+        if text.lower().startswith("here's a thinking process") or text.lower().startswith("my thinking"):
+            return True
+        return False
 
     @property
     def is_context_dump(self) -> bool:
