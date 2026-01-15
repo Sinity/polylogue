@@ -88,12 +88,19 @@ def parse_chunked_prompt(provider: str, payload: dict, fallback_id: str) -> Pars
             continue
         role = normalize_role(chunk_obj.get("role") or chunk_obj.get("author"))
         msg_id = str(chunk_obj.get("id") or f"chunk-{idx}")
+        # Preserve useful metadata (isThought for Gemini thinking traces, tokenCount, etc.)
+        meta = {"raw": chunk_obj}
+        if chunk_obj.get("isThought"):
+            meta["isThought"] = True
+        if chunk_obj.get("tokenCount"):
+            meta["tokenCount"] = chunk_obj.get("tokenCount")
         messages.append(
             ParsedMessage(
                 provider_message_id=msg_id,
                 role=role,
                 text=text,
                 timestamp=None,
+                provider_meta=meta,
             )
         )
         for doc in _collect_drive_docs(chunk_obj):
