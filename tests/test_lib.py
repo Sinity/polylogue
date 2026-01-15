@@ -15,8 +15,8 @@ def mock_db(tmp_path):
 
 def test_semantic_models():
     # Test rich methods
-    msg_user = Message(id="1", role="user", text="hello")
-    msg_bot = Message(id="2", role="assistant", text="hi")
+    msg_user = Message(id="1", role="user", text="hello, how are you today?")
+    msg_bot = Message(id="2", role="assistant", text="I'm doing well, thanks for asking!")
     conv = Conversation(id="c1", provider="test", messages=[msg_user, msg_bot])
 
     # Test filtering
@@ -24,10 +24,26 @@ def test_semantic_models():
     assert len(user_only.messages) == 1
     assert user_only.messages[0].id == "1"
 
-    # Test text_only
-    txt = conv.text_only()
-    assert "user: hello" in txt
-    assert "assistant: hi" in txt
+    # Test to_text
+    txt = conv.to_text()
+    assert "user:" in txt
+    assert "assistant:" in txt
+    assert "hello" in txt
+
+    # Test new classification properties
+    assert msg_user.is_user
+    assert msg_bot.is_assistant
+    assert msg_user.is_substantive
+    assert not msg_user.is_tool_use
+    assert not msg_user.is_noise
+
+    # Test projections
+    clean = conv.without_noise()
+    assert len(clean.messages) == 2  # Both are substantive
+
+    # Test statistics
+    assert conv.message_count == 2
+    assert conv.user_message_count == 1
 
 
 def test_repository(mock_db):
