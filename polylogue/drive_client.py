@@ -22,6 +22,7 @@ from .paths import CONFIG_HOME
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+GEMINI_PROMPT_MIME_TYPE = "application/vnd.google-makersuite.prompt"
 DEFAULT_CREDENTIALS_NAME = "credentials.json"
 DEFAULT_TOKEN_NAME = "token.json"
 DEFAULT_DRIVE_RETRIES = 3
@@ -280,7 +281,11 @@ class DriveClient:
             )
             for item in response.get("files", []):
                 name = item.get("name") or ""
-                if not name.lower().endswith((".json", ".jsonl")):
+                mime_type = item.get("mimeType") or ""
+                # Include .json/.jsonl files OR Gemini AI Studio prompt files
+                is_json_file = name.lower().endswith((".json", ".jsonl"))
+                is_gemini_prompt = mime_type == GEMINI_PROMPT_MIME_TYPE
+                if not (is_json_file or is_gemini_prompt):
                     continue
                 file_obj = DriveFile(
                     file_id=item.get("id", ""),
