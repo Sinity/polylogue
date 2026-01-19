@@ -65,33 +65,21 @@ def run_command(
         env.ui.console.print("Run cancelled.")
         return
     try:
-        from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
+        import time as _time
 
-        with (
-            Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-                TimeRemainingColumn(),
-                console=env.ui.console,
-                transient=True,
-            )
-            if not env.ui.plain
-            else click.progressbar(length=100, label="Running", show_percent=True, show_pos=False) as progress
-        ):
-            task_id = None
-            if not env.ui.plain:
-                task_id = progress.add_task("Running sources...", total=None)
+        # In plain mode, show periodic progress updates
+        if env.ui.plain:
+            print("Running...", flush=True)
+            last_update = [_time.time()]
+            processed = [0]
 
-            def progress_callback(amount: int, desc: str | None = None) -> None:
-                if env.ui.plain:
-                    # click progressbar is simple
-                    progress.update(amount)
-                else:
-                    if desc:
-                        progress.update(task_id, description=desc)
-                    progress.update(task_id, advance=amount)
+            def plain_progress(amount: int, desc: str | None = None) -> None:
+                processed[0] += amount
+                now = _time.time()
+                # Print progress every 5 seconds
+                if now - last_update[0] >= 5:
+                    print(f"  {desc or 'Processing'}: {processed[0]:,} items...", flush=True)
+                    last_update[0] = now
 
             result = run_sources(
                 config=config,
@@ -99,8 +87,35 @@ def run_command(
                 plan=None,
                 ui=env.ui,
                 source_names=selected_sources,
-                progress_callback=progress_callback,
+                progress_callback=plain_progress,
             )
+        else:
+            from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TimeRemainingColumn(),
+                console=env.ui.console,
+                transient=True,
+            ) as progress:
+                task_id = progress.add_task("Running sources...", total=None)
+
+                def progress_callback(amount: int, desc: str | None = None) -> None:
+                    if desc:
+                        progress.update(task_id, description=desc)
+                    progress.update(task_id, advance=amount)
+
+                result = run_sources(
+                    config=config,
+                    stage=stage,
+                    plan=None,
+                    ui=env.ui,
+                    source_names=selected_sources,
+                    progress_callback=progress_callback,
+                )
     except DriveError as exc:
         fail("run", str(exc))
     run_lines = [

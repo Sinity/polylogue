@@ -74,6 +74,12 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str) -> list[P
         return [chatgpt.parse(payload, fallback_id)]
     if provider == "claude":
         return [claude.parse_ai(payload, fallback_id)]
+    if provider == "claude-code":
+        if isinstance(payload, list):
+            return [claude.parse_code(payload, fallback_id)]
+        # If payload is a dict with messages, extract them
+        if isinstance(payload, dict) and isinstance(payload.get("messages"), list):
+            return [claude.parse_code(payload["messages"], fallback_id)]
     if provider == "codex":
         return [codex.parse(payload, fallback_id)]
 
