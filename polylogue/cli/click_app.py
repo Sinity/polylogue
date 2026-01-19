@@ -16,6 +16,7 @@ from polylogue.cli.commands.run import run_command, sources_command
 from polylogue.cli.commands.search import search_command
 from polylogue.cli.commands.serve import serve_command
 from polylogue.cli.commands.state import state_command
+from polylogue.cli.commands.verify import verify_command
 from polylogue.cli.formatting import announce_plain_mode, should_use_plain
 from polylogue.cli.helpers import print_summary
 from polylogue.cli.types import AppEnv
@@ -50,6 +51,7 @@ cli.add_command(export_command)
 cli.add_command(state_command)
 cli.add_command(config_command)
 cli.add_command(serve_command)
+cli.add_command(verify_command)
 
 
 def main() -> None:
