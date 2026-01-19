@@ -85,11 +85,37 @@ class Message(BaseModel):
 
     # --- Content classification (dynamic, heuristic-based) ---
 
+    def _is_chatgpt_thinking(self) -> bool:
+        """Check if this is a ChatGPT reasoning model thinking trace."""
+        if not self.provider_meta:
+            return False
+        raw = self.provider_meta.get("raw", {})
+        if not isinstance(raw, dict):
+            return False
+
+        # Check content_type for thoughts/reasoning_recap (any role)
+        content = raw.get("content", {})
+        if isinstance(content, dict):
+            content_type = content.get("content_type", "")
+            if content_type in ("thoughts", "reasoning_recap"):
+                return True
+
+        # Legacy: role=tool with finished_text in metadata
+        if self.role.lower() == "tool":
+            metadata = raw.get("metadata", {})
+            if isinstance(metadata, dict) and "finished_text" in metadata:
+                return True
+
+        return False
+
     @property
     def is_tool_use(self) -> bool:
         """Message contains tool/function calls or results."""
-        # Check role first (ChatGPT explicit tool role)
+        # ChatGPT role=tool: distinguish thinking (finished_text) from actual tools
         if self.role.lower() == "tool":
+            # If it's a thinking trace, not tool use
+            if self._is_chatgpt_thinking():
+                return False
             return True
         # Check provider_meta for Claude-code sidechain
         if self.provider_meta:
@@ -163,6 +189,22 @@ class Message(BaseModel):
         if not self.text:
             return 0
         return len(self.text.split())
+
+    # --- Cost/performance metadata (claude-code) ---
+
+    @property
+    def cost_usd(self) -> float | None:
+        """Cost in USD (claude-code messages)."""
+        if not self.provider_meta:
+            return None
+        return self.provider_meta.get("costUSD")
+
+    @property
+    def duration_ms(self) -> int | None:
+        """Response duration in milliseconds (claude-code messages)."""
+        if not self.provider_meta:
+            return None
+        return self.provider_meta.get("durationMs")
 
     def extract_thinking(self) -> str | None:
         """Extract thinking content if present."""
@@ -324,3 +366,13 @@ class Conversation(BaseModel):
     @property
     def substantive_word_count(self) -> int:
         return sum(m.word_count for m in self.messages if m.is_substantive)
+
+    @property
+    def total_cost_usd(self) -> float:
+        """Total cost in USD (sum of all message costs)."""
+        return sum(m.cost_usd or 0.0 for m in self.messages)
+
+    @property
+    def total_duration_ms(self) -> int:
+        """Total response duration in milliseconds."""
+        return sum(m.duration_ms or 0 for m in self.messages)
