@@ -80,6 +80,98 @@ def looks_like_code(payload: list) -> bool:
     return False
 
 
+def _extract_message_text(message_content: object) -> str | None:
+    """Extract text from claude-code message content structure."""
+    if isinstance(message_content, str):
+        return message_content
+    if isinstance(message_content, list):
+        return extract_text_from_segments(message_content)
+    if isinstance(message_content, dict):
+        text = message_content.get("text")
+        if isinstance(text, str):
+            return text
+        parts = message_content.get("parts")
+        if isinstance(parts, list):
+            return "\n".join(str(p) for p in parts if p)
+    return None
+
+
+def parse_code(payload: list, fallback_id: str) -> ParsedConversation:
+    """Parse claude-code JSONL format (list of message objects)."""
+    messages: list[ParsedMessage] = []
+    timestamps: list[str] = []
+    session_id: str | None = None
+
+    for idx, item in enumerate(payload, start=1):
+        if not isinstance(item, dict):
+            continue
+
+        msg_type = item.get("type")
+        # Skip summary entries and other non-message types
+        if msg_type in ("summary", "init"):
+            continue
+
+        # Extract session ID for conversation grouping
+        if not session_id:
+            session_id = item.get("sessionId") or item.get("session_id")
+
+        # Get message UUID
+        msg_id = str(item.get("uuid") or item.get("id") or f"msg-{idx}")
+
+        # Map type to role
+        role = "user" if msg_type in ("user", "human") else "assistant" if msg_type == "assistant" else msg_type or "unknown"
+
+        # Get timestamp
+        timestamp = item.get("timestamp")
+        if timestamp:
+            timestamps.append(str(timestamp))
+
+        # Extract text from nested message.content structure
+        msg_obj = item.get("message", {})
+        text = None
+        if isinstance(msg_obj, dict):
+            text = _extract_message_text(msg_obj.get("content"))
+        elif isinstance(msg_obj, str):
+            text = msg_obj
+
+        # Build provider_meta with useful fields
+        meta: dict = {"raw": item}
+        if item.get("costUSD"):
+            meta["costUSD"] = item.get("costUSD")
+        if item.get("durationMs"):
+            meta["durationMs"] = item.get("durationMs")
+        if item.get("isSidechain"):
+            meta["isSidechain"] = True
+        if item.get("isMeta"):
+            meta["isMeta"] = True
+
+        messages.append(
+            ParsedMessage(
+                provider_message_id=msg_id,
+                role=role,
+                text=text,
+                timestamp=str(timestamp) if timestamp else None,
+                provider_meta=meta,
+            )
+        )
+
+    # Derive conversation timestamps from messages
+    created_at = min(timestamps) if timestamps else None
+    updated_at = max(timestamps) if timestamps else None
+
+    # Use session_id as conversation ID if available
+    conv_id = session_id or fallback_id
+
+    return ParsedConversation(
+        provider_name="claude-code",
+        provider_conversation_id=str(conv_id),
+        title=str(conv_id),  # Claude-code doesn't have titles, use session ID
+        created_at=created_at,
+        updated_at=updated_at,
+        messages=messages,
+    )
+
+
 def parse_ai(payload: dict, fallback_id: str) -> ParsedConversation:
     messages, attachments = extract_messages_from_chat_messages(payload.get("chat_messages", []))
     title = payload.get("title") or payload.get("name") or fallback_id
