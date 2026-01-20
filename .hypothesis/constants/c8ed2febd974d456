@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/email/iterators.py
+# hypothesis_version: 6.150.2
+
+[' [%s]', 'body_line_iterator', 'text', 'walk']

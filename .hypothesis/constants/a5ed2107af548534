@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/ui/facade.py
+# hypothesis_version: 6.150.2
+
+['!', '#14b8a6', '#3b82f6', '#475569', '#4c1d95', '#cdecef', '#d6dee8', '#e5e7eb', '0', '1', 'ansi_dark', 'banner.border', 'banner.icon', 'banner.subtitle', 'banner.title', 'bold #34d399', 'bold #38bdf8', 'bold #7fdbca', 'bold #c4e0ff', 'bold #e0f2f1', 'bold #f9a825', 'bold #ff6b6b', 'choose', 'code.border', 'confirm', 'diff', 'false', 'file', 'index', 'input', 'left', 'markdown.border', 'monokai', 'n', 'no', 'panel.border', 'panel.text', 'python', 'status.icon.error', 'status.icon.info', 'status.icon.success', 'status.icon.warning', 'status.message', 'summary.bullet', 'summary.text', 'summary.title', 'true', 'type', 'use_default', 'utf-8', 'value', 'y', 'yes', '• ', 'ℹ', '◈ ', '✓', '✗']

@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/cli/commands/run.py
+# hypothesis_version: 6.150.2
+
+[', ', '--json', '--preview', '--source', '--stage', 'Output JSON', 'Preview', 'Proceed with run?', 'Run', 'Run cancelled.', 'Running sources...', 'Running...', 'Sources', 'all', 'drive', 'folder', 'index', 'ingest', 'json_output', 'kind', 'name', 'path', 'render', 'run', 'sources']

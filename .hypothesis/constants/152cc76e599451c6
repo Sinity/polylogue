@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/csv.py
+# hypothesis_version: 6.150.2
+
+[0.01, 0.9, 1.0, 127, '"', '%c ', ',', ', ', '1.0', ':', ';', 'Dialect', 'DictReader', 'DictWriter', 'Error', 'QUOTE_ALL', 'QUOTE_MINIMAL', 'QUOTE_NONE', 'QUOTE_NONNUMERIC', 'QUOTE_NOTNULL', 'QUOTE_STRINGS', 'Sniffer', 'delim', 'excel', 'excel-tab', 'excel_tab', 'field_size_limit', 'get_dialect', 'ignore', 'list_dialects', 'quote', 'raise', 'reader', 'register_dialect', 'sniffed', 'space', 'unix', 'unix_dialect', 'unregister_dialect', 'writer']

@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/xml/dom/domreg.py
+# hypothesis_version: 6.150.2
+
+['0123456789', '4DOM', 'PYTHON_DOM', 'bad feature name: %r', 'getDOMImplementation', 'minidom', 'xml.dom.minidom']

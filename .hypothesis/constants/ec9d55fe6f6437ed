@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/cli/commands/export.py
+# hypothesis_version: 6.150.2
+
+['--out', 'export']

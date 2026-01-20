@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/pipeline/__init__.py
+# hypothesis_version: 6.150.2
+
+['ExistingConversation', 'PlanResult', 'RunResult', 'attachment_seed', 'conversation_id', 'latest_run', 'message_content_hash', 'message_id', 'plan_sources', 'prepare_ingest', 'run_sources']

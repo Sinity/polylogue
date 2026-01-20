@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/paths.py
+# hypothesis_version: 6.150.2
+
+['.', '..', '._-', '.cache', '.config', '.local/share', '.local/state', 'CACHE_HOME', 'CACHE_ROOT', 'CONFIG_HOME', 'CONFIG_ROOT', 'DATA_HOME', 'DATA_ROOT', 'STATE_HOME', 'STATE_ROOT', 'XDG_CACHE_HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', '[^A-Za-z0-9._-]', '_', 'is_within_root', 'item', 'polylogue', 'safe_path_component', 'utf-8']

@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/shlex.py
+# hypothesis_version: 6.150.2
+
+['"', '"%s", line %d: ', '#', "'", '\'"', '\'"\'"\'', "''", '();<>|&', 'No closing quotation', 'No escaped character', 'Token: ', '[^\\w@%+=:,./-]', '\\', '__main__', 'a', 'c', 'join', 'quote', 'r', 'shlex', 'shlex: raw token=', 'shlex: raw token=EOF', 'shlex: token=', 'shlex: token=EOF', 'split', '~-./*?=']

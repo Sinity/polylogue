@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/bdb.py
+# hypothesis_version: 6.150.2
+
+['\n\tstop only if %s', '%s(%r)', '()', ')', '+++', '+++ call', '+++ exception', '+++ return', '->', ':', ': ', '<', '<lambda>', '<string>', '>', '???', 'Bdb', 'BdbQuit', 'Breakpoint', '__name__', '__return__', 'bar returned', 'bar(', 'c_call', 'c_exception', 'c_return', 'call', 'del  ', 'exception', 'exec', 'f_lineno', 'foo(', 'keep ', 'line', 'no   ', 'opcode', 'return', 's', 'yes  ']

@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/email/_policybase.py
+# hypothesis_version: 6.150.2
+
+['%s: ', '+', ', ', '7bit', '8bit', ':', 'Compat32', 'Policy', '__doc__', 'ascii', 'compat32', 'surrogateescape', '{}({})', '{}={!r}']

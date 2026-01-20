@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/cli/commands/view.py
+# hypothesis_version: 6.150.2
+
+['%Y-%m-%d', '--json', '--json-lines', '--limit', '--list', '--offset', '--projection', '--provider', '--query', '--since', '--until', '--verbose', '-p', '-q', '-v', 'Conversations', 'Output JSON', 'User messages only', 'assistant', 'assistant_messages', 'clean', 'conversation_id', 'cost_usd', 'created_at', 'dialogue', 'duration_ms', 'full', 'id', 'is_assistant', 'is_substantive', 'is_thinking', 'is_tool_use', 'is_user', 'json_output', 'list_mode', 'message_count', 'messages', 'pairs', 'provider', 'role', 'stats', 'substantive_words', 'text', 'thinking', 'thinking_traces', 'timestamp', 'title', 'unknown', 'updated_at', 'user', 'user_messages', 'view', 'word_count']

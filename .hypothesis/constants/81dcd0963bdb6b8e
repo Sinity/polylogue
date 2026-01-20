@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/db.py
+# hypothesis_version: 6.150.2
+
+['.local/state', 'DROP TABLE runs_old', 'PRAGMA user_version', 'SCHEMA_VERSION', 'XDG_STATE_HOME', 'attachment_id', 'conn', 'connection_context', 'conversation_id', 'default_db_path', 'depth', 'message_id', 'mime_type', 'open_connection', 'path', 'polylogue', 'polylogue.db', 'provider_meta', 'size_bytes', 'state', 'utf-8']

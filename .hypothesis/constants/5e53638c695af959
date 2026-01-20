@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/importers/drive.py
+# hypothesis_version: 6.150.2
+
+['author', 'chunkedPrompt', 'chunks', 'content', 'createTime', 'data', 'displayName', 'driveDocument', 'driveDocuments', 'driveId', 'drive_document', 'fileId', 'id', 'isThought', 'markdown', 'message', 'metadata', 'mimeType', 'mime_type', 'name', 'parts', 'raw', 'role', 'size', 'sizeBytes', 'text', 'title', 'tokenCount', 'updateTime']

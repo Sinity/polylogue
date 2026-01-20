@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/lib/projections.py
+# hypothesis_version: 6.150.2
+
+['...', 'Conversation', 'Message', 'Message | None', 'attachments', 'messages', 'text']

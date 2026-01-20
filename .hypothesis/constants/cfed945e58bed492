@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/importers/claude.py
+# hypothesis_version: 6.150.2
+
+['assistant', 'attachments', 'chat_messages', 'claude', 'claude-code', 'content', 'conversation_id', 'costUSD', 'create_time', 'created_at', 'durationMs', 'files', 'human', 'id', 'init', 'isMeta', 'isSidechain', 'leafUuid', 'message', 'message_id', 'name', 'parentUuid', 'parts', 'raw', 'role', 'sender', 'sessionId', 'session_id', 'summary', 'text', 'timestamp', 'title', 'tool_result', 'tool_use', 'type', 'unknown', 'updated_at', 'user', 'uuid']

@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/ui/__init__.py
+# hypothesis_version: 6.150.2
+
+[0.0, 0.0001, '.', '0', 'Console', 'ConsoleFacade', 'ConsoleLike', 'UI', 'aborted', 'complete', 'confirmation prompts', 'create_ui', 'description', 'file', 'menu selections', 'python', 'text input', 'total', 'y', 'yes', '{task.completed:.0f}', '{task.description}']

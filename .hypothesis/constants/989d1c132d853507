@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/cli/commands/state.py
+# hypothesis_version: 6.150.2
+
+['--all', '--db/--no-db', '--force', '--last-source', 'Reset cancelled.', 'reset', 'reset_all', 'reset_db', 'state', 'state reset']

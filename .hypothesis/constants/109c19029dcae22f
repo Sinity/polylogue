@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/asyncio/exceptions.py
+# hypothesis_version: 6.150.2
+
+['BrokenBarrierError', 'CancelledError', 'IncompleteReadError', 'InvalidStateError', 'LimitOverrunError', 'TimeoutError', 'undefined']

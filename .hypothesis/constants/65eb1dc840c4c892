@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/importlib/resources/readers.py
+# hypothesis_version: 6.150.2
+
+[', ', '.', '/', 'Invalid path', 'NamespacePath', '[\\\\/]', '\\', 'name']

@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/export.py
+# hypothesis_version: 6.150.2
+
+['attachments', 'conversation', 'conversation_id', 'conversations.jsonl', 'export_jsonl', 'exports', 'messages', 'utf-8', 'w']

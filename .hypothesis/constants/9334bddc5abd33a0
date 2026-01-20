@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/colorsys.py
+# hypothesis_version: 6.150.2
+
+[0.0, 0.11, 0.27, 0.27478764629897834, 0.3, 0.41, 0.48, 0.5, 0.59, 0.6235565819861433, 0.6356910791873801, 0.74, 0.9468822170900693, 1.0, 1.1085450346420322, 1.7090069284064666, 2.0, 3.0, 4.0, 6.0, 'hls_to_rgb', 'hsv_to_rgb', 'rgb_to_hls', 'rgb_to_hsv', 'rgb_to_yiq', 'yiq_to_rgb']

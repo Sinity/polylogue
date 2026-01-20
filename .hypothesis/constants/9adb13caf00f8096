@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/genericpath.py
+# hypothesis_version: 6.150.2
+
+['ALLOW_MISSING', 'commonprefix', 'exists', 'getatime', 'getctime', 'getmtime', 'getsize', 'isdevdrive', 'isdir', 'isfile', 'isjunction', 'islink', 'lexists', 'samefile', 'sameopenfile', 'samestat']

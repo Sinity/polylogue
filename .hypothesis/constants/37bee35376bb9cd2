@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/source_ingest.py
+# hypothesis_version: 6.150.2
+
+['\x00', '*', '.json', '.jsonl', '.jsonl.txt', '.ndjson', '.zip', 'ParsedAttachment', 'ParsedConversation', 'ParsedMessage', 'chatgpt', 'chunkedPrompt', 'chunks', 'claude', 'claude-code', 'claude_code', 'codex', 'conversations', 'conversations.item', 'file_count', 'id', 'ignore', 'item', 'latest_mtime', 'latest_path', 'messages', 'name', 'parse_drive_payload', 'rb', 'title', 'utf-16', 'utf-16-be', 'utf-16-le', 'utf-32', 'utf-32-be', 'utf-32-le', 'utf-8', 'utf-8-sig']

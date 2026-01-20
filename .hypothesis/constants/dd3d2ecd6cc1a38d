@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/lib/models.py
+# hypothesis_version: 6.150.2
+
+[0.0, 100, '**', '</system>', '</thinking>', '<system>', '<system>.*</system>', '<thinking>', 'DialoguePair', 'Role', '^<file path=', '^Contents of .+:', '```', 'after', 'analyzing', 'antml:function_calls', 'antml:invoke', 'antml:thinking', 'assessing', 'assistant', 'attachments', 'clarifying', 'considering', 'content', 'content_type', 'costUSD', 'durationMs', 'evaluating', 'examining', 'exploring', 'finished_text', 'formulating', 'framing', 'function_calls', 'function_result', 'human', 'isMeta', 'isSidechain', 'isThought', 'mapping', 'messages', 'metadata', 'model', 'my thinking', 'name', 'pinpointing', 'processing', 'raw', 'reasoning_recap', 'refining', 'reviewing', 'synthesizing', 'system', 'thinking', 'thoughts', 'tool', 'tool_result', 'tool_use', 'unknown', 'user']

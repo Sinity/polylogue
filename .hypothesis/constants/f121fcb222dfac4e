@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/asyncio/futures.py
+# hypothesis_version: 6.150.2
+
+['Future', 'Result is not ready.', 'exception', 'future', 'isfuture', 'message', 'source_traceback', 'wrap_future']

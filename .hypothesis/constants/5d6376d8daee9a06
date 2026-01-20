@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/xml/dom/minicompat.py
+# hypothesis_version: 6.150.2
+
+['EmptyNodeList', 'NodeList', 'StringTypes', '_get_', '_set_', 'defproperty']

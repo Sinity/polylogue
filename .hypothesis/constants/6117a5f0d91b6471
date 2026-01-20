@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/tomllib/_parser.py
+# hypothesis_version: 6.150.2
+
+[127, 55295, 57344, 1114111, '\x08', '"', '"""', '"\'', '#', "'", "'''", '+inf', '+nan', ',', '-_', '-inf', '-nan', '.', '=', 'Invalid hex value', 'Invalid statement', 'Invalid value', 'Unclosed array', 'Unterminated string', '[', '\\', '\\\t', '\\\n', '\\ ', '\\"', '\\U', '\\\\', '\\b', '\\f', '\\n', '\\r', '\\t', '\\u', ']', ']]', 'end of document', 'f', 'false', 'flags', 'inf', 'nan', 'nested', 'recursive_flags', 't', 'true', '{', '}']

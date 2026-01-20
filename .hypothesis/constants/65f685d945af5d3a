@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/encodings/__init__.py
+# hypothesis_version: 6.150.2
+
+['*', '--unknown--', '.', '_', 'ascii', 'cp%s', 'encodings.', 'win32']

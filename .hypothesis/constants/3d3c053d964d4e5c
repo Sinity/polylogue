@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/heapq.py
+# hypothesis_version: 6.150.2
+
+['__main__', 'heapify', 'heappop', 'heappush', 'heappushpop', 'heapreplace', 'merge', 'nlargest', 'nsmallest']

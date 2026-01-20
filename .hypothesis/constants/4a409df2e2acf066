@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/drive_ingest.py
+# hypothesis_version: 6.150.2
+
+['+00:00', 'Z', 'drive_id', 'error_count', 'file_count', 'latest_error', 'latest_error_file', 'latest_file_id', 'latest_file_name', 'latest_mtime', 'mime_type', 'name']

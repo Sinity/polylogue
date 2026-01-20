@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/assets.py
+# hypothesis_version: 6.150.2
+
+['[^A-Za-z0-9._-]', '_', 'asset_path', 'assets', 'utf-8']

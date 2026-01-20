@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/json/scanner.py
+# hypothesis_version: 6.150.2
+
+['"', '-', '-Infinity', 'I', 'Infinity', 'N', 'NaN', '[', 'f', 'false', 'make_scanner', 'n', 'null', 't', 'true', '{']

@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/fnmatch.py
+# hypothesis_version: 6.150.2
+
+[32768, '!', '(?!)', '([&~|])', '*', '-', '.', '.*', '?', 'ISO-8859-1', '[', '\\', '\\-', '\\[', '\\\\', '\\\\\\1', ']', '^', 'filter', 'fnmatch', 'fnmatchcase', 'translate']

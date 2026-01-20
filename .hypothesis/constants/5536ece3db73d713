@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/xml/dom/expatbuilder.py
+# hypothesis_version: 6.150.2
+
+[1024, " %s='%s'", "%s\n    %s='%s'", '%s "%s"', '%s NOTATION %s', '%s SYSTEM "%s"', '%s SYSTEM "%s">', '%s:%s', '%s<!ENTITY %s', '%s<!NOTATION %s', '(', '>', 'CDATA', 'CharacterDataHandler', 'CommentHandler', 'ENTITIES', 'ENTITY', 'ENUM', 'ID', 'IDREF', 'IDREFS', 'NMTOKEN', 'NMTOKENS', 'PUBLIC "%s" "%s"', 'SYSTEM "%s"', '_attr_info', '_builder', '_level', '_model', '_ns_prefix_uri', '_old_end', '_old_start', 'cdata', 'entities', 'entity', 'enumeration', 'filter', 'id', 'idref', 'idrefs', 'nmtoken', 'nmtokens', 'rb', 'tagName', 'xmlns', 'xmlns:']

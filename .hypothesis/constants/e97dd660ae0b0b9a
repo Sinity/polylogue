@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/cli/commands/completions.py
+# hypothesis_version: 6.150.2
+
+['--shell', '_POLYLOGUE_COMPLETE', 'bash', 'completions', 'fish', 'zsh']

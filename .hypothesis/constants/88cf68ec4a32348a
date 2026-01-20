@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/config.py
+# hypothesis_version: 6.150.2
+
+[', ', 'POLYLOGUE_CONFIG', 'archive', 'archive_root', 'config', 'config.json', 'folder', 'inbox', 'name', 'path', 'render', 'render_root', 'source', 'sources', 'template_path', 'utf-8', 'version']

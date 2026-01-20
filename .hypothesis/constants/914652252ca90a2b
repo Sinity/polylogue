@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/server/app.py
+# hypothesis_version: 6.150.2
+
+['/api', '0.1.0', 'Polylogue']

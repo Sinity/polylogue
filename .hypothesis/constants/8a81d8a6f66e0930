@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/configparser.py
+# hypothesis_version: 6.150.2
+
+['\n\t[line %2d]: %s', ' [line {0:2d}]', ' already exists', ' in section ', ' {} ', '#', '$', '$$', '%', '%%', '%\\(([^)]+)\\)s', '(', '(?!)', '0', '1', ':', ': option ', ': section ', ';', '<???>', '<Section: {}>', '<UNNAMED_SECTION>', '<dict>', '<string>', '=', '=|:', 'BasicInterpolation', 'ConfigParser', 'ConverterMapping', 'DEFAULT', 'DEFAULTSECT', 'DuplicateOptionError', 'Interpolation', 'InterpolationError', 'No section: %r', 'NoOptionError', 'NoSectionError', 'Not a boolean: %s', 'Option ', 'ParsingError', 'RawConfigParser', 'Section ', 'SectionProxy', 'UNNAMED_SECTION', 'While reading from ', '[{}]\n', '\\$\\{([^}]+)\\}', '\\S', '^get(?P<name>.+)$', 'false', 'get', 'header', 'name', 'no', 'off', 'on', 'option', 'true', 'value', 'vi', 'yes', '{', '{}{}\n', '|']

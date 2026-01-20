@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/linecache.py
+# hypothesis_version: 6.150.2
+
+['<', '>', '__loader__', '__name__', '__spec__', 'checkcache', 'clearcache', 'get_source', 'getline', 'lazycache', 'loader', 'name']

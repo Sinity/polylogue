@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/render_paths.py
+# hypothesis_version: 6.150.2
+
+['conversation', 'legacy_render_root', 'provider', 'render_root']

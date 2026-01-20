@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/xml/dom/xmlbuilder.py
+# hypothesis_version: 6.150.2
+
+['-', '/', 'DOMBuilder', 'DOMEntityResolver', 'DOMInputSource', '_', '_opener', 'baseURI', 'byteStream', 'cdata_sections', 'characterStream', 'charset', 'comments', 'encoding', 'entities', 'feature %s not known', 'infoset', 'namespaces', 'not a legal action', 'publicId', 'stringData', 'systemId', 'unknown feature: ', 'validate_if_schema', 'validation']

@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/zoneinfo/_tzpath.py
+# hypothesis_version: 6.150.2
+
+[b'TZif', '/', 'PYTHONTZPATH', 'TZPATH', '_', 'posix', 'posixrules', 'r', 'rb', 'right', 'tzdata', 'utf-8', 'zones']

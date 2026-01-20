@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/ingest.py
+# hypothesis_version: 6.150.2
+
+['IngestBundle', 'IngestResult', 'attachments', 'conversations', 'ingest_bundle', 'messages', 'skipped_attachments', 'skipped_messages']

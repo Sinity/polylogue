@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/cli/click_app.py
+# hypothesis_version: 6.150.2
+
+['--config', '--help', '--interactive', '--plain', '-h', '0', 'Path to config.json', 'cli', 'config_path', 'false', 'help_option_names', 'main', 'no']

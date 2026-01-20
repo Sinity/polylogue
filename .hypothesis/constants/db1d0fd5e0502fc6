@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/http/cookies.py
+# hypothesis_version: 6.150.2
+
+[256, ' ()/<=>?@[]{}', "!#$%&'*+-.^_`|~:", '"', '$', '%s %s', '%s=%d', '%s=%s', '; ', '<%s: %s>', 'Apr', 'Aug', 'BaseCookie', 'Comment', 'CookieError', 'Dec', 'Domain', 'Feb', 'Fri', 'HttpOnly', 'Illegal key %r', 'Invalid attribute %r', 'Jan', 'Jul', 'Jun', 'Mar', 'Max-Age', 'May', 'Mon', 'Nov', 'Oct', 'Path', 'SameSite', 'Sat', 'Secure', 'Sep', 'Set-Cookie:', 'SimpleCookie', 'Sun', 'Thu', 'Tue', 'Version', 'Wed', '[%s]+', '\\', '\\"', '\\%03o', '\\[\\]', '\\\\', 'coded_value', 'comment', 'domain', 'expires', 'httponly', 'key', 'max-age', 'path', 'samesite', 'secure', 'val', 'value', 'version']

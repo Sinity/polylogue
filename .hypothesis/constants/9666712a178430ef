@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/getpass.py
+# hypothesis_version: 6.150.2
+
+['\x03', '\x08', '/dev/tty', 'GetPassWarning', 'LNAME', 'LOGNAME', 'Password: ', 'TCSASOFT', 'USER', 'USERNAME', 'getpass', 'getuser', 'replace', 'w+']

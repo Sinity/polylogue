@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/cli/commands/config.py
+# hypothesis_version: 6.150.2
+
+['--drive-folder', '--drive-name', '--interactive', '--json', '--with-drive', 'Add source', 'Archive root', 'Config', 'Config edit', 'Done', 'Drive folder name', 'Drive source name', 'Edit source', 'Google AI Studio', 'Local path', 'No changes made.', 'Output JSON', 'POLYLOGUE_CONFIG', 'Remove source', 'Remove which source?', 'Render root', 'Select source', 'Set archive root', 'Set render root', 'Source name', 'Source type', 'archive_root', 'config', 'config edit', 'config init', 'config set', 'config show', 'drive folder', 'edit', 'env_overrides', 'gemini', 'inbox', 'init', 'interactive', 'json_output', 'key', 'local path', 'render_root', 'resolved_render_root', 'set', 'show', 'source.', 'utf-8', 'value']

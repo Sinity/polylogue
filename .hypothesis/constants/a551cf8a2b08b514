@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/run.py
+# hypothesis_version: 6.150.2
+
+['ExistingConversation', 'PlanResult', 'RunResult', '_attachment_seed', '_conversation_id', '_message_id', '_prepare_ingest', 'latest_run', 'plan_sources', 'run_sources']

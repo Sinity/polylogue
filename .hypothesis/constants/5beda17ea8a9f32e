@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/importers/chatgpt.py
+# hypothesis_version: 6.150.2
+
+[0.0, 'author', 'chatgpt', 'content', 'conversation_id', 'create_time', 'id', 'mapping', 'message', 'name', 'parts', 'raw', 'role', 'title', 'update_time', 'user', 'uuid']

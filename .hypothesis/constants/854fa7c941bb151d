@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/unittest/result.py
+# hypothesis_version: 6.150.2
+
+['\nStderr:\n%s', '\nStdout:\n%s', '__unittest', 'collectedDurations', 'failfast', 'unexpectedSuccesses']

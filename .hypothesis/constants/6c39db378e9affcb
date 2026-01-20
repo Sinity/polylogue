@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/pipeline/ingest.py
+# hypothesis_version: 6.150.2
+
+['attachments', 'content_hash', 'conversation_id', 'conversations', 'message_id', 'messages', 'provider_id', 'provider_message_id', 'skipped_attachments', 'skipped_messages', 'source']

@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/importers/base.py
+# hypothesis_version: 6.150.2
+
+['assistant', 'author', 'content', 'content_type', 'create_time', 'created_at', 'fileId', 'file_id', 'filename', 'human', 'id', 'message', 'mimeType', 'mime_type', 'model', 'name', 'parts', 'raw', 'role', 'sender', 'size', 'sizeBytes', 'size_bytes', 'system', 'text', 'timestamp', 'user', 'uuid']

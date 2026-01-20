@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/hmac.py
+# hypothesis_version: 6.150.2
+
+[b'\x00', 256, '_hmac', '_inner', '_outer', 'block_size', 'digest_size']

@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/cli/commands/verify.py
+# hypothesis_version: 6.150.2
+
+['--json', '--verbose', '-v', '?', 'Data Verification', 'ERR', 'OK', 'Output as JSON', 'WARN', '[green]✓[/green]', '[red]✗[/red]', '[yellow]![/yellow]', 'error', 'json_output', 'ok', 'verify', 'warning']

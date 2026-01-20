@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/pipeline/runner.py
+# hypothesis_version: 6.150.2
+
+[1000, 'Ingesting', 'all', 'attachments', 'changed', 'conversation_id', 'conversations', 'counts', 'counts_json', 'drift', 'drift_json', 'duration_ms', 'error_count', 'exists', 'index', 'index_error', 'indexed', 'ingest', 'latest_error', 'latest_error_source', 'messages', 'new', 'plan_snapshot', 'provider_meta', 'provider_name', 'removed', 'render', 'rendered', 'run_id', 'runs', 'skipped_attachments', 'skipped_messages', 'source', 'timestamp', 'unknown', 'utf-8']

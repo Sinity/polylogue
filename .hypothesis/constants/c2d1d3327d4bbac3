@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/search.py
+# hypothesis_version: 6.150.2
+
+[' LIMIT ?', 'SearchHit', 'SearchResult', 'conversation.md', 'conversation_id', 'message_id', 'provider_name', 'render', 'search_messages', 'snippet', 'source_name', 'timestamp', 'title']

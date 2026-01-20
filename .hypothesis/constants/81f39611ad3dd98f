@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/verify.py
+# hypothesis_version: 6.150.2
+
+[', ', 'No duplicates', 'No orphaned messages', 'VerifyReport', 'VerifyResult', 'VerifyStatus', 'breakdown', 'checks', 'content_hashes', 'count', 'detail', 'duplicate_messages', 'empty_conversations', 'empty_text_messages', 'error', 'fts_sync', 'metadata_validity', 'name', 'null_created_at', 'null_timestamps', 'ok', 'orphaned_messages', 'record_counts', 'sqlite_integrity', 'status', 'summary', 'verify_data', 'warning']

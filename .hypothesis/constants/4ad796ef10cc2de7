@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/concurrent/futures/_base.py
+# hypothesis_version: 6.150.2
+
+['<%s at %#x state=%s>', 'ALL_COMPLETED', 'CANCELLED', 'FINISHED', 'FIRST_COMPLETED', 'FIRST_EXCEPTION', 'PENDING', 'RUNNING', '_AS_COMPLETED', 'cancelled', 'concurrent.futures', 'done not_done', 'finished', 'pending', 'running', '{}: {!r}']

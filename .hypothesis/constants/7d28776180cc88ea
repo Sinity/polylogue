@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/concurrent/futures/__init__.py
+# hypothesis_version: 6.150.2
+
+['ALL_COMPLETED', 'BrokenExecutor', 'CancelledError', 'Executor', 'FIRST_COMPLETED', 'FIRST_EXCEPTION', 'Future', 'InvalidStateError', 'ProcessPoolExecutor', 'ThreadPoolExecutor', 'TimeoutError', '__author__', '__doc__', 'as_completed', 'wait']

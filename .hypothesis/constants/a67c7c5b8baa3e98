@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/store.py
+# hypothesis_version: 6.150.2
+
+[', ', '?', 'AttachmentRecord', 'ConversationRecord', 'MessageRecord', 'RunRecord', 'attachment_id', 'attachments', 'content_hash', 'conversation_id', 'conversations', 'message_id', 'messages', 'provider_name', 'record_run', 'ref_id', 'size_bytes', 'skipped_attachments', 'skipped_messages', 'store_records', 'utf-8']

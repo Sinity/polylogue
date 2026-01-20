@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/code.py
+# hypothesis_version: 6.150.2
+
+['\nKeyboardInterrupt\n', '%s\n', '-q', '... ', '<console>', '<input>', '>>> ', 'Ctrl-D (i.e. EOF)', 'Ctrl-Z plus Return', 'InteractiveConsole', '__console__', '__doc__', '__main__', '__name__', 'compile_command', 'exit', 'interact', 'now exiting %s...\n', 'quit', 'single', 'source', 'store_true', 'win32']

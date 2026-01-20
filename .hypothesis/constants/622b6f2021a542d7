@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/concurrent/futures/thread.py
+# hypothesis_version: 6.150.2
+
+['%s_%d', 'Exception in worker', 'register_at_fork']

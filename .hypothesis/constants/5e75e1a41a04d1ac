@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/xml/etree/ElementPath.py
+# hypothesis_version: 6.150.2
+
+[100, '!=', "'", '\'"', '*', '-', "-!='", '-()', '-()-', "-='", '.', ".!='", '..', ".='", '/', '//', ':', '@', '@-', "@-!='", "@-='", '[', '\\-?\\d+$', ']', 'invalid descendant', 'invalid path', 'invalid predicate', 'last', 'unsupported function', '{', '{%s}%s', '{*}', '{*}*', '{}', '{}*', '}*']

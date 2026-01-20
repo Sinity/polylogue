@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/drive_client.py
+# hypothesis_version: 6.150.2
+
+[0.0, 0.5, 403, 404, 1000, "'", '+00:00', '-_', '.json', '.jsonl', '.jsonl.txt', '.ndjson', 'DriveAuthError', 'DriveClient', 'DriveError', 'DriveFile', 'DriveNotFoundError', 'POLYLOGUE_TOKEN_PATH', 'Z', "\\'", 'consent', 'credentials.json', 'default_token_path', 'drive', 'files', 'files(id,name)', 'googleapiclient.http', 'id', 'id,name,mimeType', 'mimeType', 'modifiedTime', 'name', 'nextPageToken', 'offline', 'plain', 'replace', 'size', 'token.json', 'utf-8', 'v3']

@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/zoneinfo/_common.py
+# hypothesis_version: 6.150.2
+
+[b'\x00', b'\n', b'TZif', '.', '/', '>6l', '>lbb', 'charcnt', 'isstdcnt', 'isutcnt', 'l', 'leapcnt', 'q', 'rb', 'timecnt', 'typecnt', 'tzdata.zoneinfo', 'version']

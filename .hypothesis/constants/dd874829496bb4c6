@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/cli/commands/search.py
+# hypothesis_version: 6.150.2
+
+['--csv', '--json', '--json-lines', '--latest', '--limit', '--list', '--open', '--since', '--source', '--verbose', '.html', ':', 'Output JSON', 'Output JSON Lines', 'Search', 'Search cancelled.', 'Select result', 'Write CSV to file', 'conversation_id', 'conversation_path', 'index not built', 'json_output', 'list_mode', 'message_id', 'open_result', 'path', 'provider', 'query', 'search', 'search index', 'snippet', 'source', 'source_name', 'timestamp', 'title', 'utf-8', 'w']

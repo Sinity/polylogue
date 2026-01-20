@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/pipeline/ids.py
+# hypothesis_version: 6.150.2
+
+['attachments', 'created_at', 'digest', 'hash', 'id', 'message_id', 'messages', 'mime_type', 'name', 'role', 'sha256', 'size_bytes', 'text', 'timestamp', 'title', 'updated_at', '|']

@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/cli/commands/health.py
+# hypothesis_version: 6.150.2
+
+['Health', 'age_seconds', 'cached', 'checks', 'detail', 'health', 'name', 'status']

@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/cmd.py
+# hypothesis_version: 6.150.2
+
+['!', '%s\n', '(Cmd) ', '*** No help on %s', ', ', '<empty>\n', '=', '?', 'Cmd', 'EOF', '_', 'bind ^I rl_complete', 'complete_', 'do_', 'do_shell', 'editline', 'help ', 'help_', 'shell ', 'tab']

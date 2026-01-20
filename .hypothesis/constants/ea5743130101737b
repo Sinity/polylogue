@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/email/base64mime.py
+# hypothesis_version: 6.150.2
+
+['=?%s?b?%s?=', 'ascii', 'body_decode', 'body_encode', 'decode', 'decodestring', 'header_encode', 'header_length', 'iso-8859-1', 'raw-unicode-escape']

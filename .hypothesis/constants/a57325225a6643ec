@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/health.py
+# hypothesis_version: 6.150.2
+
+[600, ', ', 'DB reachable', 'HEALTH_TTL_SECONDS', 'HealthCheck', 'POLYLOGUE_TOKEN_PATH', 'age_seconds', 'archive_root', 'cached', 'checks', 'config', 'database', 'error', 'exists', 'get_health', 'health.json', 'index', 'index not built', 'not run', 'ok', 'render_root', 'run_health', 'status', 'timestamp', 'unknown', 'utf-8', 'warning']

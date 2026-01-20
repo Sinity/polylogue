@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/cli/formatting.py
+# hypothesis_version: 6.150.2
+
+[', ', '0', '; ', 'Index: error', 'Index: ok', 'Index: skipped', 'Index: up-to-date', 'error_count', 'false', 'file_count', 'ingest', 'latest_file_name', 'latest_mtime', 'latest_path', 'no', 'none', 'render', 'rendered', 'unknown']

@@ -153,9 +153,15 @@
                         
                         {% for att in msg.attachments %}
                         <div class="attachments">
-                            <a href="#" class="attachment">
+                            {% if att.path %}
+                            <a href="{{ att.path }}" class="attachment" target="_blank">
                                 📎 {{ att.name or att.id }}
                             </a>
+                            {% else %}
+                            <span class="attachment">
+                                📎 {{ att.name or att.id }}
+                            </span>
+                            {% endif %}
                         </div>
                         {% endfor %}
                     </div>

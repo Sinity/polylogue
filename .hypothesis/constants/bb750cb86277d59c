@@ -1,0 +1,4 @@
+# file: /etc/profiles/per-user/sinity/lib/python3.13/textwrap.py
+# hypothesis_version: 6.150.2
+
+[' [...]', '(%s+)', '(?m)^', '(^[ \t]*)(?:[^ \t\n])', '-', 'TextWrapper', '[%s]', '[\\w!"\\\'&.,?]', '[^', '[^\\d\\W]', '^[ \t]+$', '__main__', 'dedent', 'fill', 'indent', 'lt', 'nws', 'shorten', 'wp', 'wrap', 'ws']

@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/cli/commands/serve.py
+# hypothesis_version: 6.150.2
+
+[8000, '--host', '--port', '127.0.0.1', 'Host to bind', 'Port to bind', 'serve']

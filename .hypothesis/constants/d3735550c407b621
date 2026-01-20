@@ -1,0 +1,4 @@
+# file: /realm/project/polylogue/polylogue/core/timestamps.py
+# hypothesis_version: 6.150.2
+
+['+00:00', '.', 'Z', 'format_timestamp', 'parse_timestamp', 'seconds']
