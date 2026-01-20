@@ -11,6 +11,9 @@ def _clear_polylogue_env(monkeypatch):
         "POLYLOGUE_RENDER_ROOT",
         "POLYLOGUE_TEMPLATE_PATH",
         "POLYLOGUE_DECLARATIVE",
+        # Prevent tests from hitting external Qdrant
+        "QDRANT_URL",
+        "QDRANT_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -33,3 +36,37 @@ def workspace_env(tmp_path, monkeypatch):
         "archive_root": archive_root,
         "state_root": state_dir,
     }
+
+
+@pytest.fixture
+def db_without_fts(tmp_path):
+    """Database with schema but WITHOUT the FTS table (simulates fresh install)."""
+    from polylogue.db import open_connection
+
+    db_path = tmp_path / "no_fts.db"
+    with open_connection(db_path) as conn:
+        # Drop the FTS table to simulate fresh install state
+        conn.execute("DROP TABLE IF EXISTS messages_fts")
+        conn.commit()
+    return db_path
+
+
+@pytest.fixture
+def uppercase_json_inbox(tmp_path):
+    """Inbox directory with uppercase extension files."""
+    import json
+
+    inbox = tmp_path / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+
+    # Create files with various case combinations
+    payload = {
+        "id": "upper-conv",
+        "messages": [{"id": "m1", "role": "user", "text": "uppercase test"}],
+    }
+
+    (inbox / "CHATGPT.JSON").write_text(json.dumps(payload), encoding="utf-8")
+    (inbox / "Export.JSONL").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    (inbox / "data.jsonl.txt").write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    return inbox

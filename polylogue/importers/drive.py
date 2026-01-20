@@ -94,6 +94,24 @@ def parse_chunked_prompt(provider: str, payload: dict, fallback_id: str) -> Pars
             meta["isThought"] = True
         if chunk_obj.get("tokenCount"):
             meta["tokenCount"] = chunk_obj.get("tokenCount")
+
+        # Extract structured content blocks for semantic detection
+        content_blocks = []
+        if chunk_obj.get("isThought"):
+            # Gemini thinking block
+            content_blocks.append({
+                "type": "thinking",
+                "text": text,
+            })
+        else:
+            # Regular text content
+            content_blocks.append({
+                "type": "text",
+                "text": text,
+            })
+        if content_blocks:
+            meta["content_blocks"] = content_blocks
+
         messages.append(
             ParsedMessage(
                 provider_message_id=msg_id,
