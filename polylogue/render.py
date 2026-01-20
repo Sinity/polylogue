@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from jinja2 import DictLoader, Environment, FileSystemLoader
 from markdown_it import MarkdownIt
@@ -87,7 +89,7 @@ def render_conversation(
             (conversation_id,),
         ).fetchone()
         if not convo:
-            raise RuntimeError(f"Conversation not found: {conversation_id}")
+            raise ValueError(f"Conversation not found: {conversation_id}")
         messages = conn.execute(
             """
             SELECT * FROM messages
@@ -119,7 +121,7 @@ def render_conversation(
             (conversation_id,),
         ).fetchall()
 
-    attachments_by_message = {}
+    attachments_by_message: dict[str, list[Any]] = {}
     for att in attachments:
         attachments_by_message.setdefault(att["message_id"], []).append(att)
 
@@ -130,7 +132,7 @@ def render_conversation(
             try:
                 meta_dict = json.loads(meta)
                 name = meta_dict.get("name") or meta_dict.get("provider_id") or meta_dict.get("drive_id")
-            except Exception:
+            except json.JSONDecodeError:
                 name = None
         label = name or att["attachment_id"]
         path_value = att["path"] or str(asset_path(archive_root, att["attachment_id"]))

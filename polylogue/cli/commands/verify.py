@@ -38,7 +38,10 @@ def verify_command(env: AppEnv, json_output: bool, verbose: bool) -> None:
                 lines.append(f"    {provider}: {count:,}")
 
     summary = report.summary
-    summary_line = f"Summary: {summary.get('ok', 0)} ok, {summary.get('warning', 0)} warnings, {summary.get('error', 0)} errors"
+    summary_line = (
+        f"Summary: {summary.get('ok', 0)} ok, "
+        f"{summary.get('warning', 0)} warnings, {summary.get('error', 0)} errors"
+    )
     lines.append("")
     lines.append(summary_line)
 
