@@ -15,8 +15,6 @@ def _resolve_version() -> str:
         return metadata_version("polylogue")
     except PackageNotFoundError:
         pass
-    except Exception:
-        pass
 
     pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
     if pyproject_path.exists():
@@ -25,7 +23,8 @@ def _resolve_version() -> str:
             match = re.search(r'^version\s*=\s*"([^"]+)"', text, re.MULTILINE)
             if match:
                 return match.group(1)
-        except Exception:
+        except (OSError, UnicodeDecodeError):
+            # Failed to read pyproject.toml
             pass
 
     return "unknown"

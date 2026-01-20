@@ -67,7 +67,7 @@ def maybe_prompt_sources(
         options.insert(0, last_choice)
     choice = env.ui.choose(f"Select source for {command}", options)
     if not choice:
-        return selected_sources
+        fail(command, "No source selected.")
     save_last_source(choice)
     if choice == "all":
         return None
@@ -108,7 +108,7 @@ def print_summary(env: AppEnv) -> None:
     last_run_data = latest_run()
     last_line = "Last run: none"
     if last_run_data:
-        last_line = f"Last run: {last_run_data.get('run_id')} ({last_run_data.get('timestamp')})"
+        last_line = f"Last run: {last_run_data.run_id} ({last_run_data.timestamp})"
     health_line = f"Health: {cached_health_summary(config.archive_root)}"
     ui.summary(
         "Polylogue",
@@ -129,4 +129,16 @@ def latest_render_path(render_root: Path) -> Path | None:
     candidates = list(render_root.rglob("conversation.md")) + list(render_root.rglob("conversation.html"))
     if not candidates:
         return None
-    return max(candidates, key=lambda p: p.stat().st_mtime)
+    # Handle race condition where files may be deleted between listing and stat
+    latest: Path | None = None
+    latest_mtime: float = 0.0
+    for path in candidates:
+        try:
+            mtime = path.stat().st_mtime
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+                latest = path
+        except OSError:
+            # File was deleted between listing and stat, skip it
+            continue
+    return latest

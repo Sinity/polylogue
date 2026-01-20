@@ -5,9 +5,14 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _LOCAL = threading.local()
+
+
+class DatabaseError(Exception):
+    """Database-related errors (schema, connection, migration)."""
 
 
 def default_db_path() -> Path:
@@ -29,11 +34,15 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT,
             content_hash TEXT NOT NULL,
             provider_meta TEXT,
+            source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
             version INTEGER NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_conversations_provider
         ON conversations(provider_name, provider_conversation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_conversations_source_name
+        ON conversations(source_name) WHERE source_name IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS messages (
             message_id TEXT PRIMARY KEY,
@@ -237,7 +246,67 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP TABLE runs_old")
-    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+    conn.execute("PRAGMA user_version = 3")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.commit()
+
+
+def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """Add computed source_name column to conversations for faster filtering."""
+    conn.execute("PRAGMA foreign_keys = OFF")
+    # Drop existing index before renaming table to avoid conflicts
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_provider")
+    conn.execute("ALTER TABLE conversations RENAME TO conversations_old")
+    conn.executescript(
+        """
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            provider_conversation_id TEXT NOT NULL,
+            title TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            content_hash TEXT NOT NULL,
+            provider_meta TEXT,
+            source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
+            version INTEGER NOT NULL
+        );
+
+        CREATE INDEX idx_conversations_provider
+        ON conversations(provider_name, provider_conversation_id);
+
+        CREATE INDEX idx_conversations_source_name
+        ON conversations(source_name) WHERE source_name IS NOT NULL;
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO conversations (
+            conversation_id,
+            provider_name,
+            provider_conversation_id,
+            title,
+            created_at,
+            updated_at,
+            content_hash,
+            provider_meta,
+            version
+        )
+        SELECT
+            conversation_id,
+            provider_name,
+            provider_conversation_id,
+            title,
+            created_at,
+            updated_at,
+            content_hash,
+            provider_meta,
+            version
+        FROM conversations_old
+        """
+    )
+    conn.execute("DROP TABLE conversations_old")
+    conn.execute("PRAGMA user_version = 4")
     conn.execute("PRAGMA foreign_keys = ON")
     conn.commit()
 
@@ -253,9 +322,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         version = 2
     if version == 2:
         _migrate_v2_to_v3(conn)
+        version = 3
+    if version == 3:
+        _migrate_v3_to_v4(conn)
         return
     if version != SCHEMA_VERSION:
-        raise RuntimeError(f"Unsupported DB schema version {version} (expected {SCHEMA_VERSION})")
+        raise DatabaseError(f"Unsupported DB schema version {version} (expected {SCHEMA_VERSION})")
 
 
 def _get_state() -> dict:
@@ -267,12 +339,12 @@ def _get_state() -> dict:
 
 
 @contextmanager
-def open_connection(db_path: Path | None = None) -> sqlite3.Connection:
+def open_connection(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     target_path = Path(db_path) if db_path is not None else default_db_path()
     target_path.parent.mkdir(parents=True, exist_ok=True)
     state = _get_state()
     if state["conn"] is not None and state["path"] != target_path:
-        raise RuntimeError(f"Existing connection opened for {state['path']}, cannot open {target_path}")
+        raise DatabaseError(f"Existing connection opened for {state['path']}, cannot open {target_path}")
 
     created_here = False
     if state["conn"] is None:
@@ -303,8 +375,54 @@ def open_connection(db_path: Path | None = None) -> sqlite3.Connection:
 
 
 @contextmanager
-def connection_context(conn: sqlite3.Connection | None = None, db_path: Path | None = None) -> sqlite3.Connection:
-    """Use an provided connection or open a new one via open_connection."""
+def connection_context(conn: sqlite3.Connection | None = None, db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
+    """Use a provided connection or open a new one via open_connection.
+
+    This is a convenience wrapper that allows code to optionally accept a connection
+    or create one automatically. It enables both standalone usage and composition
+    within larger transactions.
+
+    Transaction ownership and commit behavior:
+        - If conn is provided: The caller owns the connection and is responsible for
+          commit/rollback. This function does NOT commit or rollback. The connection
+          remains open after the context exits.
+
+        - If conn is None: A new connection is opened via open_connection(), which
+          automatically commits on successful exit and closes the connection. The
+          caller does NOT need to commit.
+
+    Thread safety:
+        - Each thread has its own connection state (via threading.local in open_connection).
+        - Passing a connection between threads is NOT safe - SQLite connections are
+          not thread-safe.
+        - If you need concurrent database access, each thread should call this with
+          conn=None to get its own connection.
+
+    Context manager behavior:
+        - Always use this as a context manager (with statement).
+        - The yielded connection is valid only within the context.
+        - Do not store the connection for use outside the context.
+
+    Args:
+        conn: Optional existing connection to use. If provided, caller retains ownership.
+        db_path: Optional database path. Only used if conn is None. Defaults to
+                 default_db_path() if not specified.
+
+    Yields:
+        sqlite3.Connection: The connection to use (either provided or newly opened).
+
+    Example:
+        # Standalone usage (auto-commit, auto-close):
+        with connection_context() as conn:
+            conn.execute("INSERT INTO ...")
+
+        # Composed within a transaction:
+        with open_connection() as conn:
+            with connection_context(conn) as same_conn:
+                # Operations here are part of the outer transaction
+                same_conn.execute("INSERT INTO ...")
+            # Commit happens here when open_connection context exits
+    """
     if conn:
         yield conn
     else:

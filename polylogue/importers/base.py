@@ -40,6 +40,8 @@ def normalize_role(role: str | None) -> str:
     if not role:
         return "message"
     lowered = str(role).strip().lower()
+    if not lowered:  # Handle whitespace-only strings
+        return "message"
     if lowered in {"assistant", "model"}:
         return "assistant"
     if lowered in {"user", "human"}:
