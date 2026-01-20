@@ -12,6 +12,7 @@ from polylogue.cli.formatting import format_source_label
 from polylogue.cli.helpers import fail, latest_render_path, load_effective_config
 from polylogue.cli.types import AppEnv
 from polylogue.config import ConfigError
+from polylogue.db import DatabaseError
 from polylogue.index import rebuild_index
 from polylogue.search import search_messages
 
@@ -47,8 +48,8 @@ def search_command(
         config = load_effective_config(env)
     except ConfigError as exc:
         fail("search", str(exc))
-    if query is None and not latest:
-        latest = True
+
+    # Validate --latest vs query/export options
     if latest:
         if query:
             fail("search", "--latest cannot be combined with a query")
@@ -68,8 +69,10 @@ def search_command(
         else:
             env.ui.console.print(f"[yellow]Could not open {target}[/yellow]")
         return
+
+    # Require query when not using --latest
     if not query:
-        fail("search", "Query required.")
+        fail("search", "Query required. Use --latest to open the most recent render instead.")
     try:
         result = search_messages(
             query,
@@ -79,9 +82,9 @@ def search_command(
             source=source,
             since=since,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, DatabaseError) as exc:
         message = str(exc)
-        if "Search index not built" in message:
+        if "index not built" in message.lower() or "search index" in message.lower():
             env.ui.console.print("Index missing; rebuilding...")
             try:
                 rebuild_index()
@@ -168,7 +171,8 @@ def search_command(
         try:
             index = int(choice.split(":", 1)[0]) - 1
             selected = [hits[index]]
-        except Exception:
+        except (ValueError, IndexError):
+            # Invalid input or out of range - default to first result
             selected = [hits[0]]
 
     if env.ui.plain or list_mode:
@@ -186,8 +190,13 @@ def search_command(
             return
         target = selected[0].conversation_path
         html_target = target.with_suffix(".html")
+        # Prefer HTML version if it exists, then markdown, then report not found
         if html_target.exists():
             target = html_target
+        elif not target.exists():
+            env.ui.console.print(f"[yellow]Render not found: {target}[/yellow]")
+            env.ui.console.print("Run `polylogue run` to render conversations.")
+            return
         if target.suffix.lower() == ".html" and open_in_browser(target):
             env.ui.console.print(f"Opened {target} in browser")
             return

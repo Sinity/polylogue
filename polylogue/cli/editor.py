@@ -101,10 +101,12 @@ def open_in_browser(path: Path, anchor: str | None = None) -> bool:
         try:
             subprocess.Popen(cmd)
             return True
-        except Exception:
+        except (OSError, subprocess.SubprocessError):
+            # Failed to launch custom browser
             return False
 
     try:
         return webbrowser.open(target)
-    except Exception:
+    except (OSError, webbrowser.Error):
+        # Failed to open in default browser
         return False

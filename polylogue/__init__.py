@@ -4,4 +4,5 @@ __all__ = [
     "run",
     "render",
     "search",
+    "types",
 ]

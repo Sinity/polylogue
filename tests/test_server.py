@@ -59,3 +59,32 @@ def test_web_view(test_client):
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "hello server" in response.text
+
+
+def test_api_search_returns_503_when_fts_missing(tmp_path):
+    """GET /api/search returns 503 with helpful message when index not built."""
+    db_path = tmp_path / "no_fts.db"
+
+    # Init DB but don't build FTS index
+    from tests.factories import DbFactory
+
+    factory = DbFactory(db_path)
+    factory.create_conversation(
+        id="c1",
+        provider="test",
+        messages=[{"id": "m1", "role": "user", "text": "search me"}],
+    )
+
+    def override_repo():
+        return ConversationRepository(db_path)
+
+    app.dependency_overrides[get_repository] = override_repo
+    client = TestClient(app)
+
+    try:
+        response = client.get("/api/search", params={"q": "search"})
+        assert response.status_code == 503
+        data = response.json()
+        assert "Search index not built" in data["detail"]
+    finally:
+        app.dependency_overrides.clear()

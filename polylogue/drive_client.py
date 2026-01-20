@@ -4,6 +4,7 @@ import contextlib
 import importlib
 import io
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -19,6 +20,8 @@ from tenacity import (
 )
 
 from .paths import CONFIG_HOME
+
+logger = logging.getLogger(__name__)
 
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
@@ -196,12 +199,16 @@ class DriveClient:
         if token_path.exists():
             try:
                 creds = credentials_cls.from_authorized_user_file(str(token_path), SCOPES)
-            except Exception:
+            except (OSError, ValueError):
+                # Token file corrupt or invalid
                 creds = None
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(request_cls())
-            except Exception:
+            except Exception as exc:
+                # Refresh failed - will need to re-authenticate
+                # Keep broad exception here as google-auth can raise various errors
+                logger.warning("Token refresh failed: %s. Re-authentication required.", exc)
                 creds = None
         if creds and creds.valid:
             self._persist_token(creds, token_path)
@@ -223,7 +230,24 @@ class DriveClient:
         flow = installed_app_flow_cls.from_client_secrets_file(str(credentials_path), SCOPES)
         try:
             creds = flow.run_local_server(open_browser=False, port=0)
-        except Exception:
+        except OSError as exc:
+            # Local server auth failed - try manual flow
+            logger.info("Local server auth unavailable (%s). Using manual flow.", exc)
+            auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
+            self._ui.console.print("Open this URL in your browser to authorize Drive access:")
+            self._ui.console.print(auth_url)
+            code = self._ui.input("Paste the authorization code")
+            if not code:
+                raise DriveAuthError("Drive authorization cancelled.") from None
+            try:
+                flow.fetch_token(code=code)
+            except Exception as exc:
+                raise DriveAuthError(f"Drive authorization failed: {exc}") from exc
+            creds = flow.credentials
+        except Exception as exc:
+            # Other unexpected errors - try manual flow
+            # Keep broad exception here as google-auth can raise various errors
+            logger.warning("Unexpected auth error: %s. Falling back to manual flow.", exc)
             auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
             self._ui.console.print("Open this URL in your browser to authorize Drive access:")
             self._ui.console.print(auth_url)
@@ -252,6 +276,7 @@ class DriveClient:
         return self._service
 
     def resolve_folder_id(self, folder_ref: str) -> str:
+        http_error_cls = _import_module("googleapiclient.errors").HttpError
         service = self._service_handle()
         if _looks_like_id(folder_ref):
             try:
@@ -260,7 +285,14 @@ class DriveClient:
                 )
                 if file_meta and file_meta.get("mimeType") == FOLDER_MIME_TYPE:
                     return file_meta["id"]
-            except Exception:
+            except Exception as exc:
+                # File not found or permission denied - try by name
+                # Keep broad exception here as google-api errors vary
+                if isinstance(exc, http_error_cls):
+                    if exc.resp.status not in (404, 403):
+                        logger.warning("Unexpected Drive API error resolving %s: %s", folder_ref, exc)
+                else:
+                    logger.warning("Error resolving folder ID %s: %s", folder_ref, exc)
                 pass
         escaped = folder_ref.replace("'", "\\'")
         query = f"name = '{escaped}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
@@ -283,7 +315,7 @@ class DriveClient:
                 name = item.get("name") or ""
                 mime_type = item.get("mimeType") or ""
                 # Include .json/.jsonl files OR Gemini AI Studio prompt files
-                is_json_file = name.lower().endswith((".json", ".jsonl"))
+                is_json_file = name.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson"))
                 is_gemini_prompt = mime_type == GEMINI_PROMPT_MIME_TYPE
                 if not (is_json_file or is_gemini_prompt):
                     continue
@@ -381,7 +413,14 @@ class DriveClient:
         raw = self.download_bytes(file_id)
         handle = io.BytesIO(raw)
 
-        if name.lower().endswith(".jsonl"):
+        # Treat all newline-delimited JSON formats consistently
+        name_lower = name.lower()
+        is_ndjson = (
+            name_lower.endswith(".jsonl")
+            or name_lower.endswith(".jsonl.txt")
+            or name_lower.endswith(".ndjson")
+        )
+        if is_ndjson:
             items = []
             for line in handle:
                 line = line.strip()
@@ -389,7 +428,8 @@ class DriveClient:
                     continue
                 try:
                     items.append(json.loads(line))
-                except json.JSONDecodeError:
+                except json.JSONDecodeError as exc:
+                    logger.warning("Skipping invalid JSON line in Drive file %s: %s", name, exc)
                     continue
             return items
 

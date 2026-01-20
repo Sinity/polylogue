@@ -116,8 +116,11 @@ def prepare_ingest(
 
     attachments: list[AttachmentRecord] = []
     for att in convo.attachments:
-        aid = attachment_content_id(convo.provider_name, att, archive_root=archive_root)
-        meta = dict(att.provider_meta or {})
+        aid, updated_meta, updated_path = attachment_content_id(
+            convo.provider_name, att, archive_root=archive_root
+        )
+        # Merge updated metadata with provider_id if present
+        meta = dict(updated_meta or {})
         if att.provider_attachment_id:
             meta.setdefault("provider_id", att.provider_attachment_id)
         attachments.append(
@@ -127,7 +130,7 @@ def prepare_ingest(
                 message_id=message_ids.get(att.message_provider_id or ""),
                 mime_type=att.mime_type,
                 size_bytes=att.size_bytes,
-                path=att.path,
+                path=updated_path,
                 provider_meta=meta,
             )
         )

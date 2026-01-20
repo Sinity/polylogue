@@ -2,9 +2,9 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.templating import Jinja2Templates
+from markdown_it import MarkdownIt
 
 import polylogue
-from markdown_it import MarkdownIt
 from polylogue.lib.repository import ConversationRepository
 from polylogue.server.deps import get_repository
 

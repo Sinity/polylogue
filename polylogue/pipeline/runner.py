@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
+import sqlite3
+import threading
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -15,7 +18,7 @@ from polylogue.core.log import get_logger
 from polylogue.db import connection_context
 from polylogue.drive_client import DriveAuthError
 from polylogue.drive_ingest import iter_drive_conversations
-from polylogue.index import index_status, rebuild_index, update_index_for_conversations
+from polylogue.index import ensure_index, index_status, rebuild_index, update_index_for_conversations
 from polylogue.pipeline.ingest import prepare_ingest
 from polylogue.pipeline.models import PlanResult, RunResult
 from polylogue.render import render_conversation
@@ -90,9 +93,13 @@ def plan_sources(
 
 def _all_conversation_ids(source_names: Sequence[str] | None = None) -> list[str]:
     with connection_context(None) as conn:
+        # Skip provider_meta if no filtering needed
+        if not source_names:
+            rows = conn.execute("SELECT conversation_id FROM conversations").fetchall()
+            return [row["conversation_id"] for row in rows]
+
         rows = conn.execute("SELECT conversation_id, provider_name, provider_meta FROM conversations").fetchall()
-    if not source_names:
-        return [row["conversation_id"] for row in rows]
+
     selected: list[str] = []
     name_set = set(source_names)
     for row in rows:
@@ -104,7 +111,8 @@ def _all_conversation_ids(source_names: Sequence[str] | None = None) -> list[str
             continue
         try:
             payload = loads(meta)
-        except Exception:
+        except (ValueError, TypeError):
+            # Invalid JSON in provider_meta - skip this conversation
             continue
         if isinstance(payload, dict) and payload.get("source") in name_set:
             selected.append(row["conversation_id"])
@@ -145,10 +153,12 @@ def run_sources(
         "attachments": 0,
     }
     processed_ids: set[str] = set()
+    # Lock to protect shared mutable state from concurrent access
+    _counts_lock = threading.Lock()
 
     with connection_context(None) as conn:
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            futures = {}
+            futures: dict[Any, Any] = {}
 
             def _process_one(convo_item, source_name_item):
                 # Run preparation in a separate thread with its own connection for reads
@@ -159,6 +169,26 @@ def run_sources(
                         archive_root=config.archive_root,
                         conn=thread_conn,
                     )
+
+            def _handle_future(fut):
+                convo_id, result_counts, content_changed = fut.result()
+                ingest_changed = (
+                    result_counts["conversations"] + result_counts["messages"] + result_counts["attachments"]
+                ) > 0
+                # Protect all mutations to shared state with lock
+                with _counts_lock:
+                    if ingest_changed or content_changed:
+                        processed_ids.add(convo_id)
+                    if content_changed:
+                        changed_counts["conversations"] += 1
+                    if result_counts["messages"]:
+                        changed_counts["messages"] += result_counts["messages"]
+                    if result_counts["attachments"]:
+                        changed_counts["attachments"] += result_counts["attachments"]
+                    for key, value in result_counts.items():
+                        counts[key] += value
+                if progress_callback:
+                    progress_callback(1, desc="Ingesting")
 
             if stage in {"ingest", "all"}:
                 for source in _select_sources(config, source_names):
@@ -177,61 +207,54 @@ def run_sources(
                             )
                             for fut in done:
                                 try:
-                                    convo_id, result_counts, content_changed = fut.result()
-                                    ingest_changed = (
-                                        result_counts["conversations"]
-                                        + result_counts["messages"]
-                                        + result_counts["attachments"]
-                                    ) > 0
-                                    if ingest_changed or content_changed:
-                                        processed_ids.add(convo_id)
-                                    if content_changed:
-                                        changed_counts["conversations"] += 1
-                                    for key, value in result_counts.items():
-                                        counts[key] += value
+                                    _handle_future(fut)
                                 finally:
                                     del futures[fut]
 
                         future = executor.submit(_process_one, convo, source.name)
                         futures[future] = convo.provider_conversation_id
-                        if progress_callback:
-                            progress_callback(1, desc="Ingesting")
 
                 # Drain remaining
                 for fut in concurrent.futures.as_completed(futures):
                     try:
-                        convo_id, result_counts, content_changed = fut.result()
-                        ingest_changed = (
-                            result_counts["conversations"] + result_counts["messages"] + result_counts["attachments"]
-                        ) > 0
-                        if ingest_changed or content_changed:
-                            processed_ids.add(convo_id)
-                        if content_changed:
-                            changed_counts["conversations"] += 1
-                        for key, value in result_counts.items():
-                            counts[key] += value
-                        if progress_callback:
-                            progress_callback(1, desc="Ingesting")
+                        _handle_future(fut)
                     except Exception as exc:
                         logger.error("Error processing conversation", error=str(exc))
                         raise
 
         if stage in {"render", "all"}:
             ids = _all_conversation_ids(source_names) if stage == "render" else list(processed_ids)
-            for convo_id in ids:
+
+            def _render_one(convo_id):
                 render_conversation(
                     conversation_id=convo_id,
                     archive_root=config.archive_root,
                     render_root_path=config.render_root,
                     template_path=config.template_path,
                 )
-                counts["rendered"] += 1
+                return 1
+
+            # Parallel rendering
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as render_executor:
+                render_futures = {render_executor.submit(_render_one, cid): cid for cid in ids}
+                for fut in concurrent.futures.as_completed(render_futures):
+                    try:
+                        counts["rendered"] += fut.result()
+                    except Exception as exc:
+                        logger.error("Error rendering conversation %s: %s", render_futures[fut], exc)
 
         indexed = False
         index_error: str | None = None
         try:
             if stage == "index":
-                rebuild_index(conn)
+                if source_names:
+                    ids = _all_conversation_ids(source_names)
+                    if ids:
+                        update_index_for_conversations(ids, conn)
+                    else:
+                        ensure_index(conn)
+                else:
+                    rebuild_index(conn)
                 indexed = True
             elif stage == "all":
                 idx = index_status()
@@ -306,7 +329,43 @@ def run_sources(
     )
 
 
-def latest_run() -> dict | None:
+def latest_run() -> RunRecord | None:
+    """Fetch the most recent run record from the database.
+
+    Returns:
+        RunRecord if a run exists, None otherwise.
+    """
     with connection_context(None) as conn:
         row = conn.execute("SELECT * FROM runs ORDER BY timestamp DESC LIMIT 1").fetchone()
-    return dict(row) if row else None
+    if not row:
+        return None
+
+    # Parse JSON columns
+    plan_snapshot = None
+    counts = None
+    drift = None
+
+    raw_plan = row["plan_snapshot"]
+    if isinstance(raw_plan, str) and raw_plan:
+        with contextlib.suppress(ValueError, TypeError):
+            plan_snapshot = loads(raw_plan)
+
+    raw_counts = row["counts_json"]
+    if isinstance(raw_counts, str) and raw_counts:
+        with contextlib.suppress(ValueError, TypeError):
+            counts = loads(raw_counts)
+
+    raw_drift = row["drift_json"]
+    if isinstance(raw_drift, str) and raw_drift:
+        with contextlib.suppress(ValueError, TypeError):
+            drift = loads(raw_drift)
+
+    return RunRecord(
+        run_id=row["run_id"],
+        timestamp=row["timestamp"],
+        plan_snapshot=plan_snapshot,
+        counts=counts,
+        drift=drift,
+        indexed=bool(row["indexed"]) if row["indexed"] is not None else None,
+        duration_ms=row["duration_ms"],
+    )

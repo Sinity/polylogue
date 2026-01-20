@@ -30,32 +30,43 @@ def attachment_content_id(
     attachment: ParsedAttachment,
     *,
     archive_root: Path,
-) -> str:
+) -> tuple[str, dict | None, str | None]:
+    """Compute attachment content ID and return updated metadata.
+
+    Returns:
+        Tuple of (attachment_id, updated_provider_meta, updated_path).
+        The caller is responsible for applying any updates to the attachment.
+        This function does NOT mutate the attachment object.
+    """
     meta = dict(attachment.provider_meta or {})
+    updated_path = attachment.path
     for key in ("sha256", "digest", "hash"):
         value = meta.get(key)
         if isinstance(value, str) and value:
-            return value
+            return (value, meta, updated_path)
     raw_path = attachment.path
     if isinstance(raw_path, str) and raw_path:
         path = Path(raw_path)
         if path.exists() and path.is_file():
             digest = hash_file(path)
             meta.setdefault("sha256", digest)
-            attachment.provider_meta = meta
-            assets_root = archive_root / "assets"
-            if assets_root in path.parents:
-                target = asset_path(archive_root, digest)
-                if target != path:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    if target.exists():
-                        path.unlink()
-                    else:
+            target = asset_path(archive_root, digest)
+            if target != path:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists():
+                    path.unlink()
+                else:
+                    try:
                         path.replace(target)
-                    attachment.path = str(target)
-            return digest
+                    except OSError:
+                        target.write_bytes(path.read_bytes())
+                        path.unlink()
+                updated_path = str(target)
+            else:
+                updated_path = str(path)
+            return (digest, meta, updated_path)
     seed = attachment_seed(provider_name, attachment)
-    return hash_text(seed)
+    return (hash_text(seed), meta, updated_path)
 
 
 def conversation_id(provider_name: str, provider_conversation_id: str) -> str:

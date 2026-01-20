@@ -4,45 +4,76 @@ import hashlib
 import sqlite3
 import threading
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from polylogue.core.json import dumps as json_dumps
+
+# Type aliases for semantic clarity (full migration pending)
+# from polylogue.types import ConversationId, MessageId, AttachmentId, ContentHash
 
 _WRITE_LOCK = threading.Lock()
 
 
 class ConversationRecord(BaseModel):
-    conversation_id: str
-    provider_name: str
+    conversation_id: str  # TODO: migrate to ConversationId
+    provider_name: str  # TODO: migrate to Provider
     provider_conversation_id: str
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
-    content_hash: str
+    content_hash: str  # TODO: migrate to ContentHash
     provider_meta: dict | None = None
     version: int = 1
 
+    @field_validator("conversation_id", "provider_name", "provider_conversation_id", "content_hash")
+    @classmethod
+    def non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
 
 class MessageRecord(BaseModel):
-    message_id: str
-    conversation_id: str
+    message_id: str  # TODO: migrate to MessageId
+    conversation_id: str  # TODO: migrate to ConversationId
     provider_message_id: str | None = None
     role: str | None = None
     text: str | None = None
     timestamp: str | None = None
-    content_hash: str
+    content_hash: str  # TODO: migrate to ContentHash
     provider_meta: dict | None = None
     version: int = 1
 
+    @field_validator("message_id", "conversation_id", "content_hash")
+    @classmethod
+    def non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
 
 class AttachmentRecord(BaseModel):
-    attachment_id: str
-    conversation_id: str
-    message_id: str | None = None
+    attachment_id: str  # TODO: migrate to AttachmentId
+    conversation_id: str  # TODO: migrate to ConversationId
+    message_id: str | None = None  # TODO: migrate to MessageId | None
     mime_type: str | None = None
     size_bytes: int | None = None
     path: str | None = None
     provider_meta: dict | None = None
+
+    @field_validator("attachment_id", "conversation_id")
+    @classmethod
+    def non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+    @field_validator("size_bytes")
+    @classmethod
+    def non_negative_size(cls, v: int | None) -> int | None:
+        if v is not None and v < 0:
+            raise ValueError("size_bytes cannot be negative")
+        return v
 
 
 class RunRecord(BaseModel):
@@ -67,6 +98,52 @@ def _make_ref_id(attachment_id: str, conversation_id: str, message_id: str | Non
     return f"ref-{digest}"
 
 
+def _prune_attachment_refs(conn, conversation_id: str, keep_ref_ids: set[str]) -> None:
+    query = "SELECT ref_id, attachment_id FROM attachment_refs WHERE conversation_id = ?"
+    params: list[str] = [conversation_id]
+    if keep_ref_ids:
+        placeholders = ", ".join("?" for _ in keep_ref_ids)
+        query += f" AND ref_id NOT IN ({placeholders})"
+        params.extend(sorted(keep_ref_ids))
+    rows = conn.execute(query, tuple(params)).fetchall()
+    if not rows:
+        return
+
+    ref_ids = [row["ref_id"] for row in rows]
+    attachments = {row["attachment_id"] for row in rows}
+
+    # Use SAVEPOINT for atomic multi-step ref_count operations
+    # If interrupted, all changes rollback to prevent incorrect ref_count
+    conn.execute("SAVEPOINT prune_attachment_refs")
+    try:
+        placeholders = ", ".join("?" for _ in ref_ids)
+        conn.execute(
+            f"DELETE FROM attachment_refs WHERE ref_id IN ({placeholders})",
+            tuple(ref_ids),
+        )
+
+        # Single UPDATE query with IN clause instead of N individual queries
+        if attachments:
+            att_placeholders = ", ".join("?" for _ in attachments)
+            conn.execute(
+                f"""
+                UPDATE attachments
+                SET ref_count = (
+                    SELECT COUNT(*)
+                    FROM attachment_refs
+                    WHERE attachment_refs.attachment_id = attachments.attachment_id
+                )
+                WHERE attachment_id IN ({att_placeholders})
+                """,
+                tuple(attachments),
+            )
+        conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
+        conn.execute("RELEASE SAVEPOINT prune_attachment_refs")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT prune_attachment_refs")
+        raise
+
+
 def upsert_conversation(conn, record: ConversationRecord) -> bool:
     res = conn.execute(
         """
@@ -87,7 +164,12 @@ def upsert_conversation(conn, record: ConversationRecord) -> bool:
             updated_at = excluded.updated_at,
             content_hash = excluded.content_hash,
             provider_meta = excluded.provider_meta
-        WHERE content_hash != excluded.content_hash OR title != excluded.title
+        WHERE
+            content_hash != excluded.content_hash
+            OR IFNULL(title, '') != IFNULL(excluded.title, '')
+            OR IFNULL(created_at, '') != IFNULL(excluded.created_at, '')
+            OR IFNULL(updated_at, '') != IFNULL(excluded.updated_at, '')
+            OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
         """,
         (
             record.conversation_id,
@@ -124,7 +206,12 @@ def upsert_message(conn, record: MessageRecord) -> bool:
             timestamp = excluded.timestamp,
             content_hash = excluded.content_hash,
             provider_meta = excluded.provider_meta
-        WHERE content_hash != excluded.content_hash
+        WHERE
+            content_hash != excluded.content_hash
+            OR IFNULL(role, '') != IFNULL(excluded.role, '')
+            OR IFNULL(text, '') != IFNULL(excluded.text, '')
+            OR IFNULL(timestamp, '') != IFNULL(excluded.timestamp, '')
+            OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
         """,
         (
             record.message_id,
@@ -239,22 +326,27 @@ def store_records(
 
     from .db import connection_context
 
-    with connection_context(conn) as db_conn:
-        with _WRITE_LOCK:
-            if upsert_conversation(db_conn, conversation):
-                counts["conversations"] += 1
+    with connection_context(conn) as db_conn, _WRITE_LOCK:
+        if upsert_conversation(db_conn, conversation):
+            counts["conversations"] += 1
+        else:
+            counts["skipped_conversations"] += 1
+        for message in messages:
+            if upsert_message(db_conn, message):
+                counts["messages"] += 1
             else:
-                counts["skipped_conversations"] += 1
-            for message in messages:
-                if upsert_message(db_conn, message):
-                    counts["messages"] += 1
-                else:
-                    counts["skipped_messages"] += 1
-            for attachment in attachments:
-                if upsert_attachment(db_conn, attachment):
-                    counts["attachments"] += 1
-                else:
-                    counts["skipped_attachments"] += 1
+                counts["skipped_messages"] += 1
+        seen_ref_ids: set[str] = set()
+        for attachment in attachments:
+            ref_id = _make_ref_id(attachment.attachment_id, attachment.conversation_id, attachment.message_id)
+            seen_ref_ids.add(ref_id)
+            if upsert_attachment(db_conn, attachment):
+                counts["attachments"] += 1
+            else:
+                counts["skipped_attachments"] += 1
+        _prune_attachment_refs(db_conn, conversation.conversation_id, seen_ref_ids)
+        # Commit inside lock to ensure atomic transaction boundaries
+        db_conn.commit()
 
     return counts
 

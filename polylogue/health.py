@@ -31,7 +31,7 @@ def _load_cached(archive_root: Path) -> dict | None:
         return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
 
@@ -136,7 +136,7 @@ def cached_health_summary(archive_root: Path) -> str:
     age = int(time.time()) - timestamp
     checks = cached.get("checks")
     if isinstance(checks, list):
-        counts = {}
+        counts: dict[str, int] = {}
         for check in checks:
             if not isinstance(check, dict):
                 continue

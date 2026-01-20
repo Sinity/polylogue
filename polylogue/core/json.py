@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from decimal import Decimal
 import logging
-from typing import Any, Callable
+from collections.abc import Callable
+from decimal import Decimal
+from typing import Any
 
 import orjson
 
@@ -30,8 +31,11 @@ def _default_encoder(user_default: Callable[[Any], Any] | None = None) -> Callab
 def dumps(obj: Any, *, default: Callable[[Any], Any] | None = None, option: int | None = None) -> str:
     """Dump object to JSON string."""
     encoder = _default_encoder(default)
+    kwargs: dict[str, Any] = {"default": encoder}
+    if option is not None:
+        kwargs["option"] = option
     try:
-        return orjson.dumps(obj, default=encoder, option=option).decode("utf-8")
+        return orjson.dumps(obj, **kwargs).decode("utf-8")
     except TypeError:
         pass
     import json

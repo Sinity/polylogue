@@ -75,7 +75,8 @@ def config_show(env: AppEnv, json_output: bool) -> None:
             if isinstance(raw, dict):
                 raw_root = raw.get("archive_root")
                 raw_render_root = raw.get("render_root")
-        except Exception:
+        except (OSError, json.JSONDecodeError):
+            # Config file missing or malformed - use defaults
             raw_root = None
             raw_render_root = None
         payload["resolved_archive_root"] = str(config.archive_root)

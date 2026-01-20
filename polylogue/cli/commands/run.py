@@ -40,6 +40,7 @@ def run_command(
     stage: str,
     sources: tuple[str, ...],
 ) -> None:
+    plan_snapshot = None
     try:
         config = load_effective_config(env)
     except ConfigError as exc:
@@ -48,20 +49,21 @@ def run_command(
     selected_sources = maybe_prompt_sources(env, config, selected_sources, "run")
     if preview:
         try:
-            plan_result = plan_sources(config, ui=env.ui, source_names=selected_sources)
+            plan_snapshot = plan_sources(config, ui=env.ui, source_names=selected_sources)
         except DriveError as exc:
             fail("run", str(exc))
         plan_lines = []
         if selected_sources:
             plan_lines.append(f"Sources: {', '.join(selected_sources)}")
-        plan_lines.append(f"Counts: {format_counts(plan_result.counts)}")
-        cursor_line = format_cursors(plan_result.cursors)
+        plan_lines.append(f"Counts: {format_counts(plan_snapshot.counts)}")
+        cursor_line = format_cursors(plan_snapshot.cursors)
         if cursor_line:
             plan_lines.append(f"Cursors: {cursor_line}")
-        plan_lines.append(f"Snapshot: {format_timestamp(plan_result.timestamp)}")
+        plan_lines.append(f"Snapshot: {format_timestamp(plan_snapshot.timestamp)}")
         env.ui.summary("Preview", plan_lines)
-        return
-    if not env.ui.plain and not env.ui.confirm("Proceed with run?", default=True):
+        if env.ui.plain or not env.ui.confirm("Run now using this snapshot?", default=False):
+            return
+    if not plan_snapshot and not env.ui.plain and not env.ui.confirm("Proceed with run?", default=True):
         env.ui.console.print("Run cancelled.")
         return
     try:
@@ -84,7 +86,7 @@ def run_command(
             result = run_sources(
                 config=config,
                 stage=stage,
-                plan=None,
+                plan=plan_snapshot,
                 ui=env.ui,
                 source_names=selected_sources,
                 progress_callback=plain_progress,
@@ -111,7 +113,7 @@ def run_command(
                 result = run_sources(
                     config=config,
                     stage=stage,
-                    plan=None,
+                    plan=plan_snapshot,
                     ui=env.ui,
                     source_names=selected_sources,
                     progress_callback=progress_callback,

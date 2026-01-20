@@ -40,7 +40,7 @@ def _decode_json_bytes(blob: bytes) -> str | None:
     try:
         decoded = blob.decode("utf-8", errors="ignore").replace("\x00", "")
         return decoded if decoded else None
-    except Exception:
+    except (AttributeError, UnicodeDecodeError):
         LOGGER.debug("Failed to coerce JSON bytes after fallbacks.")
         return None
 
@@ -86,10 +86,11 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str) -> list[P
     # Fallback / Generic
     if isinstance(payload, dict):
         if "conversations" in payload and isinstance(payload["conversations"], list):
-            return [
-                _parse_json_payload(provider, item, f"{fallback_id}-{i}")[0]
-                for i, item in enumerate(payload["conversations"])
-            ]
+            results = []
+            for i, item in enumerate(payload["conversations"]):
+                parsed = _parse_json_payload(provider, item, f"{fallback_id}-{i}")
+                results.extend(parsed)
+            return results
 
         # Generic "messages" support
         if "messages" in payload and isinstance(payload["messages"], list):
@@ -124,14 +125,13 @@ def parse_drive_payload(provider: str, payload: Any, fallback_id: str) -> list[P
     if isinstance(payload, dict):
         if "chunkedPrompt" in payload or "chunks" in payload:
             return [drive.parse_chunked_prompt(provider, payload, fallback_id)]
-        return [
-            chatgpt.parse(payload, fallback_id) if chatgpt.looks_like(payload) else chatgpt.parse(payload, fallback_id)
-        ]  # placeholder
+        detected = detect_provider(payload, Path(fallback_id)) or provider
+        return _parse_json_payload(detected, payload, fallback_id)
     return []
 
 
 def _iter_json_stream(handle: BinaryIO, path_name: str) -> Iterable[dict]:
-    if path_name.lower().endswith((".jsonl", ".jsonl.txt")):
+    if path_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
         for line in handle:
             raw = line.strip()
             if not raw:
@@ -145,7 +145,8 @@ def _iter_json_stream(handle: BinaryIO, path_name: str) -> Iterable[dict]:
                 decoded = raw
             try:
                 yield json.loads(decoded)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
+                LOGGER.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
                 continue
         return
 
@@ -158,9 +159,10 @@ def _iter_json_stream(handle: BinaryIO, path_name: str) -> Iterable[dict]:
             yield item
         if found_any:
             return
-    except (ijson.common.JSONError, Exception):
-        # LOGGER.info("Strategy 1 failed for %s: %s", path_name, e)
-        pass
+    except ijson.common.JSONError:
+        pass  # Expected, try next strategy
+    except Exception as exc:
+        LOGGER.debug("Strategy 1 (ijson items) failed for %s: %s", path_name, exc)
 
     handle.seek(0)
     # Strategy 2: Try streaming conversations list
@@ -172,9 +174,10 @@ def _iter_json_stream(handle: BinaryIO, path_name: str) -> Iterable[dict]:
             yield item
         if found_any:
             return
-    except (ijson.common.JSONError, Exception):
-        # LOGGER.info("Strategy 2 failed for %s: %s", path_name, e)
-        pass
+    except ijson.common.JSONError:
+        pass  # Expected, try next strategy
+    except Exception as exc:
+        LOGGER.debug("Strategy 2 (ijson conversations.item) failed for %s: %s", path_name, exc)
 
     handle.seek(0)
     # Strategy 3: Load full object (fallback for single dicts or unknown structures)
@@ -192,14 +195,29 @@ def _iter_json_stream(handle: BinaryIO, path_name: str) -> Iterable[dict]:
         raise
 
 
+_INGEST_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
+_INGEST_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
+
+
+def _has_ingest_extension(path: Path) -> bool:
+    """Check if path has a supported ingest extension (case-insensitive)."""
+    name_lower = path.name.lower()
+    # Check double extensions first (e.g., .jsonl.txt)
+    for ext in _INGEST_DOUBLE_EXTENSIONS:
+        if name_lower.endswith(ext):
+            return True
+    # Check single extensions
+    return path.suffix.lower() in _INGEST_EXTENSIONS
+
+
 def iter_source_conversations(source: Source, *, cursor_state: dict | None = None) -> Iterable[ParsedConversation]:
     if not source.path:
         return
     base = source.path.expanduser()
-    paths = []
+    paths: list[Path] = []
     if base.is_dir():
-        for ext in ("*.json", "*.jsonl", "*.jsonl.txt", "*.zip"):
-            paths.extend(sorted(base.rglob(ext)))
+        # Iterate all files and filter by extension (case-insensitive)
+        paths = sorted(p for p in base.rglob("*") if p.is_file() and _has_ingest_extension(p))
     elif base.is_file():
         paths.append(base)
 
@@ -218,7 +236,8 @@ def iter_source_conversations(source: Source, *, cursor_state: dict | None = Non
             if path.suffix.lower() == ".zip":
                 with zipfile.ZipFile(path) as zf:
                     for name in zf.namelist():
-                        if name.endswith(("conversations.json", ".jsonl")):
+                        lower_name = name.lower()
+                        if lower_name.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
                             with zf.open(name) as handle:
                                 for payload in _iter_json_stream(handle, name):
                                     try:
@@ -236,8 +255,11 @@ def iter_source_conversations(source: Source, *, cursor_state: dict | None = Non
                         except Exception:
                             LOGGER.exception("Error processing payload from %s", path)
                             raise
-        except Exception as exc:
+        except (json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
             LOGGER.warning("Failed to parse %s: %s", path, exc)
+            continue
+        except Exception as exc:
+            LOGGER.error("Unexpected error processing %s: %s", path, exc)
             continue
 
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from polylogue.db import open_connection
 from polylogue.export import export_jsonl
 from polylogue.ingest import IngestBundle, ingest_bundle
@@ -279,3 +281,133 @@ def test_ingest_updates_metadata(workspace_env):
     assert msg["role"] == "assistant"
     assert msg["timestamp"] == "2"
     assert msg["content_hash"] == "msg-new"
+
+
+def test_ingest_updates_fields_without_hash_changes(workspace_env):
+    base_conversation = ConversationRecord(
+        conversation_id="conv-hash-stable",
+        provider_name="codex",
+        provider_conversation_id="conv-hash-stable",
+        title="Original",
+        created_at=None,
+        updated_at="1",
+        content_hash="hash-stable",
+        provider_meta={"source": "inbox"},
+    )
+    base_message = MessageRecord(
+        message_id="msg-stable",
+        conversation_id="conv-hash-stable",
+        provider_message_id="msg-stable",
+        role="user",
+        text="hello",
+        timestamp="1",
+        content_hash="msg-stable",
+        provider_meta={"k": "v1"},
+    )
+    ingest_bundle(
+        IngestBundle(
+            conversation=base_conversation,
+            messages=[base_message],
+            attachments=[],
+        )
+    )
+
+    updated = IngestBundle(
+        conversation=ConversationRecord(
+            conversation_id="conv-hash-stable",
+            provider_name="codex",
+            provider_conversation_id="conv-hash-stable",
+            title="Updated title",
+            created_at=None,
+            updated_at="2",
+            content_hash="hash-stable",
+            provider_meta={"source": "inbox", "updated": True},
+        ),
+        messages=[
+            MessageRecord(
+                message_id="msg-stable",
+                conversation_id="conv-hash-stable",
+                provider_message_id="msg-stable",
+                role="assistant",
+                text="hello",
+                timestamp="3",
+                content_hash="msg-stable",
+                provider_meta={"k": "v2"},
+            )
+        ],
+        attachments=[],
+    )
+    ingest_bundle(updated)
+
+    with open_connection(None) as conn:
+        convo = conn.execute(
+            "SELECT title, updated_at, provider_meta FROM conversations WHERE conversation_id = ?",
+            ("conv-hash-stable",),
+        ).fetchone()
+        msg = conn.execute(
+            "SELECT role, timestamp, provider_meta FROM messages WHERE message_id = ?",
+            ("msg-stable",),
+        ).fetchone()
+    assert convo["title"] == "Updated title"
+    assert convo["updated_at"] == "2"
+    convo_meta = json.loads(convo["provider_meta"])
+    msg_meta = json.loads(msg["provider_meta"])
+    assert convo_meta["updated"] is True
+    assert msg["role"] == "assistant"
+    assert msg["timestamp"] == "3"
+    assert msg_meta["k"] == "v2"
+
+
+def test_ingest_removes_missing_attachments(workspace_env):
+    bundle = IngestBundle(
+        conversation=_conversation_record(),
+        messages=[
+            MessageRecord(
+                message_id="msg:att",
+                conversation_id="conv:hash",
+                provider_message_id="msg:att",
+                role="user",
+                text="hello",
+                timestamp="1",
+                content_hash="msg:att",
+                provider_meta=None,
+            )
+        ],
+        attachments=[
+            AttachmentRecord(
+                attachment_id="att-old",
+                conversation_id="conv:hash",
+                message_id="msg:att",
+                mime_type="text/plain",
+                size_bytes=10,
+                path="/tmp/old.txt",
+                provider_meta=None,
+            )
+        ],
+    )
+    ingest_bundle(bundle)
+
+    ingest_bundle(
+        IngestBundle(
+            conversation=_conversation_record(),
+            messages=[
+                MessageRecord(
+                    message_id="msg:att",
+                    conversation_id="conv:hash",
+                    provider_message_id="msg:att",
+                    role="user",
+                    text="hello",
+                    timestamp="1",
+                    content_hash="msg:att",
+                    provider_meta=None,
+                )
+            ],
+            attachments=[],
+        )
+    )
+
+    with open_connection(None) as conn:
+        attachment_count = conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
+        ref_count = conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone()[0]
+    assert attachment_count == 0
+    assert ref_count == 0
