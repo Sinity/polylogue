@@ -1,14 +1,73 @@
+"""Semantic models for conversations, messages, and attachments.
+
+This module defines the core domain models used throughout polylogue.
+The key types are:
+
+- `Message`: A single message with classification properties (`is_user`,
+  `is_assistant`, `is_tool_use`, `is_thinking`, `is_substantive`)
+
+- `Conversation`: A conversation with filtering views (`substantive_only()`,
+  `without_noise()`) and iteration helpers (`iter_pairs()`, `iter_thinking()`)
+
+- `DialoguePair`: A user message paired with its assistant response
+
+- `Attachment`: File attachments associated with messages
+
+These models support "semantic projections" - views over the data that
+filter and transform based on semantic meaning rather than raw structure.
+
+Example:
+    # Get only substantive dialogue (no tool calls, context dumps)
+    clean = conversation.substantive_only()
+
+    # Iterate over user/assistant turn pairs
+    for pair in conversation.iter_pairs():
+        print(f"Q: {pair.user.text[:50]}")
+        print(f"A: {pair.assistant.text[:50]}")
+
+    # Check message classification
+    if message.is_thinking:
+        print("This is a reasoning trace")
+"""
+
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import datetime
-from typing import Callable
+from enum import Enum
+from functools import cached_property
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord
+
+
+class Role(str, Enum):
+    """Canonical message roles across all providers."""
+    USER = "user"
+    ASSISTANT = "assistant"
+    SYSTEM = "system"
+    TOOL = "tool"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def from_string(cls, value: str | None) -> "Role":
+        """Normalize various role strings to canonical Role."""
+        if not value:
+            return cls.UNKNOWN
+        normalized = value.lower().strip()
+        # Handle provider variations
+        if normalized in ("assistant", "model"):
+            return cls.ASSISTANT
+        if normalized in ("user", "human"):
+            return cls.USER
+        # Direct match
+        try:
+            return cls(normalized)
+        except ValueError:
+            return cls.UNKNOWN
 
 
 class Attachment(BaseModel):
@@ -32,15 +91,12 @@ class Attachment(BaseModel):
         )
 
 
-# Patterns for content classification
-_TOOL_MARKERS = [
-    "tool_use", "tool_result", "function_calls", "function_result",
-    "antml:invoke", "antml:function_calls",
-]
-_THINKING_MARKERS = ["antml:thinking", "thinking", "isThought"]
+# Patterns for context dump detection (kept for is_context_dump)
 _CONTEXT_PATTERNS = [
     r"^Contents of .+:",
     r"^<file path=",
+    r"<system>.*</system>",  # System prompts pasted as context
+    r"(```\w*\n.*?\n```.*?){3,}",  # 3+ code fences = context dump
 ]
 
 
@@ -66,17 +122,25 @@ class Message(BaseModel):
 
     # --- Role classification ---
 
+    @cached_property
+    def role_enum(self) -> Role:
+        """Get the normalized Role enum for this message."""
+        return Role.from_string(self.role)
+
     @property
     def is_user(self) -> bool:
-        return self.role.lower() == "user"
+        """Message is from the user."""
+        return self.role_enum == Role.USER
 
     @property
     def is_assistant(self) -> bool:
-        return self.role.lower() in ("assistant", "model")
+        """Message is from the assistant."""
+        return self.role_enum == Role.ASSISTANT
 
     @property
     def is_system(self) -> bool:
-        return self.role.lower() == "system"
+        """Message is a system prompt."""
+        return self.role_enum == Role.SYSTEM
 
     @property
     def is_dialogue(self) -> bool:
@@ -111,54 +175,46 @@ class Message(BaseModel):
     @property
     def is_tool_use(self) -> bool:
         """Message contains tool/function calls or results."""
-        # ChatGPT role=tool: distinguish thinking (finished_text) from actual tools
+        # Check structured content_blocks (populated at ingest time)
+        if self.provider_meta:
+            blocks = self.provider_meta.get("content_blocks", [])
+            if blocks and any(b.get("type") in ("tool_use", "tool_result") for b in blocks):
+                return True
+
+        # ChatGPT role=tool: distinguish thinking from actual tools
         if self.role.lower() == "tool":
-            # If it's a thinking trace, not tool use
-            if self._is_chatgpt_thinking():
-                return False
-            return True
-        # Check provider_meta for Claude-code sidechain
+            return not self._is_chatgpt_thinking()
+
+        # Claude-code sidechain/meta markers (from raw data)
         if self.provider_meta:
             raw = self.provider_meta.get("raw", {})
             if isinstance(raw, dict):
-                if raw.get("isSidechain"):
+                if raw.get("isSidechain") or raw.get("isMeta"):
                     return True
-                if raw.get("isMeta"):
-                    return True
-        if not self.text:
-            return False
-        # Text-based detection (fallback)
-        text_lower = self.text.lower()
-        return any(marker in text_lower for marker in _TOOL_MARKERS)
+
+        return False
 
     @property
     def is_thinking(self) -> bool:
         """Message contains reasoning/thinking traces."""
-        # Check provider_meta first (Gemini isThought)
+        # Check structured content_blocks (populated at ingest time)
+        if self.provider_meta:
+            blocks = self.provider_meta.get("content_blocks", [])
+            if blocks and any(b.get("type") == "thinking" for b in blocks):
+                return True
+
+        # Gemini isThought marker (from raw data)
         if self.provider_meta:
             if self.provider_meta.get("isThought"):
                 return True
             raw = self.provider_meta.get("raw", {})
             if isinstance(raw, dict) and raw.get("isThought"):
                 return True
-        if not self.text:
-            return False
-        text = self.text
-        # Gemini thinking pattern 1: Bold action header (e.g., "**Analyzing...**\n\nI'm...")
-        if text.startswith("**"):
-            lines = text.split("\n", 2)
-            if len(lines) >= 1:
-                first_line = lines[0]
-                if first_line.endswith("**"):
-                    action_words = ["analyzing", "considering", "examining", "reviewing", 
-                                    "processing", "thinking", "assessing", "exploring",
-                                    "evaluating", "framing", "synthesizing", "formulating",
-                                    "pinpointing", "refining", "clarifying", "mapping"]
-                    if any(w in first_line.lower() for w in action_words):
-                        return True
-        # Gemini thinking pattern 2: Explicit thinking preface
-        if text.lower().startswith("here's a thinking process") or text.lower().startswith("my thinking"):
+
+        # ChatGPT content_type check (from raw data)
+        if self._is_chatgpt_thinking():
             return True
+
         return False
 
     @property
@@ -168,10 +224,14 @@ class Message(BaseModel):
             return False
         if len(self.attachments) > 0 and (not self.text or len(self.text) < 100):
             return True
-        for pattern in _CONTEXT_PATTERNS:
-            if re.search(pattern, self.text, re.MULTILINE):
-                return True
-        return False
+        # System prompt content
+        if "<system>" in self.text and "</system>" in self.text:
+            return True
+        # Multiple code fences (3+) suggest pasted file content
+        code_fence_count = self.text.count("```")
+        if code_fence_count >= 6:  # 3 complete fences = 6 backtick blocks
+            return True
+        return any(re.search(pattern, self.text, re.MULTILINE) for pattern in _CONTEXT_PATTERNS)
 
     @property
     def is_noise(self) -> bool:
@@ -181,7 +241,9 @@ class Message(BaseModel):
     @property
     def is_substantive(self) -> bool:
         """Message has substantive dialogue content."""
-        return self.is_dialogue and not self.is_noise and bool(self.text and len(self.text.strip()) > 10)
+        if not self.is_dialogue or self.is_noise or self.is_thinking:
+            return False
+        return bool(self.text and len(self.text.strip()) > 10)
 
     @property
     def word_count(self) -> int:
@@ -220,7 +282,16 @@ class DialoguePair(BaseModel):
     """A user message followed by assistant response."""
     user: Message
     assistant: Message
-    
+
+    @model_validator(mode="after")
+    def validate_roles(self) -> "DialoguePair":
+        """Ensure user message has user role and assistant message has assistant role."""
+        if not self.user.is_user:
+            raise ValueError(f"user message must have user role, got {self.user.role}")
+        if not self.assistant.is_assistant:
+            raise ValueError(f"assistant message must have assistant role, got {self.assistant.role}")
+        return self
+
     @property
     def exchange(self) -> str:
         """Render as text exchange."""
@@ -376,3 +447,14 @@ class Conversation(BaseModel):
     def total_duration_ms(self) -> int:
         """Total response duration in milliseconds."""
         return sum(m.duration_ms or 0 for m in self.messages)
+
+    # --- Projection API ---
+
+    def project(self) -> "ConversationProjection":
+        """Create a projection builder for lazy, composable filtering.
+
+        Example:
+            conv.project().substantive().min_words(50).execute()
+        """
+        from polylogue.lib.projections import ConversationProjection
+        return ConversationProjection(self)

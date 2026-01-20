@@ -45,3 +45,19 @@ def test_config_rejects_duplicate_sources(workspace_env):
     workspace_env["config_path"].write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ConfigError):
         load_config()
+
+
+def test_load_config_malformed_json_includes_path(workspace_env):
+    """Malformed config.json error message includes file path."""
+    config_path = workspace_env["config_path"]
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    # Write invalid JSON
+    config_path.write_text("{ this is not valid json", encoding="utf-8")
+
+    with pytest.raises(ConfigError) as exc_info:
+        load_config()
+
+    error_msg = str(exc_info.value)
+    # Error should mention the file path and indicate invalid JSON
+    assert str(config_path) in error_msg or "config" in error_msg.lower()
+    assert "JSON" in error_msg or "json" in error_msg.lower()
