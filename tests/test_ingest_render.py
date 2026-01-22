@@ -121,11 +121,16 @@ def test_render_escapes_html(workspace_env):
 
 
 def test_render_sanitizes_paths(workspace_env):
+    """Test that render paths are sanitized even with path-like conversation IDs.
+
+    Note: Invalid provider names are now rejected at the validation layer, so we
+    test path sanitization through conversation_id alone using a valid provider name.
+    """
     archive_root = workspace_env["archive_root"]
     bundle = IngestBundle(
         conversation=ConversationRecord(
             conversation_id="../escape",
-            provider_name="bad/provider",
+            provider_name="test",  # Valid provider name (path chars now rejected)
             provider_conversation_id="conv-escape",
             title="Escape",
             created_at=None,

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import unicodedata
 from pathlib import Path
 
 import pytest
+from hypothesis import given, strategies as st
 
 from polylogue.core.hashing import (
     hash_file,
@@ -251,3 +253,85 @@ class TestCrossFunctionConsistency:
             short = hash_text_short(text, length=length)
             full = hash_text(text)
             assert short == full[:length]
+
+
+class TestUnicodeNormalization:
+    """Tests for Unicode normalization in hashing.
+
+    Issue: core/hashing.py:14-16 doesn't normalize Unicode, so
+    visually identical strings (NFC vs NFD) produce different hashes.
+    """
+
+    def test_nfc_nfd_produce_same_hash(self):
+        """Visually identical Unicode strings MUST hash identically.
+
+        This test SHOULD FAIL until Unicode normalization is added to hash_text().
+        Fix: Apply unicodedata.normalize("NFC", text) before hashing.
+        """
+        # "café" in NFC (precomposed) vs NFD (decomposed)
+        nfc = unicodedata.normalize("NFC", "café")  # é as single codepoint
+        nfd = unicodedata.normalize("NFD", "café")  # e + combining acute
+
+        # Verify they're visually identical but byte-different
+        # Note: Python does NOT normalize on comparison, so nfc != nfd as strings
+        assert nfc.encode("utf-8") != nfd.encode("utf-8")  # Bytes differ
+
+        hash_nfc = hash_text(nfc)
+        hash_nfd = hash_text(nfd)
+
+        # MUST be equal for content-addressable hashing to work correctly
+        assert hash_nfc == hash_nfd, f"Unicode normalization bug: NFC hash {hash_nfc[:16]}... != NFD hash {hash_nfd[:16]}..."
+
+    def test_combining_characters_hash_same(self):
+        """Precomposed and decomposed characters MUST hash identically.
+
+        This test SHOULD FAIL until normalization is implemented.
+        """
+        # ñ as single char vs n + combining tilde
+        precomposed = "\u00f1"  # ñ
+        decomposed = "n\u0303"  # n + combining tilde
+
+        hash1 = hash_text(precomposed)
+        hash2 = hash_text(decomposed)
+
+        assert hash1 == hash2, "Combining characters must hash same as precomposed"
+
+    def test_emoji_with_modifiers(self):
+        """Test emoji with skin tone modifiers hash consistently."""
+        # Base emoji
+        wave = "👋"
+        # Same emoji with skin tone modifier
+        wave_light = "👋🏻"
+
+        hash_base = hash_text(wave)
+        hash_modified = hash_text(wave_light)
+
+        # These SHOULD be different (different characters)
+        assert hash_base != hash_modified
+
+    def test_zero_width_characters(self):
+        """Test that zero-width characters affect hash."""
+        normal = "hello"
+        with_zwj = "hel\u200dlo"  # Zero-width joiner in middle
+
+        hash_normal = hash_text(normal)
+        hash_zwj = hash_text(with_zwj)
+
+        # Zero-width chars DO affect hash (may or may not be desired)
+        assert hash_normal != hash_zwj
+
+
+@given(st.text())
+def test_hash_text_unicode_normalization_invariant(text: str):
+    """Hash MUST be invariant under Unicode normalization.
+
+    This test SHOULD FAIL until normalization is added.
+    """
+    nfc = unicodedata.normalize("NFC", text)
+    nfd = unicodedata.normalize("NFD", text)
+
+    hash_nfc = hash_text(nfc)
+    hash_nfd = hash_text(nfd)
+
+    # MUST be equal regardless of normalization form
+    assert hash_nfc == hash_nfd, f"Normalization variant for {repr(text[:20])}..."
