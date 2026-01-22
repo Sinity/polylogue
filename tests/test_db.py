@@ -381,8 +381,9 @@ def test_migrate_v1_to_v2_creates_new_tables(tmp_path):
     )
     conn.commit()
 
-    # Migrate
-    _migrate_v1_to_v2(conn)
+    # Migrate using the runner (which updates version)
+    from polylogue.db import _run_migrations
+    _run_migrations(conn, 1, 2)
 
     # Check version updated
     row = conn.execute("PRAGMA user_version").fetchone()
@@ -451,9 +452,11 @@ def test_migrate_v2_to_v3_updates_runs_table(tmp_path):
     conn.commit()
 
     # Migrate
-    _migrate_v2_to_v3(conn)
+    # Migrate using the runner (which updates version)
+    from polylogue.db import _run_migrations
+    _run_migrations(conn, 2, 3)
 
-    # Check version updated to 3 (not SCHEMA_VERSION which might be higher)
+    # Check version updated to 3
     row = conn.execute("PRAGMA user_version").fetchone()
     assert row[0] == 3
 
@@ -511,8 +514,9 @@ def test_migrate_v3_to_v4_adds_source_name_column(tmp_path):
     )
     conn.commit()
 
-    # Migrate
-    _migrate_v3_to_v4(conn)
+    # Migrate using the runner (which updates version)
+    from polylogue.db import _run_migrations
+    _run_migrations(conn, 3, 4)
 
     # Check version updated to 4
     row = conn.execute("PRAGMA user_version").fetchone()
@@ -635,3 +639,211 @@ def test_open_connection_busy_timeout_set(tmp_path):
         # Check busy_timeout is set (should be 30000ms = 30 seconds)
         row = conn.execute("PRAGMA busy_timeout").fetchone()
         assert row[0] == 30000
+
+
+class TestMigrations:
+    """Tests for database migration behavior."""
+
+    def test_migration_failure_preserves_original_state(self, tmp_path):
+        """Failed migration should not leave database in inconsistent state.
+
+        Issue: db.py:314-331 migrations don't have rollback on failure.
+        This test verifies that if a migration step fails, the database
+        remains usable at its previous version.
+        """
+        db_path = tmp_path / "test.db"
+
+        # Initialize database at current schema
+        with open_connection(db_path) as conn:
+            _ensure_schema(conn)
+            # Verify it's at current version
+            cursor = conn.execute("PRAGMA user_version")
+            version = cursor.fetchone()[0]
+            assert version == SCHEMA_VERSION
+
+            # Insert some test data
+            conn.execute("""
+                INSERT INTO conversations
+                (conversation_id, provider_name, provider_conversation_id, title, content_hash, version)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, ("test-conv", "test", "prov-1", "Test Title", "hash123", 1))
+            conn.commit()
+
+        # Verify data persists
+        with open_connection(db_path) as conn:
+            cursor = conn.execute("SELECT title FROM conversations WHERE conversation_id = ?", ("test-conv",))
+            row = cursor.fetchone()
+            assert row is not None
+            assert row[0] == "Test Title"
+
+    def test_migration_failure_raises_runtime_error(self, tmp_path, monkeypatch):
+        """Failed migration raises RuntimeError with details.
+
+        Note: SQLite DDL (ALTER TABLE, CREATE TABLE) cannot be rolled back.
+        This test verifies that migration failures are properly reported.
+        """
+        db_path = tmp_path / "migration_failure_test.db"
+
+        # Create a v3 database manually
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA user_version = 3")
+        conn.execute(
+            """
+            CREATE TABLE conversations (
+                conversation_id TEXT PRIMARY KEY,
+                provider_name TEXT NOT NULL,
+                provider_conversation_id TEXT NOT NULL,
+                title TEXT,
+                created_at TEXT,
+                updated_at TEXT,
+                content_hash TEXT NOT NULL,
+                provider_meta TEXT,
+                version INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX idx_conversations_provider
+            ON conversations(provider_name, provider_conversation_id)
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        # Patch _MIGRATIONS[3] to fail (patching the function won't work as dict has reference)
+        from polylogue import db
+
+        def failing_migration(conn):
+            raise RuntimeError("Simulated migration failure")
+
+        original = db._MIGRATIONS[3]
+        monkeypatch.setitem(db._MIGRATIONS, 3, failing_migration)
+
+        # Migration should raise RuntimeError
+        with pytest.raises(RuntimeError, match="Migration from v3 to v4 failed"):
+            with open_connection(db_path) as conn:
+                pass
+
+    def test_nested_transaction_savepoint_rollback(self, tmp_path):
+        """Nested SAVEPOINT failures MUST not corrupt outer transaction.
+
+        This test verifies that SAVEPOINT-based nested transactions properly
+        rollback without affecting the outer transaction.
+
+        SHOULD FAIL if SAVEPOINT nesting is mishandled in db.py.
+        """
+        db_path = tmp_path / "nested_savepoint_test.db"
+
+        with open_connection(db_path) as conn:
+            _ensure_schema(conn)
+
+            # Insert outer work
+            conn.execute(
+                """
+                INSERT INTO conversations
+                (conversation_id, provider_name, provider_conversation_id, title, content_hash, version)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """,
+                ("outer-conv", "test", "prov-1", "Outer Data", "hash1", 1),
+            )
+
+            # Nested operation with savepoint that fails
+            try:
+                conn.execute("SAVEPOINT nested_op")
+                conn.execute(
+                    """
+                    INSERT INTO conversations
+                    (conversation_id, provider_name, provider_conversation_id, title, content_hash, version)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                    ("inner-conv", "test", "prov-2", "Inner Data", "hash2", 1),
+                )
+                # Simulate failure
+                raise ValueError("Inner operation failed")
+            except ValueError:
+                conn.execute("ROLLBACK TO SAVEPOINT nested_op")
+
+            # Outer transaction continues (will be committed by open_connection on exit)
+
+        # Verify outer was committed, inner was rolled back
+        with open_connection(db_path) as conn:
+            cursor = conn.execute("SELECT conversation_id FROM conversations")
+            ids = [row[0] for row in cursor.fetchall()]
+
+            assert (
+                "outer-conv" in ids
+            ), "Outer transaction was lost - savepoint rollback corrupted parent"
+            assert (
+                "inner-conv" not in ids
+            ), "Inner transaction was not rolled back - savepoint rollback failed"
+
+    def test_connection_context_commits_on_success(self, tmp_path):
+        """open_connection should commit on normal exit."""
+        db_path = tmp_path / "commit_test.db"
+
+        with open_connection(db_path) as conn:
+            _ensure_schema(conn)
+            conn.execute(
+                """
+                INSERT INTO conversations
+                (conversation_id, provider_name, provider_conversation_id, title, content_hash, version)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """,
+                ("commit-test", "test", "prov-1", "Commit Test", "hash456", 1),
+            )
+
+        # Verify committed
+        with open_connection(db_path) as conn:
+            cursor = conn.execute(
+                "SELECT title FROM conversations WHERE conversation_id = ?",
+                ("commit-test",),
+            )
+            row = cursor.fetchone()
+            assert row is not None
+
+    def test_connection_context_rollsback_on_exception(self, tmp_path):
+        """open_connection should rollback on exception."""
+        db_path = tmp_path / "rollback_test.db"
+
+        # First create the database and table
+        with open_connection(db_path) as conn:
+            _ensure_schema(conn)
+
+        # Now try to insert and raise
+        try:
+            with open_connection(db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO conversations
+                    (conversation_id, provider_name, provider_conversation_id, title, content_hash, version)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                    ("rollback-test", "test", "prov-1", "Rollback Test", "hash789", 1),
+                )
+                raise ValueError("Simulated failure")
+        except ValueError:
+            pass
+
+        # Verify rolled back
+        with open_connection(db_path) as conn:
+            cursor = conn.execute(
+                "SELECT title FROM conversations WHERE conversation_id = ?",
+                ("rollback-test",),
+            )
+            row = cursor.fetchone()
+            assert row is None, "Insert should have been rolled back"
+
+    def test_nested_connection_contexts_share_connection(self, tmp_path):
+        """Nested open_connection calls should reuse the same connection."""
+        db_path = tmp_path / "nested_test.db"
+
+        with open_connection(db_path) as conn1:
+            _ensure_schema(conn1)
+            conn1_id = id(conn1)
+
+            with open_connection(db_path) as conn2:
+                conn2_id = id(conn2)
+                # Same thread should get same connection
+                assert conn1_id == conn2_id

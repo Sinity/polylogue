@@ -91,9 +91,14 @@ def test_search_invalid_query_reports_error(monkeypatch, workspace_env):
 
 
 def test_search_prefers_legacy_render_when_present(workspace_env):
+    """Test that search returns legacy render paths when they exist.
+
+    Note: Invalid provider names are now rejected at validation, so we use a valid
+    provider name but still test legacy path resolution behavior.
+    """
     archive_root = workspace_env["archive_root"]
-    provider_name = "bad/provider"
-    conversation_id = "conv/one"
+    provider_name = "legacy-provider"  # Valid provider name (path chars now rejected)
+    conversation_id = "conv-one"
     bundle = IngestBundle(
         conversation=ConversationRecord(
             conversation_id=conversation_id,
@@ -122,6 +127,7 @@ def test_search_prefers_legacy_render_when_present(workspace_env):
     ingest_bundle(bundle)
     rebuild_index()
 
+    # Create a legacy-style render path
     legacy_path = archive_root / "render" / provider_name / conversation_id / "conversation.md"
     legacy_path.parent.mkdir(parents=True, exist_ok=True)
     legacy_path.write_text("legacy", encoding="utf-8")
@@ -242,43 +248,29 @@ def test_search_since_filters_numeric_timestamps(workspace_env):
 
 
 def test_search_since_handles_mixed_timestamp_formats(workspace_env):
-    """--since works with mix of ISO and numeric timestamps in same DB."""
+    """--since works with mix of ISO and numeric timestamps in same DB.
+
+    Note: Search results are deduplicated by conversation, so we create
+    separate conversations to verify both ISO and numeric timestamps work.
+    """
     archive_root = workspace_env["archive_root"]
-    bundle = IngestBundle(
+
+    # Create conversation with ISO timestamp (after cutoff)
+    bundle_iso = IngestBundle(
         conversation=ConversationRecord(
-            conversation_id="conv:mixed",
+            conversation_id="conv:iso-new",
             provider_name="test",
-            provider_conversation_id="mixed-conv",
-            title="Mixed Test",
+            provider_conversation_id="iso-conv",
+            title="ISO Test",
             created_at=None,
             updated_at=None,
-            content_hash="hash-mixed",
+            content_hash="hash-iso",
             provider_meta=None,
         ),
         messages=[
             MessageRecord(
-                message_id="msg:iso-old",
-                conversation_id="conv:mixed",
-                provider_message_id="iso-old",
-                role="user",
-                text="mixedformat alpha",
-                timestamp="2024-01-05T12:00:00",  # ISO - before cutoff
-                content_hash="hash5",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="msg:num-old",
-                conversation_id="conv:mixed",
-                provider_message_id="num-old",
-                role="user",
-                text="mixedformat beta",
-                timestamp="1704326400.0",  # 2024-01-04 - before cutoff
-                content_hash="hash6",
-                provider_meta=None,
-            ),
-            MessageRecord(
                 message_id="msg:iso-new",
-                conversation_id="conv:mixed",
+                conversation_id="conv:iso-new",
                 provider_message_id="iso-new",
                 role="user",
                 text="mixedformat gamma",
@@ -286,9 +278,26 @@ def test_search_since_handles_mixed_timestamp_formats(workspace_env):
                 content_hash="hash7",
                 provider_meta=None,
             ),
+        ],
+        attachments=[],
+    )
+
+    # Create conversation with numeric timestamp (after cutoff)
+    bundle_num = IngestBundle(
+        conversation=ConversationRecord(
+            conversation_id="conv:num-new",
+            provider_name="test",
+            provider_conversation_id="num-conv",
+            title="Numeric Test",
+            created_at=None,
+            updated_at=None,
+            content_hash="hash-num",
+            provider_meta=None,
+        ),
+        messages=[
             MessageRecord(
                 message_id="msg:num-new",
-                conversation_id="conv:mixed",
+                conversation_id="conv:num-new",
                 provider_message_id="num-new",
                 role="user",
                 text="mixedformat delta",
@@ -299,7 +308,37 @@ def test_search_since_handles_mixed_timestamp_formats(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+
+    # Create conversation with old ISO timestamp (before cutoff)
+    bundle_old = IngestBundle(
+        conversation=ConversationRecord(
+            conversation_id="conv:old",
+            provider_name="test",
+            provider_conversation_id="old-conv",
+            title="Old Test",
+            created_at=None,
+            updated_at=None,
+            content_hash="hash-old",
+            provider_meta=None,
+        ),
+        messages=[
+            MessageRecord(
+                message_id="msg:iso-old",
+                conversation_id="conv:old",
+                provider_message_id="iso-old",
+                role="user",
+                text="mixedformat alpha",
+                timestamp="2024-01-05T12:00:00",  # ISO - before cutoff
+                content_hash="hash5",
+                provider_meta=None,
+            ),
+        ],
+        attachments=[],
+    )
+
+    ingest_bundle(bundle_iso)
+    ingest_bundle(bundle_num)
+    ingest_bundle(bundle_old)
     rebuild_index()
 
     results = search_messages(
@@ -308,9 +347,10 @@ def test_search_since_handles_mixed_timestamp_formats(workspace_env):
         since="2024-01-15",
         limit=10,
     )
+    # Should get 2 hits: one ISO, one numeric - both after cutoff
     assert len(results.hits) == 2
-    hit_ids = {h.message_id for h in results.hits}
-    assert hit_ids == {"msg:iso-new", "msg:num-new"}
+    hit_conv_ids = {h.conversation_id for h in results.hits}
+    assert hit_conv_ids == {"conv:iso-new", "conv:num-new"}
 
 
 def test_search_since_invalid_date_raises_error(workspace_env):

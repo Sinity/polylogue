@@ -6,12 +6,273 @@ import json
 import pytest
 
 from polylogue.importers.claude import (
+    extract_messages_from_chat_messages,
     extract_text_from_segments,
     looks_like_ai,
     looks_like_code,
     parse_ai,
     parse_code,
 )
+
+
+class TestExtractMessagesFromChatMessages:
+    """Tests for extract_messages_from_chat_messages helper function."""
+
+    def test_extract_messages_basic(self):
+        """Test extracting basic messages from chat_messages list."""
+        chat_messages = [
+            {
+                "uuid": "msg-1",
+                "sender": "human",
+                "text": "Hello",
+                "created_at": "2024-01-01T00:00:00Z",
+            },
+            {
+                "uuid": "msg-2",
+                "sender": "assistant",
+                "text": "Hi there!",
+                "created_at": "2024-01-01T00:01:00Z",
+            },
+        ]
+
+        messages, attachments = extract_messages_from_chat_messages(chat_messages)
+
+        assert len(messages) == 2
+        assert len(attachments) == 0
+        assert messages[0].provider_message_id == "msg-1"
+        assert messages[0].role == "user"
+        assert messages[0].text == "Hello"
+        assert messages[1].provider_message_id == "msg-2"
+        assert messages[1].role == "assistant"
+
+    def test_extract_messages_with_attachments(self):
+        """Test extracting messages with attachments field."""
+        chat_messages = [
+            {
+                "uuid": "msg-1",
+                "sender": "human",
+                "text": "Check file",
+                "attachments": [
+                    {
+                        "id": "att-1",
+                        "name": "document.pdf",
+                        "mimeType": "application/pdf",
+                        "size": 2048,
+                    },
+                ],
+            },
+        ]
+
+        messages, attachments = extract_messages_from_chat_messages(chat_messages)
+
+        assert len(messages) == 1
+        assert len(attachments) == 1
+        assert attachments[0].provider_attachment_id == "att-1"
+        assert attachments[0].name == "document.pdf"
+        assert attachments[0].mime_type == "application/pdf"
+        assert attachments[0].size_bytes == 2048
+
+    def test_extract_messages_with_files(self):
+        """Test extracting messages with files field."""
+        chat_messages = [
+            {
+                "uuid": "msg-1",
+                "sender": "human",
+                "text": "See image",
+                "files": [
+                    {
+                        "fileId": "file-1",
+                        "filename": "screenshot.png",
+                    },
+                ],
+            },
+        ]
+
+        messages, attachments = extract_messages_from_chat_messages(chat_messages)
+
+        assert len(attachments) == 1
+        assert attachments[0].provider_attachment_id == "file-1"
+        assert attachments[0].name == "screenshot.png"
+
+    def test_extract_messages_multiple_attachments(self):
+        """Test extracting message with multiple attachments."""
+        chat_messages = [
+            {
+                "uuid": "msg-1",
+                "sender": "human",
+                "text": "Multiple files",
+                "attachments": [
+                    {"id": "att-1", "name": "file1.txt"},
+                    {"id": "att-2", "name": "file2.pdf"},
+                    {"id": "att-3", "name": "file3.docx"},
+                ],
+            },
+        ]
+
+        messages, attachments = extract_messages_from_chat_messages(chat_messages)
+
+        assert len(attachments) == 3
+        assert attachments[0].provider_attachment_id == "att-1"
+        assert attachments[1].provider_attachment_id == "att-2"
+        assert attachments[2].provider_attachment_id == "att-3"
+
+    def test_extract_messages_role_alternatives(self):
+        """Test role extraction with various field names."""
+        chat_messages = [
+            {"uuid": "1", "sender": "human", "text": "msg1"},  # sender field
+            {"uuid": "2", "role": "assistant", "text": "msg2"},  # role field
+            {"uuid": "3", "text": "msg3"},  # no role field
+        ]
+
+        messages, _ = extract_messages_from_chat_messages(chat_messages)
+
+        assert messages[0].role == "user"  # human -> user
+        assert messages[1].role == "assistant"
+        assert messages[2].role == "message"  # default
+
+    def test_extract_messages_timestamp_alternatives(self):
+        """Test timestamp extraction with various field names."""
+        chat_messages = [
+            {"uuid": "1", "sender": "human", "text": "msg", "created_at": "2024-01-01"},
+            {"uuid": "2", "sender": "assistant", "text": "msg", "create_time": 1704067200},
+            {"uuid": "3", "sender": "human", "text": "msg", "timestamp": "2024-01-02"},
+        ]
+
+        messages, _ = extract_messages_from_chat_messages(chat_messages)
+
+        assert messages[0].timestamp == "2024-01-01"
+        assert messages[1].timestamp == "1704067200.0"
+        assert messages[2].timestamp == "2024-01-02"
+
+    def test_extract_messages_id_alternatives(self):
+        """Test message ID extraction with various field names."""
+        chat_messages = [
+            {"uuid": "uuid-1", "sender": "human", "text": "msg"},
+            {"id": "id-1", "sender": "human", "text": "msg"},
+            {"message_id": "msg-id-1", "sender": "human", "text": "msg"},
+            {"sender": "human", "text": "msg"},  # No id field
+        ]
+
+        messages, _ = extract_messages_from_chat_messages(chat_messages)
+
+        assert messages[0].provider_message_id == "uuid-1"
+        assert messages[1].provider_message_id == "id-1"
+        assert messages[2].provider_message_id == "msg-id-1"
+        assert messages[3].provider_message_id == "msg-4"  # Generated fallback
+
+    def test_extract_messages_content_as_list(self):
+        """Test extracting text when content is a list."""
+        chat_messages = [
+            {
+                "uuid": "msg-1",
+                "sender": "human",
+                "content": ["Part A", "Part B"],
+            },
+        ]
+
+        messages, _ = extract_messages_from_chat_messages(chat_messages)
+
+        assert len(messages) == 1
+        assert messages[0].text == "Part A\nPart B"
+
+    def test_extract_messages_content_as_dict(self):
+        """Test extracting text when content is a dict."""
+        chat_messages = [
+            {
+                "uuid": "msg-1",
+                "sender": "human",
+                "content": {"text": "Dict text"},
+            },
+        ]
+
+        messages, _ = extract_messages_from_chat_messages(chat_messages)
+
+        assert len(messages) == 1
+        assert messages[0].text == "Dict text"
+
+    def test_extract_messages_content_dict_with_parts(self):
+        """Test extracting from dict content with parts."""
+        chat_messages = [
+            {
+                "uuid": "msg-1",
+                "sender": "human",
+                "content": {"parts": ["A", "B", "C"]},
+            },
+        ]
+
+        messages, _ = extract_messages_from_chat_messages(chat_messages)
+
+        assert len(messages) == 1
+        assert messages[0].text == "A\nB\nC"
+
+    def test_extract_messages_skip_non_dict(self):
+        """Test that non-dict items are skipped."""
+        chat_messages = [
+            "string item",
+            123,
+            None,
+            {"uuid": "msg-1", "sender": "human", "text": "Valid"},
+        ]
+
+        messages, _ = extract_messages_from_chat_messages(chat_messages)
+
+        assert len(messages) == 1
+        assert messages[0].text == "Valid"
+
+    def test_extract_messages_skip_messages_without_text(self):
+        """Test that messages without text are skipped."""
+        chat_messages = [
+            {"uuid": "msg-1", "sender": "human", "text": "Valid"},
+            {"uuid": "msg-2", "sender": "assistant"},  # No text
+            {"uuid": "msg-3", "sender": "human", "text": "Another valid"},
+        ]
+
+        messages, _ = extract_messages_from_chat_messages(chat_messages)
+
+        assert len(messages) == 2
+        assert messages[0].text == "Valid"
+        assert messages[1].text == "Another valid"
+
+    def test_extract_messages_provider_meta(self):
+        """Test that raw message is stored in provider_meta."""
+        chat_messages = [
+            {
+                "uuid": "msg-1",
+                "sender": "human",
+                "text": "Test",
+                "extra_field": "extra_value",
+            },
+        ]
+
+        messages, _ = extract_messages_from_chat_messages(chat_messages)
+
+        assert messages[0].provider_meta is not None
+        assert "raw" in messages[0].provider_meta
+        assert messages[0].provider_meta["raw"]["extra_field"] == "extra_value"
+
+    def test_extract_messages_empty_list(self):
+        """Test with empty chat_messages list."""
+        messages, attachments = extract_messages_from_chat_messages([])
+
+        assert len(messages) == 0
+        assert len(attachments) == 0
+
+    def test_extract_messages_attachment_message_id_reference(self):
+        """Test that attachment references correct message ID."""
+        chat_messages = [
+            {
+                "uuid": "msg-abc-123",
+                "sender": "human",
+                "text": "With attachment",
+                "attachments": [
+                    {"id": "att-1", "name": "file.pdf"},
+                ],
+            },
+        ]
+
+        messages, attachments = extract_messages_from_chat_messages(chat_messages)
+
+        assert attachments[0].message_provider_id == "msg-abc-123"
 
 
 class TestClaudeFormatDetection:
@@ -462,14 +723,14 @@ class TestClaudeCodeParsing:
         assert result.provider_name == "claude-code"
         assert result.provider_conversation_id == "session-123"
         assert result.title == "session-123"
-        assert result.created_at == "1704067200000"
-        assert result.updated_at == "1704067201000"
+        assert result.created_at == "1704067200.0"
+        assert result.updated_at == "1704067201.0"
         assert len(result.messages) == 2
 
         assert result.messages[0].provider_message_id == "msg-1"
         assert result.messages[0].role == "user"
         assert result.messages[0].text == "Hello Claude Code"
-        assert result.messages[0].timestamp == "1704067200000"
+        assert result.messages[0].timestamp == "1704067200.0"
 
         assert result.messages[1].provider_message_id == "msg-2"
         assert result.messages[1].role == "assistant"
@@ -567,9 +828,9 @@ class TestClaudeCodeParsing:
         result = parse_code(payload, fallback_id="fallback-999")
 
         # created_at should be earliest timestamp
-        assert result.created_at == "1000000"
+        assert result.created_at == "1000000.0"
         # updated_at should be latest timestamp
-        assert result.updated_at == "2000000"
+        assert result.updated_at == "2000000.0"
 
     def test_parse_code_conversation_title_extraction(self):
         """Test that session ID is used as title."""

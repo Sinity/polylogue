@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
+from pydantic import ValidationError
 
 from polylogue.db import open_connection
 from polylogue.store import (
@@ -783,3 +784,302 @@ def test_prune_attachment_refs_transactional_rollback(test_conn):
         "SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", ("att1",)
     ).fetchone()[0]
     assert actual_refs == 1  # Consistent!
+
+
+def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
+    """Test for concurrent attachment ref_count race condition.
+
+    Issue: store.py:258-283 has a read-modify-write race in upsert_attachment.
+    This test SHOULD FAIL until the race condition is fixed.
+    The fix requires atomic increment (e.g., UPDATE ... SET ref_count = ref_count + 1).
+
+    Concurrent upserts of same attachment should maintain correct ref_count.
+    """
+    SHARED_ATTACHMENT_ID = "shared-attachment-race-test"
+
+    def create_conversation(i: int):
+        conv = ConversationRecord(
+            conversation_id=f"race-conv-{i}",
+            provider_name="test",
+            provider_conversation_id=f"race-{i}",
+            title=f"Race Test {i}",
+            created_at=None,
+            updated_at=None,
+            content_hash=f"hash-{i}",
+            version=1,
+        )
+        msg = MessageRecord(
+            message_id=f"race-msg-{i}",
+            conversation_id=f"race-conv-{i}",
+            role="user",
+            text="test",
+            timestamp=None,
+            provider_meta=None,
+            content_hash=f"msg-hash-{i}",
+            version=1,
+        )
+        # Each conversation references the SAME attachment_id
+        attachment = AttachmentRecord(
+            attachment_id=SHARED_ATTACHMENT_ID,
+            conversation_id=f"race-conv-{i}",
+            message_id=f"race-msg-{i}",
+            mime_type="text/plain",
+            size_bytes=100,
+            path="/fake/path.txt",
+            provider_meta=None,
+        )
+        with open_connection(test_db) as conn:
+            store_records(conversation=conv, messages=[msg], attachments=[attachment], conn=conn)
+
+    # Run concurrently
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        list(executor.map(create_conversation, range(10)))
+
+    # Verify ref_count matches actual refs with strict assertions
+    with open_connection(test_db) as conn:
+        cursor = conn.execute("SELECT ref_count FROM attachments WHERE attachment_id = ?", (SHARED_ATTACHMENT_ID,))
+        row = cursor.fetchone()
+        assert row is not None, "Attachment should exist"
+        stored_ref_count = row[0]
+
+        cursor = conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?", (SHARED_ATTACHMENT_ID,))
+        actual_refs = cursor.fetchone()[0]
+
+        # Strict assertion: ref_count must equal number of concurrent insertions
+        assert stored_ref_count == 10, f"Race condition! ref_count is {stored_ref_count}, expected 10"
+        assert actual_refs == 10, f"Missing refs! Found {actual_refs}, expected 10"
+        assert stored_ref_count == actual_refs, f"Mismatch: ref_count={stored_ref_count}, actual_refs={actual_refs}"
+
+
+class TestAttachmentRecordValidation:
+    """Tests for AttachmentRecord field validation."""
+
+    def test_size_bytes_rejects_negative(self):
+        """size_bytes cannot be negative."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            AttachmentRecord(
+                attachment_id="test",
+                conversation_id="conv1",
+                message_id="msg1",
+                mime_type="text/plain",
+                size_bytes=-100,
+                path="/fake/path",
+                provider_meta=None,
+            )
+
+    def test_size_bytes_rejects_impossibly_large(self):
+        """size_bytes cannot exceed reasonable maximum (1TB)."""
+        from pydantic import ValidationError
+        from polylogue.store import MAX_ATTACHMENT_SIZE
+
+        with pytest.raises(ValidationError):
+            AttachmentRecord(
+                attachment_id="test",
+                conversation_id="conv1",
+                message_id="msg1",
+                mime_type="text/plain",
+                size_bytes=MAX_ATTACHMENT_SIZE * 10,  # 10TB - clearly invalid
+                path="/fake/path",
+                provider_meta=None,
+            )
+
+    def test_size_bytes_allows_zero(self):
+        """size_bytes of 0 should be valid (empty file)."""
+        record = AttachmentRecord(
+            attachment_id="test",
+            conversation_id="conv1",
+            message_id="msg1",
+            mime_type="text/plain",
+            size_bytes=0,
+            path="/fake/path",
+            provider_meta=None,
+        )
+        assert record.size_bytes == 0
+
+    def test_size_bytes_allows_reasonable_values(self):
+        """size_bytes should allow reasonable file sizes."""
+        # 100MB - reasonable
+        record = AttachmentRecord(
+            attachment_id="test",
+            conversation_id="conv1",
+            message_id="msg1",
+            mime_type="text/plain",
+            size_bytes=100 * 1024 * 1024,
+            path="/fake/path",
+            provider_meta=None,
+        )
+        assert record.size_bytes == 100 * 1024 * 1024
+
+    def test_size_bytes_allows_max_size(self):
+        """size_bytes should allow exactly the maximum size (1TB)."""
+        from polylogue.store import MAX_ATTACHMENT_SIZE
+
+        record = AttachmentRecord(
+            attachment_id="test",
+            conversation_id="conv1",
+            message_id="msg1",
+            mime_type="text/plain",
+            size_bytes=MAX_ATTACHMENT_SIZE,
+            path="/fake/path",
+            provider_meta=None,
+        )
+        assert record.size_bytes == MAX_ATTACHMENT_SIZE
+
+    def test_size_bytes_rejects_one_byte_over_max(self):
+        """size_bytes cannot exceed maximum by even one byte."""
+        from pydantic import ValidationError
+        from polylogue.store import MAX_ATTACHMENT_SIZE
+
+        with pytest.raises(ValidationError):
+            AttachmentRecord(
+                attachment_id="test",
+                conversation_id="conv1",
+                message_id="msg1",
+                mime_type="text/plain",
+                size_bytes=MAX_ATTACHMENT_SIZE + 1,
+                path="/fake/path",
+                provider_meta=None,
+            )
+
+    def test_size_bytes_allows_none(self):
+        """size_bytes can be None (unknown size)."""
+        record = AttachmentRecord(
+            attachment_id="test",
+            conversation_id="conv1",
+            message_id="msg1",
+            mime_type="text/plain",
+            size_bytes=None,
+            path="/fake/path",
+            provider_meta=None,
+        )
+        assert record.size_bytes is None
+
+
+class TestProviderNameValidation:
+    """Tests for provider_name field validation."""
+
+    def test_provider_name_rejects_empty(self):
+        """provider_name cannot be empty."""
+        with pytest.raises(ValidationError):
+            ConversationRecord(
+                conversation_id="test",
+                provider_name="",
+                provider_conversation_id="ext1",
+                title="Test",
+                content_hash="hash123",
+                version=1,
+            )
+
+    def test_provider_name_rejects_whitespace_only(self):
+        """provider_name cannot be only whitespace."""
+        with pytest.raises(ValidationError):
+            ConversationRecord(
+                conversation_id="test",
+                provider_name="   ",
+                provider_conversation_id="ext1",
+                title="Test",
+                content_hash="hash123",
+                version=1,
+            )
+
+    def test_provider_name_rejects_special_characters(self):
+        """provider_name should only contain safe characters."""
+        invalid_names = [
+            "../escape",
+            "name\x00null",
+            "name\nwith\nnewlines",
+            "path/separator",
+            "back\\slash",
+            "name.with.dots",
+            "name with spaces",
+            "!invalid",
+            "@symbol",
+        ]
+
+        for name in invalid_names:
+            with pytest.raises(ValidationError, match="invalid"):
+                ConversationRecord(
+                    conversation_id="test",
+                    provider_name=name,
+                    provider_conversation_id="ext1",
+                    title="Test",
+                    content_hash="hash123",
+                    version=1,
+                )
+
+    def test_provider_name_rejects_starting_with_number(self):
+        """provider_name must start with a letter."""
+        with pytest.raises(ValidationError, match="Must start with a letter"):
+            ConversationRecord(
+                conversation_id="test",
+                provider_name="123invalid",
+                provider_conversation_id="ext1",
+                title="Test",
+                content_hash="hash123",
+                version=1,
+            )
+
+    def test_provider_name_rejects_starting_with_hyphen(self):
+        """provider_name must start with a letter."""
+        with pytest.raises(ValidationError, match="Must start with a letter"):
+            ConversationRecord(
+                conversation_id="test",
+                provider_name="-invalid",
+                provider_conversation_id="ext1",
+                title="Test",
+                content_hash="hash123",
+                version=1,
+            )
+
+    def test_provider_name_rejects_starting_with_underscore(self):
+        """provider_name must start with a letter."""
+        with pytest.raises(ValidationError, match="Must start with a letter"):
+            ConversationRecord(
+                conversation_id="test",
+                provider_name="_invalid",
+                provider_conversation_id="ext1",
+                title="Test",
+                content_hash="hash123",
+                version=1,
+            )
+
+    def test_provider_name_allows_valid_names(self):
+        """Valid provider names should be accepted."""
+        valid_names = [
+            "chatgpt",
+            "claude",
+            "claude-code",
+            "codex",
+            "gemini",
+            "custom_provider",
+            "Provider123",
+            "a",  # Single letter
+            "A-Z_123",  # Mix of valid characters
+            "CustomProvider",
+        ]
+
+        for name in valid_names:
+            record = ConversationRecord(
+                conversation_id="test",
+                provider_name=name,
+                provider_conversation_id="ext1",
+                title="Test",
+                content_hash="hash123",
+                version=1,
+            )
+            assert record.provider_name == name
+
+    def test_provider_name_validates_on_store_records(self, test_conn):
+        """ConversationRecord rejects invalid provider names at construction time."""
+        # Should raise ValidationError during record creation (Pydantic validates at construction)
+        with pytest.raises(ValidationError):
+            ConversationRecord(
+                conversation_id="test",
+                provider_name="invalid/name",
+                provider_conversation_id="ext1",
+                title="Test",
+                content_hash="hash123",
+                version=1,
+            )

@@ -49,6 +49,8 @@ def sample_messages():
             role="assistant",
             text="Let me analyze this. <thinking>Need to check the stack trace carefully</thinking> The error is caused by...",
             timestamp=datetime(2024, 1, 1, 10, 3),
+            # Mark as thinking via provider_meta (how real importers do it)
+            provider_meta={"content_blocks": [{"type": "thinking", "text": "Need to check the stack trace carefully"}]},
         ),
         Message(
             id="m5",
