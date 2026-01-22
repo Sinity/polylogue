@@ -37,6 +37,21 @@ def extract_text_from_segments(segments: list) -> str | None:
     return combined or None
 
 
+def normalize_timestamp(ts: int | float | str | None) -> str | None:
+    if ts is None:
+        return None
+    try:
+        val = float(ts)
+        # If timestamp is > 1e11 (year 5138), assume milliseconds and convert to seconds
+        # 1e11 seconds is roughly year 5138.
+        # 1700000000000 (current ms) is 1.7e12.
+        if val > 1e11:
+            val = val / 1000.0
+        return str(val)
+    except (ValueError, TypeError):
+        return str(ts)
+
+
 def extract_messages_from_chat_messages(chat_messages: list) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
@@ -45,7 +60,10 @@ def extract_messages_from_chat_messages(chat_messages: list) -> tuple[list[Parse
             continue
         message_id = str(item.get("uuid") or item.get("id") or item.get("message_id") or f"msg-{idx}")
         role = normalize_role(item.get("sender") or item.get("role"))
-        timestamp = item.get("created_at") or item.get("create_time") or item.get("timestamp")
+        
+        raw_ts = item.get("created_at") or item.get("create_time") or item.get("timestamp")
+        timestamp = normalize_timestamp(raw_ts)
+        
         # Check for text field directly first (Claude AI format)
         text = item.get("text") if isinstance(item.get("text"), str) else None
         # Then check content field
@@ -65,7 +83,7 @@ def extract_messages_from_chat_messages(chat_messages: list) -> tuple[list[Parse
                     provider_message_id=message_id,
                     role=role,
                     text=text,
-                    timestamp=str(timestamp) if timestamp is not None else None,
+                    timestamp=timestamp,
                     provider_meta={"raw": item},
                 )
             )
@@ -140,9 +158,10 @@ def parse_code(payload: list, fallback_id: str) -> ParsedConversation:
             role = msg_type or "unknown"
 
         # Get timestamp
-        timestamp = item.get("timestamp")
+        raw_ts = item.get("timestamp")
+        timestamp = normalize_timestamp(raw_ts)
         if timestamp:
-            timestamps.append(str(timestamp))
+            timestamps.append(timestamp)
 
         # Extract text from nested message.content structure
         msg_obj = item.get("message", {})
@@ -217,7 +236,7 @@ def parse_code(payload: list, fallback_id: str) -> ParsedConversation:
                 provider_message_id=msg_id,
                 role=role,
                 text=text,
-                timestamp=str(timestamp) if timestamp else None,
+                timestamp=timestamp,
                 provider_meta=meta,
             )
         )
@@ -240,7 +259,7 @@ def parse_code(payload: list, fallback_id: str) -> ParsedConversation:
 
 
 def parse_ai(payload: dict, fallback_id: str) -> ParsedConversation:
-    messages, attachments = extract_messages_from_chat_messages(payload.get("chat_messages", []))
+    messages, attachments = extract_messages_from_chat_messages(payload.get("chat_messages") or [])
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
     return ParsedConversation(
