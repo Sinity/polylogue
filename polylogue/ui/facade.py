@@ -139,7 +139,8 @@ class ConsoleFacade:
 
     def summary(self, title: str, lines: Iterable[str]) -> None:
         """Display a summary panel."""
-        text = "\n".join(lines)
+        lines_list = list(lines)
+        text = "\n".join(lines_list)
         if self.plain:
             self.console.print(f"-- {title} --")
             if text:
@@ -147,9 +148,12 @@ class ConsoleFacade:
             return
 
         summary_text = Text()
-        for line in lines:
+        for line in lines_list:
             summary_text.append("• ", style="summary.bullet")
-            summary_text.append(line + "\n", style="summary.text")
+            # Parse markup in line content (e.g., [green]✓[/green])
+            parsed = Text.from_markup(line, style="summary.text")
+            summary_text.append_text(parsed)
+            summary_text.append("\n")
         panel = Panel(
             summary_text if summary_text.plain else Text(text, style="summary.text"),
             title=f"  {title}  ",

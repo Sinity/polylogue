@@ -3,10 +3,39 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import subprocess
 import webbrowser
 from pathlib import Path
+
+
+# Pattern for detecting shell metacharacters that could enable command injection
+_UNSAFE_PATTERN = re.compile(r'[;&|`$(){}[\]<>!\\]')
+
+
+def validate_command(command: str, context: str = "command") -> None:
+    """Validate command string for shell injection risks.
+
+    Rejects commands containing shell metacharacters that could be used for
+    injection attacks when parsed by shells or passed unsafely.
+
+    Args:
+        command: Command string to validate
+        context: Description of context (for error messages)
+
+    Raises:
+        ValueError: If command contains unsafe shell metacharacters
+    """
+    if not command or not command.strip():
+        raise ValueError(f"{context} cannot be empty")
+
+    # Check for shell metacharacters
+    if _UNSAFE_PATTERN.search(command):
+        raise ValueError(
+            f"{context} contains unsafe shell metacharacters: {command!r}. "
+            "Use a simple command like 'vim' or '/usr/bin/code --wait'"
+        )
 
 
 def get_editor() -> str | None:
@@ -31,12 +60,21 @@ def open_in_editor(path: Path, line: int | None = None) -> bool:
 
     Returns:
         True if editor was launched successfully, False otherwise
+
+    Raises:
+        ValueError: If EDITOR contains unsafe shell metacharacters
     """
     editor = get_editor()
     if not editor:
         return False
 
     if not path.exists():
+        return False
+
+    # Validate editor command for injection risks before use
+    try:
+        validate_command(editor, context="$EDITOR")
+    except ValueError:
         return False
 
     try:
@@ -80,12 +118,17 @@ def _run_editor(cmd: list[str]) -> bool:
 
 
 def open_in_browser(path: Path, anchor: str | None = None) -> bool:
-    """Open a file in the system browser/HTML handler."""
+    """Open a file in the system browser/HTML handler.
 
-    resolved = path.resolve()
+    Raises:
+        ValueError: If POLYLOGUE_BROWSER contains unsafe shell metacharacters
+    """
+
     try:
+        resolved = path.resolve()
         target = resolved.as_uri()
-    except ValueError:
+    except (ValueError, OSError):
+        # Handle invalid paths (null characters, invalid Unicode, etc.)
         return False
 
     if anchor:
@@ -93,6 +136,12 @@ def open_in_browser(path: Path, anchor: str | None = None) -> bool:
 
     custom_browser = os.environ.get("POLYLOGUE_BROWSER")
     if custom_browser:
+        # Validate browser command for injection risks before use
+        try:
+            validate_command(custom_browser, context="$POLYLOGUE_BROWSER")
+        except ValueError:
+            return False
+
         try:
             cmd = shlex.split(custom_browser)
         except ValueError:
