@@ -23,15 +23,15 @@ pkgs.mkShell {
     export TESSDATA_PREFIX="${pkgs.tesseract}/share/tessdata"
     if [ -n "$BASH_VERSION" ]; then
       _polylogue_comp_file="$TMPDIR/polylogue-bash-completions"
-      python3 polylogue.py completions --shell bash >"$_polylogue_comp_file" 2>/dev/null || true
+      python -m polylogue.cli completions --shell bash >"$_polylogue_comp_file" 2>/dev/null || true
       [ -f "$_polylogue_comp_file" ] && source "$_polylogue_comp_file"
     elif [ -n "$ZSH_VERSION" ]; then
       _polylogue_comp_file="$TMPDIR/polylogue-zsh-completions"
-      python3 polylogue.py completions --shell zsh >"$_polylogue_comp_file" 2>/dev/null || true
+      python -m polylogue.cli completions --shell zsh >"$_polylogue_comp_file" 2>/dev/null || true
       [ -f "$_polylogue_comp_file" ] && source "$_polylogue_comp_file"
     elif [ -n "$FISH_VERSION" ]; then
       _polylogue_comp_file="$TMPDIR/polylogue-fish-completions.fish"
-      python3 polylogue.py completions --shell fish >"$_polylogue_comp_file" 2>/dev/null || true
+      python -m polylogue.cli completions --shell fish >"$_polylogue_comp_file" 2>/dev/null || true
       [ -f "$_polylogue_comp_file" ] && source "$_polylogue_comp_file"
     fi
   '';
