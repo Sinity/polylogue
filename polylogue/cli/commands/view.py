@@ -307,10 +307,11 @@ def view_command(
         # List mode - show conversation summaries
         env.ui.summary("Conversations", [f"Found: {len(conversations)}"])
         for convo in conversations:
-            title = convo.title or convo.id[:20]
+            title = convo.title or (convo.id[:30] + "..." if len(convo.id) > 30 else convo.id)
             date_str = convo.updated_at.strftime("%Y-%m-%d") if convo.updated_at else "unknown"
             msg_count = convo.message_count
-            env.ui.console.print(f"  {convo.id[:12]}  {date_str}  [{convo.provider}]  {title} ({msg_count} msgs)")
+            # Show up to 24 chars of ID to be more usable for prefix matching
+            env.ui.console.print(f"  {convo.id[:24]:24}  {date_str}  [{convo.provider:12}]  {title} ({msg_count} msgs)")
 
         if not json_output and not json_lines:
             return
