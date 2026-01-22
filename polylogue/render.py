@@ -138,6 +138,18 @@ def render_conversation(
         path_value = att["path"] or str(asset_path(archive_root, att["attachment_id"]))
         lines.append(f"- Attachment: {label} ({path_value})")
 
+    def _format_text(text: str) -> str:
+        if not text:
+            return ""
+        # Handle JSON (tool use/result) by wrapping in code blocks
+        if (text.startswith("{") and text.endswith("}")) or (text.startswith("[") and text.endswith("]")):
+            try:
+                parsed = json.loads(text)
+                return f"```json\n{json.dumps(parsed, indent=2)}\n```"
+            except json.JSONDecodeError:
+                pass
+        return text
+
     title = convo["title"] or conversation_id
     provider = convo["provider_name"]
 
@@ -148,13 +160,23 @@ def render_conversation(
         role = msg["role"] or "message"
         text = msg["text"] or ""
         timestamp = msg["timestamp"]
+        msg_atts = attachments_by_message.get(msg["message_id"], [])
+        
+        # Skip empty tool/system/message sections that have no content and no attachments
+        if not text.strip() and not msg_atts:
+            continue
+            
         lines.append(f"## {role}")
         if timestamp:
             lines.append(f"_Timestamp: {timestamp}_")
         lines.append("")
-        lines.append(text)
-        lines.append("")
-        for att in attachments_by_message.get(msg["message_id"], []):
+        
+        formatted_text = _format_text(text)
+        if formatted_text:
+            lines.append(formatted_text)
+            lines.append("")
+            
+        for att in msg_atts:
             _append_attachment(att)
         lines.append("")
 
