@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
-SCHEMA_VERSION = 3
+LOGGER = logging.getLogger(__name__)
+SCHEMA_VERSION = 4
 _LOCAL = threading.local()
+
+
+class DatabaseError(Exception):
+    """Database-related errors (schema, connection, migration)."""
 
 
 def default_db_path() -> Path:
@@ -29,11 +36,15 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT,
             content_hash TEXT NOT NULL,
             provider_meta TEXT,
+            source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
             version INTEGER NOT NULL
         );
 
         CREATE INDEX IF NOT EXISTS idx_conversations_provider
         ON conversations(provider_name, provider_conversation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_conversations_source_name
+        ON conversations(source_name) WHERE source_name IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS messages (
             message_id TEXT PRIMARY KEY,
@@ -193,9 +204,7 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP TABLE attachment_refs_old")
-    conn.execute("PRAGMA user_version = 2")
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.commit()
 
 
 def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
@@ -237,25 +246,148 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP TABLE runs_old")
-    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.commit()
+
+
+def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
+    """Add computed source_name column to conversations for faster filtering."""
+    conn.execute("PRAGMA foreign_keys = OFF")
+    # Drop existing index before renaming table to avoid conflicts
+    conn.execute("DROP INDEX IF EXISTS idx_conversations_provider")
+    conn.execute("ALTER TABLE conversations RENAME TO conversations_old")
+    conn.executescript(
+        """
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            provider_conversation_id TEXT NOT NULL,
+            title TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            content_hash TEXT NOT NULL,
+            provider_meta TEXT,
+            source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
+            version INTEGER NOT NULL
+        );
+
+        CREATE INDEX idx_conversations_provider
+        ON conversations(provider_name, provider_conversation_id);
+
+        CREATE INDEX idx_conversations_source_name
+        ON conversations(source_name) WHERE source_name IS NOT NULL;
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO conversations (
+            conversation_id,
+            provider_name,
+            provider_conversation_id,
+            title,
+            created_at,
+            updated_at,
+            content_hash,
+            provider_meta,
+            version
+        )
+        SELECT
+            conversation_id,
+            provider_name,
+            provider_conversation_id,
+            title,
+            created_at,
+            updated_at,
+            content_hash,
+            provider_meta,
+            version
+        FROM conversations_old
+        """
+    )
+    conn.execute("DROP TABLE conversations_old")
+    conn.execute("PRAGMA foreign_keys = ON")
+
+
+# Migration registry: maps source version to migration function
+_MIGRATIONS = {
+    1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
+    3: _migrate_v3_to_v4,
+}
+
+
+def _run_migrations(conn: sqlite3.Connection, current_version: int, target_version: int) -> None:
+    """Run migrations from current_version to target_version.
+
+    Note: SQLite DDL statements (ALTER TABLE, CREATE TABLE, etc.) auto-commit
+    and cannot be rolled back. If a migration fails mid-way, the database may
+    be in an inconsistent state. Always backup before migrations.
+
+    Each successful migration updates the schema version before proceeding to
+    the next, so partial progress is preserved.
+
+    Args:
+        conn: Database connection
+        current_version: Starting schema version
+        target_version: Target schema version
+
+    Raises:
+        RuntimeError: If any migration fails, with details about which migration
+                     failed and at what version the database remains.
+    """
+    if current_version >= target_version:
+        return
+
+    for version in range(current_version, target_version):
+        migration_func = _MIGRATIONS.get(version)
+        if migration_func is None:
+            continue
+
+        LOGGER.info("Running migration v%d -> v%d", version, version + 1)
+
+        try:
+            migration_func(conn)
+            conn.execute(f"PRAGMA user_version = {version + 1}")
+            LOGGER.info("Migration v%d -> v%d completed", version, version + 1)
+        except Exception as exc:
+            LOGGER.error("Migration v%d -> v%d failed: %s", version, version + 1, exc)
+            raise RuntimeError(
+                f"Migration from v{version} to v{version + 1} failed. "
+                f"Database may be in inconsistent state. Error: {exc}"
+            ) from exc
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Ensure database schema is at current version, running migrations if needed.
+
+    For fresh databases (version 0), creates the schema directly.
+    For existing databases, runs migrations sequentially with rollback support.
+
+    Args:
+        conn: Database connection
+
+    Raises:
+        DatabaseError: If schema version is unsupported or migration fails
+    """
     row = conn.execute("PRAGMA user_version").fetchone()
-    version = row[0] if row else 0
-    if version == 0:
+    current_version = row[0] if row else 0
+
+    if current_version == 0:
+        # Fresh database - create schema directly
         _apply_schema(conn)
         return
-    if version == 1:
-        _migrate_v1_to_v2(conn)
-        version = 2
-    if version == 2:
-        _migrate_v2_to_v3(conn)
+
+    if current_version < SCHEMA_VERSION:
+        # Run migrations with rollback support
+        try:
+            _run_migrations(conn, current_version, SCHEMA_VERSION)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         return
-    if version != SCHEMA_VERSION:
-        raise RuntimeError(f"Unsupported DB schema version {version} (expected {SCHEMA_VERSION})")
+
+    if current_version != SCHEMA_VERSION:
+        raise DatabaseError(f"Unsupported DB schema version {current_version} (expected {SCHEMA_VERSION})")
 
 
 def _get_state() -> dict:
@@ -267,31 +399,39 @@ def _get_state() -> dict:
 
 
 @contextmanager
-def open_connection(db_path: Path | None = None) -> sqlite3.Connection:
+def open_connection(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     target_path = Path(db_path) if db_path is not None else default_db_path()
     target_path.parent.mkdir(parents=True, exist_ok=True)
     state = _get_state()
     if state["conn"] is not None and state["path"] != target_path:
-        raise RuntimeError(f"Existing connection opened for {state['path']}, cannot open {target_path}")
+        raise DatabaseError(f"Existing connection opened for {state['path']}, cannot open {target_path}")
 
     created_here = False
     if state["conn"] is None:
-        conn = sqlite3.connect(target_path)
+        conn = sqlite3.connect(target_path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA busy_timeout = 30000")
         _ensure_schema(conn)
         state["conn"] = conn
         state["path"] = target_path
         created_here = True
     state["depth"] += 1
+    exc_info = None
     try:
         yield state["conn"]
+    except Exception:
+        exc_info = True
+        raise
     finally:
         state["depth"] -= 1
         if state["depth"] <= 0 and created_here:
             try:
-                state["conn"].commit()
+                if exc_info:
+                    state["conn"].rollback()
+                else:
+                    state["conn"].commit()
             finally:
                 try:
                     state["conn"].close()
@@ -302,8 +442,54 @@ def open_connection(db_path: Path | None = None) -> sqlite3.Connection:
 
 
 @contextmanager
-def connection_context(conn: sqlite3.Connection | None = None, db_path: Path | None = None) -> sqlite3.Connection:
-    """Use an provided connection or open a new one via open_connection."""
+def connection_context(conn: sqlite3.Connection | None = None, db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
+    """Use a provided connection or open a new one via open_connection.
+
+    This is a convenience wrapper that allows code to optionally accept a connection
+    or create one automatically. It enables both standalone usage and composition
+    within larger transactions.
+
+    Transaction ownership and commit behavior:
+        - If conn is provided: The caller owns the connection and is responsible for
+          commit/rollback. This function does NOT commit or rollback. The connection
+          remains open after the context exits.
+
+        - If conn is None: A new connection is opened via open_connection(), which
+          automatically commits on successful exit and closes the connection. The
+          caller does NOT need to commit.
+
+    Thread safety:
+        - Each thread has its own connection state (via threading.local in open_connection).
+        - Passing a connection between threads is NOT safe - SQLite connections are
+          not thread-safe.
+        - If you need concurrent database access, each thread should call this with
+          conn=None to get its own connection.
+
+    Context manager behavior:
+        - Always use this as a context manager (with statement).
+        - The yielded connection is valid only within the context.
+        - Do not store the connection for use outside the context.
+
+    Args:
+        conn: Optional existing connection to use. If provided, caller retains ownership.
+        db_path: Optional database path. Only used if conn is None. Defaults to
+                 default_db_path() if not specified.
+
+    Yields:
+        sqlite3.Connection: The connection to use (either provided or newly opened).
+
+    Example:
+        # Standalone usage (auto-commit, auto-close):
+        with connection_context() as conn:
+            conn.execute("INSERT INTO ...")
+
+        # Composed within a transaction:
+        with open_connection() as conn:
+            with connection_context(conn) as same_conn:
+                # Operations here are part of the outer transaction
+                same_conn.execute("INSERT INTO ...")
+            # Commit happens here when open_connection context exits
+    """
     if conn:
         yield conn
     else:
