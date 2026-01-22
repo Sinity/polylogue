@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from .db import open_connection
 from .drive_client import default_credentials_path, default_token_path
 from .index import index_status
 
+LOGGER = logging.getLogger(__name__)
 HEALTH_TTL_SECONDS = 600
 
 
@@ -26,20 +28,55 @@ def _cache_path(archive_root: Path) -> Path:
 
 
 def _load_cached(archive_root: Path) -> dict | None:
+    """Load health check cache from disk.
+
+    Returns the cached dict if present and valid, or None if:
+    - Cache file doesn't exist (cache miss)
+    - Cache file is corrupted (invalid JSON)
+    - Cache file contains non-dict JSON
+    - File can't be read (permissions, encoding, etc.)
+
+    All errors are logged as warnings to aid debugging.
+    """
     path = _cache_path(archive_root)
     if not path.exists():
         return None
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except json.JSONDecodeError as exc:
+        LOGGER.warning("Health cache corrupted (invalid JSON) at %s: %s", path, exc)
         return None
-    return payload if isinstance(payload, dict) else None
+    except UnicodeDecodeError as exc:
+        LOGGER.warning("Health cache has encoding error at %s: %s", path, exc)
+        return None
+    except PermissionError as exc:
+        LOGGER.warning("Cannot read health cache (permission denied) at %s: %s", path, exc)
+        return None
+    except OSError as exc:
+        LOGGER.warning("Error reading health cache at %s: %s", path, exc)
+        return None
+
+    # Validate it's actually a dict, not just valid JSON
+    if not isinstance(payload, dict):
+        LOGGER.warning("Health cache contains non-dict JSON (got %s) at %s, treating as cache miss",
+                      type(payload).__name__, path)
+        return None
+
+    return payload
 
 
 def _write_cache(archive_root: Path, payload: dict) -> None:
+    """Write health check cache to disk.
+
+    Creates parent directories as needed.
+    Logs a warning on failure but does not raise (cache write is not critical).
+    """
     path = _cache_path(archive_root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        LOGGER.warning("Failed to write health cache to %s: %s", path, exc)
 
 
 def run_health(config: Config) -> dict:
