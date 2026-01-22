@@ -222,6 +222,7 @@ def run_sources(
                         logger.error("Error processing conversation", error=str(exc))
                         raise
 
+        render_failures: list[dict[str, str]] = []
         if stage in {"render", "all"}:
             ids = _all_conversation_ids(source_names) if stage == "render" else list(processed_ids)
 
@@ -238,10 +239,16 @@ def run_sources(
             with concurrent.futures.ThreadPoolExecutor(max_workers=4) as render_executor:
                 render_futures = {render_executor.submit(_render_one, cid): cid for cid in ids}
                 for fut in concurrent.futures.as_completed(render_futures):
+                    convo_id = render_futures[fut]
                     try:
                         counts["rendered"] += fut.result()
                     except Exception as exc:
-                        logger.error("Error rendering conversation %s: %s", render_futures[fut], exc)
+                        logger.warning("Failed to render conversation %s: %s", convo_id, exc)
+                        render_failures.append({
+                            "conversation_id": convo_id,
+                            "error": str(exc),
+                        })
+                        counts["render_failures"] = counts.get("render_failures", 0) + 1
 
         indexed = False
         index_error: str | None = None
@@ -326,6 +333,7 @@ def run_sources(
         indexed=indexed,
         index_error=index_error,
         duration_ms=duration_ms,
+        render_failures=render_failures,
     )
 
 

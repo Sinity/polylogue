@@ -19,6 +19,7 @@ class RunResult(BaseModel):
     indexed: bool
     index_error: str | None
     duration_ms: int
+    render_failures: list[dict[str, str]] = []
 
 
 class ExistingConversation(BaseModel):
