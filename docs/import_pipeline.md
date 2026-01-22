@@ -9,16 +9,19 @@ Polylogue uses a simple ingest pipeline that feeds a SQLite store, renders Markd
 
 ## Parsing
 
-- `polylogue/source_ingest.py` handles local payloads and auto-detects provider shapes:
-  - ChatGPT `mapping` graphs.
-  - Claude `chat_messages` arrays (attachments metadata captured).
-  - Generic `messages` lists or flat JSONL message streams.
+- `polylogue/source_ingest.py` handles local payloads and auto-detects provider shapes.
+- `polylogue/importers/` contains provider-specific parsers:
+  - `chatgpt.py` - ChatGPT `mapping` graphs
+  - `claude.py` - Claude AI and Claude Code `chat_messages` arrays
+  - `codex.py` - OpenAI Codex CLI sessions
+  - `base.py` - Common structures (`ParsedConversation`, `ParsedMessage`, `ParsedAttachment`)
 - `polylogue/drive_ingest.py` downloads Drive payloads and parses `chunkedPrompt.chunks` for Gemini chats.
 
 ## Storage
 
-- `polylogue/ingest.py` writes conversations/messages/attachments into SQLite via `polylogue/store.py`.
-- Conversations are idempotent based on content hash.
+- `polylogue/pipeline/ingest.py` prepares bundles with content hashing for idempotent storage.
+- `polylogue/store.py` writes conversations/messages/attachments into SQLite.
+- Conversations are deduplicated based on content hash (SHA-256).
 
 ## Rendering
 
@@ -26,4 +29,4 @@ Polylogue uses a simple ingest pipeline that feeds a SQLite store, renders Markd
 
 ## Indexing
 
-- `polylogue/index.py` builds the SQLite FTS index for `polylogue search`.
+- `polylogue/index.py` builds the SQLite FTS5 index for `polylogue search`.
