@@ -206,13 +206,20 @@ class DriveClient:
             try:
                 creds.refresh(request_cls())
             except Exception as exc:
-                # Refresh failed - will need to re-authenticate
-                # Keep broad exception here as google-auth can raise various errors
-                logger.warning("Token refresh failed: %s. Re-authentication required.", exc)
-                creds = None
+                # Token refresh failed - expose the error to the user instead of silently
+                # falling back to re-authentication, so they know what went wrong
+                raise DriveAuthError(
+                    f"Failed to refresh OAuth token: {exc}. "
+                    "Try re-authenticating with 'polylogue auth'."
+                ) from exc
         if creds and creds.valid:
             self._persist_token(creds, token_path)
             return creds
+        if creds and not creds.valid and not creds.refresh_token:
+            raise DriveAuthError(
+                f"Drive token at {token_path} is invalid and cannot be refreshed "
+                "(no refresh token). Delete it and re-run with --interactive to re-authorize."
+            )
         if creds is None and token_path.exists() and (self._ui is None or getattr(self._ui, "plain", True)):
             raise DriveAuthError(
                 f"Drive token at {token_path} is invalid or expired. "

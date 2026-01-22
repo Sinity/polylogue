@@ -2,6 +2,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from polylogue.version import VERSION_INFO
+
 from . import api, web  # Import routes
 
 
@@ -15,7 +17,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Polylogue",
     description="Personal Knowledge Engine",
-    version="0.1.0",
+    version=VERSION_INFO.full,
     lifespan=lifespan,
 )
 
