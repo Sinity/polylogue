@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from jinja2 import DictLoader, Environment, FileSystemLoader
 from markdown_it import MarkdownIt
@@ -52,14 +54,14 @@ DEFAULT_HTML_TEMPLATE = """
   </style>
 </head>
 <body>
-  {{ body }}
+  {{ body|safe }}
 </body>
 </html>
 """
 
 
 def _render_html(markdown_text: str, *, title: str, template_path: Path | None = None) -> str:
-    md = MarkdownIt("commonmark", {"html": False, "linkify": True})
+    md = MarkdownIt("commonmark", {"html": False, "linkify": True}).enable("table")
     body_html = md.render(markdown_text)
 
     if template_path and template_path.exists():
@@ -87,7 +89,7 @@ def render_conversation(
             (conversation_id,),
         ).fetchone()
         if not convo:
-            raise RuntimeError(f"Conversation not found: {conversation_id}")
+            raise ValueError(f"Conversation not found: {conversation_id}")
         messages = conn.execute(
             """
             SELECT * FROM messages
@@ -119,7 +121,7 @@ def render_conversation(
             (conversation_id,),
         ).fetchall()
 
-    attachments_by_message = {}
+    attachments_by_message: dict[str, list[Any]] = {}
     for att in attachments:
         attachments_by_message.setdefault(att["message_id"], []).append(att)
 
@@ -130,11 +132,23 @@ def render_conversation(
             try:
                 meta_dict = json.loads(meta)
                 name = meta_dict.get("name") or meta_dict.get("provider_id") or meta_dict.get("drive_id")
-            except Exception:
+            except json.JSONDecodeError:
                 name = None
         label = name or att["attachment_id"]
         path_value = att["path"] or str(asset_path(archive_root, att["attachment_id"]))
         lines.append(f"- Attachment: {label} ({path_value})")
+
+    def _format_text(text: str) -> str:
+        if not text:
+            return ""
+        # Handle JSON (tool use/result) by wrapping in code blocks
+        if (text.startswith("{") and text.endswith("}")) or (text.startswith("[") and text.endswith("]")):
+            try:
+                parsed = json.loads(text)
+                return f"```json\n{json.dumps(parsed, indent=2)}\n```"
+            except json.JSONDecodeError:
+                pass
+        return text
 
     title = convo["title"] or conversation_id
     provider = convo["provider_name"]
@@ -146,13 +160,23 @@ def render_conversation(
         role = msg["role"] or "message"
         text = msg["text"] or ""
         timestamp = msg["timestamp"]
+        msg_atts = attachments_by_message.get(msg["message_id"], [])
+        
+        # Skip empty tool/system/message sections that have no content and no attachments
+        if not text.strip() and not msg_atts:
+            continue
+            
         lines.append(f"## {role}")
         if timestamp:
             lines.append(f"_Timestamp: {timestamp}_")
         lines.append("")
-        lines.append(text)
-        lines.append("")
-        for att in attachments_by_message.get(msg["message_id"], []):
+        
+        formatted_text = _format_text(text)
+        if formatted_text:
+            lines.append(formatted_text)
+            lines.append("")
+            
+        for att in msg_atts:
             _append_attachment(att)
         lines.append("")
 

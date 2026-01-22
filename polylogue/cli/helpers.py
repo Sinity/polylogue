@@ -9,7 +9,7 @@ from pathlib import Path
 from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config, ConfigError, load_config
-from polylogue.health import cached_health_summary
+from polylogue.health import cached_health_summary, get_health
 from polylogue.pipeline.runner import latest_run
 
 
@@ -67,7 +67,7 @@ def maybe_prompt_sources(
         options.insert(0, last_choice)
     choice = env.ui.choose(f"Select source for {command}", options)
     if not choice:
-        return selected_sources
+        fail(command, "No source selected.")
     save_last_source(choice)
     if choice == "all":
         return None
@@ -97,7 +97,7 @@ def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> l
     return requested
 
 
-def print_summary(env: AppEnv) -> None:
+def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     ui = env.ui
     try:
         config = load_effective_config(env)
@@ -108,19 +108,35 @@ def print_summary(env: AppEnv) -> None:
     last_run_data = latest_run()
     last_line = "Last run: none"
     if last_run_data:
-        last_line = f"Last run: {last_run_data.get('run_id')} ({last_run_data.get('timestamp')})"
-    health_line = f"Health: {cached_health_summary(config.archive_root)}"
-    ui.summary(
-        "Polylogue",
-        [
-            f"Config: {config.path}",
-            f"Archive root: {config.archive_root}",
-            f"Render root: {config.render_root}",
-            f"Sources: {format_sources_summary(config.sources)}",
-            last_line,
-            health_line,
-        ],
-    )
+        last_line = f"Last run: {last_run_data.run_id} ({last_run_data.timestamp})"
+
+    lines = [
+        f"Config: {config.path}",
+        f"Archive root: {config.archive_root}",
+        f"Render root: {config.render_root}",
+        f"Sources: {format_sources_summary(config.sources)}",
+        last_line,
+    ]
+
+    if verbose:
+        # Show detailed health checks
+        payload = get_health(config)
+        cached = payload.get("cached")
+        age = payload.get("age_seconds")
+        health_header = f"Health (cached={cached}, age={age}s)" if cached is not None else "Health"
+        lines.append(health_header)
+        for check in payload.get("checks", []):
+            name = check.get("name")
+            status = check.get("status")
+            detail = check.get("detail")
+            icon = {"ok": "[green]✓[/green]", "warning": "[yellow]![/yellow]", "error": "[red]✗[/red]"}.get(status, "?")
+            if ui.plain:
+                icon = {"ok": "OK", "warning": "WARN", "error": "ERR"}.get(status, "?")
+            lines.append(f"  {icon} {name}: {detail}")
+    else:
+        lines.append(f"Health: {cached_health_summary(config.archive_root)}")
+
+    ui.summary("Polylogue", lines)
 
 
 def latest_render_path(render_root: Path) -> Path | None:
@@ -129,4 +145,16 @@ def latest_render_path(render_root: Path) -> Path | None:
     candidates = list(render_root.rglob("conversation.md")) + list(render_root.rglob("conversation.html"))
     if not candidates:
         return None
-    return max(candidates, key=lambda p: p.stat().st_mtime)
+    # Handle race condition where files may be deleted between listing and stat
+    latest: Path | None = None
+    latest_mtime: float = 0.0
+    for path in candidates:
+        try:
+            mtime = path.stat().st_mtime
+            if mtime > latest_mtime:
+                latest_mtime = mtime
+                latest = path
+        except OSError:
+            # File was deleted between listing and stat, skip it
+            continue
+    return latest

@@ -30,6 +30,10 @@ from rich.text import Text
 from rich.theme import Theme
 
 
+class UIError(Exception):
+    """UI-related errors (prompt stubs, user interaction)."""
+
+
 class ConsoleLike(Protocol):
     def print(self, *objects: object, **kwargs: object) -> None: ...
 
@@ -100,7 +104,7 @@ class ConsoleFacade:
                 if isinstance(data, dict):
                     entries.append(data)
             except json.JSONDecodeError as exc:
-                raise RuntimeError(f"Invalid prompt stub entry: {line}") from exc
+                raise UIError(f"Invalid prompt stub entry: {line}") from exc
         return entries
 
     def _pop_prompt_response(self, kind: str) -> dict[str, object] | None:
@@ -109,7 +113,7 @@ class ConsoleFacade:
         entry = self._prompt_responses.popleft()
         expected = entry.get("type")
         if expected and expected != kind:
-            raise RuntimeError(f"Prompt stub expected '{expected}' but got '{kind}'")
+            raise UIError(f"Prompt stub expected '{expected}' but got '{kind}'")
         return entry
 
     def banner(self, title: str, subtitle: str | None = None) -> None:
@@ -135,7 +139,8 @@ class ConsoleFacade:
 
     def summary(self, title: str, lines: Iterable[str]) -> None:
         """Display a summary panel."""
-        text = "\n".join(lines)
+        lines_list = list(lines)
+        text = "\n".join(lines_list)
         if self.plain:
             self.console.print(f"-- {title} --")
             if text:
@@ -143,9 +148,12 @@ class ConsoleFacade:
             return
 
         summary_text = Text()
-        for line in lines:
+        for line in lines_list:
             summary_text.append("• ", style="summary.bullet")
-            summary_text.append(line + "\n", style="summary.text")
+            # Parse markup in line content (e.g., [green]✓[/green])
+            parsed = Text.from_markup(line, style="summary.text")
+            summary_text.append_text(parsed)
+            summary_text.append("\n")
         panel = Panel(
             summary_text if summary_text.plain else Text(text, style="summary.text"),
             title=f"  {title}  ",
@@ -193,7 +201,8 @@ class ConsoleFacade:
                     idx = int(response["index"])  # type: ignore[arg-type]
                     if 0 <= idx < len(options):
                         return options[idx]
-                except Exception:
+                except (KeyError, ValueError, TypeError):
+                    # Response missing index, or index not numeric/valid
                     pass
         if len(options) > 12:
             result = questionary.autocomplete(
@@ -271,7 +280,8 @@ class ConsoleFacade:
                 lexer = get_lexer_by_name("diff")
                 highlighted = highlight(diff_text, lexer, TerminalFormatter())
                 self.console.print(highlighted, markup=False, highlight=False)
-        except Exception:
+        except (ImportError, AttributeError):
+            # Pygments not available or lexer not found - fall back to basic syntax
             syntax = Syntax(diff_text, "diff", theme="ansi_dark")
             self.console.print(syntax)
 
