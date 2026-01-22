@@ -2,11 +2,57 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
+from typing import Any
 
 from polylogue.assets import asset_path
 from polylogue.core.hashing import hash_file, hash_payload, hash_text
 from polylogue.source_ingest import ParsedAttachment, ParsedConversation, ParsedMessage
+
+# Sentinel values to distinguish None from empty in hash computations
+_NULL_SENTINEL = "__POLYLOGUE_NULL__"
+_EMPTY_SENTINEL = "__POLYLOGUE_EMPTY__"
+
+
+def move_attachment_to_archive(source: Path, dest: Path) -> None:
+    """Move attachment file to archive location.
+
+    Creates parent directories and moves the file atomically. Raises on failure.
+
+    Args:
+        source: Source file path.
+        dest: Destination file path.
+
+    Raises:
+        FileNotFoundError: If source file doesn't exist.
+        PermissionError: If move fails due to permissions.
+        OSError: For other filesystem errors.
+    """
+    if not source.exists():
+        raise FileNotFoundError(f"Source attachment not found: {source}")
+
+    # Create parent directories
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    # Move file (will raise on failure)
+    shutil.move(str(source), str(dest))
+
+
+def _normalize_for_hash(value: Any) -> Any:
+    """Normalize a value for hashing, distinguishing None from empty.
+
+    Args:
+        value: Any value to normalize.
+
+    Returns:
+        Normalized value with None → _NULL_SENTINEL and "" → _EMPTY_SENTINEL.
+    """
+    if value is None:
+        return _NULL_SENTINEL
+    if value == "":
+        return _EMPTY_SENTINEL
+    return value
 
 
 def attachment_seed(provider_name: str, attachment: ParsedAttachment) -> str:
@@ -37,6 +83,9 @@ def attachment_content_id(
         Tuple of (attachment_id, updated_provider_meta, updated_path).
         The caller is responsible for applying any updates to the attachment.
         This function does NOT mutate the attachment object.
+
+    Raises:
+        OSError: If attachment file move fails (FileNotFoundError, PermissionError, etc).
     """
     meta = dict(attachment.provider_meta or {})
     updated_path = attachment.path
@@ -52,15 +101,10 @@ def attachment_content_id(
             meta.setdefault("sha256", digest)
             target = asset_path(archive_root, digest)
             if target != path:
-                target.parent.mkdir(parents=True, exist_ok=True)
                 if target.exists():
                     path.unlink()
                 else:
-                    try:
-                        path.replace(target)
-                    except OSError:
-                        target.write_bytes(path.read_bytes())
-                        path.unlink()
+                    move_attachment_to_archive(path, target)
                 updated_path = str(target)
             else:
                 updated_path = str(path)
@@ -70,6 +114,22 @@ def attachment_content_id(
 
 
 def conversation_id(provider_name: str, provider_conversation_id: str) -> str:
+    """Generate deterministic conversation ID from provider info.
+
+    Args:
+        provider_name: Name of the provider (e.g., "chatgpt", "claude").
+        provider_conversation_id: Provider's conversation identifier.
+
+    Returns:
+        Formatted conversation ID.
+
+    Raises:
+        ValueError: If provider_name or provider_conversation_id is empty.
+    """
+    if not provider_name or not provider_name.strip():
+        raise ValueError("provider_name cannot be empty")
+    if not provider_conversation_id or not provider_conversation_id.strip():
+        raise ValueError("provider_conversation_id cannot be empty")
     return f"{provider_name}:{provider_conversation_id}"
 
 
@@ -78,16 +138,37 @@ def message_id(conversation_id: str, provider_message_id: str) -> str:
 
 
 def message_content_hash(message: ParsedMessage, provider_message_id: str) -> str:
+    """Generate content hash for a message.
+
+    Uses sentinel values to distinguish None from empty string.
+
+    Args:
+        message: Parsed message object.
+        provider_message_id: Provider's message identifier.
+
+    Returns:
+        Content hash string.
+    """
     payload = {
         "id": provider_message_id,
         "role": message.role,
-        "text": message.text,
-        "timestamp": message.timestamp,
+        "text": _normalize_for_hash(message.text),
+        "timestamp": _normalize_for_hash(message.timestamp),
     }
     return hash_payload(payload)
 
 
 def conversation_content_hash(convo: ParsedConversation) -> str:
+    """Generate content hash for conversation.
+
+    Uses sentinel values to distinguish None from empty/missing fields.
+
+    Args:
+        convo: Parsed conversation object.
+
+    Returns:
+        Content hash string.
+    """
     messages_payload = []
     for idx, msg in enumerate(convo.messages, start=1):
         message_id = msg.provider_message_id or f"msg-{idx}"
@@ -95,18 +176,18 @@ def conversation_content_hash(convo: ParsedConversation) -> str:
             {
                 "id": message_id,
                 "role": msg.role,
-                "text": msg.text,
-                "timestamp": msg.timestamp,
+                "text": _normalize_for_hash(msg.text),
+                "timestamp": _normalize_for_hash(msg.timestamp),
             }
         )
     attachments_payload = sorted(
         [
             {
-                "id": att.provider_attachment_id,
-                "message_id": att.message_provider_id,
-                "name": att.name,
-                "mime_type": att.mime_type,
-                "size_bytes": att.size_bytes,
+                "id": _normalize_for_hash(att.provider_attachment_id),
+                "message_id": _normalize_for_hash(att.message_provider_id),
+                "name": _normalize_for_hash(att.name),
+                "mime_type": _normalize_for_hash(att.mime_type),
+                "size_bytes": _normalize_for_hash(att.size_bytes),
             }
             for att in convo.attachments
         ],
@@ -118,9 +199,9 @@ def conversation_content_hash(convo: ParsedConversation) -> str:
     )
     return hash_payload(
         {
-            "title": convo.title,
-            "created_at": convo.created_at,
-            "updated_at": convo.updated_at,
+            "title": _normalize_for_hash(convo.title),
+            "created_at": _normalize_for_hash(convo.created_at),
+            "updated_at": _normalize_for_hash(convo.updated_at),
             "messages": messages_payload,
             "attachments": attachments_payload,
         }
