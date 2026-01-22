@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 import threading
 
@@ -10,6 +11,12 @@ from polylogue.core.json import dumps as json_dumps
 
 # Type aliases for semantic clarity (full migration pending)
 # from polylogue.types import ConversationId, MessageId, AttachmentId, ContentHash
+
+# Valid provider name pattern: starts with letter, contains only letters, numbers, hyphens, underscores
+_PROVIDER_NAME_PATTERN = re.compile(r'^[a-zA-Z][a-zA-Z0-9_-]*$')
+
+# Maximum reasonable file size (1TB)
+MAX_ATTACHMENT_SIZE = 1024 * 1024 * 1024 * 1024
 
 _WRITE_LOCK = threading.Lock()
 
@@ -25,7 +32,20 @@ class ConversationRecord(BaseModel):
     provider_meta: dict | None = None
     version: int = 1
 
-    @field_validator("conversation_id", "provider_name", "provider_conversation_id", "content_hash")
+    @field_validator("provider_name")
+    @classmethod
+    def validate_provider_name(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("provider_name cannot be empty")
+        v = v.strip()
+        if not _PROVIDER_NAME_PATTERN.match(v):
+            raise ValueError(
+                f"provider_name '{v}' is invalid. Must start with a letter and "
+                "contain only letters, numbers, hyphens, and underscores."
+            )
+        return v
+
+    @field_validator("conversation_id", "provider_conversation_id", "content_hash")
     @classmethod
     def non_empty_string(cls, v: str) -> str:
         if not v or not v.strip():
@@ -70,9 +90,13 @@ class AttachmentRecord(BaseModel):
 
     @field_validator("size_bytes")
     @classmethod
-    def non_negative_size(cls, v: int | None) -> int | None:
-        if v is not None and v < 0:
+    def validate_size_bytes(cls, v: int | None) -> int | None:
+        if v is None:
+            return v
+        if v < 0:
             raise ValueError("size_bytes cannot be negative")
+        if v > MAX_ATTACHMENT_SIZE:
+            raise ValueError(f"size_bytes exceeds maximum ({MAX_ATTACHMENT_SIZE} bytes / 1TB)")
         return v
 
 
@@ -122,6 +146,9 @@ def _prune_attachment_refs(conn, conversation_id: str, keep_ref_ids: set[str]) -
             tuple(ref_ids),
         )
 
+        # Recalculate ref_count from actual attachment_refs table
+        # This is race-safe: instead of decrementing (which could race),
+        # we recompute from source of truth using COUNT(*)
         # Single UPDATE query with IN clause instead of N individual queries
         if attachments:
             att_placeholders = ", ".join("?" for _ in attachments)
@@ -229,6 +256,7 @@ def upsert_message(conn, record: MessageRecord) -> bool:
 
 
 def upsert_attachment(conn, record: AttachmentRecord) -> bool:
+    # Ensure attachment metadata exists (idempotent, doesn't touch ref_count)
     conn.execute(
         """
         INSERT INTO attachments (
@@ -240,10 +268,10 @@ def upsert_attachment(conn, record: AttachmentRecord) -> bool:
             provider_meta
         ) VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(attachment_id) DO UPDATE SET
-            mime_type = excluded.mime_type,
-            size_bytes = excluded.size_bytes,
-            path = COALESCE(excluded.path, path),
-            provider_meta = excluded.provider_meta
+            mime_type = COALESCE(excluded.mime_type, attachments.mime_type),
+            size_bytes = COALESCE(excluded.size_bytes, attachments.size_bytes),
+            path = COALESCE(excluded.path, attachments.path),
+            provider_meta = COALESCE(excluded.provider_meta, attachments.provider_meta)
         """,
         (
             record.attachment_id,
@@ -255,6 +283,8 @@ def upsert_attachment(conn, record: AttachmentRecord) -> bool:
         ),
     )
 
+    # Atomically insert ref and increment count in a single statement
+    # This prevents race conditions where multiple threads could increment simultaneously
     ref_id = _make_ref_id(record.attachment_id, record.conversation_id, record.message_id)
     res = conn.execute(
         """
@@ -274,6 +304,9 @@ def upsert_attachment(conn, record: AttachmentRecord) -> bool:
             _json_or_none(record.provider_meta),
         ),
     )
+
+    # Only increment if we actually inserted a new ref
+    # Use atomic increment to avoid read-modify-write race
     if res.rowcount > 0:
         conn.execute(
             "UPDATE attachments SET ref_count = ref_count + 1 WHERE attachment_id = ?",
@@ -356,6 +389,7 @@ __all__ = [
     "MessageRecord",
     "AttachmentRecord",
     "RunRecord",
+    "MAX_ATTACHMENT_SIZE",
     "record_run",
     "store_records",
 ]

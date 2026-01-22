@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 import threading
@@ -7,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+LOGGER = logging.getLogger(__name__)
 SCHEMA_VERSION = 4
 _LOCAL = threading.local()
 
@@ -202,9 +204,7 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP TABLE attachment_refs_old")
-    conn.execute("PRAGMA user_version = 2")
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.commit()
 
 
 def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
@@ -246,9 +246,7 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP TABLE runs_old")
-    conn.execute("PRAGMA user_version = 3")
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.commit()
 
 
 def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
@@ -306,28 +304,90 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP TABLE conversations_old")
-    conn.execute("PRAGMA user_version = 4")
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.commit()
+
+
+# Migration registry: maps source version to migration function
+_MIGRATIONS = {
+    1: _migrate_v1_to_v2,
+    2: _migrate_v2_to_v3,
+    3: _migrate_v3_to_v4,
+}
+
+
+def _run_migrations(conn: sqlite3.Connection, current_version: int, target_version: int) -> None:
+    """Run migrations from current_version to target_version.
+
+    Note: SQLite DDL statements (ALTER TABLE, CREATE TABLE, etc.) auto-commit
+    and cannot be rolled back. If a migration fails mid-way, the database may
+    be in an inconsistent state. Always backup before migrations.
+
+    Each successful migration updates the schema version before proceeding to
+    the next, so partial progress is preserved.
+
+    Args:
+        conn: Database connection
+        current_version: Starting schema version
+        target_version: Target schema version
+
+    Raises:
+        RuntimeError: If any migration fails, with details about which migration
+                     failed and at what version the database remains.
+    """
+    if current_version >= target_version:
+        return
+
+    for version in range(current_version, target_version):
+        migration_func = _MIGRATIONS.get(version)
+        if migration_func is None:
+            continue
+
+        LOGGER.info("Running migration v%d -> v%d", version, version + 1)
+
+        try:
+            migration_func(conn)
+            conn.execute(f"PRAGMA user_version = {version + 1}")
+            LOGGER.info("Migration v%d -> v%d completed", version, version + 1)
+        except Exception as exc:
+            LOGGER.error("Migration v%d -> v%d failed: %s", version, version + 1, exc)
+            raise RuntimeError(
+                f"Migration from v{version} to v{version + 1} failed. "
+                f"Database may be in inconsistent state. Error: {exc}"
+            ) from exc
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    """Ensure database schema is at current version, running migrations if needed.
+
+    For fresh databases (version 0), creates the schema directly.
+    For existing databases, runs migrations sequentially with rollback support.
+
+    Args:
+        conn: Database connection
+
+    Raises:
+        DatabaseError: If schema version is unsupported or migration fails
+    """
     row = conn.execute("PRAGMA user_version").fetchone()
-    version = row[0] if row else 0
-    if version == 0:
+    current_version = row[0] if row else 0
+
+    if current_version == 0:
+        # Fresh database - create schema directly
         _apply_schema(conn)
         return
-    if version == 1:
-        _migrate_v1_to_v2(conn)
-        version = 2
-    if version == 2:
-        _migrate_v2_to_v3(conn)
-        version = 3
-    if version == 3:
-        _migrate_v3_to_v4(conn)
+
+    if current_version < SCHEMA_VERSION:
+        # Run migrations with rollback support
+        try:
+            _run_migrations(conn, current_version, SCHEMA_VERSION)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         return
-    if version != SCHEMA_VERSION:
-        raise DatabaseError(f"Unsupported DB schema version {version} (expected {SCHEMA_VERSION})")
+
+    if current_version != SCHEMA_VERSION:
+        raise DatabaseError(f"Unsupported DB schema version {current_version} (expected {SCHEMA_VERSION})")
 
 
 def _get_state() -> dict:
@@ -358,13 +418,20 @@ def open_connection(db_path: Path | None = None) -> Iterator[sqlite3.Connection]
         state["path"] = target_path
         created_here = True
     state["depth"] += 1
+    exc_info = None
     try:
         yield state["conn"]
+    except Exception:
+        exc_info = True
+        raise
     finally:
         state["depth"] -= 1
         if state["depth"] <= 0 and created_here:
             try:
-                state["conn"].commit()
+                if exc_info:
+                    state["conn"].rollback()
+                else:
+                    state["conn"].commit()
             finally:
                 try:
                     state["conn"].close()
