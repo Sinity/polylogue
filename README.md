@@ -16,7 +16,7 @@ Polylogue is built for Nix-first development, but you can run it directly from t
 
 - Nix dev shell: `direnv allow` or `nix develop`
 - Build a packaged CLI: `nix build .#polylogue`
-- Run from source: `python3 polylogue.py --help`
+- Run from source: `uv run polylogue --help` or `python -m polylogue.cli --help`
 
 ## Quick start
 
