@@ -27,6 +27,26 @@ class Source:
     path: Path | None = None
     folder: str | None = None
 
+    def __post_init__(self):
+        """Validate source configuration."""
+        # Name validation
+        if not self.name or not self.name.strip():
+            raise ValueError("Source name cannot be empty")
+        self.name = self.name.strip()
+
+        # Path/folder validation
+        has_path = self.path is not None
+        has_folder = self.folder is not None and self.folder.strip()
+
+        if not has_path and not has_folder:
+            raise ValueError(f"Source '{self.name}' must have either 'path' or 'folder'")
+        if has_path and has_folder:
+            raise ValueError(f"Source '{self.name}' cannot have both 'path' and 'folder' (ambiguous)")
+
+        # Normalize folder
+        if self.folder:
+            self.folder = self.folder.strip()
+
     def as_dict(self) -> dict:
         payload = {"name": self.name}
         if self.path is not None:
@@ -48,6 +68,15 @@ class Config:
     sources: list[Source]
     path: Path
     template_path: Path | None = None
+
+    def __post_init__(self):
+        """Validate config invariants."""
+        # Check for duplicate source names
+        names = [s.name for s in self.sources]
+        duplicates = {name for name in names if names.count(name) > 1}
+        if duplicates:
+            dup_list = ", ".join(sorted(duplicates))
+            raise ConfigError(f"Duplicate source name(s): {dup_list}")
 
     def as_dict(self) -> dict:
         payload = {
