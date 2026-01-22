@@ -55,7 +55,7 @@ git rebase -i main
 ```bash
 # Example:
 pytest tests/test_new_feature.py -v
-python3 polylogue.py <new-command> --dry-run
+uv run polylogue <new-command> --dry-run
 ```
 
 ## Additional Notes
