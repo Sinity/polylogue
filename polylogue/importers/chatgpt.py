@@ -83,7 +83,7 @@ def looks_like(payload: object) -> bool:
 
 
 def parse(payload: dict, fallback_id: str) -> ParsedConversation:
-    messages = extract_messages_from_mapping(payload.get("mapping", {}))
+    messages = extract_messages_from_mapping(payload.get("mapping") or {})
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
     return ParsedConversation(

@@ -74,6 +74,9 @@ def parse_chunked_prompt(provider: str, payload: dict, fallback_id: str) -> Pars
     elif isinstance(payload.get("chunks"), list):
         chunks = payload.get("chunks")
 
+    # Fallback timestamp from conversation metadata
+    default_timestamp = str(payload.get("createTime")) if payload.get("createTime") else None
+
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
     for idx, chunk in enumerate(chunks, start=1):
@@ -117,7 +120,7 @@ def parse_chunked_prompt(provider: str, payload: dict, fallback_id: str) -> Pars
                 provider_message_id=msg_id,
                 role=role,
                 text=text,
-                timestamp=None,
+                timestamp=default_timestamp,
                 provider_meta=meta,
             )
         )
