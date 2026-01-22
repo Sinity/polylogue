@@ -52,6 +52,9 @@ polylogue = "polylogue.cli:main"
 where = ["."]
 include = ["polylogue", "polylogue.*"]
 
+[tool.setuptools.package-data]
+polylogue = ["templates/*.html"]
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]

@@ -1,67 +1,19 @@
-# Polylogue Codebase Backlog
+# Polylogue Backlog
 
-> Generated from comprehensive multi-agent analysis (2026-01-19)
-> Updated: 2026-01-20 (hardening sprint + agent sweep completed)
+> Last updated: 2026-01-22
+> Status: All tests passing (859 tests), critical issues resolved
 
-## Executive Summary
+## Remaining Work Summary
 
-Analysis identified **113 issues** across 6 dimensions. Two sprints addressed critical issues and code quality.
+| Category | P0 (Critical) | P1 (High) | P2 (Medium) | P3 (Low) |
+|----------|---------------|-----------|-------------|----------|
+| API Contracts | 0 | 3 | 7 | 3 |
+| Data Flow | 0 | 3 | 5 | 4 |
+| Performance | 1 | 3 | 4 | 4 |
+| Test Coverage | 0 | 1 | 4 | 1 |
+| Type Safety | 0 | 0 | 0 | 9 |
 
-| Category | Critical | High | Medium | Low | Total |
-|----------|----------|------|--------|-----|-------|
-| Type Safety | ~~1~~ 0 | ~~2~~ 0 | ~~11~~ 0 | 9 | ~~23~~ 9 |
-| API Contracts | ~~5~~ 3 | ~~4~~ 3 | 7 | 3 | ~~19~~ 16 |
-| Data Flow | ~~5~~ 2 | ~~4~~ 3 | 5 | 4 | ~~18~~ 14 |
-| Performance | ~~2~~ 1 | ~~4~~ 3 | 4 | 4 | ~~14~~ 12 |
-| Test Coverage | ~~5~~ 4 | ~~3~~ 1 | 4 | 1 | ~~13~~ 10 |
-| Dependencies | ~~1~~ 0 | ~~2~~ 0 | ~~2~~ 0 | ~~3~~ 0 | ~~8~~ 0 |
-| Static Analysis | - | - | ~~11~~ 0 | ~~56~~ 0 | ~~67~~ 0 |
-
----
-
-## Completed
-
-### Hardening Sprint (2026-01-20)
-
-**P0 Critical Fixes:**
-- [x] Race conditions in runner.py - Added `_counts_lock` around mutations
-- [x] Thread-unsafe mutation in ids.py - Returns `(id, meta, path)` tuple
-- [x] Transaction boundary in store.py - `conn.commit()` inside `_WRITE_LOCK`
-- [x] Pydantic version constraint - Pinned `pydantic>=2.0,<3.0`
-
-**Dependency Cleanup:**
-- [x] Removed unused deps: `pathvalidate`, `aiofiles`, `python-frontmatter`, `watchfiles`, `tiktoken`, `pypdf`, `alembic`
-- [x] Added version upper bounds: `httpx<1.0`, `fastapi<1.0`, `uvicorn<1.0`, `rich<14.0`, `click<9.0`
-- [x] Deleted orphaned `alembic.ini`
-
-**API Formalization:**
-- [x] Exported public API in `polylogue/lib/__init__.py`
-- [x] Added `view()` method to repository with partial ID resolution
-- [x] Added docstrings to `lib/models.py` explaining semantic projections
-
-### Agent Sweep (2026-01-20)
-
-**Type Safety:**
-- [x] Created `DatabaseError` exception in `db.py`
-- [x] Created `UIError` exception in `ui/facade.py`
-- [x] Narrowed 15+ bare `except Exception:` blocks to specific types
-- [x] Added logging for silently swallowed errors in `search.py`, `repository.py`
-
-**Static Analysis:**
-- [x] Ran `ruff --fix` across codebase
-- [x] Fixed SIM simplifications, E501 line-length issues
-- [x] Import sorting fixes
-
-**Performance:**
-- [x] Fixed N+1 query in `store.py:_prune_attachment_refs()` - single UPDATE with IN clause
-
-**Test Coverage:**
-- [x] Created `tests/test_pipeline_concurrent.py` (6 tests for thread safety)
-- [x] Enhanced `tests/test_search_health.py` (+278 lines)
-- [x] Enhanced `tests/test_source_ingest.py` (+326 lines, encoding fallback tests)
-- [x] Enhanced `tests/test_cli.py` (+167 lines)
-- [x] Enhanced `tests/test_ingest_render.py` (+132 lines)
-- [x] Enhanced `tests/test_lib.py` (+126 lines)
+**Recent work:** Hardening Sprint, Agent Sweep, and Bug Hunt (2026-01-20 to 2026-01-22) resolved all critical type safety, dependency, and static analysis issues. See git history for details.
 
 ---
 
@@ -126,6 +78,8 @@ Functions needing docstrings for mutation semantics:
 
 ## View Command Roadmap
 
+The `view` command provides semantic projections over conversations for analysis and export. See `docs/design-view-command.md` for detailed design.
+
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | Core `view` command with basic filters/formats | ✅ Done |
@@ -134,10 +88,17 @@ Functions needing docstrings for mutation semantics:
 | 4 | Add `turns` entity and semantic grouping | Pending |
 | 5 | Interactive mode and editor integration | Pending |
 
-### Future Extensions (v2)
-- Query language: `polylogue query "messages where provider='claude' | strip_tools | limit 100"`
-- Saved views: `polylogue view --save my-analysis` / `--use my-analysis`
-- Agent piping: `polylogue view messages --format jsonl | polylogue agent analyze`
+**Current capabilities:**
+- Entity types: `conversations`, `messages`
+- Filters: `--provider`, `--since`, `--limit`, `--id`
+- Output formats: `table`, `jsonl`, `json`, `markdown`
+- Repository API: `ConversationRepository.view()` for programmatic access
+
+**Planned features:**
+- Content transforms: `--transform strip-tools`, `--transform strip-thinking`
+- Pattern annotations: `--annotate frustration`, `--annotate verbosity`
+- Field projections: `--fields id,role,text` or `--fields minimal`
+- Additional entities: `turns` (dialogue pairs), `stats` (aggregations)
 
 ---
 
