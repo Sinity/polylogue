@@ -25,6 +25,10 @@ _ENCODING_GUESSES: tuple[str, ...] = (
     "utf-32-be",
 )
 
+# ZIP bomb protection constants
+MAX_COMPRESSION_RATIO = 100  # Reject if uncompressed/compressed > 100x
+MAX_UNCOMPRESSED_SIZE = 500 * 1024 * 1024  # 500MB limit per file
+
 
 def _decode_json_bytes(blob: bytes) -> str | None:
     """Decode a JSON payload from bytes, trying multiple encodings."""
@@ -81,7 +85,16 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str) -> list[P
         if isinstance(payload, dict) and isinstance(payload.get("messages"), list):
             return [claude.parse_code(payload["messages"], fallback_id)]
     if provider == "codex":
-        return [codex.parse(payload, fallback_id)]
+        if isinstance(payload, list):
+            return [codex.parse(payload, fallback_id)]
+        if isinstance(payload, dict):
+            # If it's a single dict that looks like a codex item, wrap it
+            if "prompt" in payload or "completion" in payload:
+                return [codex.parse([payload], fallback_id)]
+    if provider == "gemini" or provider == "drive":
+        if isinstance(payload, list):
+            # Treat list as chunks for a single conversation
+            return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
 
     # Fallback / Generic
     if isinstance(payload, dict):
@@ -118,6 +131,11 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str) -> list[P
 
 def parse_drive_payload(provider: str, payload: Any, fallback_id: str) -> list[ParsedConversation]:
     if isinstance(payload, list):
+        # Check if it looks like a list of conversations or a list of messages
+        # For drive/gemini, if it's a list, it's often a list of chunks
+        if payload and isinstance(payload[0], dict) and ("role" in payload[0] or "text" in payload[0]):
+             return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
+        
         results = []
         for i, item in enumerate(payload):
             results.extend(parse_drive_payload(provider, item, f"{fallback_id}-{i}"))
@@ -130,7 +148,7 @@ def parse_drive_payload(provider: str, payload: Any, fallback_id: str) -> list[P
     return []
 
 
-def _iter_json_stream(handle: BinaryIO, path_name: str) -> Iterable[dict]:
+def _iter_json_stream(handle: BinaryIO, path_name: str, unpack_lists: bool = True) -> Iterable[Any]:
     if path_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
         for line in handle:
             raw = line.strip()
@@ -150,36 +168,37 @@ def _iter_json_stream(handle: BinaryIO, path_name: str) -> Iterable[dict]:
                 continue
         return
 
-    # Strategy 1: Try streaming root list
-    try:
-        # LOGGER.info("Strategy 1: ijson items(item) for %s", path_name)
-        found_any = False
-        for item in ijson.items(handle, "item"):
-            found_any = True
-            yield item
-        if found_any:
-            return
-    except ijson.common.JSONError:
-        pass  # Expected, try next strategy
-    except Exception as exc:
-        LOGGER.debug("Strategy 1 (ijson items) failed for %s: %s", path_name, exc)
+    if unpack_lists:
+        # Strategy 1: Try streaming root list
+        try:
+            # LOGGER.info("Strategy 1: ijson items(item) for %s", path_name)
+            found_any = False
+            for item in ijson.items(handle, "item"):
+                found_any = True
+                yield item
+            if found_any:
+                return
+        except ijson.common.JSONError:
+            pass  # Expected, try next strategy
+        except Exception as exc:
+            LOGGER.debug("Strategy 1 (ijson items) failed for %s: %s", path_name, exc)
 
-    handle.seek(0)
-    # Strategy 2: Try streaming conversations list
-    try:
-        # LOGGER.info("Strategy 2: ijson items(conversations.item) for %s", path_name)
-        found_any = False
-        for item in ijson.items(handle, "conversations.item"):
-            found_any = True
-            yield item
-        if found_any:
-            return
-    except ijson.common.JSONError:
-        pass  # Expected, try next strategy
-    except Exception as exc:
-        LOGGER.debug("Strategy 2 (ijson conversations.item) failed for %s: %s", path_name, exc)
+        handle.seek(0)
+        # Strategy 2: Try streaming conversations list
+        try:
+            # LOGGER.info("Strategy 2: ijson items(conversations.item) for %s", path_name)
+            found_any = False
+            for item in ijson.items(handle, "conversations.item"):
+                found_any = True
+                yield item
+            if found_any:
+                return
+        except ijson.common.JSONError:
+            pass  # Expected, try next strategy
+        except Exception as exc:
+            LOGGER.debug("Strategy 2 (ijson conversations.item) failed for %s: %s", path_name, exc)
 
-    handle.seek(0)
+        handle.seek(0)
     # Strategy 3: Load full object (fallback for single dicts or unknown structures)
     try:
         # LOGGER.info("Strategy 3: json.load for %s", path_name)
@@ -187,9 +206,13 @@ def _iter_json_stream(handle: BinaryIO, path_name: str) -> Iterable[dict]:
         if isinstance(data, dict):
             yield data
         elif isinstance(data, list):
-            yield from data
-    except json.JSONDecodeError:
-        LOGGER.warning("Failed to parse JSON from %s", path_name)
+            if unpack_lists:
+                yield from data
+            else:
+                yield data
+    except json.JSONDecodeError as e:
+        LOGGER.warning("Failed to parse JSON from %s: %s", path_name, e)
+        raise  # Re-raise so caller can track failure
     except Exception as e:
         LOGGER.warning("Strategy 3 failed for %s: %s", path_name, e)
         raise
@@ -223,6 +246,8 @@ def iter_source_conversations(source: Source, *, cursor_state: dict | None = Non
 
     if cursor_state is not None:
         cursor_state["file_count"] = len(paths)
+        cursor_state.setdefault("failed_files", [])
+        cursor_state.setdefault("failed_count", 0)
         if paths:
             try:
                 latest = max(paths, key=lambda p: p.stat().st_mtime)
@@ -233,33 +258,107 @@ def iter_source_conversations(source: Source, *, cursor_state: dict | None = Non
 
     for path in paths:
         try:
+            # Detect provider from path name first to decide iteration strategy
+            provider_hint = detect_provider(None, path) or source.name
+            # Providers where one file (even JSONL) is one conversation
+            group_providers = {"claude-code", "codex", "gemini", "drive"}
+            should_group = provider_hint in group_providers
+
             if path.suffix.lower() == ".zip":
                 with zipfile.ZipFile(path) as zf:
-                    for name in zf.namelist():
+                    for info in zf.infolist():
+                        # Skip directories
+                        if info.is_dir():
+                            continue
+
+                        name = info.filename
                         lower_name = name.lower()
+
+                        # ZIP bomb protection
+                        if info.compress_size > 0:
+                            ratio = info.file_size / info.compress_size
+                            if ratio > MAX_COMPRESSION_RATIO:
+                                LOGGER.warning(
+                                    "Skipping suspicious file %s in %s: compression ratio %.1f exceeds limit",
+                                    name, path, ratio
+                                )
+                                if cursor_state is not None:
+                                    cursor_state["failed_files"].append({
+                                        "path": f"{path}:{name}",
+                                        "error": f"Suspicious compression ratio: {ratio:.1f}"
+                                    })
+                                    cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
+                                continue
+
+                        if info.file_size > MAX_UNCOMPRESSED_SIZE:
+                            LOGGER.warning(
+                                "Skipping oversized file %s in %s: %d bytes exceeds limit",
+                                name, path, info.file_size
+                            )
+                            if cursor_state is not None:
+                                cursor_state["failed_files"].append({
+                                    "path": f"{path}:{name}",
+                                    "error": f"File size {info.file_size} exceeds limit"
+                                })
+                                cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
+                            continue
+
                         if lower_name.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
                             with zf.open(name) as handle:
-                                for payload in _iter_json_stream(handle, name):
-                                    try:
-                                        provider = detect_provider(payload, path) or source.name
-                                        yield from _parse_json_payload(provider, payload, path.stem)
-                                    except Exception:
-                                        LOGGER.exception("Error processing payload from %s", name)
-                                        raise
+                                if lower_name.endswith((".jsonl", ".jsonl.txt", ".ndjson")) and should_group:
+                                    # Group all lines into one conversation
+                                    payloads = list(_iter_json_stream(handle, name))
+                                    if payloads:
+                                        yield from _parse_json_payload(provider_hint, payloads, path.stem)
+                                else:
+                                    # For .json files, we might need to disable unpacking if it's a grouped provider
+                                    unpack = not (lower_name.endswith(".json") and should_group)
+                                    for payload in _iter_json_stream(handle, name, unpack_lists=unpack):
+                                        try:
+                                            provider = detect_provider(payload, path) or provider_hint
+                                            yield from _parse_json_payload(provider, payload, path.stem)
+                                        except Exception:
+                                            LOGGER.exception("Error processing payload from %s", name)
+                                            raise
             else:
                 with path.open("rb") as handle:
-                    for payload in _iter_json_stream(handle, path.name):
+                    if path.suffix.lower() in (".jsonl", ".ndjson") or path.name.lower().endswith(".jsonl.txt"):
+                        if should_group:
+                            # Group all lines into one conversation
+                            payloads = list(_iter_json_stream(handle, path.name))
+                            if payloads:
+                                yield from _parse_json_payload(provider_hint, payloads, path.stem)
+                            continue
+
+                    unpack = not (path.suffix.lower() == ".json" and should_group)
+                    for payload in _iter_json_stream(handle, path.name, unpack_lists=unpack):
                         try:
-                            provider = detect_provider(payload, path) or source.name
+                            provider = detect_provider(payload, path) or provider_hint
                             yield from _parse_json_payload(provider, payload, path.stem)
                         except Exception:
                             LOGGER.exception("Error processing payload from %s", path)
                             raise
+        except FileNotFoundError as exc:
+            # TOCTOU race condition: file existed during directory scan but was deleted before read
+            LOGGER.warning("File disappeared during processing (TOCTOU race): %s", path)
+            if cursor_state is not None:
+                cursor_state["failed_files"].append({
+                    "path": str(path),
+                    "error": f"File not found (may have been deleted): {exc}"
+                })
+                cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
+            continue
         except (json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
             LOGGER.warning("Failed to parse %s: %s", path, exc)
+            if cursor_state is not None:
+                cursor_state["failed_files"].append({"path": str(path), "error": str(exc)})
+                cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
             continue
         except Exception as exc:
             LOGGER.error("Unexpected error processing %s: %s", path, exc)
+            if cursor_state is not None:
+                cursor_state["failed_files"].append({"path": str(path), "error": str(exc)})
+                cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
             continue
 
 
