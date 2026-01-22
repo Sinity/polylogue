@@ -19,6 +19,9 @@ Thumbs.db
 # Python
 __pycache__
 .pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
 
 # Local tool state
 .claude/
