@@ -1,0 +1,116 @@
+{
+  "metadata": {
+    "timestamp": "2026-01-23T04:26:42.097124",
+    "python_version": "3.13.11 (main, Dec  5 2025, 16:06:33) [GCC 15.2.0]"
+  },
+  "hashing": {
+    "small_text_10k": {
+      "time_ms": 3.3227620006073266,
+      "ops_per_sec": 3009544.468779956
+    },
+    "medium_text_1k": {
+      "time_ms": 2.3691050009801984,
+      "ops_per_sec": 422100.32885256584
+    },
+    "large_text_100": {
+      "time_ms": 2.085465999698499,
+      "ops_per_sec": 47950.913615689366
+    },
+    "unicode_normalization_overhead_pct": 811.7694657092466,
+    "conversation_hash_100": {
+      "time_ms": 4.490217001148267,
+      "ops_per_sec": 22270.63858482282,
+      "message_count": 50
+    }
+  },
+  "search": {
+    "escape_simple_query": {
+      "time_ms": 5.0809270032914355,
+      "ops_per_sec": 1968144.788051861
+    },
+    "escape_query_with_AND_operator": {
+      "time_ms": 7.124006999220001,
+      "ops_per_sec": 1403704.4041499242
+    },
+    "escape_query_with_special_chars:_*^()": {
+      "time_ms": 4.066669000167167,
+      "ops_per_sec": 2459014.9824313056
+    },
+    "escape_quoted_query": {
+      "time_ms": 3.672770002594916,
+      "ops_per_sec": 2722740.5998564344
+    },
+    "escape_query_OR_another": {
+      "time_ms": 6.204649002029328,
+      "ops_per_sec": 1611694.7141940412
+    },
+    "escape_***": {
+      "time_ms": 1.4847089987597428,
+      "ops_per_sec": 6735326.59150954
+    },
+    "escape_AND": {
+      "time_ms": 2.00829100140254,
+      "ops_per_sec": 4979358.067638729
+    },
+    "build_index_100": {
+      "create_ms": 3.1322329996328335,
+      "build_ms": 1.3553329990827478,
+      "total_ms": 4.487565998715581,
+      "messages_per_sec": 22283.794829674196
+    },
+    "build_index_1000": {
+      "create_ms": 3.3260409982176498,
+      "build_ms": 3.451060998486355,
+      "total_ms": 6.777101996704005,
+      "messages_per_sec": 147555.69570685862
+    },
+    "build_index_5000": {
+      "create_ms": 3.313670000352431,
+      "build_ms": 15.463706000446109,
+      "total_ms": 18.77737600079854,
+      "messages_per_sec": 266277.8867391997
+    },
+    "search_common_100": {
+      "time_ms": 549.5553150030901,
+      "ops_per_sec": 181.96530407396335
+    },
+    "search_multi_word_100": {
+      "time_ms": 661.9164560033823,
+      "ops_per_sec": 151.0764675708395
+    },
+    "search_rare_100": {
+      "time_ms": 30.291480998130282,
+      "ops_per_sec": 3301.258198837238
+    },
+    "update_single_conv": {
+      "time_ms": 1.9770600010815542
+    },
+    "update_5_convs": {
+      "time_ms": 3.6363930012157653
+    }
+  },
+  "pipeline": {
+    "prepare_ingest_cold": {
+      "time_ms": 4.492964002565714
+    },
+    "prepare_ingest_warm_skip": {
+      "time_ms": 0.7282139995368198
+    },
+    "sequential_20_convs": {
+      "time_ms": 137.80611499896622,
+      "convs_per_sec": 145.13144064869715
+    },
+    "parallel_20_convs_4workers": {
+      "time_ms": 47.88897599792108,
+      "convs_per_sec": 417.6326510065328,
+      "speedup": 2.8776166565964694
+    },
+    "unbounded_50_convs": {
+      "time_ms": 108.88150399841834
+    },
+    "bounded_50_convs_16max": {
+      "time_ms": 107.86160099814879,
+      "overhead_pct": -0.9367091405022898
+    }
+  }
+}
