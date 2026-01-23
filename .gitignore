@@ -12,6 +12,9 @@ Thumbs.db
 
 # Local dev environment
 .direnv/
+.venv/
+venv/
+env/
 
 # Local scratch
 .tmp/
@@ -19,6 +22,18 @@ Thumbs.db
 # Python
 __pycache__
 .pytest_cache/
+.hypothesis/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
 
 # Local tool state
 .claude/

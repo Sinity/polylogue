@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 from polylogue.config import Source
-from polylogue.drive_client import DriveFile
-from polylogue.drive_ingest import iter_drive_conversations
+from polylogue.ingestion import DriveFile
+from polylogue.ingestion import iter_drive_conversations
 
 
 @dataclass
@@ -63,3 +65,62 @@ def test_drive_ingest_chunked_prompt_no_download(tmp_path):
     assert attachment.provider_attachment_id == "att-1"
     assert attachment.message_provider_id == "chunk-2"
     assert attachment.path is None
+
+
+class TestDriveDownloadFailureTracking:
+    """Tests for tracking Drive download failures."""
+
+    def test_download_failure_tracked_in_result(self):
+        """Failed downloads should be tracked in the result, not silently ignored.
+
+        This test SHOULD FAIL until failure tracking is implemented.
+        """
+        from polylogue.ingestion import download_drive_files
+
+        # Mock the drive client to fail on specific files
+        mock_client = MagicMock()
+        mock_client.list_files.return_value = [
+            {"id": "file1", "name": "good.json"},
+            {"id": "file2", "name": "bad.json"},
+            {"id": "file3", "name": "also_good.json"},
+        ]
+
+        def mock_download(file_id, dest):
+            if file_id == "file2":
+                raise IOError("Download failed")
+            dest.write_text('{"test": true}')
+
+        mock_client.download_file.side_effect = mock_download
+
+        result = download_drive_files(mock_client, "folder123", Path("/tmp/test"))
+
+        # Result should track failures
+        assert hasattr(result, "failed_files") or "failed" in result
+        assert len(result.failed_files) >= 1
+        assert any("bad.json" in str(f) for f in result.failed_files)
+
+    def test_download_continues_after_single_failure(self):
+        """Download should continue processing other files after one fails."""
+        from polylogue.ingestion import download_drive_files
+
+        mock_client = MagicMock()
+        mock_client.list_files.return_value = [
+            {"id": "f1", "name": "first.json"},
+            {"id": "f2", "name": "fails.json"},
+            {"id": "f3", "name": "third.json"},
+        ]
+
+        download_count = [0]
+
+        def mock_download(file_id, dest):
+            if file_id == "f2":
+                raise IOError("Failed")
+            download_count[0] += 1
+            dest.write_text('{}')
+
+        mock_client.download_file.side_effect = mock_download
+
+        result = download_drive_files(mock_client, "folder", Path("/tmp/test"))
+
+        # Should have attempted all 3, succeeded on 2
+        assert download_count[0] == 2

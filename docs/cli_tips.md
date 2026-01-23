@@ -29,7 +29,7 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 ## Config editing
 
 - Use `polylogue config edit` (interactive) to add or change sources.
-- `config set` only supports `archive_root` now.
+- `config set` supports `archive_root` and `render_root`.
 
 ## Index rebuild
 
@@ -42,3 +42,4 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 ## Path debugging
 
 - `polylogue config show` prints a summary; `polylogue config show --json` shows raw values and env overrides.
+- Use `POLYLOGUE_RENDER_ROOT` to override render output without editing config.

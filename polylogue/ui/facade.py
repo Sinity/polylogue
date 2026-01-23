@@ -4,15 +4,17 @@ Polylogue ships with a small UI layer. Interactive mode relies entirely on the
 bundled Python stack (questionary + Rich) so it works anywhere without external
 CLI binaries, while plain mode falls back to basic stdout prompting.
 """
+
 from __future__ import annotations
 
 import difflib
 import json
 import os
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Deque, Dict, Iterable, List, Optional, Protocol
+from typing import Protocol
 
 import questionary
 from pygments import highlight
@@ -28,9 +30,12 @@ from rich.text import Text
 from rich.theme import Theme
 
 
+class UIError(Exception):
+    """UI-related errors (prompt stubs, user interaction)."""
+
+
 class ConsoleLike(Protocol):
-    def print(self, *objects: object, **kwargs: object) -> None:
-        ...
+    def print(self, *objects: object, **kwargs: object) -> None: ...
 
 
 class PlainConsole:
@@ -52,7 +57,7 @@ class ConsoleFacade:
     console: ConsoleLike = field(init=False)
 
     theme: Theme = field(init=False, repr=False)
-    _prompt_responses: Deque[Dict[str, object]] = field(init=False, repr=False)
+    _prompt_responses: deque[dict[str, object]] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.theme = Theme(
@@ -78,16 +83,18 @@ class ConsoleFacade:
         if self.plain:
             self.console = PlainConsole()
         else:
-            self.console = Console(no_color=False, force_terminal=True, theme=self.theme)
+            self.console = Console(
+                no_color=False, force_terminal=True, theme=self.theme
+            )
         self._panel_box = box.ROUNDED
         self._banner_box = box.DOUBLE
         self._prompt_responses = self._load_prompt_responses()
 
-    def _load_prompt_responses(self) -> Deque[Dict[str, object]]:
+    def _load_prompt_responses(self) -> deque[dict[str, object]]:
         prompt_file = os.environ.get("POLYLOGUE_TEST_PROMPT_FILE")
         if not prompt_file:
             return deque()
-        entries: Deque[Dict[str, object]] = deque()
+        entries: deque[dict[str, object]] = deque()
         for line in Path(prompt_file).read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
@@ -97,19 +104,19 @@ class ConsoleFacade:
                 if isinstance(data, dict):
                     entries.append(data)
             except json.JSONDecodeError as exc:
-                raise RuntimeError(f"Invalid prompt stub entry: {line}") from exc
+                raise UIError(f"Invalid prompt stub entry: {line}") from exc
         return entries
 
-    def _pop_prompt_response(self, kind: str) -> Optional[Dict[str, object]]:
+    def _pop_prompt_response(self, kind: str) -> dict[str, object] | None:
         if not self._prompt_responses:
             return None
         entry = self._prompt_responses.popleft()
         expected = entry.get("type")
         if expected and expected != kind:
-            raise RuntimeError(f"Prompt stub expected '{expected}' but got '{kind}'")
+            raise UIError(f"Prompt stub expected '{expected}' but got '{kind}'")
         return entry
 
-    def banner(self, title: str, subtitle: Optional[str] = None) -> None:
+    def banner(self, title: str, subtitle: str | None = None) -> None:
         """Display a banner message."""
         if self.plain:
             self.console.print(f"== {title} ==")
@@ -132,7 +139,8 @@ class ConsoleFacade:
 
     def summary(self, title: str, lines: Iterable[str]) -> None:
         """Display a summary panel."""
-        text = "\n".join(lines)
+        lines_list = list(lines)
+        text = "\n".join(lines_list)
         if self.plain:
             self.console.print(f"-- {title} --")
             if text:
@@ -140,9 +148,12 @@ class ConsoleFacade:
             return
 
         summary_text = Text()
-        for line in lines:
+        for line in lines_list:
             summary_text.append("• ", style="summary.bullet")
-            summary_text.append(line + "\n", style="summary.text")
+            # Parse markup in line content (e.g., [green]✓[/green])
+            parsed = Text.from_markup(line, style="summary.text")
+            summary_text.append_text(parsed)
+            summary_text.append("\n")
         panel = Panel(
             summary_text if summary_text.plain else Text(text, style="summary.text"),
             title=f"  {title}  ",
@@ -173,7 +184,7 @@ class ConsoleFacade:
         result = questionary.confirm(prompt, default=default).ask()
         return default if result is None else result
 
-    def choose(self, prompt: str, options: List[str]) -> Optional[str]:
+    def choose(self, prompt: str, options: list[str]) -> str | None:
         """Choose from a list of options."""
         if not options:
             return None
@@ -190,17 +201,18 @@ class ConsoleFacade:
                     idx = int(response["index"])  # type: ignore[arg-type]
                     if 0 <= idx < len(options):
                         return options[idx]
-                except Exception:
+                except (KeyError, ValueError, TypeError):
+                    # Response missing index, or index not numeric/valid
                     pass
         if len(options) > 12:
             result = questionary.autocomplete(
-                prompt, choices=options, match_middle=True, instruction="Type to filter"
+                prompt, choices=options, match_middle=True
             ).ask()
         else:
             result = questionary.select(prompt, choices=options).ask()
         return result
 
-    def input(self, prompt: str, *, default: Optional[str] = None) -> Optional[str]:
+    def input(self, prompt: str, *, default: str | None = None) -> str | None:
         """Get text input from user."""
         if self.plain:
             return default
@@ -254,7 +266,7 @@ class ConsoleFacade:
             new_lines,
             fromfile=f"a/{filename}",
             tofile=f"b/{filename}",
-            lineterm=""
+            lineterm="",
         )
 
         diff_text = "".join(diff)
@@ -268,7 +280,8 @@ class ConsoleFacade:
                 lexer = get_lexer_by_name("diff")
                 highlighted = highlight(diff_text, lexer, TerminalFormatter())
                 self.console.print(highlighted, markup=False, highlight=False)
-        except Exception:
+        except (ImportError, AttributeError):
+            # Pygments not available or lexer not found - fall back to basic syntax
             syntax = Syntax(diff_text, "diff", theme="ansi_dark")
             self.console.print(syntax)
 
