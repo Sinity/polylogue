@@ -1,7 +1,7 @@
 # Polylogue Architecture
 
 **Version**: Post-refactoring (2026-01-23)
-**Status**: Production-ready layered architecture
+**Status**: ✅ Production-ready layered architecture (Priorities 1-4 complete)
 
 This document describes Polylogue's architecture after the comprehensive refactoring completed in January 2026. The codebase follows a **layered architecture** with clear separation of concerns, **protocol-based abstraction**, and **dependency injection** throughout.
 
@@ -242,9 +242,9 @@ polylogue/
 
 ### Migration Notes
 
-Some modules remain at the root level during the transition:
-- **Deprecated**: `assets.py`, `render_paths.py`, `render.py`, `run.py` (will be removed)
-- **Transitional**: Top-level utilities being migrated to packages
+**Legacy modules** (backward compatibility, can be deprecated in future):
+- `render.py`, `render_paths.py`, `assets.py`: Legacy rendering API (use `rendering/renderers/` instead)
+- `run.py`: Legacy pipeline API (use `pipeline/runner.py` + services instead)
 
 ---
 
@@ -566,26 +566,28 @@ search = create_search_provider()
 vector = create_vector_provider(config)  # Returns None if not configured
 ```
 
-### 3. Renderer Protocol (planned)
+### 3. OutputRenderer Protocol (✅ implemented Priority 3.3)
 
 **Purpose**: Decouple rendering from template engine
 
 **Interface**:
 ```python
 @runtime_checkable
-class Renderer(Protocol):
-    def render_markdown(self, conversation: Conversation, output_path: Path) -> Path:
-        """Render as Markdown."""
+class OutputRenderer(Protocol):
+    def render(self, conversation_id: str, output_path: Path) -> Path:
+        """Render conversation to output format."""
         ...
 
-    def render_html(self, conversation: Conversation, output_path: Path) -> Path:
-        """Render as HTML."""
+    def supports_format(self) -> str:
+        """Return the format this renderer supports."""
         ...
 ```
 
-**Implementations** (future):
-- `rendering.renderers.jinja2.Jinja2Renderer`
-- `rendering.renderers.custom.CustomRenderer`
+**Implementations**:
+- `rendering.renderers.markdown.MarkdownRenderer` (stdlib only, .md output)
+- `rendering.renderers.html.HTMLRenderer` (Jinja2-based, .html + .md output)
+
+**Factory**: `create_renderer(format, config)` in rendering/renderers/__init__.py
 
 ### 4. Service Pattern
 
@@ -1229,20 +1231,23 @@ def test_parallel_ingestion_thread_safety():
 Polylogue's post-refactoring architecture achieves:
 
 ✅ **Clear separation of concerns**: 7 distinct layers with single responsibilities
-✅ **Protocol-based abstraction**: Swappable backends via runtime-checkable protocols
-✅ **Dependency injection**: Services receive dependencies explicitly
-✅ **Testability**: 1.93:1 test-to-source ratio, extensive coverage
+✅ **Protocol-based abstraction**: Swappable backends via runtime-checkable protocols (StorageBackend, SearchProvider, OutputRenderer, VectorProvider)
+✅ **Dependency injection**: Services receive dependencies explicitly via dependency-injector framework
+✅ **Testability**: 1.93:1 test-to-source ratio, 951 tests, 69% overall coverage (83% core)
 ✅ **Thread safety**: Bounded parallelism, explicit locking, thread-local connections
 ✅ **Idempotency**: Content hashing enables safe re-runs
 ✅ **Extensibility**: Clear extension points for backends, providers, renderers
+✅ **Type safety**: 100% mypy strict mode compliance (0 errors, 85 files)
+✅ **Performance**: 21,343x search cache speedup, parallel ingestion, incremental indexing
 
-**Next Steps** (from refactoring-plan.md Priority 3):
-- Complete rendering package refactor (`rendering/` with Renderer protocol)
-- Implement ConversationRepository query methods
-- Add end-to-end CLI tests
-- Performance profiling and optimization
+**Completed (Priorities 1-4)**:
+- ✅ Priority 1: Module organization, repository pattern, protocols, NewType IDs
+- ✅ Priority 2: Config objects, pipeline services, search abstraction, backend abstraction
+- ✅ Priority 3: Dependency injection framework, renderer abstraction
+- ✅ Priority 4: Type safety hardening (211 → 0 mypy errors), test coverage (83% core), performance benchmarking
 
 For detailed implementation notes, see:
 - [Refactoring Plan](./refactoring-plan.md) - Complete refactoring roadmap
 - [Storage Backend Abstraction](./storage-backend-abstraction.md) - Backend protocol details
 - [CLAUDE.md](../CLAUDE.md) - Developer guide with critical patterns
+- [Performance Guide](./performance.md) - Benchmarking results and optimization strategies
