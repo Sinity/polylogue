@@ -6,9 +6,11 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 
 from .db import DatabaseError, open_connection
+from .search_cache import SearchCacheKey
 from polylogue.render_paths import legacy_render_root, render_root
 
 logger = logging.getLogger(__name__)
@@ -126,14 +128,34 @@ def escape_fts5_query(query: str) -> str:
     return query
 
 
-def search_messages(
+@lru_cache(maxsize=128)
+def _search_messages_cached(cache_key: SearchCacheKey) -> SearchResult:
+    """Internal cached implementation of search_messages.
+
+    Args:
+        cache_key: Immutable cache key containing all search parameters
+
+    Returns:
+        SearchResult with hits
+    """
+    # Reconstruct parameters from cache key
+    query = cache_key.query
+    archive_root = Path(cache_key.archive_root)
+    render_root_path = Path(cache_key.render_root_path) if cache_key.render_root_path else None
+    limit = cache_key.limit
+    source = cache_key.source
+    since = cache_key.since
+
+    return _search_messages_impl(query, archive_root, render_root_path, limit, source, since)
+
+
+def _search_messages_impl(
     query: str,
-    *,
     archive_root: Path,
-    render_root_path: Path | None = None,
-    limit: int = 20,
-    source: str | None = None,
-    since: str | None = None,
+    render_root_path: Path | None,
+    limit: int,
+    source: str | None,
+    since: str | None,
 ) -> SearchResult:
     with open_connection(None) as conn:
         exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
@@ -230,6 +252,49 @@ def search_messages(
             break
             
     return SearchResult(hits=hits)
+
+
+def search_messages(
+    query: str,
+    *,
+    archive_root: Path,
+    render_root_path: Path | None = None,
+    limit: int = 20,
+    source: str | None = None,
+    since: str | None = None,
+) -> SearchResult:
+    """Search for messages using FTS5 full-text search.
+
+    This function uses an LRU cache for repeated queries. The cache is
+    automatically invalidated when conversations are re-ingested.
+
+    Args:
+        query: Search query string (automatically escaped for FTS5)
+        archive_root: Root directory for archived conversations
+        render_root_path: Optional root for rendered output
+        limit: Maximum number of results to return (default: 20)
+        source: Optional source/provider filter
+        since: Optional timestamp filter (ISO format)
+
+    Returns:
+        SearchResult with matching conversations
+
+    Raises:
+        DatabaseError: If search index doesn't exist
+        ValueError: If since date is invalid
+    """
+    # Create cache key
+    cache_key = SearchCacheKey.create(
+        query=query,
+        archive_root=archive_root,
+        render_root_path=render_root_path,
+        limit=limit,
+        source=source,
+        since=since,
+    )
+
+    # Use cached implementation
+    return _search_messages_cached(cache_key)
 
 
 __all__ = ["SearchHit", "SearchResult", "search_messages", "escape_fts5_query"]

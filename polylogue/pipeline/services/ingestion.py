@@ -5,15 +5,17 @@ from __future__ import annotations
 import concurrent.futures
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Generator
 
 from polylogue.core.log import get_logger
 from polylogue.ingestion import DriveAuthError, iter_drive_conversations, iter_source_conversations
 from polylogue.pipeline.ingest import prepare_ingest
 from polylogue.storage.db import connection_context
+from polylogue.storage.search_cache import invalidate_search_cache
 
 if TYPE_CHECKING:
     from polylogue.config import Config, Source
+    from polylogue.importers.base import ParsedConversation
     from polylogue.storage.repository import StorageRepository
 
 logger = get_logger(__name__)
@@ -22,8 +24,8 @@ logger = get_logger(__name__)
 class IngestResult:
     """Result of an ingestion operation."""
 
-    def __init__(self):
-        self.counts = {
+    def __init__(self) -> None:
+        self.counts: dict[str, int] = {
             "conversations": 0,
             "messages": 0,
             "attachments": 0,
@@ -31,7 +33,7 @@ class IngestResult:
             "skipped_messages": 0,
             "skipped_attachments": 0,
         }
-        self.changed_counts = {
+        self.changed_counts: dict[str, int] = {
             "conversations": 0,
             "messages": 0,
             "attachments": 0,
@@ -39,7 +41,7 @@ class IngestResult:
         self.processed_ids: set[str] = set()
         self._lock = threading.Lock()
 
-    def merge_result(self, conversation_id: str, result_counts: dict[str, int], content_changed: bool):
+    def merge_result(self, conversation_id: str, result_counts: dict[str, int], content_changed: bool) -> None:
         """Merge a single conversation's result into the aggregate.
 
         Args:
@@ -104,9 +106,9 @@ class IngestionService:
         result = IngestResult()
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            futures: dict[Any, Any] = {}
+            futures: dict[concurrent.futures.Future[tuple[str, dict[str, int], bool]], str] = {}
 
-            def _process_one(convo_item, source_name_item):
+            def _process_one(convo_item: ParsedConversation, source_name_item: str) -> tuple[str, dict[str, int], bool]:
                 # Run preparation in a separate thread with its own connection for reads
                 with connection_context(None) as thread_conn:
                     return prepare_ingest(
@@ -117,7 +119,7 @@ class IngestionService:
                         repository=self.repository,
                     )
 
-            def _handle_future(fut):
+            def _handle_future(fut: concurrent.futures.Future[tuple[str, dict[str, int], bool]]) -> None:
                 convo_id, result_counts, content_changed = fut.result()
                 result.merge_result(convo_id, result_counts, content_changed)
                 if progress_callback:
@@ -153,6 +155,11 @@ class IngestionService:
                     logger.error("Error processing conversation", error=str(exc))
                     raise
 
+        # Invalidate search cache after ingestion
+        if result.processed_ids:
+            invalidate_search_cache()
+            logger.debug("Search cache invalidated after ingesting %d conversations", len(result.processed_ids))
+
         return result
 
     def _iter_source_conversations_safe(
@@ -161,8 +168,8 @@ class IngestionService:
         source: Source,
         ui: object | None,
         download_assets: bool,
-        cursor_state: dict | None = None,
-    ):
+        cursor_state: dict[str, Any] | None = None,
+    ) -> Generator[ParsedConversation, None, None]:
         """Iterate over conversations from a source with error handling.
 
         Args:
