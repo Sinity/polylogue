@@ -276,7 +276,7 @@ def view_command(
         if not convo:
             fail("view", f"Conversation not found: {conversation_id}")
 
-        projected = _apply_projection(convo, projection)  # type: ignore[arg-type]
+        projected = _apply_projection(convo, projection)
 
         if json_output:
             env.ui.console.print(json.dumps(_render_json(projected), indent=2))

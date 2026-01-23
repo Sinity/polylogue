@@ -87,6 +87,7 @@ class HTMLRenderer:
         md = MarkdownIt("commonmark", {"html": False, "linkify": True}).enable("table")
         body_html = md.render(markdown_text)
 
+        loader: FileSystemLoader | DictLoader
         if self.template_path and self.template_path.exists():
             loader = FileSystemLoader(self.template_path.parent)
             template_name = self.template_path.name
@@ -156,7 +157,7 @@ class HTMLRenderer:
         for att in attachments:
             attachments_by_message.setdefault(att["message_id"], []).append(att)
 
-        def _append_attachment(att, lines: list[str]) -> None:
+        def _append_attachment(att: dict[str, Any], lines: list[str]) -> None:
             name = None
             meta = att["provider_meta"]
             if meta:
