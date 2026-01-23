@@ -6,6 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.core.content_enrichment import enrich_message_metadata
 from polylogue.storage.db import connection_context
 from polylogue.ingestion import IngestBundle, ingest_bundle
 from polylogue.pipeline.ids import (
@@ -107,6 +108,10 @@ def prepare_ingest(
         mid: MessageId = existing_message_ids.get(provider_message_id) or make_message_id(cid, provider_message_id)
         message_hash = message_content_hash(msg, provider_message_id)
         message_ids[str(provider_message_id)] = mid
+
+        # Enrich provider_meta with code language detection
+        enriched_meta = enrich_message_metadata(msg.provider_meta)
+
         messages.append(
             MessageRecord(
                 message_id=mid,
@@ -116,7 +121,7 @@ def prepare_ingest(
                 text=msg.text,
                 timestamp=msg.timestamp,
                 content_hash=message_hash,
-                provider_meta=msg.provider_meta,
+                provider_meta=enriched_meta,
             )
         )
 

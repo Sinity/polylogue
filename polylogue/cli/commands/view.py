@@ -12,6 +12,7 @@ import click
 from polylogue.cli.helpers import fail, load_effective_config
 from polylogue.cli.types import AppEnv
 from polylogue.config import ConfigError
+from polylogue.core.dates import parse_date
 from polylogue.lib.models import Conversation, DialoguePair, Message
 from polylogue.lib.repository import ConversationRepository
 
@@ -184,20 +185,18 @@ def _list_conversations(
         fetch_limit = limit * 20 if (since or until) else limit
         conversations = repo.list(limit=fetch_limit, offset=offset, provider=provider) or []
 
-    # Apply date filters (still Python-level for now)
+    # Apply date filters (supports natural language)
     if since:
-        try:
-            since_dt = datetime.fromisoformat(since)
-            conversations = [c for c in conversations if c.updated_at and c.updated_at >= since_dt]
-        except ValueError as exc:
-            raise ValueError(f"Invalid --since date '{since}': {exc}") from exc
+        since_dt = parse_date(since)
+        if not since_dt:
+            raise ValueError(f"Could not parse --since date: '{since}'. Try ISO format (2024-01-15) or natural language ('last week', 'yesterday')")
+        conversations = [c for c in conversations if c.updated_at and c.updated_at >= since_dt]
 
     if until:
-        try:
-            until_dt = datetime.fromisoformat(until)
-            conversations = [c for c in conversations if c.updated_at and c.updated_at <= until_dt]
-        except ValueError as exc:
-            raise ValueError(f"Invalid --until date '{until}': {exc}") from exc
+        until_dt = parse_date(until)
+        if not until_dt:
+            raise ValueError(f"Could not parse --until date: '{until}'. Try ISO format (2024-01-15) or natural language ('last week', 'yesterday')")
+        conversations = [c for c in conversations if c.updated_at and c.updated_at <= until_dt]
 
     return list(conversations[:limit])
 
@@ -216,8 +215,8 @@ def _list_conversations(
 @click.option("--limit", type=int, default=20, show_default=True, help="Max conversations to list")
 @click.option("--offset", type=int, default=0, help="Skip first N conversations")
 @click.option("--provider", help="Filter by provider (chatgpt, claude, etc)")
-@click.option("--since", help="Filter conversations updated after date (ISO format)")
-@click.option("--until", help="Filter conversations updated before date (ISO format)")
+@click.option("--since", help="Filter conversations updated after date (ISO, e.g. 2024-01-15, or natural language, e.g. 'last week')")
+@click.option("--until", help="Filter conversations updated before date (ISO, e.g. 2024-01-15, or natural language, e.g. '2 weeks ago')")
 @click.option("--query", "-q", help="FTS search query to filter conversations")
 @click.option("--json", "json_output", is_flag=True, help="Output JSON")
 @click.option("--json-lines", is_flag=True, help="Output JSON Lines (one per conversation)")
