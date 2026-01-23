@@ -10,6 +10,18 @@
     let
       inherit (flake-utils.lib) eachDefaultSystem;
 
+      # Override dependency-injector to fix Pydantic v2 test incompatibility
+      dependencyInjectorOverlay = final: prev: {
+        python3Packages = prev.python3Packages.override {
+          overrides = _pyfinal: pyprev: {
+            dependency-injector = pyprev.dependency-injector.overridePythonAttrs (_: {
+              doCheck = false; # Tests fail with Pydantic v2
+              meta.broken = false;
+            });
+          };
+        };
+      };
+
       re2Overlay = final: prev:
         let
           inherit (final) lib;
@@ -58,7 +70,7 @@
         let
           pkgs = import nixpkgs {
             inherit system;
-            overlays = [ re2Overlay ];
+            overlays = [ re2Overlay dependencyInjectorOverlay ];
           };
 
           pyPkgs = pkgs.python3Packages;

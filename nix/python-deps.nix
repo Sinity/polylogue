@@ -6,29 +6,22 @@ let
     google-api-python-client
     google-auth-httplib2
     httpx
-    pathvalidate
-    aiofiles
     rich
     pydantic
-    pydantic-settings
-    python-frontmatter
     jinja2
     markdown-it-py
-    watchfiles
     ijson
-    tiktoken
     qdrant-client
-    pypdf
     questionary
     pygments
     tenacity
     click
-    pillow
-    pytesseract
+    dateparser
     fastapi
     uvicorn
     structlog
     orjson
+    dependency-injector
   ];
   devDeps = with pyPkgs; [
     pytest
