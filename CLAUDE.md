@@ -1,27 +1,27 @@
 # Polylogue Developer Guide
 
-Polylogue is a local-first AI chat archive that ingests exports from ChatGPT, Claude AI, Claude Code, Codex, and Google Drive into SQLite with full-text search and optional vector search.
+> **Meta**: See AGENTS.meta.md for maintenance philosophy. Update this file when adding features, changing behaviors, or discovering patterns during debugging.
+
+**Mission**: Local-first AI chat archive (ChatGPT, Claude, Codex, Gemini → SQLite + FTS5/Qdrant)
 
 ## Core Architecture
 
-**Mission**: Privacy-preserving, searchable archive of AI chat history.
-
-**Design Principles** (Post-Refactoring):
-- **Layered abstraction**: Storage (backends) → Ingestion → Rendering → Pipeline services
-- **Backend agnostic**: StorageBackend protocol enables SQLite/PostgreSQL/other implementations
-- **Search provider agnostic**: SearchProvider protocol supports FTS5/Qdrant/vector alternatives
-- **Renderer agnostic**: OutputRenderer protocol supports Markdown/HTML/PDF/EPUB formats
-- **Service-oriented**: IngestionService, IndexService, RenderService encapsulate business logic
-- **Dependency injection**: ApplicationContainer manages service lifecycle and dependencies
-- **Repository pattern**: StorageRepository owns the write lock and coordinates DB operations
-- **Type-safe**: 100% mypy strict mode compliance with comprehensive type annotations
+| Aspect | Implementation | Key Behavior |
+|--------|---------------|--------------|
+| **Storage** | StorageBackend protocol | SQLiteBackend (750 lines), thread-local connections, _WRITE_LOCK in repository |
+| **Search** | SearchProvider protocol | FTS5Provider (local, BM25), QdrantProvider (Voyage embeddings), LRU cache (21,343x) |
+| **Rendering** | OutputRenderer protocol | MarkdownRenderer (.md), HTMLRenderer (.html + .md), --format flag |
+| **Services** | DI via dependency-injector | IngestionService (parallel, bounded), IndexService, RenderService |
+| **Thread safety** | _WRITE_LOCK + thread-local | repository.py:48 owns lock, max 16 in-flight futures, 4 render workers |
+| **Deduplication** | SHA-256 + NFC normalization | Idempotent: same content → same hash → skip re-import |
+| **Type safety** | mypy strict mode | 0 errors (was 211), 85 files, NewType IDs, protocol types |
 
 **Key Invariants**:
-- **Content-hash deduplication**: SHA-256 with NFC Unicode normalization prevents duplicates
-- **Idempotent ingestion**: Safe to re-run imports; unchanged conversations skipped
-- **Thread-safe**: Thread-local connections + `_WRITE_LOCK` in StorageRepository for writes
-- **Structured content**: Content blocks decompose messages into text/thinking/tool_use segments
-- **Semantic projections**: Fluent API for filtering (substantive, dialogue-only, pairs, etc.)
+- Content hash includes: title, timestamps, messages (id/role/text/timestamp), attachments (id/mime_type)
+- Content hash excludes: provider_meta (semantic content only)
+- Idempotent: Safe to re-run imports, unchanged conversations skipped
+- Thread-local connections: Each thread has own SQLite connection via `connection_context()`
+- _WRITE_LOCK serializes: All DB writes go through StorageRepository under lock
 
 ## Data Flow
 
@@ -82,32 +82,25 @@ Index (FTS5 + optional Qdrant)
 
 ## Thread Safety Model
 
-**Architecture**:
-```python
-ThreadPoolExecutor(max_workers=4)
-    ├─ prepare_ingest() - Pure (hashing, parsing) → runs in parallel
-    │  Bounded submission: max 16 in-flight futures
-    └─ StorageRepository.save_conversation() - Writes DB → serialized under _WRITE_LOCK
+| Component | Pattern | Location | Behavior |
+|-----------|---------|----------|----------|
+| **DB writes** | _WRITE_LOCK | repository.py:48 | Serializes all writes, held only during commit (not I/O) |
+| **DB reads** | Thread-local conn | db.py | Each thread gets own connection via `connection_context()` |
+| **Ingestion** | Bounded submission | runner.py | Max 16 in-flight futures, FIRST_COMPLETED wait |
+| **Rendering** | ThreadPoolExecutor | runner.py | max_workers=4, parallel output generation |
+| **Ingest metrics** | IngestResult._lock | pipeline/ingest.py | Protects shared counter updates |
 
-Rendering: Parallel (max_workers=4)
+**Parallelization Rules**:
 ```
+✅ Parallel: prepare_ingest() (pure: hashing, parsing, content_blocks extraction)
+✅ Parallel: rendering (ThreadPoolExecutor max_workers=4)
+✅ Bounded: Ingestion futures (max 16 in-flight prevents memory explosion)
+✅ Pattern: with _WRITE_LOCK: save() → Atomically write under lock
 
-**Locks**:
-- `_WRITE_LOCK` (StorageRepository:48): Protects all DB writes, owned by repository
-- Thread-local connections: Each thread has own SQLite connection via `connection_context()`
-- `IngestResult._lock`: Protects shared ingest metrics during parallel preparation
-
-**Rules**:
-- ✅ Parallelize pure ops (hashing, parsing, rendering)
-- ✅ All DB writes go through StorageRepository with `_WRITE_LOCK` held
-- ✅ Use thread-local connections via `connection_context()` context manager
-- ✅ Bound in-flight futures (prevents memory explosion, max 16 in-flight)
-- ✅ Pure operations (hashing, parsing) can run unbounded in parallel
-- ❌ DON'T bypass StorageRepository for DB writes
-- ❌ DON'T hold `_WRITE_LOCK` during I/O (only during commit)
-- ❌ DON'T mutate shared state without locks (use thread-local state when possible)
-
-**Verified**: storage/repository.py `with _WRITE_LOCK: save_conversation(...)`
+❌ NEVER: Direct sqlite3.connect() or sqlite3 ops (bypass repository)
+❌ NEVER: Hold _WRITE_LOCK during I/O (deadlock risk, only during commit)
+❌ NEVER: Mutate shared state without locks (use thread-local or lock)
+```
 
 ## Content Hashing (Critical!)
 
@@ -201,56 +194,41 @@ error_count = conv.project().contains("error").count()
 
 ## CLI Commands
 
-- **`run`**: Ingest → render → index pipeline (with `--preview`, `--stage`, `--source`)
-- **`search`**: FTS5 full-text search with query escaping
-- **`view`**: Semantic projection viewer
-  - Projections: `full`, `dialogue`, `clean` (default), `pairs`, `user`, `assistant`, `thinking`, `stats`
-  - Filters: `--provider`, `--since`, `--until`, `--query` (FTS)
-  - Output: text, `--json`, `--json-lines`, `--list`
-  - Example: `polylogue view --provider claude --query "python" -p stats --json`
-- **`verify`**: Data integrity checks (orphaned refs, missing files)
-- **`config`**: View/edit configuration
+| Command | Purpose | Key Flags | Example |
+|---------|---------|-----------|---------|
+| **`run`** | Ingest → render → index pipeline | `--preview`, `--stage`, `--source`, `--format` (markdown\|html) | `polylogue run --preview --format html` |
+| **`search`** | FTS5 full-text search | Query string, `--limit` | `polylogue search "python error handling"` |
+| **`view`** | Semantic projection viewer | `-p` (projection), `--provider`, `--since`, `--until`, `--query`, `--json` | `polylogue view --provider claude --query "python" -p stats --json` |
+| **`verify`** | Data integrity checks | `--verbose` | `polylogue verify --verbose` |
+| **`config`** | View/edit configuration | `show`, `--json` | `polylogue config show --json` |
+
+**Projections** (view -p): `full`, `dialogue`, `clean` (default), `pairs`, `user`, `assistant`, `thinking`, `stats`
+**Output formats** (view): text (default), `--json`, `--json-lines`, `--list`
 
 ## Provider Quirks
 
-### ChatGPT
-- **Format**: `conversations.json` with UUID-keyed graph (`mapping`)
-- **Traversal**: Reconstruct order via parent/child relationships
-- **Content blocks**: From `message.content.parts` + `content_type`
-- **Attachments**: Tool outputs in `message.metadata.attachments`
+| Provider | Format | Structure | Content Blocks | Attachments | Importer |
+|----------|--------|-----------|----------------|-------------|----------|
+| **ChatGPT** | conversations.json | UUID graph (`mapping`), parent/child traversal | From `content.parts` + `content_type` | Tool outputs in `metadata.attachments` | importers/chatgpt.py (828 lines tests) |
+| **Claude AI** | JSONL | Flat `chat_messages` array | Simple text only (no structured blocks) | N/A | importers/claude.py (826 lines tests) |
+| **Claude Code** | JSON array | `parentUuid`/`sessionId` markers | `[{type: "text\|thinking\|tool_use"}]` | Via content array | importers/claude.py (same file) |
+| **Gemini** | Drive API | `chunkedPrompt.chunks` | From chunk structure | Via Drive metadata | ingestion/drive.py |
+| **Codex** | Session export | Session-based | N/A | N/A | importers/codex.py |
 
-### Claude AI
-- **Format**: JSONL with `chat_messages` array
-- **Structure**: Flat messages with `uuid`, `sender`, `text`, `created_at`
-- **Content blocks**: Simple text, no structured blocks
-
-### Claude Code
-- **Format**: JSON array with `parentUuid`/`sessionId` markers
-- **Content blocks**: `[{"type": "text|thinking|tool_use", ...}]`
-- **Detection**: `isThought: true` or `type: "thinking"`
-
-### Gemini (Drive)
-- **Format**: `chunkedPrompt.chunks`
-- **Content blocks**: From chunk structure
+**Detection**: `ingestion/source.py:detect_provider()` auto-detects from payload structure (`looks_like()` functions)
 
 ## External Integrations
 
-### Qdrant (Vector Search)
-- **Embedding**: Voyage AI (`voyage-2`, 1024-dim vectors, cosine distance)
-- **API Key**: `VOYAGE_API_KEY` env var (required)
-- **URL**: `QDRANT_URL` env (default: `http://localhost:6333`)
-- **API Key**: `QDRANT_API_KEY` env (optional)
-- **Retry logic**:
-  - Voyage embeddings: 5 attempts, exponential backoff 1s→10s
-  - Qdrant ops: 3 attempts, exponential backoff 1s→5s
-- **Batch**: Processes all messages in single API call (no chunking)
+| Integration | Purpose | Config | Auth | Retry Logic | Behavior |
+|-------------|---------|--------|------|-------------|----------|
+| **Voyage AI** | Embeddings for Qdrant | `VOYAGE_API_KEY` (required) | API key | 5× exponential backoff 1s→10s | voyage-2 model, 1024-dim vectors, batch API |
+| **Qdrant** | Vector search | `QDRANT_URL` (default: localhost:6333), `QDRANT_API_KEY` (optional) | Optional API key | 3× exponential backoff 1s→5s | Cosine distance, batch upsert |
+| **Google Drive** | Gemini chat import | `~/.config/polylogue/polylogue-credentials.json`, `~/.config/polylogue/polylogue-token.json` | OAuth 2.0 (interactive) | 3× (configurable via `ENV_DRIVE_RETRIES`) | Auto-refresh token, requires browser for initial auth |
 
-### Google Drive OAuth
-- **Credentials**: `~/.config/polylogue/polylogue-credentials.json` (or `POLYLOGUE_CREDENTIAL_PATH`)
-- **Token**: `~/.config/polylogue/polylogue-token.json` (plain JSON, not encrypted)
-- **Refresh**: Automatic via google-auth library
-- **Headless**: ❌ Requires interactive browser flow for initial auth
-- **Retry**: Configurable via `ENV_DRIVE_RETRIES` (default: 3), exponential backoff
+**Notes**:
+- Qdrant: storage/search_providers/qdrant.py, lazy imports (no deps if unused)
+- Drive: ingestion/drive_client.py, OAuth flow blocks until user grants access
+- Voyage: Single batch call (no chunking), handles all messages at once
 
 ## Security & Safety
 
@@ -334,237 +312,70 @@ class StorageBackend(Protocol):
 
 ## Search Provider Abstraction
 
-**Protocol** (protocols.py):
-```python
-class SearchProvider(Protocol):
-    """Abstract interface for search providers."""
-    def index(self, messages: list[MessageRecord]) -> None: ...
+| Provider | Type | Storage | Indexing | Performance | Retry |
+|----------|------|---------|----------|-------------|-------|
+| **FTS5Provider** | Full-text (BM25) | SQLite virtual table | Incremental (delete+reinsert 200/batch) | Fast, local, no API | N/A |
+| **QdrantProvider** | Vector semantic | Remote Qdrant/Docker | Batch (Voyage API bulk) | Network I/O, rate-limited | Voyage 5×, Qdrant 3× exp backoff |
+| **Search Cache** | LRU wrapper | In-memory (128 entries) | Version-based invalidation | **21,343x speedup** (69ms → 0.003ms) | N/A |
 
-    def search(self, query: str, limit: int = 100) -> list[SearchResult]: ...
+**Protocol Methods** (protocols.py):
+- `index(messages: list[MessageRecord])` → Batch index/reindex
+- `search(query: str, limit: int)` → Ranked results with scores
+- `delete(message_ids: list[str])` → Remove from index
 
-    def delete(self, message_ids: list[str]) -> None: ...
-```
+**IndexConfig**:
+| Field | Default | Env Override | Purpose |
+|-------|---------|--------------|---------|
+| `enabled` | True | - | Enable/disable indexing |
+| `provider` | "fts5" | - | "fts5" \| "qdrant" \| "hybrid" |
+| `qdrant_url` | None | QDRANT_URL | `http://localhost:6333` |
+| `qdrant_api_key` | None | QDRANT_API_KEY | Optional auth |
+| `voyage_api_key` | None | VOYAGE_API_KEY | Required for Qdrant |
 
-**FTS5Provider** (storage/search_providers/fts5.py):
-- **Type**: Full-text search (BM25 ranking)
-- **Storage**: Virtual table in SQLite
-- **Incremental**: Deletes + re-inserts affected conversations
-- **Query escaping**: Hardened against injection (asterisk-only, operator position checks)
-- **Performance**: Fast, local, no external API
-
-**QdrantProvider** (storage/search_providers/qdrant.py):
-- **Type**: Vector semantic search
-- **Embeddings**: Voyage AI (1024-dim, cosine distance)
-- **Storage**: Remote Qdrant instance or local Docker
-- **Indexing**: Batch embeddings via Voyage API, bulk insert to Qdrant
-- **Retry logic**: Exponential backoff (Voyage 5×, Qdrant 3×)
-
-**Configuration** (IndexConfig):
-```python
-@dataclass
-class IndexConfig:
-    """Configuration for search indexing."""
-    enabled: bool = True
-    provider: Literal["fts5", "qdrant"] = "fts5"  # Or "hybrid" for both
-    qdrant_url: str | None = None  # Override: env QDRANT_URL
-    qdrant_api_key: str | None = None  # Override: env QDRANT_API_KEY
-    voyage_api_key: str | None = None  # Override: env VOYAGE_API_KEY
-```
-
-**Extension Points**:
-- Add hybrid search: Create HybridProvider combining FTS5 + Qdrant
-- Add Milvus: Implement SearchProvider in `storage/search_providers/milvus.py`
-- Add Elasticsearch: Implement SearchProvider in `storage/search_providers/elasticsearch.py`
+**Extension**: Implement SearchProvider → Add to factory → Configure via IndexConfig
 
 ## Service Layer
 
-**IngestionService** (pipeline/services/ingestion.py):
-- **Responsibility**: Orchestrate conversation ingestion from sources
-- **Inputs**: Config, Source objects, archive_root
-- **Outputs**: IngestResult with counts and changed_ids
-- **Thread-safe**: Uses StorageRepository for coordinated writes
-- **Methods**:
-  - `ingest_source(source: Source) → IngestResult`: Ingest from single source
-  - `ingest_all() → IngestResult`: Ingest all configured sources
-  - `ingest_drive() → IngestResult`: Ingest from Google Drive (with OAuth flow)
+| Service | File | Responsibility | Lifecycle | Key Methods | Thread Safety |
+|---------|------|---------------|-----------|-------------|---------------|
+| **IngestionService** | pipeline/services/ingestion.py | Orchestrate ingestion from sources | Factory | `ingest_source()`, `ingest_all()`, `ingest_drive()` | Via StorageRepository |
+| **IndexService** | pipeline/services/indexing.py | Manage FTS5/Qdrant index updates | Factory | `index_incremental()`, `rebuild_index()` | Via SearchProvider |
+| **RenderService** | pipeline/services/rendering.py | Generate Markdown/HTML/JSON outputs | Factory | `render_markdown()`, `render_html()`, `render_json()` | Parallel (4 workers) |
 
-**IndexService** (pipeline/services/indexing.py):
-- **Responsibility**: Manage search index updates
-- **Inputs**: Changed conversation IDs, SearchProvider
-- **Workflow**: Load messages → request embeddings (if vector) → batch index
-- **Methods**:
-  - `index_conversations(conversation_ids: list[str]) → IndexResult`
-  - `index_incremental(changed_ids: set[str]) → IndexResult`
-  - `rebuild_index() → IndexResult`
-
-**RenderService** (pipeline/services/rendering.py):
-- **Responsibility**: Generate output formats (Markdown, HTML, JSON)
-- **Inputs**: Conversations with semantic projections applied
-- **Rendering**: Jinja2 templates, parallel execution
-- **Methods**:
-  - `render_markdown(conversation, options) → str`
-  - `render_html(conversation, options) → str`
-  - `render_json(conversations) → str`
-
-**Pipeline Orchestration** (pipeline/runner.py):
-```python
-# Typical flow
-ingest_service = IngestionService(repo, archive_root, config)
-index_service = IndexService(repo, config.index)
-render_service = RenderService(config)
-
-# Run pipeline
-ingest_result = ingest_service.ingest_all()
-index_result = index_service.index_incremental(ingest_result.changed_ids)
-render_result = render_service.render_all(conversations)
-```
+**Pipeline Flow**: `IngestionService.ingest_all()` → `IndexService.index_incremental(changed_ids)` → `RenderService.render_all()`
+**Orchestration**: pipeline/runner.py coordinates service calls, aggregates results into RunResult
 
 ## Dependency Injection (Priority 3.2)
 
 **Framework**: `dependency-injector>=4.41.0`
 
-**ApplicationContainer** (polylogue/container.py):
-- Centralized dependency graph management
-- Singleton providers: Config, StorageRepository
-- Factory providers: IngestionService, IndexService, RenderService
-- Container overrides enable easy mocking in tests
+| Provider | Type | Dependencies | File |
+|----------|------|--------------|------|
+| `config` | Singleton | load_config() | container.py |
+| `storage` | Singleton | SQLiteBackend (singleton) | container.py |
+| `ingestion_service` | Factory | storage, config | container.py |
+| `indexing_service` | Factory | storage, config | container.py |
+| `rendering_service` | Factory | config.archive_root, config.template_path | container.py |
 
-**Architecture**:
-```python
-class ApplicationContainer(containers.DeclarativeContainer):
-    # Configuration
-    config = providers.Singleton(load_config)
-
-    # Storage
-    storage = providers.Singleton(
-        StorageRepository,
-        backend=providers.Singleton(SQLiteBackend, ...)
-    )
-
-    # Services
-    ingestion_service = providers.Factory(
-        IngestionService,
-        repository=storage,
-        config=config
-    )
-
-    indexing_service = providers.Factory(
-        IndexService,
-        repository=storage,
-        config=config
-    )
-
-    rendering_service = providers.Factory(
-        RenderService,
-        archive_root=config.provided.archive_root,
-        template_path=config.provided.template_path
-    )
-```
-
-**CLI Integration** (cli/container.py):
-```python
-def create_config(config_path: Path | None = None) -> Config:
-    container = get_container(config_path)
-    return container.config()
-
-def create_storage_repository() -> StorageRepository:
-    container = get_container()
-    return container.storage()
-
-def create_ingestion_service(config: Config, repository: StorageRepository) -> IngestionService:
-    container = get_container()
-    return container.ingestion_service()
-```
-
-**Benefits**:
-- Explicit dependency declaration (no hidden coupling)
-- Type-safe dependency resolution
-- Easy mocking via container.override()
-- Single source of truth for object creation
-- Backward compatible (factory functions wrap container)
-
-**Testing**:
-```python
-# tests/test_container.py - 18 comprehensive tests
-def test_storage_singleton():
-    container = ApplicationContainer()
-    repo1 = container.storage()
-    repo2 = container.storage()
-    assert repo1 is repo2  # Singleton behavior
-
-def test_service_factory():
-    container = ApplicationContainer()
-    svc1 = container.ingestion_service()
-    svc2 = container.ingestion_service()
-    assert svc1 is not svc2  # Factory behavior
-```
+**Behavior**:
+- **Singleton**: Same instance across calls (`repo1 is repo2`)
+- **Factory**: New instance per call (`svc1 is not svc2`)
+- **CLI Integration**: cli/container.py wraps container with `create_*()` factory functions
+- **Testing**: `container.override()` enables easy mocking (18 tests in test_container.py)
+- **Benefits**: Explicit deps, type-safe, single source of truth, backward compatible
 
 ## Renderer Abstraction (Priority 3.3)
 
-**Protocol** (protocols.py):
-```python
-@runtime_checkable
-class OutputRenderer(Protocol):
-    """Abstract interface for conversation renderers."""
+**Protocol** (protocols.py): `OutputRenderer` with `render(conversation_id, output_path) → Path`, `supports_format(format) → bool`
 
-    def render(self, conversation_id: str, output_path: Path) -> Path:
-        """Render conversation to output format.
+| Renderer | File | Output | Dependencies | Performance |
+|----------|------|--------|--------------|-------------|
+| **MarkdownRenderer** | rendering/renderers/markdown.py | .md only | None (stdlib only) | Fast, minimal |
+| **HTMLRenderer** | rendering/renderers/html.py | .html + .md | Jinja2, markdown-it | Custom templates via template_path |
 
-        Returns:
-            Path to generated output file
-        """
-        ...
-
-    def supports_format(self, format: str) -> bool:
-        """Check if renderer supports given format."""
-        ...
-```
-
-**Implementations**:
-
-**MarkdownRenderer** (rendering/renderers/markdown.py):
-- Generates plain `.md` files
-- Simple text-based output
-- No dependencies on Jinja2
-- Fast, minimal overhead
-
-**HTMLRenderer** (rendering/renderers/html.py):
-- Generates both `.html` and `.md` files (backward compatible)
-- Jinja2-based templating
-- Custom template support via `template_path`
-- Syntax-highlighted code blocks via markdown-it
-
-**Factory** (rendering/renderers/__init__.py):
-```python
-def create_renderer(format: str, config: Config) -> OutputRenderer:
-    """Create renderer for specified format.
-
-    Args:
-        format: "markdown" or "html" (case-insensitive)
-        config: Config with archive_root and template_path
-
-    Returns:
-        OutputRenderer implementation
-    """
-    format_lower = format.lower()
-    if format_lower == "markdown":
-        return MarkdownRenderer(config.archive_root)
-    elif format_lower == "html":
-        return HTMLRenderer(config.archive_root, config.template_path)
-    else:
-        raise ValueError(f"Unknown format: {format}")
-```
-
-**CLI Integration**:
-```bash
-polylogue run --format markdown  # Use MarkdownRenderer
-polylogue run --format html      # Use HTMLRenderer (default)
-```
-
-**Extension Points**:
-- Add PDF renderer: Implement OutputRenderer in `rendering/renderers/pdf.py`
-- Add EPUB renderer: Implement OutputRenderer in `rendering/renderers/epub.py`
-- Custom formats: Subclass OutputRenderer, register in factory
+**Factory**: `create_renderer(format, config)` in rendering/renderers/__init__.py
+**CLI**: `polylogue run --format markdown` or `--format html` (default)
+**Extension**: Implement OutputRenderer → Add to factory → Use via `--format pdf`
 
 ## Performance Optimizations (Priority 4.4)
 
@@ -611,123 +422,82 @@ def _cached_search(query: str, version: int, limit: int, ...) -> SearchResult:
 
 ## Configuration Objects
 
-**Config** (config.py):
-Top-level configuration object (YAML-based):
-```python
-@dataclass
-class Config:
-    archive_root: Path
-    index: IndexConfig
-    drive: DriveConfig | None = None
-    sources: list[Source] = field(default_factory=list)
-```
+| Object | File | Fields | Defaults | Env Override |
+|--------|------|--------|----------|--------------|
+| **Config** | config.py | archive_root, index, drive, sources | YAML-based | `POLYLOGUE_ARCHIVE_ROOT` |
+| **IndexConfig** | config.py | enabled, provider, qdrant_url, qdrant_api_key, voyage_api_key | enabled=True, provider="fts5" | `QDRANT_URL`, `QDRANT_API_KEY`, `VOYAGE_API_KEY` |
+| **DriveConfig** | config.py | enabled, credential_path, retries, backoff_factor | enabled=False, retries=3, backoff=1.0 | `POLYLOGUE_CREDENTIAL_PATH`, `ENV_DRIVE_RETRIES` |
+| **Source** | config.py | name, path, provider, enabled | enabled=True | - |
 
-**IndexConfig**:
-```python
-@dataclass
-class IndexConfig:
-    enabled: bool = True
-    provider: Literal["fts5", "qdrant"] = "fts5"
-    qdrant_url: str | None = None
-    qdrant_api_key: str | None = None
-    voyage_api_key: str | None = None
-```
-
-**DriveConfig**:
-```python
-@dataclass
-class DriveConfig:
-    enabled: bool = False
-    credential_path: Path | None = None
-    retries: int = 3
-    backoff_factor: float = 1.0
-```
-
-**Source**:
-```python
-@dataclass
-class Source:
-    name: str
-    path: str
-    provider: str  # "chatgpt", "claude", "codex", "gemini"
-    enabled: bool = True
-```
-
-**Env var precedence** (highest to lowest):
-1. Command-line flags
-2. Environment variables (`POLYLOGUE_*`)
-3. Config file YAML
-4. Built-in defaults
+**Precedence** (highest → lowest): CLI flags → Env vars (`POLYLOGUE_*`) → YAML config → Defaults
+**Providers**: "chatgpt", "claude", "codex", "gemini" (auto-detected from payload structure)
 
 ## Error Handling
 
-**Exception Hierarchy**:
-- `ConfigError` - Configuration errors
-- `DatabaseError` - Database operations
-- `DriveError` - Google Drive operations
-  - `DriveAuthError` - OAuth failures
-  - `DriveNotFoundError` - Missing resources
-- `QdrantError` - Vector index errors
-- `UIError` - UI rendering errors
+| Exception | Category | Pipeline Behavior | Example |
+|-----------|----------|-------------------|---------|
+| `ConfigError` | Configuration | Fail-fast (abort) | Invalid YAML, missing archive_root |
+| `DatabaseError` | Storage | Fail-fast (abort) | Schema corruption, locked database |
+| `DriveAuthError` | External | Fail-fast (abort) | OAuth token expired, invalid credentials |
+| `DriveNotFoundError` | External | Graceful (log, skip) | Missing Drive file, deleted conversation |
+| `QdrantError` | External | Graceful (log, set indexed=False) | Network timeout, Qdrant unavailable |
+| `UIError` | Presentation | Graceful (log, fallback) | Template rendering failure |
 
-**Pipeline Strategy** (runner.py):
+**Pipeline Strategy** (pipeline/runner.py):
 - **Ingest**: Fail-fast (abort on error, raise exception)
-- **Render**: Graceful degradation (log, continue, report failures)
-- **Index**: Log, set `indexed=False`, continue
+- **Render**: Graceful degradation (log, continue, track in RunResult.render_failures)
+- **Index**: Graceful degradation (log, set `indexed=False`, continue)
 
 ## Testing
 
-**Coverage** (Priority 4.3 Complete):
-- **Tests**: 951 passing (99.9% pass rate)
-- **Overall coverage**: 69%
-- **Core business logic**: 83% (storage, pipeline, models, protocols)
-- **Test code**: 17,371 lines
-- **Source code**: 9,022 lines
-- **Test-to-code ratio**: 1.93:1 (exceptionally high)
+**Metrics** (Priority 4.3 Complete):
+| Metric | Value | Notes |
+|--------|-------|-------|
+| Total tests | 951 (99.9% pass) | --ignore=tests/test_qdrant.py |
+| Overall coverage | 69% | Deliberate: focus on core business logic |
+| Core coverage | 83% | storage, pipeline, models, protocols |
+| Test code | 17,371 lines | |
+| Source code | 9,022 lines | |
+| Test-to-code ratio | 1.93:1 | Exceptionally high |
 
 **High-Coverage Modules** (>90%):
-- lib/projections.py: 100%
-- protocols.py: 100%
-- lib/repository.py: 92%
-- pipeline/ids.py: 92%
-- pipeline/ingest.py: 91%
-- storage/db.py: 96%
-- storage/search.py: 96%
-- storage/store.py: 94%
-- verify.py: 88%
-- core/timestamps.py: 97%
-- Plus 25+ more files at 90-100%
+| Module | Coverage | Why High Priority |
+|--------|----------|-------------------|
+| lib/projections.py | 100% | Fluent API correctness critical |
+| protocols.py | 100% | Protocol contracts must be verified |
+| storage/db.py | 96% | Database integrity essential |
+| storage/search.py | 96% | Query escaping prevents injection |
+| storage/store.py | 94% | Data consistency guarantees |
+| core/timestamps.py | 97% | Timestamp parsing affects ordering |
+| lib/repository.py | 92% | Primary query interface |
+| pipeline/ids.py | 92% | Content hash stability critical |
+| pipeline/ingest.py | 91% | Deduplication correctness |
+| Plus 25+ more | 90-100% | See coverage report |
 
 **Lower-Coverage Areas** (deliberately):
-- ingestion/drive_client.py: 28% (complex OAuth flows, hard to test)
-- cli/commands/*: 25-70% (presentation layer, lower ROI)
-- ui/*: 24-37% (UI facade, integration tests preferred)
-- server/*: 67-91% (API endpoints, functional tests cover)
+| Module | Coverage | Why Lower Priority |
+|--------|----------|-------------------|
+| ingestion/drive_client.py | 28% | Complex OAuth, hard to test, low change frequency |
+| cli/commands/* | 25-70% | Presentation layer, lower ROI, integration tests preferred |
+| ui/* | 24-37% | UI facade, end-to-end tests more valuable |
+| server/* | 67-91% | API endpoints covered by functional tests |
 
-**Key suites**:
-- `test_importers_*.py` - Provider parsing (828 lines chatgpt, 826 claude)
-- `test_projections.py` - Fluent API (714 lines)
-- `test_store.py` - Storage layer (785 lines)
-- `test_db.py` - Database ops (637 lines)
-- `test_hashing.py` - Content hash verification (253 lines)
-- `test_properties.py` - Hypothesis property-based (349 lines)
-- `test_pipeline_concurrent.py` - Thread safety (232 lines)
-- `test_container.py` - DI container (18 tests, all passing)
-- `test_renderers.py` - Renderer implementations (17 tests)
-- `test_simple_coverage.py` - Edge cases (8 strategic tests)
-- `tests/benchmarks/` - Performance benchmarks (baseline measurements)
+**Key Test Suites**:
+| Suite | Lines | Focus |
+|-------|-------|-------|
+| test_importers_chatgpt.py | 828 | Provider parsing, graph traversal, content_blocks |
+| test_importers_claude.py | 826 | JSONL parsing, Claude Code structured blocks |
+| test_projections.py | 714 | Fluent API, lazy evaluation, composability |
+| test_store.py | 785 | Storage layer, _WRITE_LOCK, transactions |
+| test_db.py | 637 | Database ops, migrations, schema v4 |
+| test_hashing.py | 253 | NFC normalization, content hash stability |
+| test_properties.py | 349 | Hypothesis property-based (hash stability, idempotency) |
+| test_pipeline_concurrent.py | 232 | Thread safety, bounded submission |
+| test_container.py | 18 tests | DI singleton vs factory behavior |
+| test_renderers.py | 17 tests | OutputRenderer protocol compliance |
+| tests/benchmarks/ | - | Performance baselines (21,343x cache speedup) |
 
-**Fixtures** (tests/conftest.py):
-- `workspace_env` - Isolated temp directories (config/state/archive)
-- `test_conn` - Test database connection
-- `DbFactory` - Test conversation creation helper
-
-**Property-based testing** (Hypothesis):
-```python
-@given(text())
-def test_hash_stability(input_text):
-    assert hash_text(input_text) == hash_text(input_text)
-```
+**Fixtures** (tests/conftest.py): `workspace_env` (isolated temp dirs), `test_conn` (DB connection), `DbFactory` (conversation factory)
 
 ## Development Patterns
 
@@ -896,25 +666,29 @@ def min_words(self, n: int) -> ConversationProjection:
 
 ## Type Safety (Priority 4.2 Complete)
 
-**Mypy Strict Mode**: 100% compliant
-- **Errors**: 211 → 0 (100% resolved)
-- **Strict settings**: `strict = true`, `disallow_any_generics`, `disallow_untyped_defs`
-- **Files checked**: 85 source files
-- **Type marker**: `polylogue/py.typed` present
+**Mypy Strict Mode**:
+| Metric | Before (P4.1) | After (P4.2) | Improvement |
+|--------|---------------|--------------|-------------|
+| Mypy errors | 211 | 0 | 100% resolved |
+| Files checked | 85 | 85 | All source files |
+| Strict mode | ❌ | ✅ | `strict = true` |
+| Type marker | ❌ | ✅ | `polylogue/py.typed` |
 
-**Annotations**:
-- NewType IDs: ConversationId, MessageId, AttachmentId
-- Protocol types: StorageBackend, SearchProvider, OutputRenderer, VectorProvider
-- Generic types: `dict[str, object]`, `list[Message]`, proper variance (Mapping vs dict)
-- Union types: `Path | None`, `str | None`, proper narrowing with isinstance()
-- Forward references: TYPE_CHECKING imports for circular dependencies
+**Type Annotations**:
+| Category | Types | Usage Example |
+|----------|-------|---------------|
+| NewType IDs | ConversationId, MessageId, AttachmentId | `def get(id: ConversationId) → Conversation` |
+| Protocols | StorageBackend, SearchProvider, OutputRenderer, VectorProvider | `repo: StorageRepository[StorageBackend]` |
+| Variance | Mapping (covariant), dict (invariant) | `def format(data: Mapping[str, object])` |
+| Unions | Path \| None, str \| None | `config_path: Path \| None = None` |
+| Forward refs | TYPE_CHECKING imports | `if TYPE_CHECKING: from .projections import ...` |
 
-**Key improvements**:
-- Runtime type narrowing with isinstance() checks
-- Proper NewType conversions (e.g., ConversationId(str(...)))
-- Variance-correct types (Mapping for read-only, dict for mutable)
-- Type annotations on all function parameters and returns
-- No `Any` types except in legacy compatibility layers
+**Key Fixes** (commit 0e56861):
+- Runtime type narrowing: `isinstance(blocks, list) and isinstance(b, dict)` before iteration
+- NewType conversions: `ConversationId(str(row["conversation_id"]))` not bare `str`
+- Variance correctness: `Mapping[str, object]` for function params (covariant)
+- Method shadowing: `builtins.list` to avoid conflict with `self.list()`
+- Type annotations: All functions have parameter and return types
 
 ## Build Commands
 
