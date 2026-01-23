@@ -59,7 +59,7 @@ class MessageRecord(BaseModel):
     text: str | None = None
     timestamp: str | None = None
     content_hash: ContentHash
-    provider_meta: dict | None = None
+    provider_meta: dict[str, object] | None = None
     version: int = 1
 
     @field_validator("message_id", "conversation_id", "content_hash")
@@ -108,7 +108,7 @@ class RunRecord(BaseModel):
     duration_ms: int | None = None
 
 
-def _json_or_none(value: dict | None) -> str | None:
+def _json_or_none(value: dict[str, object] | None) -> str | None:
     if value is None:
         return None
     return json_dumps(value)
@@ -120,7 +120,7 @@ def _make_ref_id(attachment_id: AttachmentId, conversation_id: ConversationId, m
     return f"ref-{digest}"
 
 
-def _prune_attachment_refs(conn, conversation_id: ConversationId, keep_ref_ids: set[str]) -> None:
+def _prune_attachment_refs(conn: sqlite3.Connection, conversation_id: ConversationId, keep_ref_ids: set[str]) -> None:
     query = "SELECT ref_id, attachment_id FROM attachment_refs WHERE conversation_id = ?"
     params: list[str] = [conversation_id]
     if keep_ref_ids:
@@ -169,7 +169,7 @@ def _prune_attachment_refs(conn, conversation_id: ConversationId, keep_ref_ids: 
         raise
 
 
-def upsert_conversation(conn, record: ConversationRecord) -> bool:
+def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) -> bool:
     res = conn.execute(
         """
         INSERT INTO conversations (
@@ -208,10 +208,10 @@ def upsert_conversation(conn, record: ConversationRecord) -> bool:
             record.version,
         ),
     )
-    return res.rowcount > 0
+    return bool(res.rowcount > 0)
 
 
-def upsert_message(conn, record: MessageRecord) -> bool:
+def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
     res = conn.execute(
         """
         INSERT INTO messages (
@@ -250,10 +250,10 @@ def upsert_message(conn, record: MessageRecord) -> bool:
             record.version,
         ),
     )
-    return res.rowcount > 0
+    return bool(res.rowcount > 0)
 
 
-def upsert_attachment(conn, record: AttachmentRecord) -> bool:
+def upsert_attachment(conn: sqlite3.Connection, record: AttachmentRecord) -> bool:
     # Ensure attachment metadata exists (idempotent, doesn't touch ref_count)
     conn.execute(
         """
@@ -314,7 +314,7 @@ def upsert_attachment(conn, record: AttachmentRecord) -> bool:
     return False
 
 
-def record_run(conn, record: RunRecord) -> None:
+def record_run(conn: sqlite3.Connection, record: RunRecord) -> None:
     conn.execute(
         """
         INSERT INTO runs (
@@ -345,7 +345,7 @@ def store_records(
     messages: list[MessageRecord],
     attachments: list[AttachmentRecord],
     conn: sqlite3.Connection | None = None,
-) -> dict:
+) -> dict[str, int]:
     counts = {
         "conversations": 0,
         "messages": 0,

@@ -9,7 +9,7 @@ from .search_providers import create_search_provider, create_vector_provider
 from .store import MessageRecord
 
 
-def ensure_index(conn) -> None:
+def ensure_index(conn: sqlite3.Connection) -> None:
     """Create FTS5 index table if it doesn't exist.
 
     This function is maintained for backward compatibility. New code should
@@ -39,7 +39,7 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
     Args:
         conn: Optional SQLite connection. If None, creates a new connection.
     """
-    def _do(db_conn):
+    def _do(db_conn: sqlite3.Connection) -> None:
         ensure_index(db_conn)
         db_conn.execute("DELETE FROM messages_fts")
         db_conn.execute(
@@ -80,7 +80,7 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
     if not conversation_ids:
         return
 
-    def _do(db_conn):
+    def _do(db_conn: sqlite3.Connection) -> None:
         ensure_index(db_conn)
         # SQLite FTS Update
         for chunk in _chunked(conversation_ids, size=200):
@@ -105,7 +105,7 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
         if vector_provider:
             from .index_qdrant import update_qdrant_for_conversations
 
-            update_qdrant_for_conversations(conversation_ids, db_conn)
+            update_qdrant_for_conversations(list(conversation_ids), db_conn)
 
         db_conn.commit()
 
@@ -118,7 +118,7 @@ def _chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
         yield items[idx : idx + size]
 
 
-def index_status() -> dict:
+def index_status() -> dict[str, object]:
     with open_connection(None) as conn:
         row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         exists = bool(row)

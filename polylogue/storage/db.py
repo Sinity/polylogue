@@ -390,8 +390,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         raise DatabaseError(f"Unsupported DB schema version {current_version} (expected {SCHEMA_VERSION})")
 
 
-def _get_state() -> dict:
-    state = getattr(_LOCAL, "state", None)
+def _get_state() -> dict[str, object]:
+    state: dict[str, object] | None = getattr(_LOCAL, "state", None)
     if state is None:
         state = {"conn": None, "path": None, "depth": 0}
         _LOCAL.state = state
@@ -403,11 +403,15 @@ def open_connection(db_path: Path | None = None) -> Iterator[sqlite3.Connection]
     target_path = Path(db_path) if db_path is not None else default_db_path()
     target_path.parent.mkdir(parents=True, exist_ok=True)
     state = _get_state()
-    if state["conn"] is not None and state["path"] != target_path:
-        raise DatabaseError(f"Existing connection opened for {state['path']}, cannot open {target_path}")
+    state_conn: sqlite3.Connection | None = state["conn"]  # type: ignore[assignment]
+    state_path: Path | None = state["path"]  # type: ignore[assignment]
+    state_depth: int = state["depth"]  # type: ignore[assignment]
+
+    if state_conn is not None and state_path != target_path:
+        raise DatabaseError(f"Existing connection opened for {state_path}, cannot open {target_path}")
 
     created_here = False
-    if state["conn"] is None:
+    if state_conn is None:
         conn = sqlite3.connect(target_path, timeout=30)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON")
@@ -416,25 +420,28 @@ def open_connection(db_path: Path | None = None) -> Iterator[sqlite3.Connection]
         _ensure_schema(conn)
         state["conn"] = conn
         state["path"] = target_path
+        state_conn = conn
         created_here = True
-    state["depth"] += 1
+    state["depth"] = state_depth + 1
     exc_info = None
     try:
-        yield state["conn"]
+        yield state_conn
     except Exception:
         exc_info = True
         raise
     finally:
-        state["depth"] -= 1
-        if state["depth"] <= 0 and created_here:
+        state_depth_val: int = state["depth"]  # type: ignore[assignment]
+        state_depth_val = state_depth_val - 1
+        state["depth"] = state_depth_val
+        if state_depth_val <= 0 and created_here:
             try:
                 if exc_info:
-                    state["conn"].rollback()
+                    state_conn.rollback()
                 else:
-                    state["conn"].commit()
+                    state_conn.commit()
             finally:
                 try:
-                    state["conn"].close()
+                    state_conn.close()
                 finally:
                     state["conn"] = None
                     state["path"] = None
