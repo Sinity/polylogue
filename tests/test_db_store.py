@@ -16,8 +16,8 @@ from uuid import uuid4
 
 import pytest
 
-from polylogue.db import open_connection, connection_context, SCHEMA_VERSION
-from polylogue.store import (
+from polylogue.storage.db import open_connection, connection_context, SCHEMA_VERSION
+from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
     MessageRecord,

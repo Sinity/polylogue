@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.db import (
+from polylogue.storage.db import (
     SCHEMA_VERSION,
     DatabaseError,
     _apply_schema,
@@ -128,7 +128,7 @@ def test_open_connection_depth_tracking(tmp_path):
     """open_connection() properly tracks connection depth."""
     db_path = tmp_path / "test.db"
 
-    from polylogue.db import _get_state
+    from polylogue.storage.db import _get_state
 
     with open_connection(db_path):
         state = _get_state()
@@ -173,7 +173,7 @@ def test_open_connection_closes_on_exception(tmp_path):
     """open_connection() closes connection after exception."""
     db_path = tmp_path / "test.db"
 
-    from polylogue.db import _get_state
+    from polylogue.storage.db import _get_state
 
     try:
         with open_connection(db_path) as conn:
@@ -382,7 +382,7 @@ def test_migrate_v1_to_v2_creates_new_tables(tmp_path):
     conn.commit()
 
     # Migrate using the runner (which updates version)
-    from polylogue.db import _run_migrations
+    from polylogue.storage.db import _run_migrations
     _run_migrations(conn, 1, 2)
 
     # Check version updated
@@ -453,7 +453,7 @@ def test_migrate_v2_to_v3_updates_runs_table(tmp_path):
 
     # Migrate
     # Migrate using the runner (which updates version)
-    from polylogue.db import _run_migrations
+    from polylogue.storage.db import _run_migrations
     _run_migrations(conn, 2, 3)
 
     # Check version updated to 3
@@ -515,7 +515,7 @@ def test_migrate_v3_to_v4_adds_source_name_column(tmp_path):
     conn.commit()
 
     # Migrate using the runner (which updates version)
-    from polylogue.db import _run_migrations
+    from polylogue.storage.db import _run_migrations
     _run_migrations(conn, 3, 4)
 
     # Check version updated to 4
@@ -713,7 +713,7 @@ class TestMigrations:
         conn.close()
 
         # Patch _MIGRATIONS[3] to fail (patching the function won't work as dict has reference)
-        from polylogue import db
+        from polylogue.storage import db
 
         def failing_migration(conn):
             raise RuntimeError("Simulated migration failure")

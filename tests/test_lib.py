@@ -1,6 +1,6 @@
 import pytest
 
-from polylogue.db import open_connection
+from polylogue.storage.db import open_connection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.repository import ConversationRepository
 
