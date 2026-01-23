@@ -105,10 +105,11 @@ def iter_drive_conversations(
     client: DriveClient | None = None,
     download_assets: bool = True,
     cursor_state: dict | None = None,
+    drive_config: object | None = None,
 ) -> Iterable[ParsedConversation]:
     if not source.folder:
         return
-    drive_client = client or DriveClient(ui=ui)
+    drive_client = client or DriveClient(ui=ui, config=drive_config)
     folder_id = drive_client.resolve_folder_id(source.folder)
     if cursor_state is not None:
         cursor_state.setdefault("file_count", 0)

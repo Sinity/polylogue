@@ -206,15 +206,13 @@ def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch
             id_by_source[name] = row["conversation_id"]
 
     update_calls = []
-    import polylogue.pipeline.runner as runner_mod
+    from polylogue.pipeline.services.indexing import IndexService
 
-    monkeypatch.setattr(runner_mod, "rebuild_index", lambda conn=None: (_ for _ in ()).throw(RuntimeError("rebuild")))
-    monkeypatch.setattr(runner_mod, "ensure_index", lambda conn=None: (_ for _ in ()).throw(RuntimeError("ensure")))
-
-    def fake_update(ids, conn=None):
+    original_update = IndexService.update_index
+    def fake_update_method(self, ids):
         update_calls.append(list(ids))
-
-    monkeypatch.setattr(runner_mod, "update_index_for_conversations", fake_update)
+        return True
+    monkeypatch.setattr(IndexService, "update_index", fake_update_method)
 
     run_sources(config=config, stage="index", source_names=["source-b"])
 
@@ -252,12 +250,12 @@ def test_index_failure_is_nonfatal(workspace_env, monkeypatch):
     config = default_config()
     write_config(config)
 
-    import polylogue.pipeline.runner as runner_mod
+    from polylogue.pipeline.services.indexing import IndexService
 
-    def boom(conn=None):
+    def boom(self):
         raise RuntimeError("index failed")
 
-    monkeypatch.setattr(runner_mod, "rebuild_index", boom)
+    monkeypatch.setattr(IndexService, "rebuild_index", boom)
     result = run_sources(config=config, stage="index")
     assert result.indexed is False
     assert result.index_error is not None
