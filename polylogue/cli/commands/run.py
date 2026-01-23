@@ -6,6 +6,9 @@ import json
 
 import click
 
+from pathlib import Path
+
+from polylogue.cli.container import create_config
 from polylogue.cli.formatting import (
     format_counts,
     format_cursors,
@@ -14,7 +17,6 @@ from polylogue.cli.formatting import (
 )
 from polylogue.cli.helpers import (
     fail,
-    load_effective_config,
     maybe_prompt_sources,
     resolve_sources,
 )
@@ -33,23 +35,25 @@ from polylogue.pipeline.runner import plan_sources, run_sources
     multiple=True,
     help="Limit to source name (repeatable, or 'last'). Use `polylogue sources` to list.",
 )
+@click.option("--config", type=click.Path(path_type=Path), help="Path to config file")
 @click.pass_obj
 def run_command(
     env: AppEnv,
     preview: bool,
     stage: str,
     sources: tuple[str, ...],
+    config: Path | None,
 ) -> None:
     plan_snapshot = None
     try:
-        config = load_effective_config(env)
+        cfg = create_config(config or env.config_path)
     except ConfigError as exc:
         fail("run", str(exc))
-    selected_sources = resolve_sources(config, sources, "run")
-    selected_sources = maybe_prompt_sources(env, config, selected_sources, "run")
+    selected_sources = resolve_sources(cfg, sources, "run")
+    selected_sources = maybe_prompt_sources(env, cfg, selected_sources, "run")
     if preview:
         try:
-            plan_snapshot = plan_sources(config, ui=env.ui, source_names=selected_sources)
+            plan_snapshot = plan_sources(cfg, ui=env.ui, source_names=selected_sources)
         except DriveError as exc:
             fail("run", str(exc))
         plan_lines = []
@@ -84,7 +88,7 @@ def run_command(
                     last_update[0] = now
 
             result = run_sources(
-                config=config,
+                config=cfg,
                 stage=stage,
                 plan=plan_snapshot,
                 ui=env.ui,
@@ -111,7 +115,7 @@ def run_command(
                     progress.update(task_id, advance=amount)
 
                 result = run_sources(
-                    config=config,
+                    config=cfg,
                     stage=stage,
                     plan=plan_snapshot,
                     ui=env.ui,
@@ -144,7 +148,7 @@ def run_command(
     if stage in {"render", "all"}:
         from polylogue.cli.helpers import latest_render_path
 
-        latest = latest_render_path(config.render_root)
+        latest = latest_render_path(cfg.render_root)
         if latest:
             env.ui.console.print(f"Latest render: {latest}")
     if result.index_error:
@@ -160,10 +164,11 @@ def run_command(
 
 @click.command("sources")
 @click.option("--json", "json_output", is_flag=True, help="Output JSON")
+@click.option("--config", type=click.Path(path_type=Path), help="Path to config file")
 @click.pass_obj
-def sources_command(env: AppEnv, json_output: bool) -> None:
+def sources_command(env: AppEnv, json_output: bool, config: Path | None) -> None:
     try:
-        config = load_effective_config(env)
+        cfg = create_config(config or env.config_path)
     except ConfigError as exc:
         fail("sources", str(exc))
     if json_output:
@@ -174,12 +179,12 @@ def sources_command(env: AppEnv, json_output: bool) -> None:
                 "folder": source.folder,
                 "kind": "drive" if source.folder else "path",
             }
-            for source in config.sources
+            for source in cfg.sources
         ]
         env.ui.console.print(json.dumps(payload, indent=2))
         return
     lines = []
-    for source in config.sources:
+    for source in cfg.sources:
         if source.folder:
             lines.append(f"{source.name}: drive folder '{source.folder}'")
         elif source.path:

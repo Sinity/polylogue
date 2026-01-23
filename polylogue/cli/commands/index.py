@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 
+from polylogue.cli.container import create_config
 from polylogue.cli.formatting import format_index_status
-from polylogue.cli.helpers import fail, load_effective_config
+from polylogue.cli.helpers import fail
 from polylogue.cli.types import AppEnv
 from polylogue.config import ConfigError
 from polylogue.ingestion import DriveError
@@ -13,15 +16,16 @@ from polylogue.pipeline.runner import run_sources
 
 
 @click.command("index")
+@click.option("--config", type=click.Path(path_type=Path), help="Path to config file")
 @click.pass_obj
-def index_command(env: AppEnv) -> None:
+def index_command(env: AppEnv, config: Path | None) -> None:
     try:
-        config = load_effective_config(env)
+        cfg = create_config(config or env.config_path)
     except ConfigError as exc:
         fail("index", str(exc))
     try:
         result = run_sources(
-            config=config,
+            config=cfg,
             stage="index",
             plan=None,
             ui=env.ui,

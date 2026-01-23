@@ -31,9 +31,7 @@ def test_attachment_content_id_moves_file_into_assets(tmp_path):
     )
 
     # attachment_content_id now returns (digest, updated_meta, updated_path) without mutation
-    digest, updated_meta, updated_path = attachment_content_id(
-        "chatgpt", attachment, archive_root=archive_root
-    )
+    digest, updated_meta, updated_path = attachment_content_id("chatgpt", attachment, archive_root=archive_root)
     target = asset_path(archive_root, digest)
 
     assert digest

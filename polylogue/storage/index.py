@@ -5,9 +5,19 @@ import sqlite3
 from collections.abc import Iterable, Sequence
 
 from .db import connection_context, open_connection
+from .search_providers import create_search_provider, create_vector_provider
+from .store import MessageRecord
 
 
 def ensure_index(conn) -> None:
+    """Create FTS5 index table if it doesn't exist.
+
+    This function is maintained for backward compatibility. New code should
+    use the search provider abstraction.
+
+    Args:
+        conn: Active SQLite database connection
+    """
     conn.execute(
         """
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -21,6 +31,14 @@ def ensure_index(conn) -> None:
 
 
 def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
+    """Rebuild the entire search index from scratch.
+
+    This function is maintained for backward compatibility. It rebuilds both
+    FTS5 and Qdrant indexes if configured.
+
+    Args:
+        conn: Optional SQLite connection. If None, creates a new connection.
+    """
     def _do(db_conn):
         ensure_index(db_conn)
         db_conn.execute("DELETE FROM messages_fts")
@@ -33,13 +51,16 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
             WHERE messages.text IS NOT NULL
             """
         )
-        # Optional Qdrant support
-        if os.environ.get("QDRANT_URL") or os.environ.get("QDRANT_API_KEY"):
+
+        # Optional Qdrant support via vector provider
+        vector_provider = create_vector_provider()
+        if vector_provider:
             from .index_qdrant import update_qdrant_for_conversations
 
             rows = db_conn.execute("SELECT conversation_id FROM conversations").fetchall()
             ids = [row["conversation_id"] for row in rows]
             update_qdrant_for_conversations(ids, db_conn)
+
         db_conn.commit()
 
     with connection_context(conn) as db_conn:
@@ -47,6 +68,15 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
 
 
 def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite3.Connection | None = None) -> None:
+    """Update search indexes for specific conversations.
+
+    This function is maintained for backward compatibility. It updates both
+    FTS5 and Qdrant indexes if configured.
+
+    Args:
+        conversation_ids: List of conversation IDs to re-index
+        conn: Optional SQLite connection. If None, creates a new connection.
+    """
     if not conversation_ids:
         return
 
@@ -69,11 +99,14 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
                 """,
                 tuple(chunk),
             )
-        # Optional Qdrant support
-        if os.environ.get("QDRANT_URL") or os.environ.get("QDRANT_API_KEY"):
+
+        # Optional Qdrant support via vector provider
+        vector_provider = create_vector_provider()
+        if vector_provider:
             from .index_qdrant import update_qdrant_for_conversations
 
             update_qdrant_for_conversations(conversation_ids, db_conn)
+
         db_conn.commit()
 
     with connection_context(conn) as db_conn:
