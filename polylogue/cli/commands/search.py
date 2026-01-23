@@ -13,6 +13,7 @@ from polylogue.cli.formatting import format_source_label
 from polylogue.cli.helpers import fail, latest_render_path
 from polylogue.cli.types import AppEnv
 from polylogue.config import ConfigError
+from polylogue.core.dates import format_date_iso, parse_date
 from polylogue.storage.db import DatabaseError
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.search import search_messages
@@ -22,7 +23,7 @@ from polylogue.storage.search import search_messages
 @click.argument("query", required=False)
 @click.option("--limit", type=int, default=20, show_default=True)
 @click.option("--source", help="Filter by source/provider name")
-@click.option("--since", help="Filter by date (ISO format, e.g. 2023-01-01)")
+@click.option("--since", help="Filter by date (ISO, e.g. 2024-01-15, or natural language, e.g. 'last week', 'yesterday')")
 @click.option("--latest", is_flag=True, help="Open the latest render instead of searching")
 @click.option("--list", "list_mode", is_flag=True, help="Print all hits (skip interactive picker)")
 @click.option("--verbose", is_flag=True, help="Show snippets alongside hits")
@@ -76,6 +77,15 @@ def search_command(
     # Require query when not using --latest
     if not query:
         fail("search", "Query required. Use --latest to open the most recent render instead.")
+
+    # Parse since parameter (supports natural language dates)
+    since_iso: str | None = None
+    if since:
+        parsed_date = parse_date(since)
+        if not parsed_date:
+            fail("search", f"Could not parse date: '{since}'. Try ISO format (2024-01-15) or natural language ('last week', 'yesterday')")
+        since_iso = format_date_iso(parsed_date)
+
     try:
         result = search_messages(
             query,
@@ -83,7 +93,7 @@ def search_command(
             render_root_path=cfg.render_root,
             limit=limit,
             source=source,
-            since=since,
+            since=since_iso,
         )
     except (RuntimeError, DatabaseError) as exc:
         message = str(exc)
@@ -99,7 +109,7 @@ def search_command(
                 render_root_path=cfg.render_root,
                 limit=limit,
                 source=source,
-                since=since,
+                since=since_iso,
             )
         else:
             fail("search", message)
