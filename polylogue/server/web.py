@@ -19,14 +19,15 @@ _markdown = MarkdownIt("commonmark", {"linkify": True, "html": False}).enable("t
 def _render_markdown(text: str | None) -> str:
     if not text:
         return ""
-    return _markdown.render(text)
+    result = _markdown.render(text)
+    return result if isinstance(result, str) else ""
 
 
 templates.env.filters["render_markdown"] = _render_markdown
 
 
 @router.get("/")
-def index(request: Request, repo: ConversationRepository = Depends(get_repository)):
+def index(request: Request, repo: ConversationRepository = Depends(get_repository)) -> object:
     convs = repo.list(limit=50)
     return templates.TemplateResponse(
         request,
@@ -40,7 +41,7 @@ def index(request: Request, repo: ConversationRepository = Depends(get_repositor
 
 
 @router.get("/view/{conversation_id}")
-def view_conversation(request: Request, conversation_id: str, repo: ConversationRepository = Depends(get_repository)):
+def view_conversation(request: Request, conversation_id: str, repo: ConversationRepository = Depends(get_repository)) -> object:
     conv = repo.get(conversation_id)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")

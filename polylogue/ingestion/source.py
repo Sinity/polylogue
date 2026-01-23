@@ -5,7 +5,7 @@ import logging
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, IO
 
 import ijson
 
@@ -148,7 +148,7 @@ def parse_drive_payload(provider: str, payload: Any, fallback_id: str) -> list[P
     return []
 
 
-def _iter_json_stream(handle: BinaryIO, path_name: str, unpack_lists: bool = True) -> Iterable[Any]:
+def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists: bool = True) -> Iterable[Any]:
     if path_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
         for line in handle:
             raw = line.strip()
@@ -233,7 +233,7 @@ def _has_ingest_extension(path: Path) -> bool:
     return path.suffix.lower() in _INGEST_EXTENSIONS
 
 
-def iter_source_conversations(source: Source, *, cursor_state: dict | None = None) -> Iterable[ParsedConversation]:
+def iter_source_conversations(source: Source, *, cursor_state: dict[str, Any] | None = None) -> Iterable[ParsedConversation]:
     if not source.path:
         return
     base = source.path.expanduser()
