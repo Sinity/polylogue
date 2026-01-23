@@ -26,10 +26,21 @@ class QdrantError(RuntimeError):
     pass
 
 
-def _get_voyage_key() -> str:
-    key = os.environ.get("VOYAGE_API_KEY")
+def _get_voyage_key(config_key: str | None = None) -> str:
+    """Get Voyage API key from config or environment.
+
+    Args:
+        config_key: Optional key from IndexConfig (takes priority)
+
+    Returns:
+        Voyage API key
+
+    Raises:
+        QdrantError: If key is not found
+    """
+    key = config_key or os.environ.get("VOYAGE_API_KEY")
     if not key:
-        raise QdrantError("VOYAGE_API_KEY environment variable not set")
+        raise QdrantError("VOYAGE_API_KEY not set in config or environment variable")
     return key
 
 
@@ -39,9 +50,17 @@ def _get_voyage_key() -> str:
     retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
     reraise=True,
 )
-def get_embeddings(texts: list[str]) -> list[list[float]]:
-    """Get embeddings from Voyage AI using httpx."""
-    key = _get_voyage_key()
+def get_embeddings(texts: list[str], voyage_api_key: str | None = None) -> list[list[float]]:
+    """Get embeddings from Voyage AI using httpx.
+
+    Args:
+        texts: List of texts to embed
+        voyage_api_key: Optional Voyage API key (from config or env)
+
+    Returns:
+        List of embedding vectors
+    """
+    key = _get_voyage_key(voyage_api_key)
     with httpx.Client(timeout=30.0) as client:
         response = client.post(
             VOYAGE_API_URL,
@@ -62,12 +81,14 @@ class VectorStore:
         url: str | None = None,
         api_key: str | None = None,
         collection: str = DEFAULT_COLLECTION,
+        voyage_api_key: str | None = None,
     ):
         self.client = QdrantClient(
             url=url or os.environ.get("QDRANT_URL", "http://localhost:6333"),
             api_key=api_key or os.environ.get("QDRANT_API_KEY"),
         )
         self.collection = collection
+        self.voyage_api_key = voyage_api_key
 
     @retry(
         stop=stop_after_attempt(3),
@@ -96,7 +117,7 @@ class VectorStore:
             return
 
         texts = [m["content"] for m in messages]
-        embeddings = get_embeddings(texts)
+        embeddings = get_embeddings(texts, voyage_api_key=self.voyage_api_key)
 
         points = []
         for msg, vector in zip(messages, embeddings, strict=False):

@@ -55,11 +55,17 @@ class DriveFile:
     size_bytes: int | None
 
 
-def default_credentials_path() -> Path:
+def default_credentials_path(config: object | None = None) -> Path:
+    """Get default credentials path, optionally from DriveConfig."""
+    if config is not None and hasattr(config, "credentials_path") and config.credentials_path:
+        return config.credentials_path
     return CONFIG_HOME / DEFAULT_CREDENTIALS_NAME
 
 
-def default_token_path() -> Path:
+def default_token_path(config: object | None = None) -> Path:
+    """Get default token path, optionally from DriveConfig."""
+    if config is not None and hasattr(config, "token_path") and config.token_path:
+        return config.token_path
     return CONFIG_HOME / DEFAULT_TOKEN_NAME
 
 
@@ -102,13 +108,23 @@ def _looks_like_id(value: str) -> bool:
     return all(ch.isalnum() or ch in "-_" for ch in value)
 
 
-def _resolve_credentials_path(ui: object | None) -> Path:
+def _resolve_credentials_path(ui: object | None, config: object | None = None) -> Path:
+    """Resolve credentials path from config, environment, or defaults."""
+    # First check config
+    if config is not None and hasattr(config, "credentials_path") and config.credentials_path:
+        return config.credentials_path
+
+    # Then environment variable
     env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
     if env_path:
         return Path(env_path).expanduser()
-    default_path = default_credentials_path()
+
+    # Then default path
+    default_path = default_credentials_path(config)
     if default_path.exists():
         return default_path
+
+    # Interactive prompt if UI available
     if ui is not None and not getattr(ui, "plain", True):
         prompt = f"Path to Google OAuth client JSON (default {default_path}):"
         response = ui.input(prompt, default=str(default_path))
@@ -119,27 +135,44 @@ def _resolve_credentials_path(ui: object | None) -> Path:
                 if candidate != default_path:
                     shutil.copy(candidate, default_path)
                 return default_path
+
     raise DriveAuthError(
         f"Drive credentials not found. Set POLYLOGUE_CREDENTIAL_PATH or place a client JSON at {default_path}."
     )
 
 
-def _resolve_token_path() -> Path:
+def _resolve_token_path(config: object | None = None) -> Path:
+    """Resolve token path from config, environment, or defaults."""
+    # First check config
+    if config is not None and hasattr(config, "token_path") and config.token_path:
+        return config.token_path
+
+    # Then environment variable
     env_path = os.environ.get("POLYLOGUE_TOKEN_PATH")
     if env_path:
         return Path(env_path).expanduser()
-    return default_token_path()
+
+    # Then default
+    return default_token_path(config)
 
 
-def _resolve_retries(value: int | None) -> int:
+def _resolve_retries(value: int | None, config: object | None = None) -> int:
+    """Resolve retry count from explicit value, config, environment, or default."""
     if value is not None:
         return max(0, int(value))
+
+    # Check config
+    if config is not None and hasattr(config, "retry_count"):
+        return max(0, int(config.retry_count))
+
+    # Check environment
     env_value = os.environ.get(ENV_DRIVE_RETRIES)
     if env_value:
         try:
             return max(0, int(env_value))
         except ValueError:
             pass
+
     return DEFAULT_DRIVE_RETRIES
 
 
@@ -168,13 +201,15 @@ class DriveClient:
         token_path: Path | None = None,
         retries: int | None = None,
         retry_base: float | None = None,
+        config: object | None = None,
     ) -> None:
         self._ui = ui
         self._credentials_path = credentials_path
         self._token_path = token_path
+        self._config = config
         self._service = None
         self._meta_cache: dict[str, DriveFile] = {}
-        self._retries = _resolve_retries(retries)
+        self._retries = _resolve_retries(retries, config)
         self._retry_base = _resolve_retry_base(retry_base)
 
     def _call_with_retry(self, func, *args, **kwargs):
@@ -194,7 +229,7 @@ class DriveClient:
         credentials_cls = _import_module("google.oauth2.credentials").Credentials
         installed_app_flow_cls = _import_module("google_auth_oauthlib.flow").InstalledAppFlow
 
-        token_path = self._token_path or _resolve_token_path()
+        token_path = self._token_path or _resolve_token_path(self._config)
         creds = None
         if token_path.exists():
             try:
@@ -226,7 +261,7 @@ class DriveClient:
                 "Delete it and re-run with --interactive to re-authorize."
             )
 
-        credentials_path = self._credentials_path or _resolve_credentials_path(self._ui)
+        credentials_path = self._credentials_path or _resolve_credentials_path(self._ui, self._config)
         if not credentials_path.exists():
             raise DriveAuthError(f"Drive credentials not found: {credentials_path}")
         if self._ui is None or getattr(self._ui, "plain", True):

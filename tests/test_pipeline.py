@@ -635,8 +635,9 @@ def test_prepare_ingest_handles_empty_provider_message_ids(test_conn, tmp_path):
     # First one should have a fallback ID (contains provider_message_id as 'msg-1')
     # Second one should contain the explicit ID
     provider_ids = [
-        test_conn.execute("SELECT provider_message_id FROM messages WHERE message_id = ?", (row["message_id"],))
-        .fetchone()["provider_message_id"]
+        test_conn.execute(
+            "SELECT provider_message_id FROM messages WHERE message_id = ?", (row["message_id"],)
+        ).fetchone()["provider_message_id"]
         for row in rows
     ]
     assert "msg-1" in provider_ids  # Fallback

@@ -26,6 +26,12 @@ from .store import (
 # Repository module - encapsulated storage operations
 from .repository import StorageRepository
 
+# Backend abstraction - new storage backend interface
+from .backends import (
+    SQLiteBackend,
+    create_backend,
+)
+
 # Index module - FTS5 indexing
 from .index import (
     ensure_index,
@@ -42,13 +48,14 @@ from .search import (
     search_messages,
 )
 
-# Qdrant vector index module
-from .index_qdrant import (
-    QdrantError,
-    VectorStore,
-    get_embeddings,
-    update_qdrant_for_conversations,
-)
+# Qdrant vector index module - lazy import to avoid loading heavy dependencies
+def __getattr__(name: str):
+    """Lazy import for Qdrant-related exports to avoid loading heavy dependencies."""
+    if name in ("QdrantError", "VectorStore", "get_embeddings", "update_qdrant_for_conversations"):
+        from . import index_qdrant
+        return getattr(index_qdrant, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Database
@@ -68,6 +75,9 @@ __all__ = [
     "upsert_message",
     # Repository
     "StorageRepository",
+    # Backends
+    "SQLiteBackend",
+    "create_backend",
     # Index
     "ensure_index",
     "index_status",

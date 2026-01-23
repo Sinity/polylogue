@@ -61,6 +61,24 @@ class Source:
 
 
 @dataclass
+class DriveConfig:
+    """Configuration for Google Drive integration."""
+    credentials_path: Path | None = None
+    token_path: Path | None = None
+    retry_count: int = 3
+    timeout: int = 30
+
+
+@dataclass
+class IndexConfig:
+    """Configuration for search and vector indexing."""
+    fts_enabled: bool = True
+    qdrant_url: str | None = None
+    qdrant_api_key: str | None = None
+    voyage_api_key: str | None = None
+
+
+@dataclass
 class Config:
     version: int
     archive_root: Path
@@ -68,6 +86,8 @@ class Config:
     sources: list[Source]
     path: Path
     template_path: Path | None = None
+    drive_config: DriveConfig | None = None
+    index_config: IndexConfig | None = None
 
     def __post_init__(self):
         """Validate config invariants."""
@@ -128,6 +148,39 @@ def _parse_source(raw: dict) -> Source:
     )
 
 
+def _load_drive_config_from_env() -> DriveConfig:
+    """Load DriveConfig from environment variables for backward compatibility."""
+    credentials_path_str = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+    token_path_str = os.environ.get("POLYLOGUE_TOKEN_PATH")
+    retry_count_str = os.environ.get("POLYLOGUE_DRIVE_RETRIES")
+
+    credentials_path = Path(credentials_path_str).expanduser() if credentials_path_str else None
+    token_path = Path(token_path_str).expanduser() if token_path_str else None
+
+    retry_count = 3
+    if retry_count_str:
+        try:
+            retry_count = max(0, int(retry_count_str))
+        except ValueError:
+            pass
+
+    return DriveConfig(
+        credentials_path=credentials_path,
+        token_path=token_path,
+        retry_count=retry_count,
+    )
+
+
+def _load_index_config_from_env() -> IndexConfig:
+    """Load IndexConfig from environment variables for backward compatibility."""
+    return IndexConfig(
+        fts_enabled=True,
+        qdrant_url=os.environ.get("QDRANT_URL"),
+        qdrant_api_key=os.environ.get("QDRANT_API_KEY"),
+        voyage_api_key=os.environ.get("VOYAGE_API_KEY"),
+    )
+
+
 def default_config(
     path: Path | None = None,
     *,
@@ -139,21 +192,21 @@ def default_config(
     env_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
     env_render_root = os.environ.get("POLYLOGUE_RENDER_ROOT")
     env_template_path = os.environ.get("POLYLOGUE_TEMPLATE_PATH")
-    
+
     if archive_root:
         root = archive_root.expanduser()
     elif env_root:
         root = Path(env_root).expanduser()
     else:
         root = DEFAULT_ARCHIVE_ROOT
-        
+
     if render_root:
         resolved_render_root = render_root.expanduser()
     elif env_render_root:
         resolved_render_root = Path(env_render_root).expanduser()
     else:
         resolved_render_root = root / "render"
-        
+
     if template_path:
         resolved_template_path = template_path.expanduser()
     elif env_template_path:
@@ -169,6 +222,8 @@ def default_config(
         sources=sources,
         path=config_path,
         template_path=resolved_template_path,
+        drive_config=_load_drive_config_from_env(),
+        index_config=_load_index_config_from_env(),
     )
 
 
@@ -232,6 +287,8 @@ def load_config(path: Path | None = None) -> Config:
         sources=sources,
         path=config_path,
         template_path=resolved_template_path,
+        drive_config=_load_drive_config_from_env(),
+        index_config=_load_index_config_from_env(),
     )
 
 

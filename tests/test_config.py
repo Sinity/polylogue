@@ -552,3 +552,54 @@ class TestUpdateSource:
 
         with pytest.raises(ConfigError, match="Unknown source field"):
             update_source(config, "inbox", "unknown", "value")
+
+
+class TestIndexConfig:
+    """Tests for IndexConfig."""
+
+    def test_index_config_default_values(self):
+        """IndexConfig has correct default values."""
+        from polylogue.config import IndexConfig
+
+        config = IndexConfig()
+        assert config.fts_enabled is True
+        assert config.qdrant_url is None
+        assert config.qdrant_api_key is None
+        assert config.voyage_api_key is None
+
+    def test_index_config_from_env(self, monkeypatch):
+        """IndexConfig loads from environment variables."""
+        from polylogue.config import _load_index_config_from_env
+
+        monkeypatch.setenv("QDRANT_URL", "http://localhost:6333")
+        monkeypatch.setenv("QDRANT_API_KEY", "test-api-key")
+        monkeypatch.setenv("VOYAGE_API_KEY", "test-voyage-key")
+
+        config = _load_index_config_from_env()
+        assert config.fts_enabled is True
+        assert config.qdrant_url == "http://localhost:6333"
+        assert config.qdrant_api_key == "test-api-key"
+        assert config.voyage_api_key == "test-voyage-key"
+
+    def test_default_config_includes_index_config(self, workspace_env, monkeypatch):
+        """default_config includes IndexConfig loaded from environment."""
+        monkeypatch.setenv("QDRANT_URL", "http://test:6333")
+        monkeypatch.setenv("VOYAGE_API_KEY", "test-key")
+
+        config = default_config()
+        assert config.index_config is not None
+        assert config.index_config.qdrant_url == "http://test:6333"
+        assert config.index_config.voyage_api_key == "test-key"
+
+    def test_load_config_includes_index_config(self, workspace_env, monkeypatch):
+        """load_config includes IndexConfig loaded from environment."""
+        from polylogue.config import write_config
+
+        monkeypatch.setenv("QDRANT_URL", "http://test:6333")
+
+        config = default_config()
+        write_config(config)
+
+        loaded = load_config()
+        assert loaded.index_config is not None
+        assert loaded.index_config.qdrant_url == "http://test:6333"

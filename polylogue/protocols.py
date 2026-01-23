@@ -116,9 +116,38 @@ class StorageBackend(Protocol):
     other databases.
 
     Example implementations:
-    - SQLite backend (polylogue.storage.store)
+    - SQLite backend (polylogue.storage.backends.sqlite)
     - PostgreSQL (future)
+    - DuckDB (future)
     """
+
+    def get_conversation(self, id: str) -> ConversationRecord | None:
+        """Retrieve a conversation by ID.
+
+        Args:
+            id: Unique identifier for the conversation
+
+        Returns:
+            ConversationRecord if found, None otherwise
+
+        Raises:
+            DatabaseError: If retrieval fails
+        """
+        ...
+
+    def list_conversations(self, source: str | None = None) -> list[ConversationRecord]:
+        """List all conversations, optionally filtered by source.
+
+        Args:
+            source: Optional source name filter (e.g., 'claude', 'chatgpt')
+
+        Returns:
+            List of ConversationRecords
+
+        Raises:
+            DatabaseError: If retrieval fails
+        """
+        ...
 
     def save_conversation(self, record: ConversationRecord) -> None:
         """Persist a conversation record.
@@ -134,14 +163,14 @@ class StorageBackend(Protocol):
         """
         ...
 
-    def get_conversation(self, conversation_id: str) -> ConversationRecord | None:
-        """Retrieve a conversation by ID.
+    def get_messages(self, conversation_id: str) -> list[MessageRecord]:
+        """Retrieve all messages for a conversation.
 
         Args:
-            conversation_id: Unique identifier for the conversation
+            conversation_id: ID of the conversation
 
         Returns:
-            ConversationRecord if found, None otherwise
+            List of MessageRecords, ordered by timestamp (if available)
 
         Raises:
             DatabaseError: If retrieval fails
@@ -163,14 +192,14 @@ class StorageBackend(Protocol):
         """
         ...
 
-    def get_messages(self, conversation_id: str) -> list[MessageRecord]:
-        """Retrieve all messages for a conversation.
+    def get_attachments(self, conversation_id: str) -> list[AttachmentRecord]:
+        """Retrieve all attachments for a conversation.
 
         Args:
             conversation_id: ID of the conversation
 
         Returns:
-            List of MessageRecords, ordered by timestamp (if available)
+            List of AttachmentRecords
 
         Raises:
             DatabaseError: If retrieval fails
@@ -188,17 +217,27 @@ class StorageBackend(Protocol):
         """
         ...
 
-    def get_attachments(self, conversation_id: str) -> list[AttachmentRecord]:
-        """Retrieve all attachments for a conversation.
-
-        Args:
-            conversation_id: ID of the conversation
-
-        Returns:
-            List of AttachmentRecords
+    def begin(self) -> None:
+        """Begin a transaction or savepoint.
 
         Raises:
-            DatabaseError: If retrieval fails
+            DatabaseError: If transaction start fails
+        """
+        ...
+
+    def commit(self) -> None:
+        """Commit the current transaction.
+
+        Raises:
+            DatabaseError: If commit fails
+        """
+        ...
+
+    def rollback(self) -> None:
+        """Rollback the current transaction.
+
+        Raises:
+            DatabaseError: If rollback fails
         """
         ...
 
