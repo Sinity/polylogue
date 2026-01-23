@@ -9,9 +9,9 @@ from typing import Any, BinaryIO
 
 import ijson
 
-from .config import Source
-from .importers import chatgpt, claude, codex, drive
-from .importers.base import ParsedAttachment, ParsedConversation, ParsedMessage, extract_messages_from_list
+from ..config import Source
+from ..importers import chatgpt, claude, codex, drive
+from ..importers.base import ParsedAttachment, ParsedConversation, ParsedMessage, extract_messages_from_list
 
 LOGGER = logging.getLogger(__name__)
 _ENCODING_GUESSES: tuple[str, ...] = (

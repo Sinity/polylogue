@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.db import DatabaseError, open_connection
-from polylogue.ingest import IngestBundle, ingest_bundle
+from polylogue.storage.db import DatabaseError, open_connection
+from polylogue.ingestion import IngestBundle, ingest_bundle
 from polylogue.lib.models import Attachment, Conversation, Message
 from polylogue.lib.repository import ConversationRepository
 from polylogue.render import render_conversation
-from polylogue.store import ConversationRecord, MessageRecord
+from polylogue.storage.store import ConversationRecord, MessageRecord
 from tests.factories import DbFactory
 
 
@@ -236,7 +236,7 @@ def test_repository_search_returns_matching_conversations(mock_db, workspace_env
 
     # Build the FTS index
     with open_connection(mock_db) as conn:
-        from polylogue.index import rebuild_index
+        from polylogue.storage.index import rebuild_index
 
         rebuild_index(conn)
 
@@ -656,7 +656,7 @@ def test_render_conversation_html_includes_content(workspace_env):
 def test_render_conversation_with_message_attachments(workspace_env):
     """render_conversation() includes attachments associated with messages."""
     archive_root = workspace_env["archive_root"]
-    from polylogue.store import AttachmentRecord
+    from polylogue.storage.store import AttachmentRecord
 
     bundle = IngestBundle(
         conversation=ConversationRecord(
@@ -706,7 +706,7 @@ def test_render_conversation_with_message_attachments(workspace_env):
 def test_render_conversation_with_orphan_attachments(workspace_env):
     """render_conversation() includes attachments not linked to messages."""
     archive_root = workspace_env["archive_root"]
-    from polylogue.store import AttachmentRecord
+    from polylogue.storage.store import AttachmentRecord
 
     # Manually create a conversation with orphan attachments using IngestBundle
     bundle = IngestBundle(

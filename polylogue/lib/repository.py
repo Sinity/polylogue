@@ -15,9 +15,10 @@ from contextlib import AbstractContextManager as ContextManager
 from pathlib import Path
 
 from polylogue.core import json as json_utils
-from polylogue.db import DatabaseError, open_connection
+from polylogue.storage.db import DatabaseError, open_connection
 from polylogue.lib.models import Conversation
-from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.types import ConversationId
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ class ConversationRepository:
     def _get_conn(self) -> ContextManager[sqlite3.Connection]:
         return open_connection(self._db_path)
 
-    def resolve_id(self, id_prefix: str) -> str | None:
+    def resolve_id(self, id_prefix: str) -> ConversationId | None:
         """Resolve a partial ID to a full conversation ID.
 
         Supports both exact matches and prefix matches. If multiple

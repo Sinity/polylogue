@@ -10,7 +10,7 @@ from jinja2 import DictLoader, Environment, FileSystemLoader
 from markdown_it import MarkdownIt
 
 from .assets import asset_path
-from .db import open_connection
+from .storage.db import open_connection
 from .render_paths import render_root
 
 

@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Config
-from .db import open_connection
-from .drive_client import default_credentials_path, default_token_path
-from .index import index_status
+from .storage.db import open_connection
+from .ingestion.drive_client import default_credentials_path, default_token_path
+from .storage.index import index_status
 
 LOGGER = logging.getLogger(__name__)
 HEALTH_TTL_SECONDS = 600

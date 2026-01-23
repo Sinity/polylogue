@@ -8,9 +8,7 @@ import threading
 from pydantic import BaseModel, field_validator
 
 from polylogue.core.json import dumps as json_dumps
-
-# Type aliases for semantic clarity (full migration pending)
-# from polylogue.types import ConversationId, MessageId, AttachmentId, ContentHash
+from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId
 
 # Valid provider name pattern: starts with letter, contains only letters, numbers, hyphens, underscores
 _PROVIDER_NAME_PATTERN = re.compile(r'^[a-zA-Z][a-zA-Z0-9_-]*$')
@@ -22,13 +20,13 @@ _WRITE_LOCK = threading.Lock()
 
 
 class ConversationRecord(BaseModel):
-    conversation_id: str  # TODO: migrate to ConversationId
+    conversation_id: ConversationId
     provider_name: str  # TODO: migrate to Provider
     provider_conversation_id: str
     title: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
-    content_hash: str  # TODO: migrate to ContentHash
+    content_hash: ContentHash
     provider_meta: dict | None = None
     version: int = 1
 
@@ -54,13 +52,13 @@ class ConversationRecord(BaseModel):
 
 
 class MessageRecord(BaseModel):
-    message_id: str  # TODO: migrate to MessageId
-    conversation_id: str  # TODO: migrate to ConversationId
+    message_id: MessageId
+    conversation_id: ConversationId
     provider_message_id: str | None = None
     role: str | None = None
     text: str | None = None
     timestamp: str | None = None
-    content_hash: str  # TODO: migrate to ContentHash
+    content_hash: ContentHash
     provider_meta: dict | None = None
     version: int = 1
 
@@ -73,9 +71,9 @@ class MessageRecord(BaseModel):
 
 
 class AttachmentRecord(BaseModel):
-    attachment_id: str  # TODO: migrate to AttachmentId
-    conversation_id: str  # TODO: migrate to ConversationId
-    message_id: str | None = None  # TODO: migrate to MessageId | None
+    attachment_id: AttachmentId
+    conversation_id: ConversationId
+    message_id: MessageId | None = None
     mime_type: str | None = None
     size_bytes: int | None = None
     path: str | None = None
@@ -116,13 +114,13 @@ def _json_or_none(value: dict | None) -> str | None:
     return json_dumps(value)
 
 
-def _make_ref_id(attachment_id: str, conversation_id: str, message_id: str | None) -> str:
+def _make_ref_id(attachment_id: AttachmentId, conversation_id: ConversationId, message_id: MessageId | None) -> str:
     seed = f"{attachment_id}:{conversation_id}:{message_id or ''}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"ref-{digest}"
 
 
-def _prune_attachment_refs(conn, conversation_id: str, keep_ref_ids: set[str]) -> None:
+def _prune_attachment_refs(conn, conversation_id: ConversationId, keep_ref_ids: set[str]) -> None:
     query = "SELECT ref_id, attachment_id FROM attachment_refs WHERE conversation_id = ?"
     params: list[str] = [conversation_id]
     if keep_ref_ids:

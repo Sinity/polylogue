@@ -7,7 +7,7 @@ from click.testing import CliRunner
 
 from polylogue.cli import cli
 from polylogue.config import load_config
-from polylogue.db import default_db_path
+from polylogue.storage.db import default_db_path
 
 
 def _write_prompt_file(path: Path, entries: list[dict]) -> None:

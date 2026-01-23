@@ -8,7 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.db import default_db_path
+from polylogue.storage.db import default_db_path
 from tests.factories import DbFactory
 
 

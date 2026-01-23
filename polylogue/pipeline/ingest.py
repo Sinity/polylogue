@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from polylogue.db import connection_context
-from polylogue.ingest import IngestBundle, ingest_bundle
+from polylogue.storage.db import connection_context
+from polylogue.ingestion import IngestBundle, ingest_bundle
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
@@ -15,8 +16,11 @@ from polylogue.pipeline.ids import (
     message_id,
 )
 from polylogue.pipeline.models import ExistingConversation
-from polylogue.source_ingest import ParsedConversation
-from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.ingestion import ParsedConversation
+from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+
+if TYPE_CHECKING:
+    from polylogue.storage.repository import StorageRepository
 
 
 def _existing_message_map(conversation_id: str) -> dict[str, str]:
@@ -38,6 +42,7 @@ def prepare_ingest(
     *,
     archive_root: Path,
     conn: sqlite3.Connection | None = None,
+    repository: StorageRepository | None = None,
 ) -> tuple[str, dict[str, int], bool]:
     content_hash = conversation_content_hash(convo)
 
@@ -142,6 +147,7 @@ def prepare_ingest(
             attachments=attachments,
         ),
         conn=conn,
+        repository=repository,
     )
     return (
         cid,
