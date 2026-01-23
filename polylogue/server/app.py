@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from typing import AsyncIterator
 
 from fastapi import FastAPI
 
@@ -8,7 +9,7 @@ from . import api, web  # Import routes
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Startup: load resources
     yield
     # Shutdown: cleanup

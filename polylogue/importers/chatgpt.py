@@ -17,7 +17,7 @@ def _coerce_float(value: object) -> float | None:
     return None
 
 
-def extract_messages_from_mapping(mapping: dict) -> list[ParsedMessage]:
+def extract_messages_from_mapping(mapping: dict[str, object]) -> list[ParsedMessage]:
     entries: list[tuple[float | None, int, ParsedMessage]] = []
     for idx, node in enumerate(mapping.values(), start=1):
         if not isinstance(node, dict):
@@ -39,7 +39,7 @@ def extract_messages_from_mapping(mapping: dict) -> list[ParsedMessage]:
             msg_id = f"msg-{idx}"
 
         # Build provider_meta with structured content_blocks
-        meta: dict = {"raw": msg}
+        meta: dict[str, object] = {"raw": msg}
 
         # Extract structured content blocks for semantic detection
         content_type = content.get("content_type", "text")
@@ -82,8 +82,11 @@ def looks_like(payload: object) -> bool:
     return isinstance(payload.get("mapping"), dict)
 
 
-def parse(payload: dict, fallback_id: str) -> ParsedConversation:
-    messages = extract_messages_from_mapping(payload.get("mapping") or {})
+def parse(payload: dict[str, object], fallback_id: str) -> ParsedConversation:
+    mapping = payload.get("mapping") or {}
+    if not isinstance(mapping, dict):
+        mapping = {}
+    messages = extract_messages_from_mapping(mapping)
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
     return ParsedConversation(
