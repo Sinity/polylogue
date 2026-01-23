@@ -72,32 +72,44 @@ class FTS5Provider:
         with connection_context(None, self.db_path) as conn:
             self._ensure_index(conn)
 
-            # Delete existing entries for these conversations
-            for conv_id in conversation_ids:
+            # Batch delete existing entries for these conversations
+            if conversation_ids:
+                placeholders = ",".join("?" * len(conversation_ids))
                 conn.execute(
-                    "DELETE FROM messages_fts WHERE conversation_id = ?",
-                    (conv_id,)
+                    f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
+                    conversation_ids
                 )
 
-            # Insert messages
-            for msg in messages:
-                # Only index messages with text content
-                if msg.text:
-                    # Need to fetch provider_name from conversations table
-                    row = conn.execute(
-                        "SELECT provider_name FROM conversations WHERE conversation_id = ?",
-                        (msg.conversation_id,)
-                    ).fetchone()
+            # Prepare batch insert with provider_name lookup
+            # Filter messages with text content
+            messages_to_index = [msg for msg in messages if msg.text]
 
-                    if row:
-                        provider_name = row["provider_name"]
-                        conn.execute(
-                            """
-                            INSERT INTO messages_fts (message_id, conversation_id, provider_name, content)
-                            VALUES (?, ?, ?, ?)
-                            """,
-                            (msg.message_id, msg.conversation_id, provider_name, msg.text)
-                        )
+            if messages_to_index:
+                # Build lookup map of conversation_id -> provider_name
+                conv_id_placeholders = ",".join("?" * len(conversation_ids))
+                rows = conn.execute(
+                    f"SELECT conversation_id, provider_name FROM conversations WHERE conversation_id IN ({conv_id_placeholders})",
+                    conversation_ids
+                ).fetchall()
+
+                provider_map = {row["conversation_id"]: row["provider_name"] for row in rows}
+
+                # Prepare batch insert data
+                insert_data = [
+                    (msg.message_id, msg.conversation_id, provider_map.get(msg.conversation_id), msg.text)
+                    for msg in messages_to_index
+                    if msg.conversation_id in provider_map
+                ]
+
+                # Batch insert using executemany
+                if insert_data:
+                    conn.executemany(
+                        """
+                        INSERT INTO messages_fts (message_id, conversation_id, provider_name, content)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        insert_data
+                    )
 
             conn.commit()
 
