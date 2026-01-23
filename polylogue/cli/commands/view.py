@@ -29,7 +29,7 @@ PROJECTIONS = {
 }
 
 
-def _apply_projection(convo: Conversation, projection: str) -> Conversation | list[DialoguePair] | list[str] | dict:
+def _apply_projection(convo: Conversation, projection: str) -> Conversation | list[DialoguePair] | list[str] | dict[str, Any]:
     """Apply semantic projection to conversation."""
     if projection == "full":
         return convo
@@ -85,7 +85,7 @@ def _format_pair_text(pair: DialoguePair) -> str:
 
 
 def _render_text(
-    data: Conversation | list[DialoguePair] | list[str] | dict,
+    data: Conversation | list[DialoguePair] | list[str] | dict[str, Any],
     include_role: bool = True,
     include_meta: bool = False,
 ) -> Iterator[str]:
@@ -102,13 +102,13 @@ def _render_text(
         if data and isinstance(data[0], DialoguePair):
             for i, pair in enumerate(data, 1):
                 yield f"--- Turn {i} ---"
-                yield _format_pair_text(pair)
+                yield _format_pair_text(pair)  # type: ignore[arg-type]
                 yield ""
         elif data and isinstance(data[0], str):
             # Thinking traces
             for i, trace in enumerate(data, 1):
                 yield f"--- Thinking {i} ---"
-                yield trace
+                yield trace  # type: ignore[misc]
                 yield ""
 
 
@@ -138,7 +138,7 @@ def _serialize_pair(pair: DialoguePair) -> dict[str, Any]:
     }
 
 
-def _render_json(data: Conversation | list[DialoguePair] | list[str] | dict) -> dict[str, Any]:
+def _render_json(data: Conversation | list[DialoguePair] | list[str] | dict[str, Any]) -> dict[str, Any]:
     """Render projection data as JSON-serializable dict."""
     if isinstance(data, dict):
         return data
@@ -153,7 +153,7 @@ def _render_json(data: Conversation | list[DialoguePair] | list[str] | dict) -> 
         }
     elif isinstance(data, list):
         if data and isinstance(data[0], DialoguePair):
-            return {"pairs": [_serialize_pair(p) for p in data]}
+            return {"pairs": [_serialize_pair(p) for p in data]}  # type: ignore[arg-type]
         elif data and isinstance(data[0], str):
             return {"thinking_traces": data}
     return {}
@@ -174,7 +174,7 @@ def _list_conversations(
 ) -> list[Conversation]:
     """List and filter conversations."""
     if query:
-        conversations = repo.search(query)
+        conversations: list[Conversation] = repo.search(query) or []
         # Apply provider filter to search results (search doesn't filter by provider)
         if provider:
             conversations = [c for c in conversations if c.provider == provider]
@@ -182,7 +182,7 @@ def _list_conversations(
         # Provider filtering happens at SQL level now
         # Fetch more if date filters are active (they're still Python-level)
         fetch_limit = limit * 20 if (since or until) else limit
-        conversations = repo.list(limit=fetch_limit, offset=offset, provider=provider)
+        conversations = repo.list(limit=fetch_limit, offset=offset, provider=provider) or []
 
     # Apply date filters (still Python-level for now)
     if since:
@@ -199,7 +199,7 @@ def _list_conversations(
         except ValueError as exc:
             raise ValueError(f"Invalid --until date '{until}': {exc}") from exc
 
-    return conversations[:limit]
+    return list(conversations[:limit])
 
 
 # --- CLI Command ---
@@ -276,7 +276,7 @@ def view_command(
         if not convo:
             fail("view", f"Conversation not found: {conversation_id}")
 
-        projected = _apply_projection(convo, projection)
+        projected = _apply_projection(convo, projection)  # type: ignore[arg-type]
 
         if json_output:
             env.ui.console.print(json.dumps(_render_json(projected), indent=2))

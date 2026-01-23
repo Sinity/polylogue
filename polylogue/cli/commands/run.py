@@ -13,8 +13,8 @@ from polylogue.cli.formatting import (
     format_counts,
     format_cursors,
     format_index_status,
-    format_timestamp,
 )
+from polylogue.core.timestamps import format_timestamp
 from polylogue.cli.helpers import (
     fail,
     maybe_prompt_sources,
@@ -68,11 +68,12 @@ def run_command(
         plan_lines = []
         if selected_sources:
             plan_lines.append(f"Sources: {', '.join(selected_sources)}")
-        plan_lines.append(f"Counts: {format_counts(plan_snapshot.counts)}")
-        cursor_line = format_cursors(plan_snapshot.cursors)
-        if cursor_line:
-            plan_lines.append(f"Cursors: {cursor_line}")
-        plan_lines.append(f"Snapshot: {format_timestamp(plan_snapshot.timestamp)}")
+        if plan_snapshot is not None:
+            plan_lines.append(f"Counts: {format_counts(plan_snapshot.counts)}")
+            cursor_line = format_cursors(plan_snapshot.cursors)
+            if cursor_line:
+                plan_lines.append(f"Cursors: {cursor_line}")
+            plan_lines.append(f"Snapshot: {format_timestamp(plan_snapshot.timestamp)}")
         env.ui.summary("Preview", plan_lines)
         if env.ui.plain or not env.ui.confirm("Run now using this snapshot?", default=False):
             return
@@ -114,7 +115,7 @@ def run_command(
                 BarColumn(),
                 TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
                 TimeRemainingColumn(),
-                console=env.ui.console,
+                console=env.ui.console,  # type: ignore[arg-type]
                 transient=True,
             ) as progress:
                 task_id = progress.add_task("Running sources...", total=None)

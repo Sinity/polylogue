@@ -3,7 +3,7 @@ from __future__ import annotations
 from .base import ParsedAttachment, ParsedConversation, ParsedMessage, normalize_role
 
 
-def extract_text_from_chunk(chunk: dict) -> str | None:
+def extract_text_from_chunk(chunk: dict[str, object]) -> str | None:
     for key in ("text", "content", "message", "markdown", "data"):
         value = chunk.get(key)
         if isinstance(value, str):
@@ -14,8 +14,8 @@ def extract_text_from_chunk(chunk: dict) -> str | None:
     return None
 
 
-def _collect_drive_docs(payload: object) -> list[dict | str]:
-    docs: list[dict | str] = []
+def _collect_drive_docs(payload: object) -> list[dict[str, object] | str]:
+    docs: list[dict[str, object] | str] = []
     if not isinstance(payload, dict):
         return docs
     for key in ("driveDocument", "driveDocuments", "drive_document"):
@@ -30,10 +30,10 @@ def _collect_drive_docs(payload: object) -> list[dict | str]:
     return docs
 
 
-def _attachment_from_doc(doc: dict | str, message_id: str | None) -> ParsedAttachment | None:
+def _attachment_from_doc(doc: dict[str, object] | str, message_id: str | None) -> ParsedAttachment | None:
     if isinstance(doc, str):
         doc_id: str = doc
-        meta: dict = {"id": doc_id}
+        meta: dict[str, object] = {"id": doc_id}
         return ParsedAttachment(
             provider_attachment_id=doc_id,
             message_provider_id=message_id,
@@ -56,20 +56,22 @@ def _attachment_from_doc(doc: dict | str, message_id: str | None) -> ParsedAttac
             size_bytes = int(size_raw)
         except ValueError:
             size_bytes = None
+    name_val = doc.get("name") or doc.get("title")
+    mime_val = doc.get("mimeType") or doc.get("mime_type")
     return ParsedAttachment(
         provider_attachment_id=doc_id,
         message_provider_id=message_id,
-        name=doc.get("name") or doc.get("title"),
-        mime_type=doc.get("mimeType") or doc.get("mime_type"),
+        name=name_val if isinstance(name_val, str) else None,
+        mime_type=mime_val if isinstance(mime_val, str) else None,
         size_bytes=size_bytes,
         path=None,
         provider_meta=doc,
     )
 
 
-def parse_chunked_prompt(provider: str, payload: dict, fallback_id: str) -> ParsedConversation:
+def parse_chunked_prompt(provider: str, payload: dict[str, object], fallback_id: str) -> ParsedConversation:
     prompt = payload.get("chunkedPrompt")
-    chunks: list[str | dict] = []
+    chunks: list[str | dict[str, object]] = []
     if isinstance(prompt, dict):
         prompt_chunks = prompt.get("chunks")
         chunks = prompt_chunks if isinstance(prompt_chunks, list) else []
@@ -86,7 +88,7 @@ def parse_chunked_prompt(provider: str, payload: dict, fallback_id: str) -> Pars
     attachments: list[ParsedAttachment] = []
     for idx, chunk in enumerate(chunks, start=1):
         if isinstance(chunk, str):
-            chunk_obj: dict = {"text": chunk}
+            chunk_obj: dict[str, object] = {"text": chunk}
         elif isinstance(chunk, dict):
             chunk_obj = chunk
         else:
@@ -94,10 +96,11 @@ def parse_chunked_prompt(provider: str, payload: dict, fallback_id: str) -> Pars
         text = extract_text_from_chunk(chunk_obj)
         if not text:
             continue
-        role = normalize_role(chunk_obj.get("role") or chunk_obj.get("author"))
+        role_val = chunk_obj.get("role") or chunk_obj.get("author")
+        role = normalize_role(role_val if isinstance(role_val, str) else None)
         msg_id = str(chunk_obj.get("id") or f"chunk-{idx}")
         # Preserve useful metadata (isThought for Gemini thinking traces, tokenCount, etc.)
-        meta: dict = {"raw": chunk_obj}
+        meta: dict[str, object] = {"raw": chunk_obj}
         if chunk_obj.get("isThought"):
             meta["isThought"] = True
         token_count = chunk_obj.get("tokenCount")
@@ -105,7 +108,7 @@ def parse_chunked_prompt(provider: str, payload: dict, fallback_id: str) -> Pars
             meta["tokenCount"] = token_count
 
         # Extract structured content blocks for semantic detection
-        content_blocks: list[dict] = []
+        content_blocks: list[dict[str, object]] = []
         if chunk_obj.get("isThought"):
             # Gemini thinking block
             content_blocks.append({

@@ -3,7 +3,7 @@ from __future__ import annotations
 from .base import ParsedConversation, ParsedMessage
 
 
-def looks_like(payload: list) -> bool:
+def looks_like(payload: list[object]) -> bool:
     if not isinstance(payload, list):
         return False
     for item in payload:
@@ -14,7 +14,7 @@ def looks_like(payload: list) -> bool:
     return False
 
 
-def parse(payload: list, fallback_id: str) -> ParsedConversation:
+def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
     messages: list[ParsedMessage] = []
     for idx, item in enumerate(payload, start=1):
         if not isinstance(item, dict):

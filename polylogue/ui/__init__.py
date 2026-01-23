@@ -3,7 +3,9 @@ from __future__ import annotations
 import math
 import sys
 from collections.abc import Iterable
+from types import TracebackType
 
+from rich.console import Console
 from rich.progress import (
     BarColumn,
     Progress,
@@ -14,7 +16,7 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 
-from .facade import Console, ConsoleFacade, ConsoleLike, create_console_facade
+from .facade import ConsoleFacade, ConsoleLike, create_console_facade
 
 __all__ = [
     "UI",
@@ -41,11 +43,11 @@ class UI:
 
     @property
     def console(self) -> ConsoleLike:
-        return self._facade.console
+        return self._facade.console  # type: ignore[return-value]
 
     @console.setter
     def console(self, value: ConsoleLike) -> None:
-        self._facade.console = value
+        self._facade.console = value  # type: ignore[assignment]
 
     # Presentation helpers -------------------------------------------------
     def banner(self, title: str, subtitle: str | None = None) -> None:
@@ -113,7 +115,7 @@ class UI:
         return self._facade.input(prompt, default=default)
 
     # Progress -------------------------------------------------------------
-    def progress(self, description: str, total: int | None = None):
+    def progress(self, description: str, total: int | None = None) -> _PlainProgressTracker | _RichProgressTracker:
         if self.plain:
             return _PlainProgressTracker(self.console, description, total)
         count_format = "{task.completed:.0f}/{task.total:.0f}" if total is not None else "{task.completed:.0f}"
@@ -157,7 +159,8 @@ class _PlainProgressTracker:
     def __init__(self, console: ConsoleLike, description: str, total: int | None) -> None:
         self._console = console
         self._description = description
-        self._total = self._coerce_int(total) if total is not None else None
+        coerced = self._coerce_int(total) if total is not None else None
+        self._total: int | float | None = coerced
         if self._total is None and total is not None:
             self._total = float(total)
             self._completed: float | int = 0.0
@@ -167,7 +170,7 @@ class _PlainProgressTracker:
             self._use_float = False
         self._console.print(f"{description}...")
 
-    def __enter__(self):
+    def __enter__(self) -> _PlainProgressTracker:
         return self
 
     def advance(self, advance: float = 1) -> None:
@@ -190,7 +193,7 @@ class _PlainProgressTracker:
                 self._total = float(total)
                 self._use_float = True
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None) -> None:
         status = "aborted" if exc_type else "complete"
         suffix = ""
         if self._total is not None:
@@ -223,7 +226,7 @@ class _RichProgressTracker:
         self._progress = progress
         self._task_id = task_id
 
-    def __enter__(self):
+    def __enter__(self) -> _RichProgressTracker:
         self._progress.__enter__()
         return self
 
@@ -231,13 +234,10 @@ class _RichProgressTracker:
         self._progress.advance(self._task_id, advance)
 
     def update(self, *, total: int | None = None, description: str | None = None) -> None:
-        kwargs = {}
         if total is not None:
-            kwargs["total"] = total
+            self._progress.update(self._task_id, total=total)
         if description is not None:
-            kwargs["description"] = description
-        if kwargs:
-            self._progress.update(self._task_id, **kwargs)
+            self._progress.update(self._task_id, description=description)
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None) -> None:
         self._progress.__exit__(exc_type, exc, tb)

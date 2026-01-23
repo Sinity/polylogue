@@ -25,37 +25,38 @@ def announce_plain_mode() -> None:
     sys.stderr.write("Plain output active (non-TTY). Use --interactive from a TTY to re-enable prompts.\n")
 
 
-def format_cursors(cursors: dict) -> str | None:
+def format_cursors(cursors: dict[str, object]) -> str | None:
     if not cursors:
         return None
     parts: list[str] = []
     for name, cursor in cursors.items():
         detail_bits: list[str] = []
-        file_count = cursor.get("file_count")
-        if isinstance(file_count, int):
-            detail_bits.append(f"{file_count} files")
-        error_count = cursor.get("error_count")
-        if isinstance(error_count, int) and error_count:
-            detail_bits.append(f"{error_count} errors")
-        latest_mtime = cursor.get("latest_mtime")
-        latest_label = None
-        if isinstance(latest_mtime, (int, float)):
-            latest_label = format_timestamp(int(latest_mtime))
-        else:
-            latest_name = cursor.get("latest_file_name")
-            latest_path = cursor.get("latest_path")
-            if isinstance(latest_name, str):
-                latest_label = latest_name
-            elif isinstance(latest_path, str):
-                latest_label = Path(latest_path).name
-        if latest_label:
-            detail_bits.append(f"latest {latest_label}")
+        if isinstance(cursor, dict):
+            file_count = cursor.get("file_count")
+            if isinstance(file_count, int):
+                detail_bits.append(f"{file_count} files")
+            error_count = cursor.get("error_count")
+            if isinstance(error_count, int) and error_count:
+                detail_bits.append(f"{error_count} errors")
+            latest_mtime = cursor.get("latest_mtime")
+            latest_label = None
+            if isinstance(latest_mtime, (int, float)):
+                latest_label = format_timestamp(int(latest_mtime))
+            else:
+                latest_name = cursor.get("latest_file_name")
+                latest_path = cursor.get("latest_path")
+                if isinstance(latest_name, str):
+                    latest_label = latest_name
+                elif isinstance(latest_path, str):
+                    latest_label = Path(latest_path).name
+            if latest_label:
+                detail_bits.append(f"latest {latest_label}")
         detail = ", ".join(detail_bits) if detail_bits else "unknown"
         parts.append(f"{name} ({detail})")
     return "; ".join(parts)
 
 
-def format_counts(counts: dict) -> str:
+def format_counts(counts: dict[str, object]) -> str:
     parts = [
         f"{counts.get('conversations', 0)} conv",
         f"{counts.get('messages', 0)} msg",

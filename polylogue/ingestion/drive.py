@@ -5,6 +5,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from ..assets import asset_path
 from ..config import Source
@@ -19,7 +20,7 @@ class DriveDownloadResult:
     """Result of Drive file download operation."""
 
     downloaded_files: list[Path]
-    failed_files: list[dict]
+    failed_files: list[dict[str, str | int]]
     total_files: int
 
 
@@ -38,17 +39,16 @@ def download_drive_files(
     Returns:
         DriveDownloadResult with lists of downloaded/failed files and counts
     """
-    files = client.list_files(folder_id)
-    downloaded = []
-    failed = []
+    downloaded: list[Path] = []
+    failed: list[dict[str, str | int]] = []
 
-    for file_info in files:
-        file_id = file_info["id"]
-        name = file_info["name"]
+    for file_info in client.iter_json_files(folder_id):
+        file_id = file_info.file_id
+        name = file_info.name
         dest_path = dest_dir / name
 
         try:
-            client.download_file(file_id, dest_path)
+            client.download_to_path(file_id, dest_path)
             downloaded.append(dest_path)
         except Exception as exc:
             LOGGER.warning("Failed to download %s (%s): %s", name, file_id, exc)
@@ -64,7 +64,7 @@ def download_drive_files(
     return DriveDownloadResult(
         downloaded_files=downloaded,
         failed_files=failed,
-        total_files=len(files),
+        total_files=len(downloaded) + len(failed),
     )
 
 
@@ -104,7 +104,7 @@ def iter_drive_conversations(
     ui: object | None = None,
     client: DriveClient | None = None,
     download_assets: bool = True,
-    cursor_state: dict | None = None,
+    cursor_state: dict[str, Any] | None = None,
     drive_config: object | None = None,
 ) -> Iterable[ParsedConversation]:
     if not source.folder:
