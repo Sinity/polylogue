@@ -108,16 +108,8 @@ def run_health(config: Config) -> dict:
 
     for source in config.sources:
         if source.folder:
-            cred_path = (
-                Path(os.environ.get("POLYLOGUE_CREDENTIAL_PATH", "")).expanduser()
-                if os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
-                else default_credentials_path()
-            )
-            token_path = (
-                Path(os.environ.get("POLYLOGUE_TOKEN_PATH", "")).expanduser()
-                if os.environ.get("POLYLOGUE_TOKEN_PATH")
-                else default_token_path()
-            )
+            cred_path = default_credentials_path(config.drive_config)
+            token_path = default_token_path(config.drive_config)
             cred_status = "ok" if cred_path.exists() else "warning"
             token_status = "ok" if token_path.exists() else "warning"
             checks.append(
