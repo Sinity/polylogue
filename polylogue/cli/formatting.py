@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 from polylogue.config import Source
@@ -25,7 +26,7 @@ def announce_plain_mode() -> None:
     sys.stderr.write("Plain output active (non-TTY). Use --interactive from a TTY to re-enable prompts.\n")
 
 
-def format_cursors(cursors: dict[str, object]) -> str | None:
+def format_cursors(cursors: Mapping[str, object]) -> str | None:
     if not cursors:
         return None
     parts: list[str] = []
@@ -56,7 +57,7 @@ def format_cursors(cursors: dict[str, object]) -> str | None:
     return "; ".join(parts)
 
 
-def format_counts(counts: dict[str, object]) -> str:
+def format_counts(counts: Mapping[str, object]) -> str:
     parts = [
         f"{counts.get('conversations', 0)} conv",
         f"{counts.get('messages', 0)} msg",
