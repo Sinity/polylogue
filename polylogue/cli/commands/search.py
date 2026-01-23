@@ -7,9 +7,10 @@ from pathlib import Path
 
 import click
 
+from polylogue.cli.container import create_config
 from polylogue.cli.editor import open_in_browser, open_in_editor
 from polylogue.cli.formatting import format_source_label
-from polylogue.cli.helpers import fail, latest_render_path, load_effective_config
+from polylogue.cli.helpers import fail, latest_render_path
 from polylogue.cli.types import AppEnv
 from polylogue.config import ConfigError
 from polylogue.storage.db import DatabaseError
@@ -29,6 +30,7 @@ from polylogue.storage.search import search_messages
 @click.option("--json-lines", is_flag=True, help="Output JSON Lines")
 @click.option("--csv", type=click.Path(path_type=Path), help="Write CSV to file")
 @click.option("--open", "open_result", is_flag=True, help="Open result path after selection")
+@click.option("--config", type=click.Path(path_type=Path), help="Path to config file")
 @click.pass_obj
 def search_command(
     env: AppEnv,
@@ -43,9 +45,10 @@ def search_command(
     json_lines: bool,
     csv: Path | None,
     open_result: bool,
+    config: Path | None,
 ) -> None:
     try:
-        config = load_effective_config(env)
+        cfg = create_config(config or env.config_path)
     except ConfigError as exc:
         fail("search", str(exc))
 
@@ -55,7 +58,7 @@ def search_command(
             fail("search", "--latest cannot be combined with a query")
         if json_output or json_lines or csv:
             fail("search", "--latest cannot be combined with JSON/CSV output")
-        target = latest_render_path(config.render_root)
+        target = latest_render_path(cfg.render_root)
         if not target:
             fail("search", "no rendered outputs found")
         if not open_result:
@@ -76,8 +79,8 @@ def search_command(
     try:
         result = search_messages(
             query,
-            archive_root=config.archive_root,
-            render_root_path=config.render_root,
+            archive_root=cfg.archive_root,
+            render_root_path=cfg.render_root,
             limit=limit,
             source=source,
             since=since,
@@ -92,8 +95,8 @@ def search_command(
                 fail("search", f"Index rebuild failed: {build_exc}")
             result = search_messages(
                 query,
-                archive_root=config.archive_root,
-                render_root_path=config.render_root,
+                archive_root=cfg.archive_root,
+                render_root_path=cfg.render_root,
                 limit=limit,
                 source=source,
                 since=since,
