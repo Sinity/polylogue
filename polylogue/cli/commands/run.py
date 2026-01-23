@@ -36,6 +36,14 @@ from polylogue.pipeline.runner import plan_sources, run_sources
     help="Limit to source name (repeatable, or 'last'). Use `polylogue sources` to list.",
 )
 @click.option("--config", type=click.Path(path_type=Path), help="Path to config file")
+@click.option(
+    "--format",
+    "render_format",
+    type=click.Choice(["markdown", "html"]),
+    default="html",
+    show_default=True,
+    help="Output format for rendering (markdown or html)",
+)
 @click.pass_obj
 def run_command(
     env: AppEnv,
@@ -43,6 +51,7 @@ def run_command(
     stage: str,
     sources: tuple[str, ...],
     config: Path | None,
+    render_format: str,
 ) -> None:
     plan_snapshot = None
     try:
@@ -94,6 +103,7 @@ def run_command(
                 ui=env.ui,
                 source_names=selected_sources,
                 progress_callback=plain_progress,
+                render_format=render_format,
             )
         else:
             from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeRemainingColumn
@@ -121,6 +131,7 @@ def run_command(
                     ui=env.ui,
                     source_names=selected_sources,
                     progress_callback=progress_callback,
+                    render_format=render_format,
                 )
     except DriveError as exc:
         fail("run", str(exc))

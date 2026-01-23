@@ -6,6 +6,7 @@ import concurrent.futures
 from pathlib import Path
 
 from polylogue.core.log import get_logger
+from polylogue.protocols import OutputRenderer
 from polylogue.render import render_conversation
 
 logger = get_logger(__name__)
@@ -45,6 +46,7 @@ class RenderService:
         template_path: Path | None,
         render_root: Path,
         archive_root: Path,
+        renderer: OutputRenderer | None = None,
     ):
         """Initialize the rendering service.
 
@@ -52,10 +54,12 @@ class RenderService:
             template_path: Optional path to custom HTML template
             render_root: Root directory for rendered output
             archive_root: Root directory for archived conversations
+            renderer: Optional OutputRenderer implementation (uses legacy render if None)
         """
         self.template_path = template_path
         self.render_root = render_root
         self.archive_root = archive_root
+        self.renderer = renderer
 
     def render_conversations(
         self,
@@ -75,12 +79,17 @@ class RenderService:
         result = RenderResult()
 
         def _render_one(convo_id):
-            render_conversation(
-                conversation_id=convo_id,
-                archive_root=self.archive_root,
-                render_root_path=self.render_root,
-                template_path=self.template_path,
-            )
+            if self.renderer:
+                # Use new renderer abstraction
+                self.renderer.render(convo_id, self.render_root)
+            else:
+                # Use legacy render function
+                render_conversation(
+                    conversation_id=convo_id,
+                    archive_root=self.archive_root,
+                    render_root_path=self.render_root,
+                    template_path=self.template_path,
+                )
             return 1
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
