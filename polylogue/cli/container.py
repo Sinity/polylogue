@@ -1,15 +1,47 @@
 """CLI dependency injection container.
 
-Factory functions for creating service instances with proper dependency injection.
-This enables better testability by decoupling CLI commands from direct instantiation.
+Factory functions for creating service instances using the centralized
+dependency injection container. This provides a backward-compatible API
+while delegating to the ApplicationContainer for actual instantiation.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from polylogue.config import Config, load_config
+from polylogue.config import Config
+from polylogue.container import create_container
+from polylogue.pipeline.services.indexing import IndexService
+from polylogue.pipeline.services.ingestion import IngestionService
+from polylogue.pipeline.services.rendering import RenderService
 from polylogue.storage.repository import StorageRepository
+
+# Module-level container instance (lazy-initialized)
+_container = None
+
+
+def get_container(config_path: Path | None = None):
+    """Get or create the application container.
+
+    Args:
+        config_path: Optional path to config file. If None, uses default location.
+
+    Returns:
+        ApplicationContainer instance (singleton).
+    """
+    global _container
+    if _container is None:
+        _container = create_container(config_path)
+    return _container
+
+
+def reset_container():
+    """Reset the global container instance.
+
+    Useful for testing to ensure a clean state between tests.
+    """
+    global _container
+    _container = None
 
 
 def create_config(config_path: Path | None = None) -> Config:
@@ -25,7 +57,8 @@ def create_config(config_path: Path | None = None) -> Config:
     Raises:
         ConfigError: If config file is missing or invalid.
     """
-    return load_config(config_path)
+    container = get_container(config_path)
+    return container.config()
 
 
 def create_storage_repository() -> StorageRepository:
@@ -34,73 +67,48 @@ def create_storage_repository() -> StorageRepository:
     Returns:
         StorageRepository instance with its own write lock for thread-safe operations.
     """
-    return StorageRepository()
+    container = get_container()
+    return container.storage()
 
 
-# Placeholder for future service layer - will be implemented when
-# pipeline/services.py is created by another agent.
-# For now, CLI commands continue to use pipeline.runner directly.
+def create_ingestion_service(
+    config: Config,
+    repository: StorageRepository,
+) -> IngestionService:
+    """Create ingestion service with dependencies.
 
-# def create_ingestion_service(
-#     config: Config,
-#     repository: StorageRepository,
-# ) -> IngestionService:
-#     """Create ingestion service with dependencies.
-#
-#     Args:
-#         config: Application configuration
-#         repository: Storage repository for persisting data
-#
-#     Returns:
-#         IngestionService instance ready for use.
-#     """
-#     from polylogue.pipeline.services import IngestionService
-#     return IngestionService(config=config, repository=repository)
+    Args:
+        config: Application configuration (not used, provided by container)
+        repository: Storage repository (not used, provided by container)
+
+    Returns:
+        IngestionService instance ready for use.
+    """
+    container = get_container()
+    return container.ingestion_service()
 
 
-# def create_index_service(config: Config) -> IndexService:
-#     """Create index service for FTS5 and Qdrant operations.
-#
-#     Args:
-#         config: Application configuration (for archive_root, etc.)
-#
-#     Returns:
-#         IndexService instance ready for use.
-#     """
-#     from polylogue.pipeline.services import IndexService
-#     return IndexService(config=config)
+def create_index_service(config: Config) -> IndexService:
+    """Create index service for FTS5 and Qdrant operations.
+
+    Args:
+        config: Application configuration (not used, provided by container)
+
+    Returns:
+        IndexService instance ready for use.
+    """
+    container = get_container()
+    return container.indexing_service()
 
 
-# def create_render_service(config: Config) -> RenderService:
-#     """Create render service for conversation rendering.
-#
-#     Args:
-#         config: Application configuration (for render_root, template_path, etc.)
-#
-#     Returns:
-#         RenderService instance ready for use.
-#     """
-#     from polylogue.pipeline.services import RenderService
-#     return RenderService(config=config)
+def create_render_service(config: Config) -> RenderService:
+    """Create render service for conversation rendering.
 
+    Args:
+        config: Application configuration (not used, provided by container)
 
-# def create_pipeline_runner(config: Config) -> PipelineRunner:
-#     """Create pipeline runner orchestrator with all services.
-#
-#     Args:
-#         config: Application configuration
-#
-#     Returns:
-#         PipelineRunner instance with all services wired up.
-#     """
-#     from polylogue.pipeline.services import PipelineRunner
-#     repository = create_storage_repository()
-#     ingestion = create_ingestion_service(config, repository)
-#     indexing = create_index_service(config)
-#     rendering = create_render_service(config)
-#     return PipelineRunner(
-#         config=config,
-#         ingestion=ingestion,
-#         indexing=indexing,
-#         rendering=rendering,
-#     )
+    Returns:
+        RenderService instance ready for use.
+    """
+    container = get_container()
+    return container.rendering_service()

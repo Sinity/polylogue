@@ -90,7 +90,7 @@ class StorageRepository:
         attachments: list[AttachmentRecord],
     ) -> dict[str, int]:
         """Save via StorageBackend (new abstraction layer)."""
-        counts = {
+        counts: dict[str, int] = {
             "conversations": 0,
             "messages": 0,
             "attachments": 0,
@@ -99,20 +99,24 @@ class StorageRepository:
             "skipped_attachments": 0,
         }
 
+        backend = self._backend
+        if backend is None:
+            raise RuntimeError("Backend is not initialized")
+
         with self._write_lock:
             # Use backend transaction for atomicity
-            self._backend.begin()
+            backend.begin()
             try:
                 # Check if conversation already exists with same content_hash
-                existing = self._backend.get_conversation(conversation.conversation_id)
+                existing = backend.get_conversation(conversation.conversation_id)
                 if existing and existing.content_hash == conversation.content_hash:
                     counts["skipped_conversations"] += 1
                 else:
-                    self._backend.save_conversation(conversation)
+                    backend.save_conversation(conversation)
                     counts["conversations"] += 1
 
                 # Check and save messages
-                existing_messages = {msg.message_id: msg for msg in self._backend.get_messages(conversation.conversation_id)}
+                existing_messages = {msg.message_id: msg for msg in backend.get_messages(conversation.conversation_id)}
                 for message in messages:
                     existing_msg = existing_messages.get(message.message_id)
                     if existing_msg and existing_msg.content_hash == message.content_hash:
@@ -122,10 +126,10 @@ class StorageRepository:
 
                 # Save all messages (backend handles upsert)
                 if messages:
-                    self._backend.save_messages(messages)
+                    backend.save_messages(messages)
 
                 # Check and save attachments
-                existing_attachments = {att.attachment_id: att for att in self._backend.get_attachments(conversation.conversation_id)}
+                existing_attachments = {att.attachment_id: att for att in backend.get_attachments(conversation.conversation_id)}
                 for attachment in attachments:
                     if attachment.attachment_id in existing_attachments:
                         counts["skipped_attachments"] += 1
@@ -134,11 +138,11 @@ class StorageRepository:
 
                 # Save all attachments (backend handles refs)
                 if attachments:
-                    self._backend.save_attachments(attachments)
+                    backend.save_attachments(attachments)
 
-                self._backend.commit()
+                backend.commit()
             except Exception:
-                self._backend.rollback()
+                backend.rollback()
                 raise
 
         return counts

@@ -32,9 +32,9 @@ class TestRenderFailureTracking:
         config.archive_root.mkdir(parents=True, exist_ok=True)
 
         # Mock render_conversation to fail for specific conversation
-        with patch("polylogue.pipeline.services.rendering.render_conversation") as mock_render:
+        with patch("polylogue.rendering.renderers.html.HTMLRenderer.render") as mock_render:
 
-            def render_side_effect(conversation_id, **kwargs):
+            def render_side_effect(conversation_id, output_path):
                 if "fail-conv" in conversation_id:
                     raise ValueError("Render failed for testing")
                 return MagicMock()
@@ -83,9 +83,9 @@ class TestRenderFailureTracking:
 
         render_attempts = []
 
-        with patch("polylogue.pipeline.services.rendering.render_conversation") as mock_render:
+        with patch("polylogue.rendering.renderers.html.HTMLRenderer.render") as mock_render:
 
-            def render_side_effect(conversation_id, **kwargs):
+            def render_side_effect(conversation_id, output_path):
                 render_attempts.append(conversation_id)
                 if "second" in conversation_id:
                     raise ValueError("Failed on purpose")
@@ -124,9 +124,9 @@ class TestRenderFailureTracking:
         )
         config.archive_root.mkdir(parents=True, exist_ok=True)
 
-        with patch("polylogue.pipeline.services.rendering.render_conversation") as mock_render:
+        with patch("polylogue.rendering.renderers.html.HTMLRenderer.render") as mock_render:
 
-            def render_side_effect(conversation_id, **kwargs):
+            def render_side_effect(conversation_id, output_path):
                 if conversation_id in ["test:fail1", "test:fail2"]:
                     raise ValueError("Render failed")
                 return MagicMock()

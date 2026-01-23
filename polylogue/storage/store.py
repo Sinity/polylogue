@@ -27,7 +27,7 @@ class ConversationRecord(BaseModel):
     created_at: str | None = None
     updated_at: str | None = None
     content_hash: ContentHash
-    provider_meta: dict | None = None
+    provider_meta: dict[str, object] | None = None
     version: int = 1
 
     @field_validator("provider_name")
@@ -77,7 +77,7 @@ class AttachmentRecord(BaseModel):
     mime_type: str | None = None
     size_bytes: int | None = None
     path: str | None = None
-    provider_meta: dict | None = None
+    provider_meta: dict[str, object] | None = None
 
     @field_validator("attachment_id", "conversation_id")
     @classmethod
@@ -101,9 +101,9 @@ class AttachmentRecord(BaseModel):
 class RunRecord(BaseModel):
     run_id: str
     timestamp: str
-    plan_snapshot: dict | None = None
-    counts: dict | None = None
-    drift: dict | None = None
+    plan_snapshot: dict[str, object] | None = None
+    counts: dict[str, object] | None = None
+    drift: dict[str, object] | None = None
     indexed: bool | None = None
     duration_ms: int | None = None
 

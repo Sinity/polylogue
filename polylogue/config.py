@@ -319,13 +319,13 @@ def update_config(
     """
     from dataclasses import replace
 
-    updates = {}
-    if archive_root is not None:
-        updates["archive_root"] = archive_root.expanduser()
-    if render_root is not None:
-        updates["render_root"] = render_root.expanduser()
+    new_archive_root = archive_root.expanduser() if archive_root is not None else config.archive_root
+    new_render_root = render_root.expanduser() if render_root is not None else config.render_root
 
-    return replace(config, **updates) if updates else config
+    if new_archive_root == config.archive_root and new_render_root == config.render_root:
+        return config
+
+    return replace(config, archive_root=new_archive_root, render_root=new_render_root)
 
 
 def update_source(config: Config, source_name: str, field: str, value: str) -> Config:
