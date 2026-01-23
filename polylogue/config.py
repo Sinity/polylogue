@@ -27,7 +27,7 @@ class Source:
     path: Path | None = None
     folder: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate source configuration."""
         # Name validation
         if not self.name or not self.name.strip():
@@ -47,8 +47,8 @@ class Source:
         if self.folder:
             self.folder = self.folder.strip()
 
-    def as_dict(self) -> dict:
-        payload = {"name": self.name}
+    def as_dict(self) -> dict[str, str]:
+        payload: dict[str, str] = {"name": self.name}
         if self.path is not None:
             payload["path"] = str(self.path)
         if self.folder is not None:
@@ -89,7 +89,7 @@ class Config:
     drive_config: DriveConfig | None = None
     index_config: IndexConfig | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate config invariants."""
         # Check for duplicate source names
         names = [s.name for s in self.sources]
@@ -98,8 +98,8 @@ class Config:
             dup_list = ", ".join(sorted(duplicates))
             raise ConfigError(f"Duplicate source name(s): {dup_list}")
 
-    def as_dict(self) -> dict:
-        payload = {
+    def as_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
             "version": self.version,
             "archive_root": str(self.archive_root),
             "render_root": str(self.render_root),
@@ -119,14 +119,14 @@ def _config_path(explicit: Path | None = None) -> Path:
     return CONFIG_HOME / DEFAULT_CONFIG_NAME
 
 
-def _ensure_keys(data: dict, *, allowed: Iterable[str], context: str) -> None:
+def _ensure_keys(data: dict[str, object], *, allowed: Iterable[str], context: str) -> None:
     unknown = set(data.keys()) - set(allowed)
     if unknown:
         keys = ", ".join(sorted(unknown))
         raise ConfigError(f"Unknown {context} key(s): {keys}")
 
 
-def _parse_source(raw: dict) -> Source:
+def _parse_source(raw: dict[str, object]) -> Source:
     _ensure_keys(raw, allowed=_ALLOWED_SOURCE_KEYS, context="source")
     name = raw.get("name")
     if not isinstance(name, str) or not name.strip():

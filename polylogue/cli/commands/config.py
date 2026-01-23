@@ -8,7 +8,8 @@ from pathlib import Path
 
 import click
 
-from polylogue.cli.helpers import fail, format_sources_summary, is_declarative, load_effective_config
+from polylogue.cli.formatting import format_sources_summary
+from polylogue.cli.helpers import fail, is_declarative, load_effective_config
 from polylogue.cli.types import AppEnv
 from polylogue.config import (
     DEFAULT_INBOX_ROOT,

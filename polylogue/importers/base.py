@@ -10,7 +10,7 @@ class ParsedMessage(BaseModel):
     role: str
     text: str | None = None
     timestamp: str | None = None
-    provider_meta: dict | None = None
+    provider_meta: dict[str, object] | None = None
 
 
 class ParsedAttachment(BaseModel):
@@ -20,7 +20,7 @@ class ParsedAttachment(BaseModel):
     mime_type: str | None = None
     size_bytes: int | None = None
     path: str | None = None
-    provider_meta: dict | None = None
+    provider_meta: dict[str, object] | None = None
 
 
 class ParsedConversation(BaseModel):
@@ -84,7 +84,7 @@ def attachment_from_meta(meta: object, message_id: str | None, index: int) -> Pa
     )
 
 
-def extract_messages_from_list(items: list) -> list[ParsedMessage]:
+def extract_messages_from_list(items: list[object]) -> list[ParsedMessage]:
     messages: list[ParsedMessage] = []
     for idx, item in enumerate(items, start=1):
         if not isinstance(item, dict):
