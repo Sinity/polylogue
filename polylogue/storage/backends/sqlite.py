@@ -29,7 +29,7 @@ def default_db_path() -> Path:
     return state_root / "polylogue" / "polylogue.db"
 
 
-def _json_or_none(value: dict | None) -> str | None:
+def _json_or_none(value: dict[str, object] | None) -> str | None:
     if value is None:
         return None
     return json_dumps(value)

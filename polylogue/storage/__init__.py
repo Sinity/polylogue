@@ -49,7 +49,7 @@ from .search import (
 )
 
 # Qdrant vector index module - lazy import to avoid loading heavy dependencies
-def __getattr__(name: str):
+def __getattr__(name: str) -> object:
     """Lazy import for Qdrant-related exports to avoid loading heavy dependencies."""
     if name in ("QdrantError", "VectorStore", "get_embeddings", "update_qdrant_for_conversations"):
         from . import index_qdrant

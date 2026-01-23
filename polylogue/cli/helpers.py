@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import NoReturn, cast
 
 from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.types import AppEnv
@@ -13,7 +14,7 @@ from polylogue.health import cached_health_summary, get_health
 from polylogue.pipeline.runner import latest_run
 
 
-def fail(command: str, message: str) -> None:
+def fail(command: str, message: str) -> NoReturn:
     raise SystemExit(f"{command}: {message}")
 
 
@@ -38,8 +39,10 @@ def load_last_source() -> str | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return None
-    if isinstance(payload, dict) and isinstance(payload.get("source"), str):
-        return payload["source"]
+    if isinstance(payload, dict):
+        source = payload.get("source")
+        if isinstance(source, str):
+            return source
     return None
 
 
@@ -62,12 +65,13 @@ def maybe_prompt_sources(
         return selected_sources
     options = ["all"] + names
     last_choice = load_last_source()
-    if last_choice in options:
+    if last_choice and last_choice in options:
         options.remove(last_choice)
         options.insert(0, last_choice)
     choice = env.ui.choose(f"Select source for {command}", options)
     if not choice:
         fail(command, "No source selected.")
+    # At this point choice is guaranteed to be str (not None) due to the above check
     save_last_source(choice)
     if choice == "all":
         return None
@@ -88,7 +92,7 @@ def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> l
         last = load_last_source()
         if not last:
             fail(command, "No previously selected source found for --source last")
-        requested = [last]
+        requested = [last]  # last is guaranteed str here due to the if not last check above
     defined = {source.name for source in config.sources}
     missing = sorted(set(requested) - defined)
     if missing:
@@ -125,14 +129,18 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
         age = payload.get("age_seconds")
         health_header = f"Health (cached={cached}, age={age}s)" if cached is not None else "Health"
         lines.append(health_header)
-        for check in payload.get("checks", []):
-            name = check.get("name")
-            status = check.get("status")
-            detail = check.get("detail")
-            icon = {"ok": "[green]✓[/green]", "warning": "[yellow]![/yellow]", "error": "[red]✗[/red]"}.get(status, "?")
-            if ui.plain:
-                icon = {"ok": "OK", "warning": "WARN", "error": "ERR"}.get(status, "?")
-            lines.append(f"  {icon} {name}: {detail}")
+        checks = payload.get("checks")
+        if isinstance(checks, list):
+            for check in checks:
+                if isinstance(check, dict):
+                    name = check.get("name")
+                    status = check.get("status")
+                    detail = check.get("detail")
+                    status_str = str(status) if status else "?"
+                    icon = {"ok": "[green]✓[/green]", "warning": "[yellow]![/yellow]", "error": "[red]✗[/red]"}.get(status_str, "?")
+                    if ui.plain:
+                        icon = {"ok": "OK", "warning": "WARN", "error": "ERR"}.get(status_str, "?")
+                    lines.append(f"  {icon} {name}: {detail}")
     else:
         lines.append(f"Health: {cached_health_summary(config.archive_root)}")
 

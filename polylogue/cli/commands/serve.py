@@ -30,6 +30,6 @@ def serve_command(env: AppEnv, host: str, port: int) -> None:
         ui = env.ui
         ui.console.print(f"Starting server at http://{host}:{port}/api/docs")
         # UVicorn type stubs might expect string or app, which is fine
-        uvicorn.run("polylogue.server.app:app", host=host, port=port)  # type: ignore
+        uvicorn.run("polylogue.server.app:app", host=host, port=port)
     except Exception as exc:
         fail("serve", str(exc))

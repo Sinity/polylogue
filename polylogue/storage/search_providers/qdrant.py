@@ -30,7 +30,7 @@ class QdrantError(RuntimeError):
     pass
 
 
-def _retry_decorator():
+def _retry_decorator() -> Any:
     """Lazy import for tenacity retry decorator."""
     from tenacity import (
         retry,
@@ -39,7 +39,7 @@ def _retry_decorator():
         wait_exponential,
     )
 
-    def decorator(stop_attempts: int, min_wait: int, max_wait: int, retry_on):
+    def decorator(stop_attempts: int, min_wait: int, max_wait: int, retry_on: type[Exception]) -> Any:
         return retry(
             stop=stop_after_attempt(stop_attempts),
             wait=wait_exponential(multiplier=1, min=min_wait, max=max_wait),
@@ -117,7 +117,7 @@ class QdrantProvider:
             retry=retry_if_exception_type(Exception),
             reraise=True,
         )
-        def _do_ensure():
+        def _do_ensure() -> None:
             collections = self.client.get_collections().collections
             exists = any(c.name == self.collection for c in collections)
 
@@ -161,7 +161,7 @@ class QdrantProvider:
             retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
             reraise=True,
         )
-        def _do_get():
+        def _do_get() -> list[list[float]]:
             try:
                 with httpx.Client(timeout=30.0) as client:
                     response = client.post(
@@ -211,7 +211,7 @@ class QdrantProvider:
             return
 
         # Generate embeddings
-        texts = [msg.text for msg in text_messages]
+        texts = [msg.text for msg in text_messages if msg.text]
         embeddings = self._get_embeddings(texts)
 
         # Prepare points for upsert
@@ -222,9 +222,11 @@ class QdrantProvider:
 
             # Need provider_name - fetch from message metadata or use placeholder
             # In practice, this should be passed in or fetched from DB
-            provider_name = "unknown"
+            provider_name: str = "unknown"
             if msg.provider_meta:
-                provider_name = msg.provider_meta.get("provider_name", "unknown")
+                pname = msg.provider_meta.get("provider_name", "unknown")
+                if isinstance(pname, str):
+                    provider_name = pname
 
             points.append(
                 models.PointStruct(
@@ -246,7 +248,7 @@ class QdrantProvider:
             retry=retry_if_exception_type(Exception),
             reraise=True,
         )
-        def _do_upsert():
+        def _do_upsert() -> None:
             try:
                 self.client.upsert(collection_name=self.collection, points=points)
             except Exception as exc:
@@ -280,7 +282,7 @@ class QdrantProvider:
 
         # Search Qdrant
         try:
-            results = self.client.search(
+            results = self.client.search(  # type: ignore[attr-defined]
                 collection_name=self.collection,
                 query_vector=query_vector,
                 limit=limit,

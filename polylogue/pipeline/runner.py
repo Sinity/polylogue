@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -12,6 +12,7 @@ from uuid import uuid4
 from polylogue.config import Config, Source
 from polylogue.core.json import dumps, loads
 from polylogue.core.log import get_logger
+from polylogue.ingestion.source import ParsedConversation
 from polylogue.storage.db import connection_context
 from polylogue.storage.repository import StorageRepository
 from polylogue.ingestion import DriveAuthError, iter_drive_conversations, iter_source_conversations
@@ -35,9 +36,9 @@ def _iter_source_conversations_safe(
     archive_root: Path,
     ui: object | None,
     download_assets: bool,
-    cursor_state: dict | None = None,
+    cursor_state: dict[str, Any] | None = None,
     drive_config: object | None = None,
-):
+) -> Iterable[ParsedConversation]:
     if source.folder:
         try:
             yield from iter_drive_conversations(
@@ -65,12 +66,12 @@ def plan_sources(
     ui: object | None = None,
     source_names: Sequence[str] | None = None,
 ) -> PlanResult:
-    counts = {"conversations": 0, "messages": 0, "attachments": 0}
-    sources = []
-    cursors: dict[str, dict] = {}
+    counts: dict[str, int] = {"conversations": 0, "messages": 0, "attachments": 0}
+    sources: list[str] = []
+    cursors: dict[str, dict[str, Any]] = {}
     for source in _select_sources(config, source_names):
         sources.append(source.name)
-        cursor_state: dict[str, object] = {}
+        cursor_state: dict[str, Any] = {}
         conversations = _iter_source_conversations_safe(
             source=source,
             archive_root=config.archive_root,
@@ -116,7 +117,7 @@ def _all_conversation_ids(source_names: Sequence[str] | None = None) -> list[str
     return selected
 
 
-def _write_run_json(archive_root: Path, payload: dict) -> Path:
+def _write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
     runs_dir = archive_root / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     run_id = payload.get("run_id", "unknown")

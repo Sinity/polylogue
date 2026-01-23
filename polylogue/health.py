@@ -27,7 +27,7 @@ def _cache_path(archive_root: Path) -> Path:
     return archive_root / "health.json"
 
 
-def _load_cached(archive_root: Path) -> dict | None:
+def _load_cached(archive_root: Path) -> dict[str, object] | None:
     """Load health check cache from disk.
 
     Returns the cached dict if present and valid, or None if:
@@ -65,7 +65,7 @@ def _load_cached(archive_root: Path) -> dict | None:
     return payload
 
 
-def _write_cache(archive_root: Path, payload: dict) -> None:
+def _write_cache(archive_root: Path, payload: dict[str, object]) -> None:
     """Write health check cache to disk.
 
     Creates parent directories as needed.
@@ -79,7 +79,7 @@ def _write_cache(archive_root: Path, payload: dict) -> None:
         LOGGER.warning("Failed to write health cache to %s: %s", path, exc)
 
 
-def run_health(config: Config) -> dict:
+def run_health(config: Config) -> dict[str, object]:
     checks: list[HealthCheck] = []
 
     checks.append(HealthCheck("config", "ok", f"Loaded {config.path}"))
@@ -140,7 +140,7 @@ def run_health(config: Config) -> dict:
     return payload
 
 
-def get_health(config: Config) -> dict:
+def get_health(config: Config) -> dict[str, object]:
     cached = _load_cached(config.archive_root)
     now = int(time.time())
     if cached:

@@ -77,14 +77,14 @@ class Attachment(BaseModel):
     mime_type: str | None = None
     size_bytes: int | None = None
     path: str | None = None
-    provider_meta: dict | None = None
+    provider_meta: dict[str, object] | None = None
 
     @classmethod
     def from_record(cls, record: AttachmentRecord) -> Attachment:
         name = record.provider_meta.get("name") if record.provider_meta else None
         return cls(
             id=record.attachment_id,
-            name=name or record.attachment_id,
+            name=name if isinstance(name, str) else record.attachment_id,
             mime_type=record.mime_type,
             size_bytes=record.size_bytes,
             path=record.path,
@@ -107,7 +107,7 @@ class Message(BaseModel):
     text: str | None = None
     timestamp: datetime | None = None
     attachments: list[Attachment] = Field(default_factory=list)
-    provider_meta: dict | None = None
+    provider_meta: dict[str, object] | None = None
 
     @classmethod
     def from_record(cls, record: MessageRecord, attachments: list[AttachmentRecord]) -> Message:
@@ -306,7 +306,7 @@ class Conversation(BaseModel):
     messages: list[Message]
     created_at: datetime | None = None
     updated_at: datetime | None = None
-    provider_meta: dict | None = None
+    provider_meta: dict[str, object] | None = None
 
     @classmethod
     def from_records(
@@ -451,7 +451,7 @@ class Conversation(BaseModel):
 
     # --- Projection API ---
 
-    def project(self) -> "ConversationProjection":
+    def project(self) -> ConversationProjection:
         """Create a projection builder for lazy, composable filtering.
 
         Example:

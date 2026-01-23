@@ -8,10 +8,11 @@ import logging
 import os
 import shutil
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any, TypeVar
 
 from tenacity import (
     retry_if_exception_type,
@@ -20,6 +21,8 @@ from tenacity import (
 )
 
 from ..paths import CONFIG_HOME
+
+T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
@@ -57,19 +60,23 @@ class DriveFile:
 
 def default_credentials_path(config: object | None = None) -> Path:
     """Get default credentials path, optionally from DriveConfig."""
-    if config is not None and hasattr(config, "credentials_path") and config.credentials_path:
-        return config.credentials_path
+    if config is not None and hasattr(config, "credentials_path"):
+        cred_path = getattr(config, "credentials_path", None)
+        if cred_path:
+            return Path(cred_path)
     return CONFIG_HOME / DEFAULT_CREDENTIALS_NAME
 
 
 def default_token_path(config: object | None = None) -> Path:
     """Get default token path, optionally from DriveConfig."""
-    if config is not None and hasattr(config, "token_path") and config.token_path:
-        return config.token_path
+    if config is not None and hasattr(config, "token_path"):
+        token_path = getattr(config, "token_path", None)
+        if token_path:
+            return Path(token_path)
     return CONFIG_HOME / DEFAULT_TOKEN_NAME
 
 
-def _import_module(name: str):
+def _import_module(name: str) -> Any:
     try:
         return importlib.import_module(name)
     except ModuleNotFoundError as exc:
@@ -111,8 +118,10 @@ def _looks_like_id(value: str) -> bool:
 def _resolve_credentials_path(ui: object | None, config: object | None = None) -> Path:
     """Resolve credentials path from config, environment, or defaults."""
     # First check config
-    if config is not None and hasattr(config, "credentials_path") and config.credentials_path:
-        return config.credentials_path
+    if config is not None and hasattr(config, "credentials_path"):
+        cred_path = getattr(config, "credentials_path", None)
+        if cred_path:
+            return Path(cred_path)
 
     # Then environment variable
     env_path = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
@@ -127,7 +136,7 @@ def _resolve_credentials_path(ui: object | None, config: object | None = None) -
     # Interactive prompt if UI available
     if ui is not None and not getattr(ui, "plain", True):
         prompt = f"Path to Google OAuth client JSON (default {default_path}):"
-        response = ui.input(prompt, default=str(default_path))
+        response = getattr(ui, "input", lambda p, default: None)(prompt, default=str(default_path))
         if response:
             candidate = Path(response).expanduser()
             if candidate.exists():
@@ -144,8 +153,10 @@ def _resolve_credentials_path(ui: object | None, config: object | None = None) -
 def _resolve_token_path(config: object | None = None) -> Path:
     """Resolve token path from config, environment, or defaults."""
     # First check config
-    if config is not None and hasattr(config, "token_path") and config.token_path:
-        return config.token_path
+    if config is not None and hasattr(config, "token_path"):
+        token_path = getattr(config, "token_path", None)
+        if token_path:
+            return Path(token_path)
 
     # Then environment variable
     env_path = os.environ.get("POLYLOGUE_TOKEN_PATH")
@@ -212,7 +223,7 @@ class DriveClient:
         self._retries = _resolve_retries(retries, config)
         self._retry_base = _resolve_retry_base(retry_base)
 
-    def _call_with_retry(self, func, *args, **kwargs):
+    def _call_with_retry(self, func: Callable[..., T], *args: Any, **kwargs: Any) -> T:
         from tenacity import Retrying, retry_if_not_exception_type
 
         retryer = Retrying(
@@ -224,7 +235,7 @@ class DriveClient:
         )
         return retryer(func, *args, **kwargs)
 
-    def _load_credentials(self):
+    def _load_credentials(self) -> Any:
         request_cls = _import_module("google.auth.transport.requests").Request
         credentials_cls = _import_module("google.oauth2.credentials").Credentials
         installed_app_flow_cls = _import_module("google_auth_oauthlib.flow").InstalledAppFlow
@@ -276,9 +287,11 @@ class DriveClient:
             # Local server auth failed - try manual flow
             logger.info("Local server auth unavailable (%s). Using manual flow.", exc)
             auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-            self._ui.console.print("Open this URL in your browser to authorize Drive access:")
-            self._ui.console.print(auth_url)
-            code = self._ui.input("Paste the authorization code")
+            console = getattr(self._ui, "console", None)
+            if console:
+                getattr(console, "print", print)("Open this URL in your browser to authorize Drive access:")
+                getattr(console, "print", print)(auth_url)
+            code = getattr(self._ui, "input", lambda x: None)("Paste the authorization code")
             if not code:
                 raise DriveAuthError("Drive authorization cancelled.") from None
             try:
@@ -291,9 +304,11 @@ class DriveClient:
             # Keep broad exception here as google-auth can raise various errors
             logger.warning("Unexpected auth error: %s. Falling back to manual flow.", exc)
             auth_url, _ = flow.authorization_url(prompt="consent", access_type="offline")
-            self._ui.console.print("Open this URL in your browser to authorize Drive access:")
-            self._ui.console.print(auth_url)
-            code = self._ui.input("Paste the authorization code")
+            console = getattr(self._ui, "console", None)
+            if console:
+                getattr(console, "print", print)("Open this URL in your browser to authorize Drive access:")
+                getattr(console, "print", print)(auth_url)
+            code = getattr(self._ui, "input", lambda x: None)("Paste the authorization code")
             if not code:
                 raise DriveAuthError("Drive authorization cancelled.") from None
             try:
@@ -304,11 +319,11 @@ class DriveClient:
         self._persist_token(creds, token_path)
         return creds
 
-    def _persist_token(self, creds, token_path: Path) -> None:
+    def _persist_token(self, creds: Any, token_path: Path) -> None:
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json(), encoding="utf-8")
 
-    def _service_handle(self):
+    def _service_handle(self) -> Any:
         if self._service is not None:
             return self._service
         build = _import_module("googleapiclient.discovery").build
@@ -322,11 +337,11 @@ class DriveClient:
         service = self._service_handle()
         if _looks_like_id(folder_ref):
             try:
-                file_meta = self._call_with_retry(
+                file_meta: dict[str, Any] = self._call_with_retry(
                     lambda: service.files().get(fileId=folder_ref, fields="id,name,mimeType").execute()
                 )
                 if file_meta and file_meta.get("mimeType") == FOLDER_MIME_TYPE:
-                    return file_meta["id"]
+                    return str(file_meta["id"])
             except Exception as exc:
                 # File not found or permission denied - try by name
                 # Keep broad exception here as google-api errors vary
@@ -338,19 +353,19 @@ class DriveClient:
                 pass
         escaped = folder_ref.replace("'", "\\'")
         query = f"name = '{escaped}' and mimeType = '{FOLDER_MIME_TYPE}' and trashed = false"
-        response = self._call_with_retry(lambda: service.files().list(q=query, fields="files(id,name)").execute())
+        response: dict[str, Any] = self._call_with_retry(lambda: service.files().list(q=query, fields="files(id,name)").execute())
         matches = response.get("files", [])
         if not matches:
             raise DriveNotFoundError(f"Folder not found: {folder_ref}")
-        return matches[0]["id"]
+        return str(matches[0]["id"])
 
     def iter_json_files(self, folder_id: str) -> Iterable[DriveFile]:
         service = self._service_handle()
-        page_token = None
+        page_token: str | None = None
         query = f"'{folder_id}' in parents and trashed = false"
         fields = "nextPageToken, files(id,name,mimeType,modifiedTime,size)"
         while True:
-            response = self._call_with_retry(
+            response: dict[str, Any] = self._call_with_retry(
                 lambda t=page_token: service.files().list(q=query, fields=fields, pageToken=t, pageSize=1000).execute()
             )
             for item in response.get("files", []):
@@ -378,7 +393,7 @@ class DriveClient:
     def download_bytes(self, file_id: str) -> bytes:
         media_io_base_download_cls = _import_module("googleapiclient.http").MediaIoBaseDownload
 
-        def _download():
+        def _download() -> bytes:
             service = self._service_handle()
             request = service.files().get_media(fileId=file_id)
             buffer = io.BytesIO()
@@ -394,7 +409,7 @@ class DriveClient:
         if file_id in self._meta_cache:
             return self._meta_cache[file_id]
         service = self._service_handle()
-        meta = self._call_with_retry(
+        meta: dict[str, Any] = self._call_with_retry(
             lambda: service.files().get(fileId=file_id, fields="id,name,mimeType,modifiedTime,size").execute()
         )
         file_obj = DriveFile(
@@ -427,8 +442,8 @@ class DriveClient:
                     needs_download = True
         if needs_download:
 
-            def _download_once():
-                tmp_path = None
+            def _download_once() -> None:
+                tmp_path: Path | None = None
                 try:
                     service = self._service_handle()
                     request = service.files().get_media(fileId=file_id)

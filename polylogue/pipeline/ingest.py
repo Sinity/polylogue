@@ -126,7 +126,7 @@ def prepare_ingest(
             convo.provider_name, att, archive_root=archive_root
         )
         # Merge updated metadata with provider_id if present
-        meta: dict = dict(updated_meta or {})
+        meta: dict[str, object] = dict(updated_meta or {})
         if att.provider_attachment_id:
             meta.setdefault("provider_id", att.provider_attachment_id)
         message_id_val: MessageId | None = message_ids.get(att.message_provider_id or "") if att.message_provider_id else None

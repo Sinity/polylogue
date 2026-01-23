@@ -54,7 +54,7 @@ class ConsoleFacade:
     """Pure Python facade for terminal UI - no external binaries required."""
 
     plain: bool
-    console: ConsoleLike = field(init=False)
+    console: Console | PlainConsole = field(init=False)
 
     theme: Theme = field(init=False, repr=False)
     _prompt_responses: deque[dict[str, object]] = field(init=False, repr=False)
@@ -194,18 +194,25 @@ class ConsoleFacade:
         if response is not None:
             if response.get("use_default"):
                 return options[0] if options else None
-            if "value" in response and response["value"] in options:
-                return response["value"]
+            if "value" in response:
+                value = response["value"]
+                if isinstance(value, str) and value in options:
+                    return value
             if "index" in response:
                 try:
-                    idx = int(response["index"])  # type: ignore[arg-type]
-                    if 0 <= idx < len(options):
+                    index_val = response["index"]
+                    idx: int | None = None
+                    if isinstance(index_val, int):
+                        idx = index_val
+                    elif isinstance(index_val, str):
+                        idx = int(index_val)
+                    if idx is not None and 0 <= idx < len(options):
                         return options[idx]
                 except (KeyError, ValueError, TypeError):
                     # Response missing index, or index not numeric/valid
                     pass
         if len(options) > 12:
-            result = questionary.autocomplete(
+            result: str | None = questionary.autocomplete(
                 prompt, choices=options, match_middle=True
             ).ask()
         else:
@@ -223,7 +230,7 @@ class ConsoleFacade:
             if "value" in response:
                 value = response["value"]
                 return None if value is None else str(value)
-        result = questionary.text(prompt, default=default or "").ask()
+        result: str | None = questionary.text(prompt, default=default or "").ask()
         return result if result else default
 
     def render_markdown(self, content: str) -> None:
@@ -276,14 +283,20 @@ class ConsoleFacade:
             return
 
         try:
-            with self.console.pager():
-                lexer = get_lexer_by_name("diff")
-                highlighted = highlight(diff_text, lexer, TerminalFormatter())
-                self.console.print(highlighted, markup=False, highlight=False)
+            if isinstance(self.console, Console):
+                with self.console.pager():
+                    lexer = get_lexer_by_name("diff")
+                    highlighted = highlight(diff_text, lexer, TerminalFormatter())
+                    self.console.print(highlighted, markup=False, highlight=False)
+            else:
+                self.console.print(diff_text)
         except (ImportError, AttributeError):
             # Pygments not available or lexer not found - fall back to basic syntax
-            syntax = Syntax(diff_text, "diff", theme="ansi_dark")
-            self.console.print(syntax)
+            if isinstance(self.console, Console):
+                syntax = Syntax(diff_text, "diff", theme="ansi_dark")
+                self.console.print(syntax)
+            else:
+                self.console.print(diff_text)
 
     def error(self, message: str) -> None:
         """Display an error message."""

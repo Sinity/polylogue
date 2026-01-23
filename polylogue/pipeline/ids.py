@@ -77,7 +77,7 @@ def attachment_content_id(
     attachment: ParsedAttachment,
     *,
     archive_root: Path,
-) -> tuple[str, dict | None, str | None]:
+) -> tuple[str, dict[str, object] | None, str | None]:
     """Compute attachment content ID and return updated metadata.
 
     Returns:

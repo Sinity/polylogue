@@ -15,15 +15,15 @@ logger = get_logger(__name__)
 class RenderResult:
     """Result of a rendering operation."""
 
-    def __init__(self):
-        self.rendered_count = 0
+    def __init__(self) -> None:
+        self.rendered_count: int = 0
         self.failures: list[dict[str, str]] = []
 
-    def record_success(self):
+    def record_success(self) -> None:
         """Record a successful render."""
         self.rendered_count += 1
 
-    def record_failure(self, conversation_id: str, error: str):
+    def record_failure(self, conversation_id: str, error: str) -> None:
         """Record a rendering failure.
 
         Args:
@@ -78,7 +78,7 @@ class RenderService:
         """
         result = RenderResult()
 
-        def _render_one(convo_id):
+        def _render_one(convo_id: str) -> int:
             if self.renderer:
                 # Use new renderer abstraction
                 self.renderer.render(convo_id, self.render_root)

@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from polylogue.config import Config
-from polylogue.container import create_container
+from polylogue.container import ApplicationContainer, create_container
 from polylogue.pipeline.services.indexing import IndexService
 from polylogue.pipeline.services.ingestion import IngestionService
 from polylogue.pipeline.services.rendering import RenderService
@@ -20,7 +20,7 @@ from polylogue.storage.repository import StorageRepository
 _container = None
 
 
-def get_container(config_path: Path | None = None):
+def get_container(config_path: Path | None = None) -> ApplicationContainer:
     """Get or create the application container.
 
     Args:
@@ -35,7 +35,7 @@ def get_container(config_path: Path | None = None):
     return _container
 
 
-def reset_container():
+def reset_container() -> None:
     """Reset the global container instance.
 
     Useful for testing to ensure a clean state between tests.
@@ -58,7 +58,7 @@ def create_config(config_path: Path | None = None) -> Config:
         ConfigError: If config file is missing or invalid.
     """
     container = get_container(config_path)
-    return container.config()
+    return container.config()  # type: ignore[no-any-return]
 
 
 def create_storage_repository() -> StorageRepository:
@@ -68,7 +68,7 @@ def create_storage_repository() -> StorageRepository:
         StorageRepository instance with its own write lock for thread-safe operations.
     """
     container = get_container()
-    return container.storage()
+    return container.storage()  # type: ignore[no-any-return]
 
 
 def create_ingestion_service(
@@ -85,7 +85,7 @@ def create_ingestion_service(
         IngestionService instance ready for use.
     """
     container = get_container()
-    return container.ingestion_service()
+    return container.ingestion_service()  # type: ignore[no-any-return]
 
 
 def create_index_service(config: Config) -> IndexService:
@@ -98,7 +98,7 @@ def create_index_service(config: Config) -> IndexService:
         IndexService instance ready for use.
     """
     container = get_container()
-    return container.indexing_service()
+    return container.indexing_service()  # type: ignore[no-any-return]
 
 
 def create_render_service(config: Config) -> RenderService:
@@ -111,4 +111,4 @@ def create_render_service(config: Config) -> RenderService:
         RenderService instance ready for use.
     """
     container = get_container()
-    return container.rendering_service()
+    return container.rendering_service()  # type: ignore[no-any-return]

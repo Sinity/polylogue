@@ -41,7 +41,8 @@ class IndexService:
             True if indexing succeeded, False otherwise
         """
         if not conversation_ids:
-            ensure_index(self.conn)
+            if self.conn is not None:
+                ensure_index(self.conn)
             return True
 
         try:
@@ -71,13 +72,14 @@ class IndexService:
             True if index exists or was created, False on error
         """
         try:
-            ensure_index(self.conn)
+            if self.conn is not None:
+                ensure_index(self.conn)
             return True
         except Exception as exc:
             logger.error("Failed to ensure index exists", error=str(exc))
             return False
 
-    def get_index_status(self) -> dict:
+    def get_index_status(self) -> dict[str, object]:
         """Get the current status of the search index.
 
         Returns:

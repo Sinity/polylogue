@@ -96,7 +96,7 @@ class VectorStore:
         retry=retry_if_exception_type(Exception),
         reraise=True,
     )
-    def ensure_collection(self, vector_size: int = DEFAULT_VECTOR_SIZE):
+    def ensure_collection(self, vector_size: int = DEFAULT_VECTOR_SIZE) -> None:
         collections = self.client.get_collections().collections
         exists = any(c.name == self.collection for c in collections)
         if not exists:
@@ -111,7 +111,7 @@ class VectorStore:
         retry=retry_if_exception_type(Exception),
         reraise=True,
     )
-    def upsert_messages(self, messages: list[dict[str, Any]]):
+    def upsert_messages(self, messages: list[dict[str, Any]]) -> None:
         """Upsert messages to Qdrant. Idempotency is ensured by UUID v5 of message_id."""
         if not messages:
             return
@@ -139,7 +139,7 @@ class VectorStore:
         self.client.upsert(collection_name=self.collection, points=points)
 
 
-def update_qdrant_for_conversations(conversation_ids: list[str], conn):
+def update_qdrant_for_conversations(conversation_ids: list[str], conn: Any) -> None:
     """Bridge function to index conversations from SQLite to Qdrant."""
     if not conversation_ids:
         return
