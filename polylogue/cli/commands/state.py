@@ -6,7 +6,7 @@ import click
 
 from polylogue.cli.helpers import fail, source_state_path
 from polylogue.cli.types import AppEnv
-from polylogue.db import default_db_path, open_connection
+from polylogue.storage.db import default_db_path, open_connection
 
 
 @click.group("state")

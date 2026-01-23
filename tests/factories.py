@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord, store_records
+from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, store_records
 
 
 class DbFactory:
@@ -66,7 +66,7 @@ class DbFactory:
                             )
                         )
 
-        from polylogue.db import open_connection
+        from polylogue.storage.db import open_connection
 
         with open_connection(self.db_path) as conn:
             store_records(

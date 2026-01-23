@@ -12,9 +12,9 @@ from polylogue.cli.formatting import format_source_label
 from polylogue.cli.helpers import fail, latest_render_path, load_effective_config
 from polylogue.cli.types import AppEnv
 from polylogue.config import ConfigError
-from polylogue.db import DatabaseError
-from polylogue.index import rebuild_index
-from polylogue.search import search_messages
+from polylogue.storage.db import DatabaseError
+from polylogue.storage.index import rebuild_index
+from polylogue.storage.search import search_messages
 
 
 @click.command("search")

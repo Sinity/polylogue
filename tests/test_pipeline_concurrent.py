@@ -78,7 +78,7 @@ def test_counts_without_lock_may_lose_updates():
 def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
     """Verify attachment_content_id returns values instead of mutating."""
     from polylogue.pipeline.ids import attachment_content_id
-    from polylogue.source_ingest import ParsedAttachment
+    from polylogue.ingestion import ParsedAttachment
 
     # Create a test file
     test_file = tmp_path / "test.txt"
@@ -116,7 +116,7 @@ def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
 
 def test_store_records_commits_within_lock(tmp_path: Path):
     """Verify store_records commits inside the lock scope."""
-    from polylogue.store import ConversationRecord, MessageRecord, store_records
+    from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
 
     # Create a test database
     db_path = tmp_path / "test.db"
@@ -136,7 +136,7 @@ def test_store_records_commits_within_lock(tmp_path: Path):
     # This is tricky to test directly, but we can verify the code structure
 
     # For now, just verify the function works and commits
-    from polylogue.db import open_connection
+    from polylogue.storage.db import open_connection
 
     with open_connection(db_path) as conn:
         record = ConversationRecord(
@@ -167,8 +167,8 @@ def test_store_records_commits_within_lock(tmp_path: Path):
 
 def test_concurrent_store_records_no_deadlock(workspace_env):
     """Verify concurrent store_records calls don't deadlock."""
-    from polylogue.db import open_connection
-    from polylogue.store import ConversationRecord, MessageRecord, store_records
+    from polylogue.storage.db import open_connection
+    from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
 
     # Initialize the database using workspace_env fixture (sets up proper env vars)
     with open_connection(None):

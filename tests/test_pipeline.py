@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.db import open_connection
+from polylogue.storage.db import open_connection
 from polylogue.importers.base import ParsedAttachment, ParsedConversation, ParsedMessage
 from polylogue.pipeline.ids import (
     conversation_content_hash,
