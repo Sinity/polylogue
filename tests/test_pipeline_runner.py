@@ -32,7 +32,8 @@ class TestRenderFailureTracking:
         config.archive_root.mkdir(parents=True, exist_ok=True)
 
         # Mock render_conversation to fail for specific conversation
-        with patch("polylogue.pipeline.runner.render_conversation") as mock_render:
+        with patch("polylogue.pipeline.services.rendering.render_conversation") as mock_render:
+
             def render_side_effect(conversation_id, **kwargs):
                 if "fail-conv" in conversation_id:
                     raise ValueError("Render failed for testing")
@@ -82,7 +83,8 @@ class TestRenderFailureTracking:
 
         render_attempts = []
 
-        with patch("polylogue.pipeline.runner.render_conversation") as mock_render:
+        with patch("polylogue.pipeline.services.rendering.render_conversation") as mock_render:
+
             def render_side_effect(conversation_id, **kwargs):
                 render_attempts.append(conversation_id)
                 if "second" in conversation_id:
@@ -122,7 +124,8 @@ class TestRenderFailureTracking:
         )
         config.archive_root.mkdir(parents=True, exist_ok=True)
 
-        with patch("polylogue.pipeline.runner.render_conversation") as mock_render:
+        with patch("polylogue.pipeline.services.rendering.render_conversation") as mock_render:
+
             def render_side_effect(conversation_id, **kwargs):
                 if conversation_id in ["test:fail1", "test:fail2"]:
                     raise ValueError("Render failed")
