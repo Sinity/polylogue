@@ -362,38 +362,93 @@ def _run_migrations(conn: sqlite3.Connection, current_version: int, target_versi
             ) from exc
 
 
-def _ensure_schema(conn: sqlite3.Connection) -> None:
+def _ensure_schema(conn: sqlite3.Connection, max_retries: int = 5) -> None:
     """Ensure database schema is at current version, running migrations if needed.
 
     For fresh databases (version 0), creates the schema directly.
     For existing databases, runs migrations sequentially with rollback support.
 
+    Thread safety: When multiple threads simultaneously try to create the schema,
+    SQLite may return "database is locked" errors. This function retries with
+    exponential backoff to handle concurrent schema initialization.
+
     Args:
         conn: Database connection
+        max_retries: Maximum number of retries on lock contention (default: 5)
 
     Raises:
         DatabaseError: If schema version is unsupported or migration fails
     """
-    row = conn.execute("PRAGMA user_version").fetchone()
-    current_version = row[0] if row else 0
+    import time
 
-    if current_version == 0:
-        # Fresh database - create schema directly
-        _apply_schema(conn)
-        return
-
-    if current_version < SCHEMA_VERSION:
-        # Run migrations with rollback support
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
         try:
-            _run_migrations(conn, current_version, SCHEMA_VERSION)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        return
+            row = conn.execute("PRAGMA user_version").fetchone()
+            current_version = row[0] if row else 0
 
-    if current_version != SCHEMA_VERSION:
-        raise DatabaseError(f"Unsupported DB schema version {current_version} (expected {SCHEMA_VERSION})")
+            if current_version == 0:
+                # Fresh database - create schema directly
+                _apply_schema(conn)
+                return
+
+            if current_version < SCHEMA_VERSION:
+                # Run migrations with rollback support
+                try:
+                    _run_migrations(conn, current_version, SCHEMA_VERSION)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+                return
+
+            if current_version != SCHEMA_VERSION:
+                raise DatabaseError(f"Unsupported DB schema version {current_version} (expected {SCHEMA_VERSION})")
+
+            return  # Schema is at correct version
+
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e).lower():
+                last_error = e
+                # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, 1.6s
+                sleep_time = 0.1 * (2**attempt)
+                LOGGER.debug("Schema creation locked (attempt %d/%d), retrying in %.1fs", attempt + 1, max_retries, sleep_time)
+                time.sleep(sleep_time)
+            else:
+                raise
+
+    # All retries exhausted
+    raise DatabaseError(f"Failed to initialize schema after {max_retries} retries: {last_error}")
+
+
+def _execute_pragma_with_retry(conn: sqlite3.Connection, pragma: str, max_retries: int = 5) -> None:
+    """Execute a PRAGMA statement with retry on database lock.
+
+    Some PRAGMAs like journal_mode=WAL can fail with "database is locked" when
+    multiple processes/threads initialize the database simultaneously.
+
+    Args:
+        conn: Database connection
+        pragma: PRAGMA statement to execute
+        max_retries: Maximum retries on lock contention
+    """
+    import time
+
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            conn.execute(pragma)
+            return
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e).lower():
+                last_error = e
+                sleep_time = 0.1 * (2**attempt)
+                LOGGER.debug("PRAGMA locked (attempt %d/%d), retrying in %.1fs", attempt + 1, max_retries, sleep_time)
+                time.sleep(sleep_time)
+            else:
+                raise
+
+    raise DatabaseError(f"Failed to execute {pragma} after {max_retries} retries: {last_error}")
 
 
 def _get_state() -> dict[str, object]:
@@ -420,9 +475,11 @@ def open_connection(db_path: Path | None = None) -> Iterator[sqlite3.Connection]
     if state_conn is None:
         conn = sqlite3.connect(target_path, timeout=30)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode=WAL;")
+        # Set busy_timeout FIRST to handle concurrent access during PRAGMA setup
         conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA foreign_keys = ON")
+        # WAL mode can fail with "database is locked" during concurrent initialization
+        _execute_pragma_with_retry(conn, "PRAGMA journal_mode=WAL;")
         _ensure_schema(conn)
         state["conn"] = conn
         state["path"] = target_path
