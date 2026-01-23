@@ -5,7 +5,7 @@ import zipfile
 from pathlib import Path
 
 from polylogue.config import Source
-from polylogue.source_ingest import iter_source_conversations, parse_drive_payload
+from polylogue.ingestion import iter_source_conversations, parse_drive_payload
 
 
 def test_auto_detect_chatgpt_and_claude(tmp_path):
@@ -265,7 +265,7 @@ def test_parse_json_payload_invalid_conversation_items(tmp_path):
 
 def test_decode_json_bytes_utf8_with_bom(tmp_path):
     """_decode_json_bytes() handles UTF-8 with BOM."""
-    from polylogue.source_ingest import _decode_json_bytes
+    from polylogue.ingestion.source import _decode_json_bytes
 
     payload = {"id": "test", "messages": [{"id": "m1", "role": "user", "text": "Hello"}]}
     json_str = json.dumps(payload)
@@ -284,7 +284,7 @@ def test_decode_json_bytes_utf8_with_bom(tmp_path):
 
 def test_decode_json_bytes_utf16_le(tmp_path):
     """_decode_json_bytes() handles UTF-16 LE encoding."""
-    from polylogue.source_ingest import _decode_json_bytes
+    from polylogue.ingestion.source import _decode_json_bytes
 
     payload = {"id": "utf16test", "messages": []}
     json_str = json.dumps(payload)
@@ -300,7 +300,7 @@ def test_decode_json_bytes_utf16_le(tmp_path):
 
 def test_decode_json_bytes_utf16_be(tmp_path):
     """_decode_json_bytes() handles UTF-16 BE encoding."""
-    from polylogue.source_ingest import _decode_json_bytes
+    from polylogue.ingestion.source import _decode_json_bytes
 
     payload = {"id": "utf16be", "messages": []}
     json_str = json.dumps(payload)
@@ -316,7 +316,7 @@ def test_decode_json_bytes_utf16_be(tmp_path):
 
 def test_decode_json_bytes_invalid_utf8_fallback(tmp_path):
     """_decode_json_bytes() handles bytes gracefully without crashing."""
-    from polylogue.source_ingest import _decode_json_bytes
+    from polylogue.ingestion.source import _decode_json_bytes
 
     # Test with genuinely problematic bytes that require fallback
     # This tests that the function tries multiple encodings and eventually succeeds
@@ -337,7 +337,7 @@ def test_decode_json_bytes_invalid_utf8_fallback(tmp_path):
 
 def test_decode_json_bytes_strips_null_bytes(tmp_path):
     """_decode_json_bytes() removes null bytes from decoded string."""
-    from polylogue.source_ingest import _decode_json_bytes
+    from polylogue.ingestion.source import _decode_json_bytes
 
     # JSON with embedded null bytes
     payload = b'{"id": "test\x00null", "messages": []}'
@@ -352,7 +352,7 @@ def test_decode_json_bytes_strips_null_bytes(tmp_path):
 
 def test_decode_json_bytes_returns_none_on_all_nulls(tmp_path):
     """_decode_json_bytes() returns None if only null bytes remain."""
-    from polylogue.source_ingest import _decode_json_bytes
+    from polylogue.ingestion.source import _decode_json_bytes
 
     # All null bytes
     all_nulls = b"\x00\x00\x00\x00"
@@ -364,7 +364,7 @@ def test_decode_json_bytes_returns_none_on_all_nulls(tmp_path):
 
 def test_decode_json_bytes_handles_utf32(tmp_path):
     """_decode_json_bytes() handles UTF-32 encoding."""
-    from polylogue.source_ingest import _decode_json_bytes
+    from polylogue.ingestion.source import _decode_json_bytes
 
     payload = {"id": "utf32", "messages": []}
     json_str = json.dumps(payload)
@@ -416,7 +416,7 @@ def test_iter_source_conversations_handles_malformed_encoding_gracefully(tmp_pat
 
 def test_decode_json_bytes_empty_after_cleaning(tmp_path):
     """_decode_json_bytes() returns None if string is empty after cleaning."""
-    from polylogue.source_ingest import _decode_json_bytes
+    from polylogue.ingestion.source import _decode_json_bytes
 
     # String that becomes empty after cleaning
     only_nulls = b"\x00\x00\x00"

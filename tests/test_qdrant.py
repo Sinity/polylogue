@@ -3,10 +3,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.index_qdrant import QdrantError, VectorStore, get_embeddings, update_qdrant_for_conversations
+from polylogue.storage.index_qdrant import QdrantError, VectorStore, get_embeddings, update_qdrant_for_conversations
 
 
-@patch("polylogue.index_qdrant.httpx.Client")
+@patch("polylogue.storage.index_qdrant.httpx.Client")
 @patch.dict("os.environ", {"VOYAGE_API_KEY": "fake-key"})
 def test_get_embeddings(mock_client_cls):
     mock_client = MagicMock()
@@ -24,8 +24,8 @@ def test_get_embeddings_no_key():
     with pytest.raises(QdrantError, match="VOYAGE_API_KEY"):
         get_embeddings(["text"])
 
-@patch("polylogue.index_qdrant.QdrantClient")
-@patch("polylogue.index_qdrant.get_embeddings")
+@patch("polylogue.storage.index_qdrant.QdrantClient")
+@patch("polylogue.storage.index_qdrant.get_embeddings")
 def test_upsert_messages(mock_get_embeddings, mock_qdrant_cls):
     mock_client = MagicMock()
     mock_qdrant_cls.return_value = mock_client
@@ -44,7 +44,7 @@ def test_upsert_messages(mock_get_embeddings, mock_qdrant_cls):
     assert point.payload["message_id"] == "m1"
     assert point.vector == [0.1, 0.2]
 
-@patch("polylogue.index_qdrant.VectorStore")
+@patch("polylogue.storage.index_qdrant.VectorStore")
 def test_update_qdrant_for_conversations(mock_store_cls):
     mock_store = MagicMock()
     mock_store_cls.return_value = mock_store

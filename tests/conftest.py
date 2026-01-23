@@ -41,7 +41,7 @@ def workspace_env(tmp_path, monkeypatch):
 @pytest.fixture
 def db_without_fts(tmp_path):
     """Database with schema but WITHOUT the FTS table (simulates fresh install)."""
-    from polylogue.db import open_connection
+    from polylogue.storage.db import open_connection
 
     db_path = tmp_path / "no_fts.db"
     with open_connection(db_path) as conn:
@@ -70,3 +70,16 @@ def uppercase_json_inbox(tmp_path):
     (inbox / "data.jsonl.txt").write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
     return inbox
+
+
+@pytest.fixture
+def storage_repository():
+    """Storage repository with its own write lock.
+
+    Use this fixture in tests that need thread-safe storage operations.
+    The repository encapsulates the write lock and provides methods for
+    saving conversations and recording runs.
+    """
+    from polylogue.storage.repository import StorageRepository
+
+    return StorageRepository()

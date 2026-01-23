@@ -12,10 +12,10 @@ from uuid import uuid4
 
 import pytest
 
-from polylogue.db import open_connection
-from polylogue.index import ensure_index, rebuild_index, update_index_for_conversations
-from polylogue.search import search_messages
-from polylogue.store import ConversationRecord, MessageRecord, store_records
+from polylogue.storage.db import open_connection
+from polylogue.storage.index import ensure_index, rebuild_index, update_index_for_conversations
+from polylogue.storage.search import search_messages
+from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
 
 
 @pytest.fixture
@@ -492,7 +492,7 @@ def test_update_index_handles_large_batch(test_conn):
 
 def test_search_finds_matching_text(workspace_env):
     """search_messages() finds conversations with matching text."""
-    from polylogue.ingest import IngestBundle, ingest_bundle
+    from polylogue.ingestion import IngestBundle, ingest_bundle
 
     conv = ConversationRecord(
         conversation_id="conv1",
@@ -526,7 +526,7 @@ def test_search_finds_matching_text(workspace_env):
 
 def test_search_returns_multiple_matches(workspace_env):
     """search_messages() returns multiple matching conversations."""
-    from polylogue.ingest import IngestBundle, ingest_bundle
+    from polylogue.ingestion import IngestBundle, ingest_bundle
 
     for i in range(3):
         conv = ConversationRecord(
@@ -561,7 +561,7 @@ def test_search_returns_multiple_matches(workspace_env):
 
 def test_search_no_results_returns_empty(workspace_env):
     """search_messages() returns empty list when no matches found."""
-    from polylogue.ingest import IngestBundle, ingest_bundle
+    from polylogue.ingestion import IngestBundle, ingest_bundle
 
     conv = ConversationRecord(
         conversation_id="conv1",
@@ -593,7 +593,7 @@ def test_search_no_results_returns_empty(workspace_env):
 
 def test_search_respects_limit(workspace_env):
     """search_messages() respects limit parameter."""
-    from polylogue.ingest import IngestBundle, ingest_bundle
+    from polylogue.ingestion import IngestBundle, ingest_bundle
 
     for i in range(10):
         conv = ConversationRecord(
@@ -625,7 +625,7 @@ def test_search_respects_limit(workspace_env):
 
 def test_search_includes_snippet(workspace_env):
     """search_messages() includes text snippet in results."""
-    from polylogue.ingest import IngestBundle, ingest_bundle
+    from polylogue.ingestion import IngestBundle, ingest_bundle
 
     conv = ConversationRecord(
         conversation_id="conv1",
@@ -660,7 +660,7 @@ def test_search_includes_snippet(workspace_env):
 
 def test_search_includes_conversation_metadata(workspace_env):
     """search_messages() includes conversation metadata in results."""
-    from polylogue.ingest import IngestBundle, ingest_bundle
+    from polylogue.ingestion import IngestBundle, ingest_bundle
 
     conv = ConversationRecord(
         conversation_id="conv1",
@@ -705,7 +705,7 @@ def test_search_includes_conversation_metadata(workspace_env):
 
 def test_search_with_special_characters(workspace_env):
     """search_messages() handles special characters in text."""
-    from polylogue.ingest import IngestBundle, ingest_bundle
+    from polylogue.ingestion import IngestBundle, ingest_bundle
 
     conv = ConversationRecord(
         conversation_id="conv1",
@@ -737,7 +737,7 @@ def test_search_with_special_characters(workspace_env):
 
 def test_search_with_quotes_in_text(workspace_env):
     """search_messages() handles quoted text correctly."""
-    from polylogue.ingest import IngestBundle, ingest_bundle
+    from polylogue.ingestion import IngestBundle, ingest_bundle
 
     conv = ConversationRecord(
         conversation_id="conv1",
@@ -768,7 +768,7 @@ def test_search_with_quotes_in_text(workspace_env):
 
 def test_search_with_unicode_text(workspace_env):
     """search_messages() handles unicode characters."""
-    from polylogue.ingest import IngestBundle, ingest_bundle
+    from polylogue.ingestion import IngestBundle, ingest_bundle
 
     conv = ConversationRecord(
         conversation_id="conv1",
@@ -799,7 +799,7 @@ def test_search_with_unicode_text(workspace_env):
 
 def test_search_with_hyphenated_words(workspace_env):
     """search_messages() handles words in hyphenated phrases."""
-    from polylogue.ingest import IngestBundle, ingest_bundle
+    from polylogue.ingestion import IngestBundle, ingest_bundle
 
     conv = ConversationRecord(
         conversation_id="conv1",
@@ -858,7 +858,7 @@ def test_rebuild_index_with_empty_database(test_conn):
 
 def test_search_returns_searchresult_object(workspace_env):
     """search_messages() returns SearchResult with hits list."""
-    from polylogue.ingest import IngestBundle, ingest_bundle
+    from polylogue.ingestion import IngestBundle, ingest_bundle
 
     conv = ConversationRecord(
         conversation_id="conv1",

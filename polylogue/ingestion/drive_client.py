@@ -19,7 +19,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from .paths import CONFIG_HOME
+from ..paths import CONFIG_HOME
 
 logger = logging.getLogger(__name__)
 

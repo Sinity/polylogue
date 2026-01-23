@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.drive_client import DriveAuthError, DriveClient
+from polylogue.ingestion import DriveAuthError, DriveClient
 
 
 def test_drive_retry_success():
