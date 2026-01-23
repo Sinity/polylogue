@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .db import DatabaseError, open_connection
-from .render_paths import legacy_render_root, render_root
+from polylogue.render_paths import legacy_render_root, render_root
 
 logger = logging.getLogger(__name__)
 

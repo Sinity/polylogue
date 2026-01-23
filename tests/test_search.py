@@ -7,10 +7,10 @@ from uuid import uuid4
 
 import pytest
 
-from polylogue.db import open_connection
-from polylogue.index import rebuild_index
-from polylogue.search import escape_fts5_query, search_messages
-from polylogue.store import ConversationRecord, MessageRecord, store_records
+from polylogue.storage.db import open_connection
+from polylogue.storage.index import rebuild_index
+from polylogue.storage.search import escape_fts5_query, search_messages
+from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
 from tests.factories import DbFactory
 
 

@@ -20,7 +20,7 @@ from polylogue.cli.helpers import (
 )
 from polylogue.cli.types import AppEnv
 from polylogue.config import ConfigError
-from polylogue.drive_client import DriveError
+from polylogue.ingestion import DriveError
 from polylogue.pipeline.runner import plan_sources, run_sources
 
 

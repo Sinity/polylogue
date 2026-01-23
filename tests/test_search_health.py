@@ -7,10 +7,10 @@ import pytest
 
 from polylogue.config import default_config, load_config, write_config
 from polylogue.health import get_health
-from polylogue.index import rebuild_index
-from polylogue.ingest import IngestBundle, ingest_bundle
-from polylogue.search import search_messages
-from polylogue.store import ConversationRecord, MessageRecord
+from polylogue.storage.index import rebuild_index
+from polylogue.ingestion import IngestBundle, ingest_bundle
+from polylogue.storage.search import search_messages
+from polylogue.storage.store import ConversationRecord, MessageRecord
 
 
 def _seed_conversation():
@@ -84,8 +84,8 @@ def test_search_invalid_query_reports_error(monkeypatch, workspace_env):
     def stub_open_connection(_):
         yield StubConn()
 
-    monkeypatch.setattr("polylogue.search.open_connection", stub_open_connection)
-    from polylogue.db import DatabaseError
+    monkeypatch.setattr("polylogue.storage.search.open_connection", stub_open_connection)
+    from polylogue.storage.db import DatabaseError
     with pytest.raises(DatabaseError, match="Invalid search query"):
         search_messages('"unterminated', archive_root=workspace_env["archive_root"], limit=5)
 
@@ -437,8 +437,8 @@ def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_wit
     archive_root = workspace_env["archive_root"]
 
     # Monkey-patch to use the db without FTS
-    from polylogue import db
-    from polylogue.db import DatabaseError
+    from polylogue.storage import db
+    from polylogue.storage.db import DatabaseError
 
     monkeypatch.setattr(db, "default_db_path", lambda: db_without_fts)
 

@@ -10,8 +10,8 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from polylogue.db import open_connection
-from polylogue.store import (
+from polylogue.storage.db import open_connection
+from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
     MessageRecord,
@@ -608,7 +608,7 @@ def test_store_records_without_connection_creates_own(test_db):
     os.environ["XDG_STATE_HOME"] = str(test_db.parent.parent)
 
     # Move test DB to default location
-    from polylogue.db import default_db_path
+    from polylogue.storage.db import default_db_path
 
     default_path = default_db_path()
     default_path.parent.mkdir(parents=True, exist_ok=True)
@@ -872,7 +872,7 @@ class TestAttachmentRecordValidation:
     def test_size_bytes_rejects_impossibly_large(self):
         """size_bytes cannot exceed reasonable maximum (1TB)."""
         from pydantic import ValidationError
-        from polylogue.store import MAX_ATTACHMENT_SIZE
+        from polylogue.storage.store import MAX_ATTACHMENT_SIZE
 
         with pytest.raises(ValidationError):
             AttachmentRecord(
@@ -914,7 +914,7 @@ class TestAttachmentRecordValidation:
 
     def test_size_bytes_allows_max_size(self):
         """size_bytes should allow exactly the maximum size (1TB)."""
-        from polylogue.store import MAX_ATTACHMENT_SIZE
+        from polylogue.storage.store import MAX_ATTACHMENT_SIZE
 
         record = AttachmentRecord(
             attachment_id="test",
@@ -930,7 +930,7 @@ class TestAttachmentRecordValidation:
     def test_size_bytes_rejects_one_byte_over_max(self):
         """size_bytes cannot exceed maximum by even one byte."""
         from pydantic import ValidationError
-        from polylogue.store import MAX_ATTACHMENT_SIZE
+        from polylogue.storage.store import MAX_ATTACHMENT_SIZE
 
         with pytest.raises(ValidationError):
             AttachmentRecord(

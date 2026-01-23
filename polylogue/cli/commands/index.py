@@ -8,7 +8,7 @@ from polylogue.cli.formatting import format_index_status
 from polylogue.cli.helpers import fail, load_effective_config
 from polylogue.cli.types import AppEnv
 from polylogue.config import ConfigError
-from polylogue.drive_client import DriveError
+from polylogue.ingestion import DriveError
 from polylogue.pipeline.runner import run_sources
 
 

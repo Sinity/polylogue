@@ -15,15 +15,16 @@ from uuid import uuid4
 from polylogue.config import Config, Source
 from polylogue.core.json import dumps, loads
 from polylogue.core.log import get_logger
-from polylogue.db import connection_context
-from polylogue.drive_client import DriveAuthError
-from polylogue.drive_ingest import iter_drive_conversations
-from polylogue.index import ensure_index, index_status, rebuild_index, update_index_for_conversations
+from polylogue.storage.db import connection_context
+from polylogue.storage.repository import StorageRepository
+from polylogue.ingestion import DriveAuthError
+from polylogue.ingestion import iter_drive_conversations
+from polylogue.storage.index import ensure_index, index_status, rebuild_index, update_index_for_conversations
 from polylogue.pipeline.ingest import prepare_ingest
 from polylogue.pipeline.models import PlanResult, RunResult
 from polylogue.render import render_conversation
-from polylogue.source_ingest import iter_source_conversations
-from polylogue.store import RunRecord, record_run
+from polylogue.ingestion import iter_source_conversations
+from polylogue.storage.store import RunRecord
 
 logger = get_logger(__name__)
 
@@ -156,6 +157,10 @@ def run_sources(
     # Lock to protect shared mutable state from concurrent access
     _counts_lock = threading.Lock()
 
+    # Create repository instance once for the entire run
+    # This owns the write lock and ensures thread-safe storage operations
+    repository = StorageRepository()
+
     with connection_context(None) as conn:
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             futures: dict[Any, Any] = {}
@@ -168,6 +173,7 @@ def run_sources(
                         source_name_item,
                         archive_root=config.archive_root,
                         conn=thread_conn,
+                        repository=repository,
                     )
 
             def _handle_future(fut):
@@ -310,8 +316,7 @@ def run_sources(
             "duration_ms": duration_ms,
         }
         _write_run_json(config.archive_root, run_payload)
-        record_run(
-            conn,
+        repository.record_run(
             RunRecord(
                 run_id=run_id,
                 timestamp=str(run_payload["timestamp"]),

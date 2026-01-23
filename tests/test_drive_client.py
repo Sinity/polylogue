@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import polylogue.drive_client as drive_client
-from polylogue.drive_client import DriveAuthError, DriveClient
+import polylogue.ingestion.drive_client as drive_client
+from polylogue.ingestion import DriveAuthError, DriveClient
 
 
 def test_drive_client_reports_missing_dependency(monkeypatch):

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from polylogue.db import DatabaseError
+from polylogue.storage.db import DatabaseError
 from polylogue.lib.models import Conversation
 from polylogue.lib.repository import ConversationRepository
 from polylogue.server.deps import get_repository

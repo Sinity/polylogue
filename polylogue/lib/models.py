@@ -41,7 +41,8 @@ from functools import cached_property
 from pydantic import BaseModel, Field, model_validator
 
 from polylogue.core.timestamps import parse_timestamp
-from polylogue.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.types import AttachmentId, ConversationId, MessageId
 
 
 class Role(str, Enum):
@@ -299,7 +300,7 @@ class DialoguePair(BaseModel):
 
 
 class Conversation(BaseModel):
-    id: str
+    id: ConversationId
     provider: str
     title: str | None = None
     messages: list[Message]
@@ -314,7 +315,7 @@ class Conversation(BaseModel):
         messages: list[MessageRecord],
         attachments: list[AttachmentRecord],
     ) -> Conversation:
-        att_map: dict[str, list[AttachmentRecord]] = {}
+        att_map: dict[MessageId, list[AttachmentRecord]] = {}
         for att in attachments:
             if att.message_id:
                 att_map.setdefault(att.message_id, []).append(att)

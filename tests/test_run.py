@@ -4,7 +4,7 @@ import json
 import time
 
 from polylogue.config import Source, default_config, write_config
-from polylogue.db import open_connection
+from polylogue.storage.db import open_connection
 from polylogue.run import plan_sources, run_sources
 
 

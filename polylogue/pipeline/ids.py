@@ -8,7 +8,8 @@ from typing import Any
 
 from polylogue.assets import asset_path
 from polylogue.core.hashing import hash_file, hash_payload, hash_text
-from polylogue.source_ingest import ParsedAttachment, ParsedConversation, ParsedMessage
+from polylogue.ingestion import ParsedAttachment, ParsedConversation, ParsedMessage
+from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId
 
 # Sentinel values to distinguish None from empty in hash computations
 _NULL_SENTINEL = "__POLYLOGUE_NULL__"
@@ -113,7 +114,7 @@ def attachment_content_id(
     return (hash_text(seed), meta, updated_path)
 
 
-def conversation_id(provider_name: str, provider_conversation_id: str) -> str:
+def conversation_id(provider_name: str, provider_conversation_id: str) -> ConversationId:
     """Generate deterministic conversation ID from provider info.
 
     Args:
@@ -130,14 +131,14 @@ def conversation_id(provider_name: str, provider_conversation_id: str) -> str:
         raise ValueError("provider_name cannot be empty")
     if not provider_conversation_id or not provider_conversation_id.strip():
         raise ValueError("provider_conversation_id cannot be empty")
-    return f"{provider_name}:{provider_conversation_id}"
+    return ConversationId(f"{provider_name}:{provider_conversation_id}")
 
 
-def message_id(conversation_id: str, provider_message_id: str) -> str:
-    return f"{conversation_id}:{provider_message_id}"
+def message_id(conversation_id: ConversationId, provider_message_id: str) -> MessageId:
+    return MessageId(f"{conversation_id}:{provider_message_id}")
 
 
-def message_content_hash(message: ParsedMessage, provider_message_id: str) -> str:
+def message_content_hash(message: ParsedMessage, provider_message_id: str) -> ContentHash:
     """Generate content hash for a message.
 
     Uses sentinel values to distinguish None from empty string.
@@ -155,10 +156,10 @@ def message_content_hash(message: ParsedMessage, provider_message_id: str) -> st
         "text": _normalize_for_hash(message.text),
         "timestamp": _normalize_for_hash(message.timestamp),
     }
-    return hash_payload(payload)
+    return ContentHash(hash_payload(payload))
 
 
-def conversation_content_hash(convo: ParsedConversation) -> str:
+def conversation_content_hash(convo: ParsedConversation) -> ContentHash:
     """Generate content hash for conversation.
 
     Uses sentinel values to distinguish None from empty/missing fields.
@@ -197,7 +198,7 @@ def conversation_content_hash(convo: ParsedConversation) -> str:
             item.get("name") or "",
         ),
     )
-    return hash_payload(
+    return ContentHash(hash_payload(
         {
             "title": _normalize_for_hash(convo.title),
             "created_at": _normalize_for_hash(convo.created_at),
@@ -205,4 +206,4 @@ def conversation_content_hash(convo: ParsedConversation) -> str:
             "messages": messages_payload,
             "attachments": attachments_payload,
         }
-    )
+    ))
