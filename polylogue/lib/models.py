@@ -37,12 +37,16 @@ from collections.abc import Callable, Iterator
 from datetime import datetime
 from enum import Enum
 from functools import cached_property
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, model_validator
 
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 from polylogue.types import AttachmentId, ConversationId, MessageId
+
+if TYPE_CHECKING:
+    from polylogue.lib.projections import ConversationProjection
 
 
 class Role(str, Enum):
@@ -179,7 +183,9 @@ class Message(BaseModel):
         # Check structured content_blocks (populated at ingest time)
         if self.provider_meta:
             blocks = self.provider_meta.get("content_blocks", [])
-            if blocks and any(b.get("type") in ("tool_use", "tool_result") for b in blocks):
+            if isinstance(blocks, list) and any(
+                isinstance(b, dict) and b.get("type") in ("tool_use", "tool_result") for b in blocks
+            ):
                 return True
 
         # ChatGPT role=tool: distinguish thinking from actual tools
@@ -201,7 +207,7 @@ class Message(BaseModel):
         # Check structured content_blocks (populated at ingest time)
         if self.provider_meta:
             blocks = self.provider_meta.get("content_blocks", [])
-            if blocks and any(b.get("type") == "thinking" for b in blocks):
+            if isinstance(blocks, list) and any(isinstance(b, dict) and b.get("type") == "thinking" for b in blocks):
                 return True
 
         # Gemini isThought marker (from raw data)
@@ -260,14 +266,16 @@ class Message(BaseModel):
         """Cost in USD (claude-code messages)."""
         if not self.provider_meta:
             return None
-        return self.provider_meta.get("costUSD")
+        cost = self.provider_meta.get("costUSD")
+        return float(cost) if isinstance(cost, (int, float)) else None
 
     @property
     def duration_ms(self) -> int | None:
         """Response duration in milliseconds (claude-code messages)."""
         if not self.provider_meta:
             return None
-        return self.provider_meta.get("durationMs")
+        duration = self.provider_meta.get("durationMs")
+        return int(duration) if isinstance(duration, (int, float)) else None
 
     def extract_thinking(self) -> str | None:
         """Extract thinking content if present."""

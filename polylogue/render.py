@@ -64,6 +64,7 @@ def _render_html(markdown_text: str, *, title: str, template_path: Path | None =
     md = MarkdownIt("commonmark", {"html": False, "linkify": True}).enable("table")
     body_html = md.render(markdown_text)
 
+    loader: FileSystemLoader | DictLoader
     if template_path and template_path.exists():
         loader = FileSystemLoader(template_path.parent)
         template_name = template_path.name
@@ -125,7 +126,7 @@ def render_conversation(
     for att in attachments:
         attachments_by_message.setdefault(att["message_id"], []).append(att)
 
-    def _append_attachment(att) -> None:
+    def _append_attachment(att: dict[str, Any]) -> None:
         name = None
         meta = att["provider_meta"]
         if meta:

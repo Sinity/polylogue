@@ -9,6 +9,7 @@ like `substantive_only()`, `iter_pairs()`, and `without_noise()`.
 
 from __future__ import annotations
 
+import builtins
 import logging
 import sqlite3
 from contextlib import AbstractContextManager as ContextManager
@@ -23,7 +24,7 @@ from polylogue.types import ConversationId
 logger = logging.getLogger(__name__)
 
 
-def _decode_meta(payload: dict) -> None:
+def _decode_meta(payload: dict[str, object]) -> None:
     raw = payload.get("provider_meta")
     if isinstance(raw, str) and raw:
         try:
@@ -83,7 +84,7 @@ class ConversationRepository:
                 (id_prefix,),
             ).fetchone()
             if row:
-                return row["conversation_id"]
+                return ConversationId(str(row["conversation_id"]))
 
             # Try prefix match
             rows = conn.execute(
@@ -91,7 +92,7 @@ class ConversationRepository:
                 (f"{id_prefix}%",),
             ).fetchall()
             if len(rows) == 1:
-                return rows[0]["conversation_id"]
+                return ConversationId(str(rows[0]["conversation_id"]))
             return None  # No match or ambiguous
 
     def view(self, conversation_id: str) -> Conversation | None:
@@ -296,7 +297,7 @@ class ConversationRepository:
 
         return self._get_many(ids)
 
-    def search(self, query: str) -> list[Conversation]:
+    def search(self, query: str) -> "builtins.list[Conversation]":
         # FTS search using messages_fts (the actual FTS index)
         with self._get_conn() as conn:
             # Check if FTS table exists before querying

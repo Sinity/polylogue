@@ -58,7 +58,7 @@ def create_config(config_path: Path | None = None) -> Config:
         ConfigError: If config file is missing or invalid.
     """
     container = get_container(config_path)
-    return container.config()  # type: ignore[no-any-return]
+    return container.config()
 
 
 def create_storage_repository() -> StorageRepository:
@@ -68,7 +68,7 @@ def create_storage_repository() -> StorageRepository:
         StorageRepository instance with its own write lock for thread-safe operations.
     """
     container = get_container()
-    return container.storage()  # type: ignore[no-any-return]
+    return container.storage()
 
 
 def create_ingestion_service(
@@ -85,7 +85,7 @@ def create_ingestion_service(
         IngestionService instance ready for use.
     """
     container = get_container()
-    return container.ingestion_service()  # type: ignore[no-any-return]
+    return container.ingestion_service()
 
 
 def create_index_service(config: Config) -> IndexService:
@@ -98,7 +98,7 @@ def create_index_service(config: Config) -> IndexService:
         IndexService instance ready for use.
     """
     container = get_container()
-    return container.indexing_service()  # type: ignore[no-any-return]
+    return container.indexing_service()
 
 
 def create_render_service(config: Config) -> RenderService:
@@ -111,4 +111,4 @@ def create_render_service(config: Config) -> RenderService:
         RenderService instance ready for use.
     """
     container = get_container()
-    return container.rendering_service()  # type: ignore[no-any-return]
+    return container.rendering_service()

@@ -64,10 +64,10 @@ def search_command(
         if not open_result:
             env.ui.console.print(str(target))
             return
-        if target.suffix.lower() == ".html" and open_in_browser(target):  # type: ignore[union-attr,arg-type]
+        if target.suffix.lower() == ".html" and open_in_browser(target):
             env.ui.console.print(f"Opened {target} in browser")
             return
-        if open_in_editor(target):  # type: ignore[arg-type]
+        if open_in_editor(target):
             env.ui.console.print(f"Opened {target} in editor")
         else:
             env.ui.console.print(f"[yellow]Could not open {target}[/yellow]")
@@ -78,7 +78,7 @@ def search_command(
         fail("search", "Query required. Use --latest to open the most recent render instead.")
     try:
         result = search_messages(
-            query,  # type: ignore[arg-type]
+            query,
             archive_root=cfg.archive_root,
             render_root_path=cfg.render_root,
             limit=limit,
@@ -94,7 +94,7 @@ def search_command(
             except Exception as build_exc:
                 fail("search", f"Index rebuild failed: {build_exc}")
             result = search_messages(
-                query,  # type: ignore[arg-type]
+                query,
                 archive_root=cfg.archive_root,
                 render_root_path=cfg.render_root,
                 limit=limit,
