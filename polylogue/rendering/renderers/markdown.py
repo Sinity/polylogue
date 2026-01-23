@@ -88,7 +88,7 @@ class MarkdownRenderer:
         for att in attachments:
             attachments_by_message.setdefault(att["message_id"], []).append(att)
 
-        def _append_attachment(att, lines: list[str]) -> None:
+        def _append_attachment(att: dict[str, Any], lines: list[str]) -> None:
             name = None
             meta = att["provider_meta"]
             if meta:
