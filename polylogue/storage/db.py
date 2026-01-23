@@ -63,6 +63,12 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_messages_conversation
         ON messages(conversation_id);
 
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_covering
+        ON messages(conversation_id, message_id, content_hash);
+
+        CREATE INDEX IF NOT EXISTS idx_messages_conversation_ordering
+        ON messages(conversation_id, timestamp, message_id);
+
         CREATE TABLE IF NOT EXISTS attachments (
             attachment_id TEXT PRIMARY KEY,
             mime_type TEXT,
