@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from collections import defaultdict
 from pathlib import Path
 
-from .db import open_connection
+from .storage.db import open_connection
 
 
 def export_jsonl(*, archive_root: Path, output_path: Path | None = None) -> Path:

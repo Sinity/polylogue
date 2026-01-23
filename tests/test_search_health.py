@@ -7,13 +7,13 @@ import pytest
 
 from polylogue.config import default_config, load_config, write_config
 from polylogue.health import get_health
-from polylogue.index import rebuild_index
-from polylogue.ingest import IngestBundle, ingest_bundle
-from polylogue.search import search_messages
-from polylogue.store import ConversationRecord, MessageRecord
+from polylogue.ingestion import IngestBundle, ingest_bundle
+from polylogue.storage.index import rebuild_index
+from polylogue.storage.search import search_messages
+from polylogue.storage.store import ConversationRecord, MessageRecord
 
 
-def _seed_conversation():
+def _seed_conversation(storage_repository):
     ingest_bundle(
         IngestBundle(
             conversation=ConversationRecord(
@@ -39,12 +39,13 @@ def _seed_conversation():
                 )
             ],
             attachments=[],
-        )
+        ),
+        repository=storage_repository,
     )
 
 
-def test_search_after_index(workspace_env):
-    _seed_conversation()
+def test_search_after_index(workspace_env, storage_repository):
+    _seed_conversation(storage_repository)
     rebuild_index()
     results = search_messages("hello", archive_root=workspace_env["archive_root"], limit=5)
     assert results.hits
@@ -84,13 +85,15 @@ def test_search_invalid_query_reports_error(monkeypatch, workspace_env):
     def stub_open_connection(_):
         yield StubConn()
 
-    monkeypatch.setattr("polylogue.search.open_connection", stub_open_connection)
-    from polylogue.db import DatabaseError
-    with pytest.raises(DatabaseError, match="Invalid search query"):
+    monkeypatch.setattr("polylogue.storage.search.open_connection", stub_open_connection)
+    # Use type name check to handle module reload class identity issues
+    with pytest.raises(Exception) as exc_info:
         search_messages('"unterminated', archive_root=workspace_env["archive_root"], limit=5)
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "Invalid search query" in str(exc_info.value)
 
 
-def test_search_prefers_legacy_render_when_present(workspace_env):
+def test_search_prefers_legacy_render_when_present(workspace_env, storage_repository):
     """Test that search returns legacy render paths when they exist.
 
     Note: Invalid provider names are now rejected at validation, so we use a valid
@@ -124,7 +127,7 @@ def test_search_prefers_legacy_render_when_present(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     # Create a legacy-style render path
@@ -139,7 +142,7 @@ def test_search_prefers_legacy_render_when_present(workspace_env):
 
 # --since timestamp filtering tests
 
-def test_search_since_filters_by_iso_date(workspace_env):
+def test_search_since_filters_by_iso_date(workspace_env, storage_repository):
     """--since with ISO date filters messages correctly."""
     archive_root = workspace_env["archive_root"]
     # Message with ISO timestamp: 2024-01-15T10:00:00
@@ -178,7 +181,7 @@ def test_search_since_filters_by_iso_date(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     # Filter for messages after 2024-01-15
@@ -192,7 +195,7 @@ def test_search_since_filters_by_iso_date(workspace_env):
     assert results.hits[0].message_id == "msg:new-iso"
 
 
-def test_search_since_filters_numeric_timestamps(workspace_env):
+def test_search_since_filters_numeric_timestamps(workspace_env, storage_repository):
     """--since works when DB has float timestamps (e.g., 1704067200.0)."""
     archive_root = workspace_env["archive_root"]
     # 1705312800.0 = 2024-01-15T10:00:00 UTC
@@ -233,7 +236,7 @@ def test_search_since_filters_numeric_timestamps(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     # Filter for messages after 2024-01-15
@@ -247,7 +250,7 @@ def test_search_since_filters_numeric_timestamps(workspace_env):
     assert results.hits[0].message_id == "msg:new-num"
 
 
-def test_search_since_handles_mixed_timestamp_formats(workspace_env):
+def test_search_since_handles_mixed_timestamp_formats(workspace_env, storage_repository):
     """--since works with mix of ISO and numeric timestamps in same DB.
 
     Note: Search results are deduplicated by conversation, so we create
@@ -336,9 +339,9 @@ def test_search_since_handles_mixed_timestamp_formats(workspace_env):
         attachments=[],
     )
 
-    ingest_bundle(bundle_iso)
-    ingest_bundle(bundle_num)
-    ingest_bundle(bundle_old)
+    ingest_bundle(bundle_iso, repository=storage_repository)
+    ingest_bundle(bundle_num, repository=storage_repository)
+    ingest_bundle(bundle_old, repository=storage_repository)
     rebuild_index()
 
     results = search_messages(
@@ -353,10 +356,10 @@ def test_search_since_handles_mixed_timestamp_formats(workspace_env):
     assert hit_conv_ids == {"conv:iso-new", "conv:num-new"}
 
 
-def test_search_since_invalid_date_raises_error(workspace_env):
+def test_search_since_invalid_date_raises_error(workspace_env, storage_repository):
     """Invalid --since format raises ValueError with helpful message."""
     archive_root = workspace_env["archive_root"]
-    _seed_conversation()
+    _seed_conversation(storage_repository)
     rebuild_index()
 
     with pytest.raises(ValueError, match="Invalid --since date"):
@@ -376,7 +379,7 @@ def test_search_since_invalid_date_raises_error(workspace_env):
         )
 
 
-def test_search_since_boundary_condition(workspace_env):
+def test_search_since_boundary_condition(workspace_env, storage_repository):
     """Messages at or after --since timestamp are included, earlier ones excluded."""
     archive_root = workspace_env["archive_root"]
     # Use dates far enough apart that timezone differences don't matter
@@ -418,7 +421,7 @@ def test_search_since_boundary_condition(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     results = search_messages(
@@ -437,10 +440,12 @@ def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_wit
     archive_root = workspace_env["archive_root"]
 
     # Monkey-patch to use the db without FTS
-    from polylogue import db
-    from polylogue.db import DatabaseError
+    from polylogue.storage import db
 
     monkeypatch.setattr(db, "default_db_path", lambda: db_without_fts)
 
-    with pytest.raises(DatabaseError, match="Search index not built"):
+    # Use type name check to handle module reload class identity issues
+    with pytest.raises(Exception) as exc_info:
         search_messages("hello", archive_root=archive_root, limit=5)
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "Search index not built" in str(exc_info.value)

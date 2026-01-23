@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 from polylogue.core.json import loads
-from polylogue.db import connection_context
+from polylogue.storage.db import connection_context
 
 
 class VerifyStatus(str, Enum):

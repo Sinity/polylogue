@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
-from polylogue.db import open_connection
-from polylogue.index import rebuild_index
-from polylogue.search import escape_fts5_query, search_messages
-from polylogue.store import ConversationRecord, MessageRecord, store_records
+from polylogue.storage.db import open_connection
+from polylogue.storage.index import rebuild_index
+from polylogue.storage.search import escape_fts5_query, search_messages
+from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
 from tests.factories import DbFactory
 
 
@@ -258,7 +257,7 @@ class TestSearchWithSpecialCharacters:
         """Search with unclosed quote should not raise SQL error."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
         try:
-            result = search_messages('"unclosed quote', archive_root=archive_root)
+            result = search_messages('"unclosed quote', archive_root=archive_root, db_path=indexed_db)
             # Should return SearchResult, even if empty
             assert result is not None
         except Exception as exc:
@@ -268,7 +267,7 @@ class TestSearchWithSpecialCharacters:
         """Search with bare OR should not raise SQL error."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
         try:
-            result = search_messages('test OR', archive_root=archive_root)
+            result = search_messages('test OR', archive_root=archive_root, db_path=indexed_db)
             assert result is not None
         except Exception as exc:
             pytest.fail(f"Bare OR raised {exc}")
@@ -277,7 +276,7 @@ class TestSearchWithSpecialCharacters:
         """Search with unbalanced parenthesis should not raise SQL error."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
         try:
-            result = search_messages('(unbalanced', archive_root=archive_root)
+            result = search_messages('(unbalanced', archive_root=archive_root, db_path=indexed_db)
             assert result is not None
         except Exception as exc:
             pytest.fail(f"Unbalanced paren raised {exc}")
@@ -286,7 +285,7 @@ class TestSearchWithSpecialCharacters:
         """Search with colon should not raise SQL error."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
         try:
-            result = search_messages('col:umn', archive_root=archive_root)
+            result = search_messages('col:umn', archive_root=archive_root, db_path=indexed_db)
             assert result is not None
         except Exception as exc:
             pytest.fail(f"Colon raised {exc}")
@@ -295,7 +294,7 @@ class TestSearchWithSpecialCharacters:
         """Search with multiple asterisks should not raise SQL error."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
         try:
-            result = search_messages('***', archive_root=archive_root)
+            result = search_messages('***', archive_root=archive_root, db_path=indexed_db)
             assert result is not None
         except Exception as exc:
             pytest.fail(f"Multiple asterisks raised {exc}")
@@ -304,7 +303,7 @@ class TestSearchWithSpecialCharacters:
         """Search with consecutive AND/OR should not raise SQL error."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
         try:
-            result = search_messages('a AND AND b', archive_root=archive_root)
+            result = search_messages('a AND AND b', archive_root=archive_root, db_path=indexed_db)
             assert result is not None
         except Exception as exc:
             pytest.fail(f"Consecutive operators raised {exc}")
@@ -333,7 +332,7 @@ class TestSearchWithSpecialCharacters:
 
         for query in dangerous_queries:
             try:
-                result = search_messages(query, archive_root=archive_root)
+                result = search_messages(query, archive_root=archive_root, db_path=indexed_db)
                 assert result is not None, f"Query {query!r} returned None"
             except Exception as exc:
                 pytest.fail(f"Query {query!r} raised {exc}")
@@ -401,20 +400,20 @@ class TestSearchIntegration:
     def test_search_simple_word(self, search_indexed_db, search_archive_root, monkeypatch):
         """Search should find simple words."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(search_archive_root))
-        result = search_messages("decorators", archive_root=search_archive_root)
+        result = search_messages("decorators", archive_root=search_archive_root, db_path=search_indexed_db)
         assert len(result.hits) > 0
         assert any("decorators" in h.snippet.lower() for h in result.hits)
 
     def test_search_multiple_words(self, search_indexed_db, search_archive_root, monkeypatch):
         """Search should find multiple word queries."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(search_archive_root))
-        result = search_messages("HTTP methods", archive_root=search_archive_root)
+        result = search_messages("HTTP methods", archive_root=search_archive_root, db_path=search_indexed_db)
         assert len(result.hits) > 0
 
     def test_search_returns_snippet(self, search_indexed_db, search_archive_root, monkeypatch):
         """Search results should include snippets."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(search_archive_root))
-        result = search_messages("decorators", archive_root=search_archive_root)
+        result = search_messages("decorators", archive_root=search_archive_root, db_path=search_indexed_db)
         assert len(result.hits) > 0
         hit = result.hits[0]
         assert hit.snippet is not None
@@ -423,7 +422,7 @@ class TestSearchIntegration:
     def test_search_returns_conversation_metadata(self, search_indexed_db, search_archive_root, monkeypatch):
         """Search results should include conversation metadata."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(search_archive_root))
-        result = search_messages("decorators", archive_root=search_archive_root)
+        result = search_messages("decorators", archive_root=search_archive_root, db_path=search_indexed_db)
         assert len(result.hits) > 0
         hit = result.hits[0]
         assert hit.conversation_id is not None
@@ -433,12 +432,12 @@ class TestSearchIntegration:
     def test_search_respects_limit(self, search_indexed_db, search_archive_root, monkeypatch):
         """Search should respect limit parameter."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(search_archive_root))
-        result = search_messages("a", archive_root=search_archive_root, limit=1)
+        result = search_messages("a", archive_root=search_archive_root, db_path=search_indexed_db, limit=1)
         assert len(result.hits) <= 1
 
     def test_search_empty_result(self, search_indexed_db, search_archive_root, monkeypatch):
         """Search with no matches should return empty result."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(search_archive_root))
-        result = search_messages("xyzabc", archive_root=search_archive_root)
+        result = search_messages("xyzabc", archive_root=search_archive_root, db_path=search_indexed_db)
         assert result is not None
         assert len(result.hits) == 0

@@ -6,27 +6,19 @@ with emphasis on content-hash deduplication and attachment ref counting.
 
 from __future__ import annotations
 
-import sqlite3
-import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
-from pathlib import Path
 from uuid import uuid4
 
-import pytest
-
-from polylogue.db import open_connection, connection_context, SCHEMA_VERSION
-from polylogue.store import (
+from polylogue.storage.db import SCHEMA_VERSION, connection_context, open_connection
+from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
     MessageRecord,
     _make_ref_id,
     _prune_attachment_refs,
     store_records,
-    upsert_attachment,
-    upsert_conversation,
-    upsert_message,
 )
 
 
