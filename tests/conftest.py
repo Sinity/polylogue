@@ -5,6 +5,10 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _clear_polylogue_env(monkeypatch):
+    # Reset the container singleton to ensure clean state between tests
+    from polylogue.cli.container import reset_container
+    reset_container()
+
     for key in (
         "POLYLOGUE_CONFIG",
         "POLYLOGUE_ARCHIVE_ROOT",
