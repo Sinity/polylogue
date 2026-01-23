@@ -11,6 +11,9 @@ import orjson
 
 logger = logging.getLogger(__name__)
 
+# Export JSONDecodeError for compatibility
+JSONDecodeError = ValueError  # orjson.JSONDecodeError is not exposed, use ValueError
+
 
 def _default_encoder(user_default: Callable[[Any], Any] | None = None) -> Callable[[Any], Any]:
     """Create a JSON encoder that handles Decimal values."""

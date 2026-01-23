@@ -28,6 +28,7 @@ dependencies = [
   "orjson>=3.9.0",
   "structlog>=24.1.0",
   "pydantic>=2.0,<3.0",
+  "dependency-injector>=4.41.0",
 ]
 
 [project.optional-dependencies]
@@ -69,12 +70,14 @@ show_missing = true
 
 [tool.mypy]
 python_version = "3.10"
+strict = true
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
-disallow_any_generics = false
-disallow_incomplete_defs = false
-disallow_untyped_defs = false
+warn_return_any = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_untyped_defs = true
 plugins = []
 exclude = ["tests/"]
 files = [

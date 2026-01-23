@@ -11,13 +11,14 @@ from polylogue.ingestion import IngestBundle, ingest_bundle
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
-    conversation_id,
+    conversation_id as make_conversation_id,
     message_content_hash,
-    message_id,
+    message_id as make_message_id,
 )
 from polylogue.pipeline.models import ExistingConversation
 from polylogue.ingestion import ParsedConversation
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.types import AttachmentId, ConversationId, MessageId
 
 if TYPE_CHECKING:
     from polylogue.storage.repository import StorageRepository
@@ -63,10 +64,10 @@ def prepare_ingest(
             existing = ExistingConversation(conversation_id=row["conversation_id"], content_hash=row["content_hash"])
 
     if existing:
-        cid = existing.conversation_id
+        cid: ConversationId = ConversationId(existing.conversation_id)
         changed = existing.content_hash != content_hash
     else:
-        cid = conversation_id(convo.provider_name, convo.provider_conversation_id)
+        cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
         changed = False
 
     conversation_record = ConversationRecord(
@@ -81,10 +82,10 @@ def prepare_ingest(
     )
 
     messages: list[MessageRecord] = []
-    message_ids: dict[str, str] = {}
+    message_ids: dict[str, MessageId] = {}
 
     # Retrieve existing message ID mapping using the same connection
-    existing_message_ids = {}
+    existing_message_ids: dict[str, MessageId] = {}
     if conn:
         # Optimization: Reuse conn if available
         # But _existing_message_map uses its own connection context.
@@ -98,12 +99,12 @@ def prepare_ingest(
             (cid,),
         ).fetchall()
         existing_message_ids = {
-            str(row["provider_message_id"]): row["message_id"] for row in rows if row["provider_message_id"]
+            str(row["provider_message_id"]): MessageId(row["message_id"]) for row in rows if row["provider_message_id"]
         }
 
     for idx, msg in enumerate(convo.messages, start=1):
         provider_message_id = msg.provider_message_id or f"msg-{idx}"
-        mid = existing_message_ids.get(provider_message_id) or message_id(cid, provider_message_id)
+        mid: MessageId = existing_message_ids.get(provider_message_id) or make_message_id(cid, provider_message_id)
         message_hash = message_content_hash(msg, provider_message_id)
         message_ids[str(provider_message_id)] = mid
         messages.append(
@@ -125,14 +126,15 @@ def prepare_ingest(
             convo.provider_name, att, archive_root=archive_root
         )
         # Merge updated metadata with provider_id if present
-        meta = dict(updated_meta or {})
+        meta: dict = dict(updated_meta or {})
         if att.provider_attachment_id:
             meta.setdefault("provider_id", att.provider_attachment_id)
+        message_id_val: MessageId | None = message_ids.get(att.message_provider_id or "") if att.message_provider_id else None
         attachments.append(
             AttachmentRecord(
-                attachment_id=aid,
+                attachment_id=AttachmentId(aid),
                 conversation_id=cid,
-                message_id=message_ids.get(att.message_provider_id or ""),
+                message_id=message_id_val,
                 mime_type=att.mime_type,
                 size_bytes=att.size_bytes,
                 path=updated_path,

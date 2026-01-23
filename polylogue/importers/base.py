@@ -90,7 +90,8 @@ def extract_messages_from_list(items: list) -> list[ParsedMessage]:
         if not isinstance(item, dict):
             continue
         # Support various schema conventions
-        payload = item.get("message") if isinstance(item.get("message"), dict) else item
+        message_val = item.get("message")
+        payload = message_val if isinstance(message_val, dict) else item
 
         role = normalize_role(
             payload.get("role")
@@ -111,18 +112,21 @@ def extract_messages_from_list(items: list) -> list[ParsedMessage]:
         )
 
         text = None
-        if "text" in payload and isinstance(payload["text"], str):
-            text = payload["text"]
-        elif "content" in payload:
-            content = payload["content"]
+        text_val = payload.get("text")
+        if text_val is not None and isinstance(text_val, str):
+            text = text_val
+        else:
+            content = payload.get("content")
             if isinstance(content, str):
                 text = content
             elif isinstance(content, dict):
                 parts = content.get("parts")
                 if isinstance(parts, list):
                     text = "\n".join(str(part) for part in parts)
-                elif "text" in content and isinstance(content["text"], str):
-                    text = content["text"]
+                else:
+                    text_dict_val = content.get("text")
+                    if text_dict_val is not None and isinstance(text_dict_val, str):
+                        text = text_dict_val
             elif isinstance(content, list):
                 # Simple concatenation for list of strings or dicts
                 parts = []
@@ -130,7 +134,8 @@ def extract_messages_from_list(items: list) -> list[ParsedMessage]:
                     if isinstance(part, str):
                         parts.append(part)
                     elif isinstance(part, dict):
-                        parts.append(part.get("text", ""))
+                        part_text = part.get("text")
+                        parts.append(part_text if isinstance(part_text, str) else "")
                 text = "\n".join(parts)
 
         if text:

@@ -133,6 +133,7 @@ def run_sources(
     ui: object | None = None,
     source_names: Sequence[str] | None = None,
     progress_callback: Any | None = None,
+    render_format: str = "html",
 ) -> RunResult:
     """Run the pipeline with stage control.
 
@@ -143,6 +144,7 @@ def run_sources(
         ui: Optional UI object for user interaction
         source_names: Optional list of source names to process
         progress_callback: Optional callback for progress updates
+        render_format: Output format for rendering ("markdown" or "html", default: "html")
 
     Returns:
         RunResult with counts and metadata
@@ -190,11 +192,15 @@ def run_sources(
         # Rendering stage
         render_failures: list[dict[str, str]] = []
         if stage in {"render", "all"}:
+            from polylogue.rendering.renderers import create_renderer
+
             ids = _all_conversation_ids(source_names) if stage == "render" else list(processed_ids)
+            renderer = create_renderer(render_format, config)
             render_service = RenderService(
                 config.template_path,
                 config.render_root,
                 config.archive_root,
+                renderer=renderer,
             )
             render_result = render_service.render_conversations(ids)
             counts["rendered"] = render_result.rendered_count
@@ -269,9 +275,9 @@ def run_sources(
             RunRecord(
                 run_id=run_id,
                 timestamp=str(run_payload["timestamp"]),
-                plan_snapshot=plan.counts if plan else None,
-                counts=counts,
-                drift=drift,
+                plan_snapshot=plan.counts if plan else None,  # type: ignore[arg-type]
+                counts=counts,  # type: ignore[arg-type]
+                drift=drift,  # type: ignore[arg-type]
                 indexed=indexed,
                 duration_ms=duration_ms,
             ),

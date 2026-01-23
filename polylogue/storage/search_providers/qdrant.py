@@ -68,7 +68,7 @@ class QdrantProvider:
         api_key: str | None,
         voyage_key: str,
         collection: str = DEFAULT_COLLECTION
-    ):
+    ) -> None:
         """Initialize Qdrant vector search provider.
 
         Args:
@@ -84,7 +84,7 @@ class QdrantProvider:
         self.api_key = api_key
         self.voyage_key = voyage_key
         self.collection = collection
-        self._client = None
+        self._client: QdrantClient | None = None
 
         # Ensure collection exists
         self._ensure_collection()

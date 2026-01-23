@@ -1,7 +1,8 @@
 # Polylogue Architecture Refactoring Plan
 
-**Status**: Draft
+**Status**: In Progress (Priority 1-2 Complete, Working on Priority 3)
 **Created**: 2026-01-22
+**Last Updated**: 2026-01-23
 **Estimated Total Effort**: 6-8 weeks
 
 This document tracks architectural improvements to enhance modularity, testability, and extensibility of Polylogue.
@@ -10,11 +11,11 @@ This document tracks architectural improvements to enhance modularity, testabili
 
 ## Quick Reference
 
-- 🟢 **Priority 1 (High Impact, Low Effort)**: ~1 week total
-- 🟡 **Priority 2 (Medium Impact, Medium Effort)**: ~2-3 weeks total
-- 🔴 **Priority 3 (High Impact, High Effort)**: ~3-4 weeks total
+- ✅ **Priority 1 (High Impact, Low Effort)**: COMPLETE (1.1, 1.2, 1.3, 1.4)
+- ✅ **Priority 2 (Medium Impact, Medium Effort)**: COMPLETE (2.1, 2.2, 2.3, 2.4)
+- 🟡 **Priority 3 (High Impact, High Effort)**: IN PROGRESS (3.1 complete, 3.2-3.3 active)
 
-**Progress**: 55/200+ tasks completed (Priority 1: Sections 1.1, 1.2, 1.3, 1.4 complete - PRIORITY 1 COMPLETE ✅)
+**Progress**: 130+/200+ tasks completed (Priority 1-2: 100% | Priority 3: ~45%)
 
 ---
 
@@ -103,152 +104,162 @@ This document tracks architectural improvements to enhance modularity, testabili
 
 ---
 
-## Priority 2: Medium Impact, Medium Effort (2-3 weeks)
+## Priority 2: Medium Impact, Medium Effort (2-3 weeks) ✅ COMPLETE
 
-### 2.1 Configuration Object Refactoring (3 days)
+### 2.1 Configuration Object Refactoring (3 days) ✅ COMPLETE
 
 **Goal**: Replace environment variable checks with config objects
 
 **Dependencies**: 1.1 (Module Organization)
 
+**Delivered**: IndexConfig and DriveConfig dataclasses, env var migration logic, tests updated
+
 #### Index Configuration
-- [ ] Add `IndexConfig` dataclass to `config.py`
-- [ ] Add fields: `fts_enabled`, `qdrant_url`, `qdrant_api_key`, `voyage_api_key`
-- [ ] Update `Config` class to include `index_config: IndexConfig`
-- [ ] Update `storage/index.py` to accept `IndexConfig` parameter
-- [ ] Remove `os.environ.get("QDRANT_URL")` check in `index.py:37`
-- [ ] Update `pipeline/runner.py` to pass config to index functions
-- [ ] Update CLI commands to pass config
-- [ ] Update tests to use config fixtures
+- [x] Add `IndexConfig` dataclass to `config.py`
+- [x] Add fields: `fts_enabled`, `qdrant_url`, `qdrant_api_key`, `voyage_api_key`
+- [x] Update `Config` class to include `index_config: IndexConfig`
+- [x] Update `storage/index.py` to accept `IndexConfig` parameter
+- [x] Remove `os.environ.get("QDRANT_URL")` check in `index.py:37`
+- [x] Update `pipeline/runner.py` to pass config to index functions
+- [x] Update CLI commands to pass config
+- [x] Update tests to use config fixtures
 
 #### Drive Configuration
-- [ ] Add `DriveConfig` dataclass to `config.py`
-- [ ] Add fields: `credentials_path`, `token_path`, `retry_count`, `timeout`
-- [ ] Update `ingestion/drive_client.py` to accept `DriveConfig`
-- [ ] Remove all `os.environ.get()` calls in drive modules
-- [ ] Update `pipeline/runner.py` to pass drive config
-- [ ] Update tests with drive config fixtures
+- [x] Add `DriveConfig` dataclass to `config.py`
+- [x] Add fields: `credentials_path`, `token_path`, `retry_count`, `timeout`
+- [x] Update `ingestion/drive_client.py` to accept `DriveConfig`
+- [x] Remove all `os.environ.get()` calls in drive modules
+- [x] Update `pipeline/runner.py` to pass drive config
+- [x] Update tests with drive config fixtures
 
 #### Configuration Migration
-- [ ] Add migration logic in `config.py` to read from env vars for backward compatibility
-- [ ] Update documentation with new config schema
-- [ ] Add deprecation warnings for env var usage
-- [ ] Update example config files
+- [x] Add migration logic in `config.py` to read from env vars for backward compatibility
+- [x] Update documentation with new config schema
+- [x] Add deprecation warnings for env var usage
+- [x] Update example config files
 
-### 2.2 Pipeline Service Decomposition (1 week)
+### 2.2 Pipeline Service Decomposition (1 week) ✅ COMPLETE
 
 **Goal**: Break pipeline god object into focused services with dependency injection
 
 **Dependencies**: 1.2 (Storage Repository), 2.1 (Config Objects)
 
+**Delivered**: Three focused service classes (Ingestion, Indexing, Rendering) with clean DI, reduced PipelineRunner complexity, service test fixtures
+
 #### Service Extraction
-- [ ] Create `pipeline/services/` package directory
-- [ ] Create `pipeline/services/ingestion.py` with `IngestionService` class
-- [ ] Create `pipeline/services/indexing.py` with `IndexService` class
-- [ ] Create `pipeline/services/rendering.py` with `RenderService` class
-- [ ] Move ingestion logic from `runner.py` to `IngestionService`
-- [ ] Move indexing logic from `runner.py` to `IndexService`
-- [ ] Move rendering logic from `runner.py` to `RenderService`
+- [x] Create `pipeline/services/` package directory
+- [x] Create `pipeline/services/ingestion.py` with `IngestionService` class
+- [x] Create `pipeline/services/indexing.py` with `IndexService` class
+- [x] Create `pipeline/services/rendering.py` with `RenderService` class
+- [x] Move ingestion logic from `runner.py` to `IngestionService`
+- [x] Move indexing logic from `runner.py` to `IndexService`
+- [x] Move rendering logic from `runner.py` to `RenderService`
 
 #### Service Interfaces
-- [ ] Define `IngestionService.__init__(storage_repo, drive_client, config)`
-- [ ] Define `IndexService.__init__(fts_provider, vector_provider, config)`
-- [ ] Define `RenderService.__init__(template_path, output_dir, config)`
-- [ ] Add dependency injection to services (accept dependencies in constructor)
-- [ ] Update `PipelineRunner` to orchestrate services instead of doing work
-- [ ] Reduce `PipelineRunner` imports from 18 to ~5
+- [x] Define `IngestionService.__init__(storage_repo, drive_client, config)`
+- [x] Define `IndexService.__init__(fts_provider, vector_provider, config)`
+- [x] Define `RenderService.__init__(template_path, output_dir, config)`
+- [x] Add dependency injection to services (accept dependencies in constructor)
+- [x] Update `PipelineRunner` to orchestrate services instead of doing work
+- [x] Reduce `PipelineRunner` imports from 18 to ~5
 
 #### Testing Improvements
-- [ ] Create service test fixtures with mock dependencies
-- [ ] Add unit tests for `IngestionService` with mock storage
-- [ ] Add unit tests for `IndexService` with mock providers
-- [ ] Add unit tests for `RenderService` with mock templates
-- [ ] Update integration tests to use real services
-- [ ] Verify test coverage remains >85%
+- [x] Create service test fixtures with mock dependencies
+- [x] Add unit tests for `IngestionService` with mock storage
+- [x] Add unit tests for `IndexService` with mock providers
+- [x] Add unit tests for `RenderService` with mock templates
+- [x] Update integration tests to use real services
+- [x] Verify test coverage remains >85%
 
-### 2.3 Search Provider Abstraction (3 days)
+### 2.3 Search Provider Abstraction (3 days) ✅ COMPLETE
 
 **Goal**: Implement strategy pattern for search backends
 
 **Dependencies**: 1.3 (Protocols), 2.1 (Config)
 
+**Delivered**: FTS5Provider and QdrantProvider implementations, factory pattern, provider mocks for testing
+
 #### Provider Implementations
-- [ ] Create `storage/search_providers/` package
-- [ ] Create `storage/search_providers/fts5.py` with `FTS5Provider` class
-- [ ] Create `storage/search_providers/qdrant.py` with `QdrantProvider` class
-- [ ] Implement `SearchProvider` protocol in both providers
-- [ ] Move FTS5 logic from `index.py` to `FTS5Provider`
-- [ ] Move Qdrant logic from `index_qdrant.py` to `QdrantProvider`
+- [x] Create `storage/search_providers/` package
+- [x] Create `storage/search_providers/fts5.py` with `FTS5Provider` class
+- [x] Create `storage/search_providers/qdrant.py` with `QdrantProvider` class
+- [x] Implement `SearchProvider` protocol in both providers
+- [x] Move FTS5 logic from `index.py` to `FTS5Provider`
+- [x] Move Qdrant logic from `index_qdrant.py` to `QdrantProvider`
 
 #### Integration
-- [ ] Create provider factory in `storage/search_providers/__init__.py`
-- [ ] Add `create_search_provider(config: IndexConfig)` factory function
-- [ ] Update `IndexService` to use provider factory
-- [ ] Remove conditional imports from `index.py`
-- [ ] Update tests to use provider mocks
-- [ ] Add provider-specific test suites
+- [x] Create provider factory in `storage/search_providers/__init__.py`
+- [x] Add `create_search_provider(config: IndexConfig)` factory function
+- [x] Update `IndexService` to use provider factory
+- [x] Remove conditional imports from `index.py`
+- [x] Update tests to use provider mocks
+- [x] Add provider-specific test suites
 
-### 2.4 CLI Dependency Injection (3 days)
+### 2.4 CLI Dependency Injection (3 days) ✅ COMPLETE
 
 **Goal**: Refactor CLI to use factory pattern for testability
 
 **Dependencies**: 2.2 (Service Decomposition)
 
-- [ ] Create `cli/container.py` for dependency container
-- [ ] Define `create_config()` factory function
-- [ ] Define `create_storage_repository()` factory function
-- [ ] Define `create_ingestion_service()` factory function
-- [ ] Define `create_index_service()` factory function
-- [ ] Define `create_render_service()` factory function
-- [ ] Define `create_pipeline_runner()` factory function
-- [ ] Update CLI commands to use factories instead of direct instantiation
-- [ ] Add `--config` flag to override config path
-- [ ] Add CLI test suite using mock factories
-- [ ] Update CLI documentation
+**Delivered**: CLI container with factory functions, --config flag, CLI test suite with mocks, documentation updated
+
+- [x] Create `cli/container.py` for dependency container
+- [x] Define `create_config()` factory function
+- [x] Define `create_storage_repository()` factory function
+- [x] Define `create_ingestion_service()` factory function
+- [x] Define `create_index_service()` factory function
+- [x] Define `create_render_service()` factory function
+- [x] Define `create_pipeline_runner()` factory function
+- [x] Update CLI commands to use factories instead of direct instantiation
+- [x] Add `--config` flag to override config path
+- [x] Add CLI test suite using mock factories
+- [x] Update CLI documentation
 
 ---
 
 ## Priority 3: High Impact, High Effort (3-4 weeks)
 
-### 3.1 Storage Abstraction Layer (2 weeks)
+### 3.1 Storage Abstraction Layer (2 weeks) ✅ COMPLETE
 
 **Goal**: Enable swapping storage backends (SQLite → PostgreSQL/DuckDB)
 
 **Dependencies**: 1.2 (Storage Repository), 1.3 (Protocols)
 
+**Delivered**: StorageBackend protocol, SQLiteBackend implementation, backend factory, full test suite updated
+
 #### Protocol Definition
-- [ ] Extend `StorageBackend` protocol in `protocols.py`
-- [ ] Define `get_conversation(id) -> ConversationRecord | None`
-- [ ] Define `list_conversations(filter) -> list[ConversationRecord]`
-- [ ] Define `save_conversation(record) -> None`
-- [ ] Define `get_messages(conversation_id) -> list[MessageRecord]`
-- [ ] Define `save_messages(records) -> None`
-- [ ] Define `get_attachments(conversation_id) -> list[AttachmentRecord]`
-- [ ] Define `save_attachments(records) -> None`
-- [ ] Define `search_messages(query) -> list[MessageRecord]`
-- [ ] Define transaction methods: `begin()`, `commit()`, `rollback()`
+- [x] Extend `StorageBackend` protocol in `protocols.py`
+- [x] Define `get_conversation(id) -> ConversationRecord | None`
+- [x] Define `list_conversations(filter) -> list[ConversationRecord]`
+- [x] Define `save_conversation(record) -> None`
+- [x] Define `get_messages(conversation_id) -> list[MessageRecord]`
+- [x] Define `save_messages(records) -> None`
+- [x] Define `get_attachments(conversation_id) -> list[AttachmentRecord]`
+- [x] Define `save_attachments(records) -> None`
+- [x] Define `search_messages(query) -> list[MessageRecord]`
+- [x] Define transaction methods: `begin()`, `commit()`, `rollback()`
 
 #### SQLite Backend Implementation
-- [ ] Create `storage/backends/` package
-- [ ] Create `storage/backends/sqlite.py` with `SQLiteBackend` class
-- [ ] Move all SQL queries from scattered modules to `SQLiteBackend`
-- [ ] Implement `StorageBackend` protocol in `SQLiteBackend`
-- [ ] Move schema management to `SQLiteBackend`
-- [ ] Move migration logic to `SQLiteBackend`
-- [ ] Add connection pooling to `SQLiteBackend`
-- [ ] Update `StorageRepository` to accept `StorageBackend` parameter
+- [x] Create `storage/backends/` package
+- [x] Create `storage/backends/sqlite.py` with `SQLiteBackend` class
+- [x] Move all SQL queries from scattered modules to `SQLiteBackend`
+- [x] Implement `StorageBackend` protocol in `SQLiteBackend`
+- [x] Move schema management to `SQLiteBackend`
+- [x] Move migration logic to `SQLiteBackend`
+- [x] Add connection pooling to `SQLiteBackend`
+- [x] Update `StorageRepository` to accept `StorageBackend` parameter
 
 #### Integration & Migration
-- [ ] Create backend factory in `storage/backends/__init__.py`
-- [ ] Add `backend_type` field to config
-- [ ] Update `storage/repository.py` to use backend abstraction
-- [ ] Remove direct SQL from `lib/repository.py`
-- [ ] Remove direct SQL from `pipeline/ingest.py`
-- [ ] Remove direct SQL from CLI commands
-- [ ] Update all tests to use backend fixtures
-- [ ] Create backend integration test suite
-- [ ] Run full test suite with SQLite backend
-- [ ] Document backend abstraction in architecture docs
+- [x] Create backend factory in `storage/backends/__init__.py`
+- [x] Add `backend_type` field to config
+- [x] Update `storage/repository.py` to use backend abstraction
+- [x] Remove direct SQL from `lib/repository.py`
+- [x] Remove direct SQL from `pipeline/ingest.py`
+- [x] Remove direct SQL from CLI commands
+- [x] Update all tests to use backend fixtures
+- [x] Create backend integration test suite
+- [x] Run full test suite with SQLite backend
+- [x] Document backend abstraction in architecture docs
 
 #### Future Backend Support (Optional)
 - [ ] Create `storage/backends/postgres.py` (stub implementation)

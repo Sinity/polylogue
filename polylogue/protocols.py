@@ -285,9 +285,49 @@ class Renderer(Protocol):
         ...
 
 
+@runtime_checkable
+class OutputRenderer(Protocol):
+    """Protocol for pluggable output renderers.
+
+    This protocol defines the interface for rendering conversations to various
+    output formats. Implementations can provide format-specific rendering logic
+    while maintaining a consistent API.
+
+    Example implementations:
+    - MarkdownRenderer (plain text markdown output)
+    - HTMLRenderer (HTML with Jinja2 templates)
+    - JSONRenderer (future)
+    """
+
+    def render(self, conversation_id: str, output_path: Path) -> Path:
+        """Render a conversation to the output format.
+
+        Args:
+            conversation_id: ID of the conversation to render
+            output_path: Directory where the rendered file should be written
+
+        Returns:
+            Path to the generated output file
+
+        Raises:
+            ValueError: If conversation not found
+            IOError: If output path is invalid or write fails
+        """
+        ...
+
+    def supports_format(self) -> str:
+        """Return the output format this renderer supports.
+
+        Returns:
+            Format identifier (e.g., 'markdown', 'html', 'json')
+        """
+        ...
+
+
 __all__ = [
     "SearchProvider",
     "VectorProvider",
     "StorageBackend",
     "Renderer",
+    "OutputRenderer",
 ]
