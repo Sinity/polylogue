@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 
-from ..storage.store import AttachmentRecord, ConversationRecord, MessageRecord, store_records
+from ..storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 if TYPE_CHECKING:
     from ..storage.repository import StorageRepository
@@ -29,37 +29,32 @@ class IngestResult(BaseModel):
 def ingest_bundle(
     bundle: IngestBundle,
     *,
+    repository: "StorageRepository | None" = None,
     conn: sqlite3.Connection | None = None,
-    repository: StorageRepository | None = None,
 ) -> IngestResult:
     """Ingest a conversation bundle into storage.
 
     Args:
         bundle: The conversation bundle to ingest
-        conn: Optional database connection
-        repository: Optional storage repository (recommended for thread-safe operations)
+        repository: Storage repository for thread-safe operations (creates default if None)
+        conn: Optional database connection (unused - kept for backwards compatibility)
 
     Returns:
         IngestResult with counts of inserted/skipped records
-
-    Note:
-        If repository is provided, it will be used for storage operations (recommended).
-        Otherwise, falls back to legacy store_records() function.
     """
-    if repository:
-        counts = repository.save_conversation(
-            conversation=bundle.conversation,
-            messages=bundle.messages,
-            attachments=bundle.attachments,
-            conn=conn,
-        )
-    else:
-        counts = store_records(
-            conversation=bundle.conversation,
-            messages=bundle.messages,
-            attachments=bundle.attachments,
-            conn=conn,
-        )
+    # Create default repository if none provided
+    if repository is None:
+        from ..storage.backends.sqlite import create_default_backend
+        from ..storage.repository import StorageRepository
+        backend = create_default_backend()
+        repository = StorageRepository(backend=backend)
+
+    counts = repository.save_conversation(
+        conversation=bundle.conversation,
+        messages=bundle.messages,
+        attachments=bundle.attachments,
+        conn=conn,
+    )
 
     return IngestResult(
         conversations=counts["conversations"],

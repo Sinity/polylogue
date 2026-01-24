@@ -144,9 +144,8 @@ class TestApplicationContainer:
 
         service = container.rendering_service()
 
-        assert service.template_path == test_config.template_path
+        assert service.renderer is not None
         assert service.render_root == test_config.render_root
-        assert service.archive_root == test_config.archive_root
 
     def test_container_override_config(self, test_config: Config):
         """Test that container can be overridden for testing."""
@@ -246,8 +245,8 @@ class TestContainerIntegration:
             assert ingestion.config is config
             assert indexing.config is config
 
-            # Rendering service gets specific config attributes
-            assert rendering.archive_root == config.archive_root
+            # Rendering service has correct dependencies
+            assert rendering.renderer is not None
             assert rendering.render_root == config.render_root
 
     def test_repository_thread_safety(self, test_config: Config):

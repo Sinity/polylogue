@@ -141,10 +141,11 @@ class TestFormatTimestamp:
     """Test format_timestamp function."""
 
     def test_format_timestamp_datetime(self):
-        """Format datetime object to ISO string."""
+        """Format datetime object to ISO string with UTC timezone."""
         dt = datetime(2024, 1, 1, 12, 30, 45)
         result = format_timestamp(dt)
-        assert result == "2024-01-01T12:30:45"
+        # Naive datetimes are treated as UTC
+        assert result == "2024-01-01T12:30:45+00:00"
 
     def test_format_timestamp_epoch_int(self):
         """Format integer epoch to ISO string."""
@@ -168,7 +169,7 @@ class TestFormatTimestamp:
         result = format_timestamp(dt)
         # Should not include microseconds
         assert ".123456" not in result
-        assert result == "2024-01-01T12:30:45"
+        assert result == "2024-01-01T12:30:45+00:00"
 
     def test_format_timestamp_datetime_with_timezone(self):
         """Format datetime with timezone info."""
@@ -211,7 +212,12 @@ class TestRoundtrip:
         formatted = format_timestamp(parsed)
 
         assert parsed is not None
-        assert formatted == iso_string
+        # Output now includes UTC timezone suffix
+        assert formatted == "2024-01-01T12:30:45+00:00"
+        # Verify the datetime value is preserved
+        reparsed = parse_timestamp(formatted)
+        assert reparsed is not None
+        assert abs((parsed - reparsed).total_seconds()) < 1.0
 
     def test_roundtrip_datetime(self):
         """Format and parse datetime preserves value."""
