@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
-
 import pytest
 
-from polylogue.storage.db import open_connection
 from polylogue.importers.base import ParsedAttachment, ParsedConversation, ParsedMessage
 from polylogue.pipeline.ids import (
     conversation_content_hash,
+    conversation_id,
     message_content_hash,
     message_id,
-    conversation_id,
 )
 from polylogue.pipeline.ingest import prepare_ingest
-
+from polylogue.storage.db import open_connection
 
 # ============================================================================
 # Test conversation_content_hash

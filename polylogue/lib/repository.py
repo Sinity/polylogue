@@ -15,12 +15,12 @@ import builtins
 import logging
 from typing import TYPE_CHECKING
 
-from polylogue.storage.db import DatabaseError
 from polylogue.lib.models import Conversation
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
+    from polylogue.lib import filters
     from polylogue.protocols import StorageBackend
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ class ConversationRepository:
                 print(pair.exchange)
     """
 
-    def __init__(self, backend: "StorageBackend") -> None:
+    def __init__(self, backend: StorageBackend) -> None:
         """Initialize the repository.
 
         Args:
@@ -176,11 +176,12 @@ class ConversationRepository:
         ids = [str(rec.conversation_id) for rec in conv_records]
         return self._get_many(ids)
 
-    def search(self, query: str) -> "builtins.list[Conversation]":
+    def search(self, query: str, limit: int = 20) -> builtins.list[Conversation]:
         """Search conversations using full-text search.
 
         Args:
             query: Search query string
+            limit: Maximum number of results to return (default 20)
 
         Returns:
             List of matching conversations ordered by relevance
@@ -188,5 +189,24 @@ class ConversationRepository:
         Raises:
             DatabaseError: If search index not available
         """
-        ids = self._backend.search_conversations(query, limit=20)
+        ids = self._backend.search_conversations(query, limit=limit)
         return self._get_many(ids)
+
+    def filter(self) -> filters.ConversationFilter:
+        """Create a filter builder for chainable queries.
+
+        Returns a ConversationFilter that can be used to build complex queries:
+
+            repo.filter()
+                .provider("claude")
+                .since("2024-01-01")
+                .contains("error")
+                .limit(10)
+                .list()
+
+        Returns:
+            ConversationFilter builder for chainable queries
+        """
+        from polylogue.lib import filters
+
+        return filters.ConversationFilter(self)

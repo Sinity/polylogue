@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -124,7 +123,7 @@ class TestPolylogueIngest:
         """Test ingesting a ChatGPT export file."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         result = archive.ingest_file(sample_chatgpt_file)
@@ -142,7 +141,7 @@ class TestPolylogueIngest:
         """Test ingesting a Claude AI export file."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         result = archive.ingest_file(sample_claude_file)
@@ -159,7 +158,7 @@ class TestPolylogueIngest:
         """Test that re-ingesting the same file skips duplicates."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         # First ingest
@@ -175,7 +174,7 @@ class TestPolylogueIngest:
         """Test ingesting with a custom source name."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         result = archive.ingest_file(sample_chatgpt_file, source_name="my_custom_source")
@@ -185,7 +184,7 @@ class TestPolylogueIngest:
         """Test ingesting multiple sources."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         sources = [
@@ -212,7 +211,7 @@ class TestPolylogueQuery:
         """Test getting a conversation by full ID."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         # Ingest and get conversation ID
@@ -230,7 +229,7 @@ class TestPolylogueQuery:
         """Test getting a conversation by partial ID (prefix match)."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         # Ingest and get conversation ID
@@ -248,7 +247,7 @@ class TestPolylogueQuery:
         """Test getting a non-existent conversation returns None."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         conv = archive.get_conversation("nonexistent_id")
@@ -258,7 +257,7 @@ class TestPolylogueQuery:
         """Test listing all conversations."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         # Ingest both files
@@ -273,7 +272,7 @@ class TestPolylogueQuery:
         """Test filtering conversations by provider."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         # Ingest both files
@@ -293,7 +292,7 @@ class TestPolylogueQuery:
         """Test limiting the number of conversations returned."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         archive.ingest_file(sample_chatgpt_file)
@@ -310,7 +309,7 @@ class TestPolylogueSemanticProjections:
         """Test getting substantive messages only."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         # Ingest
@@ -328,7 +327,7 @@ class TestPolylogueSemanticProjections:
         """Test iterating user/assistant pairs."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         # Ingest
@@ -347,7 +346,7 @@ class TestPolylogueSemanticProjections:
         """Test filtering out noise messages."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         # Ingest
@@ -367,7 +366,7 @@ class TestPolylogueSearch:
         """Test basic search functionality."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         # Ingest
@@ -385,7 +384,7 @@ class TestPolylogueSearch:
         """Test search with result limit."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         # Ingest
@@ -407,7 +406,7 @@ class TestPolylogueEdgeCases:
         """Test operations on an empty archive."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         # List should return empty
@@ -422,7 +421,7 @@ class TestPolylogueEdgeCases:
         """Test ingesting a non-existent file."""
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["state_root"] / "polylogue.db",
+            db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
         nonexistent = tmp_path / "does_not_exist.json"

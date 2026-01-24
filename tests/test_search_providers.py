@@ -1,6 +1,6 @@
 """Tests for search provider factory functions and FTS5 provider."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -127,7 +127,7 @@ class TestFTS5Provider:
     @pytest.fixture
     def fts_provider(self, workspace_env):
         """Create FTS5Provider with test database."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         return FTS5Provider(db_path=db_path)
 
     @pytest.fixture
@@ -176,7 +176,7 @@ class TestFTS5Provider:
         """Ensure index creates FTS5 virtual table."""
         from polylogue.storage.db import open_connection
 
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         # Index empty list to trigger table creation
         fts_provider.index([])
@@ -229,8 +229,6 @@ class TestFTS5Provider:
 
     def test_ensure_index_idempotent(self, workspace_env, fts_provider, storage_repository):
         """Calling index multiple times is safe (idempotent)."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
-
         conv = ConversationRecord(
             conversation_id="idem-conv",
             provider_name="test",
@@ -266,7 +264,7 @@ class TestFTS5Provider:
 
     def test_index_deletes_old_entries(self, workspace_env, fts_provider, storage_repository):
         """Incremental indexing removes old entries before inserting."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         conv = ConversationRecord(
             conversation_id="incr-conv",
@@ -322,7 +320,7 @@ class TestFTS5Provider:
 
     def test_index_skips_empty_text(self, workspace_env, fts_provider, storage_repository):
         """Messages with empty text are not indexed."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         conv = ConversationRecord(
             conversation_id="skip-conv",
@@ -380,7 +378,7 @@ class TestFTS5Provider:
 
     def test_search_returns_empty_if_no_index(self, workspace_env):
         """Search returns empty list if FTS index doesn't exist."""
-        db_path = workspace_env["state_root"] / "polylogue" / "nonexistent.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "nonexistent.db"
         provider = FTS5Provider(db_path=db_path)
         results = provider.search("anything")
         assert results == []

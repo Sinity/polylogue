@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Config
-from .storage.db import open_connection
 from .ingestion.drive_client import default_credentials_path, default_token_path
+from .storage.db import open_connection
 from .storage.index import index_status
 
 LOGGER = logging.getLogger(__name__)

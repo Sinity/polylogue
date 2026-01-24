@@ -1,4 +1,4 @@
-"""Tests for the verify CLI command."""
+"""Tests for the check CLI command."""
 
 from __future__ import annotations
 
@@ -29,11 +29,11 @@ def _extract_json(output: str) -> dict:
     return json.loads(json_str)
 
 
-class TestVerifyCommand:
-    """Tests for polylogue verify command."""
+class TestCheckCommand:
+    """Tests for polylogue check command."""
 
-    def test_verify_clean_database(self, workspace_env, cli_runner):
-        """Verify command succeeds on clean database with valid data."""
+    def test_check_clean_database(self, workspace_env, cli_runner):
+        """Check command succeeds on clean database with valid data."""
         db_path = default_db_path()
         factory = DbFactory(db_path)
 
@@ -48,12 +48,12 @@ class TestVerifyCommand:
             ],
         )
 
-        result = cli_runner.invoke(cli, ["verify"])
+        result = cli_runner.invoke(cli, ["check"])
         assert result.exit_code == 0
         assert "ok" in result.output.lower() or "✓" in result.output
 
-    def test_verify_json_output(self, workspace_env, cli_runner):
-        """Verify --json flag produces valid JSON."""
+    def test_check_json_output(self, workspace_env, cli_runner):
+        """Check --json flag produces valid JSON."""
         db_path = default_db_path()
         factory = DbFactory(db_path)
 
@@ -63,7 +63,7 @@ class TestVerifyCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "verify", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
         assert result.exit_code == 0
 
         # Parse JSON output
@@ -73,13 +73,13 @@ class TestVerifyCommand:
         assert isinstance(data["checks"], list)
         assert isinstance(data["summary"], dict)
 
-        # Verify summary has expected keys
+        # Check summary has expected keys
         assert "ok" in data["summary"]
         assert "warning" in data["summary"]
         assert "error" in data["summary"]
 
-    def test_verify_detects_orphan_messages(self, workspace_env, cli_runner):
-        """Verify detects messages without conversations."""
+    def test_check_detects_orphan_messages(self, workspace_env, cli_runner):
+        """Check detects messages without conversations."""
         db_path = default_db_path()
 
         # Disable foreign key constraints temporarily to insert orphan message
@@ -105,7 +105,7 @@ class TestVerifyCommand:
             )
             conn.execute("PRAGMA foreign_keys = ON")
 
-        result = cli_runner.invoke(cli, ["--plain", "verify", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -122,8 +122,8 @@ class TestVerifyCommand:
         # Summary should show at least one error
         assert data["summary"]["error"] >= 1
 
-    def test_verify_verbose_output(self, workspace_env, cli_runner):
-        """Verify -v flag increases detail with provider breakdown."""
+    def test_check_verbose_output(self, workspace_env, cli_runner):
+        """Check -v flag increases detail with provider breakdown."""
         db_path = default_db_path()
         factory = DbFactory(db_path)
 
@@ -140,19 +140,19 @@ class TestVerifyCommand:
         )
 
         # Run verify without verbose
-        result_normal = cli_runner.invoke(cli, ["verify"])
+        result_normal = cli_runner.invoke(cli, ["check"])
         assert result_normal.exit_code == 0
 
         # Run verify with verbose
-        result_verbose = cli_runner.invoke(cli, ["verify", "-v"])
+        result_verbose = cli_runner.invoke(cli, ["check", "-v"])
         assert result_verbose.exit_code == 0
 
         # Verbose output should contain provider names for breakdowns
         # (provider_distribution check always has breakdown)
         assert "chatgpt" in result_verbose.output or "claude" in result_verbose.output
 
-    def test_verify_detects_empty_conversations(self, workspace_env, cli_runner):
-        """Verify detects conversations with no messages (warning status)."""
+    def test_check_detects_empty_conversations(self, workspace_env, cli_runner):
+        """Check detects conversations with no messages (warning status)."""
         db_path = default_db_path()
 
         # Create a conversation with no messages
@@ -177,7 +177,7 @@ class TestVerifyCommand:
                 ),
             )
 
-        result = cli_runner.invoke(cli, ["--plain", "verify", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -191,8 +191,8 @@ class TestVerifyCommand:
         assert empty_check["status"] == "warning"
         assert empty_check["count"] == 1
 
-    def test_verify_no_duplicate_conversation_ids(self, workspace_env, cli_runner):
-        """Verify duplicate_conversations check passes when there are no duplicates."""
+    def test_check_no_duplicate_conversation_ids(self, workspace_env, cli_runner):
+        """Check duplicate_conversations check passes when there are no duplicates."""
         db_path = default_db_path()
         factory = DbFactory(db_path)
 
@@ -208,7 +208,7 @@ class TestVerifyCommand:
             messages=[{"id": "m2", "role": "user", "text": "test2"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "verify", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -222,8 +222,8 @@ class TestVerifyCommand:
         assert dup_check["status"] == "ok"
         assert dup_check["count"] == 0  # No duplicates found
 
-    def test_verify_detects_fts_sync_issues(self, workspace_env, cli_runner):
-        """Verify detects FTS sync issues when FTS table is missing."""
+    def test_check_detects_fts_sync_issues(self, workspace_env, cli_runner):
+        """Check detects FTS sync issues when FTS table is missing."""
         db_path = default_db_path()
         factory = DbFactory(db_path)
 
@@ -238,7 +238,7 @@ class TestVerifyCommand:
         with open_connection(db_path) as conn:
             conn.execute("DROP TABLE IF EXISTS messages_fts")
 
-        result = cli_runner.invoke(cli, ["--plain", "verify", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
@@ -252,8 +252,8 @@ class TestVerifyCommand:
         # Should be warning due to missing FTS table
         assert fts_check["status"] == "warning"
 
-    def test_verify_plain_output_format(self, workspace_env, cli_runner):
-        """Verify --plain flag produces plain text output without colors."""
+    def test_check_plain_output_format(self, workspace_env, cli_runner):
+        """Check --plain flag produces plain text output without colors."""
         db_path = default_db_path()
         factory = DbFactory(db_path)
 
@@ -263,7 +263,7 @@ class TestVerifyCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "verify"])
+        result = cli_runner.invoke(cli, ["--plain", "check"])
         assert result.exit_code == 0
 
         # Plain output should use OK/WARN/ERR instead of symbols
@@ -272,8 +272,8 @@ class TestVerifyCommand:
         assert "[green]" not in result.output
         assert "[red]" not in result.output
 
-    def test_verify_summary_counts(self, workspace_env, cli_runner):
-        """Verify summary shows correct counts of ok/warning/error checks."""
+    def test_check_summary_counts(self, workspace_env, cli_runner):
+        """Check summary shows correct counts of ok/warning/error checks."""
         db_path = default_db_path()
         factory = DbFactory(db_path)
 
@@ -284,7 +284,7 @@ class TestVerifyCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        result = cli_runner.invoke(cli, ["verify"])
+        result = cli_runner.invoke(cli, ["check"])
         assert result.exit_code == 0
 
         # Check summary line format
@@ -293,18 +293,18 @@ class TestVerifyCommand:
         assert "warnings" in result.output or "warning" in result.output
         assert "errors" in result.output or "error" in result.output
 
-    def test_verify_empty_database(self, workspace_env, cli_runner):
-        """Verify command succeeds on empty database."""
+    def test_check_empty_database(self, workspace_env, cli_runner):
+        """Check command succeeds on empty database."""
         # Don't create any data - just verify empty DB
 
-        result = cli_runner.invoke(cli, ["verify"])
+        result = cli_runner.invoke(cli, ["check"])
         assert result.exit_code == 0
 
         # Should report 0 conversations, 0 messages
         assert "0 conversations" in result.output or "0 message" in result.output
 
-    def test_verify_sqlite_integrity_check(self, workspace_env, cli_runner):
-        """Verify includes SQLite integrity check in results."""
+    def test_check_sqlite_integrity_check(self, workspace_env, cli_runner):
+        """Check includes SQLite integrity check in results."""
         db_path = default_db_path()
         factory = DbFactory(db_path)
 
@@ -314,7 +314,7 @@ class TestVerifyCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "verify", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)

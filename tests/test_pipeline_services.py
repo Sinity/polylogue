@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from polylogue.config import Config, Source
+from polylogue.config import Config
 from polylogue.pipeline.services import IndexService, IngestionService, RenderService
 from polylogue.storage.repository import StorageRepository
 

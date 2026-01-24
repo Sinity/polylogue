@@ -1,8 +1,6 @@
 """Tests for ChatGPT importer (chatgpt.py)."""
 from __future__ import annotations
 
-import pytest
-
 from polylogue.importers.chatgpt import (
     _coerce_float,
     extract_messages_from_mapping,

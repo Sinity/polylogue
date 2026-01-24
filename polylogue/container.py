@@ -22,7 +22,7 @@ from pathlib import Path
 
 from dependency_injector import containers, providers
 
-from polylogue.config import Config, load_config
+from polylogue.config import load_config
 from polylogue.pipeline.services.indexing import IndexService
 from polylogue.pipeline.services.ingestion import IngestionService
 from polylogue.pipeline.services.rendering import RenderService

@@ -8,8 +8,12 @@ while delegating to the ApplicationContainer for actual instantiation.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from polylogue.config import Config
+
+if TYPE_CHECKING:
+    from polylogue.protocols import StorageBackend
 from polylogue.container import ApplicationContainer, create_container
 from polylogue.pipeline.services.indexing import IndexService
 from polylogue.pipeline.services.ingestion import IngestionService
@@ -69,6 +73,25 @@ def create_storage_repository() -> StorageRepository:
     """
     container = get_container()
     return container.storage()
+
+
+def create_repository(config: Config | None = None) -> StorageBackend:
+    """Get the storage backend for read operations.
+
+    This is used by ConversationRepository for query operations.
+
+    Args:
+        config: Optional configuration (ignored, backend comes from container)
+
+    Returns:
+        StorageBackend instance for database queries
+    """
+
+    container = get_container()
+    storage_repo = container.storage()
+    # Access the underlying backend
+    backend: StorageBackend = storage_repo._backend
+    return backend
 
 
 def create_ingestion_service(

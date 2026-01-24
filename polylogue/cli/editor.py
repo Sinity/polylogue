@@ -9,7 +9,6 @@ import subprocess
 import webbrowser
 from pathlib import Path
 
-
 # Pattern for detecting shell metacharacters that could enable command injection
 _UNSAFE_PATTERN = re.compile(r'[;&|`$(){}[\]<>!\\]')
 

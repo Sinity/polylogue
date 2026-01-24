@@ -2,8 +2,6 @@
 
 from datetime import datetime
 
-import pytest
-
 from polylogue.core.timestamps import format_timestamp, parse_timestamp
 
 

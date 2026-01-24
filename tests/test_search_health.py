@@ -7,8 +7,8 @@ import pytest
 
 from polylogue.config import default_config, load_config, write_config
 from polylogue.health import get_health
-from polylogue.storage.index import rebuild_index
 from polylogue.ingestion import IngestBundle, ingest_bundle
+from polylogue.storage.index import rebuild_index
 from polylogue.storage.search import search_messages
 from polylogue.storage.store import ConversationRecord, MessageRecord
 
@@ -86,9 +86,11 @@ def test_search_invalid_query_reports_error(monkeypatch, workspace_env):
         yield StubConn()
 
     monkeypatch.setattr("polylogue.storage.search.open_connection", stub_open_connection)
-    from polylogue.storage.db import DatabaseError
-    with pytest.raises(DatabaseError, match="Invalid search query"):
+    # Use type name check to handle module reload class identity issues
+    with pytest.raises(Exception) as exc_info:
         search_messages('"unterminated', archive_root=workspace_env["archive_root"], limit=5)
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "Invalid search query" in str(exc_info.value)
 
 
 def test_search_prefers_legacy_render_when_present(workspace_env, storage_repository):
@@ -439,9 +441,11 @@ def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_wit
 
     # Monkey-patch to use the db without FTS
     from polylogue.storage import db
-    from polylogue.storage.db import DatabaseError
 
     monkeypatch.setattr(db, "default_db_path", lambda: db_without_fts)
 
-    with pytest.raises(DatabaseError, match="Search index not built"):
+    # Use type name check to handle module reload class identity issues
+    with pytest.raises(Exception) as exc_info:
         search_messages("hello", archive_root=archive_root, limit=5)
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "Search index not built" in str(exc_info.value)

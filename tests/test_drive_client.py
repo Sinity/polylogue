@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

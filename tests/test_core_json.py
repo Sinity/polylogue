@@ -329,7 +329,7 @@ class TestEdgeCases:
 
     def test_loads_bytes_utf8(self):
         """Test loads with UTF-8 encoded bytes."""
-        json_bytes = '{"unicode": "café"}'.encode("utf-8")
+        json_bytes = '{"unicode": "café"}'.encode()
         result = json.loads(json_bytes)
         assert result["unicode"] == "café"
 

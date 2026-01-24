@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from polylogue.analytics.metrics import ProviderMetrics, compute_provider_comparison
 from polylogue.storage.store import ConversationRecord, MessageRecord
 
@@ -89,13 +87,13 @@ class TestComputeProviderComparison:
 
     def test_empty_database(self, workspace_env):
         """Empty database returns empty list."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         result = compute_provider_comparison(db_path=db_path)
         assert result == []
 
     def test_single_provider(self, workspace_env, storage_repository):
         """Single provider aggregation."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         # Create a conversation
         conv = ConversationRecord(
@@ -143,7 +141,7 @@ class TestComputeProviderComparison:
 
     def test_multiple_providers_sorted(self, workspace_env, storage_repository):
         """Multiple providers sorted by conversation count descending."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         # Create 2 claude conversations
         for i in range(2):
@@ -208,7 +206,7 @@ class TestComputeProviderComparison:
 
     def test_user_assistant_segregation(self, workspace_env, storage_repository):
         """User and assistant messages are counted separately."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         conv = ConversationRecord(
             conversation_id="conv-roles",
@@ -273,7 +271,7 @@ class TestComputeProviderComparison:
 
     def test_avg_messages_per_conversation(self, workspace_env, storage_repository):
         """Average messages per conversation is computed correctly."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         # Conv 1: 2 messages
         conv1 = ConversationRecord(
@@ -373,7 +371,7 @@ class TestComputeProviderComparison:
 
     def test_tool_use_detection(self, workspace_env, storage_repository):
         """Tool use is detected from content_blocks."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         conv = ConversationRecord(
             conversation_id="tool-conv",
@@ -412,7 +410,7 @@ class TestComputeProviderComparison:
 
     def test_thinking_detection(self, workspace_env, storage_repository):
         """Thinking is detected from content_blocks."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         conv = ConversationRecord(
             conversation_id="think-conv",
@@ -451,7 +449,7 @@ class TestComputeProviderComparison:
 
     def test_conversations_with_tools_set_dedup(self, workspace_env, storage_repository):
         """Multiple tool uses in same conversation counted once."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         conv = ConversationRecord(
             conversation_id="multi-tool",
@@ -496,7 +494,7 @@ class TestComputeProviderComparison:
 
     def test_division_by_zero_protection(self, workspace_env, storage_repository):
         """Metrics handle zero counts gracefully."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         # Conversation with system-only messages (no user/assistant)
         conv = ConversationRecord(

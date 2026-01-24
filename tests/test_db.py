@@ -2,40 +2,45 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from pathlib import Path
 
 import pytest
 
 from polylogue.storage.db import (
     SCHEMA_VERSION,
-    DatabaseError,
     _apply_schema,
     _ensure_schema,
-    _migrate_v1_to_v2,
-    _migrate_v2_to_v3,
-    _migrate_v3_to_v4,
     connection_context,
     default_db_path,
     open_connection,
 )
 
 
-def test_default_db_path_uses_xdg_state_home(monkeypatch, tmp_path):
-    """default_db_path() respects XDG_STATE_HOME."""
-    state_home = tmp_path / "state"
-    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+def test_default_db_path_uses_xdg_data_home(monkeypatch, tmp_path):
+    """default_db_path() respects XDG_DATA_HOME."""
+    data_home = tmp_path / "data"
+    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
+    # Force reimport to pick up env var change
+    import importlib
+
+    import polylogue.paths
+    importlib.reload(polylogue.paths)
 
     path = default_db_path()
-    assert path == state_home / "polylogue" / "polylogue.db"
+    assert path == data_home / "polylogue" / "polylogue.db"
 
 
 def test_default_db_path_fallback_to_home(monkeypatch, tmp_path):
-    """default_db_path() falls back to ~/.local/state when XDG_STATE_HOME not set."""
-    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    """default_db_path() falls back to ~/.local/share when XDG_DATA_HOME not set."""
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
+    # Force reimport to pick up env var change
+    import importlib
+
+    import polylogue.paths
+    importlib.reload(polylogue.paths)
 
     path = default_db_path()
-    assert path == tmp_path / ".local/state" / "polylogue" / "polylogue.db"
+    assert path == tmp_path / ".local/share" / "polylogue" / "polylogue.db"
 
 
 def test_open_connection_creates_database(tmp_path):
@@ -118,10 +123,12 @@ def test_open_connection_prevents_different_paths_same_thread(tmp_path):
     db_path1 = tmp_path / "db1.db"
     db_path2 = tmp_path / "db2.db"
 
+    # Use type name check to handle module reload class identity issues
     with open_connection(db_path1):
-        with pytest.raises(DatabaseError, match="Existing connection opened"):
-            with open_connection(db_path2):
-                pass
+        with pytest.raises(Exception) as exc_info, open_connection(db_path2):
+            pass
+        assert exc_info.type.__name__ == "DatabaseError"
+        assert "Existing connection opened" in str(exc_info.value)
 
 
 def test_open_connection_depth_tracking(tmp_path):
@@ -306,8 +313,11 @@ def test_ensure_schema_raises_on_unsupported_version(tmp_path):
     conn.execute("PRAGMA user_version = 999")
     conn.commit()
 
-    with pytest.raises(DatabaseError, match="Unsupported DB schema version"):
+    # Use type name check to handle module reload class identity issues
+    with pytest.raises(Exception) as exc_info:
         _ensure_schema(conn)
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "Unsupported DB schema version" in str(exc_info.value)
 
     conn.close()
 

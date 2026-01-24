@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-import pytest
-
-from polylogue.config import Config, DriveConfig, default_config, load_config
+from polylogue.config import DriveConfig, default_config, load_config
 
 
 class TestDriveConfig:

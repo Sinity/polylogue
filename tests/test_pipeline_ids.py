@@ -373,8 +373,9 @@ class TestAttachmentPathMove:
 
     def test_move_attachment_raises_on_permission_error(self, tmp_path, monkeypatch):
         """Move failure due to permissions should raise, not silently fail."""
-        from polylogue.pipeline.ids import move_attachment_to_archive
         import shutil
+
+        from polylogue.pipeline.ids import move_attachment_to_archive
 
         source = tmp_path / "source.txt"
         source.write_text("content")

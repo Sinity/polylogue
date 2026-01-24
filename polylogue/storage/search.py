@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 import sqlite3
@@ -9,9 +8,10 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
+from polylogue.render_paths import legacy_render_root, render_root
+
 from .db import DatabaseError, open_connection
 from .search_cache import SearchCacheKey
-from polylogue.render_paths import legacy_render_root, render_root
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +162,7 @@ def _search_messages_impl(
     with open_connection(db_path) as conn:
         exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         if not exists:
-            raise DatabaseError("Search index not built. Run `polylogue run` with index enabled.")
+            raise DatabaseError("Search index not built. Run `polylogue sync` with index enabled.")
 
         # Escape the query to avoid syntax errors with special characters
         fts_query = escape_fts5_query(query)

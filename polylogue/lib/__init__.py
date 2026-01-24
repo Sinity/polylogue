@@ -34,6 +34,7 @@ Example usage:
         print(f"Words: {conv.word_count}")
 """
 
+from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message, Role
 from polylogue.lib.projections import ConversationProjection
 from polylogue.lib.repository import ConversationRepository
@@ -41,6 +42,7 @@ from polylogue.lib.repository import ConversationRepository
 __all__ = [
     "Attachment",
     "Conversation",
+    "ConversationFilter",
     "ConversationProjection",
     "ConversationRepository",
     "DialoguePair",

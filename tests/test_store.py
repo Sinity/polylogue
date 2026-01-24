@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import sqlite3
-import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -872,6 +869,7 @@ class TestAttachmentRecordValidation:
     def test_size_bytes_rejects_impossibly_large(self):
         """size_bytes cannot exceed reasonable maximum (1TB)."""
         from pydantic import ValidationError
+
         from polylogue.storage.store import MAX_ATTACHMENT_SIZE
 
         with pytest.raises(ValidationError):
@@ -930,6 +928,7 @@ class TestAttachmentRecordValidation:
     def test_size_bytes_rejects_one_byte_over_max(self):
         """size_bytes cannot exceed maximum by even one byte."""
         from pydantic import ValidationError
+
         from polylogue.storage.store import MAX_ATTACHMENT_SIZE
 
         with pytest.raises(ValidationError):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import dateparser
+import dateparser  # type: ignore[import-untyped]
 
 
 def parse_date(date_str: str) -> datetime | None:
@@ -37,11 +37,11 @@ def parse_date(date_str: str) -> datetime | None:
         "RELATIVE_BASE": datetime.now(tz=timezone.utc),  # Base for relative dates
     }
 
-    parsed = dateparser.parse(date_str, settings=settings)
-    if parsed is not None and parsed.tzinfo is None:
+    result: datetime | None = dateparser.parse(date_str, settings=settings)
+    if result is not None and result.tzinfo is None:
         # Ensure result is always UTC-aware
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed
+        result = result.replace(tzinfo=timezone.utc)
+    return result
 
 
 def format_date_iso(dt: datetime) -> str:

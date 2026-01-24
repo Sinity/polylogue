@@ -96,7 +96,7 @@ def main() -> None:
     from rich.text import Text
 
     from polylogue.config import Config, Source
-    from polylogue.run import plan_sources, run_sources
+    from polylogue.pipeline.runner import plan_sources, run_sources
     from polylogue.storage.search import search_messages
     from polylogue.ui.facade import ConsoleFacade
 

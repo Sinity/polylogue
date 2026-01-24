@@ -4,10 +4,8 @@ Tests cover role classification, thinking detection (via content_blocks/provider
 tool use detection, context dump detection, and noise/substantive classification.
 """
 
-import pytest
 
-from polylogue.lib.models import Message, Attachment, Role
-
+from polylogue.lib.models import Attachment, Message, Role
 
 # =============================================================================
 # Role Classification Tests

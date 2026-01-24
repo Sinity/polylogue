@@ -6,15 +6,13 @@ when conversations are re-ingested or modified.
 
 from __future__ import annotations
 
-import hashlib
 import threading
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from polylogue.storage.search import SearchResult
+    pass
 
 
 # Global cache state

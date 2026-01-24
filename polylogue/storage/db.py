@@ -1,15 +1,14 @@
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 import threading
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
 
 LOGGER = logging.getLogger(__name__)
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _LOCAL = threading.local()
 
 
@@ -18,9 +17,12 @@ class DatabaseError(Exception):
 
 
 def default_db_path() -> Path:
-    raw_state_root = os.environ.get("XDG_STATE_HOME")
-    state_root = Path(raw_state_root).expanduser() if raw_state_root else Path.home() / ".local/state"
-    return state_root / "polylogue" / "polylogue.db"
+    """Return the default database path.
+
+    Uses XDG_DATA_HOME/polylogue/polylogue.db (semantic data, not ephemeral state).
+    """
+    from polylogue.paths import DATA_HOME
+    return DATA_HOME / "polylogue.db"
 
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
@@ -36,6 +38,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT,
             content_hash TEXT NOT NULL,
             provider_meta TEXT,
+            metadata TEXT DEFAULT '{}',
             source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
             version INTEGER NOT NULL
         );
@@ -313,11 +316,17 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
+    """Add metadata column for user-editable fields."""
+    conn.execute("ALTER TABLE conversations ADD COLUMN metadata TEXT DEFAULT '{}'")
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
     3: _migrate_v3_to_v4,
+    4: _migrate_v4_to_v5,
 }
 
 

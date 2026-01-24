@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import NoReturn, cast
+from typing import NoReturn
 
 from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.types import AppEnv

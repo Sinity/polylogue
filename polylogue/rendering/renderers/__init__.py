@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from polylogue.config import Config
 from polylogue.protocols import OutputRenderer
 

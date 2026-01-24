@@ -228,9 +228,14 @@ def default_config(
 
 
 def load_config(path: Path | None = None) -> Config:
+    """Load config from file, or return default config if file doesn't exist.
+
+    This allows polylogue to work without explicit configuration - it will
+    use sensible defaults with an inbox source discovery pattern.
+    """
     config_path = _config_path(path)
     if not config_path.exists():
-        raise ConfigError(f"Config not found: {config_path}. Run 'polylogue config init'.")
+        return default_config(path=config_path)
     try:
         raw = json.loads(config_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:

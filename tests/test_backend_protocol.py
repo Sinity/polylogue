@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from polylogue.protocols import StorageBackend
 from polylogue.storage.backends import SQLiteBackend
 

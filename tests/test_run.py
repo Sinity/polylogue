@@ -4,8 +4,8 @@ import json
 import time
 
 from polylogue.config import Source, default_config, write_config
+from polylogue.pipeline.runner import plan_sources, run_sources
 from polylogue.storage.db import open_connection
-from polylogue.run import plan_sources, run_sources
 
 
 def test_plan_and_run_sources(workspace_env, tmp_path):

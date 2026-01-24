@@ -1,9 +1,6 @@
 """Tests for polylogue.assets module."""
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-
-import pytest
 
 from polylogue.assets import asset_path, write_asset
 

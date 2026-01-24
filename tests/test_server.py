@@ -65,6 +65,22 @@ def test_web_view(test_client):
 
 def test_api_search_returns_503_when_fts_missing(tmp_path):
     """GET /api/search returns 503 with helpful message when index not built."""
+    # Reload modules to ensure consistent DatabaseError class identity
+    # This is needed when other tests in the suite reload polylogue.storage.db
+    # Order: db first (defines DatabaseError), then backends, then api
+    import importlib
+
+    import polylogue.server.api
+    import polylogue.storage.backends.sqlite
+    import polylogue.storage.db
+    importlib.reload(polylogue.storage.db)
+    importlib.reload(polylogue.storage.backends.sqlite)
+    importlib.reload(polylogue.server.api)
+
+    # Re-import after reload to get consistent class references
+    from polylogue.lib.repository import ConversationRepository as ReloadedConversationRepository
+    from polylogue.storage.backends.sqlite import SQLiteBackend as ReloadedSQLiteBackend
+
     db_path = tmp_path / "no_fts.db"
 
     # Init DB but don't build FTS index
@@ -78,8 +94,8 @@ def test_api_search_returns_503_when_fts_missing(tmp_path):
     )
 
     def override_repo():
-        backend = SQLiteBackend(db_path=db_path)
-        return ConversationRepository(backend=backend)
+        backend = ReloadedSQLiteBackend(db_path=db_path)
+        return ReloadedConversationRepository(backend=backend)
 
     app.dependency_overrides[get_repository] = override_repo
     client = TestClient(app)

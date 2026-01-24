@@ -29,7 +29,7 @@ class IngestResult(BaseModel):
 def ingest_bundle(
     bundle: IngestBundle,
     *,
-    repository: "StorageRepository | None" = None,
+    repository: StorageRepository | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> IngestResult:
     """Ingest a conversation bundle into storage.

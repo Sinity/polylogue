@@ -20,6 +20,7 @@ class DbFactory:
         messages: list[dict[str, Any]] | None = None,
         created_at: datetime | None = None,
         updated_at: datetime | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """Create a conversation with messages in the DB."""
         cid = id or str(uuid4())
@@ -37,6 +38,7 @@ class DbFactory:
             updated_at=updated_iso,
             content_hash=uuid4().hex,
             version=1,
+            metadata=metadata,
         )
 
         msg_recs = []

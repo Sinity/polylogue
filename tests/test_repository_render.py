@@ -12,13 +12,12 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.storage.db import DatabaseError, open_connection
 from polylogue.ingestion import IngestBundle, ingest_bundle
-from polylogue.lib.models import Attachment, Conversation, Message
 from polylogue.lib.repository import ConversationRepository
-from polylogue.render import render_conversation
-from polylogue.storage.store import ConversationRecord, MessageRecord
+from polylogue.rendering.renderers import HTMLRenderer
 from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.db import open_connection
+from polylogue.storage.store import ConversationRecord, MessageRecord
 from tests.factories import DbFactory
 
 
@@ -270,9 +269,12 @@ def test_repository_search_raises_when_index_not_built(mock_db, db_without_fts):
         id="c1", provider="test", messages=[{"id": "m1", "role": "user", "text": "Python"}]
     )
 
-    # Search without index should raise
-    with pytest.raises(DatabaseError, match="Search index not built"):
+    # Search without index should raise DatabaseError
+    # Use type name check to handle module reload class identity issues
+    with pytest.raises(Exception) as exc_info:
         repo.search("Python")
+    assert exc_info.type.__name__ == "DatabaseError"
+    assert "Search index not built" in str(exc_info.value)
 
 
 # ============================================================================
@@ -399,9 +401,12 @@ def test_render_conversation_markdown_has_structure(workspace_env, storage_repos
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="c-md", archive_root=archive_root)
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("c-md", output_root)
+    md_path = html_path.parent / "conversation.md"
 
-    markdown = result.markdown_path.read_text(encoding="utf-8")
+    markdown = md_path.read_text(encoding="utf-8")
 
     # Check structure
     assert "# My Conversation" in markdown
@@ -431,9 +436,12 @@ def test_render_conversation_markdown_includes_provider(workspace_env, storage_r
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="c-prov", archive_root=archive_root)
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("c-prov", output_root)
+    md_path = html_path.parent / "conversation.md"
 
-    markdown = result.markdown_path.read_text(encoding="utf-8")
+    markdown = md_path.read_text(encoding="utf-8")
 
     assert "Provider: claude" in markdown
     assert "Conversation ID: c-prov" in markdown
@@ -480,9 +488,12 @@ def test_render_conversation_markdown_messages_separated(workspace_env, storage_
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="c-sep", archive_root=archive_root)
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("c-sep", output_root)
+    md_path = html_path.parent / "conversation.md"
 
-    markdown = result.markdown_path.read_text(encoding="utf-8")
+    markdown = md_path.read_text(encoding="utf-8")
 
     # Messages should be separated by blank lines (## header, optional timestamp, text, blank line)
     lines = markdown.split("\n")
@@ -521,9 +532,12 @@ def test_render_conversation_markdown_with_timestamp(workspace_env, storage_repo
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="c-ts", archive_root=archive_root)
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("c-ts", output_root)
+    md_path = html_path.parent / "conversation.md"
 
-    markdown = result.markdown_path.read_text(encoding="utf-8")
+    markdown = md_path.read_text(encoding="utf-8")
 
     assert "Timestamp: 2024-01-15T10:30:00" in markdown
 
@@ -574,9 +588,11 @@ def test_render_conversation_html_valid(workspace_env, storage_repository):
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="c-html", archive_root=archive_root)
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("c-html", output_root)
 
-    html = result.html_path.read_text(encoding="utf-8")
+    html = html_path.read_text(encoding="utf-8")
 
     # Check HTML structure
     assert "<!doctype html>" in html
@@ -616,9 +632,11 @@ def test_render_conversation_html_escapes_content(workspace_env, storage_reposit
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="c-esc", archive_root=archive_root)
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("c-esc", output_root)
 
-    html = result.html_path.read_text(encoding="utf-8")
+    html = html_path.read_text(encoding="utf-8")
 
     # Script should be escaped
     assert "<script>" not in html
@@ -659,9 +677,11 @@ def test_render_conversation_html_includes_content(workspace_env, storage_reposi
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="c-con", archive_root=archive_root)
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("c-con", output_root)
 
-    html = result.html_path.read_text(encoding="utf-8")
+    html = html_path.read_text(encoding="utf-8")
 
     assert "Important content here" in html
 
@@ -713,9 +733,12 @@ def test_render_conversation_with_message_attachments(workspace_env, storage_rep
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="c-att-msg", archive_root=archive_root)
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("c-att-msg", output_root)
+    md_path = html_path.parent / "conversation.md"
 
-    markdown = result.markdown_path.read_text(encoding="utf-8")
+    markdown = md_path.read_text(encoding="utf-8")
 
     # Attachment should be referenced
     assert "Attachment:" in markdown or "attachment" in markdown.lower()
@@ -766,9 +789,12 @@ def test_render_conversation_with_orphan_attachments(workspace_env, storage_repo
 
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="c-orphan", archive_root=archive_root)
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("c-orphan", output_root)
+    md_path = html_path.parent / "conversation.md"
 
-    markdown = result.markdown_path.read_text(encoding="utf-8")
+    markdown = md_path.read_text(encoding="utf-8")
 
     # Orphan attachments should appear in "attachments" section
     assert "attachments" in markdown.lower()
@@ -799,11 +825,14 @@ def test_render_conversation_writes_markdown_file(workspace_env, storage_reposit
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="c-file", archive_root=archive_root)
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("c-file", output_root)
+    md_path = html_path.parent / "conversation.md"
 
-    assert result.markdown_path.exists()
-    assert result.markdown_path.suffix == ".md"
-    assert result.markdown_path.name == "conversation.md"
+    assert md_path.exists()
+    assert md_path.suffix == ".md"
+    assert md_path.name == "conversation.md"
 
 
 def test_render_conversation_writes_html_file(workspace_env, storage_repository):
@@ -826,38 +855,13 @@ def test_render_conversation_writes_html_file(workspace_env, storage_repository)
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="c-html-file", archive_root=archive_root)
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("c-html-file", output_root)
 
-    assert result.html_path.exists()
-    assert result.html_path.suffix == ".html"
-    assert result.html_path.name == "conversation.html"
-
-
-def test_render_conversation_result_contains_ids(workspace_env, storage_repository):
-    """render_conversation() returns RenderResult with correct IDs."""
-    archive_root = workspace_env["archive_root"]
-
-    bundle = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id="c-result",
-            provider_name="test",
-            provider_conversation_id="c-result",
-            title="Result Test",
-            created_at=None,
-            updated_at=None,
-            content_hash="hash-result",
-            provider_meta=None,
-        ),
-        messages=[],
-        attachments=[],
-    )
-    ingest_bundle(bundle, repository=storage_repository)
-
-    result = render_conversation(conversation_id="c-result", archive_root=archive_root)
-
-    assert result.conversation_id == "c-result"
-    assert result.markdown_path is not None
-    assert result.html_path is not None
+    assert html_path.exists()
+    assert html_path.suffix == ".html"
+    assert html_path.name == "conversation.html"
 
 
 # ============================================================================

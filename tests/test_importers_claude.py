@@ -1,10 +1,6 @@
 """Tests for Claude importer (claude.py)."""
 from __future__ import annotations
 
-import json
-
-import pytest
-
 from polylogue.importers.claude import (
     extract_messages_from_chat_messages,
     extract_text_from_segments,

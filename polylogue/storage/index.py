@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import os
 import sqlite3
 from collections.abc import Iterable, Sequence
 
 from .db import connection_context, open_connection
-from .search_providers import create_search_provider, create_vector_provider
-from .store import MessageRecord
+from .search_providers import create_vector_provider
 
 
 def ensure_index(conn: sqlite3.Connection) -> None:

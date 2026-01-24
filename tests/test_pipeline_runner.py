@@ -6,26 +6,22 @@ import json
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-import pytest
-
 from polylogue.config import Config, Source
-from polylogue.core.json import dumps
-from polylogue.importers.base import ParsedConversation, ParsedMessage
 from polylogue.pipeline.models import PlanResult
 from polylogue.pipeline.runner import (
-    _select_sources,
-    _iter_source_conversations_safe,
     _all_conversation_ids,
+    _iter_source_conversations_safe,
+    _select_sources,
     _write_run_json,
+    latest_run,
     plan_sources,
     run_sources,
-    latest_run,
 )
 from polylogue.storage.db import open_connection
-from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
+from polylogue.storage.store import ConversationRecord, store_records
 
 
 class TestRenderFailureTracking:
@@ -36,9 +32,9 @@ class TestRenderFailureTracking:
 
         This test SHOULD FAIL until failure tracking is implemented.
         """
-        from polylogue.pipeline.runner import run_sources
-        from polylogue.config import Config, Source
+        from polylogue.config import Config
         from polylogue.pipeline.models import RunResult
+        from polylogue.pipeline.runner import run_sources
 
         # Create a minimal config
         config = Config(
@@ -88,8 +84,8 @@ class TestRenderFailureTracking:
 
     def test_render_continues_after_failure(self, tmp_path: Path):
         """Pipeline should continue rendering other conversations after one fails."""
-        from polylogue.pipeline.runner import run_sources
         from polylogue.config import Config
+        from polylogue.pipeline.runner import run_sources
 
         config = Config(
             version=2,
@@ -131,8 +127,8 @@ class TestRenderFailureTracking:
 
     def test_render_failure_count_in_counts(self, tmp_path: Path):
         """Pipeline should include render_failures count in result.counts."""
-        from polylogue.pipeline.runner import run_sources
         from polylogue.config import Config
+        from polylogue.pipeline.runner import run_sources
 
         config = Config(
             version=2,
@@ -410,7 +406,7 @@ class TestAllConversationIds:
 
     def test_all_ids_no_filter(self, workspace_env):
         """Returns all conversation_ids when no filter provided."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Create test conversations
@@ -435,7 +431,7 @@ class TestAllConversationIds:
 
     def test_all_ids_provider_filter(self, workspace_env):
         """Filters by provider_name when source_names match provider."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open_connection(db_path) as conn:
@@ -460,7 +456,7 @@ class TestAllConversationIds:
 
     def test_all_ids_source_filter_via_meta(self, workspace_env):
         """Filters by provider_meta.source when specified."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open_connection(db_path) as conn:
@@ -486,7 +482,7 @@ class TestAllConversationIds:
 
     def test_all_ids_null_meta_skipped(self, workspace_env):
         """Conversations with null or empty provider_meta don't crash filtering."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open_connection(db_path) as conn:
@@ -597,7 +593,7 @@ class TestLatestRun:
 
     def test_no_runs_returns_none(self, workspace_env):
         """Empty table returns None."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize DB without runs
@@ -610,7 +606,7 @@ class TestLatestRun:
 
     def test_returns_most_recent(self, workspace_env):
         """ORDER BY timestamp DESC returns latest run."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open_connection(db_path) as conn:
@@ -642,7 +638,7 @@ class TestLatestRun:
 
     def test_parses_json_columns(self, workspace_env):
         """plan_snapshot, counts, drift are parsed from JSON."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         plan = {"conversations": 5, "messages": 20}

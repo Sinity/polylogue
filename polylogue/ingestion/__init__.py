@@ -8,18 +8,6 @@ This package handles all data ingestion operations including:
 
 from __future__ import annotations
 
-# Core ingestion
-from .ingest import IngestBundle, IngestResult, ingest_bundle
-
-# Source ingestion
-from .source import (
-    ParsedAttachment,
-    ParsedConversation,
-    ParsedMessage,
-    iter_source_conversations,
-    parse_drive_payload,
-)
-
 # Drive integration
 from .drive import DriveDownloadResult, download_drive_files, iter_drive_conversations
 from .drive_client import (
@@ -30,6 +18,18 @@ from .drive_client import (
     DriveNotFoundError,
     default_credentials_path,
     default_token_path,
+)
+
+# Core ingestion
+from .ingest import IngestBundle, IngestResult, ingest_bundle
+
+# Source ingestion
+from .source import (
+    ParsedAttachment,
+    ParsedConversation,
+    ParsedMessage,
+    iter_source_conversations,
+    parse_drive_payload,
 )
 
 __all__ = [
