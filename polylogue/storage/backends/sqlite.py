@@ -1027,6 +1027,38 @@ class SQLiteBackend:
         )
         conn.commit()
 
+    def delete_conversation(self, conversation_id: str) -> bool:
+        """Delete conversation and all related records.
+
+        Args:
+            conversation_id: ID of the conversation to delete
+
+        Returns:
+            True if deleted, False if not found
+        """
+        conn = self._get_connection()
+
+        # Check if exists
+        exists = conn.execute(
+            "SELECT 1 FROM conversations WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+
+        if not exists:
+            return False
+
+        # Delete conversation (CASCADE handles messages automatically)
+        conn.execute(
+            "DELETE FROM conversations WHERE conversation_id = ?",
+            (conversation_id,),
+        )
+
+        # Clean up orphaned attachments (ref_count <= 0)
+        conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
+
+        conn.commit()
+        return True
+
     def close(self) -> None:
         """Close the database connection for this thread."""
         if hasattr(self._local, 'conn') and self._local.conn is not None:
