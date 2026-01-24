@@ -8,7 +8,7 @@ import pytest
 
 from polylogue.config import Config, Source
 from polylogue.pipeline.services.async_ingestion import AsyncIngestionService
-from polylogue.storage.backends.sqlite import create_default_backend
+from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import StorageRepository
 
 
@@ -21,7 +21,7 @@ async def test_async_ingestion_service_initialization():
         archive_root.mkdir()
 
         # Create repository
-        backend = create_default_backend(db_path=db_path)
+        backend = SQLiteBackend(db_path=db_path)
         repository = StorageRepository(backend=backend)
 
         # Create config
@@ -44,7 +44,7 @@ async def test_async_ingestion_empty_sources():
         archive_root = Path(tmpdir) / "archive"
         archive_root.mkdir()
 
-        backend = create_default_backend(db_path=db_path)
+        backend = SQLiteBackend(db_path=db_path)
         repository = StorageRepository(backend=backend)
 
         config = Config(
@@ -70,7 +70,7 @@ async def test_async_ingestion_concurrent():
         archive_root = Path(tmpdir) / "archive"
         archive_root.mkdir()
 
-        backend = create_default_backend(db_path=db_path)
+        backend = SQLiteBackend(db_path=db_path)
         repository = StorageRepository(backend=backend)
 
         config = Config(

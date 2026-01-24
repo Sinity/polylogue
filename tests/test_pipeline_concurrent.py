@@ -90,6 +90,7 @@ def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
         name="test.txt",
         mime_type="text/plain",
         size_bytes=12,
+        path=original_path,  # Must set path for file to be processed
         provider_meta=original_meta.copy(),
     )
 

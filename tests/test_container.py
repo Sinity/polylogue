@@ -55,7 +55,7 @@ class TestApplicationContainer:
 
         # Same instance should be returned
         assert config1 is config2
-        assert config1.version == 2
+        assert config1.archive_root is not None  # verify config is populated
 
     def test_storage_provider_singleton(self):
         """Test that storage provider is a singleton."""
@@ -121,7 +121,7 @@ class TestApplicationContainer:
         assert service.repository is not None
         assert isinstance(service.repository, StorageRepository)
         assert service.archive_root == test_config.archive_root
-        assert service.config.version == test_config.version
+        assert service.config.archive_root == test_config.archive_root
 
     def test_indexing_service_dependencies(self, test_config: Config):
         """Test that indexing service receives correct dependencies."""
@@ -130,7 +130,7 @@ class TestApplicationContainer:
 
         service = container.indexing_service()
 
-        assert service.config.version == test_config.version
+        assert service.config.archive_root == test_config.archive_root
         assert service.conn is None  # Default connection
 
     def test_rendering_service_dependencies(self, test_config: Config):
@@ -175,25 +175,30 @@ class TestCreateContainer:
         # Container should be created and have the expected providers
         assert hasattr(container, "config")
         config = container.config()
-        assert config.version == test_config.version
+        assert config.archive_root == test_config.archive_root
 
     def test_create_container_with_path(self, tmp_path: Path, test_config: Config):
-        """Test creating container with explicit config path."""
-        config_path = tmp_path / "custom_config.json"
+        """Test creating container with explicit config (via override).
 
-        with patch("polylogue.container.load_config", return_value=test_config):
-            container = create_container(config_path)
+        Note: Zero-config architecture - create_container() no longer takes path argument.
+        Tests config override mechanism instead.
+        """
+        container = create_container()
+        container.config.override(test_config)
 
+        try:
             # Container should have config provider
             assert hasattr(container, "config")
             config = container.config()
 
             # Config should be loaded correctly
-            assert config.version == test_config.version
+            assert config.archive_root == test_config.archive_root
+        finally:
+            container.config.reset_override()
 
     def test_create_container_services_work(self, test_config: Config):
         """Test that services created from container work correctly."""
-        with patch("polylogue.container.load_config", return_value=test_config):
+        with patch("polylogue.container.get_config", return_value=test_config):
             container = create_container()
 
             # All services should be instantiable
@@ -211,7 +216,7 @@ class TestContainerIntegration:
 
     def test_shared_dependencies(self, test_config: Config):
         """Test that services share singleton dependencies correctly."""
-        with patch("polylogue.container.load_config", return_value=test_config):
+        with patch("polylogue.container.get_config", return_value=test_config):
             container = create_container()
 
             # Create multiple services
@@ -226,7 +231,7 @@ class TestContainerIntegration:
 
     def test_config_propagation(self, test_config: Config):
         """Test that config changes propagate to all services."""
-        with patch("polylogue.container.load_config", return_value=test_config):
+        with patch("polylogue.container.get_config", return_value=test_config):
             container = create_container()
 
             # Get config instance
@@ -247,7 +252,7 @@ class TestContainerIntegration:
 
     def test_repository_thread_safety(self, test_config: Config):
         """Test that repository has thread-safe write lock."""
-        with patch("polylogue.container.load_config", return_value=test_config):
+        with patch("polylogue.container.get_config", return_value=test_config):
             container = create_container()
 
             repository = container.storage()
