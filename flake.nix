@@ -11,8 +11,51 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
         python = pkgs.python313;
+
+        # Build polylogue package
+        polylogue = pkgs.python313Packages.buildPythonApplication {
+          pname = "polylogue";
+          version = "0.1.0";
+          pyproject = true;
+          src = ./.;
+
+          build-system = with pkgs.python313Packages; [
+            setuptools
+            wheel
+          ];
+
+          dependencies = with pkgs.python313Packages; [
+            google-auth-oauthlib
+            google-api-python-client
+            google-auth-httplib2
+            httpx
+            rich
+            textual
+            jinja2
+            markdown-it-py
+            pygments
+            ijson
+            qdrant-client
+            questionary
+            click
+            tenacity
+            dateparser
+            fastapi
+            uvicorn
+            orjson
+            structlog
+            pydantic
+            dependency-injector
+            aiosqlite
+          ];
+
+          # Skip tests in build (run in checks instead)
+          doCheck = false;
+        };
       in
       {
+        packages.default = polylogue;
+
         devShells.default = pkgs.mkShell {
           buildInputs = with pkgs; [
             # Python + uv for dependency management

@@ -33,7 +33,8 @@ in
 
     package = mkOption {
       type = types.package;
-      default = pkgs.polylogue or (throw "polylogue package not found - import polylogue flake or set package explicitly");
+      default = pkgs.polylogue;
+      defaultText = literalExpression "pkgs.polylogue";
       description = "Polylogue package to use";
     };
 
