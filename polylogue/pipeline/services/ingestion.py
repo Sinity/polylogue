@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 from polylogue.core.log import get_logger
 from polylogue.ingestion import DriveAuthError, iter_drive_conversations, iter_source_conversations
 from polylogue.pipeline.ingest import prepare_ingest
-from polylogue.storage.db import connection_context
+from polylogue.storage.backends.sqlite import connection_context
 from polylogue.storage.search_cache import invalidate_search_cache
 
 if TYPE_CHECKING:
@@ -73,6 +73,7 @@ class IngestionService:
         repository: StorageRepository,
         archive_root: Path,
         config: Config,
+        drive_client_factory: Any | None = None,
     ):
         """Initialize the ingestion service.
 
@@ -80,10 +81,12 @@ class IngestionService:
             repository: Storage repository for database operations
             archive_root: Root directory for archived conversations
             config: Application configuration
+            drive_client_factory: Optional factory callable returning a DriveClient
         """
         self.repository = repository
         self.archive_root = archive_root
         self.config = config
+        self.drive_client_factory = drive_client_factory
 
     def ingest_sources(
         self,
@@ -186,6 +189,9 @@ class IngestionService:
         """
         if source.folder:
             try:
+                # Instantiate DriveClient only if needed (using DI factory if available)
+                client = self.drive_client_factory() if self.drive_client_factory else None
+
                 yield from iter_drive_conversations(
                     source=source,
                     archive_root=self.archive_root,
@@ -193,6 +199,7 @@ class IngestionService:
                     download_assets=download_assets,
                     cursor_state=cursor_state,
                     drive_config=self.config.drive_config,
+                    client=client,
                 )
             except DriveAuthError as exc:
                 logger.warning("Skipping Drive source %s: %s", source.name, exc)

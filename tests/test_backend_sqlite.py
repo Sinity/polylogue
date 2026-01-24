@@ -30,7 +30,6 @@ def test_backend_save_and_get_conversation(backend: SQLiteBackend) -> None:
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash123",
-        version=1,
     )
 
     backend.begin()
@@ -54,7 +53,6 @@ def test_backend_save_and_get_messages(backend: SQLiteBackend) -> None:
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash123",
-        version=1,
     )
 
     msg1 = MessageRecord(
@@ -64,7 +62,6 @@ def test_backend_save_and_get_messages(backend: SQLiteBackend) -> None:
         text="Hello",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="msghash1",
-        version=1,
     )
 
     msg2 = MessageRecord(
@@ -74,7 +71,6 @@ def test_backend_save_and_get_messages(backend: SQLiteBackend) -> None:
         text="Hi there",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="msghash2",
-        version=1,
     )
 
     backend.begin()
@@ -101,7 +97,6 @@ def test_backend_list_conversations(backend: SQLiteBackend) -> None:
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
         provider_meta={"source": "claude"},
-        version=1,
     )
 
     conv2 = ConversationRecord(
@@ -113,7 +108,6 @@ def test_backend_list_conversations(backend: SQLiteBackend) -> None:
         updated_at="2024-01-02T00:00:00Z",
         content_hash="hash2",
         provider_meta={"source": "chatgpt"},
-        version=1,
     )
 
     backend.begin()
@@ -141,7 +135,6 @@ def test_backend_save_attachments(backend: SQLiteBackend) -> None:
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash123",
-        version=1,
     )
 
     msg = MessageRecord(
@@ -151,7 +144,6 @@ def test_backend_save_attachments(backend: SQLiteBackend) -> None:
         text="Hello",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="msghash1",
-        version=1,
     )
 
     att = AttachmentRecord(
@@ -160,7 +152,6 @@ def test_backend_save_attachments(backend: SQLiteBackend) -> None:
         message_id="msg1",
         mime_type="image/png",
         size_bytes=1024,
-        path="/path/to/file.png",
     )
 
     backend.begin()
@@ -186,7 +177,6 @@ def test_backend_transaction_rollback(backend: SQLiteBackend) -> None:
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash123",
-        version=1,
     )
 
     backend.begin()
@@ -208,7 +198,6 @@ def test_backend_transaction_context_manager(backend: SQLiteBackend) -> None:
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash123",
-        version=1,
     )
 
     with backend.transaction():
@@ -230,7 +219,6 @@ def test_backend_transaction_context_manager_exception(backend: SQLiteBackend) -
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash123",
-        version=1,
     )
 
     with pytest.raises(ValueError), backend.transaction():

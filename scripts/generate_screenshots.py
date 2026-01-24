@@ -106,18 +106,16 @@ def main() -> None:
     _seed_inbox(inbox)
 
     config = Config(
-        version=2,
         archive_root=archive_root,
         render_root=render_root,
         sources=[Source(name="inbox", path=inbox)],
-        path=demo_root / "config.json",
     )
 
     plan_result = plan_sources(config)
 
     import uuid
 
-    import polylogue.run as run_mod
+    import polylogue.pipeline.runner as run_mod
 
     run_mod.uuid4 = lambda: uuid.UUID("12345678-1234-5678-1234-567812345678")
     perf_values = iter([1.0, 1.234])
