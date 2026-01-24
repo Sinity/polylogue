@@ -122,5 +122,7 @@
           touch $out
         '';
       }
-    );
+    ) // {
+      nixosModules.default = import ./nixos-modules/polylogue-sync.nix;
+    };
 }
