@@ -26,6 +26,7 @@ def test_attachment_content_id_moves_file_into_assets(tmp_path):
         name="note.txt",
         mime_type="text/plain",
         size_bytes=11,
+        path=str(source_file),  # Must set path for file to be moved
         provider_meta={},
     )
 

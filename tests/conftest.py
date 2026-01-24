@@ -73,14 +73,22 @@ def workspace_env(tmp_path, monkeypatch):
 
     import polylogue.paths
     import polylogue.config
+    import polylogue.container
+    import polylogue.cli.container
     import polylogue.storage.backends.sqlite
     import polylogue.storage.db
     import polylogue.storage.search
     importlib.reload(polylogue.paths)
     importlib.reload(polylogue.config)  # Depends on paths
+    importlib.reload(polylogue.container)  # Depends on config
+    importlib.reload(polylogue.cli.container)  # Depends on container
     importlib.reload(polylogue.storage.backends.sqlite)
     importlib.reload(polylogue.storage.db)
     importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
+
+    # Reset container singleton to use fresh config
+    from polylogue.cli.container import reset_container
+    reset_container()
 
     return {
         "config_path": config_dir / "config.json",
@@ -199,14 +207,22 @@ def cli_workspace(tmp_path, monkeypatch):
 
     import polylogue.paths
     import polylogue.config
+    import polylogue.container
+    import polylogue.cli.container
     import polylogue.storage.backends.sqlite
     import polylogue.storage.db
     import polylogue.storage.search
     importlib.reload(polylogue.paths)
     importlib.reload(polylogue.config)  # Depends on paths
+    importlib.reload(polylogue.container)  # Depends on config
+    importlib.reload(polylogue.cli.container)  # Depends on container
     importlib.reload(polylogue.storage.backends.sqlite)
     importlib.reload(polylogue.storage.db)
     importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
+
+    # Reset container singleton to use fresh config
+    from polylogue.cli.container import reset_container
+    reset_container()
 
     return {
         "config_path": config_path,
