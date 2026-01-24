@@ -246,6 +246,23 @@ class AsyncSQLiteBackend:
 
             return conversations
 
+    async def conversation_exists_by_hash(self, content_hash: str) -> bool:
+        """Check if conversation with given content hash exists.
+
+        Args:
+            content_hash: SHA-256 hash of conversation content
+
+        Returns:
+            True if conversation exists, False otherwise
+        """
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT 1 FROM conversations WHERE content_hash = ? LIMIT 1",
+                (content_hash,),
+            )
+            row = await cursor.fetchone()
+            return row is not None
+
     async def close(self) -> None:
         """Close database connections.
 
