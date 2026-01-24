@@ -2,25 +2,28 @@
 
 from __future__ import annotations
 
-import os
-import sys
-
 import click
+from click.shell_completion import get_completion_class
 
 
 @click.command("completions")
 @click.option("--shell", type=click.Choice(["bash", "zsh", "fish"]), required=True)
-def completions_command(shell: str) -> None:
-    """Generate shell completion scripts."""
-    script: str = ""
-    prog_name = os.path.basename(sys.argv[0])
-    env_name = "_POLYLOGUE_COMPLETE"
+@click.pass_context
+def completions_command(ctx: click.Context, shell: str) -> None:
+    """Generate shell completion scripts.
 
-    if shell == "bash":
-        script = f'eval "$({env_name}=bash_source {prog_name})"'
-    elif shell == "zsh":
-        script = f'eval "$({env_name}=zsh_source {prog_name})"'
-    elif shell == "fish":
-        script = f"eval (env {env_name}=fish_source {prog_name})"
+    Outputs the completion script for the specified shell to stdout.
+    """
+    # Use canonical program name, not sys.argv[0] which may be __main__.py
+    prog_name = "polylogue"
 
-    click.echo(f"# To enable completions, run:\n{script}")
+    # Get the root command (the CLI app)
+    root_cmd = ctx.find_root().command
+
+    # Use Click's built-in completion generator
+    comp_cls = get_completion_class(shell)
+    if comp_cls is None:
+        raise click.ClickException(f"Unsupported shell: {shell}")
+
+    comp = comp_cls(root_cmd, {}, prog_name, "_POLYLOGUE_COMPLETE")
+    click.echo(comp.source())
