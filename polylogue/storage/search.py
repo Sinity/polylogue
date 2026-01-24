@@ -8,7 +8,7 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
-from polylogue.render_paths import legacy_render_root, render_root
+from polylogue.render_paths import render_root
 
 from .db import DatabaseError, open_connection
 from .search_cache import SearchCacheKey
@@ -48,17 +48,20 @@ def _resolve_conversation_path(
     provider_name: str,
     conversation_id: str,
 ) -> Path:
+    """Resolve the path to a conversation's rendered markdown file.
+
+    Args:
+        archive_root: Root directory for archived conversations
+        render_root_path: Optional override for render output root
+        provider_name: Provider name (e.g., "claude", "chatgpt")
+        conversation_id: Unique conversation identifier
+
+    Returns:
+        Path to the conversation's rendered markdown file
+    """
     output_root = render_root_path or (archive_root / "render")
     safe_root = render_root(output_root, provider_name, conversation_id)
-    safe_md = safe_root / "conversation.md"
-    if safe_md.exists():
-        return safe_md
-    legacy_root = legacy_render_root(output_root, provider_name, conversation_id)
-    if legacy_root:
-        legacy_md = legacy_root / "conversation.md"
-        if legacy_md.exists():
-            return legacy_md
-    return safe_md
+    return safe_root / "conversation.md"
 
 
 def escape_fts5_query(query: str) -> str:
