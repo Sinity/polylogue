@@ -26,6 +26,8 @@ from polylogue.config import Config, load_config
 from polylogue.pipeline.services.indexing import IndexService
 from polylogue.pipeline.services.ingestion import IngestionService
 from polylogue.pipeline.services.rendering import RenderService
+from polylogue.rendering.renderers import create_renderer
+from polylogue.storage.backends.sqlite import create_default_backend
 from polylogue.storage.repository import StorageRepository
 
 
@@ -52,9 +54,14 @@ class ApplicationContainer(containers.DeclarativeContainer):
         path=None,
     )
 
+    # Backend provider (thread-safe SQLite)
+    backend = providers.Singleton(
+        create_default_backend,
+    )
+
     storage = providers.Singleton(
         StorageRepository,
-        backend=None,  # Uses legacy SQLite mode for now
+        backend=backend,
     )
 
     # Service factories
@@ -71,11 +78,17 @@ class ApplicationContainer(containers.DeclarativeContainer):
         conn=None,  # Uses default connection
     )
 
+    # Renderer provider (defaults to HTML)
+    renderer = providers.Factory(
+        create_renderer,
+        format="html",
+        config=config,
+    )
+
     rendering_service = providers.Factory(
         RenderService,
-        template_path=config.provided.template_path,
+        renderer=renderer,
         render_root=config.provided.render_root,
-        archive_root=config.provided.archive_root,
     )
 
 

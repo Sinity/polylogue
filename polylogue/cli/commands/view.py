@@ -267,7 +267,9 @@ def view_command(
     except ConfigError as exc:
         fail("view", str(exc))
 
-    repo = ConversationRepository()
+    from polylogue.storage.backends.sqlite import create_default_backend
+
+    repo = ConversationRepository(backend=create_default_backend())
 
     # Single conversation view
     if conversation_id:
