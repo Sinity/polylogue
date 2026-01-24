@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
@@ -30,14 +29,12 @@ def ingest_bundle(
     bundle: IngestBundle,
     *,
     repository: StorageRepository | None = None,
-    conn: sqlite3.Connection | None = None,
 ) -> IngestResult:
     """Ingest a conversation bundle into storage.
 
     Args:
         bundle: The conversation bundle to ingest
         repository: Storage repository for thread-safe operations (creates default if None)
-        conn: Optional database connection (unused - kept for backwards compatibility)
 
     Returns:
         IngestResult with counts of inserted/skipped records
@@ -53,7 +50,6 @@ def ingest_bundle(
         conversation=bundle.conversation,
         messages=bundle.messages,
         attachments=bundle.attachments,
-        conn=conn,
     )
 
     return IngestResult(

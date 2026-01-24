@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import threading
 from typing import TYPE_CHECKING
 
@@ -40,7 +39,7 @@ class StorageRepository:
         """
         self._write_lock = threading.Lock()
         self._backend = backend
-        # Store db_path for backwards compatibility with tests
+        # Store db_path for thread workers in IngestionService
         self._db_path = getattr(backend, '_db_path', None)
 
     def save_conversation(
@@ -49,7 +48,6 @@ class StorageRepository:
         conversation: ConversationRecord,
         messages: list[MessageRecord],
         attachments: list[AttachmentRecord],
-        conn: sqlite3.Connection | None = None,
     ) -> dict[str, int]:
         """Save a conversation with its messages and attachments.
 
@@ -60,7 +58,6 @@ class StorageRepository:
             conversation: Conversation record to save
             messages: List of message records
             attachments: List of attachment records
-            conn: Optional database connection (unused - kept for backwards compatibility)
 
         Returns:
             Dictionary with counts:
@@ -143,17 +140,11 @@ class StorageRepository:
 
         return counts
 
-    def record_run(
-        self,
-        record: RunRecord,
-        *,
-        conn: sqlite3.Connection | None = None,
-    ) -> None:
+    def record_run(self, record: RunRecord) -> None:
         """Record a pipeline run audit entry.
 
         Args:
             record: Run record to save
-            conn: Optional database connection (unused - kept for backwards compatibility)
         """
         with self._write_lock:
             self._backend.record_run(record)
