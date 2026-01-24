@@ -33,6 +33,7 @@ from polylogue.core.timestamps import parse_timestamp
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.lib.repository import ConversationRepository
+    from polylogue.protocols import VectorProvider
 
 # Sort field options
 SortField = Literal["date", "tokens", "messages", "words", "longest", "random"]
@@ -48,13 +49,19 @@ class ConversationFilter:
         filter.provider("claude").since("2024-01-01").limit(10).list()
     """
 
-    def __init__(self, repository: ConversationRepository) -> None:
+    def __init__(
+        self,
+        repository: ConversationRepository,
+        vector_provider: VectorProvider | None = None,
+    ) -> None:
         """Initialize filter with repository.
 
         Args:
             repository: ConversationRepository for executing queries
+            vector_provider: Optional VectorProvider for semantic search
         """
         self._repo = repository
+        self._vector_provider = vector_provider
         self._predicates: list[Callable[[Conversation], bool]] = []
         self._fts_terms: list[str] = []
         self._negative_fts_terms: list[str] = []
@@ -423,6 +430,17 @@ class ConversationFilter:
         Returns:
             List of Conversation objects matching all filters
         """
+        # If semantic search is requested, use vector provider
+        if self._similar_text:
+            candidates = self._repo.search_similar(
+                self._similar_text,
+                limit=self._limit_count or 10,
+                vector_provider=self._vector_provider,
+            )
+            # Still apply in-memory filters
+            filtered = self._apply_filters(candidates)
+            return filtered
+
         # Fetch candidates
         candidates = self._fetch_candidates()
 

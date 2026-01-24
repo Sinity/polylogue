@@ -61,7 +61,8 @@ def _handle_request(request: dict[str, Any], repo: ConversationRepository) -> di
                     "search": {"description": "Search conversations by text"},
                     "list": {"description": "List conversations"},
                     "get": {"description": "Get conversation by ID"},
-                }
+                },
+                "resources": {},
             },
         })
 
@@ -117,6 +118,37 @@ def _handle_request(request: dict[str, Any], repo: ConversationRepository) -> di
             return _handle_get(request_id, tool_args, repo)
         else:
             return _error(request_id, -32601, f"Unknown tool: {tool_name}")
+
+    elif method == "resources/list":
+        return _success(request_id, {
+            "resources": [
+                {
+                    "uri": "polylogue://stats",
+                    "name": "Archive Statistics",
+                    "mimeType": "application/json",
+                    "description": "Overall statistics about the conversation archive",
+                },
+                {
+                    "uri": "polylogue://conversations",
+                    "name": "All Conversations",
+                    "mimeType": "application/json",
+                    "description": "List of all conversations in the archive",
+                },
+            ],
+        })
+
+    elif method == "resources/read":
+        uri = params.get("uri", "")
+
+        if uri == "polylogue://stats":
+            return _handle_stats_resource(request_id, repo)
+        elif uri == "polylogue://conversations":
+            return _handle_conversations_resource(request_id, repo)
+        elif uri.startswith("polylogue://conversation/"):
+            conv_id = uri.replace("polylogue://conversation/", "")
+            return _handle_conversation_resource(request_id, conv_id, repo)
+        else:
+            return _error(request_id, -32602, f"Unknown resource URI: {uri}")
 
     else:
         return _error(request_id, -32601, f"Method not found: {method}")
@@ -211,3 +243,52 @@ def _write_error(code: int, message: str) -> None:
     response = {"jsonrpc": "2.0", "id": None, "error": {"code": code, "message": message}}
     sys.stdout.write(json.dumps(response) + "\n")
     sys.stdout.flush()
+
+
+def _handle_stats_resource(request_id: Any, repo: ConversationRepository) -> dict[str, Any]:
+    """Handle polylogue://stats resource."""
+    convs = repo.list(limit=10000)
+
+    providers_count: dict[str, int] = {}
+    for conv in convs:
+        providers_count[conv.provider] = providers_count.get(conv.provider, 0) + 1
+
+    stats = {
+        "total_conversations": len(convs),
+        "total_messages": sum(len(c.messages) for c in convs),
+        "providers": providers_count,
+    }
+
+    return _success(request_id, {
+        "contents": [
+            {"uri": "polylogue://stats", "mimeType": "application/json", "text": json.dumps(stats, indent=2)},
+        ],
+    })
+
+
+def _handle_conversations_resource(request_id: Any, repo: ConversationRepository) -> dict[str, Any]:
+    """Handle polylogue://conversations resource."""
+    convs = repo.list(limit=1000)
+    convs_data = [_conversation_to_dict(c) for c in convs]
+
+    return _success(request_id, {
+        "contents": [
+            {"uri": "polylogue://conversations", "mimeType": "application/json", "text": json.dumps(convs_data, indent=2)},
+        ],
+    })
+
+
+def _handle_conversation_resource(request_id: Any, conv_id: str, repo: ConversationRepository) -> dict[str, Any]:
+    """Handle polylogue://conversation/{id} resource."""
+    conv = repo.get(conv_id)
+    if not conv:
+        return _error(request_id, -32602, f"Conversation not found: {conv_id}")
+
+    conv_data = _conversation_to_full_dict(conv)
+    uri = f"polylogue://conversation/{conv_id}"
+
+    return _success(request_id, {
+        "contents": [
+            {"uri": uri, "mimeType": "application/json", "text": json.dumps(conv_data, indent=2)},
+        ],
+    })

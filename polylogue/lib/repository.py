@@ -21,7 +21,7 @@ from polylogue.types import ConversationId
 
 if TYPE_CHECKING:
     from polylogue.lib import filters
-    from polylogue.protocols import StorageBackend
+    from polylogue.protocols import StorageBackend, VectorProvider
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +191,80 @@ class ConversationRepository:
         """
         ids = self._backend.search_conversations(query, limit=limit)
         return self._get_many(ids)
+
+    def search_similar(
+        self,
+        text: str,
+        limit: int = 10,
+        vector_provider: VectorProvider | None = None,
+    ) -> builtins.list[Conversation]:
+        """Search by semantic similarity using vector embeddings.
+
+        Args:
+            text: Query text to find similar conversations for
+            limit: Maximum number of results to return
+            vector_provider: Optional vector provider (Qdrant). If None, raises error.
+
+        Returns:
+            List of conversations ranked by similarity
+
+        Raises:
+            ValueError: If vector_provider is None
+        """
+        if not vector_provider:
+            raise ValueError(
+                "Semantic search requires a vector provider. "
+                "Set QDRANT_URL and VOYAGE_API_KEY environment variables."
+            )
+
+        # Query returns (message_id, score) tuples
+        results = vector_provider.query(text, limit=limit * 3)
+
+        if not results:
+            return []
+
+        # Get message->conversation mapping from backend
+        message_ids = [msg_id for msg_id, _ in results]
+        msg_to_conv = self._get_message_conversation_mapping(message_ids)
+
+        # Aggregate to conversation level (max score per conversation)
+        conv_scores: dict[str, float] = {}
+        for msg_id, score in results:
+            conv_id = msg_to_conv.get(msg_id)
+            if conv_id:
+                conv_scores[conv_id] = max(conv_scores.get(conv_id, 0.0), score)
+
+        # Sort by score descending, take top N
+        ranked_ids = sorted(
+            conv_scores.keys(),
+            key=lambda x: conv_scores[x],
+            reverse=True,
+        )[:limit]
+
+        return self._get_many(ranked_ids)
+
+    def _get_message_conversation_mapping(self, message_ids: builtins.list[str]) -> dict[str, str]:
+        """Get conversation IDs for a list of message IDs.
+
+        Args:
+            message_ids: List of message IDs
+
+        Returns:
+            Mapping of message_id -> conversation_id
+        """
+        # Access backend's connection to query messages table
+        # This is a bit of a hack but avoids adding a new protocol method
+        from polylogue.storage.backends.sqlite import SQLiteBackend
+
+        if isinstance(self._backend, SQLiteBackend):
+            conn = self._backend._get_connection()
+            placeholders = ",".join("?" * len(message_ids))
+            query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
+            rows = conn.execute(query, message_ids).fetchall()
+            return {row["message_id"]: row["conversation_id"] for row in rows}
+
+        # Fallback: empty mapping
+        return {}
 
     def filter(self) -> filters.ConversationFilter:
         """Create a filter builder for chainable queries.

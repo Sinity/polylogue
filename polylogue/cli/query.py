@@ -39,9 +39,18 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         fail("query", str(exc))
 
     # Build filter chain - create_repository returns StorageBackend
+    from polylogue.cli.container import get_container
+
     backend = create_repository(config)
     conv_repo = ConversationRepository(backend)
-    filter_chain = conv_repo.filter()
+
+    # Get vector provider from container (may be None)
+    container = get_container()
+    vector_provider = container.vector_provider()
+
+    # Create filter chain with vector provider
+    from polylogue.lib.filters import ConversationFilter
+    filter_chain = ConversationFilter(conv_repo, vector_provider=vector_provider)
 
     # Apply query terms (positional args)
     query_terms = params.get("query", ())
@@ -215,22 +224,38 @@ def _apply_modifiers(
     results: list[Conversation],
     params: dict[str, Any],
 ) -> None:
-    """Apply metadata modifiers to matched conversations.
+    """Apply metadata modifiers to matched conversations."""
+    from polylogue.cli.container import create_repository
+    from polylogue.cli.helpers import load_effective_config
 
-    Note: Metadata modification requires StorageBackend protocol extension.
-    Currently shows matched conversations without modifying.
-    """
     if not results:
         env.ui.console.print("No conversations matched.")
         return
 
-    count = len(results)
-    env.ui.console.print("[yellow]Metadata modification not yet implemented.[/yellow]")
-    env.ui.console.print(f"Would modify {count} conversation(s):")
-    for conv in results[:5]:
-        env.ui.console.print(f"  {conv.id}: {conv.display_title}")
-    if count > 5:
-        env.ui.console.print(f"  ... and {count - 5} more")
+    # Load backend
+    config = load_effective_config(env)
+    backend = create_repository(config)
+
+    # Apply modifiers
+    for conv in results:
+        if params.get("set_meta"):
+            for kv in params["set_meta"]:
+                key, value = kv.split("=", 1)
+                backend.update_metadata(str(conv.id), key, value)
+
+        if params.get("unset"):
+            for key in params["unset"]:
+                backend.delete_metadata(str(conv.id), key)
+
+        if params.get("add_tag"):
+            for tag in params["add_tag"]:
+                backend.add_tag(str(conv.id), tag)
+
+        if params.get("rm_tag"):
+            for tag in params["rm_tag"]:
+                backend.remove_tag(str(conv.id), tag)
+
+    env.ui.console.print(f"[green]Modified {len(results)} conversation(s)[/green]")
 
 
 def _delete_conversations(
@@ -238,22 +263,25 @@ def _delete_conversations(
     results: list[Conversation],
     params: dict[str, Any],
 ) -> None:
-    """Delete matched conversations.
+    """Delete matched conversations."""
+    from polylogue.cli.container import create_repository
+    from polylogue.cli.helpers import load_effective_config
 
-    Note: Deletion requires StorageBackend.delete_conversation() protocol method.
-    Currently shows what would be deleted without actual deletion.
-    """
     if not results:
         env.ui.console.print("No conversations matched.")
         return
 
-    count = len(results)
-    env.ui.console.print("[yellow]Deletion not yet implemented.[/yellow]")
-    env.ui.console.print(f"Would delete {count} conversation(s):")
-    for conv in results[:5]:
-        env.ui.console.print(f"  {conv.id}: {conv.display_title}")
-    if count > 5:
-        env.ui.console.print(f"  ... and {count - 5} more")
+    # Load backend
+    config = load_effective_config(env)
+    backend = create_repository(config)
+
+    # Delete conversations
+    deleted = 0
+    for conv in results:
+        if backend.delete_conversation(str(conv.id)):
+            deleted += 1
+
+    env.ui.console.print(f"[red]Deleted {deleted} conversation(s)[/red]")
 
 
 def _annotate_conversations(
