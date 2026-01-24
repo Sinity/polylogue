@@ -10,9 +10,6 @@ from .search_providers import create_vector_provider
 def ensure_index(conn: sqlite3.Connection) -> None:
     """Create FTS5 index table if it doesn't exist.
 
-    This function is maintained for backward compatibility. New code should
-    use the search provider abstraction.
-
     Args:
         conn: Active SQLite database connection
     """
@@ -31,8 +28,7 @@ def ensure_index(conn: sqlite3.Connection) -> None:
 def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
     """Rebuild the entire search index from scratch.
 
-    This function is maintained for backward compatibility. It rebuilds both
-    FTS5 and Qdrant indexes if configured.
+    Rebuilds both FTS5 and Qdrant indexes if configured.
 
     Args:
         conn: Optional SQLite connection. If None, creates a new connection.
@@ -68,8 +64,7 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
 def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite3.Connection | None = None) -> None:
     """Update search indexes for specific conversations.
 
-    This function is maintained for backward compatibility. It updates both
-    FTS5 and Qdrant indexes if configured.
+    Updates both FTS5 and Qdrant indexes if configured.
 
     Args:
         conversation_ids: List of conversation IDs to re-index

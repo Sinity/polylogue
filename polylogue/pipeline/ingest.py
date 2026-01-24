@@ -163,7 +163,6 @@ def prepare_ingest(
             messages=messages,
             attachments=attachments,
         ),
-        conn=conn,
         repository=repository,
     )
     return (
