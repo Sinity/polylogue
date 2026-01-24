@@ -28,6 +28,7 @@ class ConversationRecord(BaseModel):
     updated_at: str | None = None
     content_hash: ContentHash
     provider_meta: dict[str, object] | None = None
+    metadata: dict[str, object] | None = None
     version: int = 1
 
     @field_validator("provider_name")

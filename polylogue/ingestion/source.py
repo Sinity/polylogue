@@ -5,7 +5,7 @@ import logging
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, BinaryIO, IO
+from typing import IO, Any, BinaryIO
 
 import ijson
 

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -47,21 +45,22 @@ from polylogue.paths import (
 )
 from polylogue.ui import create_ui
 
-
 # ==== Config Tests ====
 
 
 class TestConfigBasics:
     """Basic config load/save functionality."""
 
-    def test_load_config_missing_file_raises_error(self, workspace_env):
-        """load_config(nonexistent_path) raises ConfigError."""
+    def test_load_config_missing_file_returns_defaults(self, workspace_env):
+        """load_config(nonexistent_path) returns default config (optional config)."""
         nonexistent = workspace_env["config_path"].parent / "missing.json"
-        with pytest.raises(ConfigError) as exc_info:
-            load_config(nonexistent)
-        assert "Config not found" in str(exc_info.value)
-        # Error message includes path info (either the requested path or default)
-        assert "config" in str(exc_info.value).lower()
+        config = load_config(nonexistent)
+        # Should return a valid default config
+        assert config is not None
+        assert config.version == CONFIG_VERSION
+        # Default config has a default "inbox" source
+        assert len(config.sources) == 1
+        assert config.sources[0].name == "inbox"
 
     def test_load_config_valid_json(self, workspace_env):
         """Valid JSON config loads correctly with proper Source parsing."""
@@ -486,15 +485,16 @@ class TestPathsXDG:
 
         # Reimport to get defaults
         from importlib import reload
+
         import polylogue.paths as paths_mod
 
         reload(paths_mod)
 
         home = Path.home()
-        assert paths_mod.CONFIG_ROOT == home / ".config"
-        assert paths_mod.DATA_ROOT == home / ".local" / "share"
-        assert paths_mod.CACHE_ROOT == home / ".cache"
-        assert paths_mod.STATE_ROOT == home / ".local" / "state"
+        assert home / ".config" == paths_mod.CONFIG_ROOT
+        assert home / ".local" / "share" == paths_mod.DATA_ROOT
+        assert home / ".cache" == paths_mod.CACHE_ROOT
+        assert home / ".local" / "state" == paths_mod.STATE_ROOT
 
     def test_xdg_custom_paths(self, tmp_path, monkeypatch):
         """XDG paths can be customized via environment variables."""
@@ -509,14 +509,15 @@ class TestPathsXDG:
         monkeypatch.setenv("XDG_STATE_HOME", str(custom_state))
 
         from importlib import reload
+
         import polylogue.paths as paths_mod
 
         reload(paths_mod)
 
-        assert paths_mod.CONFIG_ROOT == custom_config
-        assert paths_mod.DATA_ROOT == custom_data
-        assert paths_mod.CACHE_ROOT == custom_cache
-        assert paths_mod.STATE_ROOT == custom_state
+        assert custom_config == paths_mod.CONFIG_ROOT
+        assert custom_data == paths_mod.DATA_ROOT
+        assert custom_cache == paths_mod.CACHE_ROOT
+        assert custom_state == paths_mod.STATE_ROOT
 
     def test_polylogue_subdirectories(self):
         """Polylogue paths include 'polylogue' subdirectory."""
@@ -723,13 +724,16 @@ class TestCliHelpersLoadEffectiveConfig:
 
         assert config.path == config_path
 
-    def test_load_effective_config_missing_raises_error(self, tmp_path):
-        """load_effective_config() raises ConfigError if config missing."""
+    def test_load_effective_config_missing_returns_defaults(self, tmp_path):
+        """load_effective_config() returns defaults if config missing (optional config)."""
         ui = create_ui(plain=True)
         env = AppEnv(ui=ui, config_path=tmp_path / "missing.json")
 
-        with pytest.raises(ConfigError):
-            load_effective_config(env)
+        config = load_effective_config(env)
+        assert config is not None
+        # Default config has a default "inbox" source
+        assert len(config.sources) == 1
+        assert config.sources[0].name == "inbox"
 
 
 class TestCliHelpersResolveSources:
@@ -899,8 +903,9 @@ class TestCliHelpersMaybePromptSources:
 
     def test_maybe_prompt_sources_fails_on_no_choice(self):
         """Fails when user provides no choice."""
-        from polylogue.ui import create_ui
         from unittest.mock import Mock
+
+        from polylogue.ui import create_ui
 
         config = Config(
             version=CONFIG_VERSION,
@@ -946,8 +951,8 @@ class TestCliHelpersPrintSummary:
 
     def test_print_summary_verbose_with_health(self, tmp_path, monkeypatch):
         """print_summary() displays health checks in verbose mode."""
-        from polylogue.ui import create_ui
         from polylogue.storage.db import open_connection
+        from polylogue.ui import create_ui
 
         config_path = tmp_path / "config.json"
         archive_root = tmp_path / "archive"

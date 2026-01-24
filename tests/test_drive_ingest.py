@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from polylogue.config import Source
-from polylogue.ingestion import DriveFile
-from polylogue.ingestion import iter_drive_conversations
+from polylogue.ingestion import DriveFile, iter_drive_conversations
 
 
 @dataclass
@@ -88,7 +87,7 @@ class TestDriveDownloadFailureTracking:
 
         def mock_download(file_id, dest):
             if file_id == "file2":
-                raise IOError("Download failed")
+                raise OSError("Download failed")
             dest.write_text('{"test": true}')
 
         mock_client.download_to_path.side_effect = mock_download
@@ -116,7 +115,7 @@ class TestDriveDownloadFailureTracking:
 
         def mock_download(file_id, dest):
             if file_id == "f2":
-                raise IOError("Failed")
+                raise OSError("Failed")
             download_count[0] += 1
             dest.write_text('{}')
 

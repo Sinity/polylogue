@@ -297,7 +297,7 @@ class StorageBackend(Protocol):
         """
         ...
 
-    def record_run(self, record: "RunRecord") -> None:
+    def record_run(self, record: RunRecord) -> None:
         """Record a pipeline run audit entry.
 
         Args:
@@ -305,6 +305,65 @@ class StorageBackend(Protocol):
 
         Raises:
             DatabaseError: If record save fails
+        """
+        ...
+
+    # --- Metadata CRUD ---
+
+    def get_metadata(self, conversation_id: str) -> dict[str, object]:
+        """Get metadata dict for a conversation.
+
+        Args:
+            conversation_id: ID of the conversation
+
+        Returns:
+            Metadata dictionary (empty dict if no metadata)
+        """
+        ...
+
+    def update_metadata(self, conversation_id: str, key: str, value: object) -> None:
+        """Set a single metadata key.
+
+        Args:
+            conversation_id: ID of the conversation
+            key: Metadata key to set
+            value: Value to set (must be JSON-serializable)
+        """
+        ...
+
+    def delete_metadata(self, conversation_id: str, key: str) -> None:
+        """Remove a metadata key.
+
+        Args:
+            conversation_id: ID of the conversation
+            key: Metadata key to remove
+        """
+        ...
+
+    def add_tag(self, conversation_id: str, tag: str) -> None:
+        """Add a tag to the conversation's tags list.
+
+        Args:
+            conversation_id: ID of the conversation
+            tag: Tag to add
+        """
+        ...
+
+    def remove_tag(self, conversation_id: str, tag: str) -> None:
+        """Remove a tag from the conversation's tags list.
+
+        Args:
+            conversation_id: ID of the conversation
+            tag: Tag to remove
+        """
+        ...
+
+    def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
+        """Replace entire metadata dict.
+
+        Args:
+            conversation_id: ID of the conversation
+            metadata: New metadata dictionary
         """
         ...
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -251,7 +250,6 @@ class TestRendererFactory:
 
     def test_create_markdown_renderer(self, workspace_env):
         """Test creating a Markdown renderer via factory."""
-        from pathlib import Path
 
         config = Config(
             version=1,
@@ -268,7 +266,6 @@ class TestRendererFactory:
 
     def test_create_html_renderer(self, workspace_env):
         """Test creating an HTML renderer via factory."""
-        from pathlib import Path
 
         config = Config(
             version=1,
@@ -285,7 +282,6 @@ class TestRendererFactory:
 
     def test_create_renderer_case_insensitive(self, workspace_env):
         """Test that format parameter is case-insensitive."""
-        from pathlib import Path
 
         config = Config(
             version=1,
@@ -305,7 +301,6 @@ class TestRendererFactory:
 
     def test_create_renderer_unsupported_format(self, workspace_env):
         """Test that unsupported format raises ValueError."""
-        from pathlib import Path
 
         config = Config(
             version=1,

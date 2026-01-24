@@ -433,21 +433,17 @@ for msg in conversation.project().contains("error").iter():
 
 **Responsibility**: Markdown/HTML generation from domain models
 
-**Current Location**: Root level (`render.py`, `render_paths.py`, `assets.py`)
-**Future**: Will be refactored into `rendering/` package
+**Location**: `rendering/renderers/` package
 
 **Templates**: Jinja2 templates in `templates/`
 
 **Example**:
 ```python
-from polylogue.render import render_conversation_markdown
+from polylogue.rendering.renderers import HTMLRenderer
 
-def render_markdown(conversation: Conversation, output_path: Path) -> Path:
-    template = env.get_template("conversation.md.j2")
-    content = template.render(conversation=conversation)
-    output_file = output_path / "conversation.md"
-    output_file.write_text(content)
-    return output_file
+def render_conversation(conversation_id: str, output_path: Path, archive_root: Path) -> Path:
+    renderer = HTMLRenderer(archive_root)
+    return renderer.render(conversation_id, output_path)
 ```
 
 ### 7. Core Layer (`core/`)
