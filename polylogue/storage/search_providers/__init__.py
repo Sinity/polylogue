@@ -7,10 +7,10 @@ factory functions for creating provider instances from configuration.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from polylogue.core.env import get_env
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.qdrant import QdrantError, QdrantProvider
 
@@ -48,6 +48,12 @@ def create_vector_provider(
 
     Checks for Qdrant configuration in config, arguments, or environment variables.
     Priority: explicit arguments > config.index_config > environment variables.
+
+    Environment variable precedence (checked in order):
+    - POLYLOGUE_QDRANT_URL > QDRANT_URL
+    - POLYLOGUE_QDRANT_API_KEY > QDRANT_API_KEY
+    - POLYLOGUE_VOYAGE_API_KEY > VOYAGE_API_KEY
+
     Returns None if Qdrant is not configured.
 
     Args:
@@ -62,32 +68,32 @@ def create_vector_provider(
     Raises:
         ValueError: If Qdrant URL is provided but Voyage API key is missing
     """
-    # Resolve Qdrant URL with priority: explicit arg > config > env
+    # Resolve Qdrant URL with priority: explicit arg > config > env (POLYLOGUE_* > unprefixed)
     url = qdrant_url
     if url is None and config and config.index_config:
         url = config.index_config.qdrant_url
     if url is None:
-        url = os.environ.get("QDRANT_URL")
+        url = get_env("QDRANT_URL")
     if not url:
         return None
 
-    # Resolve API keys with priority: explicit arg > config > env
+    # Resolve API keys with priority: explicit arg > config > env (POLYLOGUE_* > unprefixed)
     api_key = qdrant_api_key
     if api_key is None and config and config.index_config:
         api_key = config.index_config.qdrant_api_key
     if api_key is None:
-        api_key = os.environ.get("QDRANT_API_KEY")
+        api_key = get_env("QDRANT_API_KEY")
 
     voyage_key = voyage_api_key
     if voyage_key is None and config and config.index_config:
         voyage_key = config.index_config.voyage_api_key
     if voyage_key is None:
-        voyage_key = os.environ.get("VOYAGE_API_KEY")
+        voyage_key = get_env("VOYAGE_API_KEY")
 
     if not voyage_key:
         raise ValueError(
-            "Qdrant is configured but VOYAGE_API_KEY is not set. "
-            "Vector search requires Voyage AI for embeddings."
+            "Qdrant is configured but Voyage API key is not set. "
+            "Set POLYLOGUE_VOYAGE_API_KEY or VOYAGE_API_KEY environment variable."
         )
 
     return QdrantProvider(
