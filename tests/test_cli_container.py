@@ -32,12 +32,15 @@ def test_create_config_from_path(tmp_path: Path) -> None:
     assert config.sources[0].name == "test"
 
 
-def test_create_config_missing_file(tmp_path: Path) -> None:
-    """Test creating config from non-existent path raises ConfigError."""
+def test_create_config_missing_file_returns_defaults(tmp_path: Path) -> None:
+    """Test creating config from non-existent path returns defaults (optional config)."""
     missing_path = tmp_path / "missing.json"
 
-    with pytest.raises(ConfigError, match="not found"):
-        load_config(missing_path)
+    config = load_config(missing_path)
+    assert config is not None
+    # Default config has a default "inbox" source
+    assert len(config.sources) == 1
+    assert config.sources[0].name == "inbox"
 
 
 def test_create_config_invalid_json(tmp_path: Path) -> None:

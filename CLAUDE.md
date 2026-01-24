@@ -35,7 +35,7 @@ Index (FTS5 + optional Qdrant)
 ## Critical Files
 
 ### Core Abstractions & Models
-- **`lib/models.py`**: Message/Conversation with semantic classification (`is_thinking`, `is_tool_use`, `is_substantive`)
+- **`lib/models.py`**: Message/Conversation with semantic classification (`is_thinking`, `is_tool_use`, `is_substantive`) + metadata properties (`user_title`, `display_title`, `summary`, `tags`)
 - **`lib/projections.py`**: Fluent projection API (`conv.project().substantive().min_words(50).execute()`)
 - **`lib/repository.py`**: ConversationRepository (primary query interface with semantic projections)
 - **`core/hashing.py`**: NFC-normalized SHA-256 hashing
@@ -44,7 +44,7 @@ Index (FTS5 + optional Qdrant)
 - **`types.py`**: NewType IDs (ConversationId, MessageId, AttachmentId)
 
 ### Storage Layer (Refactored)
-- **`storage/db.py`**: Thread-local connections, schema v4, migrations
+- **`storage/db.py`**: Thread-local connections, schema v5, migrations
 - **`storage/store.py`**: Record definitions (ConversationRecord, MessageRecord, AttachmentRecord)
 - **`storage/repository.py`**: StorageRepository owns `_WRITE_LOCK`, requires StorageBackend (no legacy path)
 - **`storage/backends/sqlite.py`**: SQLiteBackend implementation (schema, migrations, CRUD)
@@ -76,6 +76,15 @@ Index (FTS5 + optional Qdrant)
 - **`rendering/renderers/html.py`**: HTMLRenderer (Jinja2-based .html + .md)
 - **`rendering/renderers/__init__.py`**: create_renderer() factory (format selection)
 - **`render.py`**: Legacy render functions (backward compatibility)
+
+### CLI (Query-First)
+- **`cli/click_app.py`**: Main CLI entry with QueryFirstGroup class (parse_args override for query-first routing)
+- **`cli/query.py`**: Query mode execution (filter chain, output formatting, aggregation, modifiers)
+- **`cli/container.py`**: CLI dependency injection wrappers
+- **`cli/helpers.py`**: Stats display, config loading, render path resolution
+- **`cli/commands/sync.py`**: Sync command (ingest → render → index)
+- **`cli/commands/check.py`**: Health check with repair/vacuum
+- **`cli/commands/auth.py`**: OAuth flows (Google Drive)
 
 ### Configuration
 - **`config.py`**: Config objects (IndexConfig, DriveConfig, Source)
@@ -121,26 +130,33 @@ def hash_text(text: str) -> str:
 
 **Idempotency**: Same content → same hash → skip on re-import.
 
-## Database Schema (v4)
+## Database Schema (v5)
 
 **Tables**:
-1. **conversations** - PK: conversation_id, content_hash for dedup, **source_name** (GENERATED v4)
+1. **conversations** - PK: conversation_id, content_hash for dedup, **source_name** (GENERATED), **metadata** (JSON dict v5)
 2. **messages** - FK: conversation_id (CASCADE), stores content_blocks in provider_meta JSON
 3. **attachments** - PK: attachment_id, ref_count (manual maintenance)
 4. **attachment_refs** - Many-to-many, pruned via `_prune_attachment_refs()`
 5. **runs** - Audit trail (plan_snapshot, counts_json, drift_json)
 
-**v4 Performance Fix**:
+**v5 Metadata Column**:
 ```sql
--- OLD: json_extract() can't use index
-SELECT * FROM conversations WHERE json_extract(provider_meta, '$.source') = 'x';
+-- User-editable metadata stored as JSON
+metadata TEXT NOT NULL DEFAULT '{}'
+-- Keys: title (user override), summary, tags (list), plus custom keys
+```
 
--- NEW: Generated column with index
+**Metadata Precedence** (display title): `metadata.title > original_title > truncated_id[:8]`
+
+**v4 Performance Fix** (preserved):
+```sql
 source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED
 CREATE INDEX idx_conversations_source_name ON conversations(source_name);
 ```
 
-**Migrations**: v1→v2 (attachment ref counting), v2→v3 (runs table), v3→v4 (source_name column)
+**Migrations**: v1→v2 (attachment ref counting), v2→v3 (runs table), v3→v4 (source_name column), v4→v5 (metadata column)
+
+**Database Path**: `XDG_DATA_HOME/polylogue/polylogue.db` (semantic data, not ephemeral state)
 
 ## Content Blocks Architecture
 
@@ -169,6 +185,45 @@ CREATE INDEX idx_conversations_source_name ON conversations(source_name);
 
 **Multimodal content**: Images/files handled via **attachments table**, NOT content_blocks.
 
+## Metadata System (v5)
+
+**Purpose**: User-editable conversation metadata separate from provider data.
+
+**Storage**: `conversations.metadata` column (JSON dict, default `{}`)
+
+**Reserved Keys**:
+| Key | Type | Purpose |
+|-----|------|---------|
+| `title` | string | User override for display title |
+| `summary` | string | User-written summary |
+| `tags` | list[str] | User-assigned tags |
+
+**Conversation Properties** (lib/models.py):
+```python
+conv.user_title   # metadata.get("title") - user override
+conv.display_title  # user_title or title or id[:8]
+conv.summary      # metadata.get("summary")
+conv.tags         # metadata.get("tags", [])
+```
+
+**CRUD Operations** (StorageRepository / SQLiteBackend):
+```python
+# Get full metadata dict
+meta = repo.get_metadata(conv_id)
+
+# Update single key
+repo.update_metadata(conv_id, "title", "My Custom Title")
+
+# Delete key
+repo.delete_metadata(conv_id, "title")
+
+# Tag management
+repo.add_tag(conv_id, "important")
+repo.remove_tag(conv_id, "archive")
+```
+
+**Invariant**: Metadata is user-editable; content_hash excludes metadata (only semantic content).
+
 ## Semantic Projections
 
 **Fluent API** (lib/projections.py):
@@ -193,18 +248,119 @@ error_count = conv.project().contains("error").count()
 
 **Legacy API**: `conversation.substantive_only()`, `iter_pairs()`, `without_noise()`
 
+## Conversation Filter Chain API
+
+**Fluent API** (lib/filters.py):
+```python
+from polylogue import Polylogue
+
+p = Polylogue()
+
+# Filter chain for conversation-level queries
+convs = (
+    p.filter()
+    .provider("claude")           # Filter by provider
+    .since("2024-01-01")          # After date
+    .contains("error")            # FTS search
+    .tag("important")             # Has tag
+    .sort("date")                 # Sort field
+    .limit(10)                    # Max results
+    .list()                       # Execute query
+)
+
+# Terminal methods
+first = p.filter().provider("chatgpt").first()   # First match or None
+count = p.filter().has("thinking").count()       # Count matches
+conv = p.filter().tag("review").pick()           # Interactive picker
+```
+
+**Filter methods** (return self for chaining):
+| Method | Purpose |
+|--------|---------|
+| `provider(*names)` | Include providers |
+| `no_provider(*names)` | Exclude providers |
+| `tag(*tags)` | Include tags |
+| `no_tag(*tags)` | Exclude tags |
+| `contains(text)` | FTS search |
+| `no_contains(text)` | Exclude text |
+| `has(*types)` | Content types: thinking, tools, attachments, summary |
+| `since(date)` | After date |
+| `until(date)` | Before date |
+| `title(pattern)` | Title contains |
+| `id(prefix)` | ID prefix |
+| `sort(field)` | date, tokens, messages, words, longest, random |
+| `reverse()` | Ascending instead of descending |
+| `limit(n)` | Max results |
+| `sample(n)` | Random sample |
+| `where(predicate)` | Custom filter function |
+
+**Terminal methods** (execute query):
+| Method | Returns |
+|--------|---------|
+| `list()` | `list[Conversation]` |
+| `first()` | `Conversation \| None` |
+| `count()` | `int` |
+| `pick()` | Interactive selection |
+
+## Archive Stats
+
+```python
+stats = p.stats()
+print(f"Conversations: {stats.conversation_count}")
+print(f"Messages: {stats.message_count}")
+print(f"Providers: {stats.providers}")  # dict[str, int]
+print(f"Tags: {stats.tags}")            # dict[str, int]
+print(f"Recent: {[c.id for c in stats.recent]}")  # 5 most recent
+```
+
 ## CLI Commands
+
+**Query-First Architecture** (Phase 3.3): Positional args without subcommand prefix = query mode.
+
+### Query Mode (Default)
+
+```bash
+polylogue                           # Stats mode (no args, no filters)
+polylogue "search terms"            # Query mode (positional = FTS search)
+polylogue -p claude --since "last week"  # Filter mode (no query, filters only)
+polylogue --latest --output browser # Most recent, open in browser
+```
+
+| Category | Flags | Description |
+|----------|-------|-------------|
+| **Filters** | `-c/--contains`, `-C/--no-contains`, `--regex/--no-regex` | FTS/regex text filters |
+| | `-p/--provider`, `-P/--no-provider` | Provider include/exclude |
+| | `-t/--tag`, `-T/--no-tag` | Tag filters (comma = OR, key:value) |
+| | `--has/--no-has` | Content types: thinking, tools, summary, attachments |
+| | `--since/--until`, `--title`, `-i/--id` | Date range, title contains, ID prefix |
+| | `-n/--limit`, `--latest`, `--sample` | Result limits, sampling |
+| | `--sort`, `--reverse`, `--similar` | Ordering: date, tokens, messages, words, longest, random |
+| **Output** | `-o/--output` | Destinations: stdout, browser, clipboard (comma-sep) |
+| | `-f/--format` | Formats: markdown, json, html, obsidian, org |
+| | `--fields`, `--list`, `--stats` | Field selection, force list, stats-only |
+| | `--by-month/--by-provider/--by-tag` | Aggregation histograms |
+| | `--open`, `--csv`, `--pick` | Browser open, CSV export, interactive picker |
+| **Modifiers** | `--set KEY VALUE`, `--unset KEY` | Metadata modification |
+| | `--add-tag/--rm-tag`, `--annotate` | Tag management, LLM annotation |
+| | `--delete` | Delete matched (requires filter) |
+| **Global** | `--plain/--interactive`, `--config`, `-v/--verbose` | Output mode, config path |
+
+**Exit Codes**: 0 = success, 1 = error, 2 = no results
+
+### Subcommands
 
 | Command | Purpose | Key Flags | Example |
 |---------|---------|-----------|---------|
-| **`run`** | Ingest → render → index pipeline | `--preview`, `--stage`, `--source`, `--format` (markdown\|html) | `polylogue run --preview --format html` |
-| **`search`** | FTS5 full-text search | Query string, `--limit` | `polylogue search "python error handling"` |
-| **`view`** | Semantic projection viewer | `-p` (projection), `--provider`, `--since`, `--until`, `--query`, `--json` | `polylogue view --provider claude --query "python" -p stats --json` |
-| **`verify`** | Data integrity checks | `--verbose` | `polylogue verify --verbose` |
-| **`config`** | View/edit configuration | `show`, `--json` | `polylogue config show --json` |
+| **`sync`** | Ingest → render → index | `--preview`, `--stage`, `--source`, `--format` | `polylogue sync --stage all` |
+| **`check`** | Integrity checks/repair | `--verbose`, `--repair`, `--vacuum` | `polylogue check --repair` |
+| **`reset`** | Clear database/cache | `--database`, `--cache`, `--all`, `--force` | `polylogue reset --database` |
+| **`mcp`** | Start MCP server | `--transport` | `polylogue mcp` |
+| **`config`** | Configuration | `show`, `init`, `set` | `polylogue config show` |
+| **`auth`** | OAuth flows | `-p/--provider`, `--refresh`, `--revoke` | `polylogue auth` |
+| **`serve`** | API server | `--host`, `--port` | `polylogue serve` |
+| **`completions`** | Shell completions | `bash`, `zsh`, `fish` | `polylogue completions bash` |
 
-**Projections** (view -p): `full`, `dialogue`, `clean` (default), `pairs`, `user`, `assistant`, `thinking`, `stats`
-**Output formats** (view): text (default), `--json`, `--json-lines`, `--list`
+**Implementation**: `cli/click_app.py` - `QueryFirstGroup` class overrides `parse_args()` to convert positional args to `--query-term` options, enabling both query mode and subcommand dispatch.
 
 ## Provider Quirks
 
@@ -297,10 +453,17 @@ class StorageBackend(Protocol):
     def get_conversation(self, conversation_id: str) -> ConversationRecord | None: ...
 
     def iter_conversations(self, **filters) -> Iterator[ConversationRecord]: ...
+
+    # Metadata CRUD (v5)
+    def get_metadata(self, conversation_id: str) -> dict[str, object]: ...
+    def update_metadata(self, conversation_id: str, key: str, value: object) -> None: ...
+    def delete_metadata(self, conversation_id: str, key: str) -> None: ...
+    def add_tag(self, conversation_id: str, tag: str) -> None: ...
+    def remove_tag(self, conversation_id: str, tag: str) -> None: ...
 ```
 
 **SQLiteBackend** (storage/backends/sqlite.py):
-- **Schema**: v4 with migrations support
+- **Schema**: v5 with migrations support
 - **Performance**: Indexed lookups on provider_name, provider_conversation_id, source_name
 - **Deduplication**: Content hash checks before insert
 - **Transactions**: Atomic operations via connection context manager
@@ -384,7 +547,7 @@ class StorageBackend(Protocol):
 
 | Object | File | Fields | Defaults | Env Override |
 |--------|------|--------|----------|--------------|
-| **Config** | config.py | archive_root, index, drive, sources | YAML-based | `POLYLOGUE_ARCHIVE_ROOT` |
+| **Config** | config.py | archive_root, index, drive, sources | YAML-based (optional, defaults if missing) | `POLYLOGUE_ARCHIVE_ROOT` |
 | **IndexConfig** | config.py | enabled, provider, qdrant_url, qdrant_api_key, voyage_api_key | enabled=True, provider="fts5" | `QDRANT_URL`, `QDRANT_API_KEY`, `VOYAGE_API_KEY` |
 | **DriveConfig** | config.py | enabled, credential_path, retries, backoff_factor | enabled=False, retries=3, backoff=1.0 | `POLYLOGUE_CREDENTIAL_PATH`, `ENV_DRIVE_RETRIES` |
 | **Source** | config.py | name, path, provider, enabled | enabled=True | - |
@@ -417,7 +580,7 @@ class StorageBackend(Protocol):
 | test_importers_claude.py | JSONL parsing, Claude Code structured blocks |
 | test_projections.py | Fluent API, lazy evaluation, composability |
 | test_store.py | Storage layer, _WRITE_LOCK, transactions |
-| test_db.py | Database ops, migrations, schema v4 |
+| test_db.py | Database ops, migrations, schema v5 |
 | test_hashing.py | NFC normalization, content hash stability |
 | test_properties.py | Hypothesis property-based (hash stability, idempotency) |
 | test_pipeline_concurrent.py | Thread safety, bounded submission |
@@ -454,6 +617,33 @@ class StorageBackend(Protocol):
 - Accept low coverage on presentation layers (UI, formatting)
 - Prioritize security-critical paths for 100% coverage
 - Use property-based testing (Hypothesis) for invariants
+
+### Test Isolation Patterns
+
+**Module Reload Class Identity Issue**:
+When tests reload modules (e.g., to pick up new XDG_DATA_HOME), class identity breaks:
+```python
+# Problem: After reload, DatabaseError class has different identity
+import importlib
+importlib.reload(polylogue.storage.db)  # Creates NEW DatabaseError class
+# Other modules still have OLD DatabaseError reference
+
+# Solution 1: Check type name instead of class identity
+with pytest.raises(Exception) as exc_info:
+    risky_operation()
+assert exc_info.type.__name__ == "DatabaseError"
+assert "expected message" in str(exc_info.value)
+
+# Solution 2: Import after reload for consistent references
+importlib.reload(polylogue.storage.db)
+from polylogue.storage.db import DatabaseError as CurrentDatabaseError
+with pytest.raises(CurrentDatabaseError, match="message"):
+    risky_operation()
+```
+
+**Autouse Fixture** (conftest.py): Clears thread-local DB state, search cache, and env vars before each test.
+
+**Workspace Fixtures**: `workspace_env`, `cli_workspace` provide isolated temp directories with XDG_DATA_HOME set correctly.
 
 ## Development Patterns
 
@@ -657,12 +847,15 @@ uv run ruff format --check polylogue/ tests/
 # Benchmarks
 uv run python tests/benchmarks/run_all.py
 
-# Run
-uv run polylogue --help
-uv run polylogue run --format html  # or --format markdown
-POLYLOGUE_FORCE_PLAIN=1 uv run polylogue run --preview
-uv run polylogue verify --verbose
-uv run polylogue view --provider claude-code --since 2024-01-01
+# Run (query-first CLI)
+uv run polylogue --help                              # Help
+uv run polylogue                                     # Stats mode (no args)
+uv run polylogue "python error"                      # Query mode
+uv run polylogue -p claude --since "last week"       # Filter mode
+uv run polylogue --latest -f json                    # Most recent, JSON
+uv run polylogue sync --format html                  # Sync subcommand
+POLYLOGUE_FORCE_PLAIN=1 uv run polylogue sync --preview
+uv run polylogue check --verbose
 ```
 
 ## Pinned Notes

@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.config import Config, Source
 from polylogue.container import ApplicationContainer
+from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.repository import ConversationRepository
 from polylogue.storage.search import SearchResult, search_messages
 
@@ -43,6 +44,44 @@ if TYPE_CHECKING:
     from polylogue.pipeline.services.ingestion import IngestionService, IngestResult
     from polylogue.protocols import StorageBackend
     from polylogue.storage.repository import StorageRepository
+
+
+class ArchiveStats:
+    """Statistics about the archive.
+
+    Attributes:
+        conversation_count: Total number of conversations
+        message_count: Total number of messages
+        word_count: Total word count across all messages
+        providers: Provider name -> count mapping
+        tags: Tag name -> count mapping
+        last_sync: Timestamp of last sync operation
+        recent: List of 5 most recent conversations
+    """
+
+    def __init__(
+        self,
+        conversation_count: int,
+        message_count: int,
+        word_count: int,
+        providers: dict[str, int],
+        tags: dict[str, int],
+        last_sync: str | None,
+        recent: list[Conversation],
+    ):
+        self.conversation_count = conversation_count
+        self.message_count = message_count
+        self.word_count = word_count
+        self.providers = providers
+        self.tags = tags
+        self.last_sync = last_sync
+        self.recent = recent
+
+    def __repr__(self) -> str:
+        return (
+            f"ArchiveStats(conversations={self.conversation_count}, "
+            f"messages={self.message_count}, providers={list(self.providers.keys())})"
+        )
 
 
 class Polylogue:
@@ -84,6 +123,7 @@ class Polylogue:
         # Try to load config, fall back to minimal config if not found
         if config_path is not None and config_path.exists():
             from dependency_injector import providers
+
             from polylogue.config import load_config
 
             self._container = ApplicationContainer()
@@ -373,6 +413,91 @@ class Polylogue:
                 )
 
         self._indexing_service.rebuild_index()
+
+    def filter(self) -> ConversationFilter:
+        """Create a fluent filter builder for querying conversations.
+
+        The filter builder allows chaining multiple filter criteria before
+        executing the query.
+
+        Returns:
+            ConversationFilter for building queries
+
+        Example:
+            # Get recent Claude conversations about errors
+            convs = archive.filter().provider("claude").contains("error").limit(10).list()
+
+            # Count conversations with thinking blocks
+            count = archive.filter().has("thinking").count()
+
+            # Get first matching conversation
+            conv = archive.filter().tag("important").first()
+        """
+        return ConversationFilter(self._repository)
+
+    def stats(self) -> ArchiveStats:
+        """Get statistics about the archive.
+
+        Returns:
+            ArchiveStats with conversation count, message count, provider breakdown, etc.
+
+        Example:
+            stats = archive.stats()
+            print(f"Total: {stats.conversation_count} conversations")
+            for provider, count in stats.providers.items():
+                print(f"  {provider}: {count}")
+        """
+        # Get all conversations (with reasonable limit for stats)
+        conversations = self._repository.list(limit=10000)
+
+        # Calculate stats
+        providers: dict[str, int] = {}
+        tags: dict[str, int] = {}
+        total_messages = 0
+        total_words = 0
+
+        for conv in conversations:
+            # Provider counts
+            providers[conv.provider] = providers.get(conv.provider, 0) + 1
+
+            # Tag counts
+            for tag in conv.tags:
+                tags[tag] = tags.get(tag, 0) + 1
+
+            # Message and word counts
+            total_messages += len(conv.messages)
+            total_words += sum(m.word_count for m in conv.messages)
+
+        # Get recent conversations (top 5 by date)
+        recent = sorted(
+            conversations,
+            key=lambda c: c.updated_at or c.created_at or c.id,
+            reverse=True,
+        )[:5]
+
+        # Get last sync time from runs table if available
+        last_sync = None
+        try:
+            # Check if backend has runs info
+            conn = getattr(self._backend, "_get_connection", lambda: None)()
+            if conn:
+                row = conn.execute(
+                    "SELECT MAX(ended_at) as last FROM runs"
+                ).fetchone()
+                if row and row[0]:
+                    last_sync = row[0]
+        except Exception:
+            pass
+
+        return ArchiveStats(
+            conversation_count=len(conversations),
+            message_count=total_messages,
+            word_count=total_words,
+            providers=providers,
+            tags=tags,
+            last_sync=last_sync,
+            recent=recent,
+        )
 
     def __repr__(self) -> str:
         """Return string representation."""

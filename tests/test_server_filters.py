@@ -1,8 +1,7 @@
 """Tests for server template filters."""
 
-import pytest
 
-from polylogue.server.web import templates, _render_markdown
+from polylogue.server.web import _render_markdown, templates
 
 
 class TestRenderMarkdownFilter:
