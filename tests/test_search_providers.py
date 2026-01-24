@@ -43,11 +43,9 @@ class TestCreateVectorProvider:
             voyage_api_key="config-voyage-key",
         )
         config = Config(
-            version=2,
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
             sources=[],
-            path=tmp_path / "config.json",
             index_config=index_config,
         )
 
@@ -66,11 +64,9 @@ class TestCreateVectorProvider:
             voyage_api_key="config-voyage-key",
         )
         config = Config(
-            version=2,
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
             sources=[],
-            path=tmp_path / "config.json",
             index_config=index_config,
         )
 
@@ -104,11 +100,9 @@ class TestCreateVectorProvider:
             voyage_api_key=None,
         )
         config = Config(
-            version=2,
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
             sources=[],
-            path=tmp_path / "config.json",
             index_config=index_config,
         )
 
