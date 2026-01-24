@@ -29,6 +29,7 @@ from polylogue.pipeline.services.rendering import RenderService
 from polylogue.rendering.renderers import create_renderer
 from polylogue.storage.backends.sqlite import create_default_backend
 from polylogue.storage.repository import StorageRepository
+from polylogue.storage.search_providers import create_vector_provider
 
 
 class ApplicationContainer(containers.DeclarativeContainer):
@@ -62,6 +63,12 @@ class ApplicationContainer(containers.DeclarativeContainer):
     storage = providers.Singleton(
         StorageRepository,
         backend=backend,
+    )
+
+    # Vector provider (Qdrant + Voyage AI, optional)
+    vector_provider = providers.Singleton(
+        create_vector_provider,
+        config=config,
     )
 
     # Service factories
