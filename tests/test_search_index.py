@@ -490,7 +490,7 @@ def test_update_index_handles_large_batch(test_conn):
 # ============================================================================
 
 
-def test_search_finds_matching_text(workspace_env):
+def test_search_finds_matching_text(workspace_env, storage_repository):
     """search_messages() finds conversations with matching text."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
@@ -514,7 +514,7 @@ def test_search_finds_matching_text(workspace_env):
         version=1,
     )
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]))
+    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("python", archive_root=workspace_env["archive_root"], limit=10)
@@ -524,7 +524,7 @@ def test_search_finds_matching_text(workspace_env):
     assert results.hits[0].message_id == "msg1"
 
 
-def test_search_returns_multiple_matches(workspace_env):
+def test_search_returns_multiple_matches(workspace_env, storage_repository):
     """search_messages() returns multiple matching conversations."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
@@ -548,7 +548,7 @@ def test_search_returns_multiple_matches(workspace_env):
             content_hash=f"hash-msg{i}",
             version=1,
         )
-        ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]))
+        ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
 
     rebuild_index()
 
@@ -559,7 +559,7 @@ def test_search_returns_multiple_matches(workspace_env):
     assert hit_conv_ids == {"conv0", "conv1", "conv2"}
 
 
-def test_search_no_results_returns_empty(workspace_env):
+def test_search_no_results_returns_empty(workspace_env, storage_repository):
     """search_messages() returns empty list when no matches found."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
@@ -583,7 +583,7 @@ def test_search_no_results_returns_empty(workspace_env):
         version=1,
     )
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]))
+    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("nonexistent", archive_root=workspace_env["archive_root"], limit=10)
@@ -591,7 +591,7 @@ def test_search_no_results_returns_empty(workspace_env):
     assert len(results.hits) == 0
 
 
-def test_search_respects_limit(workspace_env):
+def test_search_respects_limit(workspace_env, storage_repository):
     """search_messages() respects limit parameter."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
@@ -615,7 +615,7 @@ def test_search_respects_limit(workspace_env):
             content_hash=f"hash-msg{i}",
             version=1,
         )
-        ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]))
+        ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
 
     rebuild_index()
 
@@ -623,7 +623,7 @@ def test_search_respects_limit(workspace_env):
     assert len(results.hits) == 3
 
 
-def test_search_includes_snippet(workspace_env):
+def test_search_includes_snippet(workspace_env, storage_repository):
     """search_messages() includes text snippet in results."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
@@ -647,7 +647,7 @@ def test_search_includes_snippet(workspace_env):
         version=1,
     )
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]))
+    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("quick", archive_root=workspace_env["archive_root"], limit=10)
@@ -658,7 +658,7 @@ def test_search_includes_snippet(workspace_env):
     assert isinstance(results.hits[0].snippet, str)
 
 
-def test_search_includes_conversation_metadata(workspace_env):
+def test_search_includes_conversation_metadata(workspace_env, storage_repository):
     """search_messages() includes conversation metadata in results."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
@@ -683,7 +683,7 @@ def test_search_includes_conversation_metadata(workspace_env):
         version=1,
     )
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]))
+    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("search", archive_root=workspace_env["archive_root"], limit=10)
@@ -703,7 +703,7 @@ def test_search_includes_conversation_metadata(workspace_env):
 # ============================================================================
 
 
-def test_search_with_special_characters(workspace_env):
+def test_search_with_special_characters(workspace_env, storage_repository):
     """search_messages() handles special characters in text."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
@@ -727,7 +727,7 @@ def test_search_with_special_characters(workspace_env):
         version=1,
     )
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]))
+    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     # Search for word containing special chars
@@ -735,7 +735,7 @@ def test_search_with_special_characters(workspace_env):
     assert len(results.hits) == 1
 
 
-def test_search_with_quotes_in_text(workspace_env):
+def test_search_with_quotes_in_text(workspace_env, storage_repository):
     """search_messages() handles quoted text correctly."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
@@ -759,14 +759,14 @@ def test_search_with_quotes_in_text(workspace_env):
         version=1,
     )
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]))
+    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("hello", archive_root=workspace_env["archive_root"], limit=10)
     assert len(results.hits) == 1
 
 
-def test_search_with_unicode_text(workspace_env):
+def test_search_with_unicode_text(workspace_env, storage_repository):
     """search_messages() handles unicode characters."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
@@ -790,14 +790,14 @@ def test_search_with_unicode_text(workspace_env):
         version=1,
     )
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]))
+    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("café", archive_root=workspace_env["archive_root"], limit=10)
     assert len(results.hits) == 1
 
 
-def test_search_with_hyphenated_words(workspace_env):
+def test_search_with_hyphenated_words(workspace_env, storage_repository):
     """search_messages() handles words in hyphenated phrases."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
@@ -821,7 +821,7 @@ def test_search_with_hyphenated_words(workspace_env):
         version=1,
     )
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]))
+    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     # Search for individual words within hyphenated phrase (FTS5 tokenizes on hyphens)
@@ -856,7 +856,7 @@ def test_rebuild_index_with_empty_database(test_conn):
     assert count == 0
 
 
-def test_search_returns_searchresult_object(workspace_env):
+def test_search_returns_searchresult_object(workspace_env, storage_repository):
     """search_messages() returns SearchResult with hits list."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
@@ -880,7 +880,7 @@ def test_search_returns_searchresult_object(workspace_env):
         version=1,
     )
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]))
+    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("search", archive_root=workspace_env["archive_root"], limit=10)

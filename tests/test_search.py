@@ -439,6 +439,6 @@ class TestSearchIntegration:
     def test_search_empty_result(self, search_indexed_db, search_archive_root, monkeypatch):
         """Search with no matches should return empty result."""
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(search_archive_root))
-        result = search_messages("xyzabc", archive_root=search_archive_root)
+        result = search_messages("xyzabc", archive_root=search_archive_root, db_path=search_indexed_db)
         assert result is not None
         assert len(result.hits) == 0
