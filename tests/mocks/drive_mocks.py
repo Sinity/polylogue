@@ -184,6 +184,35 @@ class MockFilesResource:
         self.file_content = file_content or {}
         self._list_filters: dict[str, Any] = {}
 
+    def _parse_query(self, q: str) -> dict[str, str]:
+        """Parse Drive API query string into filters.
+
+        Handles queries like:
+          name='Google AI Studio'
+          name='folder' and mimeType='application/vnd.google-apps.folder'
+          'parent_id' in parents and trashed = false
+        """
+        import re
+
+        filters: dict[str, str] = {}
+
+        # Extract name='value' pattern
+        name_match = re.search(r"name\s*=\s*['\"]([^'\"]+)['\"]", q)
+        if name_match:
+            filters["name"] = name_match.group(1)
+
+        # Extract mimeType='value' pattern
+        mime_match = re.search(r"mimeType\s*=\s*['\"]([^'\"]+)['\"]", q)
+        if mime_match:
+            filters["mimeType"] = mime_match.group(1)
+
+        # Extract 'parent_id' in parents pattern
+        parent_match = re.search(r"['\"]([^'\"]+)['\"]\s+in\s+parents", q)
+        if parent_match:
+            filters["parent_id"] = parent_match.group(1)
+
+        return filters
+
     def list(
         self,
         q: str | None = None,
@@ -195,17 +224,22 @@ class MockFilesResource:
         """Mock files().list() method."""
         self._list_filters = {"q": q, "spaces": spaces, "fields": fields, "pageSize": pageSize, "pageToken": pageToken}
 
-        # Simple query parsing (just handle "name=" and "in parents")
         matching_files = list(self.files.values())
 
         if q:
-            # Parse simple queries like "name='folder'" or "'parent_id' in parents"
-            if "name=" in q:
-                name_query = q.split("name=")[1].strip(" '\"")
-                matching_files = [f for f in matching_files if f.name == name_query]
-            elif "in parents" in q:
-                parent_id = q.split("'")[1]
-                matching_files = [f for f in matching_files if parent_id in f.parents]
+            # Parse Drive API queries - handle AND clauses and various filters
+            # Example queries:
+            #   name='Google AI Studio'
+            #   name='folder' and mimeType='application/vnd.google-apps.folder'
+            #   'parent_id' in parents and trashed = false
+            filters = self._parse_query(q)
+
+            if "name" in filters:
+                matching_files = [f for f in matching_files if f.name == filters["name"]]
+            if "mimeType" in filters:
+                matching_files = [f for f in matching_files if f.mime_type == filters["mimeType"]]
+            if "parent_id" in filters:
+                matching_files = [f for f in matching_files if filters["parent_id"] in f.parents]
 
         # Pagination simulation
         page_size = pageSize or 100
