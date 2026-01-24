@@ -9,7 +9,21 @@
   outputs = { self, nixpkgs, flake-utils }:
     flake-utils.lib.eachDefaultSystem (system:
       let
-        pkgs = nixpkgs.legacyPackages.${system};
+        # Apply Python package overrides (fix dependency-injector marked as broken)
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [
+            (final: prev: {
+              python313Packages = prev.python313Packages.overrideScope (pyfinal: pysuper: {
+                dependency-injector = pysuper.dependency-injector.overridePythonAttrs (old: {
+                  nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pyfinal.cython ];
+                  doCheck = false;
+                  meta = (old.meta or {}) // { broken = false; };
+                });
+              });
+            })
+          ];
+        };
         python = pkgs.python313;
 
         # Build polylogue package
