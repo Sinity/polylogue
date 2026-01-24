@@ -491,6 +491,7 @@ class TestAttachmentHandling:
                 message_id=att.get("message_id", message_id),
                 mime_type=att.get("mime_type", "application/octet-stream"),
                 size_bytes=att.get("size_bytes", 1024),
+                path=att.get("path"),  # explicit path if provided
                 provider_meta=att.get("meta"),  # dict or None
             )
             for att in attachments
