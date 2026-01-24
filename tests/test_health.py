@@ -279,11 +279,9 @@ class TestRunHealth:
 
         missing_archive = tmp_path / "missing"
         config = Config(
-            version=2,
             archive_root=missing_archive,
             render_root=missing_archive / "render",
             sources=[Source(name="test", path=tmp_path)],
-            path=tmp_path / "config.json",
         )
 
         result = run_health(config)
@@ -314,11 +312,9 @@ class TestRunHealth:
         missing_render = tmp_path / "missing"
 
         config = Config(
-            version=2,
             archive_root=archive_root,
             render_root=missing_render,
             sources=[Source(name="test", path=tmp_path)],
-            path=tmp_path / "config.json",
         )
 
         result = run_health(config)

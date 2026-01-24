@@ -38,12 +38,9 @@ class TestRenderFailureTracking:
 
         # Create a minimal config
         config = Config(
-            version=2,
             sources=[],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
-            path=tmp_path / "config.json",
-            template_path=None,
         )
         config.archive_root.mkdir(parents=True, exist_ok=True)
 
@@ -88,12 +85,9 @@ class TestRenderFailureTracking:
         from polylogue.pipeline.runner import run_sources
 
         config = Config(
-            version=2,
             sources=[],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
-            path=tmp_path / "config.json",
-            template_path=None,
         )
         config.archive_root.mkdir(parents=True, exist_ok=True)
 
@@ -131,12 +125,9 @@ class TestRenderFailureTracking:
         from polylogue.pipeline.runner import run_sources
 
         config = Config(
-            version=2,
             sources=[],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
-            path=tmp_path / "config.json",
-            template_path=None,
         )
         config.archive_root.mkdir(parents=True, exist_ok=True)
 
@@ -173,11 +164,9 @@ class TestSelectSources:
         source3 = Source(name="source-c", path=tmp_path / "c")
 
         config = Config(
-            version=2,
             sources=[source1, source2, source3],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
-            path=tmp_path / "config.json",
         )
 
         # None filter
@@ -196,11 +185,9 @@ class TestSelectSources:
         source3 = Source(name="codex-export", path=tmp_path / "c")
 
         config = Config(
-            version=2,
             sources=[source1, source2, source3],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
-            path=tmp_path / "config.json",
         )
 
         result = _select_sources(config, ["claude-export"])
@@ -216,11 +203,9 @@ class TestSelectSources:
         source1 = Source(name="source-a", path=tmp_path / "a")
 
         config = Config(
-            version=2,
             sources=[source1],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
-            path=tmp_path / "config.json",
         )
 
         result = _select_sources(config, ["nonexistent-source"])
@@ -332,11 +317,9 @@ class TestPlanSources:
     def test_plan_empty_config(self, tmp_path: Path):
         """Returns zeros for empty config."""
         config = Config(
-            version=2,
             sources=[],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
-            path=tmp_path / "config.json",
         )
 
         result = plan_sources(config)
@@ -387,11 +370,9 @@ class TestPlanSources:
 
         source = Source(name="test-source", path=inbox)
         config = Config(
-            version=2,
             sources=[source],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
-            path=tmp_path / "config.json",
         )
 
         result = plan_sources(config)
@@ -420,7 +401,6 @@ class TestAllConversationIds:
                     created_at=datetime.now(timezone.utc).isoformat(),
                     updated_at=datetime.now(timezone.utc).isoformat(),
                     content_hash=uuid4().hex,
-                    version=1,
                 )
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
@@ -445,7 +425,6 @@ class TestAllConversationIds:
                     created_at=datetime.now(timezone.utc).isoformat(),
                     updated_at=datetime.now(timezone.utc).isoformat(),
                     content_hash=uuid4().hex,
-                    version=1,
                 )
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
@@ -470,7 +449,6 @@ class TestAllConversationIds:
                     created_at=datetime.now(timezone.utc).isoformat(),
                     updated_at=datetime.now(timezone.utc).isoformat(),
                     content_hash=uuid4().hex,
-                    version=1,
                     provider_meta={"source": source},
                 )
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
@@ -495,7 +473,6 @@ class TestAllConversationIds:
                 created_at=datetime.now(timezone.utc).isoformat(),
                 updated_at=datetime.now(timezone.utc).isoformat(),
                 content_hash=uuid4().hex,
-                version=1,
                 provider_meta={"source": "my-source"},
             )
             store_records(conversation=conv_valid, messages=[], attachments=[], conn=conn)
@@ -509,7 +486,6 @@ class TestAllConversationIds:
                 created_at=datetime.now(timezone.utc).isoformat(),
                 updated_at=datetime.now(timezone.utc).isoformat(),
                 content_hash=uuid4().hex,
-                version=1,
                 provider_meta=None,
             )
             store_records(conversation=conv_null, messages=[], attachments=[], conn=conn)
@@ -523,7 +499,6 @@ class TestAllConversationIds:
                 created_at=datetime.now(timezone.utc).isoformat(),
                 updated_at=datetime.now(timezone.utc).isoformat(),
                 content_hash=uuid4().hex,
-                version=1,
                 provider_meta={},
             )
             store_records(conversation=conv_empty, messages=[], attachments=[], conn=conn)
@@ -699,11 +674,9 @@ class TestRunSourcesIntegration:
 
         source = Source(name="test-ingest", path=inbox)
         config = Config(
-            version=2,
             sources=[source],
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
-            path=tmp_path / "config.json",
         )
 
         result = run_sources(config=config, stage="ingest")
@@ -715,11 +688,9 @@ class TestRunSourcesIntegration:
     def test_render_stage_only(self, workspace_env, tmp_path: Path):
         """Only rendering runs when stage='render'."""
         config = Config(
-            version=2,
             sources=[],
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
-            path=tmp_path / "config.json",
         )
 
         with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids:
@@ -734,11 +705,9 @@ class TestRunSourcesIntegration:
     def test_index_stage_only(self, workspace_env, tmp_path: Path):
         """Only indexing runs when stage='index'."""
         config = Config(
-            version=2,
             sources=[],
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
-            path=tmp_path / "config.json",
         )
 
         result = run_sources(config=config, stage="index")
@@ -776,11 +745,9 @@ class TestRunSourcesIntegration:
 
         source = Source(name="test-all", path=inbox)
         config = Config(
-            version=2,
             sources=[source],
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
-            path=tmp_path / "config.json",
         )
 
         result = run_sources(config=config, stage="all")
@@ -793,11 +760,9 @@ class TestRunSourcesIntegration:
     def test_drift_calculation_with_plan(self, workspace_env, tmp_path: Path):
         """Drift is calculated comparing actual vs plan."""
         config = Config(
-            version=2,
             sources=[],
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
-            path=tmp_path / "config.json",
         )
 
         # Create plan with expected counts
@@ -844,11 +809,9 @@ class TestRunSourcesIntegration:
 
         source = Source(name="test-drift", path=inbox)
         config = Config(
-            version=2,
             sources=[source],
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
-            path=tmp_path / "config.json",
         )
 
         result = run_sources(config=config, stage="ingest", plan=None)
@@ -859,11 +822,9 @@ class TestRunSourcesIntegration:
     def test_run_json_written(self, workspace_env, tmp_path: Path):
         """Run JSON file is written to archive_root/runs/."""
         config = Config(
-            version=2,
             sources=[],
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
-            path=tmp_path / "config.json",
         )
 
         result = run_sources(config=config, stage="ingest")
@@ -882,11 +843,9 @@ class TestRunSourcesIntegration:
     def test_index_error_captured(self, workspace_env, tmp_path: Path):
         """Index errors are captured in result.index_error."""
         config = Config(
-            version=2,
             sources=[],
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
-            path=tmp_path / "config.json",
         )
 
         with patch("polylogue.pipeline.services.indexing.IndexService.rebuild_index") as mock_rebuild:
