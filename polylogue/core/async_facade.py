@@ -69,17 +69,15 @@ class AsyncPolylogue:
             db_path = Path(db_path).expanduser().resolve()
 
         # Create minimal config
-        from polylogue.config import CONFIG_VERSION, DEFAULT_ARCHIVE_ROOT
+        from polylogue.paths import ARCHIVE_ROOT, RENDER_ROOT
 
         if archive_root is None:
-            archive_root = DEFAULT_ARCHIVE_ROOT
+            archive_root = ARCHIVE_ROOT
 
         self._config = Config(
-            version=CONFIG_VERSION,
             archive_root=archive_root,
-            render_root=archive_root / "render",
+            render_root=RENDER_ROOT,
             sources=[],
-            path=DEFAULT_ARCHIVE_ROOT.parent / "config.json",
         )
 
         # Create async backend
