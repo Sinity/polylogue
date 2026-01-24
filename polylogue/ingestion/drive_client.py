@@ -20,7 +20,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from ..paths import CONFIG_HOME
+from ..paths import DRIVE_CREDENTIALS_PATH, DRIVE_TOKEN_PATH
 
 T = TypeVar("T")
 
@@ -29,8 +29,6 @@ logger = logging.getLogger(__name__)
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 GEMINI_PROMPT_MIME_TYPE = "application/vnd.google-makersuite.prompt"
-DEFAULT_CREDENTIALS_NAME = "credentials.json"
-DEFAULT_TOKEN_NAME = "token.json"
 DEFAULT_DRIVE_RETRIES = 3
 DEFAULT_DRIVE_RETRY_BASE = 0.5
 ENV_DRIVE_RETRIES = "POLYLOGUE_DRIVE_RETRIES"
@@ -64,7 +62,7 @@ def default_credentials_path(config: object | None = None) -> Path:
         cred_path = getattr(config, "credentials_path", None)
         if cred_path:
             return Path(cred_path)
-    return CONFIG_HOME / DEFAULT_CREDENTIALS_NAME
+    return DRIVE_CREDENTIALS_PATH
 
 
 def default_token_path(config: object | None = None) -> Path:
@@ -73,7 +71,7 @@ def default_token_path(config: object | None = None) -> Path:
         token_path = getattr(config, "token_path", None)
         if token_path:
             return Path(token_path)
-    return CONFIG_HOME / DEFAULT_TOKEN_NAME
+    return DRIVE_TOKEN_PATH
 
 
 def _import_module(name: str) -> Any:

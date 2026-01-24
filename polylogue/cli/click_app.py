@@ -17,7 +17,6 @@ import click
 from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
 from polylogue.cli.commands.completions import completions_command
-from polylogue.cli.commands.config import config_command
 from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.serve import serve_command
@@ -76,7 +75,6 @@ class QueryFirstGroup(click.Group):
                     "-o", "--output", "-f", "--format",
                     "--fields", "--set", "--unset",
                     "--add-tag", "--rm-tag", "--annotate",
-                    "--config",
                 ):
                     if i + 1 < len(args) and not args[i + 1].startswith("-"):
                         i += 1
@@ -225,9 +223,6 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 # --- Global options ---
 @click.option("--plain", is_flag=True, help="Force non-interactive plain output")
 @click.option("--interactive", is_flag=True, help="Force interactive output")
-@click.option(
-    "--config", "config_path", type=click.Path(path_type=Path), help="Path to config.json"
-)
 @click.option("-v", "--verbose", is_flag=True, help="Verbose output")
 @click.version_option(version=POLYLOGUE_VERSION, prog_name="polylogue")
 @click.pass_context
@@ -278,7 +273,6 @@ def cli(
     # Global
     plain: bool,
     interactive: bool,
-    config_path: Path | None,
     verbose: bool,
 ) -> None:
     """Polylogue - AI conversation archive.
@@ -295,13 +289,13 @@ def cli(
         polylogue check   Health check and repair
         polylogue mcp     Start MCP server
         polylogue reset   Reset database
-        polylogue config  Configuration
+        polylogue auth    Google Drive OAuth
 
     Run `polylogue <command> --help` for subcommand details.
     """
     # Set up environment
     use_plain = should_use_plain(plain=plain, interactive=interactive)
-    env = AppEnv(ui=create_ui(use_plain), config_path=config_path)
+    env = AppEnv(ui=create_ui(use_plain))
     ctx.obj = env
 
     # Announce plain mode if auto-detected (not explicitly requested)
@@ -319,7 +313,6 @@ cli.add_command(reset_command)
 cli.add_command(mcp_command)
 cli.add_command(auth_command)
 cli.add_command(completions_command)
-cli.add_command(config_command)
 cli.add_command(serve_command)
 
 

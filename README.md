@@ -641,12 +641,11 @@ Polylogue follows XDG Base Directory specification:
 ```
 ~/.local/share/polylogue/           # XDG_DATA_HOME/polylogue
 ├── polylogue.db                    # SQLite database
-├── inbox/                          # Drop exports here
+├── inbox/                          # Drop exports here (or symlink)
 │   ├── chatgpt/                    # Organize by provider (optional)
 │   │   └── conversations.json
-│   ├── claude/
-│   │   └── export.jsonl
-│   └── claude-code -> ~/.claude/projects  # Symlinks work
+│   └── claude/
+│       └── export.jsonl
 └── render/                         # Rendered output
     ├── html/
     │   └── claude/
@@ -655,8 +654,13 @@ Polylogue follows XDG Base Directory specification:
         └── claude/
             └── abc123.md
 
-~/.config/polylogue/                # XDG_CONFIG_HOME/polylogue (optional)
-├── credentials.json                # Google OAuth (if using Drive)
+~/.claude/projects/                  # Auto-discovered: Claude Code sessions
+~/.codex/sessions/                   # Auto-discovered: Codex sessions
+
+~/.config/polylogue/                # XDG_CONFIG_HOME/polylogue
+└── polylogue-credentials.json      # Google OAuth credentials (if using Drive)
+
+~/.local/state/polylogue/           # XDG_STATE_HOME/polylogue
 └── token.json                      # OAuth token cache
 ```
 
@@ -670,23 +674,17 @@ Polylogue follows XDG Base Directory specification:
 
 ## Configuration
 
-**No configuration is required for basic use.** Paths are XDG-derived.
+**No configuration file.** Polylogue is truly zero-config. Paths follow XDG Base Directory specification.
 
 ### Environment Overrides
 
-All settings can be overridden via environment variables. Polylogue checks **POLYLOGUE_*** prefixed variables first, then falls back to unprefixed versions. This allows project-specific configuration without affecting global tools.
+Optional environment variables for vector search and API keys:
 
-| Variable | Alternative | Default | Description |
-|----------|-------------|---------|-------------|
-| `POLYLOGUE_DATA` | - | `~/.local/share/polylogue` | Data directory |
-| `POLYLOGUE_INBOX` | - | `$POLYLOGUE_DATA/inbox` | Inbox directory |
-| `POLYLOGUE_FORCE` | - | unset | Set to `1` to skip confirmations |
-| `POLYLOGUE_QDRANT_URL` | `QDRANT_URL` | unset | Qdrant server URL for `--similar` vector search |
-| `POLYLOGUE_QDRANT_API_KEY` | `QDRANT_API_KEY` | unset | Qdrant authentication token |
-| `POLYLOGUE_VOYAGE_API_KEY` | `VOYAGE_API_KEY` | unset | Voyage AI API key for embeddings |
-| `POLYLOGUE_ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY` | unset | Anthropic API key for `--annotate` (future) |
-| `POLYLOGUE_OPENAI_API_KEY` | `OPENAI_API_KEY` | unset | OpenAI API key for alternative embeddings (future) |
-| `POLYLOGUE_GOOGLE_API_KEY` | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | unset | Google Gemini API key (future) |
+| Variable | Alternative | Description |
+|----------|-------------|-------------|
+| `POLYLOGUE_QDRANT_URL` | `QDRANT_URL` | Qdrant server URL for `--similar` vector search |
+| `POLYLOGUE_QDRANT_API_KEY` | `QDRANT_API_KEY` | Qdrant authentication token |
+| `POLYLOGUE_VOYAGE_API_KEY` | `VOYAGE_API_KEY` | Voyage AI API key for embeddings |
 
 ### Backup and Export
 
@@ -712,21 +710,10 @@ The inbox directory contains original exports and can be re-synced to rebuild th
 For Gemini conversations via Google Drive:
 
 1. Create OAuth credentials at [Google Cloud Console](https://console.cloud.google.com/)
-2. Download `credentials.json` to `~/.config/polylogue/`
+2. Download to `~/.config/polylogue/polylogue-credentials.json`
 3. Run `polylogue auth` to complete OAuth flow
-4. Configure Drive folder:
 
-```bash
-# Environment variable
-export POLYLOGUE_DRIVE_FOLDER="Google AI Studio"
-
-# Or config file (~/.config/polylogue/config.json)
-{
-  "drive": {
-    "folder": "Google AI Studio"
-  }
-}
-```
+The "Google AI Studio" folder is automatically synced (hardcoded).
 
 ## MCP Integration
 

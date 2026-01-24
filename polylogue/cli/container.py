@@ -7,7 +7,6 @@ while delegating to the ApplicationContainer for actual instantiation.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import Config
@@ -24,18 +23,15 @@ from polylogue.storage.repository import StorageRepository
 _container = None
 
 
-def get_container(config_path: Path | None = None) -> ApplicationContainer:
+def get_container() -> ApplicationContainer:
     """Get or create the application container.
-
-    Args:
-        config_path: Optional path to config file. If None, uses default location.
 
     Returns:
         ApplicationContainer instance (singleton).
     """
     global _container
     if _container is None:
-        _container = create_container(config_path)
+        _container = create_container()
     return _container
 
 
@@ -48,20 +44,13 @@ def reset_container() -> None:
     _container = None
 
 
-def create_config(config_path: Path | None = None) -> Config:
-    """Create configuration from file.
-
-    Args:
-        config_path: Optional path to config file. If None, uses default location
-                    (respects POLYLOGUE_CONFIG env var).
+def create_config() -> Config:
+    """Return the hardcoded configuration (zero-config).
 
     Returns:
-        Loaded configuration instance.
-
-    Raises:
-        ConfigError: If config file is missing or invalid.
+        Loaded configuration instance with XDG defaults.
     """
-    container = get_container(config_path)
+    container = get_container()
     return container.config()
 
 

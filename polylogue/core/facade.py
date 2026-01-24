@@ -32,7 +32,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.config import Config, Source
+from polylogue.config import Config, Source, get_config
 from polylogue.container import ApplicationContainer
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.repository import ConversationRepository
@@ -88,16 +88,15 @@ class Polylogue:
     """High-level facade for Polylogue library.
 
     This class provides a simple, user-friendly API for using Polylogue
-    as a library. It manages configuration, services, and provides
-    convenient methods for common operations.
+    as a library. It manages services and provides convenient methods
+    for common operations.
 
     Args:
-        archive_root: Path to the archive directory. Defaults to ~/.local/share/polylogue/archive
-        config_path: Optional path to config file. If None, uses default location.
-        db_path: Optional path to database file. If None, uses default location.
+        archive_root: Override archive directory. Defaults to ~/.local/share/polylogue
+        db_path: Override database file. Defaults to ~/.local/share/polylogue/polylogue.db
 
     Example:
-        archive = Polylogue(archive_root="~/my-chats")
+        archive = Polylogue()  # Uses XDG defaults
         result = archive.ingest_file("chatgpt.json")
         conv = archive.get_conversation("claude:abc123")
     """
@@ -105,57 +104,27 @@ class Polylogue:
     def __init__(
         self,
         archive_root: str | Path | None = None,
-        config_path: str | Path | None = None,
         db_path: str | Path | None = None,
     ):
-        """Initialize the Polylogue archive."""
-        # Convert paths
-        if archive_root is not None:
-            archive_root = Path(archive_root).expanduser().resolve()
-        if config_path is not None:
-            config_path = Path(config_path).expanduser().resolve()
-        if db_path is not None:
-            db_path = Path(db_path).expanduser().resolve()
+        """Initialize the Polylogue archive.
 
-        # Initialize container
-        self._container: ApplicationContainer | None
-
-        # Try to load config, fall back to minimal config if not found
-        if config_path is not None and config_path.exists():
-            from dependency_injector import providers
-
-            from polylogue.config import load_config
-
-            self._container = ApplicationContainer()
-            self._container.config.override(
-                providers.Singleton(load_config, path=config_path)
-            )
-            self._config: Config = self._container.config()
-        else:
-            # Create minimal config for library use
-            from polylogue.config import CONFIG_VERSION, DEFAULT_ARCHIVE_ROOT
-
-            if archive_root is None:
-                archive_root = DEFAULT_ARCHIVE_ROOT
-
-            self._config = Config(
-                version=CONFIG_VERSION,
-                archive_root=archive_root,
-                render_root=archive_root / "render",
-                sources=[],
-                path=config_path or (DEFAULT_ARCHIVE_ROOT.parent / "config.json"),
-            )
-            self._container = None
+        Args:
+            archive_root: Override archive directory (defaults to XDG data home)
+            db_path: Override database path (defaults to XDG data home)
+        """
+        # Get hardcoded config (zero-config)
+        self._config: Config = get_config()
+        self._container: ApplicationContainer | None = None
 
         # Override archive_root if provided
         if archive_root is not None:
-            self._config.archive_root = archive_root
+            self._config.archive_root = Path(archive_root).expanduser().resolve()
 
         # Create storage backend (single source of truth for database access)
         from polylogue.storage.backends.sqlite import SQLiteBackend
 
-        self._db_path = db_path
-        self._backend: StorageBackend = SQLiteBackend(db_path=db_path)
+        self._db_path = Path(db_path).expanduser().resolve() if db_path else None
+        self._backend: StorageBackend = SQLiteBackend(db_path=self._db_path)
 
         # Create repositories using shared backend
         self._repository = ConversationRepository(backend=self._backend)
