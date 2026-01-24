@@ -97,41 +97,43 @@ async with AsyncPolylogue() as archive:
 
 ---
 
-## ⏸️ Deferred: Async Ingestion
+## ✅ Async Ingestion (Wrapper Pattern)
 
-**Why deferred**: Requires rewriting entire ingestion pipeline (~800 LOC)
+**Implementation**: Async wrapper around sync ingestion service (~90 LOC)
 
-**Current architecture** (`pipeline/services/ingestion.py`):
+**Why wrapper instead of full rewrite**: The sync ingestion has complex ID management and deduplication logic (~800 LOC) that would require significant refactoring. Using `asyncio.to_thread()` gives async benefits without the rewrite cost.
+
+**Architecture** (`pipeline/services/async_ingestion.py`):
 ```python
-# Sync version uses ThreadPoolExecutor
-with ThreadPoolExecutor(max_workers=16) as executor:
-    futures = [executor.submit(process_file, f) for f in files]
-    for future in as_completed(futures):
-        result = future.result()
+class AsyncIngestionService:
+    def __init__(self, repository, archive_root, config):
+        self._sync_service = IngestionService(repository, archive_root, config)
+
+    async def ingest_sources(self, sources, **kwargs):
+        # Run sync ingestion in thread pool - non-blocking
+        result = await asyncio.to_thread(
+            self._sync_service.ingest_sources,
+            sources,
+            **kwargs,
+        )
+        return result
 ```
 
-**Async version would be**:
-```python
-# Pure async - simpler and faster
-async def ingest_sources(sources):
-    tasks = [ingest_source(s) for s in sources]
-    results = await asyncio.gather(*tasks)
-```
+**Benefits**:
+- Async facade for library users
+- Non-blocking when called from async code
+- Can be used with `asyncio.gather()` for concurrent operations
+- Minimal code (~90 LOC vs ~800 LOC for full rewrite)
 
-**Required changes**:
-1. `IngestionService` → `AsyncIngestionService` (~200 LOC)
-2. All importers async (chatgpt, claude, codex, gemini) (~400 LOC)
-3. `StorageRepository` → `AsyncStorageRepository` (~200 LOC)
-4. Tests updated (~100 LOC)
+**Trade-offs**:
+- Still uses ThreadPoolExecutor internally (sync service does)
+- Not "pure" async (uses thread pools)
+- But: Good enough for typical workloads
 
-**Estimated effort**: 1-2 days
-
-**When to implement**:
-- Ingesting >100 files at once becomes common
-- Current ThreadPoolExecutor becomes bottleneck
-- User requests async ingestion API
-
-**Workaround for now**: Current ThreadPool approach is plenty fast for typical use (1-50 files)
+**Files**:
+- `polylogue/pipeline/services/async_ingestion.py` - Async wrapper (~90 LOC)
+- `polylogue/storage/async_repository.py` - Async storage wrapper (~130 LOC)
+- `tests/test_async_ingestion.py` - Tests (~100 LOC)
 
 ---
 
