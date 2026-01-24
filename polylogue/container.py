@@ -5,7 +5,7 @@ dependency-injector framework. It replaces manual factory functions with
 declarative service wiring.
 
 Architecture:
-- ConfigProvider: Singleton configuration loaded once per application
+- ConfigProvider: Singleton configuration (hardcoded XDG paths)
 - StorageProvider: Singleton repository with thread-safe write lock
 - ServiceProvider: Factory providers for services (ingestion, indexing, rendering)
 
@@ -18,11 +18,9 @@ Benefits:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from dependency_injector import containers, providers
 
-from polylogue.config import load_config
+from polylogue.config import get_config
 from polylogue.pipeline.services.indexing import IndexService
 from polylogue.pipeline.services.ingestion import IngestionService
 from polylogue.pipeline.services.rendering import RenderService
@@ -40,8 +38,6 @@ class ApplicationContainer(containers.DeclarativeContainer):
 
     Usage:
         container = ApplicationContainer()
-        container.config.override(load_config())
-        container.wire(modules=[...])
 
         # Access services
         config = container.config()
@@ -49,16 +45,11 @@ class ApplicationContainer(containers.DeclarativeContainer):
         ingestion = container.ingestion_service()
     """
 
-    # Core providers
-    config = providers.Singleton(
-        load_config,
-        path=None,
-    )
+    # Core providers (zero-config: hardcoded XDG paths)
+    config = providers.Singleton(get_config)
 
     # Backend provider (thread-safe SQLite)
-    backend = providers.Singleton(
-        create_default_backend,
-    )
+    backend = providers.Singleton(create_default_backend)
 
     storage = providers.Singleton(
         StorageRepository,
@@ -99,11 +90,8 @@ class ApplicationContainer(containers.DeclarativeContainer):
     )
 
 
-def create_container(config_path: Path | None = None) -> ApplicationContainer:
+def create_container() -> ApplicationContainer:
     """Create and configure the application container.
-
-    Args:
-        config_path: Optional path to config file. If None, uses default location.
 
     Returns:
         Configured ApplicationContainer ready for use.
@@ -113,11 +101,7 @@ def create_container(config_path: Path | None = None) -> ApplicationContainer:
         config = container.config()
         ingestion = container.ingestion_service()
     """
-    container = ApplicationContainer()
-    # Override config provider with custom path if provided
-    if config_path is not None:
-        container.config.override(providers.Singleton(load_config, path=config_path))
-    return container
+    return ApplicationContainer()
 
 
 __all__ = [
