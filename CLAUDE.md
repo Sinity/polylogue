@@ -54,7 +54,7 @@ Index (FTS5 + optional Qdrant)
 
 ### Ingestion & Source Management
 - **`ingestion/source.py`**: Provider detection, ParsedConversation/ParsedMessage
-- **`ingestion/ingest.py`**: ingest_bundle() creates default backend if none provided (backward compatible)
+- **`ingestion/ingest.py`**: ingest_bundle() creates default backend if none provided
 - **`ingestion/drive.py`**: Google Drive client and Gemini parsing
 - **`ingestion/drive_client.py`**: OAuth credential management
 - **`importers/chatgpt.py`**: Graph traversal, extracts thinking from `content_type`
@@ -63,7 +63,7 @@ Index (FTS5 + optional Qdrant)
 
 ### Pipeline & Services (Refactored)
 - **`pipeline/runner.py`**: Orchestrates ingest → render → index pipeline (service-based)
-- **`pipeline/ingest.py`**: prepare_ingest() creates default backend if none provided (backward compatible)
+- **`pipeline/ingest.py`**: prepare_ingest() creates default backend if none provided
 - **`pipeline/ids.py`**: Content hash generation (NFC-normalized)
 - **`pipeline/models.py`**: PlanResult, RunResult (typed result objects)
 - **`pipeline/services/ingestion.py`**: IngestionService (parallel ingest with bounded submission)
