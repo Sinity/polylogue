@@ -9,7 +9,7 @@ from typing import NoReturn
 
 from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.types import AppEnv
-from polylogue.config import Config, ConfigError, load_config
+from polylogue.config import Config, load_config
 from polylogue.health import cached_health_summary, get_health
 from polylogue.pipeline.runner import latest_run
 
@@ -79,7 +79,8 @@ def maybe_prompt_sources(
 
 
 def load_effective_config(env: AppEnv) -> Config:
-    return load_config(env.config_path)
+    """Return the hardcoded configuration (zero-config)."""
+    return load_config()
 
 
 def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> list[str] | None:
@@ -103,21 +104,15 @@ def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> l
 
 def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     ui = env.ui
-    try:
-        config = load_effective_config(env)
-    except ConfigError as exc:
-        ui.console.print(f"[yellow]{exc}[/yellow]")
-        ui.console.print("Run `polylogue config init` to create a config.")
-        return
+    config = load_effective_config(env)
     last_run_data = latest_run()
     last_line = "Last run: none"
     if last_run_data:
         last_line = f"Last run: {last_run_data.run_id} ({last_run_data.timestamp})"
 
     lines = [
-        f"Config: {config.path}",
-        f"Archive root: {config.archive_root}",
-        f"Render root: {config.render_root}",
+        f"Archive: {config.archive_root}",
+        f"Render: {config.render_root}",
         f"Sources: {format_sources_summary(config.sources)}",
         last_line,
     ]
