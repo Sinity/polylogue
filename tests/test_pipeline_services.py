@@ -18,11 +18,9 @@ class TestIngestionService:
         from polylogue.storage.backends.sqlite import SQLiteBackend
 
         config = Config(
-            version=2,
             sources=[],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
-            path=tmp_path / "config.json",
         )
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         repository = StorageRepository(backend=backend)
@@ -92,11 +90,9 @@ class TestIndexService:
     def test_initialization(self, tmp_path: Path):
         """IndexService should initialize with config."""
         config = Config(
-            version=2,
             sources=[],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
-            path=tmp_path / "config.json",
         )
 
         service = IndexService(config)
@@ -108,11 +104,9 @@ class TestIndexService:
         from polylogue.storage.db import connection_context
 
         config = Config(
-            version=2,
             sources=[],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
-            path=tmp_path / "config.json",
         )
 
         with connection_context(None) as conn:
@@ -126,11 +120,9 @@ class TestIndexService:
     def test_get_index_status_when_no_index(self, tmp_path: Path):
         """IndexService should return status when index doesn't exist."""
         config = Config(
-            version=2,
             sources=[],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
-            path=tmp_path / "config.json",
         )
         service = IndexService(config)
 

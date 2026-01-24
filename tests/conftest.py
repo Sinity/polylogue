@@ -68,14 +68,16 @@ def workspace_env(tmp_path, monkeypatch):
     monkeypatch.delenv("QDRANT_API_KEY", raising=False)
 
     # Reload paths module and dependent modules to pick up new XDG_DATA_HOME
-    # Order matters: paths first, then modules that import from db
+    # Order matters: paths first, then modules that import from paths
     import importlib
 
     import polylogue.paths
+    import polylogue.config
     import polylogue.storage.backends.sqlite
     import polylogue.storage.db
     import polylogue.storage.search
     importlib.reload(polylogue.paths)
+    importlib.reload(polylogue.config)  # Depends on paths
     importlib.reload(polylogue.storage.backends.sqlite)
     importlib.reload(polylogue.storage.db)
     importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
@@ -192,14 +194,16 @@ def cli_workspace(tmp_path, monkeypatch):
     monkeypatch.delenv("QDRANT_API_KEY", raising=False)
 
     # Reload paths module and dependent modules to pick up new XDG_DATA_HOME
-    # Order matters: paths first, then modules that import from db
+    # Order matters: paths first, then modules that import from paths
     import importlib
 
     import polylogue.paths
+    import polylogue.config
     import polylogue.storage.backends.sqlite
     import polylogue.storage.db
     import polylogue.storage.search
     importlib.reload(polylogue.paths)
+    importlib.reload(polylogue.config)  # Depends on paths
     importlib.reload(polylogue.storage.backends.sqlite)
     importlib.reload(polylogue.storage.db)
     importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class

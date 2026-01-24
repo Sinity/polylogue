@@ -47,7 +47,6 @@ def test_store_records_inserts_new_conversation(test_conn):
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash123",
-        version=1,
     )
     msg = MessageRecord(
         message_id="msg1",
@@ -56,7 +55,6 @@ def test_store_records_inserts_new_conversation(test_conn):
         text="Hello",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="msghash1",
-        version=1,
     )
 
     counts = store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
@@ -86,7 +84,6 @@ def test_store_records_skips_duplicate_conversation(test_conn):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="samehash",
-        version=1,
     )
 
     # First insert
@@ -109,7 +106,6 @@ def test_store_records_updates_changed_conversation(test_conn):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     store_records(conversation=conv1, messages=[], attachments=[], conn=test_conn)
 
@@ -122,7 +118,6 @@ def test_store_records_updates_changed_conversation(test_conn):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-02T00:00:00Z",
         content_hash="hash2",  # Different hash
-        version=1,
     )
     counts = store_records(conversation=conv2, messages=[], attachments=[], conn=test_conn)
 
@@ -145,7 +140,6 @@ def test_store_records_handles_multiple_messages(test_conn):
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash1",
-        version=1,
     )
 
     messages = [
@@ -156,7 +150,6 @@ def test_store_records_handles_multiple_messages(test_conn):
             text=f"Message {i}",
             timestamp=datetime.now(timezone.utc).isoformat(),
             content_hash=f"hash{i}",
-            version=1,
         )
         for i in range(5)
     ]
@@ -181,7 +174,6 @@ def test_store_records_attachment_ref_counting(test_conn):
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash1",
-        version=1,
     )
 
     msg1 = MessageRecord(
@@ -192,7 +184,6 @@ def test_store_records_attachment_ref_counting(test_conn):
         text="Test message",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="hash-msg1",
-        version=1,
     )
 
     att1 = AttachmentRecord(
@@ -201,7 +192,6 @@ def test_store_records_attachment_ref_counting(test_conn):
         message_id="msg1",
         mime_type="image/png",
         size_bytes=1024,
-        path="/path/to/file.png",
     )
 
     counts = store_records(conversation=conv, messages=[msg1], attachments=[att1], conn=test_conn)
@@ -228,7 +218,6 @@ def test_prune_attachment_refs_removes_old_refs(test_conn):
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash1",
-        version=1,
     )
 
     msg1 = MessageRecord(
@@ -239,7 +228,6 @@ def test_prune_attachment_refs_removes_old_refs(test_conn):
         text="First message",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="hash-msg1",
-        version=1,
     )
     msg2 = MessageRecord(
         message_id="msg2",
@@ -249,7 +237,6 @@ def test_prune_attachment_refs_removes_old_refs(test_conn):
         text="Second message",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="hash-msg2",
-        version=1,
     )
 
     att1 = AttachmentRecord(
@@ -305,7 +292,6 @@ def test_prune_attachment_refs_updates_ref_count(test_conn):
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash1",
-        version=1,
     )
 
     msg1 = MessageRecord(
@@ -316,7 +302,6 @@ def test_prune_attachment_refs_updates_ref_count(test_conn):
         text="First message",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="hash-msg1",
-        version=1,
     )
     msg2 = MessageRecord(
         message_id="msg2",
@@ -326,7 +311,6 @@ def test_prune_attachment_refs_updates_ref_count(test_conn):
         text="Second message",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="hash-msg2",
-        version=1,
     )
 
     # Same attachment referenced twice
@@ -370,7 +354,6 @@ def test_prune_attachment_refs_deletes_zero_ref_attachments(test_conn):
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash1",
-        version=1,
     )
 
     msg1 = MessageRecord(
@@ -381,7 +364,6 @@ def test_prune_attachment_refs_deletes_zero_ref_attachments(test_conn):
         text="Test message",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="hash-msg1",
-        version=1,
     )
 
     att = AttachmentRecord(
@@ -417,7 +399,6 @@ def test_upsert_conversation_missing_optional_fields(test_conn):
         updated_at=None,  # Optional
         content_hash="hash1",
         provider_meta=None,  # Optional
-        version=1,
     )
 
     updated = upsert_conversation(test_conn, conv)
@@ -441,7 +422,6 @@ def test_upsert_message_missing_optional_fields(test_conn):
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash1",
-        version=1,
     )
     upsert_conversation(test_conn, conv)
 
@@ -454,7 +434,6 @@ def test_upsert_message_missing_optional_fields(test_conn):
         timestamp=None,  # Optional
         content_hash="msghash1",
         provider_meta=None,  # Optional
-        version=1,
     )
 
     updated = upsert_message(test_conn, msg)
@@ -478,7 +457,6 @@ def test_upsert_attachment_duplicate_ref_skipped(test_conn):
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash1",
-        version=1,
     )
     upsert_conversation(test_conn, conv)
 
@@ -491,7 +469,6 @@ def test_upsert_attachment_duplicate_ref_skipped(test_conn):
         text="Test message",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="hash-msg1",
-        version=1,
     )
     upsert_message(test_conn, msg1)
 
@@ -553,7 +530,6 @@ def test_write_lock_prevents_concurrent_writes(test_db):
                 created_at=datetime.now(timezone.utc).isoformat(),
                 updated_at=datetime.now(timezone.utc).isoformat(),
                 content_hash=uuid4().hex,
-                version=1,
             )
 
             messages = [
@@ -564,7 +540,6 @@ def test_write_lock_prevents_concurrent_writes(test_db):
                     text=f"Message {i}",
                     timestamp=datetime.now(timezone.utc).isoformat(),
                     content_hash=uuid4().hex,
-                    version=1,
                 )
                 for i in range(3)
             ]
@@ -619,7 +594,6 @@ def test_store_records_without_connection_creates_own(test_db):
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash1",
-        version=1,
     )
 
     # Call without conn parameter
@@ -643,7 +617,6 @@ def test_upsert_attachment_updates_existing_metadata(test_conn):
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash1",
-        version=1,
     )
     upsert_conversation(test_conn, conv)
 
@@ -656,7 +629,6 @@ def test_upsert_attachment_updates_existing_metadata(test_conn):
         text="Test message",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="hash-msg1",
-        version=1,
     )
     upsert_message(test_conn, msg1)
 
@@ -668,7 +640,6 @@ def test_upsert_attachment_updates_existing_metadata(test_conn):
         text="Second message",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="hash-msg2",
-        version=1,
     )
     upsert_message(test_conn, msg2)
 
@@ -679,7 +650,6 @@ def test_upsert_attachment_updates_existing_metadata(test_conn):
         message_id="msg1",
         mime_type="image/png",
         size_bytes=1024,
-        path=None,
     )
     upsert_attachment(test_conn, att1)
 
@@ -713,7 +683,6 @@ def test_prune_attachment_refs_transactional_rollback(test_conn):
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash1",
-        version=1,
     )
     upsert_conversation(test_conn, conv)
 
@@ -725,7 +694,6 @@ def test_prune_attachment_refs_transactional_rollback(test_conn):
         text="Test message",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="hash-msg1",
-        version=1,
     )
     upsert_message(test_conn, msg1)
 
@@ -803,7 +771,6 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
             created_at=None,
             updated_at=None,
             content_hash=f"hash-{i}",
-            version=1,
         )
         msg = MessageRecord(
             message_id=f"race-msg-{i}",
@@ -813,7 +780,6 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
             timestamp=None,
             provider_meta=None,
             content_hash=f"msg-hash-{i}",
-            version=1,
         )
         # Each conversation references the SAME attachment_id
         attachment = AttachmentRecord(
@@ -822,7 +788,6 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
             message_id=f"race-msg-{i}",
             mime_type="text/plain",
             size_bytes=100,
-            path="/fake/path.txt",
             provider_meta=None,
         )
         with open_connection(test_db) as conn:
@@ -862,7 +827,6 @@ class TestAttachmentRecordValidation:
                 message_id="msg1",
                 mime_type="text/plain",
                 size_bytes=-100,
-                path="/fake/path",
                 provider_meta=None,
             )
 
@@ -879,7 +843,6 @@ class TestAttachmentRecordValidation:
                 message_id="msg1",
                 mime_type="text/plain",
                 size_bytes=MAX_ATTACHMENT_SIZE * 10,  # 10TB - clearly invalid
-                path="/fake/path",
                 provider_meta=None,
             )
 
@@ -891,7 +854,6 @@ class TestAttachmentRecordValidation:
             message_id="msg1",
             mime_type="text/plain",
             size_bytes=0,
-            path="/fake/path",
             provider_meta=None,
         )
         assert record.size_bytes == 0
@@ -905,7 +867,6 @@ class TestAttachmentRecordValidation:
             message_id="msg1",
             mime_type="text/plain",
             size_bytes=100 * 1024 * 1024,
-            path="/fake/path",
             provider_meta=None,
         )
         assert record.size_bytes == 100 * 1024 * 1024
@@ -920,7 +881,6 @@ class TestAttachmentRecordValidation:
             message_id="msg1",
             mime_type="text/plain",
             size_bytes=MAX_ATTACHMENT_SIZE,
-            path="/fake/path",
             provider_meta=None,
         )
         assert record.size_bytes == MAX_ATTACHMENT_SIZE
@@ -938,7 +898,6 @@ class TestAttachmentRecordValidation:
                 message_id="msg1",
                 mime_type="text/plain",
                 size_bytes=MAX_ATTACHMENT_SIZE + 1,
-                path="/fake/path",
                 provider_meta=None,
             )
 
@@ -950,7 +909,6 @@ class TestAttachmentRecordValidation:
             message_id="msg1",
             mime_type="text/plain",
             size_bytes=None,
-            path="/fake/path",
             provider_meta=None,
         )
         assert record.size_bytes is None
@@ -968,7 +926,6 @@ class TestProviderNameValidation:
                 provider_conversation_id="ext1",
                 title="Test",
                 content_hash="hash123",
-                version=1,
             )
 
     def test_provider_name_rejects_whitespace_only(self):
@@ -980,7 +937,6 @@ class TestProviderNameValidation:
                 provider_conversation_id="ext1",
                 title="Test",
                 content_hash="hash123",
-                version=1,
             )
 
     def test_provider_name_rejects_special_characters(self):
@@ -1005,7 +961,6 @@ class TestProviderNameValidation:
                     provider_conversation_id="ext1",
                     title="Test",
                     content_hash="hash123",
-                    version=1,
                 )
 
     def test_provider_name_rejects_starting_with_number(self):
@@ -1017,7 +972,6 @@ class TestProviderNameValidation:
                 provider_conversation_id="ext1",
                 title="Test",
                 content_hash="hash123",
-                version=1,
             )
 
     def test_provider_name_rejects_starting_with_hyphen(self):
@@ -1029,7 +983,6 @@ class TestProviderNameValidation:
                 provider_conversation_id="ext1",
                 title="Test",
                 content_hash="hash123",
-                version=1,
             )
 
     def test_provider_name_rejects_starting_with_underscore(self):
@@ -1041,7 +994,6 @@ class TestProviderNameValidation:
                 provider_conversation_id="ext1",
                 title="Test",
                 content_hash="hash123",
-                version=1,
             )
 
     def test_provider_name_allows_valid_names(self):
@@ -1066,7 +1018,6 @@ class TestProviderNameValidation:
                 provider_conversation_id="ext1",
                 title="Test",
                 content_hash="hash123",
-                version=1,
             )
             assert record.provider_name == name
 
@@ -1080,5 +1031,4 @@ class TestProviderNameValidation:
                 provider_conversation_id="ext1",
                 title="Test",
                 content_hash="hash123",
-                version=1,
             )

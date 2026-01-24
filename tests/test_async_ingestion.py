@@ -26,11 +26,9 @@ async def test_async_ingestion_service_initialization():
 
         # Create config
         config = Config(
-            version=2,
             archive_root=archive_root,
             render_root=archive_root / "render",
             sources=[],
-            path=Path(tmpdir) / "config.json",
         )
 
         # Initialize service
@@ -50,11 +48,9 @@ async def test_async_ingestion_empty_sources():
         repository = StorageRepository(backend=backend)
 
         config = Config(
-            version=2,
             archive_root=archive_root,
             render_root=archive_root / "render",
             sources=[],
-            path=Path(tmpdir) / "config.json",
         )
 
         service = AsyncIngestionService(repository, archive_root, config)
@@ -78,11 +74,9 @@ async def test_async_ingestion_concurrent():
         repository = StorageRepository(backend=backend)
 
         config = Config(
-            version=2,
             archive_root=archive_root,
             render_root=archive_root / "render",
             sources=[],
-            path=Path(tmpdir) / "config.json",
         )
 
         service = AsyncIngestionService(repository, archive_root, config)

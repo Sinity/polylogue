@@ -73,7 +73,6 @@ def test_rebuild_index_populates_fts_from_messages(test_conn):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     messages = [
         MessageRecord(
@@ -83,7 +82,6 @@ def test_rebuild_index_populates_fts_from_messages(test_conn):
             text="hello world",
             timestamp="2024-01-01T00:00:00Z",
             content_hash="hash-msg1",
-            version=1,
         ),
         MessageRecord(
             message_id="msg2",
@@ -92,7 +90,6 @@ def test_rebuild_index_populates_fts_from_messages(test_conn):
             text="goodbye world",
             timestamp="2024-01-01T00:01:00Z",
             content_hash="hash-msg2",
-            version=1,
         ),
     ]
 
@@ -130,7 +127,6 @@ def test_rebuild_index_clears_previous_index(test_conn):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     msg1 = MessageRecord(
         message_id="msg1",
@@ -139,7 +135,6 @@ def test_rebuild_index_clears_previous_index(test_conn):
         text="first message",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
     store_records(conversation=conv1, messages=[msg1], attachments=[], conn=test_conn)
     rebuild_index(test_conn)
@@ -159,7 +154,6 @@ def test_rebuild_index_clears_previous_index(test_conn):
         created_at="2024-01-02T00:00:00Z",
         updated_at="2024-01-02T00:00:00Z",
         content_hash="hash2",
-        version=1,
     )
     msg2 = MessageRecord(
         message_id="msg2",
@@ -168,7 +162,6 @@ def test_rebuild_index_clears_previous_index(test_conn):
         text="second message",
         timestamp="2024-01-02T00:00:00Z",
         content_hash="hash-msg2",
-        version=1,
     )
     store_records(conversation=conv2, messages=[msg2], attachments=[], conn=test_conn)
 
@@ -198,7 +191,6 @@ def test_rebuild_index_skips_null_text(test_conn):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     messages = [
         MessageRecord(
@@ -208,7 +200,6 @@ def test_rebuild_index_skips_null_text(test_conn):
             text="hello",
             timestamp="2024-01-01T00:00:00Z",
             content_hash="hash-msg1",
-            version=1,
         ),
         MessageRecord(
             message_id="msg2",
@@ -217,7 +208,6 @@ def test_rebuild_index_skips_null_text(test_conn):
             text=None,  # NULL text
             timestamp="2024-01-01T00:01:00Z",
             content_hash="hash-msg2",
-            version=1,
         ),
     ]
 
@@ -239,7 +229,6 @@ def test_rebuild_index_preserves_conversation_metadata(test_conn):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     msg = MessageRecord(
         message_id="msg1",
@@ -248,7 +237,6 @@ def test_rebuild_index_preserves_conversation_metadata(test_conn):
         text="hello",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
 
     store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
@@ -279,7 +267,6 @@ def test_update_index_incremental_single_conversation(test_conn):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     conv2 = ConversationRecord(
         conversation_id="conv2",
@@ -289,7 +276,6 @@ def test_update_index_incremental_single_conversation(test_conn):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash2",
-        version=1,
     )
     msg1 = MessageRecord(
         message_id="msg1",
@@ -298,7 +284,6 @@ def test_update_index_incremental_single_conversation(test_conn):
         text="first",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
     msg2 = MessageRecord(
         message_id="msg2",
@@ -307,7 +292,6 @@ def test_update_index_incremental_single_conversation(test_conn):
         text="second",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg2",
-        version=1,
     )
 
     store_records(conversation=conv1, messages=[msg1], attachments=[], conn=test_conn)
@@ -324,7 +308,6 @@ def test_update_index_incremental_single_conversation(test_conn):
         text="updated",
         timestamp="2024-01-01T00:01:00Z",
         content_hash="hash-msg3",
-        version=1,
     )
     test_conn.execute(
         """
@@ -365,7 +348,6 @@ def test_update_index_incremental_multiple_conversations(test_conn):
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
             content_hash=f"hash{i}",
-            version=1,
         )
         msg = MessageRecord(
             message_id=f"msg{i}",
@@ -374,7 +356,6 @@ def test_update_index_incremental_multiple_conversations(test_conn):
             text=f"text {i}",
             timestamp="2024-01-01T00:00:00Z",
             content_hash=f"hash-msg{i}",
-            version=1,
         )
         store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
 
@@ -421,7 +402,6 @@ def test_update_index_empty_list_does_nothing(test_conn):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     msg = MessageRecord(
         message_id="msg1",
@@ -430,7 +410,6 @@ def test_update_index_empty_list_does_nothing(test_conn):
         text="hello",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
 
     store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
@@ -458,7 +437,6 @@ def test_update_index_handles_large_batch(test_conn):
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
             content_hash=f"hash{i}",
-            version=1,
         )
         msg = MessageRecord(
             message_id=f"msg{i}",
@@ -467,7 +445,6 @@ def test_update_index_handles_large_batch(test_conn):
             text=f"text {i}",
             timestamp="2024-01-01T00:00:00Z",
             content_hash=f"hash-msg{i}",
-            version=1,
         )
         store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
 
@@ -497,7 +474,6 @@ def test_search_finds_matching_text(workspace_env, storage_repository):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     msg = MessageRecord(
         message_id="msg1",
@@ -506,7 +482,6 @@ def test_search_finds_matching_text(workspace_env, storage_repository):
         text="python programming language",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
@@ -532,7 +507,6 @@ def test_search_returns_multiple_matches(workspace_env, storage_repository):
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
             content_hash=f"hash{i}",
-            version=1,
         )
         msg = MessageRecord(
             message_id=f"msg{i}",
@@ -541,7 +515,6 @@ def test_search_returns_multiple_matches(workspace_env, storage_repository):
             text="testing framework",
             timestamp="2024-01-01T00:00:00Z",
             content_hash=f"hash-msg{i}",
-            version=1,
         )
         ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
 
@@ -566,7 +539,6 @@ def test_search_no_results_returns_empty(workspace_env, storage_repository):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     msg = MessageRecord(
         message_id="msg1",
@@ -575,7 +547,6 @@ def test_search_no_results_returns_empty(workspace_env, storage_repository):
         text="hello world",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
@@ -599,7 +570,6 @@ def test_search_respects_limit(workspace_env, storage_repository):
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
             content_hash=f"hash{i}",
-            version=1,
         )
         msg = MessageRecord(
             message_id=f"msg{i}",
@@ -608,7 +578,6 @@ def test_search_respects_limit(workspace_env, storage_repository):
             text="search limit",
             timestamp="2024-01-01T00:00:00Z",
             content_hash=f"hash-msg{i}",
-            version=1,
         )
         ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
 
@@ -630,7 +599,6 @@ def test_search_includes_snippet(workspace_env, storage_repository):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     msg = MessageRecord(
         message_id="msg1",
@@ -639,7 +607,6 @@ def test_search_includes_snippet(workspace_env, storage_repository):
         text="The quick brown fox jumps over the lazy dog",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
@@ -665,7 +632,6 @@ def test_search_includes_conversation_metadata(workspace_env, storage_repository
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
         provider_meta={"source": "my-source"},
     )
     msg = MessageRecord(
@@ -675,7 +641,6 @@ def test_search_includes_conversation_metadata(workspace_env, storage_repository
         text="search query",
         timestamp="2024-01-01T10:30:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
@@ -710,7 +675,6 @@ def test_search_with_special_characters(workspace_env, storage_repository):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     msg = MessageRecord(
         message_id="msg1",
@@ -719,7 +683,6 @@ def test_search_with_special_characters(workspace_env, storage_repository):
         text="C++ programming with @mentions and #hashtags",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
@@ -742,7 +705,6 @@ def test_search_with_quotes_in_text(workspace_env, storage_repository):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     msg = MessageRecord(
         message_id="msg1",
@@ -751,7 +713,6 @@ def test_search_with_quotes_in_text(workspace_env, storage_repository):
         text='She said "hello world" to me',
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
@@ -773,7 +734,6 @@ def test_search_with_unicode_text(workspace_env, storage_repository):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     msg = MessageRecord(
         message_id="msg1",
@@ -782,7 +742,6 @@ def test_search_with_unicode_text(workspace_env, storage_repository):
         text="Hello 世界 مرحبا мир café",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
@@ -804,7 +763,6 @@ def test_search_with_hyphenated_words(workspace_env, storage_repository):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     msg = MessageRecord(
         message_id="msg1",
@@ -813,7 +771,6 @@ def test_search_with_hyphenated_words(workspace_env, storage_repository):
         text="The state-of-the-art algorithm",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
@@ -863,7 +820,6 @@ def test_search_returns_searchresult_object(workspace_env, storage_repository):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     msg = MessageRecord(
         message_id="msg1",
@@ -872,7 +828,6 @@ def test_search_returns_searchresult_object(workspace_env, storage_repository):
         text="search result",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
@@ -904,7 +859,6 @@ def test_rebuild_index_with_multiple_messages_per_conversation(test_conn):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     messages = [
         MessageRecord(
@@ -914,7 +868,6 @@ def test_rebuild_index_with_multiple_messages_per_conversation(test_conn):
             text=f"message number {i}",
             timestamp=f"2024-01-01T00:{i:02d}:00Z",
             content_hash=f"hash-msg{i}",
-            version=1,
         )
         for i in range(10)
     ]
@@ -938,7 +891,6 @@ def test_update_index_deletes_old_entries_from_conversation(test_conn):
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="hash1",
-        version=1,
     )
     msg = MessageRecord(
         message_id="msg1",
@@ -947,7 +899,6 @@ def test_update_index_deletes_old_entries_from_conversation(test_conn):
         text="original message",
         timestamp="2024-01-01T00:00:00Z",
         content_hash="hash-msg1",
-        version=1,
     )
 
     store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)

@@ -26,12 +26,9 @@ def test_config(tmp_path: Path) -> Config:
     render_root.mkdir()
 
     return Config(
-        version=2,
         archive_root=archive_root,
         render_root=render_root,
         sources=[Source(name="test", path=tmp_path / "inbox")],
-        path=config_path,
-        template_path=None,
     )
 
 
@@ -264,11 +261,9 @@ class TestContainerIntegration:
         # Create different config instances
         config1 = test_config
         config2 = Config(
-            version=2,
             archive_root=tmp_path / "archive2",
             render_root=tmp_path / "render2",
             sources=[Source(name="test2", path=tmp_path / "inbox2")],
-            path=tmp_path / "config2.json",
         )
 
         container1 = create_container()

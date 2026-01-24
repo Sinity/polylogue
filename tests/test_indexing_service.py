@@ -19,11 +19,9 @@ class TestIndexService:
 
         with open_connection(None) as conn:
             config = Config(
-                version=2,
                 archive_root=tmp_path / "archive",
                 render_root=tmp_path / "render",
                 sources=[],
-                path=tmp_path / "config.json",
             )
             service = IndexService(config, conn)
 
@@ -48,7 +46,6 @@ class TestIndexService:
                 updated_at=None,
                 content_hash="hash123",
                 provider_meta=None,
-                version=1,
             )
             msg = MessageRecord(
                 message_id="msg1",
@@ -59,7 +56,6 @@ class TestIndexService:
                 timestamp=None,
                 content_hash="msghash1",
                 provider_meta=None,
-                version=1,
             )
             # Insert directly using connection
             conn.execute(
@@ -80,11 +76,9 @@ class TestIndexService:
             conn.commit()
 
             config = Config(
-                version=2,
                 archive_root=tmp_path / "archive",
                 render_root=tmp_path / "render",
                 sources=[],
-                path=tmp_path / "config.json",
             )
             service = IndexService(config, conn=conn)
 
@@ -101,11 +95,9 @@ class TestIndexService:
             pass  # Initialize DB
 
         config = Config(
-            version=2,
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
             sources=[],
-            path=tmp_path / "config.json",
         )
         service = IndexService(config, conn=None)
 
@@ -120,11 +112,9 @@ class TestIndexService:
 
         with open_connection(None) as conn:
             config = Config(
-                version=2,
                 archive_root=tmp_path / "archive",
                 render_root=tmp_path / "render",
                 sources=[],
-                path=tmp_path / "config.json",
             )
             service = IndexService(config, conn)
 
@@ -139,11 +129,9 @@ class TestIndexService:
 
         with open_connection(None) as conn:
             config = Config(
-                version=2,
                 archive_root=tmp_path / "archive",
                 render_root=tmp_path / "render",
                 sources=[],
-                path=tmp_path / "config.json",
             )
             service = IndexService(config, conn)
 

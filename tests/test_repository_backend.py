@@ -43,7 +43,6 @@ def test_repository_save_via_backend(repository_with_backend: StorageRepository)
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash123",
-        version=1,
     )
 
     msg = MessageRecord(
@@ -53,7 +52,6 @@ def test_repository_save_via_backend(repository_with_backend: StorageRepository)
         text="Hello",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="msghash1",
-        version=1,
     )
 
     counts = repository_with_backend.save_conversation(
@@ -78,7 +76,6 @@ def test_repository_deduplication_via_backend(repository_with_backend: StorageRe
         created_at="2024-01-01T00:00:00Z",
         updated_at="2024-01-01T00:00:00Z",
         content_hash="samehash",
-        version=1,
     )
 
     msg = MessageRecord(
@@ -88,7 +85,6 @@ def test_repository_deduplication_via_backend(repository_with_backend: StorageRe
         text="Hello",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="msghash1",
-        version=1,
     )
 
     # First save
@@ -122,7 +118,6 @@ def test_repository_with_attachments_via_backend(repository_with_backend: Storag
         created_at=datetime.now(timezone.utc).isoformat(),
         updated_at=datetime.now(timezone.utc).isoformat(),
         content_hash="hash123",
-        version=1,
     )
 
     msg = MessageRecord(
@@ -132,7 +127,6 @@ def test_repository_with_attachments_via_backend(repository_with_backend: Storag
         text="Hello",
         timestamp=datetime.now(timezone.utc).isoformat(),
         content_hash="msghash1",
-        version=1,
     )
 
     att = AttachmentRecord(
@@ -141,7 +135,6 @@ def test_repository_with_attachments_via_backend(repository_with_backend: Storag
         message_id="msg1",
         mime_type="image/png",
         size_bytes=1024,
-        path="/path/to/file.png",
     )
 
     counts = repository_with_backend.save_conversation(

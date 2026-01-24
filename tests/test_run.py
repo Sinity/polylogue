@@ -31,7 +31,7 @@ def test_plan_and_run_sources(workspace_env, tmp_path):
 
     result = run_sources(config=config, stage="all", plan=plan)
     assert result.counts["conversations"] == 1
-    run_dir = workspace_env["archive_root"] / "runs"
+    run_dir = config.archive_root / "runs"
     assert any(run_dir.iterdir())
 
 
@@ -83,8 +83,7 @@ def test_render_filtered_by_source_meta(workspace_env, tmp_path):
     run_sources(config=config, stage="ingest", source_names=["inbox"])
     result = run_sources(config=config, stage="render", source_names=["inbox"])
     assert result.counts["conversations"] == 0
-    render_root = workspace_env["archive_root"] / "render"
-    assert any(render_root.rglob("conversation.md"))
+    assert any(config.render_root.rglob("conversation.md"))
 
 
 def test_run_all_skips_render_when_unchanged(workspace_env, tmp_path):
@@ -106,8 +105,7 @@ def test_run_all_skips_render_when_unchanged(workspace_env, tmp_path):
 
     run_sources(config=config, stage="all")
 
-    render_root = workspace_env["archive_root"] / "render"
-    convo_path = next(render_root.rglob("conversation.md"))
+    convo_path = next(config.render_root.rglob("conversation.md"))
     first_mtime = convo_path.stat().st_mtime
 
     run_sources(config=config, stage="all")
@@ -133,8 +131,7 @@ def test_run_rerenders_when_content_changes(workspace_env, tmp_path):
 
     run_sources(config=config, stage="all")
 
-    render_root = workspace_env["archive_root"] / "render"
-    convo_path = next(render_root.rglob("conversation.md"))
+    convo_path = next(config.render_root.rglob("conversation.md"))
     first_mtime = convo_path.stat().st_mtime
 
     time.sleep(0.01)  # Ensure fs timestamp resolution
@@ -164,8 +161,7 @@ def test_run_rerenders_when_title_changes(workspace_env, tmp_path):
     write_config(config)
 
     run_sources(config=config, stage="all")
-    render_root = workspace_env["archive_root"] / "render"
-    convo_path = next(render_root.rglob("conversation.md"))
+    convo_path = next(config.render_root.rglob("conversation.md"))
     original = convo_path.read_text(encoding="utf-8")
 
     payload["title"] = "New title"
@@ -287,7 +283,7 @@ def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypatch):
     run_sources(config=config, stage="all")
     run_sources(config=config, stage="all")
 
-    run_dir = workspace_env["archive_root"] / "runs"
+    run_dir = config.archive_root / "runs"
     runs = list(run_dir.glob(f"run-{fixed_time}-*.json"))
     assert len(runs) == 2
 

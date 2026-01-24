@@ -81,7 +81,7 @@ def _write_cache(archive_root: Path, payload: dict[str, object]) -> None:
 def run_health(config: Config) -> dict[str, object]:
     checks: list[HealthCheck] = []
 
-    checks.append(HealthCheck("config", "ok", f"Loaded {config.path}"))
+    checks.append(HealthCheck("config", "ok", "Zero-config (XDG paths)"))
 
     if config.archive_root.exists():
         checks.append(HealthCheck("archive_root", "ok", str(config.archive_root)))
