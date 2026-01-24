@@ -97,7 +97,6 @@ class TestConversationFormatterFormat:
             created_at=created_at or now,
             updated_at=updated_at or now,
             content_hash=uuid4().hex,
-            version=1,
         )
         with open_connection(db_path) as conn:
             store_records(
@@ -128,7 +127,6 @@ class TestConversationFormatterFormat:
                 text="Hello!",
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 content_hash="hash1",
-                version=1,
             )
         ]
         self._create_conversation(db_path, conv_id, messages=messages)
@@ -176,7 +174,6 @@ class TestMessageOrdering:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
             content_hash=uuid4().hex,
-            version=1,
         )
         with open_connection(db_path) as conn:
             store_records(conversation=conv, messages=messages, attachments=[], conn=conn)
@@ -195,7 +192,6 @@ class TestMessageOrdering:
                 text="Third",
                 timestamp="2024-01-01T12:00:30Z",
                 content_hash="h3",
-                version=1,
             ),
             MessageRecord(
                 message_id="m1",
@@ -204,7 +200,6 @@ class TestMessageOrdering:
                 text="First",
                 timestamp="2024-01-01T12:00:10Z",
                 content_hash="h1",
-                version=1,
             ),
             MessageRecord(
                 message_id="m2",
@@ -213,7 +208,6 @@ class TestMessageOrdering:
                 text="Second",
                 timestamp="2024-01-01T12:00:20Z",
                 content_hash="h2",
-                version=1,
             ),
         ]
         self._create_conversation(db_path, conv_id, messages)
@@ -240,7 +234,6 @@ class TestMessageOrdering:
                 text="Timestamped",
                 timestamp="2024-01-01T12:00:00Z",
                 content_hash="h1",
-                version=1,
             ),
             MessageRecord(
                 message_id="m2",
@@ -249,7 +242,6 @@ class TestMessageOrdering:
                 text="NoTimestamp",
                 timestamp=None,
                 content_hash="h2",
-                version=1,
             ),
         ]
         self._create_conversation(db_path, conv_id, messages)
@@ -275,7 +267,6 @@ class TestMessageOrdering:
                 text="LaterEpoch",
                 timestamp="1704110400.5",  # Numeric epoch with decimal
                 content_hash="h1",
-                version=1,
             ),
             MessageRecord(
                 message_id="m2",
@@ -284,7 +275,6 @@ class TestMessageOrdering:
                 text="EarlierEpoch",
                 timestamp="1704106800",  # Earlier numeric epoch
                 content_hash="h2",
-                version=1,
             ),
         ]
         self._create_conversation(db_path, conv_id, messages)
@@ -317,7 +307,6 @@ class TestJSONTextWrapping:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
             content_hash=uuid4().hex,
-            version=1,
         )
         msg = MessageRecord(
             message_id="m1",
@@ -326,7 +315,6 @@ class TestJSONTextWrapping:
             text=text,
             timestamp=datetime.now(timezone.utc).isoformat(),
             content_hash="h1",
-            version=1,
         )
         with open_connection(db_path) as conn:
             store_records(conversation=conv, messages=[msg], attachments=[], conn=conn)
@@ -424,7 +412,6 @@ class TestTimestampRendering:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
             content_hash=uuid4().hex,
-            version=1,
         )
         msg = MessageRecord(
             message_id="m1",
@@ -433,7 +420,6 @@ class TestTimestampRendering:
             text="Hello",
             timestamp=timestamp,
             content_hash="h1",
-            version=1,
         )
         with open_connection(db_path) as conn:
             store_records(conversation=conv, messages=[msg], attachments=[], conn=conn)
@@ -489,7 +475,6 @@ class TestAttachmentHandling:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
             content_hash=uuid4().hex,
-            version=1,
         )
         msg = MessageRecord(
             message_id=message_id,
@@ -498,7 +483,6 @@ class TestAttachmentHandling:
             text="See attachment",
             timestamp=datetime.now(timezone.utc).isoformat(),
             content_hash="h1",
-            version=1,
         )
         att_recs = [
             AttachmentRecord(
@@ -507,7 +491,6 @@ class TestAttachmentHandling:
                 message_id=att.get("message_id", message_id),
                 mime_type=att.get("mime_type", "application/octet-stream"),
                 size_bytes=att.get("size_bytes", 1024),
-                path=att.get("path"),
                 provider_meta=att.get("meta"),  # dict or None
             )
             for att in attachments
@@ -657,7 +640,6 @@ class TestOrphanedAttachments:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
             content_hash=uuid4().hex,
-            version=1,
         )
         msg = MessageRecord(
             message_id="m1",
@@ -666,7 +648,6 @@ class TestOrphanedAttachments:
             text="Hello",
             timestamp=datetime.now(timezone.utc).isoformat(),
             content_hash="h1",
-            version=1,
         )
         # Orphaned attachment - message_id is None
         orphan_att = AttachmentRecord(
@@ -675,7 +656,6 @@ class TestOrphanedAttachments:
             message_id=None,  # No associated message
             mime_type="image/png",
             size_bytes=2048,
-            path=None,
             provider_meta={"name": "OrphanFile.png"},
         )
 
@@ -711,7 +691,6 @@ class TestMetadata:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
             content_hash=uuid4().hex,
-            version=1,
         )
         messages = [
             MessageRecord(
@@ -721,7 +700,6 @@ class TestMetadata:
                 text=f"Message {i}",
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 content_hash=f"h{i}",
-                version=1,
             )
             for i in range(5)
         ]
@@ -732,7 +710,6 @@ class TestMetadata:
                 message_id="m0",
                 mime_type="text/plain",
                 size_bytes=100,
-                path=None,
                 provider_meta=None,
             )
             for i in range(3)
@@ -762,7 +739,6 @@ class TestMetadata:
             created_at=created,
             updated_at=updated,
             content_hash=uuid4().hex,
-            version=1,
         )
 
         with open_connection(db_path) as conn:
@@ -797,7 +773,6 @@ class TestMarkdownStructure:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
             content_hash=uuid4().hex,
-            version=1,
         )
 
         with open_connection(db_path) as conn:
@@ -823,7 +798,6 @@ class TestMarkdownStructure:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
             content_hash=uuid4().hex,
-            version=1,
         )
         messages = [
             MessageRecord(
@@ -833,7 +807,6 @@ class TestMarkdownStructure:
                 text="User message",
                 timestamp="2024-01-01T10:00:00Z",
                 content_hash="h1",
-                version=1,
             ),
             MessageRecord(
                 message_id="m2",
@@ -842,7 +815,6 @@ class TestMarkdownStructure:
                 text="Assistant message",
                 timestamp="2024-01-01T10:00:10Z",
                 content_hash="h2",
-                version=1,
             ),
             MessageRecord(
                 message_id="m3",
@@ -851,7 +823,6 @@ class TestMarkdownStructure:
                 text="System message",
                 timestamp="2024-01-01T10:00:20Z",
                 content_hash="h3",
-                version=1,
             ),
         ]
 
@@ -878,7 +849,6 @@ class TestMarkdownStructure:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
             content_hash=uuid4().hex,
-            version=1,
         )
         messages = [
             MessageRecord(
@@ -888,7 +858,6 @@ class TestMarkdownStructure:
                 text="Real content",
                 timestamp="2024-01-01T10:00:00Z",
                 content_hash="h1",
-                version=1,
             ),
             MessageRecord(
                 message_id="m2",
@@ -897,7 +866,6 @@ class TestMarkdownStructure:
                 text="",  # Empty text
                 timestamp="2024-01-01T10:00:10Z",
                 content_hash="h2",
-                version=1,
             ),
             MessageRecord(
                 message_id="m3",
@@ -906,7 +874,6 @@ class TestMarkdownStructure:
                 text="   ",  # Whitespace only
                 timestamp="2024-01-01T10:00:20Z",
                 content_hash="h3",
-                version=1,
             ),
         ]
 
@@ -934,7 +901,6 @@ class TestMarkdownStructure:
             created_at=datetime.now(timezone.utc).isoformat(),
             updated_at=datetime.now(timezone.utc).isoformat(),
             content_hash=uuid4().hex,
-            version=1,
         )
         msg = MessageRecord(
             message_id="m1",
@@ -943,7 +909,6 @@ class TestMarkdownStructure:
             text="No role",
             timestamp=datetime.now(timezone.utc).isoformat(),
             content_hash="h1",
-            version=1,
         )
 
         with open_connection(db_path) as conn:
