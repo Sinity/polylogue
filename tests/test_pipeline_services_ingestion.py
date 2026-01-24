@@ -665,11 +665,9 @@ class TestIngestionServiceIntegration:
 
         # Create config
         config = Config(
-            version=2,
             archive_root=cli_workspace["archive_root"],
             render_root=cli_workspace["render_root"],
             sources=[Source(name="test-inbox", path=inbox)],
-            path=cli_workspace["config_path"],
         )
 
         # Create service and ingest
