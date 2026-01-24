@@ -29,6 +29,7 @@ Example:
 # High-level API
 # Core types for library users
 from polylogue.config import Config, ConfigError, Source
+from polylogue.core.async_facade import AsyncPolylogue
 from polylogue.core.facade import ArchiveStats, Polylogue
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, Message
@@ -38,6 +39,7 @@ from polylogue.storage.search import SearchHit, SearchResult
 __all__ = [
     # Main facade
     "Polylogue",
+    "AsyncPolylogue",
     "ArchiveStats",
     # Configuration
     "Config",
