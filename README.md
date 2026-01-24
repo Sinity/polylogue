@@ -674,13 +674,19 @@ Polylogue follows XDG Base Directory specification:
 
 ### Environment Overrides
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `POLYLOGUE_DATA` | `~/.local/share/polylogue` | Data directory |
-| `POLYLOGUE_INBOX` | `$POLYLOGUE_DATA/inbox` | Inbox directory |
-| `POLYLOGUE_FORCE` | unset | Set to `1` to skip confirmations |
-| `POLYLOGUE_EMBEDDING_MODEL` | `voyage-2` | Embedding model for `--similar` (planned) |
-| `VOYAGE_API_KEY` | unset | Voyage AI API key for embeddings (planned) |
+All settings can be overridden via environment variables. Polylogue checks **POLYLOGUE_*** prefixed variables first, then falls back to unprefixed versions. This allows project-specific configuration without affecting global tools.
+
+| Variable | Alternative | Default | Description |
+|----------|-------------|---------|-------------|
+| `POLYLOGUE_DATA` | - | `~/.local/share/polylogue` | Data directory |
+| `POLYLOGUE_INBOX` | - | `$POLYLOGUE_DATA/inbox` | Inbox directory |
+| `POLYLOGUE_FORCE` | - | unset | Set to `1` to skip confirmations |
+| `POLYLOGUE_QDRANT_URL` | `QDRANT_URL` | unset | Qdrant server URL for `--similar` vector search |
+| `POLYLOGUE_QDRANT_API_KEY` | `QDRANT_API_KEY` | unset | Qdrant authentication token |
+| `POLYLOGUE_VOYAGE_API_KEY` | `VOYAGE_API_KEY` | unset | Voyage AI API key for embeddings |
+| `POLYLOGUE_ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY` | unset | Anthropic API key for `--annotate` (future) |
+| `POLYLOGUE_OPENAI_API_KEY` | `OPENAI_API_KEY` | unset | OpenAI API key for alternative embeddings (future) |
+| `POLYLOGUE_GOOGLE_API_KEY` | `GOOGLE_API_KEY` / `GEMINI_API_KEY` | unset | Google Gemini API key (future) |
 
 ### Backup and Export
 
