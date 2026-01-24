@@ -43,7 +43,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
-from polylogue.types import AttachmentId, ConversationId, MessageId
+from polylogue.types import ConversationId, MessageId
 
 if TYPE_CHECKING:
     from polylogue.lib.projections import ConversationProjection
@@ -58,7 +58,7 @@ class Role(str, Enum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def from_string(cls, value: str | None) -> "Role":
+    def from_string(cls, value: str | None) -> Role:
         """Normalize various role strings to canonical Role."""
         if not value:
             return cls.UNKNOWN
@@ -293,7 +293,7 @@ class DialoguePair(BaseModel):
     assistant: Message
 
     @model_validator(mode="after")
-    def validate_roles(self) -> "DialoguePair":
+    def validate_roles(self) -> DialoguePair:
         """Ensure user message has user role and assistant message has assistant role."""
         if not self.user.is_user:
             raise ValueError(f"user message must have user role, got {self.user.role}")
@@ -315,6 +315,7 @@ class Conversation(BaseModel):
     created_at: datetime | None = None
     updated_at: datetime | None = None
     provider_meta: dict[str, object] | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
 
     @classmethod
     def from_records(
@@ -341,7 +342,39 @@ class Conversation(BaseModel):
             created_at=parse_timestamp(conversation.created_at),
             updated_at=parse_timestamp(conversation.updated_at),
             provider_meta=conversation.provider_meta,
+            metadata=conversation.metadata or {},
         )
+
+    # --- Metadata properties ---
+
+    @property
+    def user_title(self) -> str | None:
+        """User-defined title override from metadata."""
+        title = self.metadata.get("title")
+        return str(title) if title is not None else None
+
+    @property
+    def display_title(self) -> str:
+        """Display title with precedence: user_title > title > truncated ID."""
+        if self.user_title:
+            return self.user_title
+        if self.title:
+            return self.title
+        return self.id[:8]
+
+    @property
+    def summary(self) -> str | None:
+        """User-defined summary from metadata."""
+        summary = self.metadata.get("summary")
+        return str(summary) if summary is not None else None
+
+    @property
+    def tags(self) -> list[str]:
+        """List of tags from metadata."""
+        tags = self.metadata.get("tags", [])
+        if isinstance(tags, list):
+            return [str(t) for t in tags]
+        return []
 
     # --- Filtering views ---
 

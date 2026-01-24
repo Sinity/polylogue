@@ -1,7 +1,7 @@
 """Test performance fix for _prune_attachment_refs N+1 query issue."""
 
-from polylogue.storage.db import open_connection
 from polylogue.ingestion import IngestBundle, ingest_bundle
+from polylogue.storage.db import open_connection
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 

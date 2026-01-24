@@ -12,9 +12,11 @@ def _clear_polylogue_env(monkeypatch):
     reset_container()
 
     # Clear thread-local database state to prevent connection leaks between tests
-    from polylogue.storage import db
-    if hasattr(db, "_LOCAL"):
-        state = getattr(db._LOCAL, "state", None)
+    # Import db module fresh each time to handle module reloads from other tests
+    import sys
+    db_module = sys.modules.get("polylogue.storage.db")
+    if db_module is not None and hasattr(db_module, "_LOCAL"):
+        state = getattr(db_module._LOCAL, "state", None)
         if state is not None:
             conn = state.get("conn")
             if conn is not None:
@@ -25,6 +27,11 @@ def _clear_polylogue_env(monkeypatch):
             state["conn"] = None
             state["path"] = None
             state["depth"] = 0
+
+    # Clear search cache (LRU cache) to prevent cross-test pollution
+    search_module = sys.modules.get("polylogue.storage.search")
+    if search_module is not None and hasattr(search_module, "_search_messages_cached"):
+        search_module._search_messages_cached.cache_clear()
 
     for key in (
         "POLYLOGUE_CONFIG",
@@ -38,6 +45,9 @@ def _clear_polylogue_env(monkeypatch):
         # Clear Drive credentials to ensure test isolation
         "POLYLOGUE_CREDENTIAL_PATH",
         "POLYLOGUE_TOKEN_PATH",
+        # Don't inherit real user's XDG directories
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -45,20 +55,36 @@ def _clear_polylogue_env(monkeypatch):
 @pytest.fixture
 def workspace_env(tmp_path, monkeypatch):
     config_dir = tmp_path / "config"
+    data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"
     archive_root = tmp_path / "archive"
 
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_dir / "config.json"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(data_dir))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_RENDER_ROOT", str(archive_root / "render"))
     monkeypatch.delenv("QDRANT_URL", raising=False)
     monkeypatch.delenv("QDRANT_API_KEY", raising=False)
 
+    # Reload paths module and dependent modules to pick up new XDG_DATA_HOME
+    # Order matters: paths first, then modules that import from db
+    import importlib
+
+    import polylogue.paths
+    import polylogue.storage.backends.sqlite
+    import polylogue.storage.db
+    import polylogue.storage.search
+    importlib.reload(polylogue.paths)
+    importlib.reload(polylogue.storage.backends.sqlite)
+    importlib.reload(polylogue.storage.db)
+    importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
+
     return {
         "config_path": config_dir / "config.json",
         "archive_root": archive_root,
-        "state_root": state_dir,
+        "data_root": data_dir,
+        "state_root": state_dir,  # Kept for backward compatibility
     }
 
 
@@ -97,12 +123,15 @@ def uppercase_json_inbox(tmp_path):
 
 
 @pytest.fixture
-def storage_repository():
+def storage_repository(workspace_env):
     """Storage repository with its own write lock.
 
     Use this fixture in tests that need thread-safe storage operations.
     The repository encapsulates the write lock and provides methods for
     saving conversations and recording runs.
+
+    Depends on workspace_env to ensure XDG_DATA_HOME is set before
+    creating the default backend.
     """
     from polylogue.storage.backends.sqlite import create_default_backend
     from polylogue.storage.repository import StorageRepository
@@ -119,24 +148,24 @@ def cli_workspace(tmp_path, monkeypatch):
     Creates a complete test environment for CLI command testing:
     - Config directory with config.json
     - Archive root directory
-    - State directory for database
+    - Data directory for database (XDG_DATA_HOME)
     - Inbox directory for test data
     - Pre-configured environment variables
 
     Returns:
-        dict with paths: config_path, archive_root, state_root, inbox_dir, db_path
+        dict with paths: config_path, archive_root, data_root, inbox_dir, db_path
     """
     import json
-    from pathlib import Path
 
     # Create directory structure
     config_dir = tmp_path / "config"
+    data_dir = tmp_path / "data"
     state_dir = tmp_path / "state"
     archive_root = tmp_path / "archive"
     inbox_dir = tmp_path / "inbox"
     render_root = archive_root / "render"
 
-    for path in [config_dir, state_dir, archive_root, inbox_dir, render_root]:
+    for path in [config_dir, data_dir, state_dir, archive_root, inbox_dir, render_root]:
         path.mkdir(parents=True, exist_ok=True)
 
     # Create minimal config.json
@@ -149,11 +178,12 @@ def cli_workspace(tmp_path, monkeypatch):
     config_path.write_text(json.dumps(config, indent=2))
 
     # Set environment variables
-    # default_db_path() returns: state_root / "polylogue" / "polylogue.db"
-    db_path = state_dir / "polylogue" / "polylogue.db"
+    # default_db_path() returns: DATA_HOME / "polylogue" / "polylogue.db"
+    db_path = data_dir / "polylogue" / "polylogue.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
+    monkeypatch.setenv("XDG_DATA_HOME", str(data_dir))
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_RENDER_ROOT", str(render_root))
@@ -161,10 +191,24 @@ def cli_workspace(tmp_path, monkeypatch):
     monkeypatch.delenv("QDRANT_URL", raising=False)
     monkeypatch.delenv("QDRANT_API_KEY", raising=False)
 
+    # Reload paths module and dependent modules to pick up new XDG_DATA_HOME
+    # Order matters: paths first, then modules that import from db
+    import importlib
+
+    import polylogue.paths
+    import polylogue.storage.backends.sqlite
+    import polylogue.storage.db
+    import polylogue.storage.search
+    importlib.reload(polylogue.paths)
+    importlib.reload(polylogue.storage.backends.sqlite)
+    importlib.reload(polylogue.storage.db)
+    importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
+
     return {
         "config_path": config_path,
         "archive_root": archive_root,
-        "state_root": state_dir,
+        "data_root": data_dir,
+        "state_root": state_dir,  # Kept for backward compatibility
         "inbox_dir": inbox_dir,
         "render_root": render_root,
         "db_path": db_path,
