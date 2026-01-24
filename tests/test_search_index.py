@@ -5,11 +5,6 @@ ranking, special characters, and edge cases.
 """
 from __future__ import annotations
 
-import sqlite3
-import tempfile
-from pathlib import Path
-from uuid import uuid4
-
 import pytest
 
 from polylogue.storage.db import open_connection

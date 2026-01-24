@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from polylogue.config import Config, IndexConfig
+from polylogue.config import Config
 from polylogue.pipeline.services.indexing import IndexService
 from polylogue.storage.db import open_connection
 from polylogue.storage.store import ConversationRecord, MessageRecord

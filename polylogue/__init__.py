@@ -27,22 +27,24 @@ Example:
 """
 
 # High-level API
-from polylogue.core.facade import Polylogue
-
 # Core types for library users
-from polylogue.config import Config, Source, ConfigError
-from polylogue.lib.repository import ConversationRepository
+from polylogue.config import Config, ConfigError, Source
+from polylogue.core.facade import ArchiveStats, Polylogue
+from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, Message
-from polylogue.storage.search import SearchResult, SearchHit
+from polylogue.lib.repository import ConversationRepository
+from polylogue.storage.search import SearchHit, SearchResult
 
 __all__ = [
     # Main facade
     "Polylogue",
+    "ArchiveStats",
     # Configuration
     "Config",
     "Source",
     "ConfigError",
     # Data access
+    "ConversationFilter",
     "ConversationRepository",
     "Conversation",
     "Message",

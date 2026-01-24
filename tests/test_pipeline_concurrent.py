@@ -11,9 +11,6 @@ from __future__ import annotations
 import concurrent.futures
 import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 
 def test_counts_lock_prevents_lost_updates():
@@ -77,8 +74,8 @@ def test_counts_without_lock_may_lose_updates():
 
 def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
     """Verify attachment_content_id returns values instead of mutating."""
-    from polylogue.pipeline.ids import attachment_content_id
     from polylogue.ingestion import ParsedAttachment
+    from polylogue.pipeline.ids import attachment_content_id
 
     # Create a test file
     test_file = tmp_path / "test.txt"

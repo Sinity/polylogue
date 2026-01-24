@@ -10,7 +10,6 @@ from markdown_it import MarkdownIt
 from polylogue.render_paths import render_root
 from polylogue.rendering.core import ConversationFormatter
 
-
 DEFAULT_HTML_TEMPLATE = """
 <!doctype html>
 <html lang="en">

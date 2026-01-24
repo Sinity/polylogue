@@ -10,15 +10,16 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from polylogue.core.json import dumps as json_dumps
+from polylogue.paths import DATA_HOME
 from polylogue.storage.db import DatabaseError
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord
 from polylogue.types import ConversationId
 
 LOGGER = logging.getLogger(__name__)
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
-def create_default_backend() -> "SQLiteBackend":
+def create_default_backend() -> SQLiteBackend:
     """Create a SQLiteBackend with the default database path.
 
     This is a convenience function for creating backends when
@@ -31,11 +32,11 @@ def create_default_backend() -> "SQLiteBackend":
 
 
 def default_db_path() -> Path:
-    import os
+    """Return the default database path.
 
-    raw_state_root = os.environ.get("XDG_STATE_HOME")
-    state_root = Path(raw_state_root).expanduser() if raw_state_root else Path.home() / ".local/state"
-    return state_root / "polylogue" / "polylogue.db"
+    Uses XDG_DATA_HOME/polylogue/polylogue.db (semantic data, not ephemeral state).
+    """
+    return DATA_HOME / "polylogue.db"
 
 
 def _json_or_none(value: dict[str, object] | None) -> str | None:
@@ -64,6 +65,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT,
             content_hash TEXT NOT NULL,
             provider_meta TEXT,
+            metadata TEXT DEFAULT '{}',
             source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
             version INTEGER NOT NULL
         );
@@ -329,11 +331,18 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
 
 
+def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
+    """Migrate from v4 to v5: add metadata column for user-editable fields."""
+    # Simple column addition - SQLite supports ADD COLUMN
+    conn.execute("ALTER TABLE conversations ADD COLUMN metadata TEXT DEFAULT '{}'")
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
     3: _migrate_v3_to_v4,
+    4: _migrate_v4_to_v5,
 }
 
 
@@ -461,7 +470,8 @@ class SQLiteBackend:
             self._local.conn.execute("PRAGMA busy_timeout = 30000")
             _ensure_schema(self._local.conn)
             self._local.transaction_depth = 0
-        return self._local.conn
+        conn: sqlite3.Connection = self._local.conn
+        return conn
 
     def begin(self) -> None:
         """Begin a transaction or nested savepoint."""
@@ -498,7 +508,7 @@ class SQLiteBackend:
         else:
             conn.execute(f"ROLLBACK TO SAVEPOINT sp_{self._local.transaction_depth}")
 
-    def record_run(self, record: "RunRecord") -> None:
+    def record_run(self, record: RunRecord) -> None:
         """Record a pipeline run audit entry.
 
         Args:
@@ -551,6 +561,7 @@ class SQLiteBackend:
             updated_at=row["updated_at"],
             content_hash=row["content_hash"],
             provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+            metadata=json.loads(row["metadata"]) if row["metadata"] else None,
             version=row["version"],
         )
 
@@ -610,13 +621,18 @@ class SQLiteBackend:
                 updated_at=row["updated_at"],
                 content_hash=row["content_hash"],
                 provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                metadata=json.loads(row["metadata"]) if row["metadata"] else None,
                 version=row["version"],
             )
             for row in rows
         ]
 
     def save_conversation(self, record: ConversationRecord) -> None:
-        """Persist a conversation record with upsert semantics."""
+        """Persist a conversation record with upsert semantics.
+
+        Note: metadata is NOT updated via upsert - it's user-editable and
+        should only be modified via update_metadata/add_tag/remove_tag methods.
+        """
         conn = self._get_connection()
         conn.execute(
             """
@@ -629,8 +645,9 @@ class SQLiteBackend:
                 updated_at,
                 content_hash,
                 provider_meta,
+                metadata,
                 version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(conversation_id) DO UPDATE SET
                 title = excluded.title,
                 created_at = excluded.created_at,
@@ -653,6 +670,7 @@ class SQLiteBackend:
                 record.updated_at,
                 record.content_hash,
                 _json_or_none(record.provider_meta),
+                _json_or_none(record.metadata) or "{}",
                 record.version,
             ),
         )
@@ -920,6 +938,94 @@ class SQLiteBackend:
         ).fetchall()
 
         return [str(row["conversation_id"]) for row in rows]
+
+    # --- Metadata CRUD ---
+
+    def get_metadata(self, conversation_id: str) -> dict[str, object]:
+        """Get metadata dict for a conversation."""
+        import json
+
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT metadata FROM conversations WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()
+
+        if row is None:
+            return {}
+        return json.loads(row["metadata"]) if row["metadata"] else {}
+
+    def update_metadata(self, conversation_id: str, key: str, value: object) -> None:
+        """Set a single metadata key."""
+        import json
+
+        conn = self._get_connection()
+        current = self.get_metadata(conversation_id)
+        current[key] = value
+        conn.execute(
+            "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
+            (json.dumps(current), conversation_id),
+        )
+        conn.commit()
+
+    def delete_metadata(self, conversation_id: str, key: str) -> None:
+        """Remove a metadata key."""
+        import json
+
+        conn = self._get_connection()
+        current = self.get_metadata(conversation_id)
+        if key in current:
+            del current[key]
+            conn.execute(
+                "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
+                (json.dumps(current), conversation_id),
+            )
+            conn.commit()
+
+    def add_tag(self, conversation_id: str, tag: str) -> None:
+        """Add a tag to the conversation's tags list."""
+        import json
+
+        conn = self._get_connection()
+        current = self.get_metadata(conversation_id)
+        tags = current.get("tags", [])
+        if not isinstance(tags, list):
+            tags = []
+        if tag not in tags:
+            tags.append(tag)
+            current["tags"] = tags
+            conn.execute(
+                "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
+                (json.dumps(current), conversation_id),
+            )
+            conn.commit()
+
+    def remove_tag(self, conversation_id: str, tag: str) -> None:
+        """Remove a tag from the conversation's tags list."""
+        import json
+
+        conn = self._get_connection()
+        current = self.get_metadata(conversation_id)
+        tags = current.get("tags", [])
+        if isinstance(tags, list) and tag in tags:
+            tags.remove(tag)
+            current["tags"] = tags
+            conn.execute(
+                "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
+                (json.dumps(current), conversation_id),
+            )
+            conn.commit()
+
+    def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
+        """Replace entire metadata dict."""
+        import json
+
+        conn = self._get_connection()
+        conn.execute(
+            "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
+            (json.dumps(metadata), conversation_id),
+        )
+        conn.commit()
 
     def close(self) -> None:
         """Close the database connection for this thread."""
