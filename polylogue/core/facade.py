@@ -201,6 +201,27 @@ class Polylogue:
         """
         return self._repository.view(conversation_id)
 
+    def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]:
+        """Get multiple conversations by ID in a single database query.
+
+        This is more efficient than calling get_conversation() in a loop.
+        Non-existent IDs are silently skipped.
+
+        Args:
+            conversation_ids: List of full conversation IDs
+
+        Returns:
+            List of Conversation objects (may be fewer than requested if some don't exist)
+
+        Example:
+            # Efficient batch retrieval
+            ids = ["claude:abc123", "chatgpt:def456", "claude:ghi789"]
+            convs = archive.get_conversations(ids)
+            for conv in convs:
+                print(f"{conv.id}: {conv.display_title}")
+        """
+        return self._repository._get_many(conversation_ids)
+
     def search(
         self,
         query: str,
@@ -433,7 +454,50 @@ class Polylogue:
             # Get first matching conversation
             conv = archive.filter().tag("important").first()
         """
-        return ConversationFilter(self._repository)
+        # Get vector provider if available (may be None)
+        vector_provider = None
+        if self._container is not None:
+            try:
+                vector_provider = self._container.vector_provider()
+            except Exception:
+                pass  # Vector provider not configured
+
+        return ConversationFilter(self._repository, vector_provider=vector_provider)
+
+    def __enter__(self) -> Polylogue:
+        """Enter context manager - returns self for use in 'with' statements."""
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        """Exit context manager - closes backend connections.
+
+        Args:
+            exc_type: Exception type if an error occurred
+            exc_val: Exception value if an error occurred
+            exc_tb: Exception traceback if an error occurred
+        """
+        self.close()
+
+    def close(self) -> None:
+        """Close database connections and release resources.
+
+        This is called automatically when using Polylogue as a context manager.
+        Manual calling is only needed when not using 'with' statements.
+
+        Example:
+            # Context manager (automatic close)
+            with Polylogue() as archive:
+                convs = archive.filter().list()
+
+            # Manual close (if not using context manager)
+            archive = Polylogue()
+            try:
+                convs = archive.filter().list()
+            finally:
+                archive.close()
+        """
+        if hasattr(self._backend, "close"):
+            self._backend.close()
 
     def stats(self) -> ArchiveStats:
         """Get statistics about the archive.
