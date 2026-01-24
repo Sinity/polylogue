@@ -3,6 +3,7 @@ import pytest
 from polylogue.storage.db import open_connection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.repository import ConversationRepository
+from polylogue.storage.backends.sqlite import SQLiteBackend
 
 
 @pytest.fixture
@@ -47,7 +48,8 @@ def test_semantic_models():
 
 
 def test_repository(mock_db):
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
 
     # Seed data
     from tests.factories import DbFactory
@@ -98,7 +100,8 @@ def test_repository_get_includes_attachment_conversation_id(mock_db):
         ],
     )
 
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     conv = repo.get("c-with-att")
 
     assert conv is not None
@@ -140,7 +143,8 @@ def test_repository_get_with_multiple_attachments(mock_db):
         ],
     )
 
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     conv = repo.get("c-multi-att")
 
     assert conv is not None
@@ -184,7 +188,8 @@ def test_repository_get_attachment_metadata_decoded(mock_db):
         ],
     )
 
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     conv = repo.get("c-att-meta")
 
     assert conv is not None

@@ -18,17 +18,23 @@ class DbFactory:
         provider: str = "test",
         title: str = "Test Conversation",
         messages: list[dict[str, Any]] | None = None,
+        created_at: datetime | None = None,
+        updated_at: datetime | None = None,
     ) -> str:
         """Create a conversation with messages in the DB."""
         cid = id or str(uuid4())
+
+        # Use provided timestamps or default to now
+        created_iso = (created_at or datetime.now(timezone.utc)).isoformat()
+        updated_iso = (updated_at or datetime.now(timezone.utc)).isoformat()
 
         conv_rec = ConversationRecord(
             conversation_id=cid,
             provider_name=provider,
             provider_conversation_id=f"ext-{cid}",
             title=title,
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
+            created_at=created_iso,
+            updated_at=updated_iso,
             content_hash=uuid4().hex,
             version=1,
         )

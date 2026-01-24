@@ -7,7 +7,6 @@ from pathlib import Path
 
 from polylogue.core.log import get_logger
 from polylogue.protocols import OutputRenderer
-from polylogue.render import render_conversation
 
 logger = get_logger(__name__)
 
@@ -43,23 +42,17 @@ class RenderService:
 
     def __init__(
         self,
-        template_path: Path | None,
+        renderer: OutputRenderer,
         render_root: Path,
-        archive_root: Path,
-        renderer: OutputRenderer | None = None,
     ):
         """Initialize the rendering service.
 
         Args:
-            template_path: Optional path to custom HTML template
+            renderer: OutputRenderer implementation for rendering conversations
             render_root: Root directory for rendered output
-            archive_root: Root directory for archived conversations
-            renderer: Optional OutputRenderer implementation (uses legacy render if None)
         """
-        self.template_path = template_path
-        self.render_root = render_root
-        self.archive_root = archive_root
         self.renderer = renderer
+        self.render_root = render_root
 
     def render_conversations(
         self,
@@ -79,17 +72,7 @@ class RenderService:
         result = RenderResult()
 
         def _render_one(convo_id: str) -> int:
-            if self.renderer:
-                # Use new renderer abstraction
-                self.renderer.render(convo_id, self.render_root)
-            else:
-                # Use legacy render function
-                render_conversation(
-                    conversation_id=convo_id,
-                    archive_root=self.archive_root,
-                    render_root_path=self.render_root,
-                    template_path=self.template_path,
-                )
+            self.renderer.render(convo_id, self.render_root)
             return 1
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:

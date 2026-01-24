@@ -5,39 +5,43 @@ interface for querying and retrieving conversations from the database.
 
 The repository returns `Conversation` objects that support semantic projections
 like `substantive_only()`, `iter_pairs()`, and `without_noise()`.
+
+All database operations go through the StorageBackend protocol for clean abstraction.
 """
 
 from __future__ import annotations
 
 import builtins
 import logging
-import sqlite3
-from contextlib import AbstractContextManager as ContextManager
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from polylogue.core import json as json_utils
-from polylogue.storage.db import DatabaseError, open_connection
+from polylogue.storage.db import DatabaseError
 from polylogue.lib.models import Conversation
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 from polylogue.types import ConversationId
 
+if TYPE_CHECKING:
+    from polylogue.protocols import StorageBackend
+
 logger = logging.getLogger(__name__)
 
 
-def _decode_meta(payload: dict[str, object]) -> None:
-    raw = payload.get("provider_meta")
-    if isinstance(raw, str) and raw:
-        try:
-            payload["provider_meta"] = json_utils.loads(raw)
-        except (json_utils.JSONDecodeError, ValueError) as exc:
-            logger.warning(
-                "Failed to parse provider_meta JSON for conversation %s: %s",
-                payload.get("conversation_id", "unknown"),
-                exc,
-            )
-            payload["provider_meta"] = None
-    elif raw is None:
-        payload["provider_meta"] = None
+def _records_to_conversation(
+    conv_record: ConversationRecord,
+    msg_records: list[MessageRecord],
+    att_records: list[AttachmentRecord],
+) -> Conversation:
+    """Convert storage records to a Conversation domain object.
+
+    Args:
+        conv_record: Conversation record from storage
+        msg_records: Message records from storage
+        att_records: Attachment records from storage
+
+    Returns:
+        Conversation object with semantic projection support
+    """
+    return Conversation.from_records(conv_record, msg_records, att_records)
 
 
 class ConversationRepository:
@@ -51,19 +55,28 @@ class ConversationRepository:
     - `without_noise()` - Remove tool calls, context dumps
     - `to_clean_text()` - Render as clean dialogue text
 
+    All database operations go through a StorageBackend for clean abstraction.
+
     Example:
-        repo = ConversationRepository()
+        from polylogue.storage.backends.sqlite import SQLiteBackend
+
+        backend = SQLiteBackend(db_path="/path/to/db.db")
+        repo = ConversationRepository(backend=backend)
         conv = repo.get("claude:abc123")
         if conv:
             for pair in conv.iter_pairs():
                 print(pair.exchange)
     """
 
-    def __init__(self, db_path: Path | None = None) -> None:
-        self._db_path = db_path
+    def __init__(self, backend: "StorageBackend") -> None:
+        """Initialize the repository.
 
-    def _get_conn(self) -> ContextManager[sqlite3.Connection]:
-        return open_connection(self._db_path)
+        Args:
+            backend: Storage backend for all database operations.
+                    Use SQLiteBackend for SQLite, or implement the protocol
+                    for PostgreSQL, DuckDB, etc.
+        """
+        self._backend = backend
 
     def resolve_id(self, id_prefix: str) -> ConversationId | None:
         """Resolve a partial ID to a full conversation ID.
@@ -77,23 +90,8 @@ class ConversationRepository:
         Returns:
             The full conversation ID if exactly one match, None otherwise.
         """
-        with self._get_conn() as conn:
-            # Try exact match first
-            row = conn.execute(
-                "SELECT conversation_id FROM conversations WHERE conversation_id = ?",
-                (id_prefix,),
-            ).fetchone()
-            if row:
-                return ConversationId(str(row["conversation_id"]))
-
-            # Try prefix match
-            rows = conn.execute(
-                "SELECT conversation_id FROM conversations WHERE conversation_id LIKE ? LIMIT 2",
-                (f"{id_prefix}%",),
-            ).fetchall()
-            if len(rows) == 1:
-                return ConversationId(str(rows[0]["conversation_id"]))
-            return None  # No match or ambiguous
+        resolved = self._backend.resolve_id(id_prefix)
+        return ConversationId(resolved) if resolved else None
 
     def view(self, conversation_id: str) -> Conversation | None:
         """Get a conversation with full semantic projection support.
@@ -116,147 +114,42 @@ class ConversationRepository:
         return self.get(full_id)
 
     def get(self, conversation_id: str) -> Conversation | None:
-        with self._get_conn() as conn:
-            # 1. Fetch Conversation
-            row = conn.execute(
-                "SELECT * FROM conversations WHERE conversation_id = ?",
-                (conversation_id,),
-            ).fetchone()
-            if not row:
-                return None
+        """Get a conversation by ID.
 
-            # Map row to Record (Pydantic models need dicts or kwargs)
-            # RowObkect is dict-like
-            conv_data = dict(row)
-            _decode_meta(conv_data)
-            conv_record = ConversationRecord(**conv_data)
+        Args:
+            conversation_id: Conversation ID to retrieve
 
-            # 2. Fetch Messages
-            msg_rows = conn.execute(
-                """
-                SELECT * FROM messages 
-                WHERE conversation_id = ?
-                ORDER BY 
-                    (timestamp IS NULL),
-                    CASE 
-                        WHEN timestamp IS NULL THEN NULL
-                        WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS INTEGER)
-                        ELSE CAST(timestamp AS REAL)
-                    END,
-                    message_id
-                """,
-                (conversation_id,),
-            ).fetchall()
-            msg_records = []
-            for record in msg_rows:
-                data = dict(record)
-                _decode_meta(data)
-                msg_records.append(MessageRecord(**data))
+        Returns:
+            Conversation object with semantic projections, or None if not found
+        """
+        conv_record = self._backend.get_conversation(conversation_id)
+        if not conv_record:
+            return None
 
-            # 3. Fetch Attachments
-            # Attachments are linked via attachment_refs
-            att_rows = conn.execute(
-                """
-                SELECT
-                    attachment_refs.message_id,
-                    attachment_refs.conversation_id,
-                    attachments.*
-                FROM attachment_refs
-                JOIN attachments ON attachments.attachment_id = attachment_refs.attachment_id
-                WHERE attachment_refs.conversation_id = ?
-                """,
-                (conversation_id,),
-            ).fetchall()
+        msg_records = self._backend.get_messages(conversation_id)
+        att_records = self._backend.get_attachments(conversation_id)
 
-            att_records = []
-            for r in att_rows:
-                # Build AttachmentRecord from joined row. The attachments table doesn't
-                # have message_id/conversation_id columns (those live in attachment_refs),
-                # so we pull them from the SELECT explicitly.
-                data = dict(r)
-                data["message_id"] = r["message_id"]
-                data["conversation_id"] = r["conversation_id"]
-                _decode_meta(data)
-                att_records.append(AttachmentRecord(**data))
-
-            return Conversation.from_records(conv_record, msg_records, att_records)
+        return _records_to_conversation(conv_record, msg_records, att_records)
 
     def _get_many(self, conversation_ids: list[str]) -> list[Conversation]:
-        """Bulk fetch full conversation objects."""
+        """Bulk fetch full conversation objects.
+
+        Args:
+            conversation_ids: List of conversation IDs to fetch
+
+        Returns:
+            List of Conversation objects (may be fewer than requested if some don't exist)
+        """
         if not conversation_ids:
             return []
 
-        with self._get_conn() as conn:
-            # 1. Fetch Conversations
-            placeholders = ", ".join("?" for _ in conversation_ids)
-            conv_rows = conn.execute(
-                f"SELECT * FROM conversations WHERE conversation_id IN ({placeholders})",
-                tuple(conversation_ids),
-            ).fetchall()
-
-            # Map by ID to maintain order or easier lookup
-            conv_map = {}
-            for conv in conv_rows:
-                conv_data = dict(conv)
-                _decode_meta(conv_data)
-                conv_map[conv_data["conversation_id"]] = ConversationRecord(**conv_data)
-
-            # 2. Fetch Messages
-            msg_rows = conn.execute(
-                f"""
-                SELECT * FROM messages 
-                WHERE conversation_id IN ({placeholders})
-                ORDER BY 
-                    (timestamp IS NULL),
-                    CASE 
-                        WHEN timestamp IS NULL THEN NULL
-                        WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS INTEGER)
-                        ELSE CAST(timestamp AS REAL)
-                    END,
-                    message_id
-                """,
-                tuple(conversation_ids),
-            ).fetchall()
-
-            msg_map: dict[str, list[MessageRecord]] = {}
-            for r in msg_rows:
-                cid = r["conversation_id"]
-                data = dict(r)
-                _decode_meta(data)
-                msg_map.setdefault(cid, []).append(MessageRecord(**data))
-
-            # 3. Fetch Attachments
-            att_rows = conn.execute(
-                f"""
-                SELECT 
-                    attachment_refs.message_id, 
-                    attachment_refs.conversation_id,
-                    attachments.*
-                FROM attachment_refs
-                JOIN attachments ON attachments.attachment_id = attachment_refs.attachment_id
-                WHERE attachment_refs.conversation_id IN ({placeholders})
-                """,
-                tuple(conversation_ids),
-            ).fetchall()
-
-            att_map: dict[str, list[AttachmentRecord]] = {}
-            for r in att_rows:
-                cid = r["conversation_id"]
-                data = dict(r)
-                data["message_id"] = r["message_id"]
-                _decode_meta(data)
-                att_map.setdefault(cid, []).append(AttachmentRecord(**data))
-
+        # Fetch one by one (backend doesn't have bulk API yet)
+        # This could be optimized later by adding bulk methods to StorageBackend protocol
         results = []
         for cid in conversation_ids:
-            if cid in conv_map:
-                results.append(
-                    Conversation.from_records(
-                        conv_map[cid],
-                        msg_map.get(cid, []),
-                        att_map.get(cid, []),
-                    )
-                )
+            conv = self.get(cid)
+            if conv is not None:
+                results.append(conv)
         return results
 
     def list(
@@ -265,58 +158,35 @@ class ConversationRepository:
         offset: int = 0,
         provider: str | None = None,
     ) -> list[Conversation]:
-        with self._get_conn() as conn:
-            if provider:
-                rows = conn.execute(
-                    """
-                    SELECT conversation_id
-                    FROM conversations
-                    WHERE provider_name = ?
-                    ORDER BY
-                        CASE WHEN updated_at IS NULL OR updated_at = '' THEN 1 ELSE 0 END,
-                        updated_at DESC,
-                        conversation_id DESC
-                    LIMIT ? OFFSET ?
-                    """,
-                    (provider, limit, offset),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    """
-                    SELECT conversation_id
-                    FROM conversations
-                    ORDER BY
-                        CASE WHEN updated_at IS NULL OR updated_at = '' THEN 1 ELSE 0 END,
-                        updated_at DESC,
-                        conversation_id DESC
-                    LIMIT ? OFFSET ?
-                    """,
-                    (limit, offset),
-                ).fetchall()
-            ids = [r["conversation_id"] for r in rows]
+        """List conversations with optional filtering and pagination.
 
+        Args:
+            limit: Maximum number of conversations to return
+            offset: Number of conversations to skip
+            provider: Optional provider filter (e.g., "claude", "chatgpt")
+
+        Returns:
+            List of Conversation objects ordered by updated_at DESC
+        """
+        conv_records = self._backend.list_conversations(
+            provider=provider,
+            limit=limit,
+            offset=offset,
+        )
+        ids = [str(rec.conversation_id) for rec in conv_records]
         return self._get_many(ids)
 
     def search(self, query: str) -> "builtins.list[Conversation]":
-        # FTS search using messages_fts (the actual FTS index)
-        with self._get_conn() as conn:
-            # Check if FTS table exists before querying
-            exists = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-            ).fetchone()
-            if not exists:
-                raise DatabaseError(
-                    "Search index not built. Run `polylogue run` with index enabled or `polylogue index`."
-                )
-            rows = conn.execute(
-                """
-                SELECT DISTINCT conversation_id
-                FROM messages_fts
-                WHERE messages_fts MATCH ?
-                LIMIT 20
-                """,
-                (query,),
-            ).fetchall()
-            ids = [r["conversation_id"] for r in rows]
+        """Search conversations using full-text search.
 
+        Args:
+            query: Search query string
+
+        Returns:
+            List of matching conversations ordered by relevance
+
+        Raises:
+            DatabaseError: If search index not available
+        """
+        ids = self._backend.search_conversations(query, limit=20)
         return self._get_many(ids)

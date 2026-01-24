@@ -142,22 +142,24 @@ def _search_messages_cached(cache_key: SearchCacheKey) -> SearchResult:
     query = cache_key.query
     archive_root = Path(cache_key.archive_root)
     render_root_path = Path(cache_key.render_root_path) if cache_key.render_root_path else None
+    db_path = Path(cache_key.db_path) if cache_key.db_path else None
     limit = cache_key.limit
     source = cache_key.source
     since = cache_key.since
 
-    return _search_messages_impl(query, archive_root, render_root_path, limit, source, since)
+    return _search_messages_impl(query, archive_root, render_root_path, db_path, limit, source, since)
 
 
 def _search_messages_impl(
     query: str,
     archive_root: Path,
     render_root_path: Path | None,
+    db_path: Path | None,
     limit: int,
     source: str | None,
     since: str | None,
 ) -> SearchResult:
-    with open_connection(None) as conn:
+    with open_connection(db_path) as conn:
         exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         if not exists:
             raise DatabaseError("Search index not built. Run `polylogue run` with index enabled.")
@@ -259,6 +261,7 @@ def search_messages(
     *,
     archive_root: Path,
     render_root_path: Path | None = None,
+    db_path: Path | None = None,
     limit: int = 20,
     source: str | None = None,
     since: str | None = None,
@@ -272,6 +275,7 @@ def search_messages(
         query: Search query string (automatically escaped for FTS5)
         archive_root: Root directory for archived conversations
         render_root_path: Optional root for rendered output
+        db_path: Optional database path (for testing isolation)
         limit: Maximum number of results to return (default: 20)
         source: Optional source/provider filter
         since: Optional timestamp filter (ISO format)
@@ -288,6 +292,7 @@ def search_messages(
         query=query,
         archive_root=archive_root,
         render_root_path=render_root_path,
+        db_path=db_path,
         limit=limit,
         source=source,
         since=since,

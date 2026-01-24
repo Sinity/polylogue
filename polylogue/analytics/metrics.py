@@ -42,21 +42,24 @@ class ProviderMetrics:
         return (self.total_conversations_with_thinking / self.conversation_count) * 100
 
 
-def compute_provider_comparison(archive_root: Path) -> list[ProviderMetrics]:
+def compute_provider_comparison(db_path: Path | None = None) -> list[ProviderMetrics]:
     """Compute comparison metrics across all providers.
 
     Args:
-        archive_root: Path to polylogue archive
+        db_path: Optional path to database file. If None, uses default location.
 
     Returns:
         List of ProviderMetrics ordered by conversation count (descending)
 
     Examples:
-        >>> metrics = compute_provider_comparison(Path("~/.local/state/polylogue"))
+        >>> metrics = compute_provider_comparison()
         >>> for m in metrics:
         ...     print(f"{m.provider_name}: {m.conversation_count} conversations")
     """
-    repo = ConversationRepository(archive_root)
+    from polylogue.storage.backends.sqlite import SQLiteBackend
+
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
 
     # Aggregate metrics by provider
     provider_data: dict[str, dict] = defaultdict(
@@ -74,32 +77,41 @@ def compute_provider_comparison(archive_root: Path) -> list[ProviderMetrics]:
         }
     )
 
-    # Iterate all conversations
-    for conv in repo.iter_all():
-        provider = conv.provider_name or "unknown"
-        data = provider_data[provider]
+    # Iterate all conversations (fetch in batches of 1000)
+    offset = 0
+    batch_size = 1000
+    while True:
+        batch = repo.list(limit=batch_size, offset=offset)
+        if not batch:
+            break
 
-        data["conversation_count"] += 1
+        for conv in batch:
+            provider = conv.provider or "unknown"
+            data = provider_data[provider]
 
-        # Analyze messages
-        for msg in conv.messages:
-            data["message_count"] += 1
+            data["conversation_count"] += 1
 
-            if msg.role == "user":
-                data["user_message_count"] += 1
-                data["user_word_sum"] += msg.word_count
-            elif msg.role == "assistant":
-                data["assistant_message_count"] += 1
-                data["assistant_word_sum"] += msg.word_count
+            # Analyze messages
+            for msg in conv.messages:
+                data["message_count"] += 1
 
-            # Check for tool use and thinking
-            if msg.is_tool_use:
-                data["tool_use_count"] += 1
-                data["conversations_with_tools"].add(conv.conversation_id)
+                if msg.role == "user":
+                    data["user_message_count"] += 1
+                    data["user_word_sum"] += msg.word_count
+                elif msg.role == "assistant":
+                    data["assistant_message_count"] += 1
+                    data["assistant_word_sum"] += msg.word_count
 
-            if msg.is_thinking:
-                data["thinking_count"] += 1
-                data["conversations_with_thinking"].add(conv.conversation_id)
+                # Check for tool use and thinking
+                if msg.is_tool_use:
+                    data["tool_use_count"] += 1
+                    data["conversations_with_tools"].add(conv.id)
+
+                if msg.is_thinking:
+                    data["thinking_count"] += 1
+                    data["conversations_with_thinking"].add(conv.id)
+
+        offset += batch_size
 
     # Convert to ProviderMetrics objects
     results: list[ProviderMetrics] = []

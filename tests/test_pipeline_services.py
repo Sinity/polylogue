@@ -17,6 +17,8 @@ class TestIngestionService:
 
     def test_initialization(self, tmp_path: Path):
         """IngestionService should initialize with required dependencies."""
+        from polylogue.storage.backends.sqlite import SQLiteBackend
+
         config = Config(
             version=2,
             sources=[],
@@ -24,7 +26,8 @@ class TestIngestionService:
             render_root=tmp_path / "render",
             path=tmp_path / "config.json",
         )
-        repository = StorageRepository()
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        repository = StorageRepository(backend=backend)
 
         service = IngestionService(repository, config.archive_root, config)
 
@@ -37,20 +40,25 @@ class TestRenderService:
     """Tests for RenderService."""
 
     def test_initialization(self, tmp_path: Path):
-        """RenderService should initialize with required paths."""
-        template_path = tmp_path / "template.html"
+        """RenderService should initialize with required renderer."""
+        from polylogue.rendering.renderers import MarkdownRenderer
+
         render_root = tmp_path / "render"
         archive_root = tmp_path / "archive"
+        renderer = MarkdownRenderer(archive_root=archive_root)
 
-        service = RenderService(template_path, render_root, archive_root)
+        service = RenderService(renderer=renderer, render_root=render_root)
 
-        assert service.template_path == template_path
+        assert service.renderer is renderer
         assert service.render_root == render_root
-        assert service.archive_root == archive_root
 
     def test_render_conversations_empty_list(self, tmp_path: Path):
         """RenderService should handle empty conversation list."""
-        service = RenderService(None, tmp_path / "render", tmp_path / "archive")
+        from polylogue.rendering.renderers import MarkdownRenderer
+
+        archive_root = tmp_path / "archive"
+        renderer = MarkdownRenderer(archive_root=archive_root)
+        service = RenderService(renderer=renderer, render_root=tmp_path / "render")
 
         result = service.render_conversations([])
 
@@ -59,24 +67,25 @@ class TestRenderService:
 
     def test_render_conversations_tracks_failures(self, tmp_path: Path):
         """RenderService should track failures when rendering fails."""
-        service = RenderService(None, tmp_path / "render", tmp_path / "archive")
+        from polylogue.rendering.renderers import MarkdownRenderer
 
-        # Patch at the point where it's imported in the rendering service module
-        with patch("polylogue.pipeline.services.rendering.render_conversation") as mock_render:
+        archive_root = tmp_path / "archive"
+        mock_renderer = MagicMock(spec=MarkdownRenderer)
 
-            def render_side_effect(conversation_id, **kwargs):
-                if "fail" in conversation_id:
-                    raise ValueError("Test error")
-                return MagicMock()
+        def render_side_effect(conversation_id, output_path):
+            if "fail" in conversation_id:
+                raise ValueError("Test error")
 
-            mock_render.side_effect = render_side_effect
+        mock_renderer.render.side_effect = render_side_effect
 
-            result = service.render_conversations(["success-1", "fail-1", "success-2"])
+        service = RenderService(renderer=mock_renderer, render_root=tmp_path / "render")
 
-            assert result.rendered_count == 2
-            assert len(result.failures) == 1
-            assert result.failures[0]["conversation_id"] == "fail-1"
-            assert "Test error" in result.failures[0]["error"]
+        result = service.render_conversations(["success-1", "fail-1", "success-2"])
+
+        assert result.rendered_count == 2
+        assert len(result.failures) == 1
+        assert result.failures[0]["conversation_id"] == "fail-1"
+        assert "Test error" in result.failures[0]["error"]
 
 
 class TestIndexService:

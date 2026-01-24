@@ -509,4 +509,5 @@ __all__ = [
     "DriveNotFoundError",
     "default_credentials_path",
     "default_token_path",
+    "_parse_modified_time",
 ]

@@ -21,7 +21,7 @@ _WRITE_LOCK = threading.Lock()
 
 class ConversationRecord(BaseModel):
     conversation_id: ConversationId
-    provider_name: str  # TODO: migrate to Provider
+    provider_name: str
     provider_conversation_id: str
     title: str | None = None
     created_at: str | None = None

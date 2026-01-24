@@ -273,3 +273,34 @@ def mock_drive_service(monkeypatch):
         "file_content": file_content,
         "credentials": mock_creds,
     }
+
+
+@pytest.fixture
+def mock_media_downloader(monkeypatch):
+    """
+    Patch GoogleAPI's MediaIoBaseDownload with our mock.
+
+    This fixture patches the lazy import mechanism in drive_client.py
+    to return our MockMediaIoBaseDownload when MediaIoBaseDownload is requested.
+    """
+    from tests.mocks.drive_mocks import MockMediaIoBaseDownload
+
+    # Patch the _import_module function to return mock for MediaIoBaseDownload
+    original_import_module = None
+
+    def mock_import_module(name: str):
+        if name == "googleapiclient.http":
+            import types
+            mock_http = types.ModuleType("googleapiclient.http")
+            mock_http.MediaIoBaseDownload = MockMediaIoBaseDownload
+            return mock_http
+        # Fall through to original for other modules
+        import importlib
+        return importlib.import_module(name)
+
+    import polylogue.ingestion.drive_client as drive_client
+    original_import_module = drive_client._import_module
+
+    monkeypatch.setattr(drive_client, "_import_module", mock_import_module)
+
+    return {"MockMediaIoBaseDownload": MockMediaIoBaseDownload}

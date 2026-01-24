@@ -23,7 +23,7 @@ def _conversation_record():
     )
 
 
-def test_ingest_idempotent(workspace_env):
+def test_ingest_idempotent(workspace_env, storage_repository):
     bundle = IngestBundle(
         conversation=_conversation_record(),
         messages=[
@@ -51,15 +51,15 @@ def test_ingest_idempotent(workspace_env):
         ],
     )
 
-    first = ingest_bundle(bundle)
-    second = ingest_bundle(bundle)
+    first = ingest_bundle(bundle, repository=storage_repository)
+    second = ingest_bundle(bundle, repository=storage_repository)
 
     assert first.conversations == 1
     assert second.skipped_conversations == 1
     assert second.skipped_messages == 1
 
 
-def test_render_writes_markdown(workspace_env):
+def test_render_writes_markdown(workspace_env, storage_repository):
     archive_root = workspace_env["archive_root"]
     bundle = IngestBundle(
         conversation=_conversation_record(),
@@ -77,7 +77,7 @@ def test_render_writes_markdown(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="conv:hash", archive_root=archive_root)
     assert result.markdown_path.exists()
@@ -85,7 +85,7 @@ def test_render_writes_markdown(workspace_env):
     assert "hello" in result.markdown_path.read_text(encoding="utf-8")
 
 
-def test_render_escapes_html(workspace_env):
+def test_render_escapes_html(workspace_env, storage_repository):
     archive_root = workspace_env["archive_root"]
     bundle = IngestBundle(
         conversation=ConversationRecord(
@@ -112,7 +112,7 @@ def test_render_escapes_html(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="conv-html", archive_root=archive_root)
     html_text = result.html_path.read_text(encoding="utf-8")
@@ -120,7 +120,7 @@ def test_render_escapes_html(workspace_env):
     assert "&lt;script&gt;" in html_text
 
 
-def test_render_sanitizes_paths(workspace_env):
+def test_render_sanitizes_paths(workspace_env, storage_repository):
     """Test that render paths are sanitized even with path-like conversation IDs.
 
     Note: Invalid provider names are now rejected at the validation layer, so we
@@ -152,14 +152,14 @@ def test_render_sanitizes_paths(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="../escape", archive_root=archive_root)
     render_root = archive_root / "render"
     assert is_within_root(result.markdown_path, render_root)
 
 
-def test_render_includes_orphan_attachments(workspace_env):
+def test_render_includes_orphan_attachments(workspace_env, storage_repository):
     archive_root = workspace_env["archive_root"]
     bundle = IngestBundle(
         conversation=_conversation_record(),
@@ -187,14 +187,14 @@ def test_render_includes_orphan_attachments(workspace_env):
             )
         ],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="conv:hash", archive_root=archive_root)
     markdown = result.markdown_path.read_text(encoding="utf-8")
     assert "- Attachment: notes.txt" in markdown
 
 
-def test_export_includes_attachments(workspace_env, tmp_path):
+def test_export_includes_attachments(workspace_env, tmp_path, storage_repository):
     bundle = IngestBundle(
         conversation=_conversation_record(),
         messages=[],
@@ -210,13 +210,13 @@ def test_export_includes_attachments(workspace_env, tmp_path):
             )
         ],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
     output = export_jsonl(archive_root=workspace_env["archive_root"], output_path=tmp_path / "export.jsonl")
     payload = output.read_text(encoding="utf-8").strip().splitlines()[0]
     assert '"attachments"' in payload
 
 
-def test_ingest_updates_metadata(workspace_env):
+def test_ingest_updates_metadata(workspace_env, storage_repository):
     bundle = IngestBundle(
         conversation=ConversationRecord(
             conversation_id="conv-update",
@@ -242,7 +242,7 @@ def test_ingest_updates_metadata(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     updated = IngestBundle(
         conversation=ConversationRecord(
@@ -269,7 +269,7 @@ def test_ingest_updates_metadata(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(updated)
+    ingest_bundle(updated, repository=storage_repository)
 
     with open_connection(None) as conn:
         convo = conn.execute(
@@ -288,7 +288,7 @@ def test_ingest_updates_metadata(workspace_env):
     assert msg["content_hash"] == "msg-new"
 
 
-def test_ingest_updates_fields_without_hash_changes(workspace_env):
+def test_ingest_updates_fields_without_hash_changes(workspace_env, storage_repository):
     base_conversation = ConversationRecord(
         conversation_id="conv-hash-stable",
         provider_name="codex",
@@ -314,7 +314,8 @@ def test_ingest_updates_fields_without_hash_changes(workspace_env):
             conversation=base_conversation,
             messages=[base_message],
             attachments=[],
-        )
+        ),
+        repository=storage_repository,
     )
 
     updated = IngestBundle(
@@ -342,7 +343,7 @@ def test_ingest_updates_fields_without_hash_changes(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(updated)
+    ingest_bundle(updated, repository=storage_repository)
 
     with open_connection(None) as conn:
         convo = conn.execute(
@@ -363,7 +364,7 @@ def test_ingest_updates_fields_without_hash_changes(workspace_env):
     assert msg_meta["k"] == "v2"
 
 
-def test_ingest_removes_missing_attachments(workspace_env):
+def test_ingest_removes_missing_attachments(workspace_env, storage_repository):
     bundle = IngestBundle(
         conversation=_conversation_record(),
         messages=[
@@ -390,7 +391,7 @@ def test_ingest_removes_missing_attachments(workspace_env):
             )
         ],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     ingest_bundle(
         IngestBundle(
@@ -408,7 +409,8 @@ def test_ingest_removes_missing_attachments(workspace_env):
                 )
             ],
             attachments=[],
-        )
+        ),
+        repository=storage_repository,
     )
 
     with open_connection(None) as conn:

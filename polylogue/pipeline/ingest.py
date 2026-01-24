@@ -46,6 +46,13 @@ def prepare_ingest(
     conn: sqlite3.Connection | None = None,
     repository: StorageRepository | None = None,
 ) -> tuple[str, dict[str, int], bool]:
+    # Create default repository if none provided
+    if repository is None:
+        from polylogue.storage.backends.sqlite import create_default_backend
+        from polylogue.storage.repository import StorageRepository
+        backend = create_default_backend()
+        repository = StorageRepository(backend=backend)
+
     content_hash = conversation_content_hash(convo)
 
     # Use the passed connection for lookups

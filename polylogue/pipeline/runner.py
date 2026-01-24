@@ -152,8 +152,10 @@ def run_sources(
     """
     start = time.perf_counter()
 
-    # Initialize services
-    repository = StorageRepository()
+    # Initialize services with backend
+    from polylogue.storage.backends.sqlite import create_default_backend
+    backend = create_default_backend()
+    repository = StorageRepository(backend=backend)
     ingestion_service = IngestionService(repository, config.archive_root, config)
 
     # Track counts for reporting
@@ -198,10 +200,8 @@ def run_sources(
             ids = _all_conversation_ids(source_names) if stage == "render" else list(processed_ids)
             renderer = create_renderer(render_format, config)
             render_service = RenderService(
-                config.template_path,
-                config.render_root,
-                config.archive_root,
                 renderer=renderer,
+                render_root=config.render_root,
             )
             render_result = render_service.render_conversations(ids)
             counts["rendered"] = render_result.rendered_count

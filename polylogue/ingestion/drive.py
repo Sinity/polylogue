@@ -3,13 +3,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from ..assets import asset_path
 from ..config import Source
-from .drive_client import DriveClient
+from .drive_client import DriveClient, _parse_modified_time
 from .source import ParsedConversation, parse_drive_payload
 
 LOGGER = logging.getLogger(__name__)
@@ -146,17 +145,6 @@ def iter_drive_conversations(
                 download_assets=download_assets,
             )
             yield convo
-
-
-def _parse_modified_time(raw: str | None) -> float | None:
-    if not raw:
-        return None
-    try:
-        if raw.endswith("Z"):
-            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
-        return datetime.fromisoformat(raw).timestamp()
-    except ValueError:
-        return None
 
 
 __all__ = ["iter_drive_conversations", "download_drive_files", "DriveDownloadResult"]

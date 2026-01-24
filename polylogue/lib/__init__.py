@@ -12,8 +12,10 @@ The key abstractions are:
 Example usage:
 
     from polylogue.lib import ConversationRepository, Conversation
+    from polylogue.storage.backends.sqlite import create_default_backend
 
-    repo = ConversationRepository()
+    # Create repository with backend
+    repo = ConversationRepository(backend=create_default_backend())
 
     # Get a conversation with projection support
     conv = repo.get("claude:abc123")

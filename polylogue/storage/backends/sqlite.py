@@ -10,15 +10,24 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from polylogue.core.json import dumps as json_dumps
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.storage.db import DatabaseError
+from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord
 from polylogue.types import ConversationId
 
 LOGGER = logging.getLogger(__name__)
 SCHEMA_VERSION = 4
 
 
-class DatabaseError(Exception):
-    """Database-related errors (schema, connection, migration)."""
+def create_default_backend() -> "SQLiteBackend":
+    """Create a SQLiteBackend with the default database path.
+
+    This is a convenience function for creating backends when
+    no custom path is needed.
+
+    Returns:
+        SQLiteBackend connected to the default database location
+    """
+    return SQLiteBackend(db_path=None)
 
 
 def default_db_path() -> Path:
@@ -426,59 +435,99 @@ class SQLiteBackend:
     def __init__(self, db_path: Path | None = None) -> None:
         """Initialize SQLite backend.
 
+        Thread-safe: Each thread gets its own connection via threading.local().
+
         Args:
             db_path: Path to SQLite database file. If None, uses default path.
         """
         self._db_path = Path(db_path) if db_path is not None else default_db_path()
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn: sqlite3.Connection | None = None
-        self._transaction_depth = 0
+
+        # Thread-local storage for connections
+        import threading
+        self._local = threading.local()
 
     def _get_connection(self) -> sqlite3.Connection:
-        """Get or create the database connection."""
-        if self._conn is None:
-            self._conn = sqlite3.connect(self._db_path, timeout=30)
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA foreign_keys = ON")
-            self._conn.execute("PRAGMA journal_mode=WAL;")
-            self._conn.execute("PRAGMA busy_timeout = 30000")
-            _ensure_schema(self._conn)
-        return self._conn
+        """Get or create thread-local database connection.
+
+        Each thread gets its own connection for thread safety.
+        """
+        # Check if this thread has a connection
+        if not hasattr(self._local, 'conn') or self._local.conn is None:
+            self._local.conn = sqlite3.connect(self._db_path, timeout=30)
+            self._local.conn.row_factory = sqlite3.Row
+            self._local.conn.execute("PRAGMA foreign_keys = ON")
+            self._local.conn.execute("PRAGMA journal_mode=WAL;")
+            self._local.conn.execute("PRAGMA busy_timeout = 30000")
+            _ensure_schema(self._local.conn)
+            self._local.transaction_depth = 0
+        return self._local.conn
 
     def begin(self) -> None:
         """Begin a transaction or nested savepoint."""
         conn = self._get_connection()
-        if self._transaction_depth == 0:
+        if self._local.transaction_depth == 0:
             conn.execute("BEGIN")
         else:
-            conn.execute(f"SAVEPOINT sp_{self._transaction_depth}")
-        self._transaction_depth += 1
+            conn.execute(f"SAVEPOINT sp_{self._local.transaction_depth}")
+        self._local.transaction_depth += 1
 
     def commit(self) -> None:
         """Commit the current transaction or release savepoint."""
-        if self._transaction_depth <= 0:
+        if self._local.transaction_depth <= 0:
             raise DatabaseError("No active transaction to commit")
 
         conn = self._get_connection()
-        self._transaction_depth -= 1
+        self._local.transaction_depth -= 1
 
-        if self._transaction_depth == 0:
+        if self._local.transaction_depth == 0:
             conn.commit()
         else:
-            conn.execute(f"RELEASE SAVEPOINT sp_{self._transaction_depth}")
+            conn.execute(f"RELEASE SAVEPOINT sp_{self._local.transaction_depth}")
 
     def rollback(self) -> None:
         """Rollback to the last begin() or savepoint."""
-        if self._transaction_depth <= 0:
+        if self._local.transaction_depth <= 0:
             raise DatabaseError("No active transaction to rollback")
 
         conn = self._get_connection()
-        self._transaction_depth -= 1
+        self._local.transaction_depth -= 1
 
-        if self._transaction_depth == 0:
+        if self._local.transaction_depth == 0:
             conn.rollback()
         else:
-            conn.execute(f"ROLLBACK TO SAVEPOINT sp_{self._transaction_depth}")
+            conn.execute(f"ROLLBACK TO SAVEPOINT sp_{self._local.transaction_depth}")
+
+    def record_run(self, record: "RunRecord") -> None:
+        """Record a pipeline run audit entry.
+
+        Args:
+            record: Run record containing execution metadata
+        """
+        conn = self._get_connection()
+        conn.execute(
+            """
+            INSERT INTO runs (
+                run_id,
+                timestamp,
+                plan_snapshot,
+                counts_json,
+                drift_json,
+                indexed,
+                duration_ms
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.run_id,
+                record.timestamp,
+                _json_or_none(record.plan_snapshot),
+                _json_or_none(record.counts),
+                _json_or_none(record.drift),
+                record.indexed,
+                record.duration_ms,
+            ),
+        )
+        conn.commit()
 
     def get_conversation(self, id: str) -> ConversationRecord | None:
         """Retrieve a conversation by ID."""
@@ -505,17 +554,49 @@ class SQLiteBackend:
             version=row["version"],
         )
 
-    def list_conversations(self, source: str | None = None) -> list[ConversationRecord]:
-        """List all conversations, optionally filtered by source."""
+    def list_conversations(
+        self,
+        source: str | None = None,
+        provider: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[ConversationRecord]:
+        """List all conversations with optional filtering and pagination."""
         conn = self._get_connection()
 
+        # Build query with filters
+        where_clauses = []
+        params: list[str | int] = []
+
         if source is not None:
-            rows = conn.execute(
-                "SELECT * FROM conversations WHERE source_name = ? ORDER BY created_at DESC",
-                (source,),
-            ).fetchall()
-        else:
-            rows = conn.execute("SELECT * FROM conversations ORDER BY created_at DESC").fetchall()
+            where_clauses.append("source_name = ?")
+            params.append(source)
+
+        if provider is not None:
+            where_clauses.append("provider_name = ?")
+            params.append(provider)
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+
+        # Build full query with ordering and pagination
+        query = f"""
+            SELECT * FROM conversations
+            {where_sql}
+            ORDER BY
+                CASE WHEN updated_at IS NULL OR updated_at = '' THEN 1 ELSE 0 END,
+                updated_at DESC,
+                conversation_id DESC
+        """
+
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+
+        if offset > 0:
+            query += " OFFSET ?"
+            params.append(offset)
+
+        rows = conn.execute(query, tuple(params)).fetchall()
 
         import json
 
@@ -672,6 +753,47 @@ class SQLiteBackend:
             for row in rows
         ]
 
+    def prune_attachments(self, conversation_id: str, keep_attachment_ids: set[str]) -> None:
+        """Remove attachment refs not in keep set and clean up orphaned attachments.
+
+        Args:
+            conversation_id: The conversation to prune attachments for
+            keep_attachment_ids: Set of attachment IDs to keep (prune all others)
+        """
+        conn = self._get_connection()
+
+        # Find refs to remove (refs for this conversation not in keep set)
+        if keep_attachment_ids:
+            placeholders = ",".join("?" * len(keep_attachment_ids))
+            refs_to_remove = conn.execute(
+                f"""
+                SELECT attachment_id FROM attachment_refs
+                WHERE conversation_id = ? AND attachment_id NOT IN ({placeholders})
+                """,
+                (conversation_id, *keep_attachment_ids),
+            ).fetchall()
+        else:
+            # No attachments to keep - remove all refs for this conversation
+            refs_to_remove = conn.execute(
+                "SELECT attachment_id FROM attachment_refs WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchall()
+
+        for (attachment_id,) in refs_to_remove:
+            # Delete the ref
+            conn.execute(
+                "DELETE FROM attachment_refs WHERE conversation_id = ? AND attachment_id = ?",
+                (conversation_id, attachment_id),
+            )
+            # Decrement ref count
+            conn.execute(
+                "UPDATE attachments SET ref_count = ref_count - 1 WHERE attachment_id = ?",
+                (attachment_id,),
+            )
+
+        # Clean up orphaned attachments (ref_count <= 0)
+        conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
+
     def save_attachments(self, records: list[AttachmentRecord]) -> None:
         """Persist attachment records with reference counting."""
         conn = self._get_connection()
@@ -732,12 +854,79 @@ class SQLiteBackend:
                     (record.attachment_id,),
                 )
 
+    def resolve_id(self, id_prefix: str) -> str | None:
+        """Resolve a partial conversation ID to a full ID.
+
+        Supports both exact matches and prefix matches. If multiple
+        conversations match the prefix, returns None (ambiguous).
+
+        Args:
+            id_prefix: Full or partial conversation ID to resolve
+
+        Returns:
+            The full conversation ID if exactly one match found, None otherwise
+        """
+        conn = self._get_connection()
+
+        # Try exact match first
+        row = conn.execute(
+            "SELECT conversation_id FROM conversations WHERE conversation_id = ?",
+            (id_prefix,),
+        ).fetchone()
+        if row:
+            return str(row["conversation_id"])
+
+        # Try prefix match
+        rows = conn.execute(
+            "SELECT conversation_id FROM conversations WHERE conversation_id LIKE ? LIMIT 2",
+            (f"{id_prefix}%",),
+        ).fetchall()
+
+        if len(rows) == 1:
+            return str(rows[0]["conversation_id"])
+
+        return None  # No match or ambiguous
+
+    def search_conversations(self, query: str, limit: int = 100) -> list[str]:
+        """Search conversations using full-text search.
+
+        Args:
+            query: Search query string (FTS5 syntax)
+            limit: Maximum number of conversation IDs to return
+
+        Returns:
+            List of conversation IDs matching the query, ordered by relevance
+        """
+        conn = self._get_connection()
+
+        # Check if FTS table exists before querying
+        exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+        ).fetchone()
+
+        if not exists:
+            raise DatabaseError(
+                "Search index not built. Run indexing first or use a different backend."
+            )
+
+        rows = conn.execute(
+            """
+            SELECT DISTINCT conversation_id
+            FROM messages_fts
+            WHERE messages_fts MATCH ?
+            LIMIT ?
+            """,
+            (query, limit),
+        ).fetchall()
+
+        return [str(row["conversation_id"]) for row in rows]
+
     def close(self) -> None:
-        """Close the database connection."""
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
-            self._transaction_depth = 0
+        """Close the database connection for this thread."""
+        if hasattr(self._local, 'conn') and self._local.conn is not None:
+            self._local.conn.close()
+            self._local.conn = None
+            self._local.transaction_depth = 0
 
     @contextmanager
     def transaction(self) -> Iterator[None]:

@@ -110,7 +110,9 @@ class IngestionService:
 
             def _process_one(convo_item: ParsedConversation, source_name_item: str) -> tuple[str, dict[str, int], bool]:
                 # Run preparation in a separate thread with its own connection for reads
-                with connection_context(None) as thread_conn:
+                # Use the repository's db_path to ensure we connect to the correct database
+                db_path = self.repository._db_path
+                with connection_context(db_path=db_path) as thread_conn:
                     return prepare_ingest(
                         convo_item,
                         source_name_item,
