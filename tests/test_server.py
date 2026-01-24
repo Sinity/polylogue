@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from polylogue.lib.repository import ConversationRepository
 from polylogue.server.app import app
 from polylogue.server.deps import get_repository
+from polylogue.storage.backends.sqlite import SQLiteBackend
 
 
 @pytest.fixture
@@ -20,7 +21,8 @@ def test_client(tmp_path):
     )
 
     def override_repo():
-        return ConversationRepository(db_path)
+        backend = SQLiteBackend(db_path=db_path)
+        return ConversationRepository(backend=backend)
 
     app.dependency_overrides[get_repository] = override_repo
     client = TestClient(app)
@@ -76,7 +78,8 @@ def test_api_search_returns_503_when_fts_missing(tmp_path):
     )
 
     def override_repo():
-        return ConversationRepository(db_path)
+        backend = SQLiteBackend(db_path=db_path)
+        return ConversationRepository(backend=backend)
 
     app.dependency_overrides[get_repository] = override_repo
     client = TestClient(app)

@@ -843,6 +843,157 @@ class TestCliHelpersResolveSources:
         assert "cannot be combined" in str(exc_info.value).lower()
 
 
+class TestCliHelpersMaybePromptSources:
+    """maybe_prompt_sources() function."""
+
+    def test_maybe_prompt_sources_returns_existing_selection(self):
+        """Returns existing selected_sources if provided."""
+        from polylogue.ui import create_ui
+
+        config = Config(
+            version=CONFIG_VERSION,
+            archive_root=Path("/archive"),
+            render_root=Path("/render"),
+            sources=[Source(name="inbox", path=Path("/inbox"))],
+            path=Path("/config.json"),
+        )
+        ui = create_ui(plain=True)
+        env = AppEnv(ui=ui, config_path=Path("/config.json"))
+
+        result = maybe_prompt_sources(env, config, ["inbox"], "test")
+        assert result == ["inbox"]
+
+    def test_maybe_prompt_sources_skips_prompt_in_plain_mode(self):
+        """Skips prompting in plain mode and returns None."""
+        from polylogue.ui import create_ui
+
+        config = Config(
+            version=CONFIG_VERSION,
+            archive_root=Path("/archive"),
+            render_root=Path("/render"),
+            sources=[Source(name="inbox", path=Path("/inbox")), Source(name="drive", folder="Drive")],
+            path=Path("/config.json"),
+        )
+        ui = create_ui(plain=True)
+        env = AppEnv(ui=ui, config_path=Path("/config.json"))
+
+        result = maybe_prompt_sources(env, config, None, "test")
+        assert result is None
+
+    def test_maybe_prompt_sources_skips_single_source(self):
+        """Skips prompting when only one source exists."""
+        from polylogue.ui import create_ui
+
+        config = Config(
+            version=CONFIG_VERSION,
+            archive_root=Path("/archive"),
+            render_root=Path("/render"),
+            sources=[Source(name="inbox", path=Path("/inbox"))],
+            path=Path("/config.json"),
+        )
+        ui = create_ui(plain=True)
+        env = AppEnv(ui=ui, config_path=Path("/config.json"))
+
+        result = maybe_prompt_sources(env, config, None, "test")
+        assert result is None
+
+    def test_maybe_prompt_sources_fails_on_no_choice(self):
+        """Fails when user provides no choice."""
+        from polylogue.ui import create_ui
+        from unittest.mock import Mock
+
+        config = Config(
+            version=CONFIG_VERSION,
+            archive_root=Path("/archive"),
+            render_root=Path("/render"),
+            sources=[Source(name="inbox", path=Path("/inbox")), Source(name="drive", folder="Drive")],
+            path=Path("/config.json"),
+        )
+        ui = create_ui(plain=False)
+        ui.choose = Mock(return_value=None)
+        env = AppEnv(ui=ui, config_path=Path("/config.json"))
+
+        with pytest.raises(SystemExit) as exc_info:
+            maybe_prompt_sources(env, config, None, "test")
+        assert "No source selected" in str(exc_info.value)
+
+
+class TestCliHelpersPrintSummary:
+    """print_summary() function."""
+
+    def test_print_summary_displays_basic_info(self, tmp_path, monkeypatch):
+        """print_summary() displays basic config info without verbose."""
+        from polylogue.ui import create_ui
+
+        config_path = tmp_path / "config.json"
+        archive_root = tmp_path / "archive"
+        payload = {
+            "version": CONFIG_VERSION,
+            "archive_root": str(archive_root),
+            "sources": [{"name": "inbox", "path": str(tmp_path / "inbox")}],
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+
+        ui = create_ui(plain=True)
+        env = AppEnv(ui=ui, config_path=config_path)
+
+        # Should not raise
+        from polylogue.cli.helpers import print_summary
+
+        print_summary(env, verbose=False)
+
+    def test_print_summary_verbose_with_health(self, tmp_path, monkeypatch):
+        """print_summary() displays health checks in verbose mode."""
+        from polylogue.ui import create_ui
+        from polylogue.storage.db import open_connection
+
+        config_path = tmp_path / "config.json"
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir(parents=True, exist_ok=True)
+
+        # Initialize database
+        state_dir = tmp_path / "state"
+        db_path = state_dir / "polylogue" / "polylogue.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
+
+        with open_connection(None) as conn:
+            conn.execute("SELECT 1")
+            conn.commit()
+
+        payload = {
+            "version": CONFIG_VERSION,
+            "archive_root": str(archive_root),
+            "sources": [{"name": "inbox", "path": str(tmp_path / "inbox")}],
+        }
+        config_path.write_text(json.dumps(payload), encoding="utf-8")
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
+        monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
+
+        ui = create_ui(plain=True)
+        env = AppEnv(ui=ui, config_path=config_path)
+
+        # Should not raise and display health info
+        from polylogue.cli.helpers import print_summary
+
+        print_summary(env, verbose=True)
+
+    def test_print_summary_handles_missing_config(self, tmp_path):
+        """print_summary() handles missing config gracefully."""
+        from polylogue.ui import create_ui
+
+        config_path = tmp_path / "missing.json"
+        ui = create_ui(plain=True)
+        env = AppEnv(ui=ui, config_path=config_path)
+
+        # Should not raise, just print warning
+        from polylogue.cli.helpers import print_summary
+
+        print_summary(env, verbose=False)
+
+
 class TestCliHelpersLatestRenderPath:
     """latest_render_path() function."""
 
