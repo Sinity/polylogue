@@ -122,8 +122,5 @@
           touch $out
         '';
       }
-    ) // {
-      # NixOS module for polylogue-sync service
-      nixosModules.default = import ./nixos-modules/polylogue-sync.nix;
-    };
+    );
 }
