@@ -6,9 +6,10 @@ from fastapi.testclient import TestClient
 
 from polylogue.config import Source, default_config, write_config
 from polylogue.lib.repository import ConversationRepository
-from polylogue.run import run_sources
+from polylogue.pipeline.runner import run_sources
 from polylogue.server.app import app
 from polylogue.server.deps import get_repository
+from polylogue.storage.backends.sqlite import SQLiteBackend
 
 
 @pytest.fixture
@@ -39,10 +40,11 @@ def test_end_to_end_flow(workspace_env, tmp_path, sample_data):
     run_sources(config=config, stage="all")
 
     # 3. Verify Store & Index
-    db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+    db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
     assert db_path.exists()
 
-    repo = ConversationRepository(db_path)
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
 
     # Verify Search
     hits = repo.search("quick sort")
@@ -52,7 +54,8 @@ def test_end_to_end_flow(workspace_env, tmp_path, sample_data):
     # 4. Verify API & UI Integration
     # Override app dependency to use the test DB we just populated
     def override_repo():
-        return ConversationRepository(db_path)
+        backend = SQLiteBackend(db_path=db_path)
+        return ConversationRepository(backend=backend)
 
     app.dependency_overrides[get_repository] = override_repo
     client = TestClient(app)

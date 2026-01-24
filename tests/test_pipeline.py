@@ -2,21 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from pathlib import Path
-
 import pytest
 
-from polylogue.db import open_connection
 from polylogue.importers.base import ParsedAttachment, ParsedConversation, ParsedMessage
 from polylogue.pipeline.ids import (
     conversation_content_hash,
+    conversation_id,
     message_content_hash,
     message_id,
-    conversation_id,
 )
 from polylogue.pipeline.ingest import prepare_ingest
-
+from polylogue.storage.db import open_connection
 
 # ============================================================================
 # Test conversation_content_hash
@@ -403,7 +399,16 @@ def test_conn(test_db):
         yield conn
 
 
-def test_prepare_ingest_new_conversation(test_conn, tmp_path):
+@pytest.fixture
+def test_repository(test_db):
+    """Provide a repository pointing to the test database."""
+    from polylogue.storage.backends.sqlite import SQLiteBackend
+    from polylogue.storage.repository import StorageRepository
+    backend = SQLiteBackend(db_path=test_db)
+    return StorageRepository(backend=backend)
+
+
+def test_prepare_ingest_new_conversation(test_conn, test_repository, tmp_path):
     """prepare_ingest() marks new conversation for insertion."""
     convo = ParsedConversation(
         provider_name="test",
@@ -427,6 +432,7 @@ def test_prepare_ingest_new_conversation(test_conn, tmp_path):
         "test-source",
         archive_root=tmp_path / "archive",
         conn=test_conn,
+        repository=test_repository,
     )
 
     # New conversation should be inserted
@@ -437,7 +443,7 @@ def test_prepare_ingest_new_conversation(test_conn, tmp_path):
     assert cid == "test:new-conv-1"
 
 
-def test_prepare_ingest_unchanged_conversation_skips(test_conn, tmp_path):
+def test_prepare_ingest_unchanged_conversation_skips(test_conn, test_repository, tmp_path):
     """prepare_ingest() skips conversation with unchanged content_hash."""
     convo = ParsedConversation(
         provider_name="test",
@@ -465,6 +471,7 @@ def test_prepare_ingest_unchanged_conversation_skips(test_conn, tmp_path):
         "test-source",
         archive_root=archive_root,
         conn=test_conn,
+        repository=test_repository,
     )
 
     assert counts1["conversations"] == 1
@@ -475,6 +482,7 @@ def test_prepare_ingest_unchanged_conversation_skips(test_conn, tmp_path):
         "test-source",
         archive_root=archive_root,
         conn=test_conn,
+        repository=test_repository,
     )
 
     # Same conversation ID and content should be skipped
@@ -484,7 +492,7 @@ def test_prepare_ingest_unchanged_conversation_skips(test_conn, tmp_path):
     assert changed2 is False
 
 
-def test_prepare_ingest_detects_changed_content(test_conn, tmp_path):
+def test_prepare_ingest_detects_changed_content(test_conn, test_repository, tmp_path):
     """prepare_ingest() marks conversation as changed when content differs."""
     convo_v1 = ParsedConversation(
         provider_name="test",
@@ -512,6 +520,7 @@ def test_prepare_ingest_detects_changed_content(test_conn, tmp_path):
         "test-source",
         archive_root=archive_root,
         conn=test_conn,
+        repository=test_repository,
     )
 
     # Same conversation but with modified message
@@ -538,6 +547,7 @@ def test_prepare_ingest_detects_changed_content(test_conn, tmp_path):
         "test-source",
         archive_root=archive_root,
         conn=test_conn,
+        repository=test_repository,
     )
 
     # Same conversation ID but content changed
@@ -545,7 +555,7 @@ def test_prepare_ingest_detects_changed_content(test_conn, tmp_path):
     assert changed is True
 
 
-def test_prepare_ingest_creates_message_records(test_conn, tmp_path):
+def test_prepare_ingest_creates_message_records(test_conn, test_repository, tmp_path):
     """prepare_ingest() creates message records with proper IDs."""
     convo = ParsedConversation(
         provider_name="test",
@@ -578,6 +588,7 @@ def test_prepare_ingest_creates_message_records(test_conn, tmp_path):
         "test-source",
         archive_root=archive_root,
         conn=test_conn,
+        repository=test_repository,
     )
 
     assert counts["conversations"] == 1
@@ -590,7 +601,7 @@ def test_prepare_ingest_creates_message_records(test_conn, tmp_path):
     assert len(rows) == 2
 
 
-def test_prepare_ingest_handles_empty_provider_message_ids(test_conn, tmp_path):
+def test_prepare_ingest_handles_empty_provider_message_ids(test_conn, test_repository, tmp_path):
     """prepare_ingest() generates IDs for messages with empty provider_message_id."""
     convo = ParsedConversation(
         provider_name="test",
@@ -623,6 +634,7 @@ def test_prepare_ingest_handles_empty_provider_message_ids(test_conn, tmp_path):
         "test-source",
         archive_root=archive_root,
         conn=test_conn,
+        repository=test_repository,
     )
 
     assert counts["messages"] == 2
@@ -635,15 +647,16 @@ def test_prepare_ingest_handles_empty_provider_message_ids(test_conn, tmp_path):
     # First one should have a fallback ID (contains provider_message_id as 'msg-1')
     # Second one should contain the explicit ID
     provider_ids = [
-        test_conn.execute("SELECT provider_message_id FROM messages WHERE message_id = ?", (row["message_id"],))
-        .fetchone()["provider_message_id"]
+        test_conn.execute(
+            "SELECT provider_message_id FROM messages WHERE message_id = ?", (row["message_id"],)
+        ).fetchone()["provider_message_id"]
         for row in rows
     ]
     assert "msg-1" in provider_ids  # Fallback
     assert "msg-explicit" in provider_ids
 
 
-def test_prepare_ingest_stores_source_metadata(test_conn, tmp_path):
+def test_prepare_ingest_stores_source_metadata(test_conn, test_repository, tmp_path):
     """prepare_ingest() stores source name in provider_meta."""
     convo = ParsedConversation(
         provider_name="chatgpt",
@@ -670,6 +683,7 @@ def test_prepare_ingest_stores_source_metadata(test_conn, tmp_path):
         "my-export",
         archive_root=archive_root,
         conn=test_conn,
+        repository=test_repository,
     )
 
     # Verify source is recorded
@@ -684,7 +698,7 @@ def test_prepare_ingest_stores_source_metadata(test_conn, tmp_path):
     assert meta.get("source") == "my-export"
 
 
-def test_prepare_ingest_multiple_messages_get_unique_hashes(test_conn, tmp_path):
+def test_prepare_ingest_multiple_messages_get_unique_hashes(test_conn, test_repository, tmp_path):
     """prepare_ingest() creates unique content hashes for each message."""
     convo = ParsedConversation(
         provider_name="test",
@@ -717,6 +731,7 @@ def test_prepare_ingest_multiple_messages_get_unique_hashes(test_conn, tmp_path)
         "test-source",
         archive_root=archive_root,
         conn=test_conn,
+        repository=test_repository,
     )
 
     # Verify each message has a unique content hash
@@ -728,7 +743,7 @@ def test_prepare_ingest_multiple_messages_get_unique_hashes(test_conn, tmp_path)
     assert rows[0]["content_hash"] != rows[1]["content_hash"]
 
 
-def test_prepare_ingest_with_attachments(test_conn, tmp_path):
+def test_prepare_ingest_with_attachments(test_conn, test_repository, tmp_path):
     """prepare_ingest() creates attachment records."""
     convo = ParsedConversation(
         provider_name="test",
@@ -763,6 +778,7 @@ def test_prepare_ingest_with_attachments(test_conn, tmp_path):
         "test-source",
         archive_root=archive_root,
         conn=test_conn,
+        repository=test_repository,
     )
 
     assert counts["attachments"] == 1
@@ -777,7 +793,7 @@ def test_prepare_ingest_with_attachments(test_conn, tmp_path):
     assert att_refs[0]["mime_type"] == "application/pdf"
 
 
-def test_prepare_ingest_returns_correct_tuple_structure(test_conn, tmp_path):
+def test_prepare_ingest_returns_correct_tuple_structure(test_conn, test_repository, tmp_path):
     """prepare_ingest() returns (conversation_id, counts_dict, changed_bool)."""
     convo = ParsedConversation(
         provider_name="test",
@@ -804,6 +820,7 @@ def test_prepare_ingest_returns_correct_tuple_structure(test_conn, tmp_path):
         "test-source",
         archive_root=archive_root,
         conn=test_conn,
+        repository=test_repository,
     )
 
     assert isinstance(result, tuple)

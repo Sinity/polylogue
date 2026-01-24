@@ -5,7 +5,7 @@ import json
 from .base import ParsedAttachment, ParsedConversation, ParsedMessage, attachment_from_meta, normalize_role
 
 
-def extract_text_from_segments(segments: list) -> str | None:
+def extract_text_from_segments(segments: list[object]) -> str | None:
     lines: list[str] = []
     for segment in segments:
         if isinstance(segment, str):
@@ -52,7 +52,7 @@ def normalize_timestamp(ts: int | float | str | None) -> str | None:
         return str(ts)
 
 
-def extract_messages_from_chat_messages(chat_messages: list) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
+def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     messages: list[ParsedMessage] = []
     attachments: list[ParsedAttachment] = []
     for idx, item in enumerate(chat_messages, start=1):
@@ -100,7 +100,7 @@ def looks_like_ai(payload: object) -> bool:
     return isinstance(payload.get("chat_messages"), list)
 
 
-def looks_like_code(payload: list) -> bool:
+def looks_like_code(payload: list[object]) -> bool:
     if not isinstance(payload, list):
         return False
     for item in payload:
@@ -127,7 +127,7 @@ def _extract_message_text(message_content: object) -> str | None:
     return None
 
 
-def parse_code(payload: list, fallback_id: str) -> ParsedConversation:
+def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     """Parse claude-code JSONL format (list of message objects)."""
     messages: list[ParsedMessage] = []
     timestamps: list[str] = []
@@ -177,7 +177,7 @@ def parse_code(payload: list, fallback_id: str) -> ParsedConversation:
             text = msg_obj
 
         # Build provider_meta with useful fields
-        meta: dict = {"raw": item}
+        meta: dict[str, object] = {"raw": item}
         if item.get("costUSD"):
             meta["costUSD"] = item.get("costUSD")
         if item.get("durationMs"):
@@ -258,8 +258,11 @@ def parse_code(payload: list, fallback_id: str) -> ParsedConversation:
     )
 
 
-def parse_ai(payload: dict, fallback_id: str) -> ParsedConversation:
-    messages, attachments = extract_messages_from_chat_messages(payload.get("chat_messages") or [])
+def parse_ai(payload: dict[str, object], fallback_id: str) -> ParsedConversation:
+    chat_msgs = payload.get("chat_messages") or []
+    if not isinstance(chat_msgs, list):
+        chat_msgs = []
+    messages, attachments = extract_messages_from_chat_messages(chat_msgs)
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
     return ParsedConversation(
