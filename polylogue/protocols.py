@@ -367,6 +367,20 @@ class StorageBackend(Protocol):
         """
         ...
 
+    def delete_conversation(self, conversation_id: str) -> bool:
+        """Delete conversation and all related records.
+
+        Removes conversation, messages, and attachment references.
+        Does NOT delete attachments themselves (handled by ref counting).
+
+        Args:
+            conversation_id: ID of the conversation to delete
+
+        Returns:
+            True if conversation was deleted, False if not found
+        """
+        ...
+
 
 @runtime_checkable
 class Renderer(Protocol):
