@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import concurrent.futures
 import contextlib
-import sqlite3
-import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -15,15 +12,13 @@ from uuid import uuid4
 from polylogue.config import Config, Source
 from polylogue.core.json import dumps, loads
 from polylogue.core.log import get_logger
-from polylogue.db import connection_context
-from polylogue.drive_client import DriveAuthError
-from polylogue.drive_ingest import iter_drive_conversations
-from polylogue.index import ensure_index, index_status, rebuild_index, update_index_for_conversations
-from polylogue.pipeline.ingest import prepare_ingest
+from polylogue.ingestion import DriveAuthError, iter_drive_conversations, iter_source_conversations
+from polylogue.ingestion.source import ParsedConversation
 from polylogue.pipeline.models import PlanResult, RunResult
-from polylogue.render import render_conversation
-from polylogue.source_ingest import iter_source_conversations
-from polylogue.store import RunRecord, record_run
+from polylogue.pipeline.services import IndexService, IngestionService, RenderService
+from polylogue.storage.db import connection_context
+from polylogue.storage.repository import StorageRepository
+from polylogue.storage.store import RunRecord
 
 logger = get_logger(__name__)
 
@@ -41,8 +36,9 @@ def _iter_source_conversations_safe(
     archive_root: Path,
     ui: object | None,
     download_assets: bool,
-    cursor_state: dict | None = None,
-):
+    cursor_state: dict[str, Any] | None = None,
+    drive_config: object | None = None,
+) -> Iterable[ParsedConversation]:
     if source.folder:
         try:
             yield from iter_drive_conversations(
@@ -51,6 +47,7 @@ def _iter_source_conversations_safe(
                 ui=ui,
                 download_assets=download_assets,
                 cursor_state=cursor_state,
+                drive_config=drive_config,
             )
         except DriveAuthError as exc:
             logger.warning("Skipping Drive source %s: %s", source.name, exc)
@@ -69,18 +66,19 @@ def plan_sources(
     ui: object | None = None,
     source_names: Sequence[str] | None = None,
 ) -> PlanResult:
-    counts = {"conversations": 0, "messages": 0, "attachments": 0}
-    sources = []
-    cursors: dict[str, dict] = {}
+    counts: dict[str, int] = {"conversations": 0, "messages": 0, "attachments": 0}
+    sources: list[str] = []
+    cursors: dict[str, dict[str, Any]] = {}
     for source in _select_sources(config, source_names):
         sources.append(source.name)
-        cursor_state: dict[str, object] = {}
+        cursor_state: dict[str, Any] = {}
         conversations = _iter_source_conversations_safe(
             source=source,
             archive_root=config.archive_root,
             ui=ui,
             download_assets=False,
             cursor_state=cursor_state,
+            drive_config=config.drive_config,
         )
         for convo in conversations:
             counts["conversations"] += 1
@@ -119,7 +117,7 @@ def _all_conversation_ids(source_names: Sequence[str] | None = None) -> list[str
     return selected
 
 
-def _write_run_json(archive_root: Path, payload: dict) -> Path:
+def _write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
     runs_dir = archive_root / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
     run_id = payload.get("run_id", "unknown")
@@ -136,8 +134,31 @@ def run_sources(
     ui: object | None = None,
     source_names: Sequence[str] | None = None,
     progress_callback: Any | None = None,
+    render_format: str = "html",
 ) -> RunResult:
+    """Run the pipeline with stage control.
+
+    Args:
+        config: Application configuration
+        stage: Pipeline stage ("ingest", "render", "index", or "all")
+        plan: Optional plan result for drift detection
+        ui: Optional UI object for user interaction
+        source_names: Optional list of source names to process
+        progress_callback: Optional callback for progress updates
+        render_format: Output format for rendering ("markdown" or "html", default: "html")
+
+    Returns:
+        RunResult with counts and metadata
+    """
     start = time.perf_counter()
+
+    # Initialize services with backend
+    from polylogue.storage.backends.sqlite import create_default_backend
+    backend = create_default_backend()
+    repository = StorageRepository(backend=backend)
+    ingestion_service = IngestionService(repository, config.archive_root, config)
+
+    # Track counts for reporting
     counts = {
         "conversations": 0,
         "messages": 0,
@@ -153,128 +174,68 @@ def run_sources(
         "attachments": 0,
     }
     processed_ids: set[str] = set()
-    # Lock to protect shared mutable state from concurrent access
-    _counts_lock = threading.Lock()
 
     with connection_context(None) as conn:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            futures: dict[Any, Any] = {}
+        # Ingestion stage
+        if stage in {"ingest", "all"}:
+            sources = _select_sources(config, source_names)
+            ingest_result = ingestion_service.ingest_sources(
+                sources,
+                ui=ui,
+                download_assets=True,
+                progress_callback=progress_callback,
+            )
 
-            def _process_one(convo_item, source_name_item):
-                # Run preparation in a separate thread with its own connection for reads
-                with connection_context(None) as thread_conn:
-                    return prepare_ingest(
-                        convo_item,
-                        source_name_item,
-                        archive_root=config.archive_root,
-                        conn=thread_conn,
-                    )
+            # Merge results
+            for key, value in ingest_result.counts.items():
+                counts[key] = value
+            changed_counts.update(ingest_result.changed_counts)
+            processed_ids = ingest_result.processed_ids
 
-            def _handle_future(fut):
-                convo_id, result_counts, content_changed = fut.result()
-                ingest_changed = (
-                    result_counts["conversations"] + result_counts["messages"] + result_counts["attachments"]
-                ) > 0
-                # Protect all mutations to shared state with lock
-                with _counts_lock:
-                    if ingest_changed or content_changed:
-                        processed_ids.add(convo_id)
-                    if content_changed:
-                        changed_counts["conversations"] += 1
-                    if result_counts["messages"]:
-                        changed_counts["messages"] += result_counts["messages"]
-                    if result_counts["attachments"]:
-                        changed_counts["attachments"] += result_counts["attachments"]
-                    for key, value in result_counts.items():
-                        counts[key] += value
-                if progress_callback:
-                    progress_callback(1, desc="Ingesting")
-
-            if stage in {"ingest", "all"}:
-                for source in _select_sources(config, source_names):
-                    conversations = _iter_source_conversations_safe(
-                        source=source,
-                        archive_root=config.archive_root,
-                        ui=ui,
-                        download_assets=True,
-                    )
-
-                    for convo in conversations:
-                        # Bounded submission to prevent memory explosion
-                        while len(futures) > 16:
-                            done, _ = concurrent.futures.wait(
-                                futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED
-                            )
-                            for fut in done:
-                                try:
-                                    _handle_future(fut)
-                                finally:
-                                    del futures[fut]
-
-                        future = executor.submit(_process_one, convo, source.name)
-                        futures[future] = convo.provider_conversation_id
-
-                # Drain remaining
-                for fut in concurrent.futures.as_completed(futures):
-                    try:
-                        _handle_future(fut)
-                    except Exception as exc:
-                        logger.error("Error processing conversation", error=str(exc))
-                        raise
-
+        # Rendering stage
         render_failures: list[dict[str, str]] = []
         if stage in {"render", "all"}:
+            from polylogue.rendering.renderers import create_renderer
+
             ids = _all_conversation_ids(source_names) if stage == "render" else list(processed_ids)
+            renderer = create_renderer(render_format, config)
+            render_service = RenderService(
+                renderer=renderer,
+                render_root=config.render_root,
+            )
+            render_result = render_service.render_conversations(ids)
+            counts["rendered"] = render_result.rendered_count
+            render_failures = render_result.failures
+            if render_failures:
+                counts["render_failures"] = len(render_failures)
 
-            def _render_one(convo_id):
-                render_conversation(
-                    conversation_id=convo_id,
-                    archive_root=config.archive_root,
-                    render_root_path=config.render_root,
-                    template_path=config.template_path,
-                )
-                return 1
-
-            # Parallel rendering
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as render_executor:
-                render_futures = {render_executor.submit(_render_one, cid): cid for cid in ids}
-                for fut in concurrent.futures.as_completed(render_futures):
-                    convo_id = render_futures[fut]
-                    try:
-                        counts["rendered"] += fut.result()
-                    except Exception as exc:
-                        logger.warning("Failed to render conversation %s: %s", convo_id, exc)
-                        render_failures.append({
-                            "conversation_id": convo_id,
-                            "error": str(exc),
-                        })
-                        counts["render_failures"] = counts.get("render_failures", 0) + 1
-
+        # Indexing stage
         indexed = False
         index_error: str | None = None
+        index_service = IndexService(config, conn)
+
         try:
             if stage == "index":
                 if source_names:
                     ids = _all_conversation_ids(source_names)
                     if ids:
-                        update_index_for_conversations(ids, conn)
+                        indexed = index_service.update_index(ids)
                     else:
-                        ensure_index(conn)
+                        indexed = index_service.ensure_index_exists()
                 else:
-                    rebuild_index(conn)
-                indexed = True
+                    indexed = index_service.rebuild_index()
             elif stage == "all":
-                idx = index_status()
+                idx = index_service.get_index_status()
                 if not idx["exists"]:
-                    rebuild_index(conn)
-                    indexed = True
+                    indexed = index_service.rebuild_index()
                 elif processed_ids:
-                    update_index_for_conversations(list(processed_ids), conn)
-                    indexed = True
+                    indexed = index_service.update_index(list(processed_ids))
         except Exception as exc:
+            logger.error("Indexing failed", error=str(exc))
             index_error = str(exc)
             indexed = False
 
+        # Calculate drift and finalize
         duration_ms = int((time.perf_counter() - start) * 1000)
         drift = {
             "new": {"conversations": 0, "messages": 0, "attachments": 0},
@@ -299,6 +260,7 @@ def run_sources(
             drift["new"]["messages"] = counts["messages"]
             drift["new"]["attachments"] = counts["attachments"]
 
+        # Record run
         run_id = uuid4().hex
         run_payload = {
             "run_id": run_id,
@@ -310,21 +272,17 @@ def run_sources(
             "duration_ms": duration_ms,
         }
         _write_run_json(config.archive_root, run_payload)
-        record_run(
-            conn,
+        repository.record_run(
             RunRecord(
                 run_id=run_id,
                 timestamp=str(run_payload["timestamp"]),
-                plan_snapshot=plan.counts if plan else None,
-                counts=counts,
-                drift=drift,
+                plan_snapshot=plan.counts if plan else None,  # type: ignore[arg-type]
+                counts=counts,  # type: ignore[arg-type]
+                drift=drift,  # type: ignore[arg-type]
                 indexed=indexed,
                 duration_ms=duration_ms,
             ),
         )
-        # Context manager handles commit if needed, but explicit is fine
-        # connection_context doesn't have commit() on it if explicitly yielded conn,
-        # but conn.commit() is valid.
 
     return RunResult(
         run_id=run_id,

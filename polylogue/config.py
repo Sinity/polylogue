@@ -27,7 +27,7 @@ class Source:
     path: Path | None = None
     folder: str | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate source configuration."""
         # Name validation
         if not self.name or not self.name.strip():
@@ -47,8 +47,8 @@ class Source:
         if self.folder:
             self.folder = self.folder.strip()
 
-    def as_dict(self) -> dict:
-        payload = {"name": self.name}
+    def as_dict(self) -> dict[str, str]:
+        payload: dict[str, str] = {"name": self.name}
         if self.path is not None:
             payload["path"] = str(self.path)
         if self.folder is not None:
@@ -61,6 +61,24 @@ class Source:
 
 
 @dataclass
+class DriveConfig:
+    """Configuration for Google Drive integration."""
+    credentials_path: Path | None = None
+    token_path: Path | None = None
+    retry_count: int = 3
+    timeout: int = 30
+
+
+@dataclass
+class IndexConfig:
+    """Configuration for search and vector indexing."""
+    fts_enabled: bool = True
+    qdrant_url: str | None = None
+    qdrant_api_key: str | None = None
+    voyage_api_key: str | None = None
+
+
+@dataclass
 class Config:
     version: int
     archive_root: Path
@@ -68,8 +86,10 @@ class Config:
     sources: list[Source]
     path: Path
     template_path: Path | None = None
+    drive_config: DriveConfig | None = None
+    index_config: IndexConfig | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate config invariants."""
         # Check for duplicate source names
         names = [s.name for s in self.sources]
@@ -78,8 +98,8 @@ class Config:
             dup_list = ", ".join(sorted(duplicates))
             raise ConfigError(f"Duplicate source name(s): {dup_list}")
 
-    def as_dict(self) -> dict:
-        payload = {
+    def as_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
             "version": self.version,
             "archive_root": str(self.archive_root),
             "render_root": str(self.render_root),
@@ -99,14 +119,14 @@ def _config_path(explicit: Path | None = None) -> Path:
     return CONFIG_HOME / DEFAULT_CONFIG_NAME
 
 
-def _ensure_keys(data: dict, *, allowed: Iterable[str], context: str) -> None:
+def _ensure_keys(data: dict[str, object], *, allowed: Iterable[str], context: str) -> None:
     unknown = set(data.keys()) - set(allowed)
     if unknown:
         keys = ", ".join(sorted(unknown))
         raise ConfigError(f"Unknown {context} key(s): {keys}")
 
 
-def _parse_source(raw: dict) -> Source:
+def _parse_source(raw: dict[str, object]) -> Source:
     _ensure_keys(raw, allowed=_ALLOWED_SOURCE_KEYS, context="source")
     name = raw.get("name")
     if not isinstance(name, str) or not name.strip():
@@ -128,6 +148,39 @@ def _parse_source(raw: dict) -> Source:
     )
 
 
+def _load_drive_config_from_env() -> DriveConfig:
+    """Load DriveConfig from environment variables for backward compatibility."""
+    credentials_path_str = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
+    token_path_str = os.environ.get("POLYLOGUE_TOKEN_PATH")
+    retry_count_str = os.environ.get("POLYLOGUE_DRIVE_RETRIES")
+
+    credentials_path = Path(credentials_path_str).expanduser() if credentials_path_str else None
+    token_path = Path(token_path_str).expanduser() if token_path_str else None
+
+    retry_count = 3
+    if retry_count_str:
+        try:
+            retry_count = max(0, int(retry_count_str))
+        except ValueError:
+            pass
+
+    return DriveConfig(
+        credentials_path=credentials_path,
+        token_path=token_path,
+        retry_count=retry_count,
+    )
+
+
+def _load_index_config_from_env() -> IndexConfig:
+    """Load IndexConfig from environment variables for backward compatibility."""
+    return IndexConfig(
+        fts_enabled=True,
+        qdrant_url=os.environ.get("QDRANT_URL"),
+        qdrant_api_key=os.environ.get("QDRANT_API_KEY"),
+        voyage_api_key=os.environ.get("VOYAGE_API_KEY"),
+    )
+
+
 def default_config(
     path: Path | None = None,
     *,
@@ -139,21 +192,21 @@ def default_config(
     env_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
     env_render_root = os.environ.get("POLYLOGUE_RENDER_ROOT")
     env_template_path = os.environ.get("POLYLOGUE_TEMPLATE_PATH")
-    
+
     if archive_root:
         root = archive_root.expanduser()
     elif env_root:
         root = Path(env_root).expanduser()
     else:
         root = DEFAULT_ARCHIVE_ROOT
-        
+
     if render_root:
         resolved_render_root = render_root.expanduser()
     elif env_render_root:
         resolved_render_root = Path(env_render_root).expanduser()
     else:
         resolved_render_root = root / "render"
-        
+
     if template_path:
         resolved_template_path = template_path.expanduser()
     elif env_template_path:
@@ -169,13 +222,20 @@ def default_config(
         sources=sources,
         path=config_path,
         template_path=resolved_template_path,
+        drive_config=_load_drive_config_from_env(),
+        index_config=_load_index_config_from_env(),
     )
 
 
 def load_config(path: Path | None = None) -> Config:
+    """Load config from file, or return default config if file doesn't exist.
+
+    This allows polylogue to work without explicit configuration - it will
+    use sensible defaults with an inbox source discovery pattern.
+    """
     config_path = _config_path(path)
     if not config_path.exists():
-        raise ConfigError(f"Config not found: {config_path}. Run 'polylogue config init'.")
+        return default_config(path=config_path)
     try:
         raw = json.loads(config_path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
@@ -232,6 +292,8 @@ def load_config(path: Path | None = None) -> Config:
         sources=sources,
         path=config_path,
         template_path=resolved_template_path,
+        drive_config=_load_drive_config_from_env(),
+        index_config=_load_index_config_from_env(),
     )
 
 
@@ -262,13 +324,13 @@ def update_config(
     """
     from dataclasses import replace
 
-    updates = {}
-    if archive_root is not None:
-        updates["archive_root"] = archive_root.expanduser()
-    if render_root is not None:
-        updates["render_root"] = render_root.expanduser()
+    new_archive_root = archive_root.expanduser() if archive_root is not None else config.archive_root
+    new_render_root = render_root.expanduser() if render_root is not None else config.render_root
 
-    return replace(config, **updates) if updates else config
+    if new_archive_root == config.archive_root and new_render_root == config.render_root:
+        return config
+
+    return replace(config, archive_root=new_archive_root, render_root=new_render_root)
 
 
 def update_source(config: Config, source_name: str, field: str, value: str) -> Config:

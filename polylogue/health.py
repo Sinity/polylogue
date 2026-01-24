@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Config
-from .db import open_connection
-from .drive_client import default_credentials_path, default_token_path
-from .index import index_status
+from .ingestion.drive_client import default_credentials_path, default_token_path
+from .storage.db import open_connection
+from .storage.index import index_status
 
 LOGGER = logging.getLogger(__name__)
 HEALTH_TTL_SECONDS = 600
@@ -27,7 +26,7 @@ def _cache_path(archive_root: Path) -> Path:
     return archive_root / "health.json"
 
 
-def _load_cached(archive_root: Path) -> dict | None:
+def _load_cached(archive_root: Path) -> dict[str, object] | None:
     """Load health check cache from disk.
 
     Returns the cached dict if present and valid, or None if:
@@ -65,7 +64,7 @@ def _load_cached(archive_root: Path) -> dict | None:
     return payload
 
 
-def _write_cache(archive_root: Path, payload: dict) -> None:
+def _write_cache(archive_root: Path, payload: dict[str, object]) -> None:
     """Write health check cache to disk.
 
     Creates parent directories as needed.
@@ -79,7 +78,7 @@ def _write_cache(archive_root: Path, payload: dict) -> None:
         LOGGER.warning("Failed to write health cache to %s: %s", path, exc)
 
 
-def run_health(config: Config) -> dict:
+def run_health(config: Config) -> dict[str, object]:
     checks: list[HealthCheck] = []
 
     checks.append(HealthCheck("config", "ok", f"Loaded {config.path}"))
@@ -108,16 +107,8 @@ def run_health(config: Config) -> dict:
 
     for source in config.sources:
         if source.folder:
-            cred_path = (
-                Path(os.environ.get("POLYLOGUE_CREDENTIAL_PATH", "")).expanduser()
-                if os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
-                else default_credentials_path()
-            )
-            token_path = (
-                Path(os.environ.get("POLYLOGUE_TOKEN_PATH", "")).expanduser()
-                if os.environ.get("POLYLOGUE_TOKEN_PATH")
-                else default_token_path()
-            )
+            cred_path = default_credentials_path(config.drive_config)
+            token_path = default_token_path(config.drive_config)
             cred_status = "ok" if cred_path.exists() else "warning"
             token_status = "ok" if token_path.exists() else "warning"
             checks.append(
@@ -148,7 +139,7 @@ def run_health(config: Config) -> dict:
     return payload
 
 
-def get_health(config: Config) -> dict:
+def get_health(config: Config) -> dict[str, object]:
     cached = _load_cached(config.archive_root)
     now = int(time.time())
     if cached:
