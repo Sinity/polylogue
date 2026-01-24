@@ -18,11 +18,26 @@ uv run ruff check polylogue/ tests/
 uv run polylogue                              # Stats
 uv run polylogue "search terms"               # Query
 uv run polylogue -p claude --since "last week"
+uv run polylogue --similar "error handling"   # Semantic search
 uv run polylogue sync --preview               # Dry-run sync
 uv run polylogue check --repair               # Integrity check
+uv run polylogue mcp                          # MCP server (stdio)
 ```
 
-**Env vars**: `POLYLOGUE_ARCHIVE_ROOT`, `QDRANT_URL`, `QDRANT_API_KEY`, `VOYAGE_API_KEY`
+**Env vars**: `POLYLOGUE_ARCHIVE_ROOT`, `POLYLOGUE_QDRANT_URL`, `POLYLOGUE_VOYAGE_API_KEY`
+
+**Library API**:
+```python
+with Polylogue() as archive:
+    # Batch operations
+    convs = archive.get_conversations(["id1", "id2", "id3"])
+
+    # Semantic search (requires Qdrant + Voyage)
+    results = archive.filter().similar("error patterns").list()
+
+    # Full-text search
+    results = archive.filter().contains("python").provider("claude").list()
+```
 
 ---
 
@@ -230,6 +245,42 @@ Powers `is_thinking`, `is_tool_use`, `is_substantive` properties. Extracted at i
 | **Codex** | Session export | Session-based | N/A | `importers/codex.py` |
 
 **Detection**: `ingestion/source.py:detect_provider()` via `looks_like()` functions
+
+---
+
+## MCP Server
+
+Polylogue provides a Model Context Protocol (MCP) server for AI assistant integration.
+
+**Start server**: `uv run polylogue mcp` (stdio transport)
+
+**Capabilities**:
+- **Tools**: search, list, get conversations
+- **Resources**: Dynamic with query parameters
+  - `polylogue://stats` - Archive statistics
+  - `polylogue://conversations` - All conversations
+  - `polylogue://conversations?provider=claude&since=2024-01-01` - Filtered
+  - `polylogue://conversation/{id}` - Single conversation
+- **Prompts**: Standardized workflows
+  - `analyze-errors` - Find error patterns & solutions
+  - `summarize-week` - Weekly insights summary
+  - `extract-code` - Extract & organize code snippets
+
+**Example resource template**:
+```
+polylogue://conversations?provider=claude&tag=important&limit=50
+```
+
+**Example prompt invocation**:
+```json
+{
+  "method": "prompts/get",
+  "params": {
+    "name": "analyze-errors",
+    "arguments": {"provider": "claude", "since": "2024-01-01"}
+  }
+}
+```
 
 ---
 
