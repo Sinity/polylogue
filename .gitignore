@@ -24,6 +24,7 @@ __pycache__
 .pytest_cache/
 .hypothesis/
 .coverage
+coverage.json
 htmlcov/
 .mypy_cache/
 .ruff_cache/
