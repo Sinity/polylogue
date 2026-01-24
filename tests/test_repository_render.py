@@ -18,6 +18,7 @@ from polylogue.lib.models import Attachment, Conversation, Message
 from polylogue.lib.repository import ConversationRepository
 from polylogue.render import render_conversation
 from polylogue.storage.store import ConversationRecord, MessageRecord
+from polylogue.storage.backends.sqlite import SQLiteBackend
 from tests.factories import DbFactory
 
 
@@ -37,7 +38,8 @@ def mock_db(tmp_path):
 
 def test_repository_get_conversation(mock_db):
     """ConversationRepository.get() returns Conversation with messages loaded."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     # Create a conversation with multiple messages
@@ -71,7 +73,8 @@ def test_repository_get_conversation(mock_db):
 
 def test_repository_get_nonexistent_returns_none(mock_db):
     """ConversationRepository.get() returns None for nonexistent ID."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
 
     result = repo.get("nonexistent-id")
 
@@ -80,7 +83,8 @@ def test_repository_get_nonexistent_returns_none(mock_db):
 
 def test_repository_get_with_provider_meta(mock_db):
     """Repository correctly deserializes provider_meta JSON."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     factory.create_conversation(
@@ -103,7 +107,8 @@ def test_repository_get_with_provider_meta(mock_db):
 
 def test_repository_list_conversations(mock_db):
     """ConversationRepository.list() returns all conversations."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     # Create multiple conversations
@@ -121,7 +126,8 @@ def test_repository_list_conversations(mock_db):
 
 def test_repository_list_with_limit(mock_db):
     """ConversationRepository.list() respects limit parameter."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     # Create 5 conversations
@@ -135,7 +141,8 @@ def test_repository_list_with_limit(mock_db):
 
 def test_repository_list_with_offset(mock_db):
     """ConversationRepository.list() respects offset parameter."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     # Create 5 conversations
@@ -158,7 +165,8 @@ def test_repository_list_with_offset(mock_db):
 
 def test_repository_list_empty_returns_empty(mock_db):
     """ConversationRepository.list() returns empty list when no conversations."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
 
     result = repo.list()
 
@@ -172,7 +180,8 @@ def test_repository_list_empty_returns_empty(mock_db):
 
 def test_repository_list_by_provider(mock_db):
     """ConversationRepository.list(provider=...) filters by provider."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     # Create conversations with different providers
@@ -190,7 +199,8 @@ def test_repository_list_by_provider(mock_db):
 
 def test_repository_list_by_provider_excludes_others(mock_db):
     """ConversationRepository.list(provider=...) excludes other providers."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     factory.create_conversation(id="c1", provider="chatgpt", messages=[])
@@ -206,7 +216,8 @@ def test_repository_list_by_provider_excludes_others(mock_db):
 
 def test_repository_list_by_provider_returns_empty_when_no_match(mock_db):
     """ConversationRepository.list(provider=...) returns empty for no matches."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     factory.create_conversation(id="c1", provider="chatgpt", messages=[])
@@ -223,7 +234,8 @@ def test_repository_list_by_provider_returns_empty_when_no_match(mock_db):
 
 def test_repository_search_returns_matching_conversations(mock_db, workspace_env):
     """ConversationRepository.search() returns conversations matching query."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     # Create conversations with searchable content
@@ -249,7 +261,8 @@ def test_repository_search_returns_matching_conversations(mock_db, workspace_env
 
 def test_repository_search_raises_when_index_not_built(mock_db, db_without_fts):
     """ConversationRepository.search() raises DatabaseError when FTS table doesn't exist."""
-    repo = ConversationRepository(db_without_fts)
+    backend = SQLiteBackend(db_path=db_without_fts)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(db_without_fts)
 
     # Create conversation without building index
@@ -269,7 +282,8 @@ def test_repository_search_raises_when_index_not_built(mock_db, db_without_fts):
 
 def test_repository_resolve_id_exact_match(mock_db):
     """ConversationRepository.resolve_id() returns full ID for exact match."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     factory.create_conversation(id="conv:abc123:full", provider="test", messages=[])
@@ -281,7 +295,8 @@ def test_repository_resolve_id_exact_match(mock_db):
 
 def test_repository_resolve_id_prefix_match(mock_db):
     """ConversationRepository.resolve_id() returns full ID for unique prefix."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     factory.create_conversation(id="conv:abc123:full", provider="test", messages=[])
@@ -293,7 +308,8 @@ def test_repository_resolve_id_prefix_match(mock_db):
 
 def test_repository_resolve_id_ambiguous_returns_none(mock_db):
     """ConversationRepository.resolve_id() returns None for ambiguous prefix."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     factory.create_conversation(id="conv:abc:1", provider="test", messages=[])
@@ -311,7 +327,8 @@ def test_repository_resolve_id_ambiguous_returns_none(mock_db):
 
 def test_repository_view_with_prefix(mock_db):
     """ConversationRepository.view() resolves prefix and returns Conversation."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     factory.create_conversation(
@@ -327,7 +344,8 @@ def test_repository_view_with_prefix(mock_db):
 
 def test_repository_view_returns_none_for_nonexistent(mock_db):
     """ConversationRepository.view() returns None for nonexistent ID."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
 
     result = repo.view("nonexistent")
 
@@ -339,7 +357,7 @@ def test_repository_view_returns_none_for_nonexistent(mock_db):
 # ============================================================================
 
 
-def test_render_conversation_markdown_has_structure(workspace_env):
+def test_render_conversation_markdown_has_structure(workspace_env, storage_repository):
     """render_conversation() produces valid markdown with title and role headers."""
     archive_root = workspace_env["archive_root"]
 
@@ -379,7 +397,7 @@ def test_render_conversation_markdown_has_structure(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="c-md", archive_root=archive_root)
 
@@ -393,7 +411,7 @@ def test_render_conversation_markdown_has_structure(workspace_env):
     assert "Hi there, user!" in markdown
 
 
-def test_render_conversation_markdown_includes_provider(workspace_env):
+def test_render_conversation_markdown_includes_provider(workspace_env, storage_repository):
     """render_conversation() markdown includes provider information."""
     archive_root = workspace_env["archive_root"]
 
@@ -411,7 +429,7 @@ def test_render_conversation_markdown_includes_provider(workspace_env):
         messages=[],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="c-prov", archive_root=archive_root)
 
@@ -421,7 +439,7 @@ def test_render_conversation_markdown_includes_provider(workspace_env):
     assert "Conversation ID: c-prov" in markdown
 
 
-def test_render_conversation_markdown_messages_separated(workspace_env):
+def test_render_conversation_markdown_messages_separated(workspace_env, storage_repository):
     """render_conversation() separates messages with blank lines."""
     archive_root = workspace_env["archive_root"]
 
@@ -460,7 +478,7 @@ def test_render_conversation_markdown_messages_separated(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="c-sep", archive_root=archive_root)
 
@@ -472,7 +490,7 @@ def test_render_conversation_markdown_messages_separated(workspace_env):
     assert len([l for l in lines if l.startswith("## ")]) == 2
 
 
-def test_render_conversation_markdown_with_timestamp(workspace_env):
+def test_render_conversation_markdown_with_timestamp(workspace_env, storage_repository):
     """render_conversation() includes timestamps when present."""
     archive_root = workspace_env["archive_root"]
 
@@ -501,7 +519,7 @@ def test_render_conversation_markdown_with_timestamp(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="c-ts", archive_root=archive_root)
 
@@ -515,7 +533,7 @@ def test_render_conversation_markdown_with_timestamp(workspace_env):
 # ============================================================================
 
 
-def test_render_conversation_html_valid(workspace_env):
+def test_render_conversation_html_valid(workspace_env, storage_repository):
     """render_conversation() produces valid HTML with proper structure."""
     archive_root = workspace_env["archive_root"]
 
@@ -554,7 +572,7 @@ def test_render_conversation_html_valid(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="c-html", archive_root=archive_root)
 
@@ -567,7 +585,7 @@ def test_render_conversation_html_valid(workspace_env):
     assert "<title>HTML Test</title>" in html
 
 
-def test_render_conversation_html_escapes_content(workspace_env):
+def test_render_conversation_html_escapes_content(workspace_env, storage_repository):
     """render_conversation() escapes HTML special characters."""
     archive_root = workspace_env["archive_root"]
 
@@ -596,7 +614,7 @@ def test_render_conversation_html_escapes_content(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="c-esc", archive_root=archive_root)
 
@@ -610,7 +628,7 @@ def test_render_conversation_html_escapes_content(workspace_env):
     assert "&lt;img" in html
 
 
-def test_render_conversation_html_includes_content(workspace_env):
+def test_render_conversation_html_includes_content(workspace_env, storage_repository):
     """render_conversation() HTML includes conversation content."""
     archive_root = workspace_env["archive_root"]
 
@@ -639,7 +657,7 @@ def test_render_conversation_html_includes_content(workspace_env):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="c-con", archive_root=archive_root)
 
@@ -653,7 +671,7 @@ def test_render_conversation_html_includes_content(workspace_env):
 # ============================================================================
 
 
-def test_render_conversation_with_message_attachments(workspace_env):
+def test_render_conversation_with_message_attachments(workspace_env, storage_repository):
     """render_conversation() includes attachments associated with messages."""
     archive_root = workspace_env["archive_root"]
     from polylogue.storage.store import AttachmentRecord
@@ -693,7 +711,7 @@ def test_render_conversation_with_message_attachments(workspace_env):
             ),
         ],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="c-att-msg", archive_root=archive_root)
 
@@ -703,7 +721,7 @@ def test_render_conversation_with_message_attachments(workspace_env):
     assert "Attachment:" in markdown or "attachment" in markdown.lower()
 
 
-def test_render_conversation_with_orphan_attachments(workspace_env):
+def test_render_conversation_with_orphan_attachments(workspace_env, storage_repository):
     """render_conversation() includes attachments not linked to messages."""
     archive_root = workspace_env["archive_root"]
     from polylogue.storage.store import AttachmentRecord
@@ -746,7 +764,7 @@ def test_render_conversation_with_orphan_attachments(workspace_env):
         ],
     )
 
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="c-orphan", archive_root=archive_root)
 
@@ -761,7 +779,7 @@ def test_render_conversation_with_orphan_attachments(workspace_env):
 # ============================================================================
 
 
-def test_render_conversation_writes_markdown_file(workspace_env):
+def test_render_conversation_writes_markdown_file(workspace_env, storage_repository):
     """render_conversation() writes markdown file to expected location."""
     archive_root = workspace_env["archive_root"]
 
@@ -779,7 +797,7 @@ def test_render_conversation_writes_markdown_file(workspace_env):
         messages=[],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="c-file", archive_root=archive_root)
 
@@ -788,7 +806,7 @@ def test_render_conversation_writes_markdown_file(workspace_env):
     assert result.markdown_path.name == "conversation.md"
 
 
-def test_render_conversation_writes_html_file(workspace_env):
+def test_render_conversation_writes_html_file(workspace_env, storage_repository):
     """render_conversation() writes HTML file to expected location."""
     archive_root = workspace_env["archive_root"]
 
@@ -806,7 +824,7 @@ def test_render_conversation_writes_html_file(workspace_env):
         messages=[],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="c-html-file", archive_root=archive_root)
 
@@ -815,7 +833,7 @@ def test_render_conversation_writes_html_file(workspace_env):
     assert result.html_path.name == "conversation.html"
 
 
-def test_render_conversation_result_contains_ids(workspace_env):
+def test_render_conversation_result_contains_ids(workspace_env, storage_repository):
     """render_conversation() returns RenderResult with correct IDs."""
     archive_root = workspace_env["archive_root"]
 
@@ -833,7 +851,7 @@ def test_render_conversation_result_contains_ids(workspace_env):
         messages=[],
         attachments=[],
     )
-    ingest_bundle(bundle)
+    ingest_bundle(bundle, repository=storage_repository)
 
     result = render_conversation(conversation_id="c-result", archive_root=archive_root)
 
@@ -849,7 +867,8 @@ def test_render_conversation_result_contains_ids(workspace_env):
 
 def test_repository_conversation_supports_projections(mock_db):
     """Conversations from repository support semantic projections."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     factory.create_conversation(
@@ -877,7 +896,8 @@ def test_repository_conversation_supports_projections(mock_db):
 
 def test_repository_conversation_supports_iteration(mock_db):
     """Conversations from repository support iteration methods."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     factory.create_conversation(
@@ -900,7 +920,8 @@ def test_repository_conversation_supports_iteration(mock_db):
 
 def test_repository_conversation_supports_statistics(mock_db):
     """Conversations from repository support statistics methods."""
-    repo = ConversationRepository(mock_db)
+    backend = SQLiteBackend(db_path=mock_db)
+    repo = ConversationRepository(backend=backend)
     factory = DbFactory(mock_db)
 
     factory.create_conversation(

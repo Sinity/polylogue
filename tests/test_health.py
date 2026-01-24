@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -187,3 +188,412 @@ class TestHealthCacheErrorHandling:
             "cache" in record.message.lower() or "error" in record.message.lower()
             for record in caplog.records
         )
+
+
+class TestHealthCheck:
+    """Tests for HealthCheck dataclass."""
+
+    def test_health_check_creation(self):
+        """HealthCheck should be creatable with name, status, detail."""
+        from polylogue.health import HealthCheck
+
+        check = HealthCheck(name="test", status="ok", detail="All good")
+
+        assert check.name == "test"
+        assert check.status == "ok"
+        assert check.detail == "All good"
+
+    def test_health_check_to_dict(self):
+        """HealthCheck should convert to dict for serialization."""
+        from polylogue.health import HealthCheck
+
+        check = HealthCheck(name="database", status="error", detail="Connection failed")
+
+        result = check.__dict__
+        assert result == {
+            "name": "database",
+            "status": "error",
+            "detail": "Connection failed",
+        }
+
+    def test_health_check_with_different_statuses(self):
+        """HealthCheck should support ok, warning, error statuses."""
+        from polylogue.health import HealthCheck
+
+        for status in ["ok", "warning", "error"]:
+            check = HealthCheck(name="test", status=status, detail="Test")
+            assert check.status == status
+
+
+class TestRunHealth:
+    """Tests for run_health function."""
+
+    def test_run_health_with_valid_config(self, cli_workspace):
+        """run_health should return checks for valid configuration."""
+        from polylogue.config import load_config
+        from polylogue.health import run_health
+
+        config = load_config(cli_workspace["config_path"])
+        result = run_health(config)
+
+        assert "timestamp" in result
+        assert isinstance(result["timestamp"], int)
+        assert result["timestamp"] > 0
+
+        assert "checks" in result
+        assert isinstance(result["checks"], list)
+        assert len(result["checks"]) > 0
+
+    def test_run_health_includes_config_check(self, cli_workspace):
+        """run_health should include a config check."""
+        from polylogue.config import load_config
+        from polylogue.health import run_health
+
+        config = load_config(cli_workspace["config_path"])
+        result = run_health(config)
+
+        checks = result["checks"]
+        config_checks = [c for c in checks if c.get("name") == "config"]
+        assert len(config_checks) > 0
+        assert config_checks[0]["status"] == "ok"
+
+    def test_run_health_includes_archive_root_check(self, cli_workspace):
+        """run_health should include archive_root check (ok when exists)."""
+        from polylogue.config import load_config
+        from polylogue.health import run_health
+
+        config = load_config(cli_workspace["config_path"])
+        result = run_health(config)
+
+        checks = result["checks"]
+        archive_checks = [c for c in checks if c.get("name") == "archive_root"]
+        assert len(archive_checks) > 0
+        # Archive root exists in cli_workspace
+        assert archive_checks[0]["status"] == "ok"
+
+    def test_run_health_archive_root_warning_when_missing(self, tmp_path):
+        """run_health should warn when archive_root doesn't exist."""
+        from polylogue.config import Config, DriveConfig, Source
+        from polylogue.health import run_health
+
+        missing_archive = tmp_path / "missing"
+        config = Config(
+            version=2,
+            archive_root=missing_archive,
+            render_root=missing_archive / "render",
+            sources=[Source(name="test", path=tmp_path)],
+            path=tmp_path / "config.json",
+        )
+
+        result = run_health(config)
+        checks = result["checks"]
+        archive_checks = [c for c in checks if c.get("name") == "archive_root"]
+        assert len(archive_checks) > 0
+        assert archive_checks[0]["status"] == "warning"
+
+    def test_run_health_includes_render_root_check(self, cli_workspace):
+        """run_health should include render_root check."""
+        from polylogue.config import load_config
+        from polylogue.health import run_health
+
+        config = load_config(cli_workspace["config_path"])
+        result = run_health(config)
+
+        checks = result["checks"]
+        render_checks = [c for c in checks if c.get("name") == "render_root"]
+        assert len(render_checks) > 0
+
+    def test_run_health_render_root_warning_when_missing(self, tmp_path):
+        """run_health should warn when render_root doesn't exist."""
+        from polylogue.config import Config, Source
+        from polylogue.health import run_health
+
+        archive_root = tmp_path / "archive"
+        archive_root.mkdir()
+        missing_render = tmp_path / "missing"
+
+        config = Config(
+            version=2,
+            archive_root=archive_root,
+            render_root=missing_render,
+            sources=[Source(name="test", path=tmp_path)],
+            path=tmp_path / "config.json",
+        )
+
+        result = run_health(config)
+        checks = result["checks"]
+        render_checks = [c for c in checks if c.get("name") == "render_root"]
+        assert len(render_checks) > 0
+        assert render_checks[0]["status"] == "warning"
+
+    def test_run_health_includes_database_check(self, cli_workspace):
+        """run_health should include database check."""
+        from polylogue.config import load_config
+        from polylogue.health import run_health
+
+        config = load_config(cli_workspace["config_path"])
+        result = run_health(config)
+
+        checks = result["checks"]
+        db_checks = [c for c in checks if c.get("name") == "database"]
+        assert len(db_checks) > 0
+        # Database should be reachable in test environment
+        assert db_checks[0]["status"] == "ok"
+
+    def test_run_health_includes_index_check(self, cli_workspace):
+        """run_health should include index check."""
+        from polylogue.config import load_config
+        from polylogue.health import run_health
+
+        config = load_config(cli_workspace["config_path"])
+        result = run_health(config)
+
+        checks = result["checks"]
+        index_checks = [c for c in checks if c.get("name") == "index"]
+        assert len(index_checks) > 0
+
+    def test_run_health_includes_source_checks(self, cli_workspace):
+        """run_health should include checks for each source."""
+        from polylogue.config import load_config
+        from polylogue.health import run_health
+
+        config = load_config(cli_workspace["config_path"])
+        result = run_health(config)
+
+        checks = result["checks"]
+        source_checks = [c for c in checks if c.get("name", "").startswith("source:")]
+        # Should have at least one source check
+        assert len(source_checks) >= len(config.sources)
+
+    def test_run_health_caches_result(self, cli_workspace):
+        """run_health should write cache to health.json."""
+        from polylogue.config import load_config
+        from polylogue.health import run_health, _cache_path
+
+        config = load_config(cli_workspace["config_path"])
+        result = run_health(config)
+
+        cache_file = _cache_path(config.archive_root)
+        assert cache_file.exists(), "run_health should write cache file"
+
+        cached_data = json.loads(cache_file.read_text())
+        assert cached_data["timestamp"] == result["timestamp"]
+        assert cached_data["checks"] == result["checks"]
+
+
+class TestGetHealth:
+    """Tests for get_health function."""
+
+    def test_get_health_returns_fresh_on_cache_miss(self, cli_workspace):
+        """get_health should run fresh checks when cache doesn't exist."""
+        from polylogue.config import load_config
+        from polylogue.health import get_health
+
+        config = load_config(cli_workspace["config_path"])
+        result = get_health(config)
+
+        assert "timestamp" in result
+        assert "checks" in result
+        assert result["cached"] is False
+        assert result["age_seconds"] == 0
+
+    def test_get_health_returns_cached_when_valid(self, cli_workspace):
+        """get_health should return cached result when valid."""
+        from polylogue.config import load_config
+        from polylogue.health import get_health
+        import time
+
+        config = load_config(cli_workspace["config_path"])
+
+        # First call populates cache
+        result1 = get_health(config)
+        timestamp1 = result1["timestamp"]
+
+        # Brief sleep to ensure timestamp would differ
+        time.sleep(0.1)
+
+        # Second call should return cached result (same timestamp)
+        result2 = get_health(config)
+        timestamp2 = result2["timestamp"]
+
+        assert timestamp1 == timestamp2, "Cached result should have same timestamp"
+        assert result2["cached"] is True
+        assert result2["age_seconds"] >= 0
+
+    def test_get_health_refreshes_on_cache_expiry(self, cli_workspace, monkeypatch):
+        """get_health should refresh when cache is too old."""
+        from polylogue.config import load_config
+        from polylogue.health import get_health, HEALTH_TTL_SECONDS
+        import time
+
+        config = load_config(cli_workspace["config_path"])
+
+        # First call populates cache
+        result1 = get_health(config)
+        timestamp1 = result1["timestamp"]
+
+        # Manually set cache timestamp to old
+        from polylogue.health import _cache_path, _load_cached
+        cache_file = _cache_path(config.archive_root)
+        cached = _load_cached(config.archive_root)
+        if cached:
+            cached["timestamp"] = int(time.time()) - HEALTH_TTL_SECONDS - 100
+            cache_file.write_text(json.dumps(cached))
+
+        # Second call should refresh (not use cache)
+        result2 = get_health(config)
+
+        # New result should have different timestamp (or at least not marked as cached)
+        # Since we artificially aged the cache, get_health should run fresh checks
+        assert result2["cached"] is False
+
+    def test_get_health_includes_cache_metadata(self, cli_workspace):
+        """get_health should include cached and age_seconds fields."""
+        from polylogue.config import load_config
+        from polylogue.health import get_health
+
+        config = load_config(cli_workspace["config_path"])
+        result = get_health(config)
+
+        assert "cached" in result
+        assert isinstance(result["cached"], bool)
+        assert "age_seconds" in result
+        assert isinstance(result["age_seconds"], int)
+
+
+class TestCachedHealthSummary:
+    """Tests for cached_health_summary function."""
+
+    def test_cached_health_summary_not_run_when_no_cache(self, tmp_path):
+        """Should return 'not run' when cache doesn't exist."""
+        from polylogue.health import cached_health_summary
+
+        result = cached_health_summary(tmp_path)
+        assert result == "not run"
+
+    def test_cached_health_summary_with_valid_cache(self, cli_workspace):
+        """Should return summary string from valid cache."""
+        from polylogue.config import load_config
+        from polylogue.health import run_health, cached_health_summary
+
+        config = load_config(cli_workspace["config_path"])
+        run_health(config)  # Populate cache
+
+        result = cached_health_summary(config.archive_root)
+
+        # Should be cached X seconds ago (with check counts)
+        assert "cached" in result
+        assert "ago" in result
+        assert "ok=" in result or "warning=" in result or "error=" in result
+
+    def test_cached_health_summary_corrupted_cache(self, tmp_path):
+        """Should return 'unknown' when cache is corrupted."""
+        from polylogue.health import cached_health_summary
+
+        # Create corrupted cache
+        cache_file = tmp_path / "health.json"
+        cache_file.write_text("{invalid json")
+
+        result = cached_health_summary(tmp_path)
+        assert result == "unknown" or result == "not run"
+
+    def test_cached_health_summary_non_dict_cache(self, tmp_path):
+        """Should handle non-dict JSON gracefully."""
+        from polylogue.health import cached_health_summary
+
+        cache_file = tmp_path / "health.json"
+        cache_file.write_text('["not", "a", "dict"]')
+
+        result = cached_health_summary(tmp_path)
+        # Should not crash, returns fallback
+        assert isinstance(result, str)
+
+    def test_cached_health_summary_missing_timestamp(self, tmp_path):
+        """Should return 'unknown' when timestamp is missing."""
+        from polylogue.health import cached_health_summary
+
+        cache_file = tmp_path / "health.json"
+        cache_file.write_text(json.dumps({"checks": []}))
+
+        result = cached_health_summary(tmp_path)
+        assert result == "unknown"
+
+    def test_cached_health_summary_non_int_timestamp(self, tmp_path):
+        """Should return 'unknown' when timestamp is not int."""
+        from polylogue.health import cached_health_summary
+
+        cache_file = tmp_path / "health.json"
+        cache_file.write_text(json.dumps({"timestamp": "not-an-int", "checks": []}))
+
+        result = cached_health_summary(tmp_path)
+        assert result == "unknown"
+
+    def test_cached_health_summary_counts_statuses(self, tmp_path):
+        """Should properly count ok, warning, error statuses."""
+        from polylogue.health import cached_health_summary
+
+        cache_file = tmp_path / "health.json"
+        cache_file.write_text(
+            json.dumps({
+                "timestamp": int(time.time()),
+                "checks": [
+                    {"name": "check1", "status": "ok", "detail": "ok"},
+                    {"name": "check2", "status": "ok", "detail": "ok"},
+                    {"name": "check3", "status": "warning", "detail": "warning"},
+                    {"name": "check4", "status": "error", "detail": "error"},
+                ],
+            })
+        )
+
+        result = cached_health_summary(tmp_path)
+
+        # Should contain count summary
+        assert "ok=2" in result
+        assert "warning=1" in result
+        assert "error=1" in result
+
+    def test_cached_health_summary_ignores_invalid_checks(self, tmp_path):
+        """Should skip non-dict items in checks list."""
+        from polylogue.health import cached_health_summary
+
+        cache_file = tmp_path / "health.json"
+        cache_file.write_text(
+            json.dumps({
+                "timestamp": int(time.time()),
+                "checks": [
+                    {"name": "check1", "status": "ok", "detail": "ok"},
+                    "not a dict",  # Invalid check
+                    {"name": "check2", "status": "warning", "detail": "warning"},
+                ],
+            })
+        )
+
+        result = cached_health_summary(tmp_path)
+
+        # Should still work, ignoring the invalid check
+        assert isinstance(result, str)
+
+
+class TestHealthTTL:
+    """Tests for health check TTL constant."""
+
+    def test_health_ttl_is_reasonable(self):
+        """HEALTH_TTL_SECONDS should be a reasonable cache duration."""
+        from polylogue.health import HEALTH_TTL_SECONDS
+
+        # Should be reasonable (e.g., between 1 minute and 1 hour)
+        assert 60 <= HEALTH_TTL_SECONDS <= 3600
+        assert isinstance(HEALTH_TTL_SECONDS, int)
+
+
+class TestCachePath:
+    """Tests for _cache_path function."""
+
+    def test_cache_path_returns_health_json_in_archive_root(self, tmp_path):
+        """_cache_path should return archive_root/health.json."""
+        from polylogue.health import _cache_path
+
+        result = _cache_path(tmp_path)
+
+        assert result == tmp_path / "health.json"
+        assert result.name == "health.json"

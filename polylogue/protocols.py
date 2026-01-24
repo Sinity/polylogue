@@ -17,7 +17,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
@@ -135,14 +135,23 @@ class StorageBackend(Protocol):
         """
         ...
 
-    def list_conversations(self, source: str | None = None) -> list[ConversationRecord]:
-        """List all conversations, optionally filtered by source.
+    def list_conversations(
+        self,
+        source: str | None = None,
+        provider: str | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[ConversationRecord]:
+        """List all conversations with optional filtering and pagination.
 
         Args:
-            source: Optional source name filter (e.g., 'claude', 'chatgpt')
+            source: Optional source name filter (from provider_meta.source)
+            provider: Optional provider name filter (e.g., 'claude', 'chatgpt')
+            limit: Optional maximum number of results to return
+            offset: Number of results to skip (for pagination)
 
         Returns:
-            List of ConversationRecords
+            List of ConversationRecords, ordered by updated_at DESC
 
         Raises:
             DatabaseError: If retrieval fails
@@ -217,6 +226,53 @@ class StorageBackend(Protocol):
         """
         ...
 
+    def prune_attachments(self, conversation_id: str, keep_attachment_ids: set[str]) -> None:
+        """Remove attachment refs not in keep set and clean up orphaned attachments.
+
+        This is used during re-ingestion to remove attachments that are no longer
+        part of the conversation bundle.
+
+        Args:
+            conversation_id: The conversation to prune attachments for
+            keep_attachment_ids: Set of attachment IDs to keep (prune all others)
+
+        Raises:
+            DatabaseError: If prune operation fails
+        """
+        ...
+
+    def resolve_id(self, id_prefix: str) -> str | None:
+        """Resolve a partial conversation ID to a full ID.
+
+        Supports both exact matches and prefix matches. If multiple
+        conversations match the prefix, returns None (ambiguous).
+
+        Args:
+            id_prefix: Full or partial conversation ID to resolve
+
+        Returns:
+            The full conversation ID if exactly one match found, None otherwise
+
+        Raises:
+            DatabaseError: If query fails
+        """
+        ...
+
+    def search_conversations(self, query: str, limit: int = 100) -> list[str]:
+        """Search conversations using full-text search.
+
+        Args:
+            query: Search query string (backend-specific syntax)
+            limit: Maximum number of conversation IDs to return
+
+        Returns:
+            List of conversation IDs matching the query, ordered by relevance
+
+        Raises:
+            DatabaseError: If search index not available or query fails
+        """
+        ...
+
     def begin(self) -> None:
         """Begin a transaction or savepoint.
 
@@ -238,6 +294,17 @@ class StorageBackend(Protocol):
 
         Raises:
             DatabaseError: If rollback fails
+        """
+        ...
+
+    def record_run(self, record: "RunRecord") -> None:
+        """Record a pipeline run audit entry.
+
+        Args:
+            record: Run record containing execution metadata
+
+        Raises:
+            DatabaseError: If record save fails
         """
         ...
 

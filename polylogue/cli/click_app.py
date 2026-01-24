@@ -8,6 +8,7 @@ from pathlib import Path
 import click
 
 from polylogue.cli.commands.analytics import analytics_command
+from polylogue.cli.commands.browse import browse
 from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.commands.config import config_command
 from polylogue.cli.commands.export import export_command
@@ -50,6 +51,7 @@ cli.add_command(sources_command)
 cli.add_command(index_command)
 cli.add_command(search_command)
 cli.add_command(view_command)
+cli.add_command(browse)
 cli.add_command(analytics_command)
 cli.add_command(completions_command)
 cli.add_command(export_command)

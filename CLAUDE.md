@@ -1,6 +1,7 @@
 # Polylogue Developer Guide
 
-> **Meta**: See AGENTS.meta.md for maintenance philosophy. Update this file when adding features, changing behaviors, or discovering patterns during debugging.
+> Update this file when adding features, changing behaviors, or discovering patterns during debugging.
+> See `~/.claude/CLAUDE.md` "Project CLAUDE.md Philosophy" for maintenance principles.
 
 **Mission**: Local-first AI chat archive (ChatGPT, Claude, Codex, Gemini → SQLite + FTS5/Qdrant)
 
@@ -8,13 +9,13 @@
 
 | Aspect | Implementation | Key Behavior |
 |--------|---------------|--------------|
-| **Storage** | StorageBackend protocol | SQLiteBackend (750 lines), thread-local connections, _WRITE_LOCK in repository |
-| **Search** | SearchProvider protocol | FTS5Provider (local, BM25), QdrantProvider (Voyage embeddings), LRU cache (21,343x) |
+| **Storage** | StorageBackend protocol | SQLiteBackend, thread-local connections, _WRITE_LOCK in repository |
+| **Search** | SearchProvider protocol | FTS5Provider (local, BM25), QdrantProvider (Voyage embeddings), LRU cache |
 | **Rendering** | OutputRenderer protocol | MarkdownRenderer (.md), HTMLRenderer (.html + .md), --format flag |
 | **Services** | DI via dependency-injector | IngestionService (parallel, bounded), IndexService, RenderService |
 | **Thread safety** | _WRITE_LOCK + thread-local | repository.py:48 owns lock, max 16 in-flight futures, 4 render workers |
 | **Deduplication** | SHA-256 + NFC normalization | Idempotent: same content → same hash → skip re-import |
-| **Type safety** | mypy strict mode | 0 errors (was 211), 85 files, NewType IDs, protocol types |
+| **Type safety** | mypy strict mode | NewType IDs, protocol types |
 
 **Key Invariants**:
 - Content hash includes: title, timestamps, messages (id/role/text/timestamp), attachments (id/mime_type)
@@ -45,15 +46,15 @@ Index (FTS5 + optional Qdrant)
 ### Storage Layer (Refactored)
 - **`storage/db.py`**: Thread-local connections, schema v4, migrations
 - **`storage/store.py`**: Record definitions (ConversationRecord, MessageRecord, AttachmentRecord)
-- **`storage/repository.py`**: StorageRepository owns `_WRITE_LOCK`, coordinates DB operations
-- **`storage/backends/sqlite.py`**: SQLiteBackend implementation (750+ lines: schema, migrations, CRUD)
+- **`storage/repository.py`**: StorageRepository owns `_WRITE_LOCK`, requires StorageBackend (no legacy path)
+- **`storage/backends/sqlite.py`**: SQLiteBackend implementation (schema, migrations, CRUD)
 - **`storage/search_providers/fts5.py`**: FTS5 search provider (incremental indexing, query escaping)
 - **`storage/search_providers/qdrant.py`**: Qdrant vector search provider (Voyage AI embeddings, lazy imports)
-- **`storage/search_cache.py`**: LRU cache for search results (21,343x speedup on repeated queries)
+- **`storage/search_cache.py`**: LRU cache for search results (version-based invalidation)
 
 ### Ingestion & Source Management
 - **`ingestion/source.py`**: Provider detection, ParsedConversation/ParsedMessage
-- **`ingestion/ingest.py`**: Source ingestion pipeline (Drive, files, etc.)
+- **`ingestion/ingest.py`**: ingest_bundle() creates default backend if none provided (backward compatible)
 - **`ingestion/drive.py`**: Google Drive client and Gemini parsing
 - **`ingestion/drive_client.py`**: OAuth credential management
 - **`importers/chatgpt.py`**: Graph traversal, extracts thinking from `content_type`
@@ -61,13 +62,13 @@ Index (FTS5 + optional Qdrant)
 - **`importers/codex.py`**: Session exports
 
 ### Pipeline & Services (Refactored)
-- **`pipeline/runner.py`**: Orchestrates ingest → render → index pipeline (service-based, ~176 lines)
-- **`pipeline/ingest.py`**: Prepares conversations, checks content hashes
+- **`pipeline/runner.py`**: Orchestrates ingest → render → index pipeline (service-based)
+- **`pipeline/ingest.py`**: prepare_ingest() creates default backend if none provided (backward compatible)
 - **`pipeline/ids.py`**: Content hash generation (NFC-normalized)
 - **`pipeline/models.py`**: PlanResult, RunResult (typed result objects)
 - **`pipeline/services/ingestion.py`**: IngestionService (parallel ingest with bounded submission)
 - **`pipeline/services/indexing.py`**: IndexService (FTS5/Qdrant management, chunked updates)
-- **`pipeline/services/rendering.py`**: RenderService (delegates to OutputRenderer implementations)
+- **`pipeline/services/rendering.py`**: RenderService (requires OutputRenderer, no legacy fallback)
 - **`pipeline/services/__init__.py`**: Service exports
 
 ### Rendering (Abstracted)
@@ -209,8 +210,8 @@ error_count = conv.project().contains("error").count()
 
 | Provider | Format | Structure | Content Blocks | Attachments | Importer |
 |----------|--------|-----------|----------------|-------------|----------|
-| **ChatGPT** | conversations.json | UUID graph (`mapping`), parent/child traversal | From `content.parts` + `content_type` | Tool outputs in `metadata.attachments` | importers/chatgpt.py (828 lines tests) |
-| **Claude AI** | JSONL | Flat `chat_messages` array | Simple text only (no structured blocks) | N/A | importers/claude.py (826 lines tests) |
+| **ChatGPT** | conversations.json | UUID graph (`mapping`), parent/child traversal | From `content.parts` + `content_type` | Tool outputs in `metadata.attachments` | importers/chatgpt.py |
+| **Claude AI** | JSONL | Flat `chat_messages` array | Simple text only (no structured blocks) | N/A | importers/claude.py |
 | **Claude Code** | JSON array | `parentUuid`/`sessionId` markers | `[{type: "text\|thinking\|tool_use"}]` | Via content array | importers/claude.py (same file) |
 | **Gemini** | Drive API | `chunkedPrompt.chunks` | From chunk structure | Via Drive metadata | ingestion/drive.py |
 | **Codex** | Session export | Session-based | N/A | N/A | importers/codex.py |
@@ -308,7 +309,8 @@ class StorageBackend(Protocol):
 - Add PostgreSQL backend: Implement StorageBackend protocol in `storage/backends/postgres.py`
 - Add DuckDB backend: Implement StorageBackend protocol in `storage/backends/duckdb.py`
 - Pass backend to StorageRepository via constructor: `repo = StorageRepository(backend=PostgresBackend())`
-- Backend is optional: `StorageRepository(backend=None)` uses direct SQLite for backward compatibility
+- **Backend is required**: StorageRepository always requires a backend parameter
+- Use `create_default_backend()` for convenience: `StorageRepository(backend=create_default_backend())`
 
 ## Search Provider Abstraction
 
@@ -316,7 +318,7 @@ class StorageBackend(Protocol):
 |----------|------|---------|----------|-------------|-------|
 | **FTS5Provider** | Full-text (BM25) | SQLite virtual table | Incremental (delete+reinsert 200/batch) | Fast, local, no API | N/A |
 | **QdrantProvider** | Vector semantic | Remote Qdrant/Docker | Batch (Voyage API bulk) | Network I/O, rate-limited | Voyage 5×, Qdrant 3× exp backoff |
-| **Search Cache** | LRU wrapper | In-memory (128 entries) | Version-based invalidation | **21,343x speedup** (69ms → 0.003ms) | N/A |
+| **Search Cache** | LRU wrapper | In-memory (128 entries) | Version-based invalidation | Fast (sub-millisecond) | N/A |
 
 **Protocol Methods** (protocols.py):
 - `index(messages: list[MessageRecord])` → Batch index/reindex
@@ -345,7 +347,7 @@ class StorageBackend(Protocol):
 **Pipeline Flow**: `IngestionService.ingest_all()` → `IndexService.index_incremental(changed_ids)` → `RenderService.render_all()`
 **Orchestration**: pipeline/runner.py coordinates service calls, aggregates results into RunResult
 
-## Dependency Injection (Priority 3.2)
+## Dependency Injection
 
 **Framework**: `dependency-injector>=4.41.0`
 
@@ -355,16 +357,16 @@ class StorageBackend(Protocol):
 | `storage` | Singleton | SQLiteBackend (singleton) | container.py |
 | `ingestion_service` | Factory | storage, config | container.py |
 | `indexing_service` | Factory | storage, config | container.py |
-| `rendering_service` | Factory | config.archive_root, config.template_path | container.py |
+| `rendering_service` | Factory | renderer (OutputRenderer), config.render_root | container.py |
 
 **Behavior**:
 - **Singleton**: Same instance across calls (`repo1 is repo2`)
 - **Factory**: New instance per call (`svc1 is not svc2`)
 - **CLI Integration**: cli/container.py wraps container with `create_*()` factory functions
-- **Testing**: `container.override()` enables easy mocking (18 tests in test_container.py)
+- **Testing**: `container.override()` enables easy mocking (test_container.py)
 - **Benefits**: Explicit deps, type-safe, single source of truth, backward compatible
 
-## Renderer Abstraction (Priority 3.3)
+## Renderer Abstraction
 
 **Protocol** (protocols.py): `OutputRenderer` with `render(conversation_id, output_path) → Path`, `supports_format(format) → bool`
 
@@ -377,48 +379,6 @@ class StorageBackend(Protocol):
 **CLI**: `polylogue run --format markdown` or `--format html` (default)
 **Extension**: Implement OutputRenderer → Add to factory → Use via `--format pdf`
 
-## Performance Optimizations (Priority 4.4)
-
-**Baseline Measurements** (tests/benchmarks/):
-| Operation | Throughput | Notes |
-|-----------|-----------|-------|
-| Text hashing (SHA-256) | 3.0M ops/sec | Small texts (10k ops) |
-| Conversation hashing | 22K ops/sec | 50-message conversations |
-| FTS5 indexing | 266K msg/sec | Bulk insert (5K messages) |
-| FTS5 search (many results) | 182 ops/sec | >100 results |
-| FTS5 search (few results) | 3,301 ops/sec | <10 results (18x faster) |
-| Parallel ingestion (4 workers) | 2.88x speedup | vs sequential |
-| Content hash check (warm cache) | 6.1x speedup | Skip unchanged |
-
-**Search Result Caching** (storage/search_cache.py):
-```python
-@lru_cache(maxsize=128)
-def _cached_search(query: str, version: int, limit: int, ...) -> SearchResult:
-    """LRU cache for search results with version-based invalidation."""
-    return _execute_search(query, limit, ...)
-```
-
-**Performance Impact**:
-- **Cold cache** (first query): 69.51ms
-- **Hot cache** (repeated query): 0.003ms ← **21,343x speedup!**
-- **After invalidation**: 9.66ms (partial cache warmth)
-
-**Cache Invalidation**:
-- Version-based: Incremented on each re-ingest
-- Stored in `search_metadata` table
-- Automatic invalidation when conversations change
-- Thread-safe (version updates protected by repository lock)
-
-**Benchmarking Infrastructure**:
-- `tests/benchmarks/benchmark_hashing.py`: Content hash operations
-- `tests/benchmarks/benchmark_search.py`: FTS5 indexing and queries
-- `tests/benchmarks/benchmark_pipeline.py`: Ingestion and rendering
-- `tests/benchmarks/benchmark_caching.py`: Cache effectiveness
-- `tests/benchmarks/run_all.py`: Master runner with JSON report
-
-**Documentation**:
-- `docs/performance.md`: Comprehensive performance guide (baseline results, analysis)
-- `docs/optimization-summary.md`: Optimization summary (deliverables, impact)
 
 ## Configuration Objects
 
@@ -450,54 +410,50 @@ def _cached_search(query: str, version: int, limit: int, ...) -> SearchResult:
 
 ## Testing
 
-**Metrics** (Priority 4.3 Complete):
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Total tests | 951 (99.9% pass) | --ignore=tests/test_qdrant.py |
-| Overall coverage | 69% | Deliberate: focus on core business logic |
-| Core coverage | 83% | storage, pipeline, models, protocols |
-| Test code | 17,371 lines | |
-| Source code | 9,022 lines | |
-| Test-to-code ratio | 1.93:1 | Exceptionally high |
-
-**High-Coverage Modules** (>90%):
-| Module | Coverage | Why High Priority |
-|--------|----------|-------------------|
-| lib/projections.py | 100% | Fluent API correctness critical |
-| protocols.py | 100% | Protocol contracts must be verified |
-| storage/db.py | 96% | Database integrity essential |
-| storage/search.py | 96% | Query escaping prevents injection |
-| storage/store.py | 94% | Data consistency guarantees |
-| core/timestamps.py | 97% | Timestamp parsing affects ordering |
-| lib/repository.py | 92% | Primary query interface |
-| pipeline/ids.py | 92% | Content hash stability critical |
-| pipeline/ingest.py | 91% | Deduplication correctness |
-| Plus 25+ more | 90-100% | See coverage report |
-
-**Lower-Coverage Areas** (deliberately):
-| Module | Coverage | Why Lower Priority |
-|--------|----------|-------------------|
-| ingestion/drive_client.py | 28% | Complex OAuth, hard to test, low change frequency |
-| cli/commands/* | 25-70% | Presentation layer, lower ROI, integration tests preferred |
-| ui/* | 24-37% | UI facade, end-to-end tests more valuable |
-| server/* | 67-91% | API endpoints covered by functional tests |
-
 **Key Test Suites**:
-| Suite | Lines | Focus |
-|-------|-------|-------|
-| test_importers_chatgpt.py | 828 | Provider parsing, graph traversal, content_blocks |
-| test_importers_claude.py | 826 | JSONL parsing, Claude Code structured blocks |
-| test_projections.py | 714 | Fluent API, lazy evaluation, composability |
-| test_store.py | 785 | Storage layer, _WRITE_LOCK, transactions |
-| test_db.py | 637 | Database ops, migrations, schema v4 |
-| test_hashing.py | 253 | NFC normalization, content hash stability |
-| test_properties.py | 349 | Hypothesis property-based (hash stability, idempotency) |
-| test_pipeline_concurrent.py | 232 | Thread safety, bounded submission |
-| test_container.py | 18 tests | DI singleton vs factory behavior |
-| test_renderers.py | 17 tests | OutputRenderer protocol compliance |
-| tests/benchmarks/ | - | Performance baselines (21,343x cache speedup) |
+| Suite | Focus |
+|-------|-------|
+| test_importers_chatgpt.py | Provider parsing, graph traversal, content_blocks |
+| test_importers_claude.py | JSONL parsing, Claude Code structured blocks |
+| test_projections.py | Fluent API, lazy evaluation, composability |
+| test_store.py | Storage layer, _WRITE_LOCK, transactions |
+| test_db.py | Database ops, migrations, schema v4 |
+| test_hashing.py | NFC normalization, content hash stability |
+| test_properties.py | Hypothesis property-based (hash stability, idempotency) |
+| test_pipeline_concurrent.py | Thread safety, bounded submission |
+| test_container.py | DI singleton vs factory behavior |
+| test_renderers.py | OutputRenderer protocol compliance |
+| tests/benchmarks/ | Performance baselines and regression detection |
 
 **Fixtures** (tests/conftest.py): `workspace_env` (isolated temp dirs), `test_conn` (DB connection), `DbFactory` (conversation factory)
+
+### Test Coverage Rationale
+
+**Overall Target**: 75% coverage (current: 69%)
+**Core Business Logic**: 85%+ target (storage, pipeline, models, protocols)
+
+**Low-Coverage Modules** (Deliberate):
+
+| Module | Coverage | Rationale |
+|--------|----------|-----------|
+| ui/facade.py | 44% | Presentation layer wrapping Rich/questionary. Hard to test (ANSI, TTY). Tested via integration. |
+| ui/interactive.py | 37% | Interactive prompts require TTY mocking. Manual testing preferred. |
+| cli/formatting.py | 68% | Cosmetic formatting. Visual QA more valuable. |
+| ingestion/drive_client.py | 26% | External OAuth API. Target: 60-65% (Sprint 3). Priority: HIGH VALUE. |
+| cli/commands/* | 25-70% | User-facing commands. Target: 70-80% (Sprint 2). Priority: MEDIUM-HIGH. |
+
+**Coverage Priorities**:
+
+1. **Business logic** (80%+ target): storage, pipeline, models, protocols
+2. **External integrations** (60%+ target): Drive, Qdrant, OAuth
+3. **Security-critical** (100% target): SQL injection, command validation
+4. **User-facing commands** (70%+ target): CLI, search, rendering
+
+**Testing Philosophy**:
+- Focus on high-value business logic and external integrations
+- Accept low coverage on presentation layers (UI, formatting)
+- Prioritize security-critical paths for 100% coverage
+- Use property-based testing (Hypothesis) for invariants
 
 ## Development Patterns
 
@@ -663,16 +619,11 @@ def min_words(self, n: int) -> ConversationProjection:
 8. **Bypass StorageRepository for writes** → All writes must go through repository with `_WRITE_LOCK`
 9. **Assume backend is SQLite** → Use StorageBackend protocol, support any backend
 10. **Hardcode search provider** → Use SearchProvider protocol, support FTS5/Qdrant/others
+11. **Create StorageRepository without backend** → Always pass `backend=create_default_backend()` or custom backend
 
-## Type Safety (Priority 4.2 Complete)
+## Type Safety
 
-**Mypy Strict Mode**:
-| Metric | Before (P4.1) | After (P4.2) | Improvement |
-|--------|---------------|--------------|-------------|
-| Mypy errors | 211 | 0 | 100% resolved |
-| Files checked | 85 | 85 | All source files |
-| Strict mode | ❌ | ✅ | `strict = true` |
-| Type marker | ❌ | ✅ | `polylogue/py.typed` |
+**Configuration**: Mypy strict mode enabled (`strict = true`), type marker (`polylogue/py.typed`)
 
 **Type Annotations**:
 | Category | Types | Usage Example |
@@ -683,23 +634,23 @@ def min_words(self, n: int) -> ConversationProjection:
 | Unions | Path \| None, str \| None | `config_path: Path \| None = None` |
 | Forward refs | TYPE_CHECKING imports | `if TYPE_CHECKING: from .projections import ...` |
 
-**Key Fixes** (commit 0e56861):
+**Type Safety Patterns**:
 - Runtime type narrowing: `isinstance(blocks, list) and isinstance(b, dict)` before iteration
 - NewType conversions: `ConversationId(str(row["conversation_id"]))` not bare `str`
 - Variance correctness: `Mapping[str, object]` for function params (covariant)
 - Method shadowing: `builtins.list` to avoid conflict with `self.list()`
-- Type annotations: All functions have parameter and return types
+- Full annotations: All functions have parameter and return types
 
 ## Build Commands
 
 ```bash
 # Tests
-uv run pytest -q --ignore=tests/test_qdrant.py  # 951 tests
+uv run pytest -q --ignore=tests/test_qdrant.py
 uv run pytest -v tests/test_lib.py
 uv run pytest --cov=polylogue --cov-report=html
 
-# Quality (100% compliant)
-uv run mypy polylogue/  # 0 errors
+# Quality
+uv run mypy polylogue/
 uv run ruff check polylogue/ tests/
 uv run ruff format --check polylogue/ tests/
 
@@ -713,6 +664,14 @@ POLYLOGUE_FORCE_PLAIN=1 uv run polylogue run --preview
 uv run polylogue verify --verbose
 uv run polylogue view --provider claude-code --since 2024-01-01
 ```
+
+## Pinned Notes
+
+Active scratch files transcluded at session startup. Use `@.claude/scratch/NNN-topic.md` syntax (bare line, not in code block).
+
+*Currently empty - add as needed*
+
+---
 
 ## Common Debugging
 
@@ -736,27 +695,3 @@ uv run polylogue view --provider claude-code --since 2024-01-01
 
 **"Search provider mismatch"**: Wrong provider instantiated → Verify IndexConfig.provider setting and service initialization
 
-## Architecture Evolution (Commit History)
-
-### Priority 4 Complete (Jan 2026)
-- **0e56861**: Fix remaining mypy errors (211 → 0, 100% strict mode compliance)
-- **3b427bd**: Type safety improvements + test coverage (P4.2, P4.3, P4.4 via 12-agent swarm)
-- **2609a37**: Performance benchmarking + search caching (21,343x speedup)
-- **bb241b8**: Priority 3 complete (DI framework, renderer abstraction)
-- **7b0f695**: Priority 2 complete (config objects, services, search abstraction)
-
-### Priority 1-3 Foundation (Dec 2025)
-- **207b6ff**: Priority 1 complete (layered modules, protocols, NewType IDs)
-- **f750026**: Structured content_blocks extraction (semantic decomposition)
-- **103be12**: Parallel rendering + bounded submission (thread safety)
-- **d17270f**: Thread safety + schema v4 (source_name indexed column)
-- **dec96eb**: NFC Unicode normalization (content hash stability)
-
-**Current State**: Production-ready architecture with:
-- ✅ 100% mypy strict mode compliance (0 errors)
-- ✅ 951/951 tests passing (99.9%)
-- ✅ 83% core business logic coverage
-- ✅ Protocol-based abstractions (backend/search/renderer agnostic)
-- ✅ Dependency injection framework
-- ✅ 21,343x search performance improvement
-- ✅ Comprehensive benchmarking infrastructure
