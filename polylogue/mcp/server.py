@@ -63,6 +63,7 @@ def _handle_request(request: dict[str, Any], repo: ConversationRepository) -> di
                     "get": {"description": "Get conversation by ID"},
                 },
                 "resources": {},
+                "prompts": {},
             },
         })
 
@@ -140,15 +141,59 @@ def _handle_request(request: dict[str, Any], repo: ConversationRepository) -> di
     elif method == "resources/read":
         uri = params.get("uri", "")
 
-        if uri == "polylogue://stats":
+        # Parse URI and query parameters
+        from urllib.parse import parse_qs, urlparse
+        parsed = urlparse(uri)
+        base_uri = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        query_params = parse_qs(parsed.query)
+
+        if base_uri == "polylogue://stats":
             return _handle_stats_resource(request_id, repo)
-        elif uri == "polylogue://conversations":
-            return _handle_conversations_resource(request_id, repo)
-        elif uri.startswith("polylogue://conversation/"):
-            conv_id = uri.replace("polylogue://conversation/", "")
+        elif base_uri == "polylogue://conversations":
+            return _handle_conversations_resource(request_id, repo, query_params)
+        elif base_uri.startswith("polylogue://conversation/"):
+            conv_id = base_uri.replace("polylogue://conversation/", "")
             return _handle_conversation_resource(request_id, conv_id, repo)
         else:
             return _error(request_id, -32602, f"Unknown resource URI: {uri}")
+
+    elif method == "prompts/list":
+        return _success(request_id, {
+            "prompts": [
+                {
+                    "name": "analyze-errors",
+                    "description": "Analyze error patterns and solutions across conversations",
+                    "arguments": [
+                        {"name": "provider", "description": "Filter by provider (claude, chatgpt, etc.)", "required": False},
+                        {"name": "since", "description": "Only analyze conversations since this date", "required": False},
+                    ],
+                },
+                {
+                    "name": "summarize-week",
+                    "description": "Summarize key insights from the past week's conversations",
+                },
+                {
+                    "name": "extract-code",
+                    "description": "Extract and organize code snippets from conversations",
+                    "arguments": [
+                        {"name": "language", "description": "Programming language to focus on", "required": False},
+                    ],
+                },
+            ],
+        })
+
+    elif method == "prompts/get":
+        prompt_name = params.get("name", "")
+        prompt_args = params.get("arguments", {})
+
+        if prompt_name == "analyze-errors":
+            return _handle_analyze_errors_prompt(request_id, prompt_args, repo)
+        elif prompt_name == "summarize-week":
+            return _handle_summarize_week_prompt(request_id, prompt_args, repo)
+        elif prompt_name == "extract-code":
+            return _handle_extract_code_prompt(request_id, prompt_args, repo)
+        else:
+            return _error(request_id, -32602, f"Unknown prompt: {prompt_name}")
 
     else:
         return _error(request_id, -32601, f"Method not found: {method}")
@@ -266,9 +311,41 @@ def _handle_stats_resource(request_id: Any, repo: ConversationRepository) -> dic
     })
 
 
-def _handle_conversations_resource(request_id: Any, repo: ConversationRepository) -> dict[str, Any]:
-    """Handle polylogue://conversations resource."""
-    convs = repo.list(limit=1000)
+def _handle_conversations_resource(
+    request_id: Any,
+    repo: ConversationRepository,
+    query_params: dict[str, list[str]],
+) -> dict[str, Any]:
+    """Handle polylogue://conversations resource with query parameters.
+
+    Supports query parameters:
+    - provider: Filter by provider name
+    - since: Filter by date (YYYY-MM-DD)
+    - tag: Filter by tag
+    - limit: Max results (default: 1000)
+    """
+    # Extract parameters (parse_qs returns lists)
+    provider = query_params.get("provider", [None])[0]
+    since = query_params.get("since", [None])[0]
+    tag = query_params.get("tag", [None])[0]
+    limit_str = query_params.get("limit", ["1000"])[0]
+    limit = int(limit_str) if limit_str else 1000
+
+    # Build filter chain
+    from polylogue.lib.filters import ConversationFilter
+    filter_chain = ConversationFilter(repo)
+
+    if provider:
+        filter_chain = filter_chain.provider(provider)
+    if since:
+        filter_chain = filter_chain.since(since)
+    if tag:
+        filter_chain = filter_chain.tag(tag)
+
+    filter_chain = filter_chain.limit(limit)
+
+    # Execute query
+    convs = filter_chain.list()
     convs_data = [_conversation_to_dict(c) for c in convs]
 
     return _success(request_id, {
@@ -290,5 +367,170 @@ def _handle_conversation_resource(request_id: Any, conv_id: str, repo: Conversat
     return _success(request_id, {
         "contents": [
             {"uri": uri, "mimeType": "application/json", "text": json.dumps(conv_data, indent=2)},
+        ],
+    })
+
+
+def _handle_analyze_errors_prompt(
+    request_id: Any,
+    args: dict[str, Any],
+    repo: ConversationRepository,
+) -> dict[str, Any]:
+    """Generate a prompt for analyzing error patterns."""
+    provider = args.get("provider")
+    since = args.get("since")
+
+    # Build filter to find conversations with errors
+    from polylogue.lib.filters import ConversationFilter
+    filter_chain = ConversationFilter(repo)
+    filter_chain = filter_chain.contains("error")
+
+    if provider:
+        filter_chain = filter_chain.provider(provider)
+    if since:
+        filter_chain = filter_chain.since(since)
+
+    convs = filter_chain.limit(50).list()
+
+    # Build prompt with context
+    error_contexts = []
+    for conv in convs:
+        # Extract error-related messages
+        for msg in conv.messages:
+            if msg.text and ("error" in msg.text.lower() or "exception" in msg.text.lower()):
+                error_contexts.append({
+                    "conversation_id": str(conv.id),
+                    "provider": conv.provider,
+                    "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
+                    "snippet": msg.text[:200],
+                })
+                if len(error_contexts) >= 20:
+                    break
+        if len(error_contexts) >= 20:
+            break
+
+    prompt_text = f"""Analyze error patterns from {len(convs)} conversations.
+
+Context: {len(error_contexts)} error instances found.
+
+Your task:
+1. Identify common error patterns and root causes
+2. Note which errors have known solutions in the conversations
+3. Suggest preventive measures based on successful resolutions
+4. Highlight any recurring pain points
+
+Error contexts:
+{json.dumps(error_contexts, indent=2)}
+"""
+
+    return _success(request_id, {
+        "description": "Analyze error patterns and solutions",
+        "messages": [
+            {"role": "user", "content": {"type": "text", "text": prompt_text}},
+        ],
+    })
+
+
+def _handle_summarize_week_prompt(
+    request_id: Any,
+    args: dict[str, Any],
+    repo: ConversationRepository,
+) -> dict[str, Any]:
+    """Generate a prompt for summarizing the past week."""
+    # Get conversations from the past 7 days
+    from datetime import datetime, timedelta
+    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+
+    from polylogue.lib.filters import ConversationFilter
+    convs = ConversationFilter(repo).since(week_ago).limit(100).list()
+
+    # Group by provider and topic
+    by_provider: dict[str, int] = {}
+    total_messages = 0
+    for conv in convs:
+        by_provider[conv.provider] = by_provider.get(conv.provider, 0) + 1
+        total_messages += len(conv.messages)
+
+    prompt_text = f"""Summarize key insights from the past week's AI conversations.
+
+Statistics:
+- {len(convs)} conversations
+- {total_messages} messages
+- Providers: {', '.join(f'{k}({v})' for k, v in by_provider.items())}
+
+Your task:
+1. Identify main topics and themes discussed
+2. Highlight key decisions or insights
+3. Note any unresolved questions or ongoing work
+4. Suggest follow-up actions based on the conversations
+
+Focus on actionable insights and patterns, not exhaustive summaries.
+"""
+
+    return _success(request_id, {
+        "description": "Summarize the past week's conversations",
+        "messages": [
+            {"role": "user", "content": {"type": "text", "text": prompt_text}},
+        ],
+    })
+
+
+def _handle_extract_code_prompt(
+    request_id: Any,
+    args: dict[str, Any],
+    repo: ConversationRepository,
+) -> dict[str, Any]:
+    """Generate a prompt for extracting code snippets."""
+    language = args.get("language", "")
+
+    # Find conversations with code blocks
+    from polylogue.lib.filters import ConversationFilter
+    convs = ConversationFilter(repo).limit(50).list()
+
+    # Extract code blocks (simplified - looks for ```language markers)
+    code_snippets = []
+    for conv in convs:
+        for msg in conv.messages:
+            if not msg.text:
+                continue
+
+            # Simple code block detection
+            if "```" in msg.text:
+                blocks = msg.text.split("```")
+                for i in range(1, len(blocks), 2):
+                    block = blocks[i]
+                    lines = block.split("\n", 1)
+                    block_lang = lines[0].strip() if lines else ""
+                    code = lines[1] if len(lines) > 1 else block
+
+                    if not language or block_lang == language:
+                        code_snippets.append({
+                            "language": block_lang,
+                            "code": code[:300],
+                            "conversation": str(conv.id)[:20],
+                        })
+
+                if len(code_snippets) >= 15:
+                    break
+
+    lang_filter = f" (language: {language})" if language else ""
+    prompt_text = f"""Extract and organize code snippets from conversations{lang_filter}.
+
+Found {len(code_snippets)} code blocks.
+
+Your task:
+1. Categorize code snippets by purpose/functionality
+2. Identify reusable patterns or utilities
+3. Note any incomplete or problematic code
+4. Suggest organization into a knowledge base
+
+Code snippets:
+{json.dumps(code_snippets, indent=2)}
+"""
+
+    return _success(request_id, {
+        "description": f"Extract code snippets{lang_filter}",
+        "messages": [
+            {"role": "user", "content": {"type": "text", "text": prompt_text}},
         ],
     })
