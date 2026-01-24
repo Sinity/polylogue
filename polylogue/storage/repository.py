@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .store import (
@@ -130,7 +129,7 @@ class StorageRepository:
                         counts["attachments"] += 1
 
                 # Prune attachments no longer in the bundle (handles empty attachments too)
-                new_attachment_ids = {att.attachment_id for att in attachments}
+                new_attachment_ids: set[str] = {str(att.attachment_id) for att in attachments}
                 backend.prune_attachments(conversation.conversation_id, new_attachment_ids)
 
                 # Save all attachments (backend handles refs)
@@ -158,6 +157,37 @@ class StorageRepository:
         """
         with self._write_lock:
             self._backend.record_run(record)
+
+    # --- Metadata CRUD ---
+
+    def get_metadata(self, conversation_id: str) -> dict[str, object]:
+        """Get metadata dict for a conversation."""
+        return self._backend.get_metadata(conversation_id)
+
+    def update_metadata(self, conversation_id: str, key: str, value: object) -> None:
+        """Set a single metadata key."""
+        with self._write_lock:
+            self._backend.update_metadata(conversation_id, key, value)
+
+    def delete_metadata(self, conversation_id: str, key: str) -> None:
+        """Remove a metadata key."""
+        with self._write_lock:
+            self._backend.delete_metadata(conversation_id, key)
+
+    def add_tag(self, conversation_id: str, tag: str) -> None:
+        """Add a tag to the conversation's tags list."""
+        with self._write_lock:
+            self._backend.add_tag(conversation_id, tag)
+
+    def remove_tag(self, conversation_id: str, tag: str) -> None:
+        """Remove a tag from the conversation's tags list."""
+        with self._write_lock:
+            self._backend.remove_tag(conversation_id, tag)
+
+    def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
+        """Replace entire metadata dict."""
+        with self._write_lock:
+            self._backend.set_metadata(conversation_id, metadata)
 
 
 __all__ = ["StorageRepository"]

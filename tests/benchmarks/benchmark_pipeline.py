@@ -6,8 +6,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from polylogue.importers.base import ParsedConversation, ParsedMessage
 from polylogue.pipeline.ingest import prepare_ingest
-from polylogue.importers.base import ParsedAttachment, ParsedConversation, ParsedMessage
 from polylogue.storage.db import open_connection
 from polylogue.storage.repository import StorageRepository
 

@@ -22,7 +22,7 @@ class Provider(str, Enum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def from_string(cls, value: str | None) -> "Provider":
+    def from_string(cls, value: str | None) -> Provider:
         """Normalize provider string to enum, defaulting to UNKNOWN."""
         if not value:
             return cls.UNKNOWN

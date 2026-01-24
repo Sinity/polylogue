@@ -6,9 +6,6 @@ import os
 import stat
 import time
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
 
 
 class TestHealthCacheErrorHandling:
@@ -74,6 +71,7 @@ class TestHealthCacheErrorHandling:
     def test_cache_read_logs_corruption_warning(self, tmp_path: Path, caplog):
         """Cache read errors should be logged as warnings."""
         import logging
+
         from polylogue.health import _load_cached
 
         # Create corrupted cache file (must be named health.json)
@@ -92,6 +90,7 @@ class TestHealthCacheErrorHandling:
     def test_cache_read_logs_permission_error(self, tmp_path: Path, caplog):
         """Permission errors should be logged."""
         import logging
+
         from polylogue.health import _load_cached
 
         cache_file = tmp_path / "health.json"
@@ -133,6 +132,7 @@ class TestHealthCacheErrorHandling:
     def test_cache_write_error_logged_not_raised(self, tmp_path: Path, caplog, monkeypatch):
         """Cache write errors should be logged, not raised."""
         import logging
+
         from polylogue.health import _write_cache
 
         # Mock Path.write_text to raise an OSError
@@ -172,6 +172,7 @@ class TestHealthCacheErrorHandling:
     def test_cache_read_unicode_errors_handled(self, tmp_path: Path, caplog):
         """Unicode decode errors in cache should be handled gracefully."""
         import logging
+
         from polylogue.health import _load_cached
 
         # Write binary data that isn't valid UTF-8
@@ -273,7 +274,7 @@ class TestRunHealth:
 
     def test_run_health_archive_root_warning_when_missing(self, tmp_path):
         """run_health should warn when archive_root doesn't exist."""
-        from polylogue.config import Config, DriveConfig, Source
+        from polylogue.config import Config, Source
         from polylogue.health import run_health
 
         missing_archive = tmp_path / "missing"
@@ -368,7 +369,7 @@ class TestRunHealth:
     def test_run_health_caches_result(self, cli_workspace):
         """run_health should write cache to health.json."""
         from polylogue.config import load_config
-        from polylogue.health import run_health, _cache_path
+        from polylogue.health import _cache_path, run_health
 
         config = load_config(cli_workspace["config_path"])
         result = run_health(config)
@@ -399,9 +400,10 @@ class TestGetHealth:
 
     def test_get_health_returns_cached_when_valid(self, cli_workspace):
         """get_health should return cached result when valid."""
+        import time
+
         from polylogue.config import load_config
         from polylogue.health import get_health
-        import time
 
         config = load_config(cli_workspace["config_path"])
 
@@ -422,9 +424,10 @@ class TestGetHealth:
 
     def test_get_health_refreshes_on_cache_expiry(self, cli_workspace, monkeypatch):
         """get_health should refresh when cache is too old."""
-        from polylogue.config import load_config
-        from polylogue.health import get_health, HEALTH_TTL_SECONDS
         import time
+
+        from polylogue.config import load_config
+        from polylogue.health import HEALTH_TTL_SECONDS, get_health
 
         config = load_config(cli_workspace["config_path"])
 
@@ -474,7 +477,7 @@ class TestCachedHealthSummary:
     def test_cached_health_summary_with_valid_cache(self, cli_workspace):
         """Should return summary string from valid cache."""
         from polylogue.config import load_config
-        from polylogue.health import run_health, cached_health_summary
+        from polylogue.health import cached_health_summary, run_health
 
         config = load_config(cli_workspace["config_path"])
         run_health(config)  # Populate cache

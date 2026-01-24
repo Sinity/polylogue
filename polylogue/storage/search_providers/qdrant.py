@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from qdrant_client import QdrantClient
-    from qdrant_client.http import models
 
 from polylogue.storage.store import MessageRecord
 
@@ -103,13 +102,13 @@ class QdrantProvider:
         Args:
             vector_size: Dimension of embedding vectors (default: 1024 for Voyage-2)
         """
+        from qdrant_client.http import models
         from tenacity import (
             retry,
             retry_if_exception_type,
             stop_after_attempt,
             wait_exponential,
         )
-        from qdrant_client.http import models
 
         @retry(
             stop=stop_after_attempt(3),
@@ -197,13 +196,13 @@ class QdrantProvider:
         if not messages:
             return
 
+        from qdrant_client.http import models
         from tenacity import (
             retry,
             retry_if_exception_type,
             stop_after_attempt,
             wait_exponential,
         )
-        from qdrant_client.http import models
 
         # Filter messages with text content
         text_messages = [msg for msg in messages if msg.text]

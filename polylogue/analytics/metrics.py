@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from polylogue.lib.repository import ConversationRepository
-from polylogue.storage.db import connection_context
 
 
 @dataclass
@@ -62,7 +62,7 @@ def compute_provider_comparison(db_path: Path | None = None) -> list[ProviderMet
     repo = ConversationRepository(backend=backend)
 
     # Aggregate metrics by provider
-    provider_data: dict[str, dict] = defaultdict(
+    provider_data: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
             "conversation_count": 0,
             "message_count": 0,

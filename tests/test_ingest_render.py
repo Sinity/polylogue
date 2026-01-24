@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 
-from polylogue.storage.db import open_connection
 from polylogue.export import export_jsonl
 from polylogue.ingestion import IngestBundle, ingest_bundle
 from polylogue.paths import is_within_root
-from polylogue.render import render_conversation
+from polylogue.rendering.renderers import HTMLRenderer
+from polylogue.storage.db import open_connection
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 
@@ -79,10 +79,14 @@ def test_render_writes_markdown(workspace_env, storage_repository):
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="conv:hash", archive_root=archive_root)
-    assert result.markdown_path.exists()
-    assert result.html_path.exists()
-    assert "hello" in result.markdown_path.read_text(encoding="utf-8")
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("conv:hash", output_root)
+    md_path = html_path.parent / "conversation.md"
+
+    assert md_path.exists()
+    assert html_path.exists()
+    assert "hello" in md_path.read_text(encoding="utf-8")
 
 
 def test_render_escapes_html(workspace_env, storage_repository):
@@ -114,8 +118,11 @@ def test_render_escapes_html(workspace_env, storage_repository):
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="conv-html", archive_root=archive_root)
-    html_text = result.html_path.read_text(encoding="utf-8")
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("conv-html", output_root)
+    html_text = html_path.read_text(encoding="utf-8")
+
     assert "<script>" not in html_text
     assert "&lt;script&gt;" in html_text
 
@@ -154,9 +161,12 @@ def test_render_sanitizes_paths(workspace_env, storage_repository):
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="../escape", archive_root=archive_root)
-    render_root = archive_root / "render"
-    assert is_within_root(result.markdown_path, render_root)
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("../escape", output_root)
+    md_path = html_path.parent / "conversation.md"
+
+    assert is_within_root(md_path, output_root)
 
 
 def test_render_includes_orphan_attachments(workspace_env, storage_repository):
@@ -189,8 +199,12 @@ def test_render_includes_orphan_attachments(workspace_env, storage_repository):
     )
     ingest_bundle(bundle, repository=storage_repository)
 
-    result = render_conversation(conversation_id="conv:hash", archive_root=archive_root)
-    markdown = result.markdown_path.read_text(encoding="utf-8")
+    renderer = HTMLRenderer(archive_root)
+    output_root = archive_root / "render"
+    html_path = renderer.render("conv:hash", output_root)
+    md_path = html_path.parent / "conversation.md"
+    markdown = md_path.read_text(encoding="utf-8")
+
     assert "- Attachment: notes.txt" in markdown
 
 

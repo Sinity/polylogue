@@ -6,13 +6,13 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import (
-    ConfigError,
     Config,
+    ConfigError,
     Source,
     default_config,
     load_config,
-    write_config,
     update_source,
+    write_config,
 )
 
 

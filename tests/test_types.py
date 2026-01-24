@@ -1,8 +1,6 @@
 """Tests for polylogue.types module - NewType IDs and Provider enum."""
 from __future__ import annotations
 
-import pytest
-
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
 
 

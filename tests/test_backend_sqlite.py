@@ -233,10 +233,9 @@ def test_backend_transaction_context_manager_exception(backend: SQLiteBackend) -
         version=1,
     )
 
-    with pytest.raises(ValueError):
-        with backend.transaction():
-            backend.save_conversation(conv)
-            raise ValueError("Test error")
+    with pytest.raises(ValueError), backend.transaction():
+        backend.save_conversation(conv)
+        raise ValueError("Test error")
 
     # Should not exist after rollback
     retrieved = backend.get_conversation("conv1")

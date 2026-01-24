@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import concurrent.futures
 import threading
+from collections.abc import Generator
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Generator
+from typing import TYPE_CHECKING, Any
 
 from polylogue.core.log import get_logger
 from polylogue.ingestion import DriveAuthError, iter_drive_conversations, iter_source_conversations

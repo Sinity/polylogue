@@ -11,7 +11,6 @@ This test module covers:
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -73,7 +72,7 @@ class TestConversationFormatterFormat:
 
     def _setup_db(self, workspace_env):
         """Helper to set up database path."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return db_path
 
@@ -163,7 +162,7 @@ class TestMessageOrdering:
 
     def _setup_db(self, workspace_env):
         """Helper to set up database path."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return db_path
 
@@ -304,7 +303,7 @@ class TestJSONTextWrapping:
 
     def _setup_db(self, workspace_env):
         """Helper to set up database path."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return db_path
 
@@ -411,7 +410,7 @@ class TestTimestampRendering:
 
     def _setup_db(self, workspace_env):
         """Helper to set up database path."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return db_path
 
@@ -470,7 +469,7 @@ class TestAttachmentHandling:
 
     def _setup_db(self, workspace_env):
         """Helper to set up database path."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return db_path
 
@@ -641,7 +640,7 @@ class TestOrphanedAttachments:
 
     def _setup_db(self, workspace_env):
         """Helper to set up database path."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return db_path
 
@@ -695,7 +694,7 @@ class TestMetadata:
 
     def _setup_db(self, workspace_env):
         """Helper to set up database path."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return db_path
 
@@ -781,7 +780,7 @@ class TestMarkdownStructure:
 
     def _setup_db(self, workspace_env):
         """Helper to set up database path."""
-        db_path = workspace_env["state_root"] / "polylogue" / "polylogue.db"
+        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         return db_path
 

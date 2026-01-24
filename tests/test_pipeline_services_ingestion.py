@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from polylogue.config import Config, Source
 from polylogue.importers.base import ParsedConversation, ParsedMessage
-from polylogue.pipeline.services.ingestion import IngestResult, IngestionService
-
+from polylogue.pipeline.services.ingestion import IngestionService, IngestResult
 
 # ============================================================================
 # IngestResult Tests
