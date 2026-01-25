@@ -78,35 +78,3 @@ async def test_async_context_manager():
             await archive2.stats()
         finally:
             await archive2.close()
-
-
-@pytest.mark.skip(reason="Flaky performance test - depends on system load and empty DB doesn't show perf benefit")
-@pytest.mark.asyncio
-async def test_async_performance_benefit():
-    """Verify async operations are faster than sequential.
-
-    Note: This is a conceptual test. Real performance gains require
-    actual I/O operations on a populated database.
-    """
-    with tempfile.TemporaryDirectory() as tmpdir:
-        db_path = Path(tmpdir) / "test.db"
-
-        async with AsyncPolylogue(db_path=db_path) as archive:
-            import time
-
-            # Measure concurrent execution time
-            start = time.perf_counter()
-            await asyncio.gather(*[
-                archive.list_conversations()
-                for _ in range(10)
-            ])
-            concurrent_time = time.perf_counter() - start
-
-            # Measure sequential execution time
-            start = time.perf_counter()
-            for _ in range(10):
-                await archive.list_conversations()
-            sequential_time = time.perf_counter() - start
-
-            # Concurrent should be faster (or at least not slower)
-            assert concurrent_time <= sequential_time * 1.5  # Allow 50% margin
