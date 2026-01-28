@@ -28,7 +28,7 @@ def serve_command(env: AppEnv, host: str, port: int) -> None:
             os.environ["POLYLOGUE_ARCHIVE_ROOT"] = str(config.archive_root)
 
         ui = env.ui
-        ui.console.print(f"Starting server...")
+        ui.console.print("Starting server...")
         ui.console.print(f"  Web UI:  [bold blue]http://{host}:{port}/[/bold blue]")
         ui.console.print(f"  API:     [bold blue]http://{host}:{port}/api/docs[/bold blue]")
         uvicorn.run("polylogue.server.app:app", host=host, port=port, log_level="info")
