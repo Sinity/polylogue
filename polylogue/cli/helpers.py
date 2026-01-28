@@ -132,7 +132,9 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
                     status = check.get("status")
                     detail = check.get("detail")
                     status_str = str(status) if status else "?"
-                    icon = {"ok": "[green]✓[/green]", "warning": "[yellow]![/yellow]", "error": "[red]✗[/red]"}.get(status_str, "?")
+                    icon = {"ok": "[green]✓[/green]", "warning": "[yellow]![/yellow]", "error": "[red]✗[/red]"}.get(
+                        status_str, "?"
+                    )
                     if ui.plain:
                         icon = {"ok": "OK", "warning": "WARN", "error": "ERR"}.get(status_str, "?")
                     lines.append(f"  {icon} {name}: {detail}")
@@ -140,6 +142,75 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
         lines.append(f"Health: {cached_health_summary(config.archive_root)}")
 
     ui.summary("Polylogue", lines)
+
+    # Show analytics visualization (compatible with plain mode too)
+    if True:
+        try:
+            from polylogue.analytics.metrics import compute_provider_comparison
+
+            metrics = compute_provider_comparison()
+            if metrics:
+                ui.console.print()
+                total_convs = sum(m.conversation_count for m in metrics)
+
+                # Header with total
+                # Archive: 1,234 conversations (size not easily available without du call, skipping size)
+                ui.console.print(f"[bold]Archive:[/bold] {total_convs:,} conversations")
+
+                max_width = 30
+                for m in metrics:
+                    if total_convs > 0:
+                        pct = (m.conversation_count / total_convs) * 100
+                        bar_len = int((m.conversation_count / total_convs) * max_width)
+                    else:
+                        pct = 0
+                        bar_len = 0
+
+                    bar = "█" * bar_len
+                    # Colors per provider matching typical brand colors loosely
+                    color = "white"
+                    if "claude" in m.provider_name:
+                        color = "#d97757"  # Claude orange-ish
+                    elif "chatgpt" in m.provider_name:
+                        color = "#10a37f"  # OpenAI green
+                    elif "gemini" in m.provider_name:
+                        color = "#4285f4"  # Google blue
+                    elif "codex" in m.provider_name:
+                        color = "cyan"
+
+                    # Format:   claude-code:   512 (41%)  │  ████████████
+                    name_padded = f"{m.provider_name}:".ljust(14)
+                    count_padded = f"{m.conversation_count:,}".rjust(5)
+                    pct_padded = f"({pct:.0f}%)".rjust(5)
+
+                    ui.console.print(f"  {name_padded} {count_padded} {pct_padded}  │  [{color}]{bar}[/{color}]")
+
+                # Additional stats if verbose
+                if verbose:
+                    ui.console.print()
+                    ui.console.print("[bold]Deep Dive:[/bold]")
+                    for m in metrics:
+                        ui.console.print(f"[bold]{m.provider_name}[/bold]")
+                        ui.console.print(
+                            f"  Messages: {m.message_count:,} (avg {m.avg_messages_per_conversation:.1f}/conv)"
+                        )
+                        ui.console.print(
+                            f"  Words: {int(m.avg_user_words)} user / {int(m.avg_assistant_words)} asst (avg)"
+                        )
+                        if m.tool_use_count > 0:
+                            ui.console.print(
+                                f"  Tool Use: {m.tool_use_count:,} ({m.tool_use_percentage:.1f}% of convs)"
+                            )
+                        if m.thinking_count > 0:
+                            ui.console.print(
+                                f"  Thinking: {m.thinking_count:,} ({m.thinking_percentage:.1f}% of convs)"
+                            )
+                        ui.console.print()
+
+        except Exception as exc:
+            # Fallback if analytics fails
+            if verbose:
+                ui.console.print(f"[yellow]Analytics computation failed: {exc}[/yellow]")
 
 
 def latest_render_path(render_root: Path) -> Path | None:

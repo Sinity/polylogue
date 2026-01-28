@@ -6,21 +6,31 @@
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
       let
         # Apply Python package overrides (fix dependency-injector marked as broken)
         pkgs = import nixpkgs {
           inherit system;
           overlays = [
             (final: prev: {
-              python313Packages = prev.python313Packages.overrideScope (pyfinal: pysuper: {
-                dependency-injector = pysuper.dependency-injector.overridePythonAttrs (old: {
-                  nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pyfinal.cython ];
-                  doCheck = false;
-                  meta = (old.meta or {}) // { broken = false; };
-                });
-              });
+              python313Packages = prev.python313Packages.overrideScope (
+                pyfinal: pysuper: {
+                  dependency-injector = pysuper.dependency-injector.overridePythonAttrs (old: {
+                    nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pyfinal.cython ];
+                    doCheck = false;
+                    meta = (old.meta or { }) // {
+                      broken = false;
+                    };
+                  });
+                }
+              );
             })
           ];
         };
@@ -59,6 +69,7 @@
             orjson
             structlog
             pydantic
+            pydantic-settings
             dependency-injector
             aiosqlite
           ];
@@ -109,20 +120,31 @@
         };
 
         # Simple check: run tests
-        checks.default = pkgs.runCommand "polylogue-tests" {
-          buildInputs = [ python pkgs.uv ];
-        } ''
-          cp -r ${./.} source
-          cd source
-          export HOME=$TMPDIR
-          ${pkgs.uv}/bin/uv venv
-          source .venv/bin/activate
-          ${pkgs.uv}/bin/uv pip install -e ".[dev]"
-          pytest -q --ignore=tests/test_qdrant.py
-          touch $out
-        '';
+        checks.default =
+          pkgs.runCommand "polylogue-tests"
+            {
+              buildInputs = [
+                python
+                pkgs.uv
+              ];
+            }
+            ''
+              cp -r ${./.} source
+              cd source
+              export HOME=$TMPDIR
+              ${pkgs.uv}/bin/uv venv
+              source .venv/bin/activate
+              ${pkgs.uv}/bin/uv pip install -e ".[dev]"
+              pytest -q --ignore=tests/test_qdrant.py
+              touch $out
+            '';
       }
-    ) // {
-      nixosModules.default = import ./nixos-modules/polylogue-sync.nix;
+    )
+    // {
+      nixosModules = {
+        polylogue = import ./nixos-modules/polylogue.nix { inherit self; };
+        sync = import ./nixos-modules/sync.nix;
+        default = self.nixosModules.polylogue;
+      };
     };
 }
