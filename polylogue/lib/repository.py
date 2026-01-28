@@ -12,7 +12,7 @@ All database operations go through the StorageBackend protocol for clean abstrac
 from __future__ import annotations
 
 import builtins
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from polylogue.core.log import get_logger
 
