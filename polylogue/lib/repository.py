@@ -12,8 +12,9 @@ All database operations go through the StorageBackend protocol for clean abstrac
 from __future__ import annotations
 
 import builtins
-import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from polylogue.core.log import get_logger
 
 from polylogue.lib.models import Conversation
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
@@ -23,7 +24,7 @@ if TYPE_CHECKING:
     from polylogue.lib import filters
     from polylogue.protocols import StorageBackend, VectorProvider
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _records_to_conversation(
@@ -213,8 +214,7 @@ class ConversationRepository:
         """
         if not vector_provider:
             raise ValueError(
-                "Semantic search requires a vector provider. "
-                "Set QDRANT_URL and VOYAGE_API_KEY environment variables."
+                "Semantic search requires a vector provider. Set QDRANT_URL and VOYAGE_API_KEY environment variables."
             )
 
         # Query returns (message_id, score) tuples

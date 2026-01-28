@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from polylogue.assets import asset_path
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import open_connection
 
 
 @dataclass
@@ -160,6 +160,7 @@ class ConversationFormatter:
         Returns:
             Formatted markdown text
         """
+
         def _append_attachment(att: dict[str, Any], lines: list[str]) -> None:
             """Format an attachment as markdown."""
             name = None

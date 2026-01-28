@@ -21,13 +21,13 @@ from .drive_client import (
 )
 
 # Core ingestion
-from .ingest import IngestBundle, IngestResult, ingest_bundle
-
-# Source ingestion
 from .source import (
+    IngestBundle,
+    IngestResult,
     ParsedAttachment,
     ParsedConversation,
     ParsedMessage,
+    ingest_bundle,
     iter_source_conversations,
     parse_drive_payload,
 )

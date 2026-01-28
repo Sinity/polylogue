@@ -8,10 +8,11 @@ import threading
 from pydantic import BaseModel, field_validator
 
 from polylogue.core.json import dumps as json_dumps
+from typing import Any
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId
 
 # Valid provider name pattern: starts with letter, contains only letters, numbers, hyphens, underscores
-_PROVIDER_NAME_PATTERN = re.compile(r'^[a-zA-Z][a-zA-Z0-9_-]*$')
+_PROVIDER_NAME_PATTERN = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]*$")
 
 # Maximum reasonable file size (1TB)
 MAX_ATTACHMENT_SIZE = 1024 * 1024 * 1024 * 1024
@@ -107,6 +108,28 @@ class RunRecord(BaseModel):
     drift: dict[str, object] | None = None
     indexed: bool | None = None
     duration_ms: int | None = None
+
+
+class PlanResult(BaseModel):
+    timestamp: int
+    counts: dict[str, int]
+    sources: list[str]
+    cursors: dict[str, dict[str, Any]]
+
+
+class RunResult(BaseModel):
+    run_id: str
+    counts: dict[str, int]
+    drift: dict[str, dict[str, int]]
+    indexed: bool
+    index_error: str | None
+    duration_ms: int
+    render_failures: list[dict[str, str]] = []
+
+
+class ExistingConversation(BaseModel):
+    conversation_id: str
+    content_hash: str
 
 
 def _json_or_none(value: dict[str, object] | None) -> str | None:
@@ -356,7 +379,7 @@ def store_records(
         "skipped_attachments": 0,
     }
 
-    from .db import connection_context
+    from .backends.sqlite import connection_context
 
     with connection_context(conn) as db_conn, _WRITE_LOCK:
         if upsert_conversation(db_conn, conversation):

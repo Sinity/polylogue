@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable, Sequence
 
-from .db import connection_context, open_connection
+from .backends.sqlite import connection_context, open_connection
 from .search_providers import create_vector_provider
 
 
@@ -33,6 +33,7 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
     Args:
         conn: Optional SQLite connection. If None, creates a new connection.
     """
+
     def _do(db_conn: sqlite3.Connection) -> None:
         ensure_index(db_conn)
         db_conn.execute("DELETE FROM messages_fts")
