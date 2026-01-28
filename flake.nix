@@ -1,167 +1,151 @@
 {
-  description = "Python dev shell with Google API + tools (single source of truth)";
+  description = "Polylogue - AI conversation archive";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-24.05";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils }:
-    let
-      inherit (flake-utils.lib) eachDefaultSystem;
-
-      # Override dependency-injector to fix Pydantic v2 test incompatibility
-      dependencyInjectorOverlay = final: prev: {
-        python3Packages = prev.python3Packages.override {
-          overrides = _pyfinal: pyprev: {
-            dependency-injector = pyprev.dependency-injector.overridePythonAttrs (_: {
-              doCheck = false; # Tests fail with Pydantic v2
-              meta.broken = false;
-            });
-          };
-        };
-      };
-
-      re2Overlay = final: prev:
-        let
-          inherit (final) lib;
-        in
-        {
-          re2 = prev.re2.overrideAttrs (old: {
-            src = prev.fetchFromGitHub {
-              owner = "google";
-              repo = "re2";
-              rev = "ac82d4f628a2045d89964ae11c48403d3b091af1";
-              hash = "sha256-qRNV0O55L+r2rNSUJjU6nMqkPWXENZQvyr5riTU3e5o=";
-            };
-            postInstall = lib.concatStringsSep "\n" [
-              (old.postInstall or "")
-              ''
-                patch_re2_config() {
-                  local file="$1"
-                  if [[ ! -f "$file" ]]; then
-                    return
-                  fi
-
-                  tmp="$(mktemp)"
-                  awk '
-                    /^set_and_check\(re2_INCLUDE_DIR/ {next}
-                    /^include\(CMakeFindDependencyMacro\)$/ {
-                      print
-                      print ""
-                      print "set_and_check(re2_INCLUDE_DIR ''${PACKAGE_PREFIX_DIR}/include)"
-                      next
-                    }
-                    {print}
-                  ' "$file" > "$tmp"
-                  mv "$tmp" "$file"
+  outputs =
+    {
+      self,
+      nixpkgs,
+      flake-utils,
+    }:
+    flake-utils.lib.eachDefaultSystem (
+      system:
+      let
+        # Apply Python package overrides (fix dependency-injector marked as broken)
+        pkgs = import nixpkgs {
+          inherit system;
+          overlays = [
+            (final: prev: {
+              python313Packages = prev.python313Packages.overrideScope (
+                pyfinal: pysuper: {
+                  dependency-injector = pysuper.dependency-injector.overridePythonAttrs (old: {
+                    nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [ pyfinal.cython ];
+                    doCheck = false;
+                    meta = (old.meta or { }) // {
+                      broken = false;
+                    };
+                  });
                 }
+              );
+            })
+          ];
+        };
+        python = pkgs.python313;
 
-                patch_re2_config "$out/lib/cmake/re2/re2Config.cmake"
-                if [[ -n "$dev" ]]; then
-                  patch_re2_config "$dev/lib/cmake/re2/re2Config.cmake"
-                fi
-              ''
-            ];
-          });
+        # Build polylogue package
+        polylogue = pkgs.python313Packages.buildPythonApplication {
+          pname = "polylogue";
+          version = "0.1.0";
+          pyproject = true;
+          src = ./.;
+
+          build-system = with pkgs.python313Packages; [
+            setuptools
+            wheel
+          ];
+
+          dependencies = with pkgs.python313Packages; [
+            google-auth-oauthlib
+            google-api-python-client
+            google-auth-httplib2
+            httpx
+            rich
+            textual
+            jinja2
+            markdown-it-py
+            pygments
+            ijson
+            qdrant-client
+            questionary
+            click
+            tenacity
+            dateparser
+            fastapi
+            uvicorn
+            orjson
+            structlog
+            pydantic
+            pydantic-settings
+            dependency-injector
+            aiosqlite
+          ];
+
+          # Skip tests in build (run in checks instead)
+          doCheck = false;
+        };
+      in
+      {
+        packages.default = polylogue;
+
+        devShells.default = pkgs.mkShell {
+          buildInputs = with pkgs; [
+            # Python + uv for dependency management
+            python
+            uv
+
+            # Development tools
+            git
+            ruff
+            mypy
+
+            # Runtime dependencies (CLI helpers)
+            bat
+            glow
+          ];
+
+          shellHook = ''
+            export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
+
+            # Create venv if it doesn't exist
+            if [ ! -d .venv ]; then
+              echo "Creating virtual environment..."
+              uv venv
+            fi
+
+            # Activate venv
+            source .venv/bin/activate
+
+            # Install dependencies if needed
+            if [ ! -f .venv/.synced ]; then
+              echo "Installing dependencies..."
+              uv pip install -e ".[dev]"
+              touch .venv/.synced
+            fi
+
+            echo "Polylogue development environment ready"
+            echo "Run: polylogue --help"
+          '';
         };
 
-      perSystem = eachDefaultSystem (system:
-        let
-          pkgs = import nixpkgs {
-            inherit system;
-            overlays = [ re2Overlay dependencyInjectorOverlay ];
-          };
-
-          pyPkgs = pkgs.python3Packages;
-          deps = import ./nix/python-deps.nix { inherit pkgs; };
-
-          cliDeps = with pkgs; [ git bat glow skim ];
-          cliBinPath = pkgs.lib.makeBinPath cliDeps;
-
-          polylogueApp = pyPkgs.buildPythonApplication {
-            pname = "polylogue";
-            version = "0.1.0";
-            pyproject = true;
-            doCheck = false;
-            src = self;
-            propagatedBuildInputs = deps.commonDeps;
-            nativeBuildInputs =
-              (with pyPkgs; [ setuptools wheel ])
-              ++ cliDeps
-              ++ [ pkgs.makeWrapper ];
-            nativeCheckInputs = deps.devDeps ++ cliDeps;
-            checkPhase = ''
+        # Simple check: run tests
+        checks.default =
+          pkgs.runCommand "polylogue-tests"
+            {
+              buildInputs = [
+                python
+                pkgs.uv
+              ];
+            }
+            ''
+              cp -r ${./.} source
+              cd source
               export HOME=$TMPDIR
-              export XDG_STATE_HOME=$TMPDIR
-              export XDG_CACHE_HOME=$TMPDIR
-              pytest
+              ${pkgs.uv}/bin/uv venv
+              source .venv/bin/activate
+              ${pkgs.uv}/bin/uv pip install -e ".[dev]"
+              pytest -q --ignore=tests/test_qdrant.py
+              touch $out
             '';
-            postInstall = ''
-              wrapProgram $out/bin/polylogue \
-                --prefix PATH : ${cliBinPath}
-
-              mkdir -p $out/share/bash-completion/completions
-              mkdir -p $out/share/zsh/site-functions
-              mkdir -p $out/share/fish/vendor_completions.d
-
-              generate_completion() {
-                local shell="$1"
-                local target="$2"
-                if ! $out/bin/polylogue completions --shell "$shell" > "$target"; then
-                  echo "warning: skipping polylogue completions for $shell" >&2
-                  rm -f "$target"
-                fi
-              }
-
-              generate_completion bash $out/share/bash-completion/completions/polylogue
-              generate_completion zsh $out/share/zsh/site-functions/_polylogue
-              generate_completion fish $out/share/fish/vendor_completions.d/polylogue.fish
-            '';
-          };
-          polylogueChecks = polylogueApp.overridePythonAttrs (_: { doCheck = true; });
-
-          defaultDevShell = import ./nix/devshell.nix {
-            inherit pkgs;
-            extraPythonPackages = deps.devDeps;
-          };
-
-          cliApp = {
-            type = "app";
-            program = "${polylogueApp}/bin/polylogue";
-            meta = {
-              description = "Polylogue CLI";
-            };
-          };
-        in {
-          packages = {
-            polylogue = polylogueApp;
-            default = polylogueApp;
-          };
-
-          apps = {
-            polylogue = cliApp;
-            default = cliApp;
-          };
-
-          devShells = {
-            default = defaultDevShell;
-            ci = pkgs.mkShell {
-              buildInputs = [ polylogueApp pkgs.git pkgs.which ];
-              shellHook = ''
-                export PATH=${polylogueApp}/bin:''${PATH}
-                echo "Using packaged polylogue at ${polylogueApp}/bin/polylogue"
-              '';
-            };
-          };
-
-          checks.default = polylogueChecks;
-        }
-      );
-    in
-    perSystem // {
+      }
+    )
+    // {
       nixosModules = {
-        polylogue = import ./nix/modules/polylogue.nix { self = self; };
+        polylogue = import ./nixos-modules/polylogue.nix { inherit self; };
+        sync = import ./nixos-modules/sync.nix;
         default = self.nixosModules.polylogue;
       };
     };

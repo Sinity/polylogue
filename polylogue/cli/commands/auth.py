@@ -58,7 +58,7 @@ def _get_drive_paths(env: AppEnv) -> tuple[Path, Path]:
         return default_credentials_path(), default_token_path()
 
 
-def _drive_oauth_flow(env: AppEnv) -> None:
+def _drive_oauth_flow(env: AppEnv, retry_on_failure: bool = True) -> None:
     """Run interactive OAuth flow for Google Drive."""
     credentials_path, token_path = _get_drive_paths(env)
 
@@ -86,6 +86,12 @@ def _drive_oauth_flow(env: AppEnv) -> None:
         env.ui.console.print("Download OAuth credentials from Google Cloud Console.")
         raise SystemExit(1) from exc
     except Exception as exc:
+        # If token refresh failed and we haven't retried yet, delete token and retry
+        if retry_on_failure and token_path.exists() and "refresh" in str(exc).lower():
+            env.ui.console.print("[yellow]Token expired or revoked. Removing and re-authenticating...[/yellow]")
+            token_path.unlink()
+            _drive_oauth_flow(env, retry_on_failure=False)
+            return
         env.ui.console.print(f"[red]OAuth failed: {exc}[/red]")
         raise SystemExit(1) from exc
 

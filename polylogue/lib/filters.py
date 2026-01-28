@@ -316,23 +316,14 @@ class ConversationFilter:
 
         # Date filters
         if self._since_date:
-            results = [
-                c for c in results
-                if c.updated_at and c.updated_at >= self._since_date
-            ]
+            results = [c for c in results if c.updated_at and c.updated_at >= self._since_date]
         if self._until_date:
-            results = [
-                c for c in results
-                if c.updated_at and c.updated_at <= self._until_date
-            ]
+            results = [c for c in results if c.updated_at and c.updated_at <= self._until_date]
 
         # Title filter
         if self._title_pattern:
             pattern_lower = self._title_pattern.lower()
-            results = [
-                c for c in results
-                if c.display_title and pattern_lower in c.display_title.lower()
-            ]
+            results = [c for c in results if c.display_title and pattern_lower in c.display_title.lower()]
 
         # ID prefix filter
         if self._id_prefix:
@@ -354,10 +345,7 @@ class ConversationFilter:
         if self._negative_fts_terms:
             for term in self._negative_fts_terms:
                 term_lower = term.lower()
-                results = [
-                    c for c in results
-                    if not any(term_lower in m.text.lower() for m in c.messages if m.text)
-                ]
+                results = [c for c in results if not any(term_lower in m.text.lower() for m in c.messages if m.text)]
 
         # Custom predicates
         for predicate in self._predicates:
@@ -380,8 +368,13 @@ class ConversationFilter:
             return shuffled
 
         def sort_key(c: Conversation) -> Any:
+            # Use UTC-aware min for comparison with aware timestamps
+            from datetime import timezone
+
+            dt_min = datetime.min.replace(tzinfo=timezone.utc)
+
             if self._sort_field == "date":
-                return c.updated_at or datetime.min
+                return c.updated_at or dt_min
             elif self._sort_field == "messages":
                 return len(c.messages)
             elif self._sort_field == "words":
@@ -391,7 +384,7 @@ class ConversationFilter:
             elif self._sort_field == "tokens":
                 # Approximate: 1 token ≈ 4 chars
                 return sum(len(m.text or "") for m in c.messages) // 4
-            return c.updated_at or datetime.min
+            return c.updated_at or dt_min
 
         return sorted(
             conversations,
@@ -456,7 +449,7 @@ class ConversationFilter:
 
         # Apply limit
         if self._limit_count is not None:
-            sorted_results = sorted_results[:self._limit_count]
+            sorted_results = sorted_results[: self._limit_count]
 
         return sorted_results
 
@@ -495,10 +488,7 @@ class ConversationFilter:
                 Use direct backend methods for now.
         """
         # TODO: Add delete_conversation to StorageBackend protocol
-        raise NotImplementedError(
-            "Deletion via filter chain not yet implemented. "
-            "Use direct backend methods for now."
-        )
+        raise NotImplementedError("Deletion via filter chain not yet implemented. Use direct backend methods for now.")
 
     def pick(self) -> Conversation | None:
         """Interactive picker for matching conversations.

@@ -199,31 +199,6 @@ class TestHTMLRenderer:
         assert "test-provider" in content
         assert "Hello, can you help me?" in content
 
-    def test_render_with_custom_template(self, workspace_env, sample_conversation_id, tmp_path):
-        """Test rendering with a custom template."""
-        custom_template = tmp_path / "custom.html"
-        custom_template.write_text(
-            """
-            <html>
-            <head><title>Custom: {{ title }}</title></head>
-            <body><div class="custom">{{ body|safe }}</div></body>
-            </html>
-            """
-        )
-
-        renderer = HTMLRenderer(
-            archive_root=workspace_env["archive_root"],
-            template_path=custom_template,
-        )
-        output_path = workspace_env["archive_root"] / "render"
-
-        result_path = renderer.render(sample_conversation_id, output_path)
-        content = result_path.read_text()
-
-        # Verify custom template was used
-        assert "<title>Custom: Test Conversation</title>" in content
-        assert '<div class="custom">' in content
-
     def test_render_nonexistent_conversation(self, workspace_env):
         """Test that rendering nonexistent conversation raises error."""
         renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
@@ -252,11 +227,9 @@ class TestRendererFactory:
         """Test creating a Markdown renderer via factory."""
 
         config = Config(
-            version=1,
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
             sources=[],
-            path=Path("/tmp/test_config.json"),
         )
 
         renderer = create_renderer("markdown", config)
@@ -268,11 +241,9 @@ class TestRendererFactory:
         """Test creating an HTML renderer via factory."""
 
         config = Config(
-            version=1,
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
             sources=[],
-            path=Path("/tmp/test_config.json"),
         )
 
         renderer = create_renderer("html", config)
@@ -284,11 +255,9 @@ class TestRendererFactory:
         """Test that format parameter is case-insensitive."""
 
         config = Config(
-            version=1,
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
             sources=[],
-            path=Path("/tmp/test_config.json"),
         )
 
         renderer1 = create_renderer("HTML", config)
@@ -303,11 +272,9 @@ class TestRendererFactory:
         """Test that unsupported format raises ValueError."""
 
         config = Config(
-            version=1,
             archive_root=workspace_env["archive_root"],
             render_root=workspace_env["archive_root"] / "render",
             sources=[],
-            path=Path("/tmp/test_config.json"),
         )
 
         with pytest.raises(ValueError, match="Unsupported format: json"):

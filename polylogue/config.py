@@ -1,367 +1,104 @@
+"""Minimal configuration for polylogue (zero-config).
+
+This module provides configuration objects with hardcoded XDG paths.
+There is no config file, no load_config(), no write_config().
+All paths come from polylogue.paths.
+"""
+
 from __future__ import annotations
 
-import json
-import os
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .paths import CONFIG_HOME, DATA_HOME
-
-CONFIG_VERSION = 2
-DEFAULT_CONFIG_NAME = "config.json"
-DEFAULT_ARCHIVE_ROOT = DATA_HOME / "archive"
-DEFAULT_INBOX_ROOT = DATA_HOME / "inbox"
-
-_ALLOWED_TOP_LEVEL_KEYS = {"version", "archive_root", "render_root", "sources", "template_path"}
-_ALLOWED_SOURCE_KEYS = {"name", "path", "folder"}
+from .paths import (
+    ARCHIVE_ROOT,
+    DB_PATH,
+    RENDER_ROOT,
+    DriveConfig,
+    IndexConfig,
+    Source,
+    get_drive_config,
+    get_index_config,
+    get_sources,
+)
 
 
 class ConfigError(RuntimeError):
+    """Configuration error (kept for backward compatibility with error handling)."""
+
     pass
 
 
 @dataclass
-class Source:
-    name: str
-    path: Path | None = None
-    folder: str | None = None
-
-    def __post_init__(self) -> None:
-        """Validate source configuration."""
-        # Name validation
-        if not self.name or not self.name.strip():
-            raise ValueError("Source name cannot be empty")
-        self.name = self.name.strip()
-
-        # Path/folder validation
-        has_path = self.path is not None
-        has_folder = self.folder is not None and self.folder.strip()
-
-        if not has_path and not has_folder:
-            raise ValueError(f"Source '{self.name}' must have either 'path' or 'folder'")
-        if has_path and has_folder:
-            raise ValueError(f"Source '{self.name}' cannot have both 'path' and 'folder' (ambiguous)")
-
-        # Normalize folder
-        if self.folder:
-            self.folder = self.folder.strip()
-
-    def as_dict(self) -> dict[str, str]:
-        payload: dict[str, str] = {"name": self.name}
-        if self.path is not None:
-            payload["path"] = str(self.path)
-        if self.folder is not None:
-            payload["folder"] = self.folder
-        return payload
-
-    @property
-    def is_drive(self) -> bool:
-        return self.folder is not None
-
-
-@dataclass
-class DriveConfig:
-    """Configuration for Google Drive integration."""
-    credentials_path: Path | None = None
-    token_path: Path | None = None
-    retry_count: int = 3
-    timeout: int = 30
-
-
-@dataclass
-class IndexConfig:
-    """Configuration for search and vector indexing."""
-    fts_enabled: bool = True
-    qdrant_url: str | None = None
-    qdrant_api_key: str | None = None
-    voyage_api_key: str | None = None
-
-
-@dataclass
 class Config:
-    version: int
+    """Application configuration with hardcoded paths.
+
+    This class exists for backward compatibility with code that expects a Config object.
+    All values are derived from polylogue.paths - there is no config file.
+    """
+
     archive_root: Path
     render_root: Path
     sources: list[Source]
-    path: Path
-    template_path: Path | None = None
     drive_config: DriveConfig | None = None
     index_config: IndexConfig | None = None
 
-    def __post_init__(self) -> None:
-        """Validate config invariants."""
-        # Check for duplicate source names
-        names = [s.name for s in self.sources]
-        duplicates = {name for name in names if names.count(name) > 1}
-        if duplicates:
-            dup_list = ", ".join(sorted(duplicates))
-            raise ConfigError(f"Duplicate source name(s): {dup_list}")
-
-    def as_dict(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "version": self.version,
-            "archive_root": str(self.archive_root),
-            "render_root": str(self.render_root),
-            "sources": [source.as_dict() for source in self.sources],
-        }
-        if self.template_path:
-            payload["template_path"] = str(self.template_path)
-        return payload
+    @property
+    def db_path(self) -> Path:
+        """Database path (always XDG default)."""
+        return DB_PATH
 
 
-def _config_path(explicit: Path | None = None) -> Path:
-    env_path = os.environ.get("POLYLOGUE_CONFIG")
-    if env_path:
-        return Path(env_path).expanduser()
-    if explicit:
-        return explicit.expanduser()
-    return CONFIG_HOME / DEFAULT_CONFIG_NAME
+def get_config() -> Config:
+    """Return the hardcoded configuration.
 
-
-def _ensure_keys(data: dict[str, object], *, allowed: Iterable[str], context: str) -> None:
-    unknown = set(data.keys()) - set(allowed)
-    if unknown:
-        keys = ", ".join(sorted(unknown))
-        raise ConfigError(f"Unknown {context} key(s): {keys}")
-
-
-def _parse_source(raw: dict[str, object]) -> Source:
-    _ensure_keys(raw, allowed=_ALLOWED_SOURCE_KEYS, context="source")
-    name = raw.get("name")
-    if not isinstance(name, str) or not name.strip():
-        raise ConfigError("Source 'name' must be a non-empty string")
-    path = raw.get("path")
-    folder = raw.get("folder")
-    if path is not None and folder is not None:
-        raise ConfigError(f"Source '{name}' must not set both 'path' and 'folder'")
-    if folder is not None:
-        if not isinstance(folder, str) or not folder.strip():
-            raise ConfigError(f"Drive source '{name}' requires non-empty 'folder'")
-    else:
-        if not isinstance(path, str) or not path.strip():
-            raise ConfigError(f"Source '{name}' requires non-empty 'path'")
-    return Source(
-        name=name.strip(),
-        path=Path(path).expanduser() if isinstance(path, str) else None,
-        folder=folder.strip() if isinstance(folder, str) else None,
-    )
-
-
-def _load_drive_config_from_env() -> DriveConfig:
-    """Load DriveConfig from environment variables for backward compatibility."""
-    credentials_path_str = os.environ.get("POLYLOGUE_CREDENTIAL_PATH")
-    token_path_str = os.environ.get("POLYLOGUE_TOKEN_PATH")
-    retry_count_str = os.environ.get("POLYLOGUE_DRIVE_RETRIES")
-
-    credentials_path = Path(credentials_path_str).expanduser() if credentials_path_str else None
-    token_path = Path(token_path_str).expanduser() if token_path_str else None
-
-    retry_count = 3
-    if retry_count_str:
-        try:
-            retry_count = max(0, int(retry_count_str))
-        except ValueError:
-            pass
-
-    return DriveConfig(
-        credentials_path=credentials_path,
-        token_path=token_path,
-        retry_count=retry_count,
-    )
-
-
-def _load_index_config_from_env() -> IndexConfig:
-    """Load IndexConfig from environment variables for backward compatibility."""
-    return IndexConfig(
-        fts_enabled=True,
-        qdrant_url=os.environ.get("QDRANT_URL"),
-        qdrant_api_key=os.environ.get("QDRANT_API_KEY"),
-        voyage_api_key=os.environ.get("VOYAGE_API_KEY"),
-    )
-
-
-def default_config(
-    path: Path | None = None,
-    *,
-    archive_root: Path | None = None,
-    render_root: Path | None = None,
-    template_path: Path | None = None,
-) -> Config:
-    config_path = _config_path(path)
-    env_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
-    env_render_root = os.environ.get("POLYLOGUE_RENDER_ROOT")
-    env_template_path = os.environ.get("POLYLOGUE_TEMPLATE_PATH")
-
-    if archive_root:
-        root = archive_root.expanduser()
-    elif env_root:
-        root = Path(env_root).expanduser()
-    else:
-        root = DEFAULT_ARCHIVE_ROOT
-
-    if render_root:
-        resolved_render_root = render_root.expanduser()
-    elif env_render_root:
-        resolved_render_root = Path(env_render_root).expanduser()
-    else:
-        resolved_render_root = root / "render"
-
-    if template_path:
-        resolved_template_path = template_path.expanduser()
-    elif env_template_path:
-        resolved_template_path = Path(env_template_path).expanduser()
-    else:
-        resolved_template_path = None
-
-    sources = [Source(name="inbox", path=DEFAULT_INBOX_ROOT)]
+    This replaces load_config(). There is no config file to load.
+    All values come from XDG paths in polylogue.paths.
+    """
     return Config(
-        version=CONFIG_VERSION,
-        archive_root=root,
-        render_root=resolved_render_root,
-        sources=sources,
-        path=config_path,
-        template_path=resolved_template_path,
-        drive_config=_load_drive_config_from_env(),
-        index_config=_load_index_config_from_env(),
+        archive_root=ARCHIVE_ROOT,
+        render_root=RENDER_ROOT,
+        sources=get_sources(),
+        drive_config=get_drive_config(),
+        index_config=get_index_config(),
     )
 
 
+# Backward compatibility aliases
 def load_config(path: Path | None = None) -> Config:
-    """Load config from file, or return default config if file doesn't exist.
+    """Load configuration (ignores path argument - zero-config).
 
-    This allows polylogue to work without explicit configuration - it will
-    use sensible defaults with an inbox source discovery pattern.
+    This function exists for backward compatibility. The path argument is ignored.
+    All configuration comes from hardcoded XDG paths.
     """
-    config_path = _config_path(path)
-    if not config_path.exists():
-        return default_config(path=config_path)
-    try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ConfigError(f"Invalid JSON in config file {config_path}: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise ConfigError("Config payload must be a JSON object")
-    _ensure_keys(raw, allowed=_ALLOWED_TOP_LEVEL_KEYS, context="config")
-    version = raw.get("version")
-    if version != CONFIG_VERSION:
-        raise ConfigError(f"Unsupported config version '{version}', expected {CONFIG_VERSION}")
-    archive_root = raw.get("archive_root")
-    if not isinstance(archive_root, str) or not archive_root.strip():
-        raise ConfigError("Config 'archive_root' must be a non-empty string")
-    render_root = raw.get("render_root")
-    if render_root is not None and (not isinstance(render_root, str) or not render_root.strip()):
-        raise ConfigError("Config 'render_root' must be a non-empty string when provided")
-    
-    template_path_raw = raw.get("template_path")
-    if template_path_raw is not None and (not isinstance(template_path_raw, str) or not template_path_raw.strip()):
-        raise ConfigError("Config 'template_path' must be a non-empty string when provided")
-
-    sources_raw = raw.get("sources")
-    if not isinstance(sources_raw, list):
-        raise ConfigError("Config 'sources' must be a list")
-    sources = [_parse_source(entry) for entry in sources_raw]
-    names = [source.name for source in sources]
-    duplicates = {name for name in names if names.count(name) > 1}
-    if duplicates:
-        dup_list = ", ".join(sorted(duplicates))
-        raise ConfigError(f"Duplicate source name(s): {dup_list}")
-
-    env_root = os.environ.get("POLYLOGUE_ARCHIVE_ROOT")
-    root = Path(env_root).expanduser() if env_root else Path(archive_root).expanduser()
-    env_render_root = os.environ.get("POLYLOGUE_RENDER_ROOT")
-    if env_render_root:
-        resolved_render_root = Path(env_render_root).expanduser()
-    elif isinstance(render_root, str) and render_root.strip():
-        resolved_render_root = Path(render_root).expanduser()
-    else:
-        resolved_render_root = root / "render"
-        
-    env_template_path = os.environ.get("POLYLOGUE_TEMPLATE_PATH")
-    if env_template_path:
-        resolved_template_path = Path(env_template_path).expanduser()
-    elif isinstance(template_path_raw, str) and template_path_raw.strip():
-        resolved_template_path = Path(template_path_raw).expanduser()
-    else:
-        resolved_template_path = None
-
-    return Config(
-        version=CONFIG_VERSION,
-        archive_root=root,
-        render_root=resolved_render_root,
-        sources=sources,
-        path=config_path,
-        template_path=resolved_template_path,
-        drive_config=_load_drive_config_from_env(),
-        index_config=_load_index_config_from_env(),
-    )
+    return get_config()
 
 
-def write_config(config: Config) -> None:
-    config.path.parent.mkdir(parents=True, exist_ok=True)
-    config.path.write_text(json.dumps(config.as_dict(), indent=2), encoding="utf-8")
+def default_config() -> Config:
+    """Backward compatibility alias for get_config()."""
+    return get_config()
 
 
-def update_config(
-    config: Config,
-    *,
-    archive_root: Path | None = None,
-    render_root: Path | None = None,
-) -> Config:
-    """Update config paths, returning a new Config instance.
-
-    This function returns a new Config object with updated values rather than
-    mutating the input config in place. This makes the API more predictable
-    and prevents unintended side effects.
-
-    Args:
-        config: The config to update (not modified).
-        archive_root: If provided, set as the new archive_root (will be expanded).
-        render_root: If provided, set as the new render_root (will be expanded).
-
-    Returns:
-        A new Config object with the updated values. The original config is unchanged.
-    """
-    from dataclasses import replace
-
-    new_archive_root = archive_root.expanduser() if archive_root is not None else config.archive_root
-    new_render_root = render_root.expanduser() if render_root is not None else config.render_root
-
-    if new_archive_root == config.archive_root and new_render_root == config.render_root:
-        return config
-
-    return replace(config, archive_root=new_archive_root, render_root=new_render_root)
+def write_config(config: Config, path: Path | None = None) -> None:
+    """Backward compatibility stub - no-op since zero-config."""
+    pass
 
 
-def update_source(config: Config, source_name: str, field: str, value: str) -> Config:
-    """Update a source's field by mutating the config.sources list in place.
-
-    WARNING: Unlike update_config(), this function mutates the config object's sources
-    list by modifying the matching Source object in place. The config parameter is
-    returned for convenience, but it has been modified.
-
-    Args:
-        config: The config to update (WILL BE MUTATED - sources list modified in place).
-        source_name: Name of the source to update.
-        field: Field to update ('path' or 'folder').
-        value: New value for the field.
-
-    Returns:
-        The same config object that was passed in (now mutated).
-
-    Raises:
-        ConfigError: If source_name is not found or field is unknown.
-    """
-    matches = [source for source in config.sources if source.name == source_name]
-    if not matches:
-        raise ConfigError(f"Source '{source_name}' not found")
-    source = matches[0]
-    if field == "path":
-        source.path = Path(value).expanduser()
-        source.folder = None
-    elif field == "folder":
-        source.folder = value
-        source.path = None
-    else:
-        raise ConfigError(f"Unknown source field '{field}'")
+def update_config(config: Config, **kwargs: object) -> Config:
+    """Backward compatibility stub - returns config unchanged."""
     return config
+
+
+# Re-export from paths for backward compatibility
+__all__ = [
+    "Config",
+    "ConfigError",
+    "DriveConfig",
+    "IndexConfig",
+    "Source",
+    "get_config",
+    "load_config",
+    "default_config",
+    "write_config",
+    "update_config",
+]

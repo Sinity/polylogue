@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 
 import click
 
@@ -20,10 +19,10 @@ from polylogue.cli.helpers import (
     resolve_sources,
 )
 from polylogue.cli.types import AppEnv
-from polylogue.config import Config, ConfigError
+from polylogue.config import Config
 from polylogue.core.timestamps import format_timestamp
 from polylogue.ingestion import DriveError
-from polylogue.pipeline.models import PlanResult, RunResult
+from polylogue.storage.store import PlanResult, RunResult
 from polylogue.pipeline.runner import plan_sources, run_sources
 
 
@@ -138,6 +137,7 @@ def _notify_new_conversations(count: int) -> None:
     """Send desktop notification for new conversations."""
     try:
         import subprocess
+
         subprocess.run(
             ["notify-send", "Polylogue", f"Synced {count} new conversation(s)"],
             capture_output=True,
@@ -151,6 +151,7 @@ def _exec_on_new(exec_cmd: str, count: int) -> None:
     """Execute command when new conversations are synced."""
     import os
     import subprocess
+
     env = os.environ.copy()
     env["POLYLOGUE_NEW_COUNT"] = str(count)
     subprocess.run(exec_cmd, shell=True, env=env, check=False)
@@ -161,6 +162,7 @@ def _webhook_on_new(webhook_url: str, count: int) -> None:
     try:
         import json as json_lib
         import urllib.request
+
         data = json_lib.dumps({"event": "sync", "new_conversations": count}).encode()
         req = urllib.request.Request(
             webhook_url,
@@ -182,7 +184,6 @@ def _webhook_on_new(webhook_url: str, count: int) -> None:
     multiple=True,
     help="Limit to source name (repeatable, or 'last'). Use `polylogue sources` to list.",
 )
-@click.option("--config", type=click.Path(path_type=Path), help="Path to config file")
 @click.option(
     "--format",
     "render_format",
@@ -202,7 +203,6 @@ def sync_command(
     preview: bool,
     stage: str,
     sources: tuple[str, ...],
-    config: Path | None,
     render_format: str,
     watch: bool,
     notify: bool,
@@ -215,10 +215,7 @@ def sync_command(
     if (notify or exec_cmd or webhook) and not watch:
         fail("sync", "--notify, --exec, and --webhook require --watch mode")
 
-    try:
-        cfg = create_config(config or env.config_path)
-    except ConfigError as exc:
-        fail("sync", str(exc))
+    cfg = create_config()
 
     selected_sources = resolve_sources(cfg, sources, "sync")
     selected_sources = maybe_prompt_sources(env, cfg, selected_sources, "sync")
@@ -285,14 +282,10 @@ def sync_command(
 
 @click.command("sources")
 @click.option("--json", "json_output", is_flag=True, help="Output JSON")
-@click.option("--config", type=click.Path(path_type=Path), help="Path to config file")
 @click.pass_obj
-def sources_command(env: AppEnv, json_output: bool, config: Path | None) -> None:
+def sources_command(env: AppEnv, json_output: bool) -> None:
     """List configured sources."""
-    try:
-        cfg = create_config(config or env.config_path)
-    except ConfigError as exc:
-        fail("sources", str(exc))
+    cfg = create_config()
     if json_output:
         payload = [
             {
