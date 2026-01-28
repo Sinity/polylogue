@@ -5,15 +5,56 @@ import logging
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
-from typing import IO, Any, BinaryIO
+from typing import IO, Any, BinaryIO, TYPE_CHECKING
 
 import ijson
+
+from pydantic import BaseModel
 
 from ..config import Source
 from ..importers import chatgpt, claude, codex, drive
 from ..importers.base import ParsedAttachment, ParsedConversation, ParsedMessage, extract_messages_from_list
+from ..storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+
+if TYPE_CHECKING:
+    from ..storage.repository import StorageRepository
 
 LOGGER = logging.getLogger(__name__)
+
+
+class IngestBundle(BaseModel):
+    conversation: ConversationRecord
+    messages: list[MessageRecord]
+    attachments: list[AttachmentRecord]
+
+
+class IngestResult(BaseModel):
+    conversations: int
+    messages: int
+    attachments: int
+    skipped_conversations: int
+    skipped_messages: int
+    skipped_attachments: int
+
+
+def ingest_bundle(bundle: IngestBundle, repository: StorageRepository) -> IngestResult:
+    """Ingest a bundle of records into the repository.
+
+    Args:
+        bundle: Bundle containing conversation, messages, and attachments
+        repository: Storage repository to safe records to
+
+    Returns:
+        IngestResult with counts of imported/skipped items
+    """
+    counts = repository.save_conversation(
+        conversation=bundle.conversation,
+        messages=bundle.messages,
+        attachments=bundle.attachments,
+    )
+    return IngestResult(**counts)
+
+
 _ENCODING_GUESSES: tuple[str, ...] = (
     "utf-8",
     "utf-8-sig",

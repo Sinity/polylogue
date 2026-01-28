@@ -117,6 +117,7 @@ class AsyncPolylogue:
 
         # Convert to Conversation model
         from polylogue.lib.repository import _records_to_conversation
+
         return _records_to_conversation(conv_record, msg_records, [])
 
     async def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]:
@@ -142,14 +143,18 @@ class AsyncPolylogue:
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Filter out None and exceptions
-        conversations = []
+        conversations: list[Conversation] = []
         for result in results:
             if isinstance(result, Exception):
                 # Log error but don't fail the whole batch
                 import logging
+
                 logging.warning(f"Failed to fetch conversation: {result}")
             elif result is not None:
-                conversations.append(result)
+                # Safe because we filtered Exceptions and None
+                from typing import cast
+
+                conversations.append(cast(Conversation, result))
 
         return conversations
 
@@ -179,14 +184,16 @@ class AsyncPolylogue:
         import asyncio
         from polylogue.lib.repository import _records_to_conversation
 
-        async def _fetch_with_messages(conv_record):
+        # Define helper with explicit types
+        from polylogue.storage.store import ConversationRecord
+
+        async def _fetch_with_messages(conv_record: ConversationRecord) -> Conversation:
             msg_records = await self._backend.get_messages(conv_record.conversation_id)
             return _records_to_conversation(conv_record, msg_records, [])
 
         tasks = [_fetch_with_messages(cr) for cr in conv_records]
-        conversations = await asyncio.gather(*tasks)
-
-        return list(conversations)
+        results = await asyncio.gather(*tasks)
+        return list(results)
 
     async def stats(self) -> dict[str, object]:
         """Get archive statistics.
