@@ -134,8 +134,8 @@ def parse_drive_payload(provider: str, payload: Any, fallback_id: str) -> list[P
         # Check if it looks like a list of conversations or a list of messages
         # For drive/gemini, if it's a list, it's often a list of chunks
         if payload and isinstance(payload[0], dict) and ("role" in payload[0] or "text" in payload[0]):
-             return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
-        
+            return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
+
         results = []
         for i, item in enumerate(payload):
             results.extend(parse_drive_payload(provider, item, f"{fallback_id}-{i}"))
@@ -150,6 +150,7 @@ def parse_drive_payload(provider: str, payload: Any, fallback_id: str) -> list[P
 
 def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists: bool = True) -> Iterable[Any]:
     if path_name.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson")):
+        error_count = 0
         for line in handle:
             raw = line.strip()
             if not raw:
@@ -164,8 +165,15 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
             try:
                 yield json.loads(decoded)
             except json.JSONDecodeError as exc:
-                LOGGER.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
+                # Log first few errors, then summarize
+                error_count += 1
+                if error_count <= 3:
+                    LOGGER.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
+                elif error_count == 4:
+                    LOGGER.warning("Skipping further invalid JSON lines in %s...", path_name)
                 continue
+        if error_count > 3:
+            LOGGER.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
         return
 
     if unpack_lists:
@@ -212,10 +220,10 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
                 yield data
     except json.JSONDecodeError as e:
         LOGGER.warning("Failed to parse JSON from %s: %s", path_name, e)
-        raise  # Re-raise so caller can track failure
+        # Continue to next strategy or file
     except Exception as e:
         LOGGER.warning("Strategy 3 failed for %s: %s", path_name, e)
-        raise
+        # Continue to next strategy or file
 
 
 _INGEST_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
@@ -233,7 +241,9 @@ def _has_ingest_extension(path: Path) -> bool:
     return path.suffix.lower() in _INGEST_EXTENSIONS
 
 
-def iter_source_conversations(source: Source, *, cursor_state: dict[str, Any] | None = None) -> Iterable[ParsedConversation]:
+def iter_source_conversations(
+    source: Source, *, cursor_state: dict[str, Any] | None = None
+) -> Iterable[ParsedConversation]:
     if not source.path:
         return
     base = source.path.expanduser()
@@ -280,26 +290,28 @@ def iter_source_conversations(source: Source, *, cursor_state: dict[str, Any] | 
                             if ratio > MAX_COMPRESSION_RATIO:
                                 LOGGER.warning(
                                     "Skipping suspicious file %s in %s: compression ratio %.1f exceeds limit",
-                                    name, path, ratio
+                                    name,
+                                    path,
+                                    ratio,
                                 )
                                 if cursor_state is not None:
-                                    cursor_state["failed_files"].append({
-                                        "path": f"{path}:{name}",
-                                        "error": f"Suspicious compression ratio: {ratio:.1f}"
-                                    })
+                                    cursor_state["failed_files"].append(
+                                        {
+                                            "path": f"{path}:{name}",
+                                            "error": f"Suspicious compression ratio: {ratio:.1f}",
+                                        }
+                                    )
                                     cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
                                 continue
 
                         if info.file_size > MAX_UNCOMPRESSED_SIZE:
                             LOGGER.warning(
-                                "Skipping oversized file %s in %s: %d bytes exceeds limit",
-                                name, path, info.file_size
+                                "Skipping oversized file %s in %s: %d bytes exceeds limit", name, path, info.file_size
                             )
                             if cursor_state is not None:
-                                cursor_state["failed_files"].append({
-                                    "path": f"{path}:{name}",
-                                    "error": f"File size {info.file_size} exceeds limit"
-                                })
+                                cursor_state["failed_files"].append(
+                                    {"path": f"{path}:{name}", "error": f"File size {info.file_size} exceeds limit"}
+                                )
                                 cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
                             continue
 
@@ -342,10 +354,9 @@ def iter_source_conversations(source: Source, *, cursor_state: dict[str, Any] | 
             # TOCTOU race condition: file existed during directory scan but was deleted before read
             LOGGER.warning("File disappeared during processing (TOCTOU race): %s", path)
             if cursor_state is not None:
-                cursor_state["failed_files"].append({
-                    "path": str(path),
-                    "error": f"File not found (may have been deleted): {exc}"
-                })
+                cursor_state["failed_files"].append(
+                    {"path": str(path), "error": f"File not found (may have been deleted): {exc}"}
+                )
                 cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
             continue
         except (json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
