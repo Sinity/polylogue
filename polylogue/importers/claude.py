@@ -60,10 +60,10 @@ def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[li
             continue
         message_id = str(item.get("uuid") or item.get("id") or item.get("message_id") or f"msg-{idx}")
         role = normalize_role(item.get("sender") or item.get("role"))
-        
+
         raw_ts = item.get("created_at") or item.get("create_time") or item.get("timestamp")
         timestamp = normalize_timestamp(raw_ts)
-        
+
         # Check for text field directly first (Claude AI format)
         text = item.get("text") if isinstance(item.get("text"), str) else None
         # Then check content field

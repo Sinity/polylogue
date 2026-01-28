@@ -9,7 +9,7 @@ from typing import NoReturn
 
 from polylogue.cli.formatting import format_sources_summary
 from polylogue.cli.types import AppEnv
-from polylogue.config import Config, ConfigError, load_config
+from polylogue.config import Config, load_config
 from polylogue.health import cached_health_summary, get_health
 from polylogue.pipeline.runner import latest_run
 
@@ -79,7 +79,8 @@ def maybe_prompt_sources(
 
 
 def load_effective_config(env: AppEnv) -> Config:
-    return load_config(env.config_path)
+    """Return the hardcoded configuration (zero-config)."""
+    return load_config()
 
 
 def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> list[str] | None:
@@ -103,48 +104,112 @@ def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> l
 
 def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     ui = env.ui
-    try:
-        config = load_effective_config(env)
-    except ConfigError as exc:
-        ui.console.print(f"[yellow]{exc}[/yellow]")
-        ui.console.print("Run `polylogue config init` to create a config.")
-        return
+    config = load_effective_config(env)
     last_run_data = latest_run()
     last_line = "Last run: none"
     if last_run_data:
         last_line = f"Last run: {last_run_data.run_id} ({last_run_data.timestamp})"
 
     lines = [
-        f"Config: {config.path}",
-        f"Archive root: {config.archive_root}",
-        f"Render root: {config.render_root}",
+        f"Archive: {config.archive_root}",
+        f"Render: {config.render_root}",
         f"Sources: {format_sources_summary(config.sources)}",
         last_line,
     ]
 
     if verbose:
         # Show detailed health checks
-        payload = get_health(config)
-        cached = payload.get("cached")
-        age = payload.get("age_seconds")
+        report = get_health(config)
+        cached = report.cached
+        age = report.age_seconds
         health_header = f"Health (cached={cached}, age={age}s)" if cached is not None else "Health"
         lines.append(health_header)
-        checks = payload.get("checks")
-        if isinstance(checks, list):
+        checks = report.checks
+        if checks:
             for check in checks:
-                if isinstance(check, dict):
-                    name = check.get("name")
-                    status = check.get("status")
-                    detail = check.get("detail")
-                    status_str = str(status) if status else "?"
-                    icon = {"ok": "[green]✓[/green]", "warning": "[yellow]![/yellow]", "error": "[red]✗[/red]"}.get(status_str, "?")
-                    if ui.plain:
-                        icon = {"ok": "OK", "warning": "WARN", "error": "ERR"}.get(status_str, "?")
-                    lines.append(f"  {icon} {name}: {detail}")
+                name = check.name
+                status = check.status
+                detail = check.detail
+                status_str = str(status) if status else "?"
+                icon = {"ok": "[green]✓[/green]", "warning": "[yellow]![/yellow]", "error": "[red]✗[/red]"}.get(
+                    status_str, "?"
+                )
+                if ui.plain:
+                    icon = {"ok": "OK", "warning": "WARN", "error": "ERR"}.get(status_str, "?")
+                lines.append(f"  {icon} {name}: {detail}")
     else:
         lines.append(f"Health: {cached_health_summary(config.archive_root)}")
 
     ui.summary("Polylogue", lines)
+
+    # Show analytics visualization (compatible with plain mode too)
+    if True:
+        try:
+            from polylogue.analytics.metrics import compute_provider_comparison
+
+            metrics = compute_provider_comparison()
+            if metrics:
+                ui.console.print()
+                total_convs = sum(m.conversation_count for m in metrics)
+
+                # Header with total
+                # Archive: 1,234 conversations (size not easily available without du call, skipping size)
+                ui.console.print(f"[bold]Archive:[/bold] {total_convs:,} conversations")
+
+                max_width = 30
+                for m in metrics:
+                    if total_convs > 0:
+                        pct = (m.conversation_count / total_convs) * 100
+                        bar_len = int((m.conversation_count / total_convs) * max_width)
+                    else:
+                        pct = 0
+                        bar_len = 0
+
+                    bar = "█" * bar_len
+                    # Colors per provider matching typical brand colors loosely
+                    color = "white"
+                    if "claude" in m.provider_name:
+                        color = "#d97757"  # Claude orange-ish
+                    elif "chatgpt" in m.provider_name:
+                        color = "#10a37f"  # OpenAI green
+                    elif "gemini" in m.provider_name:
+                        color = "#4285f4"  # Google blue
+                    elif "codex" in m.provider_name:
+                        color = "cyan"
+
+                    # Format:   claude-code:   512 (41%)  │  ████████████
+                    name_padded = f"{m.provider_name}:".ljust(14)
+                    count_padded = f"{m.conversation_count:,}".rjust(5)
+                    pct_padded = f"({pct:.0f}%)".rjust(5)
+
+                    ui.console.print(f"  {name_padded} {count_padded} {pct_padded}  │  [{color}]{bar}[/{color}]")
+
+                # Additional stats if verbose
+                if verbose:
+                    ui.console.print()
+                    ui.console.print("[bold]Deep Dive:[/bold]")
+                    for m in metrics:
+                        ui.console.print(f"[bold]{m.provider_name}[/bold]")
+                        ui.console.print(
+                            f"  Messages: {m.message_count:,} (avg {m.avg_messages_per_conversation:.1f}/conv)"
+                        )
+                        ui.console.print(
+                            f"  Words: {int(m.avg_user_words)} user / {int(m.avg_assistant_words)} asst (avg)"
+                        )
+                        if m.tool_use_count > 0:
+                            ui.console.print(
+                                f"  Tool Use: {m.tool_use_count:,} ({m.tool_use_percentage:.1f}% of convs)"
+                            )
+                        if m.thinking_count > 0:
+                            ui.console.print(
+                                f"  Thinking: {m.thinking_count:,} ({m.thinking_percentage:.1f}% of convs)"
+                            )
+                        ui.console.print()
+
+        except Exception as exc:
+            # Fallback if analytics fails
+            if verbose:
+                ui.console.print(f"[yellow]Analytics computation failed: {exc}[/yellow]")
 
 
 def latest_render_path(render_root: Path) -> Path | None:

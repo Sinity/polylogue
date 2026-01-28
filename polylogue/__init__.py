@@ -28,7 +28,8 @@ Example:
 
 # High-level API
 # Core types for library users
-from polylogue.config import Config, ConfigError, Source
+from polylogue.config import Source
+from polylogue.core.async_facade import AsyncPolylogue
 from polylogue.core.facade import ArchiveStats, Polylogue
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, Message
@@ -38,11 +39,10 @@ from polylogue.storage.search import SearchHit, SearchResult
 __all__ = [
     # Main facade
     "Polylogue",
+    "AsyncPolylogue",
     "ArchiveStats",
     # Configuration
-    "Config",
     "Source",
-    "ConfigError",
     # Data access
     "ConversationFilter",
     "ConversationRepository",
@@ -54,8 +54,8 @@ __all__ = [
 ]
 
 # Note: The following modules remain available as submodules:
-# - polylogue.config (configuration)
-# - polylogue.storage.db (database)
+# - polylogue.paths (XDG paths and configuration)
+# - polylogue.storage (database and storage)
 # - polylogue.pipeline.runner (pipeline runner)
 # - polylogue.render (rendering)
 # - polylogue.storage.search (search)

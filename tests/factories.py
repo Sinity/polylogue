@@ -37,7 +37,6 @@ class DbFactory:
             created_at=created_iso,
             updated_at=updated_iso,
             content_hash=uuid4().hex,
-            version=1,
             metadata=metadata,
         )
 
@@ -54,7 +53,6 @@ class DbFactory:
                     text=msg.get("text", "hello"),
                     timestamp=msg.get("timestamp") or datetime.now(timezone.utc).isoformat(),
                     content_hash=uuid4().hex,
-                    version=1,
                 )
                 msg_recs.append(m_rec)
 
@@ -69,7 +67,6 @@ class DbFactory:
                                 message_id=mid,
                                 mime_type=att.get("mime_type", "application/octet-stream"),
                                 size_bytes=att.get("size_bytes", 1024),
-                                path=att.get("path"),
                                 provider_meta=att.get("meta"),
                             )
                         )

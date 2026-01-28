@@ -4,7 +4,7 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-from .storage.db import open_connection
+from .storage.backends.sqlite import open_connection
 
 
 def export_jsonl(*, archive_root: Path, output_path: Path | None = None) -> Path:

@@ -428,7 +428,6 @@ class TestAPIOperations:
         folder_id = client.resolve_folder_id("Google AI Studio")
         assert folder_id == "folder1"
 
-    @pytest.mark.skip(reason="Mock doesn't fully replicate Google API error handling")
     def test_resolve_folder_id_not_found(self, drive_client_with_service):
         """Raise error when folder not found."""
         from polylogue.ingestion import DriveNotFoundError
@@ -438,7 +437,6 @@ class TestAPIOperations:
         with pytest.raises(DriveNotFoundError, match="Folder.*not found"):
             client.resolve_folder_id("NonexistentFolder")
 
-    @pytest.mark.skip(reason="Mock returns DriveFile objects instead of dicts")
     def test_iter_json_files(self, drive_client_with_service):
         """Iterate through JSON files in a folder."""
         client, mock_service = drive_client_with_service
@@ -463,21 +461,25 @@ class TestAPIOperations:
             "json1": json_file1,
             "json2": json_file2,
         })
+        # Add file content for the JSON files
+        mock_service["file_content"]["json1"] = b'{"test": "content"}'
+        mock_service["file_content"]["json2"] = b'{"data": "content"}'
 
-        # Iterate through JSON files
+        # Iterate through JSON files - returns DriveFile objects
         files = list(client.iter_json_files("folder1"))
-        assert len(files) >= 1  # At least prompt1 from fixture
-        file_names = [f["name"] for f in files]
-        assert "test.json" in file_names or "Test Prompt" in file_names
+        assert len(files) >= 1  # At least some JSON files from fixture
+        # DriveFile objects use attribute access, not dict access
+        file_names = [f.name for f in files]
+        assert "test.json" in file_names or "data.json" in file_names
 
-    @pytest.mark.skip(reason="Mock returns DriveFile objects instead of dicts")
     def test_get_metadata(self, drive_client_with_service):
         """Get file metadata."""
         client, mock_service = drive_client_with_service
 
+        # get_metadata returns DriveFile object, not dict
         metadata = client.get_metadata("prompt1")
-        assert metadata["name"] == "Test Prompt"
-        assert metadata["mimeType"] == "application/vnd.google-makersuite.prompt"
+        assert metadata.name == "Test Prompt"
+        assert metadata.mime_type == "application/vnd.google-makersuite.prompt"
 
     def test_download_bytes(self, drive_client_with_service, mock_media_downloader):
         """Download file as bytes."""

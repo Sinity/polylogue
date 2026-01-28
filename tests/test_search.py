@@ -216,7 +216,6 @@ class TestSearchWithSpecialCharacters:
                 created_at=datetime.now(timezone.utc).isoformat(),
                 updated_at=datetime.now(timezone.utc).isoformat(),
                 content_hash=uuid4().hex,
-                version=1,
             )
 
             msgs = [
@@ -227,7 +226,6 @@ class TestSearchWithSpecialCharacters:
                     text="hello world",
                     timestamp=datetime.now(timezone.utc).isoformat(),
                     content_hash=uuid4().hex,
-                    version=1,
                 ),
                 MessageRecord(
                     message_id="m2",
@@ -236,7 +234,6 @@ class TestSearchWithSpecialCharacters:
                     text="test:value with special characters",
                     timestamp=datetime.now(timezone.utc).isoformat(),
                     content_hash=uuid4().hex,
-                    version=1,
                 ),
             ]
 
