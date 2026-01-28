@@ -22,7 +22,7 @@ from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 from polylogue.core.timestamps import format_timestamp
 from polylogue.ingestion import DriveError
-from polylogue.pipeline.models import PlanResult, RunResult
+from polylogue.storage.store import PlanResult, RunResult
 from polylogue.pipeline.runner import plan_sources, run_sources
 
 
@@ -137,6 +137,7 @@ def _notify_new_conversations(count: int) -> None:
     """Send desktop notification for new conversations."""
     try:
         import subprocess
+
         subprocess.run(
             ["notify-send", "Polylogue", f"Synced {count} new conversation(s)"],
             capture_output=True,
@@ -150,6 +151,7 @@ def _exec_on_new(exec_cmd: str, count: int) -> None:
     """Execute command when new conversations are synced."""
     import os
     import subprocess
+
     env = os.environ.copy()
     env["POLYLOGUE_NEW_COUNT"] = str(count)
     subprocess.run(exec_cmd, shell=True, env=env, check=False)
@@ -160,6 +162,7 @@ def _webhook_on_new(webhook_url: str, count: int) -> None:
     try:
         import json as json_lib
         import urllib.request
+
         data = json_lib.dumps({"event": "sync", "new_conversations": count}).encode()
         req = urllib.request.Request(
             webhook_url,

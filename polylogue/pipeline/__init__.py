@@ -9,8 +9,8 @@ from polylogue.pipeline.ids import (
     message_id,
 )
 from polylogue.pipeline.ingest import prepare_ingest
-from polylogue.pipeline.models import ExistingConversation, PlanResult, RunResult
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
+from polylogue.storage.store import ExistingConversation, PlanResult, RunResult
 
 __all__ = [
     "PlanResult",

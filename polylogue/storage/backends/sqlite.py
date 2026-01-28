@@ -3,20 +3,58 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 from polylogue.core.json import dumps as json_dumps
+from polylogue.core.log import get_logger
 from polylogue.paths import DATA_HOME
-from polylogue.storage.db import DatabaseError
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord
 from polylogue.types import ConversationId
 
-LOGGER = logging.getLogger(__name__)
-SCHEMA_VERSION = 5
+
+class DatabaseError(Exception):
+    """Base class for database errors."""
+
+    pass
+
+
+@contextmanager
+def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -> Iterator[sqlite3.Connection]:
+    """Context manager for managing sqlite3 connections.
+
+    Args:
+        db_path: Path to the database file, or an existing connection.
+                 If None, uses default path.
+
+    Yields:
+        An open sqlite3.Connection with Row factory and WAL mode enabled.
+    """
+    if isinstance(db_path, sqlite3.Connection):
+        yield db_path
+        return
+
+    path = Path(db_path) if db_path else default_db_path()
+    conn = sqlite3.connect(path, timeout=30)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute("PRAGMA journal_mode=WAL")
+        # Ensure schema exists and is at current version
+        _ensure_schema(conn)
+        yield conn
+    finally:
+        conn.close()
+
+
+# Alias for backward compatibility
+open_connection = connection_context
+
+
+LOGGER = get_logger(__name__)
+SCHEMA_VERSION = 6
 
 
 def create_default_backend() -> SQLiteBackend:
@@ -122,6 +160,9 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_attachment_refs_message
         ON attachment_refs(message_id);
+
+        CREATE INDEX IF NOT EXISTS idx_attachment_refs_attachment
+        ON attachment_refs(attachment_id);
 
         CREATE TABLE IF NOT EXISTS runs (
             run_id TEXT PRIMARY KEY,
@@ -337,12 +378,18 @@ def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE conversations ADD COLUMN metadata TEXT DEFAULT '{}'")
 
 
+def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
+    """Migrate from v5 to v6: add index on attachment_refs(attachment_id)."""
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_attachment_refs_attachment ON attachment_refs(attachment_id)")
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
     2: _migrate_v2_to_v3,
     3: _migrate_v3_to_v4,
     4: _migrate_v4_to_v5,
+    5: _migrate_v5_to_v6,
 }
 
 
@@ -454,6 +501,7 @@ class SQLiteBackend:
 
         # Thread-local storage for connections
         import threading
+
         self._local = threading.local()
 
     def _get_connection(self) -> sqlite3.Connection:
@@ -462,7 +510,7 @@ class SQLiteBackend:
         Each thread gets its own connection for thread safety.
         """
         # Check if this thread has a connection
-        if not hasattr(self._local, 'conn') or self._local.conn is None:
+        if not hasattr(self._local, "conn") or self._local.conn is None:
             self._local.conn = sqlite3.connect(self._db_path, timeout=30)
             self._local.conn.row_factory = sqlite3.Row
             self._local.conn.execute("PRAGMA foreign_keys = ON")
@@ -701,47 +749,50 @@ class SQLiteBackend:
         ]
 
     def save_messages(self, records: list[MessageRecord]) -> None:
-        """Persist multiple message records."""
+        """Persist multiple message records using bulk insert."""
+        if not records:
+            return
         conn = self._get_connection()
-        for record in records:
-            conn.execute(
-                """
-                INSERT INTO messages (
-                    message_id,
-                    conversation_id,
-                    provider_message_id,
-                    role,
-                    text,
-                    timestamp,
-                    content_hash,
-                    provider_meta,
-                    version
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(message_id) DO UPDATE SET
-                    role = excluded.role,
-                    text = excluded.text,
-                    timestamp = excluded.timestamp,
-                    content_hash = excluded.content_hash,
-                    provider_meta = excluded.provider_meta
-                WHERE
-                    content_hash != excluded.content_hash
-                    OR IFNULL(role, '') != IFNULL(excluded.role, '')
-                    OR IFNULL(text, '') != IFNULL(excluded.text, '')
-                    OR IFNULL(timestamp, '') != IFNULL(excluded.timestamp, '')
-                    OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
-                """,
-                (
-                    record.message_id,
-                    record.conversation_id,
-                    record.provider_message_id,
-                    record.role,
-                    record.text,
-                    record.timestamp,
-                    record.content_hash,
-                    _json_or_none(record.provider_meta),
-                    record.version,
-                ),
+        query = """
+            INSERT INTO messages (
+                message_id,
+                conversation_id,
+                provider_message_id,
+                role,
+                text,
+                timestamp,
+                content_hash,
+                provider_meta,
+                version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(message_id) DO UPDATE SET
+                role = excluded.role,
+                text = excluded.text,
+                timestamp = excluded.timestamp,
+                content_hash = excluded.content_hash,
+                provider_meta = excluded.provider_meta
+            WHERE
+                content_hash != excluded.content_hash
+                OR IFNULL(role, '') != IFNULL(excluded.role, '')
+                OR IFNULL(text, '') != IFNULL(excluded.text, '')
+                OR IFNULL(timestamp, '') != IFNULL(excluded.timestamp, '')
+                OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
+        """
+        data = [
+            (
+                r.message_id,
+                r.conversation_id,
+                r.provider_message_id,
+                r.role,
+                r.text,
+                r.timestamp,
+                r.content_hash,
+                _json_or_none(r.provider_meta),
+                r.version,
             )
+            for r in records
+        ]
+        conn.executemany(query, data)
 
     def get_attachments(self, conversation_id: str) -> list[AttachmentRecord]:
         """Retrieve all attachments for a conversation."""
@@ -797,80 +848,85 @@ class SQLiteBackend:
                 (conversation_id,),
             ).fetchall()
 
-        for (attachment_id,) in refs_to_remove:
-            # Delete the ref
+        if not refs_to_remove:
+            return
+
+        # Extract IDs
+        attachment_ids_to_check = {row[0] for row in refs_to_remove}
+
+        # Bulk Delete refs
+        if keep_attachment_ids:
+            placeholders = ",".join("?" * len(keep_attachment_ids))
             conn.execute(
-                "DELETE FROM attachment_refs WHERE conversation_id = ? AND attachment_id = ?",
-                (conversation_id, attachment_id),
+                f"DELETE FROM attachment_refs WHERE conversation_id = ? AND attachment_id NOT IN ({placeholders})",
+                (conversation_id, *keep_attachment_ids),
             )
-            # Decrement ref count
+        else:
             conn.execute(
-                "UPDATE attachments SET ref_count = ref_count - 1 WHERE attachment_id = ?",
-                (attachment_id,),
+                "DELETE FROM attachment_refs WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+
+        # Batch update ref counts for affected attachments
+        for aid in attachment_ids_to_check:
+            conn.execute(
+                """
+                UPDATE attachments
+                SET ref_count = (SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?)
+                WHERE attachment_id = ?
+                """,
+                (aid, aid),
             )
 
         # Clean up orphaned attachments (ref_count <= 0)
         conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
 
     def save_attachments(self, records: list[AttachmentRecord]) -> None:
-        """Persist attachment records with reference counting."""
+        """Persist attachment records with reference counting using bulk operations."""
+        if not records:
+            return
         conn = self._get_connection()
 
-        for record in records:
-            # Ensure attachment metadata exists (idempotent, doesn't touch ref_count)
+        # 1. Bulk Upsert attachments metadata
+        att_query = """
+            INSERT INTO attachments (
+                attachment_id, mime_type, size_bytes, path, ref_count, provider_meta
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(attachment_id) DO UPDATE SET
+                mime_type = COALESCE(excluded.mime_type, attachments.mime_type),
+                size_bytes = COALESCE(excluded.size_bytes, attachments.size_bytes),
+                path = COALESCE(excluded.path, attachments.path),
+                provider_meta = COALESCE(excluded.provider_meta, attachments.provider_meta)
+        """
+        att_data = [
+            (r.attachment_id, r.mime_type, r.size_bytes, r.path, 0, _json_or_none(r.provider_meta)) for r in records
+        ]
+        conn.executemany(att_query, att_data)
+
+        # 2. Bulk Insert or Ignore refs
+        ref_query = """
+            INSERT OR IGNORE INTO attachment_refs (
+                ref_id, attachment_id, conversation_id, message_id, provider_meta
+            ) VALUES (?, ?, ?, ?, ?)
+        """
+        ref_data = []
+        for r in records:
+            ref_id = _make_ref_id(r.attachment_id, r.conversation_id, r.message_id)
+            ref_data.append((ref_id, r.attachment_id, r.conversation_id, r.message_id, _json_or_none(r.provider_meta)))
+
+        conn.executemany(ref_query, ref_data)
+
+        # 3. Recalculate ref counts for all affected attachments in this batch
+        attachment_ids = {r.attachment_id for r in records}
+        for aid in attachment_ids:
             conn.execute(
                 """
-                INSERT INTO attachments (
-                    attachment_id,
-                    mime_type,
-                    size_bytes,
-                    path,
-                    ref_count,
-                    provider_meta
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(attachment_id) DO UPDATE SET
-                    mime_type = COALESCE(excluded.mime_type, attachments.mime_type),
-                    size_bytes = COALESCE(excluded.size_bytes, attachments.size_bytes),
-                    path = COALESCE(excluded.path, attachments.path),
-                    provider_meta = COALESCE(excluded.provider_meta, attachments.provider_meta)
+                UPDATE attachments
+                SET ref_count = (SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?)
+                WHERE attachment_id = ?
                 """,
-                (
-                    record.attachment_id,
-                    record.mime_type,
-                    record.size_bytes,
-                    record.path,
-                    0,
-                    _json_or_none(record.provider_meta),
-                ),
+                (aid, aid),
             )
-
-            # Atomically insert ref and increment count
-            ref_id = _make_ref_id(record.attachment_id, record.conversation_id, record.message_id)
-            res = conn.execute(
-                """
-                INSERT OR IGNORE INTO attachment_refs (
-                    ref_id,
-                    attachment_id,
-                    conversation_id,
-                    message_id,
-                    provider_meta
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    ref_id,
-                    record.attachment_id,
-                    record.conversation_id,
-                    record.message_id,
-                    _json_or_none(record.provider_meta),
-                ),
-            )
-
-            # Only increment if we actually inserted a new ref
-            if res.rowcount > 0:
-                conn.execute(
-                    "UPDATE attachments SET ref_count = ref_count + 1 WHERE attachment_id = ?",
-                    (record.attachment_id,),
-                )
 
     def resolve_id(self, id_prefix: str) -> str | None:
         """Resolve a partial conversation ID to a full ID.
@@ -918,14 +974,10 @@ class SQLiteBackend:
         conn = self._get_connection()
 
         # Check if FTS table exists before querying
-        exists = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-        ).fetchone()
+        exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
 
         if not exists:
-            raise DatabaseError(
-                "Search index not built. Run indexing first or use a different backend."
-            )
+            raise DatabaseError("Search index not built. Run indexing first or use a different backend.")
 
         rows = conn.execute(
             """
@@ -1061,7 +1113,7 @@ class SQLiteBackend:
 
     def close(self) -> None:
         """Close the database connection for this thread."""
-        if hasattr(self._local, 'conn') and self._local.conn is not None:
+        if hasattr(self._local, "conn") and self._local.conn is not None:
             self._local.conn.close()
             self._local.conn = None
             self._local.transaction_depth = 0

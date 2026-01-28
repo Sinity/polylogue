@@ -26,6 +26,7 @@ DEFAULT_VECTOR_SIZE = 1024  # Voyage-2 embedding dimension
 
 class QdrantError(RuntimeError):
     """Raised when Qdrant operations fail."""
+
     pass
 
 
@@ -45,6 +46,7 @@ def _retry_decorator() -> Any:
             retry=retry_if_exception_type(retry_on),
             reraise=True,
         )
+
     return decorator
 
 
@@ -62,11 +64,7 @@ class QdrantProvider:
     """
 
     def __init__(
-        self,
-        qdrant_url: str,
-        api_key: str | None,
-        voyage_key: str,
-        collection: str = DEFAULT_COLLECTION
+        self, qdrant_url: str, api_key: str | None, voyage_key: str, collection: str = DEFAULT_COLLECTION
     ) -> None:
         """Initialize Qdrant vector search provider.
 
@@ -93,6 +91,7 @@ class QdrantProvider:
         """Lazy-load Qdrant client."""
         if self._client is None:
             from qdrant_client import QdrantClient
+
             self._client = QdrantClient(url=self.qdrant_url, api_key=self.api_key)
         return self._client
 
@@ -123,10 +122,7 @@ class QdrantProvider:
             if not exists:
                 self.client.create_collection(
                     collection_name=self.collection,
-                    vectors_config=models.VectorParams(
-                        size=vector_size,
-                        distance=models.Distance.COSINE
-                    ),
+                    vectors_config=models.VectorParams(size=vector_size, distance=models.Distance.COSINE),
                 )
 
         _do_ensure()
@@ -209,51 +205,60 @@ class QdrantProvider:
         if not text_messages:
             return
 
-        # Generate embeddings
-        texts = [msg.text for msg in text_messages if msg.text]
-        embeddings = self._get_embeddings(texts)
+        # Chunk messages to respect API limits
+        batch_size = 64
+        for i in range(0, len(text_messages), batch_size):
+            batch = text_messages[i : i + batch_size]
+            texts = [msg.text for msg in batch if msg.text]
 
-        # Prepare points for upsert
-        points = []
-        for msg, vector in zip(text_messages, embeddings, strict=True):
-            # Use deterministic UUID based on message_id for idempotency
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, msg.message_id))
-
-            # Need provider_name - fetch from message metadata or use placeholder
-            # In practice, this should be passed in or fetched from DB
-            provider_name: str = "unknown"
-            if msg.provider_meta:
-                pname = msg.provider_meta.get("provider_name", "unknown")
-                if isinstance(pname, str):
-                    provider_name = pname
-
-            points.append(
-                models.PointStruct(
-                    id=point_id,
-                    vector=vector,
-                    payload={
-                        "message_id": msg.message_id,
-                        "conversation_id": msg.conversation_id,
-                        "provider_name": provider_name,
-                        "content": msg.text,
-                    },
-                )
-            )
-
-        # Upsert to Qdrant with retry
-        @retry(
-            stop=stop_after_attempt(3),
-            wait=wait_exponential(multiplier=1, min=1, max=5),
-            retry=retry_if_exception_type(Exception),
-            reraise=True,
-        )
-        def _do_upsert() -> None:
             try:
-                self.client.upsert(collection_name=self.collection, points=points)
+                embeddings = self._get_embeddings(texts)
             except Exception as exc:
-                raise QdrantError(f"Failed to upsert vectors: {exc}") from exc
+                logger.error("Failed to generate embeddings for batch %d: %s", i, exc)
+                continue
 
-        _do_upsert()
+            points = []
+            for msg, vector in zip(batch, embeddings, strict=True):
+                # Use deterministic UUID based on message_id for idempotency
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_DNS, msg.message_id))
+
+                # Need provider_name - fetch from message metadata or use placeholder
+                provider_name: str = "unknown"
+                if msg.provider_meta:
+                    pname = msg.provider_meta.get("provider_name", "unknown")
+                    if isinstance(pname, str):
+                        provider_name = pname
+
+                points.append(
+                    models.PointStruct(
+                        id=point_id,
+                        vector=vector,
+                        payload={
+                            "message_id": msg.message_id,
+                            "conversation_id": msg.conversation_id,
+                            "provider_name": provider_name,
+                            "content": msg.text,
+                        },
+                    )
+                )
+
+            # Upsert batch to Qdrant with retry
+            @retry(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=1, max=5),
+                retry=retry_if_exception_type(Exception),
+                reraise=True,
+            )
+            def _do_upsert_batch(batch_points: list[models.PointStruct]) -> None:
+                try:
+                    self.client.upsert(collection_name=self.collection, points=batch_points)
+                except Exception as exc:
+                    raise QdrantError(f"Failed to upsert vector batch: {exc}") from exc
+
+            try:
+                _do_upsert_batch(points)
+            except QdrantError as exc:
+                logger.error("Skipping batch starting at index %d due to upsert error: %s", i, exc)
 
     def query(self, text: str, limit: int = 10) -> list[tuple[str, float]]:
         """Find semantically similar messages.
@@ -287,10 +292,7 @@ class QdrantProvider:
                 limit=limit,
             )
 
-            return [
-                (result.payload["message_id"], result.score)
-                for result in results
-            ]
+            return [(result.payload["message_id"], result.score) for result in results]
         except Exception as exc:
             raise QdrantError(f"Vector search failed: {exc}") from exc
 

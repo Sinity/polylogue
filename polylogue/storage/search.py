@@ -10,7 +10,7 @@ from pathlib import Path
 
 from polylogue.render_paths import render_root
 
-from .db import DatabaseError, open_connection
+from .backends.sqlite import DatabaseError, open_connection
 from .search_cache import SearchCacheKey
 
 logger = logging.getLogger(__name__)
@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 # FTS5 special characters that need escaping or quoting (+ is inclusion operator)
 _FTS5_SPECIAL = re.compile(r'[":*^(){}[\]|&!+\-]')
 # FTS5 boolean/special operators that should be treated as literals when alone
-_FTS5_OPERATORS = {'AND', 'OR', 'NOT', 'NEAR'}
+_FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 # Pattern to detect queries that are only asterisks (dangerous wildcard-only)
-_ASTERISK_ONLY = re.compile(r'^\*+$')
+_ASTERISK_ONLY = re.compile(r"^\*+$")
 # Pattern to detect dangerous operator positions (start, end, consecutive)
-_OPERATOR_PATTERN = re.compile(r'\b(AND|OR|NOT|NEAR)\b', re.IGNORECASE)
+_OPERATOR_PATTERN = re.compile(r"\b(AND|OR|NOT|NEAR)\b", re.IGNORECASE)
 
 
 @dataclass
@@ -193,7 +193,9 @@ def _search_messages_impl(
 
         if source:
             # Case-insensitive comparison for provider_name or source_name
-            sql += " AND (messages_fts.provider_name = ? COLLATE NOCASE OR conversations.source_name = ? COLLATE NOCASE)"
+            sql += (
+                " AND (messages_fts.provider_name = ? COLLATE NOCASE OR conversations.source_name = ? COLLATE NOCASE)"
+            )
             params.extend([source, source])
 
         if since:
@@ -224,14 +226,14 @@ def _search_messages_impl(
 
     hits: list[SearchHit] = []
     seen_conversations: set[str] = set()
-    
+
     for row in rows:
         cid = row["conversation_id"]
         if cid in seen_conversations:
             continue
-        
+
         seen_conversations.add(cid)
-        
+
         conversation_path = _resolve_conversation_path(
             archive_root,
             render_root_path,
@@ -252,10 +254,10 @@ def _search_messages_impl(
                 conversation_path=conversation_path,
             )
         )
-        
+
         if len(hits) >= limit:
             break
-            
+
     return SearchResult(hits=hits)
 
 

@@ -21,6 +21,7 @@ from __future__ import annotations
 from dependency_injector import containers, providers
 
 from polylogue.config import get_config
+from polylogue.ingestion.drive_client import DriveClient
 from polylogue.pipeline.services.indexing import IndexService
 from polylogue.pipeline.services.ingestion import IngestionService
 from polylogue.pipeline.services.rendering import RenderService
@@ -63,11 +64,17 @@ class ApplicationContainer(containers.DeclarativeContainer):
     )
 
     # Service factories
+    drive_client = providers.Factory(
+        DriveClient,
+        config=config,
+    )
+
     ingestion_service = providers.Factory(
         IngestionService,
         repository=storage,
         archive_root=config.provided.archive_root,
         config=config,
+        drive_client_factory=drive_client.provider,
     )
 
     indexing_service = providers.Factory(

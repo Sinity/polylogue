@@ -119,25 +119,24 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
 
     if verbose:
         # Show detailed health checks
-        payload = get_health(config)
-        cached = payload.get("cached")
-        age = payload.get("age_seconds")
+        report = get_health(config)
+        cached = report.cached
+        age = report.age_seconds
         health_header = f"Health (cached={cached}, age={age}s)" if cached is not None else "Health"
         lines.append(health_header)
-        checks = payload.get("checks")
-        if isinstance(checks, list):
+        checks = report.checks
+        if checks:
             for check in checks:
-                if isinstance(check, dict):
-                    name = check.get("name")
-                    status = check.get("status")
-                    detail = check.get("detail")
-                    status_str = str(status) if status else "?"
-                    icon = {"ok": "[green]✓[/green]", "warning": "[yellow]![/yellow]", "error": "[red]✗[/red]"}.get(
-                        status_str, "?"
-                    )
-                    if ui.plain:
-                        icon = {"ok": "OK", "warning": "WARN", "error": "ERR"}.get(status_str, "?")
-                    lines.append(f"  {icon} {name}: {detail}")
+                name = check.name
+                status = check.status
+                detail = check.detail
+                status_str = str(status) if status else "?"
+                icon = {"ok": "[green]✓[/green]", "warning": "[yellow]![/yellow]", "error": "[red]✗[/red]"}.get(
+                    status_str, "?"
+                )
+                if ui.plain:
+                    icon = {"ok": "OK", "warning": "WARN", "error": "ERR"}.get(status_str, "?")
+                lines.append(f"  {icon} {name}: {detail}")
     else:
         lines.append(f"Health: {cached_health_summary(config.archive_root)}")
 

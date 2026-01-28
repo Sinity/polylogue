@@ -133,7 +133,6 @@ class Polylogue:
         # Services (lazy-initialized)
         self._ingestion_service: IngestionService | None = None
         self._indexing_service: IndexService | None = None
-        self._rendering_service: object | None = None
 
     @property
     def config(self) -> Config:
@@ -514,9 +513,7 @@ class Polylogue:
             # Check if backend has runs info
             conn = getattr(self._backend, "_get_connection", lambda: None)()
             if conn:
-                row = conn.execute(
-                    "SELECT MAX(ended_at) as last FROM runs"
-                ).fetchone()
+                row = conn.execute("SELECT MAX(ended_at) as last FROM runs").fetchone()
                 if row and row[0]:
                     last_sync = row[0]
         except Exception:

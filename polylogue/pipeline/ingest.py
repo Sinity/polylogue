@@ -19,8 +19,8 @@ from polylogue.pipeline.ids import (
 from polylogue.pipeline.ids import (
     message_id as make_message_id,
 )
-from polylogue.pipeline.models import ExistingConversation
-from polylogue.storage.db import connection_context
+from polylogue.storage.store import ExistingConversation
+from polylogue.storage.backends.sqlite import connection_context
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
@@ -53,6 +53,7 @@ def prepare_ingest(
     if repository is None:
         from polylogue.storage.backends.sqlite import create_default_backend
         from polylogue.storage.repository import StorageRepository
+
         backend = create_default_backend()
         repository = StorageRepository(backend=backend)
 
@@ -137,14 +138,14 @@ def prepare_ingest(
 
     attachments: list[AttachmentRecord] = []
     for att in convo.attachments:
-        aid, updated_meta, updated_path = attachment_content_id(
-            convo.provider_name, att, archive_root=archive_root
-        )
+        aid, updated_meta, updated_path = attachment_content_id(convo.provider_name, att, archive_root=archive_root)
         # Merge updated metadata with provider_id if present
         meta: dict[str, object] = dict(updated_meta or {})
         if att.provider_attachment_id:
             meta.setdefault("provider_id", att.provider_attachment_id)
-        message_id_val: MessageId | None = message_ids.get(att.message_provider_id or "") if att.message_provider_id else None
+        message_id_val: MessageId | None = (
+            message_ids.get(att.message_provider_id or "") if att.message_provider_id else None
+        )
         attachments.append(
             AttachmentRecord(
                 attachment_id=AttachmentId(aid),

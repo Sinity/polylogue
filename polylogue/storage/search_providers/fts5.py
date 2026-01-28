@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.storage.db import connection_context, open_connection
+from polylogue.storage.backends.sqlite import connection_context, open_connection
 from polylogue.storage.store import MessageRecord
 
 
@@ -75,10 +75,7 @@ class FTS5Provider:
             # Batch delete existing entries for these conversations
             if conversation_ids:
                 placeholders = ",".join("?" * len(conversation_ids))
-                conn.execute(
-                    f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
-                    conversation_ids
-                )
+                conn.execute(f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})", conversation_ids)
 
             # Prepare batch insert with provider_name lookup
             # Filter messages with text content
@@ -89,7 +86,7 @@ class FTS5Provider:
                 conv_id_placeholders = ",".join("?" * len(conversation_ids))
                 rows = conn.execute(
                     f"SELECT conversation_id, provider_name FROM conversations WHERE conversation_id IN ({conv_id_placeholders})",
-                    conversation_ids
+                    conversation_ids,
                 ).fetchall()
 
                 provider_map = {row["conversation_id"]: row["provider_name"] for row in rows}
@@ -108,7 +105,7 @@ class FTS5Provider:
                         INSERT INTO messages_fts (message_id, conversation_id, provider_name, content)
                         VALUES (?, ?, ?, ?)
                         """,
-                        insert_data
+                        insert_data,
                     )
 
             conn.commit()
@@ -135,9 +132,7 @@ class FTS5Provider:
 
         with open_connection(self.db_path) as conn:
             # Check if index exists
-            row = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-            ).fetchone()
+            row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
 
             if not row:
                 return []
@@ -150,7 +145,7 @@ class FTS5Provider:
                 WHERE messages_fts MATCH ?
                 ORDER BY rank
                 """,
-                (fts_query,)
+                (fts_query,),
             ).fetchall()
 
             return [row["message_id"] for row in rows]

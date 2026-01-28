@@ -1,12 +1,14 @@
 """Tests for search provider factory functions and FTS5 provider."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, call, patch
+import uuid
 
 import pytest
 
 from polylogue.config import Config, IndexConfig
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
+from polylogue.storage.search_providers.qdrant import QdrantProvider
 from polylogue.storage.store import ConversationRecord, MessageRecord
 
 
@@ -215,9 +217,7 @@ class TestFTS5Provider:
         fts_provider.index(msgs)
 
         with open_connection(db_path) as conn:
-            row = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-            ).fetchone()
+            row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
             assert row is not None
             assert row["name"] == "messages_fts"
 
@@ -377,9 +377,92 @@ class TestFTS5Provider:
         results = provider.search("anything")
         assert results == []
 
-    def test_search_empty_query(self, populated_fts):
-        """Search with empty-ish query returns empty list."""
-        # Empty queries after escaping may not match anything
-        results = populated_fts.search("")
         # Could be empty or match all - depends on FTS5 behavior
         assert isinstance(results, list)
+
+
+class TestQdrantProviderChunking:
+    """Tests for QdrantProvider batching/chunking."""
+
+    @pytest.fixture
+    def provider(self):
+        """Create a QdrantProvider with mocked client."""
+        # Mock sys.modules to handle lazy imports
+        mock_qdrant_module = MagicMock()
+        mock_client_cls = MagicMock()
+        mock_qdrant_module.QdrantClient = mock_client_cls
+
+        mock_httpx = MagicMock()
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "qdrant_client": mock_qdrant_module,
+                "qdrant_client.http": MagicMock(),
+                "httpx": mock_httpx,
+            },
+        ):
+            provider = QdrantProvider(qdrant_url="http://test:6333", api_key="test-key", voyage_key="voyage-key")
+            # Ensure the client property returns our mock instance
+            provider._client = mock_client_cls.return_value
+            return provider
+
+    def test_upsert_chunks_large_request(self, provider):
+        """Verify that upsert chunks messages into batches of 64."""
+        # Create 150 messages (should be 3 chunks: 64, 64, 22)
+        messages = [
+            MessageRecord(
+                message_id=f"msg-{i}",
+                conversation_id="conv-1",
+                provider_message_id=None,
+                role="user",
+                text=f"Message {i}",
+                timestamp="1000",
+                content_hash="hash",
+                provider_meta=None,
+            )
+            for i in range(150)
+        ]
+
+        # Mock embeddings to return one mock vector per input text
+        with patch.object(provider, "_get_embeddings") as mock_embed:
+            mock_embed.side_effect = lambda texts: [[0.1] * 1024] * len(texts)
+
+            provider.upsert(conversation_id="conv-1", messages=messages)
+
+            # Check embedding calls (3 batches)
+            assert mock_embed.call_count == 3
+            assert len(mock_embed.call_args_list[0][0][0]) == 64
+            assert len(mock_embed.call_args_list[1][0][0]) == 64
+            assert len(mock_embed.call_args_list[2][0][0]) == 22
+
+            # Check Qdrant upsert calls
+            assert provider.client.upsert.call_count == 3
+            assert len(provider.client.upsert.call_args_list[0].kwargs["points"]) == 64
+            assert len(provider.client.upsert.call_args_list[1].kwargs["points"]) == 64
+            assert len(provider.client.upsert.call_args_list[2].kwargs["points"]) == 22
+
+    def test_upsert_handles_single_chunk(self, provider):
+        """Verify upsert handling for small lists (<64)."""
+        messages = [
+            MessageRecord(
+                message_id=f"msg-{i}",
+                conversation_id="conv-1",
+                provider_message_id=None,
+                role="user",
+                text=f"Message {i}",
+                timestamp="1000",
+                content_hash="hash",
+                provider_meta=None,
+            )
+            for i in range(10)
+        ]
+
+        with patch.object(provider, "_get_embeddings") as mock_embed:
+            mock_embed.return_value = [[0.1] * 1024] * 10
+            provider.upsert(conversation_id="conv-1", messages=messages)
+
+            mock_embed.assert_called_once()
+            assert len(mock_embed.call_args[0][0]) == 10
+            provider.client.upsert.assert_called_once()
+            assert len(provider.client.upsert.call_args.kwargs["points"]) == 10

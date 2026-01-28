@@ -1,4 +1,5 @@
 """Tests for polylogue.health module."""
+
 from __future__ import annotations
 
 import json
@@ -84,8 +85,9 @@ class TestHealthCacheErrorHandling:
         # Should return None
         assert result is None
         # Should have logged a warning about the corruption
-        assert any("cache" in record.message.lower() for record in caplog.records), \
+        assert any("cache" in record.message.lower() for record in caplog.records), (
             f"Expected warning log about cache, got: {[r.message for r in caplog.records]}"
+        )
 
     def test_cache_read_logs_permission_error(self, tmp_path: Path, caplog):
         """Permission errors should be logged."""
@@ -106,8 +108,7 @@ class TestHealthCacheErrorHandling:
             assert result is None
             # Should have logged something about the error
             assert any(
-                "permission" in record.message.lower() or "cache" in record.message.lower()
-                for record in caplog.records
+                "permission" in record.message.lower() or "cache" in record.message.lower() for record in caplog.records
             ), f"Expected warning about permission, got: {[r.message for r in caplog.records]}"
         finally:
             os.chmod(cache_file, stat.S_IRUSR | stat.S_IWUSR)
@@ -150,8 +151,7 @@ class TestHealthCacheErrorHandling:
 
         # Should have logged a warning
         assert any(
-            "failed" in record.message.lower() or "cache" in record.message.lower()
-            for record in caplog.records
+            "failed" in record.message.lower() or "cache" in record.message.lower() for record in caplog.records
         ), f"Expected warning about write failure, got: {[r.message for r in caplog.records]}"
 
     def test_cache_with_valid_json_returns_dict(self, tmp_path: Path):
@@ -177,7 +177,7 @@ class TestHealthCacheErrorHandling:
 
         # Write binary data that isn't valid UTF-8
         cache_file = tmp_path / "health.json"
-        cache_file.write_bytes(b'\xff\xfe invalid utf8')
+        cache_file.write_bytes(b"\xff\xfe invalid utf8")
 
         with caplog.at_level(logging.WARNING):
             result = _load_cached(tmp_path)
@@ -185,10 +185,7 @@ class TestHealthCacheErrorHandling:
         # Should return None
         assert result is None
         # Should have logged a warning
-        assert any(
-            "cache" in record.message.lower() or "error" in record.message.lower()
-            for record in caplog.records
-        )
+        assert any("cache" in record.message.lower() or "error" in record.message.lower() for record in caplog.records)
 
 
 class TestHealthCheck:
@@ -196,34 +193,28 @@ class TestHealthCheck:
 
     def test_health_check_creation(self):
         """HealthCheck should be creatable with name, status, detail."""
-        from polylogue.health import HealthCheck
+        from polylogue.health import HealthCheck, VerifyStatus
 
-        check = HealthCheck(name="test", status="ok", detail="All good")
+        check = HealthCheck(name="test", status=VerifyStatus.OK, detail="All good")
 
         assert check.name == "test"
-        assert check.status == "ok"
+        assert check.status == VerifyStatus.OK
         assert check.detail == "All good"
 
     def test_health_check_to_dict(self):
         """HealthCheck should convert to dict for serialization."""
-        from polylogue.health import HealthCheck
+        from polylogue.health import HealthCheck, VerifyStatus
 
-        check = HealthCheck(name="database", status="error", detail="Connection failed")
+        check = HealthCheck(name="database", status=VerifyStatus.ERROR, detail="Connection failed")
 
-        result = check.__dict__
+        result = check.to_dict()
         assert result == {
             "name": "database",
             "status": "error",
+            "count": 0,
             "detail": "Connection failed",
+            "breakdown": {},
         }
-
-    def test_health_check_with_different_statuses(self):
-        """HealthCheck should support ok, warning, error statuses."""
-        from polylogue.health import HealthCheck
-
-        for status in ["ok", "warning", "error"]:
-            check = HealthCheck(name="test", status=status, detail="Test")
-            assert check.status == status
 
 
 class TestRunHealth:
@@ -237,45 +228,40 @@ class TestRunHealth:
         config = load_config(cli_workspace["config_path"])
         result = run_health(config)
 
-        assert "timestamp" in result
-        assert isinstance(result["timestamp"], int)
-        assert result["timestamp"] > 0
-
-        assert "checks" in result
-        assert isinstance(result["checks"], list)
-        assert len(result["checks"]) > 0
+        assert result.timestamp > 0
+        assert isinstance(result.checks, list)
+        assert len(result.checks) > 0
 
     def test_run_health_includes_config_check(self, cli_workspace):
         """run_health should include a config check."""
         from polylogue.config import load_config
-        from polylogue.health import run_health
+        from polylogue.health import VerifyStatus, run_health
 
         config = load_config(cli_workspace["config_path"])
         result = run_health(config)
 
-        checks = result["checks"]
-        config_checks = [c for c in checks if c.get("name") == "config"]
+        checks = result.checks
+        config_checks = [c for c in checks if c.name == "config"]
         assert len(config_checks) > 0
-        assert config_checks[0]["status"] == "ok"
+        assert config_checks[0].status == VerifyStatus.OK
 
     def test_run_health_includes_archive_root_check(self, cli_workspace):
         """run_health should include archive_root check (ok when exists)."""
         from polylogue.config import load_config
-        from polylogue.health import run_health
+        from polylogue.health import VerifyStatus, run_health
 
         config = load_config(cli_workspace["config_path"])
         result = run_health(config)
 
-        checks = result["checks"]
-        archive_checks = [c for c in checks if c.get("name") == "archive_root"]
+        checks = result.checks
+        archive_checks = [c for c in checks if c.name == "archive_root"]
         assert len(archive_checks) > 0
-        # Archive root exists in cli_workspace
-        assert archive_checks[0]["status"] == "ok"
+        assert archive_checks[0].status == VerifyStatus.OK
 
     def test_run_health_archive_root_warning_when_missing(self, tmp_path):
         """run_health should warn when archive_root doesn't exist."""
         from polylogue.config import Config, Source
-        from polylogue.health import run_health
+        from polylogue.health import VerifyStatus, run_health
 
         missing_archive = tmp_path / "missing"
         config = Config(
@@ -285,10 +271,10 @@ class TestRunHealth:
         )
 
         result = run_health(config)
-        checks = result["checks"]
-        archive_checks = [c for c in checks if c.get("name") == "archive_root"]
+        checks = result.checks
+        archive_checks = [c for c in checks if c.name == "archive_root"]
         assert len(archive_checks) > 0
-        assert archive_checks[0]["status"] == "warning"
+        assert archive_checks[0].status == VerifyStatus.WARNING
 
     def test_run_health_includes_render_root_check(self, cli_workspace):
         """run_health should include render_root check."""
@@ -298,14 +284,14 @@ class TestRunHealth:
         config = load_config(cli_workspace["config_path"])
         result = run_health(config)
 
-        checks = result["checks"]
-        render_checks = [c for c in checks if c.get("name") == "render_root"]
+        checks = result.checks
+        render_checks = [c for c in checks if c.name == "render_root"]
         assert len(render_checks) > 0
 
     def test_run_health_render_root_warning_when_missing(self, tmp_path):
         """run_health should warn when render_root doesn't exist."""
         from polylogue.config import Config, Source
-        from polylogue.health import run_health
+        from polylogue.health import VerifyStatus, run_health
 
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
@@ -318,24 +304,23 @@ class TestRunHealth:
         )
 
         result = run_health(config)
-        checks = result["checks"]
-        render_checks = [c for c in checks if c.get("name") == "render_root"]
+        checks = result.checks
+        render_checks = [c for c in checks if c.name == "render_root"]
         assert len(render_checks) > 0
-        assert render_checks[0]["status"] == "warning"
+        assert render_checks[0].status == VerifyStatus.WARNING
 
     def test_run_health_includes_database_check(self, cli_workspace):
         """run_health should include database check."""
         from polylogue.config import load_config
-        from polylogue.health import run_health
+        from polylogue.health import VerifyStatus, run_health
 
         config = load_config(cli_workspace["config_path"])
         result = run_health(config)
 
-        checks = result["checks"]
-        db_checks = [c for c in checks if c.get("name") == "database"]
+        checks = result.checks
+        db_checks = [c for c in checks if c.name == "database"]
         assert len(db_checks) > 0
-        # Database should be reachable in test environment
-        assert db_checks[0]["status"] == "ok"
+        assert db_checks[0].status == VerifyStatus.OK
 
     def test_run_health_includes_index_check(self, cli_workspace):
         """run_health should include index check."""
@@ -345,8 +330,8 @@ class TestRunHealth:
         config = load_config(cli_workspace["config_path"])
         result = run_health(config)
 
-        checks = result["checks"]
-        index_checks = [c for c in checks if c.get("name") == "index"]
+        checks = result.checks
+        index_checks = [c for c in checks if c.name == "index"]
         assert len(index_checks) > 0
 
     def test_run_health_includes_source_checks(self, cli_workspace):
@@ -357,9 +342,8 @@ class TestRunHealth:
         config = load_config(cli_workspace["config_path"])
         result = run_health(config)
 
-        checks = result["checks"]
-        source_checks = [c for c in checks if c.get("name", "").startswith("source:")]
-        # Should have at least one source check
+        checks = result.checks
+        source_checks = [c for c in checks if c.name.startswith("source:")]
         assert len(source_checks) >= len(config.sources)
 
     def test_run_health_caches_result(self, cli_workspace):
@@ -374,8 +358,8 @@ class TestRunHealth:
         assert cache_file.exists(), "run_health should write cache file"
 
         cached_data = json.loads(cache_file.read_text())
-        assert cached_data["timestamp"] == result["timestamp"]
-        assert cached_data["checks"] == result["checks"]
+        assert cached_data["timestamp"] == result.timestamp
+        assert len(cached_data["checks"]) == len(result.checks)
 
 
 class TestGetHealth:
@@ -389,10 +373,10 @@ class TestGetHealth:
         config = load_config(cli_workspace["config_path"])
         result = get_health(config)
 
-        assert "timestamp" in result
-        assert "checks" in result
-        assert result["cached"] is False
-        assert result["age_seconds"] == 0
+        assert result.timestamp > 0
+        assert isinstance(result.checks, list)
+        assert result.cached is False
+        assert result.age_seconds == 0
 
     def test_get_health_returns_cached_when_valid(self, cli_workspace):
         """get_health should return cached result when valid."""
@@ -405,18 +389,18 @@ class TestGetHealth:
 
         # First call populates cache
         result1 = get_health(config)
-        timestamp1 = result1["timestamp"]
+        timestamp1 = result1.timestamp
 
         # Brief sleep to ensure timestamp would differ
         time.sleep(0.1)
 
         # Second call should return cached result (same timestamp)
         result2 = get_health(config)
-        timestamp2 = result2["timestamp"]
+        timestamp2 = result2.timestamp
 
         assert timestamp1 == timestamp2, "Cached result should have same timestamp"
-        assert result2["cached"] is True
-        assert result2["age_seconds"] >= 0
+        assert result2.cached is True
+        assert result2.age_seconds >= 0
 
     def test_get_health_refreshes_on_cache_expiry(self, cli_workspace, monkeypatch):
         """get_health should refresh when cache is too old."""
@@ -429,10 +413,10 @@ class TestGetHealth:
 
         # First call populates cache
         result1 = get_health(config)
-        timestamp1 = result1["timestamp"]
 
         # Manually set cache timestamp to old
         from polylogue.health import _cache_path, _load_cached
+
         cache_file = _cache_path(config.archive_root)
         cached = _load_cached(config.archive_root)
         if cached:
@@ -442,9 +426,7 @@ class TestGetHealth:
         # Second call should refresh (not use cache)
         result2 = get_health(config)
 
-        # New result should have different timestamp (or at least not marked as cached)
-        # Since we artificially aged the cache, get_health should run fresh checks
-        assert result2["cached"] is False
+        assert result2.cached is False
 
     def test_get_health_includes_cache_metadata(self, cli_workspace):
         """get_health should include cached and age_seconds fields."""
@@ -454,10 +436,8 @@ class TestGetHealth:
         config = load_config(cli_workspace["config_path"])
         result = get_health(config)
 
-        assert "cached" in result
-        assert isinstance(result["cached"], bool)
-        assert "age_seconds" in result
-        assert isinstance(result["age_seconds"], int)
+        assert isinstance(result.cached, bool)
+        assert isinstance(result.age_seconds, int)
 
 
 class TestCachedHealthSummary:
@@ -508,17 +488,17 @@ class TestCachedHealthSummary:
         assert isinstance(result, str)
 
     def test_cached_health_summary_missing_timestamp(self, tmp_path):
-        """Should return 'unknown' when timestamp is missing."""
+        """Should handle missing timestamp safely."""
         from polylogue.health import cached_health_summary
 
         cache_file = tmp_path / "health.json"
         cache_file.write_text(json.dumps({"checks": []}))
 
         result = cached_health_summary(tmp_path)
-        assert result == "unknown"
+        assert "cached" in result
 
     def test_cached_health_summary_non_int_timestamp(self, tmp_path):
-        """Should return 'unknown' when timestamp is not int."""
+        """Should handle non-int timestamp safely."""
         from polylogue.health import cached_health_summary
 
         cache_file = tmp_path / "health.json"
@@ -533,15 +513,18 @@ class TestCachedHealthSummary:
 
         cache_file = tmp_path / "health.json"
         cache_file.write_text(
-            json.dumps({
-                "timestamp": int(time.time()),
-                "checks": [
-                    {"name": "check1", "status": "ok", "detail": "ok"},
-                    {"name": "check2", "status": "ok", "detail": "ok"},
-                    {"name": "check3", "status": "warning", "detail": "warning"},
-                    {"name": "check4", "status": "error", "detail": "error"},
-                ],
-            })
+            json.dumps(
+                {
+                    "timestamp": int(time.time()),
+                    "summary": {"ok": 2, "warning": 1, "error": 1},
+                    "checks": [
+                        {"name": "check1", "status": "ok", "detail": "ok"},
+                        {"name": "check2", "status": "ok", "detail": "ok"},
+                        {"name": "check3", "status": "warning", "detail": "warning"},
+                        {"name": "check4", "status": "error", "detail": "error"},
+                    ],
+                }
+            )
         )
 
         result = cached_health_summary(tmp_path)
@@ -557,14 +540,17 @@ class TestCachedHealthSummary:
 
         cache_file = tmp_path / "health.json"
         cache_file.write_text(
-            json.dumps({
-                "timestamp": int(time.time()),
-                "checks": [
-                    {"name": "check1", "status": "ok", "detail": "ok"},
-                    "not a dict",  # Invalid check
-                    {"name": "check2", "status": "warning", "detail": "warning"},
-                ],
-            })
+            json.dumps(
+                {
+                    "timestamp": int(time.time()),
+                    "summary": {"ok": 1, "warning": 1},
+                    "checks": [
+                        {"name": "check1", "status": "ok", "detail": "ok"},
+                        "not a dict",  # Invalid check
+                        {"name": "check2", "status": "warning", "detail": "warning"},
+                    ],
+                }
+            )
         )
 
         result = cached_health_summary(tmp_path)

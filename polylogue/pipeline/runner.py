@@ -9,15 +9,15 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from dependency_injector import providers
+
 from polylogue.config import Config, Source
 from polylogue.core.json import dumps, loads
 from polylogue.core.log import get_logger
 from polylogue.ingestion import DriveAuthError, iter_drive_conversations, iter_source_conversations
 from polylogue.ingestion.source import ParsedConversation
-from polylogue.pipeline.models import PlanResult, RunResult
-from polylogue.pipeline.services import IndexService, IngestionService, RenderService
-from polylogue.storage.db import connection_context
-from polylogue.storage.repository import StorageRepository
+from polylogue.storage.store import PlanResult, RunResult
+from polylogue.storage.backends.sqlite import connection_context
 from polylogue.storage.store import RunRecord
 
 logger = get_logger(__name__)
@@ -152,11 +152,14 @@ def run_sources(
     """
     start = time.perf_counter()
 
-    # Initialize services with backend
-    from polylogue.storage.backends.sqlite import create_default_backend
-    backend = create_default_backend()
-    repository = StorageRepository(backend=backend)
-    ingestion_service = IngestionService(repository, config.archive_root, config)
+    from polylogue.container import create_container
+
+    container = create_container()
+    # Override config singleton if a different config was passed
+    container.config.override(config)
+
+    repository = container.storage()
+    ingestion_service = container.ingestion_service()
 
     # Track counts for reporting
     counts = {
@@ -195,14 +198,15 @@ def run_sources(
         # Rendering stage
         render_failures: list[dict[str, str]] = []
         if stage in {"render", "all"}:
-            from polylogue.rendering.renderers import create_renderer
-
             ids = _all_conversation_ids(source_names) if stage == "render" else list(processed_ids)
-            renderer = create_renderer(render_format, config)
-            render_service = RenderService(
-                renderer=renderer,
-                render_root=config.render_root,
-            )
+            # Use rendering service from container (which uses correct config)
+            # We can optionally override the renderer format if needed
+            if render_format == "markdown":
+                from polylogue.rendering.renderers import create_renderer
+
+                container.renderer.override(providers.Factory(create_renderer, format="markdown", config=config))
+
+            render_service = container.rendering_service()
             render_result = render_service.render_conversations(ids)
             counts["rendered"] = render_result.rendered_count
             render_failures = render_result.failures
@@ -212,7 +216,9 @@ def run_sources(
         # Indexing stage
         indexed = False
         index_error: str | None = None
-        index_service = IndexService(config, conn)
+        index_service = container.indexing_service()
+        # Ensure we use the active connection if provided
+        index_service.conn = conn
 
         try:
             if stage == "index":

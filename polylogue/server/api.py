@@ -3,13 +3,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from polylogue.lib.models import Conversation
 from polylogue.lib.repository import ConversationRepository
 from polylogue.server.deps import get_repository
-from polylogue.storage.db import DatabaseError
+from polylogue.storage.backends.sqlite import DatabaseError
 
 router = APIRouter()
 
 
 @router.get("/conversations", response_model=list[Conversation])
-def list_conversations(limit: int = 50, offset: int = 0, repo: ConversationRepository = Depends(get_repository)) -> list[Conversation]:
+def list_conversations(
+    limit: int = 50, offset: int = 0, repo: ConversationRepository = Depends(get_repository)
+) -> list[Conversation]:
     return repo.list(limit=limit, offset=offset)
 
 
@@ -22,7 +24,9 @@ def get_conversation(conversation_id: str, repo: ConversationRepository = Depend
 
 
 @router.get("/search", response_model=list[Conversation])
-def search_conversations(q: str = Query(..., min_length=3), repo: ConversationRepository = Depends(get_repository)) -> list[Conversation]:
+def search_conversations(
+    q: str = Query(..., min_length=3), repo: ConversationRepository = Depends(get_repository)
+) -> list[Conversation]:
     try:
         return repo.search(q)
     except (RuntimeError, DatabaseError) as exc:

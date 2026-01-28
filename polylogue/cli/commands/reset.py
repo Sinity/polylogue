@@ -8,48 +8,58 @@ import click
 
 from polylogue.cli.helpers import fail
 from polylogue.cli.types import AppEnv
-from polylogue.paths import CACHE_HOME, STATE_HOME
-from polylogue.storage.db import default_db_path
+from polylogue.paths import CACHE_HOME, STATE_HOME, DB_PATH, RENDER_ROOT, DRIVE_TOKEN_PATH, DATA_HOME
 
 
 @click.command("reset")
 @click.option("--database", is_flag=True, help="Delete the SQLite database")
-@click.option("--cache", is_flag=True, help="Delete cached data")
-@click.option("--state", is_flag=True, help="Delete state files")
+@click.option("--assets", is_flag=True, help="Delete archived assets/attachments")
+@click.option("--render", is_flag=True, help="Delete rendered conversations (Markdown/HTML)")
+@click.option("--cache", is_flag=True, help="Delete search indexes and cache")
+@click.option("--auth", is_flag=True, help="Delete Google Drive OAuth tokens")
 @click.option("--all", "reset_all", is_flag=True, help="Reset everything")
 @click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt")
 @click.pass_obj
 def reset_command(
     env: AppEnv,
     database: bool,
+    assets: bool,
+    render: bool,
     cache: bool,
-    state: bool,
+    auth: bool,
     reset_all: bool,
     force: bool,
 ) -> None:
-    """Reset database, cache, or state files.
+    """Reset database, assets, rendered outputs, or auth state.
 
     By default, requires explicit flags to specify what to reset.
     Use --all to reset everything.
     """
     if reset_all:
-        database = cache = state = True
+        database = assets = render = cache = auth = True
 
-    if not (database or cache or state):
-        fail("reset", "Specify --database, --cache, --state, or --all")
+    if not (database or assets or render or cache or auth):
+        fail(
+            "reset",
+            "Specify at least one target (e.g., --database, --assets, --render, --cache, --auth) or use --all",
+        )
 
     targets = []
-    if database:
-        db_path = default_db_path()
-        if db_path.exists():
-            targets.append(("database", db_path))
+    if database and DB_PATH.exists():
+        targets.append(("database", DB_PATH))
+    if assets:
+        assets_dir = DATA_HOME / "assets"
+        if assets_dir.exists():
+            targets.append(("assets", assets_dir))
+    if render and RENDER_ROOT.exists():
+        targets.append(("render results", RENDER_ROOT))
     if cache and CACHE_HOME.exists():
-        targets.append(("cache", CACHE_HOME))
-    if state and STATE_HOME.exists():
-        targets.append(("state", STATE_HOME))
+        targets.append(("cache/indexes", CACHE_HOME))
+    if auth and DRIVE_TOKEN_PATH.exists():
+        targets.append(("OAuth token", DRIVE_TOKEN_PATH))
 
     if not targets:
-        env.ui.console.print("Nothing to reset (no files exist).")
+        env.ui.console.print("Nothing to reset (no files exist for selected targets).")
         return
 
     # Show what will be deleted
@@ -61,7 +71,7 @@ def reset_command(
         if env.ui.plain:
             env.ui.console.print("Use --force to confirm deletion.")
             return
-        if not env.ui.confirm("Delete these files?", default=False):
+        if not env.ui.confirm("Delete these files/directories?", default=False):
             env.ui.console.print("Reset cancelled.")
             return
 
