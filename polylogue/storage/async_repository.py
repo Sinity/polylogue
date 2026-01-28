@@ -70,19 +70,30 @@ class AsyncStorageRepository:
                 - attachment_refs_created: Number of new attachment references
         """
         # Convert Conversation model to ConversationRecord
+        from typing import cast, Any
+        from polylogue.types import ContentHash, ConversationId
+
+        created_at_str = conversation.created_at.isoformat() if conversation.created_at else None
+        updated_at_str = conversation.updated_at.isoformat() if conversation.updated_at else (created_at_str or None)
+
+        # Try to extract provider_id from canonical id (format: provider:id)
+        # Fallback to whole ID if pattern doesn't match
+        provider_id = str(conversation.id)
+        if ":" in provider_id and conversation.provider:
+            prefix = f"{conversation.provider}:"
+            if provider_id.startswith(prefix):
+                provider_id = provider_id[len(prefix) :]
+
         conv_record = ConversationRecord(
-            conversation_id=str(conversation.id),
+            conversation_id=cast(ConversationId, str(conversation.id)),
             provider_name=conversation.provider,
-            original_title=conversation.title or "",
-            created_at=conversation.created_at,
-            updated_at=conversation.updated_at or conversation.created_at,
-            content_hash=conversation.metadata.get("content_hash", ""),
-            source_name=conversation.metadata.get("source_name", ""),
-            provider_meta=conversation.metadata.get("provider_meta", {}),
+            provider_conversation_id=provider_id,
+            title=conversation.title or "",
+            created_at=created_at_str,
+            updated_at=updated_at_str,
+            content_hash=cast(ContentHash, conversation.metadata.get("content_hash", "")),
+            provider_meta=cast(dict[str, object], conversation.metadata.get("provider_meta", {})),
             metadata=conversation.metadata,
-            message_count=len(messages),
-            total_tokens=sum(msg.token_count or 0 for msg in messages),
-            total_chars=sum(len(msg.text or "") for msg in messages),
         )
 
         # Save via async backend

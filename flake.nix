@@ -98,6 +98,8 @@
           ];
 
           shellHook = ''
+            export LD_LIBRARY_PATH=${pkgs.stdenv.cc.cc.lib}/lib:$LD_LIBRARY_PATH
+
             # Create venv if it doesn't exist
             if [ ! -d .venv ]; then
               echo "Creating virtual environment..."

@@ -143,6 +143,26 @@ class TestApplicationContainer:
         assert service.renderer is not None
         assert service.render_root == test_config.render_root
 
+    def test_drive_client_factory(self, test_config: Config):
+        """Test that drive client is created as a factory."""
+        container = ApplicationContainer()
+        container.config.override(test_config)
+
+        client1 = container.drive_client()
+        client2 = container.drive_client()
+
+        assert client1 is not client2
+        # Verify it has config
+        assert client1._config == test_config
+
+        # Verify injection into IngestionService
+        ingestion = container.ingestion_service()
+        assert ingestion.drive_client_factory is not None
+
+        # Verify factory works
+        client = ingestion.drive_client_factory()
+        assert client._config == test_config
+
     def test_container_override_config(self, test_config: Config):
         """Test that container can be overridden for testing."""
         container = ApplicationContainer()

@@ -55,7 +55,7 @@ __all__ = [
 
 # Note: The following modules remain available as submodules:
 # - polylogue.paths (XDG paths and configuration)
-# - polylogue.storage.db (database)
+# - polylogue.storage (database and storage)
 # - polylogue.pipeline.runner (pipeline runner)
 # - polylogue.render (rendering)
 # - polylogue.storage.search (search)
