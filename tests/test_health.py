@@ -79,7 +79,7 @@ class TestHealthCacheErrorHandling:
         cache_file = tmp_path / "health.json"
         cache_file.write_text("{ invalid json")
 
-        with caplog.at_level(logging.WARNING, logger="polylogue.health"):
+        with caplog.at_level(logging.WARNING):
             result = _load_cached(tmp_path)
 
         # Should return None
@@ -101,7 +101,7 @@ class TestHealthCacheErrorHandling:
         try:
             os.chmod(cache_file, 0o000)
 
-            with caplog.at_level(logging.WARNING, logger="polylogue.health"):
+            with caplog.at_level(logging.WARNING):
                 result = _load_cached(tmp_path)
 
             # Should return None
