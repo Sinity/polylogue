@@ -23,7 +23,7 @@ import aiosqlite
 
 from polylogue.core.json import dumps as json_dumps
 from polylogue.paths import DATA_HOME
-from polylogue.storage.db import DatabaseError
+from polylogue.storage.backends.sqlite import DatabaseError
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord
 from polylogue.types import ConversationId
 
@@ -248,15 +248,17 @@ class AsyncSQLiteBackend:
 
             messages = []
             for row in rows:
-                messages.append(MessageRecord(
-                    message_id=row["message_id"],
-                    conversation_id=row["conversation_id"],
-                    message_index=row["message_index"],
-                    role=row["role"],
-                    text=row["text"],
-                    timestamp=row["timestamp"],
-                    provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
-                ))
+                messages.append(
+                    MessageRecord(
+                        message_id=row["message_id"],
+                        conversation_id=row["conversation_id"],
+                        role=row["role"],
+                        text=row["text"],
+                        timestamp=row["timestamp"],
+                        content_hash=row["content_hash"],
+                        provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                    )
+                )
 
             return messages
 
@@ -278,7 +280,9 @@ class AsyncSQLiteBackend:
         """
         async with self._get_connection() as conn:
             query = "SELECT * FROM conversations"
-            params = []
+            from typing import Any
+
+            params: list[Any] = []
 
             if provider:
                 query += " WHERE provider_name = ?"
@@ -301,18 +305,20 @@ class AsyncSQLiteBackend:
 
             conversations = []
             for row in rows:
-                conversations.append(ConversationRecord(
-                    conversation_id=row["conversation_id"],
-                    provider_name=row["provider_name"],
-                    provider_conversation_id=row["provider_conversation_id"],
-                    title=row["title"],
-                    created_at=row["created_at"],
-                    updated_at=row["updated_at"],
-                    content_hash=row["content_hash"],
-                    provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
-                    metadata=json.loads(row["metadata"]) if row["metadata"] else None,
-                    version=row["version"],
-                ))
+                conversations.append(
+                    ConversationRecord(
+                        conversation_id=row["conversation_id"],
+                        provider_name=row["provider_name"],
+                        provider_conversation_id=row["provider_conversation_id"],
+                        title=row["title"],
+                        created_at=row["created_at"],
+                        updated_at=row["updated_at"],
+                        content_hash=row["content_hash"],
+                        provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                        metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+                        version=row["version"],
+                    )
+                )
 
             return conversations
 
@@ -332,6 +338,141 @@ class AsyncSQLiteBackend:
             )
             row = await cursor.fetchone()
             return row is not None
+
+    async def save_conversation(
+        self,
+        conversation: ConversationRecord,
+        messages: list[MessageRecord],
+        attachments: list[AttachmentRecord],
+    ) -> dict[str, int]:
+        """Save a full conversation with messages and attachments.
+
+        Args:
+            conversation: Conversation record
+            messages: List of message records
+            attachments: List of attachment records
+
+        Returns:
+            Dictionary with counts of created/updated records
+        """
+        counts = {
+            "conversations_created": 0,
+            "conversations_updated": 0,
+            "messages_created": 0,
+            "attachments_created": 0,
+            "attachment_refs_created": 0,
+        }
+
+        async with self.transaction():
+            async with self._get_connection() as conn:
+                import json
+
+                # 1. Save Conversation
+                # Check if exists to determine created vs updated
+                cursor = await conn.execute(
+                    "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                    (conversation.conversation_id,),
+                )
+                exists = (await cursor.fetchone()) is not None
+                if exists:
+                    counts["conversations_updated"] = 1
+                else:
+                    counts["conversations_created"] = 1
+
+                await conn.execute(
+                    """
+                    INSERT OR REPLACE INTO conversations (
+                        conversation_id, provider_name, provider_conversation_id,
+                        title, created_at, updated_at, content_hash,
+                        provider_meta, metadata, version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        conversation.conversation_id,
+                        conversation.provider_name,
+                        conversation.provider_conversation_id,
+                        conversation.title,
+                        conversation.created_at,
+                        conversation.updated_at,
+                        conversation.content_hash,
+                        json.dumps(conversation.provider_meta) if conversation.provider_meta else None,
+                        json.dumps(conversation.metadata) if conversation.metadata else None,
+                        conversation.version,
+                    ),
+                )
+
+                # 2. Save Messages
+                # TODO: Use executemany when aiosqlite supports it properly or loop
+                for i, msg in enumerate(messages):
+                    await conn.execute(
+                        """
+                        INSERT OR REPLACE INTO messages (
+                            message_id, conversation_id, provider_message_id,
+                            role, text, timestamp, content_hash,
+                            provider_meta, version
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            msg.message_id,
+                            msg.conversation_id,
+                            msg.provider_message_id,
+                            msg.role,
+                            msg.text,
+                            msg.timestamp,
+                            msg.content_hash,
+                            json.dumps(msg.provider_meta) if msg.provider_meta else None,
+                            msg.version or 1,
+                        ),
+                    )
+                counts["messages_created"] = len(messages)
+
+                # 3. Save Attachments
+                for att in attachments:
+                    await conn.execute(
+                        """
+                        INSERT OR IGNORE INTO attachments (
+                            attachment_id, mime_type, size_bytes,
+                            path, ref_count, provider_meta
+                        ) VALUES (?, ?, ?, ?, 0, ?)
+                        """,
+                        (
+                            att.attachment_id,
+                            att.mime_type,
+                            att.size_bytes,
+                            str(att.path) if att.path else None,
+                            json.dumps(att.provider_meta) if att.provider_meta else None,
+                        ),
+                    )
+                counts["attachments_created"] = len(attachments)
+
+                # 4. Save Attachment Refs
+                from polylogue.storage.backends.sqlite import _make_ref_id
+
+                # We need to reconstruct refs from attachments list logic or pass explicit refs
+                # For now, just simplistic ref creation based on what we have
+                # This mirrors sync implementation logic if attachments contains all necessary info
+                # But Async backend is simplified. Assuming attachments list is what we want to save.
+                for att in attachments:
+                    ref_id = _make_ref_id(att.attachment_id, att.conversation_id, att.message_id)
+                    await conn.execute(
+                        """
+                        INSERT OR IGNORE INTO attachment_refs (
+                            ref_id, attachment_id, conversation_id, message_id, provider_meta
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            ref_id,
+                            att.attachment_id,
+                            att.conversation_id,
+                            att.message_id,
+                            json.dumps(att.provider_meta) if att.provider_meta else None,
+                        ),
+                    )
+                    counts["attachment_refs_created"] += 1
+
+                await conn.commit()
+
+        return counts
 
     async def close(self) -> None:
         """Close database connections.

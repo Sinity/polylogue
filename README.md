@@ -164,6 +164,7 @@ Positional arguments are implicit `--contains` (FTS). Multiple positional args a
 | `--by-tag` | Aggregate output: count by tag |
 
 **Smart defaults**:
+
 - No query → show stats
 - Single result → show content
 - Multiple results → show list
@@ -173,6 +174,7 @@ Positional arguments are implicit `--contains` (FTS). Multiple positional args a
 **Multiple outputs**: `--output browser,clipboard` performs both actions. Content is rendered once, sent to multiple destinations.
 
 **Clipboard behavior**:
+
 - Single conversation: Full markdown content copied
 - Multiple conversations (with `--list` or when query returns many): Each conversation separated by `---` delimiter
 - Format respects `--format` flag (markdown default, or json)
@@ -180,6 +182,7 @@ Positional arguments are implicit `--contains` (FTS). Multiple positional args a
 **`--pick` behavior**: Uses `fzf` if available in PATH. Falls back to numbered selection prompt (enter number to select). With `--pick`, after selection the chosen conversation is processed according to other flags.
 
 **`--stats` output** (for filtered results):
+
 ```
 Query: "error" -p claude --since "last week"
 Matched: 12 conversations
@@ -215,6 +218,7 @@ polylogue -p claude --since "last month" --annotate "Focus on technical decision
 **`--delete` safety**: Requires at least one filter flag (`-i`, `-p`, `-t`, `--since`, etc.). Cannot delete entire archive without explicit filter.
 
 **List output format**:
+
 ```
   ID (24 chars)             DATE        [PROVIDER    ]  TITLE (MSG COUNT)
   claude:a8f2c3d4e5f6...    2024-01-24  [claude-code ]  Debugging OAuth (42 msgs)
@@ -246,17 +250,20 @@ polylogue sync --watch --webhook https://...       # POST to webhook on new
 **Partial failures**: Sync continues on individual file failures, reports errors at end. Exit code 0 if any files succeeded, non-zero only if all failed.
 
 **Rendering**: Markdown and HTML are generated during sync for new/modified conversations. To force re-render:
+
 ```bash
 polylogue sync --force-render        # Re-render all
 polylogue sync --force-render -i abc # Re-render specific conversation
 ```
 
 **Delete/prune**: To remove conversations from the archive:
+
 ```bash
 polylogue -i abc123 --delete         # Delete specific conversation
 polylogue -P gemini --delete         # Delete all Gemini conversations
 polylogue --delete                   # ERROR: requires filter (safety)
 ```
+
 Deletion removes from DB and deletes render files. Original inbox files are NOT deleted.
 
 **Title display**: `user_title` (if set) > `original_title` (from provider) > truncated ID. Set user title with `--title`, clear with `--title ""`.
@@ -275,6 +282,7 @@ POLYLOGUE_FORCE=1 polylogue reset    # Automation escape hatch
 ```
 
 **`polylogue check` output**:
+
 ```
 Database: OK (156 MB, 1234 conversations)
 FTS Index: OK (45231 messages indexed)
@@ -286,6 +294,7 @@ Issues: None
 ```
 
 Checks performed:
+
 - Database accessible and schema current
 - FTS index exists and row count matches
 - Inbox directory readable
@@ -318,6 +327,7 @@ polylogue --completions bash > /etc/bash_completion.d/polylogue
 ```
 
 **Dynamic completions**: Completions query the database for:
+
 - `--provider` / `-p`: Available providers (from indexed conversations)
 - `--id` / `-i`: Recent conversation IDs (sorted by recency, shows title hint)
 - `--tag` / `-t`: Existing tags
@@ -326,6 +336,7 @@ polylogue --completions bash > /etc/bash_completion.d/polylogue
 ### Technical Details
 
 **FTS (Full-Text Search)**:
+
 - SQLite FTS5 with default tokenizer
 - Smartcase: all-lowercase query → case-insensitive; contains uppercase → case-sensitive
 - Supports phrase queries with quotes: `"exact phrase"`
@@ -333,11 +344,13 @@ polylogue --completions bash > /etc/bash_completion.d/polylogue
 **Regex**: Python `re` module syntax. Patterns are matched against message text.
 
 **Date parsing**: Uses `dateparser` library. Supports:
+
 - ISO format: `2024-01-15`, `2024-01-15T10:30:00`
 - Relative: `today`, `yesterday`, `"last week"`, `"2 days ago"`, `"last month"`
 - Natural language: `"January 15"`, `"Jan 2024"`
 
 **Exit codes**:
+
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
@@ -346,6 +359,7 @@ polylogue --completions bash > /etc/bash_completion.d/polylogue
 | 3 | Partial failure (some items failed in sync) |
 
 **Terminal output**:
+
 - Colors enabled by default on TTY, respects `NO_COLOR` env var
 - Long output (>50 lines) paged via `$PAGER` (default: `less -R`)
 - Use `--no-pager` to disable, or pipe to disable automatically
@@ -543,6 +557,7 @@ poly = Polylogue(backend=MemoryBackend())
 | `metadata` | dict | User metadata (k:v, see below) |
 
 **Metadata** (unified k:v storage):
+
 | Key | Type | Description |
 |-----|------|-------------|
 | `title` | str | User-set title (overrides original) |
@@ -589,11 +604,13 @@ Conversations may have branching structure (e.g., ChatGPT "edit and regenerate")
 Some providers include additional metadata:
 
 **Claude Code**:
+
 - `cost_usd`: API cost in USD
 - `duration_ms`: Response generation time
 - `model`: Model used (e.g., `claude-3-opus`)
 
 Access via `message.provider_meta` or convenience properties:
+
 ```python
 msg.cost_usd      # float or None
 msg.duration_ms   # int or None
@@ -617,6 +634,7 @@ Messages have classification properties derived from content and metadata:
 | `is_substantive` | Real dialogue (not noise, not thinking) |
 
 **Provider-specific detection**:
+
 - **ChatGPT**: Thinking detected via `content_type: "thoughts"` or `"reasoning_recap"` in metadata
 - **Claude Code**: Thinking via `content_blocks` with `type: "thinking"`; tool use via `type: "tool_use"` or `"tool_result"`
 - **Gemini**: Thinking via `isThought` marker in chunk metadata
@@ -785,9 +803,15 @@ polylogue/
 ├── lib/               # Core library (models, repository, projections)
 ├── storage/           # Storage layer (SQLite, FTS5, backends)
 ├── ingestion/         # Import from providers (ChatGPT, Claude, etc.)
+├── pipeline/          # Async ingestion pipeline (runner, services)
 ├── rendering/         # Output rendering (Markdown, HTML)
 ├── cli/               # CLI wrapper
-└── mcp/               # MCP server
+├── mcp/               # MCP server
+├── server/            # FastAPI backend server
+├── ui/                # Terminal UI facade (Rich, Textual)
+├── health.py          # System health checks
+├── verify.py          # Data quality verification
+└── analytics/         # Usage metrics and statistics
 ```
 
 ### Key Abstractions
@@ -830,6 +854,7 @@ See `ARCHITECTURE.md` for detailed documentation.
 **Encoding handling**: UTF-8 assumed. Fallback chain: UTF-8 → UTF-8-sig → UTF-16 → UTF-32 → UTF-8 with errors ignored. Null bytes stripped.
 
 **Stdin support**:
+
 ```bash
 cat export.json | polylogue sync --file -
 pbpaste | polylogue sync --clipboard   # macOS
