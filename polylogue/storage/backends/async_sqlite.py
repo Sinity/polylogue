@@ -12,7 +12,6 @@ Performance characteristics:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -21,11 +20,8 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from polylogue.core.json import dumps as json_dumps
 from polylogue.paths import DATA_HOME
-from polylogue.storage.backends.sqlite import DatabaseError
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord
-from polylogue.types import ConversationId
+from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 if TYPE_CHECKING:
     pass
