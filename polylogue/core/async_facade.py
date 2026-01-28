@@ -27,7 +27,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.config import Config, Source
+from polylogue.config import Config
 from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
 
 if TYPE_CHECKING:

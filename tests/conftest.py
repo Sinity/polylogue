@@ -9,12 +9,14 @@ import pytest
 def _clear_polylogue_env(monkeypatch):
     # Reset the container singleton to ensure clean state between tests
     from polylogue.cli.container import reset_container
+
     reset_container()
 
     # Clear thread-local database state to prevent connection leaks between tests
     # Import db module fresh each time to handle module reloads from other tests
     import sys
-    db_module = sys.modules.get("polylogue.storage.db")
+
+    db_module = sys.modules.get("polylogue.storage.backends.sqlite")
     if db_module is not None and hasattr(db_module, "_LOCAL"):
         state = getattr(db_module._LOCAL, "state", None)
         if state is not None:
@@ -76,18 +78,18 @@ def workspace_env(tmp_path, monkeypatch):
     import polylogue.container
     import polylogue.cli.container
     import polylogue.storage.backends.sqlite
-    import polylogue.storage.db
     import polylogue.storage.search
+
     importlib.reload(polylogue.paths)
     importlib.reload(polylogue.config)  # Depends on paths
     importlib.reload(polylogue.container)  # Depends on config
     importlib.reload(polylogue.cli.container)  # Depends on container
     importlib.reload(polylogue.storage.backends.sqlite)
-    importlib.reload(polylogue.storage.db)
     importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
 
     # Reset container singleton to use fresh config
     from polylogue.cli.container import reset_container
+
     reset_container()
 
     return {
@@ -101,7 +103,7 @@ def workspace_env(tmp_path, monkeypatch):
 @pytest.fixture
 def db_without_fts(tmp_path):
     """Database with schema but WITHOUT the FTS table (simulates fresh install)."""
-    from polylogue.storage.db import open_connection
+    from polylogue.storage.backends.sqlite import open_connection
 
     db_path = tmp_path / "no_fts.db"
     with open_connection(db_path) as conn:
@@ -210,18 +212,22 @@ def cli_workspace(tmp_path, monkeypatch):
     import polylogue.container
     import polylogue.cli.container
     import polylogue.storage.backends.sqlite
-    import polylogue.storage.db
     import polylogue.storage.search
+
     importlib.reload(polylogue.paths)
     importlib.reload(polylogue.config)  # Depends on paths
     importlib.reload(polylogue.container)  # Depends on config
     importlib.reload(polylogue.cli.container)  # Depends on container
     importlib.reload(polylogue.storage.backends.sqlite)
-    importlib.reload(polylogue.storage.db)
     importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
+
+    # Ensure schema exists before tests run
+    with polylogue.storage.backends.sqlite.connection_context(db_path) as conn:
+        polylogue.storage.backends.sqlite._ensure_schema(conn)
 
     # Reset container singleton to use fresh config
     from polylogue.cli.container import reset_container
+
     reset_container()
 
     return {
@@ -254,15 +260,17 @@ def mock_drive_credentials(tmp_path, monkeypatch):
     # Create mock credentials.json (OAuth client config)
     creds_path = creds_dir / "credentials.json"
     creds_path.write_text(
-        json.dumps({
-            "installed": {
-                "client_id": "mock_client_id.apps.googleusercontent.com",
-                "client_secret": "mock_client_secret",
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": ["http://localhost"],
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "mock_client_id.apps.googleusercontent.com",
+                    "client_secret": "mock_client_secret",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": ["http://localhost"],
+                }
             }
-        })
+        )
     )
 
     # Create mock token.json (OAuth access/refresh tokens)
@@ -355,14 +363,17 @@ def mock_media_downloader(monkeypatch):
     def mock_import_module(name: str):
         if name == "googleapiclient.http":
             import types
+
             mock_http = types.ModuleType("googleapiclient.http")
             mock_http.MediaIoBaseDownload = MockMediaIoBaseDownload
             return mock_http
         # Fall through to original for other modules
         import importlib
+
         return importlib.import_module(name)
 
     import polylogue.ingestion.drive_client as drive_client
+
     original_import_module = drive_client._import_module
 
     monkeypatch.setattr(drive_client, "_import_module", mock_import_module)

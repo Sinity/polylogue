@@ -70,7 +70,7 @@ class AsyncStorageRepository:
                 - attachment_refs_created: Number of new attachment references
         """
         # Convert Conversation model to ConversationRecord
-        from typing import cast, Any
+        from typing import cast
         from polylogue.types import ContentHash, ConversationId
 
         created_at_str = conversation.created_at.isoformat() if conversation.created_at else None

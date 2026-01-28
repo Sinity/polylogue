@@ -8,7 +8,7 @@ import click
 
 from polylogue.cli.helpers import fail
 from polylogue.cli.types import AppEnv
-from polylogue.paths import CACHE_HOME, STATE_HOME, DB_PATH, RENDER_ROOT, DRIVE_TOKEN_PATH, DATA_HOME
+from polylogue.paths import CACHE_HOME, DB_PATH, RENDER_ROOT, DRIVE_TOKEN_PATH, DATA_HOME
 
 
 @click.command("reset")

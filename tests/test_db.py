@@ -5,7 +5,7 @@ import threading
 
 import pytest
 
-from polylogue.storage.db import (
+from polylogue.storage.backends.sqlite import (
     SCHEMA_VERSION,
     _apply_schema,
     _ensure_schema,
@@ -23,6 +23,7 @@ def test_default_db_path_uses_xdg_data_home(monkeypatch, tmp_path):
     import importlib
 
     import polylogue.paths
+
     importlib.reload(polylogue.paths)
 
     path = default_db_path()
@@ -37,6 +38,7 @@ def test_default_db_path_fallback_to_home(monkeypatch, tmp_path):
     import importlib
 
     import polylogue.paths
+
     importlib.reload(polylogue.paths)
 
     path = default_db_path()
@@ -135,7 +137,7 @@ def test_open_connection_depth_tracking(tmp_path):
     """open_connection() properly tracks connection depth."""
     db_path = tmp_path / "test.db"
 
-    from polylogue.storage.db import _get_state
+    from polylogue.storage.backends.sqlite import _get_state
 
     with open_connection(db_path):
         state = _get_state()
@@ -392,7 +394,8 @@ def test_migrate_v1_to_v2_creates_new_tables(tmp_path):
     conn.commit()
 
     # Migrate using the runner (which updates version)
-    from polylogue.storage.db import _run_migrations
+    from polylogue.storage.backends.sqlite import _run_migrations
+
     _run_migrations(conn, 1, 2)
 
     # Check version updated
@@ -453,7 +456,7 @@ def test_migrate_v2_to_v3_updates_runs_table(tmp_path):
     # Insert test run data
     conn.execute(
         "INSERT INTO runs_old VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("run1", "2024-01-01T00:00:00Z", '{"test": true}', '{"count": 5}', '{}', 1, 1000),
+        ("run1", "2024-01-01T00:00:00Z", '{"test": true}', '{"count": 5}', "{}", 1, 1000),
     )
     conn.commit()
 
@@ -464,6 +467,7 @@ def test_migrate_v2_to_v3_updates_runs_table(tmp_path):
     # Migrate
     # Migrate using the runner (which updates version)
     from polylogue.storage.db import _run_migrations
+
     _run_migrations(conn, 2, 3)
 
     # Check version updated to 3
@@ -526,6 +530,7 @@ def test_migrate_v3_to_v4_adds_source_name_column(tmp_path):
 
     # Migrate using the runner (which updates version)
     from polylogue.storage.db import _run_migrations
+
     _run_migrations(conn, 3, 4)
 
     # Check version updated to 4
@@ -672,11 +677,14 @@ class TestMigrations:
             assert version == SCHEMA_VERSION
 
             # Insert some test data
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO conversations
                 (conversation_id, provider_name, provider_conversation_id, title, content_hash, version)
                 VALUES (?, ?, ?, ?, ?, ?)
-            """, ("test-conv", "test", "prov-1", "Test Title", "hash123", 1))
+            """,
+                ("test-conv", "test", "prov-1", "Test Title", "hash123", 1),
+            )
             conn.commit()
 
         # Verify data persists
@@ -723,7 +731,7 @@ class TestMigrations:
         conn.close()
 
         # Patch _MIGRATIONS[3] to fail (patching the function won't work as dict has reference)
-        from polylogue.storage import db
+        from polylogue.storage.backends import sqlite as db
 
         def failing_migration(conn):
             raise RuntimeError("Simulated migration failure")
@@ -782,12 +790,8 @@ class TestMigrations:
             cursor = conn.execute("SELECT conversation_id FROM conversations")
             ids = [row[0] for row in cursor.fetchall()]
 
-            assert (
-                "outer-conv" in ids
-            ), "Outer transaction was lost - savepoint rollback corrupted parent"
-            assert (
-                "inner-conv" not in ids
-            ), "Inner transaction was not rolled back - savepoint rollback failed"
+            assert "outer-conv" in ids, "Outer transaction was lost - savepoint rollback corrupted parent"
+            assert "inner-conv" not in ids, "Inner transaction was not rolled back - savepoint rollback failed"
 
     def test_connection_context_commits_on_success(self, tmp_path):
         """open_connection should commit on normal exit."""
