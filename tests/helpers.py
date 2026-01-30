@@ -228,6 +228,32 @@ class ConversationBuilder:
 # =============================================================================
 
 
+def make_conversation(
+    conversation_id: str = "conv1",
+    provider_name: str = "test",
+    title: str = "Test Conversation",
+    created_at: str | None = None,
+    updated_at: str | None = None,
+    **kwargs,
+) -> ConversationRecord:
+    """Quick conversation record creation without storing.
+
+    Usage:
+        conv = make_conversation("conv1", provider_name="claude", title="My Conv")
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    return ConversationRecord(
+        conversation_id=conversation_id,
+        provider_name=provider_name,
+        provider_conversation_id=kwargs.pop("provider_conversation_id", f"ext-{conversation_id}"),
+        title=title,
+        created_at=created_at or now,
+        updated_at=updated_at or now,
+        content_hash=kwargs.pop("content_hash", uuid4().hex),
+        **kwargs,
+    )
+
+
 def make_message(
     message_id: str = "m1",
     conversation_id: str = "conv1",
