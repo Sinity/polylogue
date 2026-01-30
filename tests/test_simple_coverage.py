@@ -12,7 +12,7 @@ class TestVerifyStatusStr:
 
     def test_verify_status_str_conversion(self):
         """Test __str__ returns the value."""
-        from polylogue.verify import VerifyStatus
+        from polylogue.health import VerifyStatus
 
         assert str(VerifyStatus.OK) == "ok"
         assert str(VerifyStatus.WARNING) == "warning"

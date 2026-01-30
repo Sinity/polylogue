@@ -101,7 +101,7 @@ class TestIndexService:
 
     def test_update_index_empty_list(self, tmp_path: Path, workspace_env):
         """IndexService should handle empty conversation list."""
-        from polylogue.storage.db import connection_context
+        from polylogue.storage.backends.sqlite import connection_context
 
         config = Config(
             sources=[],
