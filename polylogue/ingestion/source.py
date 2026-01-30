@@ -284,7 +284,15 @@ def iter_source_conversations(
     paths: list[Path] = []
     if base.is_dir():
         # Iterate all files and filter by extension (case-insensitive)
-        paths = sorted(p for p in base.rglob("*") if p.is_file() and _has_ingest_extension(p))
+        # Use os.walk with followlinks=True to traverse symlinked directories
+        import os
+        paths = []
+        for root, _, files in os.walk(base, followlinks=True):
+            for filename in files:
+                file_path = Path(root) / filename
+                if _has_ingest_extension(file_path):
+                    paths.append(file_path)
+        paths = sorted(paths)
     elif base.is_file():
         paths.append(base)
 
