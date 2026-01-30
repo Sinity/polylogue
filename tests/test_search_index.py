@@ -10,7 +10,8 @@ import pytest
 from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.index import ensure_index, rebuild_index, update_index_for_conversations
 from polylogue.storage.search import search_messages
-from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
+from polylogue.storage.store import store_records
+from tests.helpers import make_conversation, make_message
 
 
 @pytest.fixture
@@ -64,33 +65,10 @@ def test_rebuild_index_creates_fts_table(test_conn):
 
 def test_rebuild_index_populates_fts_from_messages(test_conn):
     """rebuild_index() populates FTS table from existing messages."""
-    # Insert conversation and messages
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test Conversation",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
+    conv = make_conversation("conv1")
     messages = [
-        MessageRecord(
-            message_id="msg1",
-            conversation_id="conv1",
-            role="user",
-            text="hello world",
-            timestamp="2024-01-01T00:00:00Z",
-            content_hash="hash-msg1",
-        ),
-        MessageRecord(
-            message_id="msg2",
-            conversation_id="conv1",
-            role="assistant",
-            text="goodbye world",
-            timestamp="2024-01-01T00:01:00Z",
-            content_hash="hash-msg2",
-        ),
+        make_message("msg1", "conv1", text="hello world"),
+        make_message("msg2", "conv1", role="assistant", text="goodbye world"),
     ]
 
     store_records(conversation=conv, messages=messages, attachments=[], conn=test_conn)
@@ -119,23 +97,8 @@ def test_rebuild_index_populates_fts_from_messages(test_conn):
 def test_rebuild_index_clears_previous_index(test_conn):
     """rebuild_index() clears old FTS entries when rebuilding."""
     # First insert and index
-    conv1 = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="First",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    msg1 = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="first message",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
+    conv1 = make_conversation("conv1", title="First")
+    msg1 = make_message("msg1", "conv1", text="first message")
     store_records(conversation=conv1, messages=[msg1], attachments=[], conn=test_conn)
     rebuild_index(test_conn)
 
@@ -146,23 +109,8 @@ def test_rebuild_index_clears_previous_index(test_conn):
     # Delete first conversation and add a new one
     test_conn.execute("DELETE FROM conversations WHERE conversation_id = ?", ("conv1",))
 
-    conv2 = ConversationRecord(
-        conversation_id="conv2",
-        provider_name="test",
-        provider_conversation_id="ext-conv2",
-        title="Second",
-        created_at="2024-01-02T00:00:00Z",
-        updated_at="2024-01-02T00:00:00Z",
-        content_hash="hash2",
-    )
-    msg2 = MessageRecord(
-        message_id="msg2",
-        conversation_id="conv2",
-        role="user",
-        text="second message",
-        timestamp="2024-01-02T00:00:00Z",
-        content_hash="hash-msg2",
-    )
+    conv2 = make_conversation("conv2", title="Second")
+    msg2 = make_message("msg2", "conv2", text="second message")
     store_records(conversation=conv2, messages=[msg2], attachments=[], conn=test_conn)
 
     # Rebuild index
@@ -183,32 +131,10 @@ def test_rebuild_index_clears_previous_index(test_conn):
 
 def test_rebuild_index_skips_null_text(test_conn):
     """rebuild_index() skips messages with NULL text."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
+    conv = make_conversation("conv1")
     messages = [
-        MessageRecord(
-            message_id="msg1",
-            conversation_id="conv1",
-            role="user",
-            text="hello",
-            timestamp="2024-01-01T00:00:00Z",
-            content_hash="hash-msg1",
-        ),
-        MessageRecord(
-            message_id="msg2",
-            conversation_id="conv1",
-            role="assistant",
-            text=None,  # NULL text
-            timestamp="2024-01-01T00:01:00Z",
-            content_hash="hash-msg2",
-        ),
+        make_message("msg1", "conv1", text="hello"),
+        make_message("msg2", "conv1", role="assistant", text=None),  # NULL text
     ]
 
     store_records(conversation=conv, messages=messages, attachments=[], conn=test_conn)
@@ -221,23 +147,8 @@ def test_rebuild_index_skips_null_text(test_conn):
 
 def test_rebuild_index_preserves_conversation_metadata(test_conn):
     """rebuild_index() includes provider_name and conversation_id in FTS."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="claude",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="hello",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
+    conv = make_conversation("conv1", provider_name="claude")
+    msg = make_message("msg1", "conv1", text="hello")
 
     store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
     rebuild_index(test_conn)
@@ -259,40 +170,10 @@ def test_rebuild_index_preserves_conversation_metadata(test_conn):
 def test_update_index_incremental_single_conversation(test_conn):
     """update_index_for_conversations() updates only specified conversations."""
     # Create and index two conversations
-    conv1 = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Conv 1",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    conv2 = ConversationRecord(
-        conversation_id="conv2",
-        provider_name="test",
-        provider_conversation_id="ext-conv2",
-        title="Conv 2",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash2",
-    )
-    msg1 = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="first",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
-    msg2 = MessageRecord(
-        message_id="msg2",
-        conversation_id="conv2",
-        role="user",
-        text="second",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg2",
-    )
+    conv1 = make_conversation("conv1", title="Conv 1")
+    conv2 = make_conversation("conv2", title="Conv 2")
+    msg1 = make_message("msg1", "conv1", text="first")
+    msg2 = make_message("msg2", "conv2", text="second")
 
     store_records(conversation=conv1, messages=[msg1], attachments=[], conn=test_conn)
     store_records(conversation=conv2, messages=[msg2], attachments=[], conn=test_conn)
@@ -300,15 +181,7 @@ def test_update_index_incremental_single_conversation(test_conn):
     # Initial rebuild
     rebuild_index(test_conn)
 
-    # Add new message to conv1
-    msg3 = MessageRecord(
-        message_id="msg3",
-        conversation_id="conv1",
-        role="assistant",
-        text="updated",
-        timestamp="2024-01-01T00:01:00Z",
-        content_hash="hash-msg3",
-    )
+    # Add new message to conv1 directly to test incremental update
     test_conn.execute(
         """
         INSERT INTO messages
@@ -337,26 +210,9 @@ def test_update_index_incremental_single_conversation(test_conn):
 def test_update_index_incremental_multiple_conversations(test_conn):
     """update_index_for_conversations() can update multiple conversations at once."""
     # Create three conversations
-    conversations = []
-    messages = []
     for i in range(3):
-        conv = ConversationRecord(
-            conversation_id=f"conv{i}",
-            provider_name="test",
-            provider_conversation_id=f"ext-conv{i}",
-            title=f"Conv {i}",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-            content_hash=f"hash{i}",
-        )
-        msg = MessageRecord(
-            message_id=f"msg{i}",
-            conversation_id=f"conv{i}",
-            role="user",
-            text=f"text {i}",
-            timestamp="2024-01-01T00:00:00Z",
-            content_hash=f"hash-msg{i}",
-        )
+        conv = make_conversation(f"conv{i}", title=f"Conv {i}")
+        msg = make_message(f"msg{i}", f"conv{i}", text=f"text {i}")
         store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
 
     rebuild_index(test_conn)
@@ -394,23 +250,8 @@ def test_update_index_incremental_multiple_conversations(test_conn):
 
 def test_update_index_empty_list_does_nothing(test_conn):
     """update_index_for_conversations([]) does nothing."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="hello",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
+    conv = make_conversation("conv1")
+    msg = make_message("msg1", "conv1", text="hello")
 
     store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
     rebuild_index(test_conn)
@@ -429,23 +270,8 @@ def test_update_index_handles_large_batch(test_conn):
     # Create 250 conversations with messages
     num_convs = 250
     for i in range(num_convs):
-        conv = ConversationRecord(
-            conversation_id=f"conv{i}",
-            provider_name="test",
-            provider_conversation_id=f"ext-conv{i}",
-            title=f"Conv {i}",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-            content_hash=f"hash{i}",
-        )
-        msg = MessageRecord(
-            message_id=f"msg{i}",
-            conversation_id=f"conv{i}",
-            role="user",
-            text=f"text {i}",
-            timestamp="2024-01-01T00:00:00Z",
-            content_hash=f"hash-msg{i}",
-        )
+        conv = make_conversation(f"conv{i}", title=f"Conv {i}")
+        msg = make_message(f"msg{i}", f"conv{i}", text=f"text {i}")
         store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
 
     # Update all at once (tests chunking with size=200)
@@ -466,23 +292,8 @@ def test_search_finds_matching_text(workspace_env, storage_repository):
     """search_messages() finds conversations with matching text."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test Conv",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="python programming language",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
+    conv = make_conversation("conv1", title="Test Conv")
+    msg = make_message("msg1", "conv1", text="python programming language")
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
@@ -499,23 +310,8 @@ def test_search_returns_multiple_matches(workspace_env, storage_repository):
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
     for i in range(3):
-        conv = ConversationRecord(
-            conversation_id=f"conv{i}",
-            provider_name="test",
-            provider_conversation_id=f"ext-conv{i}",
-            title=f"Conv {i}",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-            content_hash=f"hash{i}",
-        )
-        msg = MessageRecord(
-            message_id=f"msg{i}",
-            conversation_id=f"conv{i}",
-            role="user",
-            text="testing framework",
-            timestamp="2024-01-01T00:00:00Z",
-            content_hash=f"hash-msg{i}",
-        )
+        conv = make_conversation(f"conv{i}", title=f"Conv {i}")
+        msg = make_message(f"msg{i}", f"conv{i}", text="testing framework")
         ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
 
     rebuild_index()
@@ -531,23 +327,8 @@ def test_search_no_results_returns_empty(workspace_env, storage_repository):
     """search_messages() returns empty list when no matches found."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="hello world",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
+    conv = make_conversation("conv1")
+    msg = make_message("msg1", "conv1", text="hello world")
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
@@ -562,23 +343,8 @@ def test_search_respects_limit(workspace_env, storage_repository):
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
     for i in range(10):
-        conv = ConversationRecord(
-            conversation_id=f"conv{i}",
-            provider_name="test",
-            provider_conversation_id=f"ext-conv{i}",
-            title=f"Conv {i}",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-            content_hash=f"hash{i}",
-        )
-        msg = MessageRecord(
-            message_id=f"msg{i}",
-            conversation_id=f"conv{i}",
-            role="user",
-            text="search limit",
-            timestamp="2024-01-01T00:00:00Z",
-            content_hash=f"hash-msg{i}",
-        )
+        conv = make_conversation(f"conv{i}", title=f"Conv {i}")
+        msg = make_message(f"msg{i}", f"conv{i}", text="search limit")
         ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
 
     rebuild_index()
@@ -591,23 +357,8 @@ def test_search_includes_snippet(workspace_env, storage_repository):
     """search_messages() includes text snippet in results."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="The quick brown fox jumps over the lazy dog",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
+    conv = make_conversation("conv1")
+    msg = make_message("msg1", "conv1", text="The quick brown fox jumps over the lazy dog")
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
@@ -624,24 +375,8 @@ def test_search_includes_conversation_metadata(workspace_env, storage_repository
     """search_messages() includes conversation metadata in results."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="claude",
-        provider_conversation_id="ext-conv1",
-        title="My Conversation",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-        provider_meta={"source": "my-source"},
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="search query",
-        timestamp="2024-01-01T10:30:00Z",
-        content_hash="hash-msg1",
-    )
+    conv = make_conversation("conv1", provider_name="claude", title="My Conversation", provider_meta={"source": "my-source"})
+    msg = make_message("msg1", "conv1", text="search query", timestamp="2024-01-01T10:30:00Z")
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
@@ -667,23 +402,8 @@ def test_search_with_special_characters(workspace_env, storage_repository):
     """search_messages() handles special characters in text."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="C++ programming with @mentions and #hashtags",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
+    conv = make_conversation("conv1")
+    msg = make_message("msg1", "conv1", text="C++ programming with @mentions and #hashtags")
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
@@ -697,23 +417,8 @@ def test_search_with_quotes_in_text(workspace_env, storage_repository):
     """search_messages() handles quoted text correctly."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text='She said "hello world" to me',
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
+    conv = make_conversation("conv1")
+    msg = make_message("msg1", "conv1", text='She said "hello world" to me')
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
@@ -726,23 +431,8 @@ def test_search_with_unicode_text(workspace_env, storage_repository):
     """search_messages() handles unicode characters."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Unicode Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="Hello 世界 مرحبا мир café",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
+    conv = make_conversation("conv1", title="Unicode Test")
+    msg = make_message("msg1", "conv1", text="Hello 世界 مرحبا мир café")
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
@@ -755,23 +445,8 @@ def test_search_with_hyphenated_words(workspace_env, storage_repository):
     """search_messages() handles words in hyphenated phrases."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="The state-of-the-art algorithm",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
+    conv = make_conversation("conv1")
+    msg = make_message("msg1", "conv1", text="The state-of-the-art algorithm")
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
@@ -812,23 +487,8 @@ def test_search_returns_searchresult_object(workspace_env, storage_repository):
     """search_messages() returns SearchResult with hits list."""
     from polylogue.ingestion import IngestBundle, ingest_bundle
 
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="search result",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
+    conv = make_conversation("conv1")
+    msg = make_message("msg1", "conv1", text="search result")
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
@@ -851,23 +511,14 @@ def test_search_returns_searchresult_object(workspace_env, storage_repository):
 
 def test_rebuild_index_with_multiple_messages_per_conversation(test_conn):
     """rebuild_index() correctly indexes all messages in a conversation."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Multi-message Conv",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
+    conv = make_conversation("conv1", title="Multi-message Conv")
     messages = [
-        MessageRecord(
-            message_id=f"msg{i}",
-            conversation_id="conv1",
+        make_message(
+            f"msg{i}",
+            "conv1",
             role="user" if i % 2 == 0 else "assistant",
             text=f"message number {i}",
             timestamp=f"2024-01-01T00:{i:02d}:00Z",
-            content_hash=f"hash-msg{i}",
         )
         for i in range(10)
     ]
@@ -883,23 +534,8 @@ def test_rebuild_index_with_multiple_messages_per_conversation(test_conn):
 
 def test_update_index_deletes_old_entries_from_conversation(test_conn):
     """update_index_for_conversations() removes old index entries for updated conversations."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="original message",
-        timestamp="2024-01-01T00:00:00Z",
-        content_hash="hash-msg1",
-    )
+    conv = make_conversation("conv1")
+    msg = make_message("msg1", "conv1", text="original message")
 
     store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
     rebuild_index(test_conn)
