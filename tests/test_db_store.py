@@ -21,6 +21,7 @@ from polylogue.storage.store import (
     _prune_attachment_refs,
     store_records,
 )
+from tests.helpers import make_attachment, make_conversation, make_message
 
 
 class TestConnectionContextReuse:
@@ -73,32 +74,9 @@ class TestAttachmentRefCounting:
         """Storing conversation with attachments increments ref_count."""
         db_path = tmp_path / "test.db"
 
-        conv = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title="Test",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            content_hash="hash1",
-        )
-
-        msg = MessageRecord(
-            message_id="m1",
-            conversation_id="c1",
-            role="user",
-            text="Test",
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            content_hash="msghash1",
-        )
-
-        att = AttachmentRecord(
-            attachment_id="att1",
-            conversation_id="c1",
-            message_id="m1",
-            mime_type="image/png",
-            size_bytes=1024,
-        )
+        conv = make_conversation("c1")
+        msg = make_message("m1", "c1")
+        att = make_attachment("att1", "c1", "m1", mime_type="image/png")
 
         with open_connection(db_path) as conn:
             counts = store_records(conversation=conv, messages=[msg], attachments=[att], conn=conn)
@@ -114,50 +92,13 @@ class TestAttachmentRefCounting:
         """Same attachment ID referenced by two messages has ref_count=2."""
         db_path = tmp_path / "test.db"
 
-        conv = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title="Test",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            content_hash="hash1",
-        )
-
-        msg1 = MessageRecord(
-            message_id="m1",
-            conversation_id="c1",
-            role="user",
-            text="Message 1",
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            content_hash="msghash1",
-        )
-
-        msg2 = MessageRecord(
-            message_id="m2",
-            conversation_id="c1",
-            role="assistant",
-            text="Message 2",
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            content_hash="msghash2",
-        )
+        conv = make_conversation("c1")
+        msg1 = make_message("m1", "c1", text="Message 1")
+        msg2 = make_message("m2", "c1", role="assistant", text="Message 2")
 
         # Same attachment in both messages
-        att1 = AttachmentRecord(
-            attachment_id="att1",
-            conversation_id="c1",
-            message_id="m1",
-            mime_type="image/png",
-            size_bytes=1024,
-        )
-
-        att2 = AttachmentRecord(
-            attachment_id="att1",
-            conversation_id="c1",
-            message_id="m2",
-            mime_type="image/png",
-            size_bytes=1024,
-        )
+        att1 = make_attachment("att1", "c1", "m1", mime_type="image/png")
+        att2 = make_attachment("att1", "c1", "m2", mime_type="image/png")
 
         with open_connection(db_path) as conn:
             counts = store_records(
@@ -185,40 +126,12 @@ class TestAttachmentRefCounting:
         db_path = tmp_path / "test.db"
 
         # First version: conversation with attachment
-        conv1 = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title="Version 1",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-            content_hash="hash1",
-        )
-
-        msg1 = MessageRecord(
-            message_id="m1",
-            conversation_id="c1",
-            role="user",
-            text="Message 1",
-            timestamp="2024-01-01T00:00:00Z",
-            content_hash="msghash1",
-        )
-
-        att1 = AttachmentRecord(
-            attachment_id="att1",
-            conversation_id="c1",
-            message_id="m1",
-            mime_type="image/png",
-            size_bytes=1024,
-        )
+        conv1 = make_conversation("c1", title="Version 1", content_hash="hash1")
+        msg1 = make_message("m1", "c1", text="Message 1", timestamp="2024-01-01T00:00:00Z")
+        att1 = make_attachment("att1", "c1", "m1", mime_type="image/png")
 
         with open_connection(db_path) as conn:
-            store_records(
-                conversation=conv1,
-                messages=[msg1],
-                attachments=[att1],
-                conn=conn,
-            )
+            store_records(conversation=conv1, messages=[msg1], attachments=[att1], conn=conn)
 
         # Verify attachment exists with ref_count=1
         with open_connection(db_path) as conn:
@@ -226,23 +139,10 @@ class TestAttachmentRefCounting:
             assert row["ref_count"] == 1
 
         # Second version: same conversation, no attachments
-        conv2 = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title="Version 2",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-02T00:00:00Z",
-            content_hash="hash2",  # Different hash
-        )
+        conv2 = make_conversation("c1", title="Version 2", content_hash="hash2")
 
         with open_connection(db_path) as conn:
-            store_records(
-                conversation=conv2,
-                messages=[msg1],
-                attachments=[],  # No attachments
-                conn=conn,
-            )
+            store_records(conversation=conv2, messages=[msg1], attachments=[], conn=conn)
 
         # Verify attachment was deleted (ref_count dropped to 0)
         with open_connection(db_path) as conn:
@@ -257,24 +157,8 @@ class TestStoreConversationUpsert:
         """store_records() inserts new conversation."""
         db_path = tmp_path / "test.db"
 
-        conv = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title="New Conversation",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            content_hash="hash1",
-        )
-
-        msg = MessageRecord(
-            message_id="m1",
-            conversation_id="c1",
-            role="user",
-            text="Hello",
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            content_hash="msghash1",
-        )
+        conv = make_conversation("c1", title="New Conversation")
+        msg = make_message("m1", "c1", text="Hello")
 
         with open_connection(db_path) as conn:
             counts = store_records(conversation=conv, messages=[msg], attachments=[], conn=conn)
@@ -292,15 +176,7 @@ class TestStoreConversationUpsert:
         """store_records() skips conversation with same content_hash."""
         db_path = tmp_path / "test.db"
 
-        conv = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title="Same Title",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-            content_hash="samehash",
-        )
+        conv = make_conversation("c1", title="Same Title", content_hash="samehash")
 
         with open_connection(db_path) as conn:
             # First insert
@@ -317,29 +193,13 @@ class TestStoreConversationUpsert:
         db_path = tmp_path / "test.db"
 
         # First version
-        conv1 = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title="Original Title",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-            content_hash="hash1",
-        )
+        conv1 = make_conversation("c1", title="Original Title", content_hash="hash1")
 
         with open_connection(db_path) as conn:
             store_records(conversation=conv1, messages=[], attachments=[], conn=conn)
 
         # Second version with different content
-        conv2 = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title="Updated Title",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-02T00:00:00Z",
-            content_hash="hash2",  # Different
-        )
+        conv2 = make_conversation("c1", title="Updated Title", content_hash="hash2")
 
         with open_connection(db_path) as conn:
             counts = store_records(conversation=conv2, messages=[], attachments=[], conn=conn)
@@ -426,25 +286,9 @@ class TestThreadSafety:
 
         def write_conversation(conv_id: int):
             try:
-                conv = ConversationRecord(
-                    conversation_id=f"c{conv_id}",
-                    provider_name="test",
-                    provider_conversation_id=f"ext{conv_id}",
-                    title=f"Conversation {conv_id}",
-                    created_at=datetime.now(timezone.utc).isoformat(),
-                    updated_at=datetime.now(timezone.utc).isoformat(),
-                    content_hash=uuid4().hex,
-                )
-
+                conv = make_conversation(f"c{conv_id}", title=f"Conversation {conv_id}")
                 messages = [
-                    MessageRecord(
-                        message_id=f"m{conv_id}-{i}",
-                        conversation_id=f"c{conv_id}",
-                        role="user" if i % 2 == 0 else "assistant",
-                        text=f"Message {i}",
-                        timestamp=datetime.now(timezone.utc).isoformat(),
-                        content_hash=uuid4().hex,
-                    )
+                    make_message(f"m{conv_id}-{i}", f"c{conv_id}", role="user" if i % 2 == 0 else "assistant", text=f"Message {i}")
                     for i in range(3)
                 ]
 
@@ -478,32 +322,9 @@ class TestAttachmentPruning:
         """Pruning with empty keep_set removes all attachments."""
         db_path = tmp_path / "test.db"
 
-        conv = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title="Test",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            content_hash="hash1",
-        )
-
-        msg = MessageRecord(
-            message_id="m1",
-            conversation_id="c1",
-            role="user",
-            text="Test",
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            content_hash="msghash1",
-        )
-
-        att = AttachmentRecord(
-            attachment_id="att1",
-            conversation_id="c1",
-            message_id="m1",
-            mime_type="image/png",
-            size_bytes=1024,
-        )
+        conv = make_conversation("c1")
+        msg = make_message("m1", "c1")
+        att = make_attachment("att1", "c1", "m1", mime_type="image/png")
 
         with open_connection(db_path) as conn:
             store_records(conversation=conv, messages=[msg], attachments=[att], conn=conn)
@@ -523,42 +344,10 @@ class TestAttachmentPruning:
         """Pruning with keep_set preserves specified refs."""
         db_path = tmp_path / "test.db"
 
-        conv = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title="Test",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            content_hash="hash1",
-        )
-
-        msg1 = MessageRecord(
-            message_id="m1",
-            conversation_id="c1",
-            role="user",
-            text="Message 1",
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            content_hash="msghash1",
-        )
-
-        msg2 = MessageRecord(
-            message_id="m2",
-            conversation_id="c1",
-            role="assistant",
-            text="Message 2",
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            content_hash="msghash2",
-        )
-
-        att1 = AttachmentRecord(
-            attachment_id="att1",
-            conversation_id="c1",
-            message_id="m1",
-            mime_type="image/png",
-            size_bytes=1024,
-        )
-
+        conv = make_conversation("c1")
+        msg1 = make_message("m1", "c1", text="Message 1")
+        msg2 = make_message("m2", "c1", role="assistant", text="Message 2")
+        att1 = make_attachment("att1", "c1", "m1", mime_type="image/png")
         att2 = AttachmentRecord(
             attachment_id="att2",
             conversation_id="c1",
