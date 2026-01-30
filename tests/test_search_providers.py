@@ -170,7 +170,7 @@ class TestFTS5Provider:
 
     def test_ensure_index_creates_fts_table(self, workspace_env, fts_provider):
         """Ensure index creates FTS5 virtual table."""
-        from polylogue.storage.db import open_connection
+        from polylogue.storage.backends.sqlite import open_connection
 
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 

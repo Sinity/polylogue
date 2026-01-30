@@ -39,6 +39,9 @@ build/
 # Local tool state
 .claude/
 
+# Local test datasets (real data, review before committing)
+tests/datasets/
+
 # Local shell env files
 .env
 
@@ -46,3 +49,9 @@ build/
 data
 sinex_md/
 polylogue.egg-info/
+
+# Test datasets (review before committing)
+tests/test-datasets/*.json
+tests/test-datasets/*.jsonl
+tests/test-datasets/*.md
+tests/test-datasets/*.txt

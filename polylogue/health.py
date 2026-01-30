@@ -170,6 +170,72 @@ def run_health(config: Config) -> HealthReport:
             )
         )
 
+        # Empty conversations (conversations with no messages)
+        empty_conv = conn.execute(
+            """
+            SELECT COUNT(*) FROM conversations c
+            WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)
+        """
+        ).fetchone()[0]
+        checks.append(
+            HealthCheck(
+                "empty_conversations",
+                VerifyStatus.OK if empty_conv == 0 else VerifyStatus.WARNING,
+                count=empty_conv,
+                detail="No empty conversations" if empty_conv == 0 else f"{empty_conv} conversation(s) with no messages",
+            )
+        )
+
+        # FTS sync check (verify messages_fts table exists and is in sync)
+        try:
+            # Check if messages_fts table exists
+            fts_exists = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+            ).fetchone()
+
+            if fts_exists:
+                # Count messages in both tables
+                msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+
+                if msg_count == fts_count:
+                    checks.append(
+                        HealthCheck(
+                            "fts_sync",
+                            VerifyStatus.OK,
+                            count=fts_count,
+                            detail=f"FTS index in sync ({fts_count:,} messages indexed)",
+                        )
+                    )
+                else:
+                    checks.append(
+                        HealthCheck(
+                            "fts_sync",
+                            VerifyStatus.WARNING,
+                            count=abs(msg_count - fts_count),
+                            detail=f"FTS out of sync: {msg_count:,} messages vs {fts_count:,} indexed",
+                        )
+                    )
+            else:
+                # FTS table doesn't exist
+                msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                checks.append(
+                    HealthCheck(
+                        "fts_sync",
+                        VerifyStatus.WARNING,
+                        count=msg_count,
+                        detail=f"FTS index not built ({msg_count:,} messages not indexed)",
+                    )
+                )
+        except Exception as exc:
+            checks.append(
+                HealthCheck(
+                    "fts_sync",
+                    VerifyStatus.ERROR,
+                    detail=f"FTS check failed: {exc}",
+                )
+            )
+
     # 5. Source Accessibility
     for source in config.sources:
         if source.folder:

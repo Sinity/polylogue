@@ -18,7 +18,7 @@ from uuid import uuid4
 import pytest
 
 from polylogue.rendering.core import ConversationFormatter, FormattedConversation
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, store_records
 
 
