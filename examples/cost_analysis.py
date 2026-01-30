@@ -23,8 +23,7 @@ from pathlib import Path
 # Add parent to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from polylogue.storage.backends.sqlite import open_connection
-from polylogue.lib.models import Conversation
+from polylogue import Polylogue
 
 
 def extract_cost(provider_meta: dict | None) -> float | None:
