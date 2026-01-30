@@ -48,13 +48,15 @@ class ConversationFormatter:
         # Or convert to HTML in HTMLRenderer
     """
 
-    def __init__(self, archive_root: Path):
+    def __init__(self, archive_root: Path, db_path: Path | None = None):
         """Initialize the formatter.
 
         Args:
             archive_root: Root directory for archived conversations
+            db_path: Optional database path (defaults to standard location)
         """
         self.archive_root = archive_root
+        self.db_path = db_path
 
     def format(self, conversation_id: str) -> FormattedConversation:
         """Format a conversation to structured output.
@@ -69,7 +71,7 @@ class ConversationFormatter:
             ValueError: If conversation not found
         """
         # Query database
-        with open_connection(None) as conn:
+        with open_connection(self.db_path) as conn:
             convo = conn.execute(
                 "SELECT * FROM conversations WHERE conversation_id = ?",
                 (conversation_id,),

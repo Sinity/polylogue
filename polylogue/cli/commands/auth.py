@@ -67,8 +67,12 @@ def _drive_oauth_flow(env: AppEnv, retry_on_failure: bool = True) -> None:
         env.ui.console.print("Download OAuth credentials from Google Cloud Console.")
         raise SystemExit(1)
 
+    # Check if we have a valid token already
+    has_token = token_path.exists()
+
     env.ui.console.print("Starting Google Drive OAuth flow...")
-    env.ui.console.print("A browser window will open for authentication.")
+    if not has_token:
+        env.ui.console.print("A browser window will open for authentication.")
 
     try:
         from polylogue.ingestion.drive_client import DriveClient
@@ -80,7 +84,11 @@ def _drive_oauth_flow(env: AppEnv, retry_on_failure: bool = True) -> None:
         )
         # Trigger auth by resolving root folder (forces credential load)
         client.resolve_folder_id("root")
-        env.ui.console.print("[green]Authentication successful![/green]")
+
+        if has_token:
+            env.ui.console.print("[green]✓ Using cached credentials[/green]")
+        else:
+            env.ui.console.print("[green]Authentication successful![/green]")
     except FileNotFoundError as exc:
         env.ui.console.print(f"[red]Missing credentials file: {exc}[/red]")
         env.ui.console.print("Download OAuth credentials from Google Cloud Console.")

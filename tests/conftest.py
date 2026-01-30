@@ -379,3 +379,39 @@ def mock_media_downloader(monkeypatch):
     monkeypatch.setattr(drive_client, "_import_module", mock_import_module)
 
     return {"MockMediaIoBaseDownload": MockMediaIoBaseDownload}
+
+
+# =============================================================================
+# NEW FIXTURES FOR TEST CONSOLIDATION (added during aggressive parametrization)
+# =============================================================================
+
+
+@pytest.fixture
+def db_path(workspace_env):
+    """Shortcut fixture for database path setup.
+
+    Usage in tests:
+        def test_something(db_path):
+            builder = ConversationBuilder(db_path, "test-conv")
+    """
+    from tests.helpers import db_setup
+
+    return db_setup(workspace_env)
+
+
+@pytest.fixture
+def conversation_builder(db_path):
+    """Fixture that provides ConversationBuilder factory.
+
+    Usage in tests:
+        def test_something(conversation_builder):
+            conv = (conversation_builder("test-conv")
+                   .add_message("m1", text="Hello")
+                   .save())
+    """
+    from tests.helpers import ConversationBuilder
+
+    def _builder(conversation_id: str = "test-conv"):
+        return ConversationBuilder(db_path, conversation_id)
+
+    return _builder

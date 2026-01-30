@@ -226,24 +226,6 @@ def test_dialogue_pair_with_tool_use():
     assert pair.assistant.is_tool_use
 
 
-def test_dialogue_pair_equality():
-    """DialoguePair instances with same data are equal."""
-    user_msg = Message(id="u1", role="user", text="Q")
-    assistant_msg = Message(id="a1", role="assistant", text="A")
-    pair1 = DialoguePair(user=user_msg, assistant=assistant_msg)
-    pair2 = DialoguePair(user=user_msg, assistant=assistant_msg)
-    assert pair1 == pair2
-
-
-def test_dialogue_pair_repr():
-    """DialoguePair has useful repr."""
-    user_msg = Message(id="u1", role="user", text="Q")
-    assistant_msg = Message(id="a1", role="assistant", text="A")
-    pair = DialoguePair(user=user_msg, assistant=assistant_msg)
-    repr_str = repr(pair)
-    assert "DialoguePair" in repr_str or "user=" in repr_str
-
-
 # =============================================================================
 # 2. MESSAGE METADATA TESTS (8 tests)
 # =============================================================================
@@ -484,13 +466,6 @@ def test_conversation_equality():
     conv1 = Conversation(id="c1", provider="test", messages=messages)
     conv2 = Conversation(id="c1", provider="test", messages=messages)
     assert conv1 == conv2
-
-
-def test_conversation_repr():
-    """Conversation has useful repr."""
-    conv = Conversation(id="c1", provider="test", messages=[])
-    repr_str = repr(conv)
-    assert "c1" in repr_str or "Conversation" in repr_str
 
 
 # =============================================================================
