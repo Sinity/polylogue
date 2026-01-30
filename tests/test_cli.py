@@ -226,8 +226,6 @@ def test_cli_no_args_shows_stats(tmp_path):
 
 def test_latest_render_path_handles_deleted_file(tmp_path):
     """latest_render_path() doesn't crash if file deleted between list and stat."""
-    import time
-
     from polylogue.cli import helpers as helpers_mod
 
     render_root = tmp_path / "render"
@@ -249,8 +247,7 @@ def test_latest_render_path_handles_deleted_file(tmp_path):
     html_file2 = conv_dir2 / "conversation.html"
     html_file2.write_text("<html>test2</html>", encoding="utf-8")
 
-    # Touch html_file2 to make it the newest
-    time.sleep(0.01)
+    # Touch html_file2 to make it the newest (stat order is determined by mtime, not creation time)
     html_file2.touch()
 
     # Delete the first file to simulate race condition

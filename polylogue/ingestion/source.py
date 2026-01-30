@@ -249,22 +249,15 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
 
         handle.seek(0)
     # Strategy 3: Load full object (fallback for single dicts or unknown structures)
-    try:
-        # LOGGER.info("Strategy 3: json.load for %s", path_name)
-        data = json.load(handle)
-        if isinstance(data, dict):
+    # Let JSONDecodeError propagate so outer handler can track failed files
+    data = json.load(handle)
+    if isinstance(data, dict):
+        yield data
+    elif isinstance(data, list):
+        if unpack_lists:
+            yield from data
+        else:
             yield data
-        elif isinstance(data, list):
-            if unpack_lists:
-                yield from data
-            else:
-                yield data
-    except json.JSONDecodeError as e:
-        LOGGER.warning("Failed to parse JSON from %s: %s", path_name, e)
-        # Continue to next strategy or file
-    except Exception as e:
-        LOGGER.warning("Strategy 3 failed for %s: %s", path_name, e)
-        # Continue to next strategy or file
 
 
 _INGEST_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
