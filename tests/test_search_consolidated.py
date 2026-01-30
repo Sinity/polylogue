@@ -16,7 +16,7 @@ import pytest
 from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.search import escape_fts5_query, search_messages
-from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
+from tests.helpers import ConversationBuilder
 from tests.factories import DbFactory
 
 
@@ -118,26 +118,14 @@ def test_search_messages_escaping_integration(query, should_find, tmp_path):
     db_path = tmp_path / "test.db"
     db = DbFactory(db_path)
 
-    # Insert test conversation
-    conv = ConversationRecord(
-        conversation_id="test1",
-        provider_name="test",
-        provider_conversation_id="ext_test1",
-        content_hash="hash_test1",
-        title="Test Conversation",
-    )
+    # Insert test conversation using builder
+    (ConversationBuilder(db_path, "test1")
+     .title("Test Conversation")
+     .add_message("msg1", role="user", text='This is a test message with "quoted text" inside.')
+     .save())
 
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="test1",
-        role="user",
-        text='This is a test message with "quoted text" inside.',
-        position=0,
-        content_hash="hash_msg1",
-    )
-
+    # Build search index
     with open_connection(str(db_path)) as conn:
-        store_records(conversation=conv, messages=[msg], attachments=[], conn=conn)
         rebuild_index(conn)
 
     # Search - use keyword arguments
@@ -220,25 +208,14 @@ def test_search_messages_returns_valid_structure(tmp_path):
     db_path = tmp_path / "test.db"
     db = DbFactory(db_path)
 
-    conv = ConversationRecord(
-        conversation_id="test1",
-        provider_name="test",
-        provider_conversation_id="ext_test1",
-        content_hash="hash_test1",
-        title="Test",
-    )
+    # Insert test conversation using builder
+    (ConversationBuilder(db_path, "test1")
+     .title("Test")
+     .add_message("msg1", role="user", text="Searchable content")
+     .save())
 
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="test1",
-        role="user",
-        text="Searchable content",
-        position=0,
-        content_hash="hash_msg1",
-    )
-
+    # Build search index
     with open_connection(str(db_path)) as conn:
-        store_records(conversation=conv, messages=[msg], attachments=[], conn=conn)
         rebuild_index(conn)
 
     # Search using keyword arguments
