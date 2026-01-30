@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.importers.chatgpt import _coerce_float, extract_messages_from_mapping, looks_like, parse
+from tests.helpers import make_chatgpt_node
 
 
 # =============================================================================
@@ -79,49 +80,30 @@ def test_coerce_float_comprehensive(input_val, expected, desc):
 # =============================================================================
 
 
-def make_node(msg_id, role, content_parts, children=None, timestamp=None, metadata=None):
-    """Helper to create test nodes."""
-    node = {
-        "id": msg_id,
-        "message": {
-            "id": msg_id,
-            "author": {"role": role},
-            "content": {"parts": content_parts},
-        }
-    }
-    if children:
-        node["children"] = children
-    if timestamp:
-        node["message"]["create_time"] = timestamp
-    if metadata:
-        node["message"]["metadata"] = metadata
-    return node
-
-
 EXTRACT_MESSAGES_CASES = [
     # Basic extraction
-    ({"node1": make_node("msg1", "user", ["Hello"])}, 1, "basic message"),
+    ({"node1": make_chatgpt_node("msg1", "user", ["Hello"])}, 1, "basic message"),
 
     # Timestamp handling
-    ({"node1": make_node("msg1", "user", ["Hi"], timestamp=1704067200)}, 1, "with timestamp"),
-    ({"node1": make_node("msg1", "user", ["Hi"], timestamp=None)}, 1, "null timestamp"),
-    ({"node1": make_node("msg1", "user", ["Hi"], timestamp=0)}, 1, "zero timestamp"),
+    ({"node1": make_chatgpt_node("msg1", "user", ["Hi"], timestamp=1704067200)}, 1, "with timestamp"),
+    ({"node1": make_chatgpt_node("msg1", "user", ["Hi"], timestamp=None)}, 1, "null timestamp"),
+    ({"node1": make_chatgpt_node("msg1", "user", ["Hi"], timestamp=0)}, 1, "zero timestamp"),
 
     # Mixed timestamps (should sort)
     ({
-        "node1": make_node("msg1", "user", ["First"], timestamp=1000),
-        "node2": make_node("msg2", "assistant", ["Second"], timestamp=2000),
-        "node3": make_node("msg3", "user", ["Third"], timestamp=500),
+        "node1": make_chatgpt_node("msg1", "user", ["First"], timestamp=1000),
+        "node2": make_chatgpt_node("msg2", "assistant", ["Second"], timestamp=2000),
+        "node3": make_chatgpt_node("msg3", "user", ["Third"], timestamp=500),
     }, 3, "mixed timestamps sorted"),
 
     # Content variants
-    ({"node1": make_node("msg1", "user", ["Part1", "Part2"])}, 1, "multiple parts"),
-    ({"node1": make_node("msg1", "user", [None, "Valid"])}, 1, "parts with None"),
+    ({"node1": make_chatgpt_node("msg1", "user", ["Part1", "Part2"])}, 1, "multiple parts"),
+    ({"node1": make_chatgpt_node("msg1", "user", [None, "Valid"])}, 1, "parts with None"),
     ({"node1": {"message": {"id": "1", "author": {"role": "user"}, "content": {"parts": []}}}}, 1, "empty parts"),
 
     # Role normalization
-    ({"node1": make_node("msg1", "human", ["Hi"])}, 1, "human role alias"),
-    ({"node1": make_node("msg1", "model", ["Response"])}, 1, "model role alias"),
+    ({"node1": make_chatgpt_node("msg1", "human", ["Hi"])}, 1, "human role alias"),
+    ({"node1": make_chatgpt_node("msg1", "model", ["Response"])}, 1, "model role alias"),
 
     # Missing fields
     ({"node1": {"id": "1", "message": None}}, 0, "missing message"),
