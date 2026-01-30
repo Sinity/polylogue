@@ -1,0 +1,1970 @@
+{
+  "title": "Draft review feedback",
+  "create_time": 1760927914.188944,
+  "update_time": 1760928222.77444,
+  "mapping": {
+    "client-created-root": {
+      "id": "client-created-root",
+      "message": null,
+      "parent": null,
+      "children": [
+        "fc05c2c6-a37e-46ea-8a5e-80091d2c4447"
+      ]
+    },
+    "fc05c2c6-a37e-46ea-8a5e-80091d2c4447": {
+      "id": "fc05c2c6-a37e-46ea-8a5e-80091d2c4447",
+      "message": {
+        "id": "fc05c2c6-a37e-46ea-8a5e-80091d2c4447",
+        "author": {
+          "role": "system",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": null,
+        "update_time": null,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            ""
+          ]
+        },
+        "status": "finished_successfully",
+        "end_turn": true,
+        "weight": 0.0,
+        "metadata": {
+          "is_visually_hidden_from_conversation": true
+        },
+        "recipient": "all",
+        "channel": null
+      },
+      "parent": "client-created-root",
+      "children": [
+        "e40412b8-0ba1-48d9-b3a3-50f0b9f1dddd"
+      ]
+    },
+    "e40412b8-0ba1-48d9-b3a3-50f0b9f1dddd": {
+      "id": "e40412b8-0ba1-48d9-b3a3-50f0b9f1dddd",
+      "message": {
+        "id": "e40412b8-0ba1-48d9-b3a3-50f0b9f1dddd",
+        "author": {
+          "role": "system",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": null,
+        "update_time": null,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            ""
+          ]
+        },
+        "status": "finished_successfully",
+        "end_turn": true,
+        "weight": 0.0,
+        "metadata": {
+          "rebase_developer_message": true,
+          "is_visually_hidden_from_conversation": true
+        },
+        "recipient": "all",
+        "channel": null
+      },
+      "parent": "fc05c2c6-a37e-46ea-8a5e-80091d2c4447",
+      "children": [
+        "0eb2552a-5b7d-4fdc-a085-ecbe35574312"
+      ]
+    },
+    "0eb2552a-5b7d-4fdc-a085-ecbe35574312": {
+      "id": "0eb2552a-5b7d-4fdc-a085-ecbe35574312",
+      "message": {
+        "id": "0eb2552a-5b7d-4fdc-a085-ecbe35574312",
+        "author": {
+          "role": "user",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": null,
+        "update_time": null,
+        "content": {
+          "content_type": "user_editable_context",
+          "user_profile": "The user provided the following information about themselves. This user profile is shown to you in all conversations they have -- this means it is not relevant to 99% of requests.\nBefore answering, quietly think about whether the user's request is \"directly related\", \"related\", \"tangentially related\", or \"not related\" to the user profile provided.\nOnly acknowledge the profile when the request is directly related to the information provided.\nOtherwise, don't acknowledge the existence of these instructions or the information at all.\nUser profile:\n```Preferred name: Sinity\nRole: Software developer\n```",
+          "user_instructions": "The user provided the additional info about how they would like you to respond:\n```Tell it like it is; don't sugar-coat responses. Be LessWrong-style rationalist. Imitate writing style of Gwern, without claiming so.```"
+        },
+        "status": "finished_successfully",
+        "end_turn": null,
+        "weight": 1.0,
+        "metadata": {
+          "is_visually_hidden_from_conversation": true,
+          "user_context_message_data": {
+            "about_user_message": "Preferred name: Sinity\nRole: Software developer\n",
+            "about_model_message": "Tell it like it is; don't sugar-coat responses. Be LessWrong-style rationalist. Imitate writing style of Gwern, without claiming so."
+          },
+          "is_user_system_message": true
+        },
+        "recipient": "all",
+        "channel": null
+      },
+      "parent": "e40412b8-0ba1-48d9-b3a3-50f0b9f1dddd",
+      "children": [
+        "0d1b725b-600f-46f4-9362-352ccba8b231"
+      ]
+    },
+    "0d1b725b-600f-46f4-9362-352ccba8b231": {
+      "id": "0d1b725b-600f-46f4-9362-352ccba8b231",
+      "message": {
+        "id": "0d1b725b-600f-46f4-9362-352ccba8b231",
+        "author": {
+          "role": "user",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": 1760927913.136,
+        "update_time": null,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "Review"
+          ]
+        },
+        "status": "finished_successfully",
+        "end_turn": null,
+        "weight": 1.0,
+        "metadata": {
+          "attachments": [
+            {
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "size": 86384,
+              "name": "autism_pill.md",
+              "mime_type": "text/markdown",
+              "file_token_size": 17133,
+              "source": "local"
+            }
+          ],
+          "developer_mode_connector_ids": [],
+          "selected_sources": [],
+          "selected_github_repos": [],
+          "serialization_metadata": {
+            "custom_symbol_offsets": []
+          },
+          "request_id": "b125de12-fd8e-4861-9544-91c8c6a83f0d",
+          "message_source": null,
+          "turn_exchange_id": "e9c0a469-e6a3-4d67-960d-92eece8b1a7b",
+          "timestamp_": "absolute"
+        },
+        "recipient": "all",
+        "channel": null
+      },
+      "parent": "0eb2552a-5b7d-4fdc-a085-ecbe35574312",
+      "children": [
+        "012abfb2-d784-4990-9522-a4dfc1ba2795"
+      ]
+    },
+    "012abfb2-d784-4990-9522-a4dfc1ba2795": {
+      "id": "012abfb2-d784-4990-9522-a4dfc1ba2795",
+      "message": {
+        "id": "012abfb2-d784-4990-9522-a4dfc1ba2795",
+        "author": {
+          "role": "tool",
+          "name": "a8km123",
+          "metadata": {}
+        },
+        "create_time": 1760927914.814367,
+        "update_time": null,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "\n\n**Reviewing the file**\n\nI'm examining \"The Autism Pill\" by The Nuance Pill's Substack, February 17, 2025, focusing on summarizing, analyzing claims, evidence quality, and proposing improvements.\n\n**Highlights and pitfalls**\n\nAnalyzing sample sizes, potential biases, and measurement errors. Assessing strengths, weaknesses, and suggesting explicit disclaimers to mitigate stigmatization and ensure safety.\n\n**Cracking potential and pitfalls**\n\nI'm noting the pitfalls of self-selected samples and self-reported data. Emphasizing careful interpretations and validating claims to avoid misrepresentation of findings.\n\n**Crafting the review**\n\nI\u2019m organizing the review into sections: TL;DR, strengths, weaknesses, improvements, actionable guidance, and line edits. This approach ensures a thorough and structured evaluation.\n\n**Piecing together clarity**\n\nI\u2019m verifying author names and sorting citation errors, noting inconsistencies and expressing challenge in maintaining clarity. This ensures the review is precise and well-organized."
+          ]
+        },
+        "status": "finished_successfully",
+        "end_turn": null,
+        "weight": 0.0,
+        "metadata": {
+          "finished_text": "Reasoned for 5m 6s",
+          "initial_text": "Reasoning",
+          "summarization_headline": "Request for GPT-5 Pro",
+          "async_source": "bon-user-rf3eY7DJ5FG8NLoWI7gbdyZq-b125de12-fd8e-4861-9544-91c8c6a83f0d",
+          "parent_id": "0d1b725b-600f-46f4-9362-352ccba8b231",
+          "poll_on_websocket_inactivity_ms": 30000,
+          "poll_freshness_max_mins": 30,
+          "poll_interval_ms": 10000,
+          "request_id": "b125de12-fd8e-4861-9544-91c8c6a83f0d",
+          "message_type": "next",
+          "model_slug": "gpt-5-pro",
+          "default_model_slug": "gpt-5-pro",
+          "turn_exchange_id": "e9c0a469-e6a3-4d67-960d-92eece8b1a7b",
+          "timestamp_": "absolute",
+          "finished_duration_sec": 306,
+          "pro_skipped": false
+        },
+        "recipient": "all",
+        "channel": null
+      },
+      "parent": "0d1b725b-600f-46f4-9362-352ccba8b231",
+      "children": [
+        "eaa80977-dd51-45b0-a7e1-7136008ad0ca"
+      ]
+    },
+    "eaa80977-dd51-45b0-a7e1-7136008ad0ca": {
+      "id": "eaa80977-dd51-45b0-a7e1-7136008ad0ca",
+      "message": {
+        "id": "eaa80977-dd51-45b0-a7e1-7136008ad0ca",
+        "author": {
+          "role": "assistant",
+          "name": null,
+          "metadata": {}
+        },
+        "create_time": 1760928221.117535,
+        "update_time": 1760928057.592038,
+        "content": {
+          "content_type": "text",
+          "parts": [
+            "Below is a frank, craft\u2011level review of your draft \u201cThe Autism Pill\u201d (Feb 17, 2025). I\u2019m evaluating claims, evidence hygiene, framing, and what would make the piece both truer and harder to cheaply dismiss. Where I refer to specific sections/claims, I\u2019m citing your manuscript directly. \ue200filecite\ue202turn0file0\ue201\n\n---\n\n## Executive verdict\n\n- **Strength:** unusually comprehensive synthesis of disparate literatures (incel self\u2011samples; first\u2011impression work; prosody; movement/synchrony; fertility genetics) into one throughline; readable, cohesive, and not mealy\u2011mouthed about uncomfortable correlations. Your survey summaries and cross\u2011references are far above typical pop\u2011psych fare. \ue200filecite\ue202turn0file0\ue201  \n- **Weakness:** causal overreach by implication; base\u2011rate neglect in the violence section; heterogeneous measures conflated (diagnosis vs AQ\u201110 screen vs self\u2011report); and strong rhetorical frames (\u201creal black pill\u201d, \u201crizz vacuum\u201d) that make the piece easier to quote\u2011mine and easier for critics to dismiss as stigmatizing. Several results are presented without denominators or uncertainty, making some takeaways look more dispositive than the underlying data justify. \ue200filecite\ue202turn0file0\ue201  \n- **Bottom line:** keep the synthesis; tighten the statistics; decouple prevalence from moral valence; explicitly separate *descriptive* findings from *prescriptive* conclusions. Add base\u2011rate math and a short \u201cthreat model\u201d for misinterpretation. If you do just those, the essay graduates from \u201cgood synthesis\u201d to \u201creference link opponents feel obliged to argue with.\u201d\n\n---\n\n## What\u2019s working (keep and double\u2011down)\n\n1. **Layered evidence and clear summaries.** Your compact recaps (e.g., Strunz; Sch\u00f6ttle; Weir; Ponzi; Kavanagh on expressivity; Zeevi/Cohen on synchrony and attraction) allow a reader to trace a chain from trait \u2192 first impression \u2192 interaction quality \u2192 relationship odds. That scaffolding is excellent and rare. \ue200filecite\ue202turn0file0\ue201  \n2. **Sex\u2011difference nuance.** You consistently note the male/female asymmetries (e.g., desire vs activity; different vulnerabilities such as unwanted advances for autistic women). This earns credibility. \ue200filecite\ue202turn0file0\ue201  \n3. **Mechanistic angles.** The sections on expressivity, prosody, gait/kinematics, and (inter/intra)personal synchrony give readers *levers* rather than just labels. This is the right grain of analysis. \ue200filecite\ue202turn0file0\ue201\n\n---\n\n## Where it overreaches (and how to fix)\n\n### 1) Violence & \u201cincel\u2011linked\u201d perpetrators: base\u2011rate neglect and collider bias\nYou enumerate a handful of high\u2011profile offenders with ASD diagnoses or traits and then argue this pattern is \u201cat least one ingredient in the cocktail,\u201d while acknowledging controversy. The problem is twofold:\n\n- **Base rates:** A few salient cases are not informative without a denominator: How many mass killers in a given window had diagnosed ASD vs expected by chance? Without this, readers will overweight availability. At minimum, report the count of mass\u2011violence cases surveyed, the number assessed for ASD, and the confidence interval for any \u201cover\u2011representation\u201d ratio. Right now, the section risks imprinting stigma with weak epistemics. \ue200filecite\ue202turn0file0\ue201  \n- **Selection/collider issues:** You\u2019re drawing from a *media\u2011ascertained* subset (extreme, scrutinized, often retrospectively profiled), which will inflate detection of anything \u201cunusual.\u201d Acknowledge that conditioning on \u201cbecame infamous and neurodivergent enough to be remarked upon\u201d biases correlations upward.\n\n**Fix:** Add a sidebar that does the math (even if the CI is huge) and explicitly warns about misinterpretation. Make it crystal that *most* violence is not ASD\u2011related and *most* ASD is not violent, and that the plausible link\u2014if any\u2014likely runs through **loneliness, comorbid depression/anxiety, and grievance**, not a direct \u201cautism \u2192 violence\u201d arrow. Keep the paragraph where you note different violence types (impulsive vs calculated); then add the base\u2011rate paragraph. \ue200filecite\ue202turn0file0\ue201\n\n### 2) Mixing constructs: diagnosis vs AQ\u201110 vs \u201cself\u2011report autism\u201d\nIn \u201cPrevalence among incels,\u201d you smartly separate diagnosed (\u224818\u201332% across small samples) from self\u2011reported (\u224844\u201374%), but later you often discuss \u201cautism\u201d as if these were interchangeable. The AQ\u201110 is a **referral** screener; self\u2011IDs in online subcultures are notorious for spectrum slippage and motivated identification. That matters. \ue200filecite\ue202turn0file0\ue201\n\n**Fix:** Add a one\u2011paragraph methods caveat up front: define the three buckets and commit to keeping them distinct in prose and figures. Where you synthesize (\u201caround 20% officially diagnosed, ~50%+ incl. self\u2011reports\u201d), add a sentence on why that upper figure should be read as \u201ctraits heavy\u201d rather than \u201ccases heavy.\u201d \ue200filecite\ue202turn0file0\ue201\n\n### 3) Correlation \u2192 actionability leap\nYou convincingly stack correlates of worse dating outcomes (less positive affect display, reduced eye contact, atypical prosody, less synchrony, pragmatic language issues). Then you jump to a quasi\u2011deterministic frame (\u201creal black pill\u201d, \u201crizz vacuum\u201d). This undermines your own later nuance that many eventually \u201cfigure it out\u201d to varying degrees. \ue200filecite\ue202turn0file0\ue201\n\n**Fix:** Keep the hard truths; change the *claim shape*. Offer an explicit \u201c**tractable levers**\u201d box: e.g., **expressivity training** (video modeling/mimicry), **prosody/intonation coaching**, **improv/movement classes** for synchrony, **gradual eye\u2011contact desensitization**, **PEERS\u2011style pragmatic drills**, and **strength training/cardio** for gait/posture. You don\u2019t need to promise miracles; just show gradient\u2011improvability so the piece doesn\u2019t cash out as fatalism.\n\n### 4) Confounding and mediators are gestured at, not modeled\nYou mention likely co\u2011drivers\u2014ADHD, depression/anxiety, alexithymia, unemployment/SES\u2014but mostly qualitatively. Several of your strongest claims would be more honest as **\u201cX remains even controlling for Y / is largely mediated by Y\u201d** (or \u201cunknown\u201d). \ue200filecite\ue202turn0file0\ue201\n\n**Fix:** Where possible, rewrite a few key bullets with the causal graph explicit. For example:  \n- *Observed*: ASD \u2194 low relationship rates.  \n- *Mediators/confounds to consider*: social anxiety; alexithymia; executive function; temperament (negative affectivity, low surgency); unemployment; motor coordination.  \n- *What survives adjustment?* Note what the cited studies actually controlled for; where they didn\u2019t, say so. \ue200filecite\ue202turn0file0\ue201\n\n---\n\n## Evidence hygiene & statistics (specifics you can tighten)\n\n- **Uncertainty & denominators.** Many percentages are reported without Ns or CIs (e.g., masturbation/virginity rates, relationship proportions). Readers can\u2019t tell if differences are precise or just large\u2011looking. Add Ns and, where feasible, approximate 95% CIs. A simple \u201c\u00b1\u201d or range communicates epistemic humility without math dumps. \ue200filecite\ue202turn0file0\ue201  \n- **Heterogeneity flags.** When reporting meta\u2011analytic effects (e.g., Trevisan on facial expression production; Coll on motor skills), note heterogeneity (I\u00b2) and whether you\u2019re quoting random\u2011effects estimates. Otherwise, \u201cmoderate\u201d or \u201clarge\u201d is contextless. \ue200filecite\ue202turn0file0\ue201  \n- **Screen vs ability.** The prosody section nicely distinguishes objective features (pitch variance) from perceived \u201cnaturalness.\u201d Keep doing that throughout; explicitly mark when a metric is perceptual (ratings) vs kinematic/acoustic (instrumented). It helps fend off straw\u2011men. \ue200filecite\ue202turn0file0\ue201  \n- **AQ correlations:** Where you quote r\u2019s (e.g., Ponzi: AQ with partners count and sociosexual orientation), add a one\u2011liner about attenuation from restriction of range / self\u2011report bias in college samples. It signals statistical sobriety. \ue200filecite\ue202turn0file0\ue201\n\n---\n\n## Framing & ethics (reduce collateral damage without defanging)\n\n- **Rename the \u201cmass killers\u201d header.** Keep the examples, but reframe the section as **\u201cHigh\u2011salience cases and base\u2011rate illusions\u201d**. Add two sentences stating: (1) ASD individuals are more likely to be victims than perpetrators in aggregate; (2) if there is any link to planned violence, it is plausibly mediated by isolation + grievance + comorbidities rather than autistic traits per se. You already hint at this; make it explicit and quantitative where possible. \ue200filecite\ue202turn0file0\ue201  \n- **Ditch two phrases:** \u201crizz vacuum\u201d and \u201creal black pill.\u201d They punch down and weaken your credibility with exactly the readers you want (methodologists, clinicians, autistic adults who could corroborate). Your tone elsewhere is clinical\u2011curious; let that be your signature. \ue200filecite\ue202turn0file0\ue201  \n- **Add a \u201cthreat model\u201d box.** List plausible misreadings (\u201cAutism causes violence,\u201d \u201cNothing can help\u201d) and pre\u2011empt them in 3 sentences each. That\u2019s not PR; it\u2019s responsible epistemics for a stigmatized group.\n\n---\n\n## Concrete revision to\u2011do (actionable)\n\n1. **Front\u2011matter:** a 6\u2011bullet **TL;DR** that separates (A) *what is descriptively true* from (B) *what follows* and (C) *what does not follow*. Put \u201ccorrelation \u2260 causation\u201d in plain English, not as a ritual disclaimer. \ue200filecite\ue202turn0file0\ue201  \n2. **Methods box:** define \u201cdiagnosed ASD,\u201d \u201cscreen\u2011positive (AQ\u201110),\u201d and \u201cself\u2011ID,\u201d and commit to not merging them in rates. Note typical male:female diagnosis skew in your samples so readers don\u2019t infer sex asymmetries solely from your effects. \ue200filecite\ue202turn0file0\ue201  \n3. **Tables/figures:** one compact table listing each dating/relationship study you cite with N, age, % male, diagnostic method, and key outcome (ever sexually active; in relationship; desire). Visuals: two bar charts (men vs women; ASD vs NT) and one funnel of \u201cdesire \u2192 opportunity \u2192 activity\u201d to emphasize the gap driver (opportunity/first\u2011impression). \ue200filecite\ue202turn0file0\ue201  \n4. **Base\u2011rate sidebar for violence:** provide the denominator caveat; distinguish impulsive vs predatory vs grievance\u2011driven violence; state the priors clearly. Keep your \u201ccalculated vs everyday violence\u201d distinction, but anchor it in numbers. \ue200filecite\ue202turn0file0\ue201  \n5. **Intervention box (\u201clevers, not cures\u201d):** list plausible, low\u2011risk levers aligned to your mechanisms:  \n   - **Expressivity:** smile training via video self\u2011modeling; deliberate positive affect display; mirror\u2011practice of head nodding during listening (ties to your nodding literature).  \n   - **Prosody:** reading aloud + pitch contour imitation drills; feedback apps; Toastmasters\u2011style practice.  \n   - **Synchrony:** beginner partner dance, improv classes, or conversational \u201cshadowing\u201d exercises.  \n   - **Pragmatics:** scripted \u2192 improvised progression (PEERS\u2011style); narrow\u2011cast to 2\u20133 high\u2011value contexts instead of \u201cget social everywhere.\u201d  \n   - **Motor/gait:** basic strength/posture work; metronome walking drills for cadence regularity.  \n   Make zero promises; state \u201cmarginal improvements compound.\u201d Tie each lever to the mechanism you documented. \ue200filecite\ue202turn0file0\ue201  \n6. **Language pass:** neutralize 6\u20138 most inflammatory phrasings; keep the bite by using data, not zingers. E.g., replace \u201crizz vacuum\u201d with \u201cdown\u2011regulated positive affect display and synchrony reduce approachability signals.\u201d \ue200filecite\ue202turn0file0\ue201  \n7. **Cite format:** add full references or links for every study named. Pop readers rarely chase DOIs, but giving the option inoculates you against \u201ccherry\u2011pick & paraphrase\u201d accusations. Where you quote precise stats (e.g., Hedges\u2019 g = 1.22), include the study\u2019s N and sample description. \ue200filecite\ue202turn0file0\ue201\n\n---\n\n## Nits & micro\u2011edits (selected)\n\n- The incel\u2011prevalence paragraph: after the four samples, insert one sentence: \u201cThese are convenience samples with strong selection and identification biases, so treat them as *upper bounds* on true diagnostic prevalence in the community.\u201d That\u2019s the right epistemic posture. \ue200filecite\ue202turn0file0\ue201  \n- The prosody section contains a nice contradiction (\u201cmore singsongy\u201d vs \u201cperceived as monotone/unnatural\u201d). Call it out explicitly as \u201cexpressive variance \u2260 socially legible variance.\u201d That\u2019s a memorable concept hook. \ue200filecite\ue202turn0file0\ue201  \n- The \u201cfirst impressions\u201d block is gold. Consider one graphic that stacks conditions (still \u2192 audio\u2011only \u2192 video\u2011only \u2192 audio\u2011video) with effect direction, to highlight that **more channels help NTs; they often don\u2019t help ASD**\u2014a key practical insight for job interviews/dates. \ue200filecite\ue202turn0file0\ue201\n\n---\n\n## Big\u2011picture fairness check\n\nYou do say, late, that many people eventually \u201cfigure it out,\u201d and you emphasize that autistic women\u2019s outcome profile is different (and often risk\u2011shifted toward exploitation). Consider moving both statements **up**, near the top, to anchor reader priors before they read 3,000 words of deficits. The essay is truer\u2014and *feels* fairer\u2014if the opening says: \u201cThere are meaningful, mostly non\u2011moral differences in signals and synchrony that impair first impressions and opportunity; these are partially trainable; the average effects are large for men and heterogeneous for women.\u201d That\u2019s still blunt, but it doesn\u2019t collapse into nihilism. \ue200filecite\ue202turn0file0\ue201\n\n---\n\n## What would change *my* mind (suggested \u201cfalsification\u201d box)\n\nOffer 3 crisp predictions readers could check in future work:\n\n1. In controlled speed\u2011dating with scripted affect displays, **increasing** ASD participants\u2019 positive affect display by 1 SD increases partner \u201cwould see again\u201d odds by \u226520% (holding attractiveness constant).  \n2. Across ASD men not meeting MDD/GAD criteria, the relationship\u2011status gap vs NT men shrinks by \u22651/3 after adjusting for **employment + expressivity + synchrony**.  \n3. In mixed neurotype dyads, adding \u201cnodding while listening\u201d alone raises perceived warmth by \u22650.3 SD (observer ratings).  \n\nIf any of those fail robustly, your \u201cis autism the real black pill?\u201d framing should be weakened; if they hold, the mechanism\u2011heavy thesis strengthens. \ue200filecite\ue202turn0file0\ue201\n\n---\n\n### Final take\n\nThis is already **strong**: dense, literate, and mechanism\u2011aware. It will draw heat because of the topic regardless; your job is to make sure the heat bounces off the epistemics. Add base\u2011rate math, disentangle constructs, foreground uncertainty, and swap two zingers for sharper operationalizations. Do that, and you\u2019ll have one of the few pieces on autism/dating that is simultaneously frank, humane, and hard to refute on methodological grounds. \ue200filecite\ue202turn0file0\ue201"
+          ]
+        },
+        "status": "finished_successfully",
+        "end_turn": true,
+        "weight": 1.0,
+        "metadata": {
+          "citations": [
+            {
+              "start_ix": 287,
+              "end_ix": 308,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 684,
+              "end_ix": 705,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 1178,
+              "end_ix": 1199,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 1935,
+              "end_ix": 1956,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 2163,
+              "end_ix": 2184,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 2390,
+              "end_ix": 2411,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 3193,
+              "end_ix": 3214,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 4008,
+              "end_ix": 4029,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 4442,
+              "end_ix": 4463,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 4786,
+              "end_ix": 4807,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 5198,
+              "end_ix": 5219,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 6010,
+              "end_ix": 6031,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 6459,
+              "end_ix": 6480,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 6887,
+              "end_ix": 6908,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 7173,
+              "end_ix": 7194,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 7478,
+              "end_ix": 7499,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 7744,
+              "end_ix": 7765,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 8308,
+              "end_ix": 8329,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 8610,
+              "end_ix": 8631,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 9116,
+              "end_ix": 9137,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 9388,
+              "end_ix": 9409,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 9768,
+              "end_ix": 9789,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 10037,
+              "end_ix": 10058,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 10929,
+              "end_ix": 10950,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 11181,
+              "end_ix": 11202,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 11495,
+              "end_ix": 11516,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 11833,
+              "end_ix": 11854,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 12076,
+              "end_ix": 12097,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 12378,
+              "end_ix": 12399,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 13076,
+              "end_ix": 13097,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 13887,
+              "end_ix": 13908,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            },
+            {
+              "start_ix": 14380,
+              "end_ix": 14401,
+              "citation_format_type": "berry_file_search",
+              "metadata": {
+                "type": "file",
+                "name": "autism_pill.md",
+                "id": "file_00000000ae10620a80b7dc0efa62282e",
+                "source": "my_files",
+                "text": "",
+                "extra": {
+                  "retrieval_turn": 0,
+                  "retrieval_file_index": 0,
+                  "cited_message_idx": 8,
+                  "cited_message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                  "search_result_idx": null,
+                  "line_range": null,
+                  "cloud_doc_url": null,
+                  "authors_display": null,
+                  "doi": null,
+                  "publication_year": "None",
+                  "journal_name": null,
+                  "journal_homepage_url": null
+                }
+              }
+            }
+          ],
+          "content_references": [
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 287,
+              "end_idx": 308,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 684,
+              "end_idx": 705,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 1178,
+              "end_idx": 1199,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 1935,
+              "end_idx": 1956,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 2163,
+              "end_idx": 2184,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 2390,
+              "end_idx": 2411,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 3193,
+              "end_idx": 3214,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 4008,
+              "end_idx": 4029,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 4442,
+              "end_idx": 4463,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 4786,
+              "end_idx": 4807,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 5198,
+              "end_idx": 5219,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 6010,
+              "end_idx": 6031,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 6459,
+              "end_idx": 6480,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 6887,
+              "end_idx": 6908,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 7173,
+              "end_idx": 7194,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 7478,
+              "end_idx": 7499,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 7744,
+              "end_idx": 7765,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 8308,
+              "end_idx": 8329,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 8610,
+              "end_idx": 8631,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 9116,
+              "end_idx": 9137,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 9388,
+              "end_idx": 9409,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 9768,
+              "end_idx": 9789,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 10037,
+              "end_idx": 10058,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 10929,
+              "end_idx": 10950,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 11181,
+              "end_idx": 11202,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 11495,
+              "end_idx": 11516,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 11833,
+              "end_idx": 11854,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 12076,
+              "end_idx": 12097,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 12378,
+              "end_idx": 12399,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 13076,
+              "end_idx": 13097,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 13887,
+              "end_idx": 13908,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            },
+            {
+              "matched_text": "\ue200filecite\ue202turn0file0\ue201",
+              "start_idx": 14380,
+              "end_idx": 14401,
+              "alt": null,
+              "type": "file",
+              "name": "autism_pill.md",
+              "id": "file_00000000ae10620a80b7dc0efa62282e",
+              "source": "my_files",
+              "snippet": "",
+              "cloud_doc_url": null,
+              "medical_file_reference": {
+                "authors_display": null,
+                "doi": null,
+                "publication_year": "None",
+                "journal_name": null,
+                "journal_homepage_url": null
+              },
+              "input_pointer": {
+                "message_index": 0,
+                "message_id": "ce785b71-b1fb-439a-8f35-e8032abfe388",
+                "file_index": 0,
+                "line_range_start": null,
+                "line_range_end": null
+              },
+              "fff_metadata": null
+            }
+          ],
+          "request_id": "wfr_0199ff7b9f797e7cbc5aaa0025b040b5",
+          "message_type": "next",
+          "model_slug": "gpt-5-pro",
+          "default_model_slug": "gpt-5-pro",
+          "parent_id": "012abfb2-d784-4990-9522-a4dfc1ba2795",
+          "timestamp_": "absolute"
+        },
+        "recipient": "all",
+        "channel": "final"
+      },
+      "parent": "012abfb2-d784-4990-9522-a4dfc1ba2795",
+      "children": []
+    }
+  },
+  "moderation_results": [],
+  "current_node": "eaa80977-dd51-45b0-a7e1-7136008ad0ca",
+  "plugin_ids": null,
+  "conversation_id": "68f5a0a9-3c30-832e-8e81-bc2bdcd937b7",
+  "conversation_template_id": null,
+  "gizmo_id": null,
+  "gizmo_type": null,
+  "is_archived": false,
+  "is_starred": null,
+  "safe_urls": [
+    "https://www.openai.com"
+  ],
+  "blocked_urls": [],
+  "default_model_slug": "gpt-5-pro",
+  "conversation_origin": null,
+  "is_read_only": null,
+  "voice": null,
+  "async_status": null,
+  "disabled_tool_ids": [],
+  "is_do_not_remember": false,
+  "memory_scope": "global_enabled",
+  "context_scopes": null,
+  "sugar_item_id": null,
+  "sugar_item_visible": false,
+  "is_study_mode": false,
+  "owner": null,
+  "id": "68f5a0a9-3c30-832e-8e81-bc2bdcd937b7"
+}

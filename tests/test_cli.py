@@ -8,7 +8,7 @@ from click.testing import CliRunner
 
 from polylogue.cli import cli
 from polylogue.config import load_config
-from tests.helpers.cli_subprocess import run_cli, setup_isolated_workspace
+from tests.cli_helpers.cli_subprocess import run_cli, setup_isolated_workspace
 
 
 def _write_prompt_file(path: Path, entries: list[dict]) -> None:
