@@ -8,7 +8,7 @@ import click
 
 from polylogue.cli.helpers import fail, load_effective_config
 from polylogue.cli.types import AppEnv
-from polylogue.health import VerifyStatus, get_health
+from polylogue.health import VerifyStatus, get_health, run_all_repairs
 
 
 @click.command("check")
@@ -65,31 +65,28 @@ def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, v
         warning_count = summary.get("warning", 0)
         if error_count == 0 and warning_count == 0:
             env.ui.console.print("No issues to repair.")
-            return
-
-        env.ui.console.print("")
-        env.ui.console.print("Repair mode:")
-
-        # Perform repairs based on check results
-        repairs_made = 0
-        for check in report.checks:
-            if check.status in ("warning", "error"):
-                # Attempt repair based on check type
-                if "orphaned" in check.name.lower():
-                    env.ui.console.print(f"  Cleaning orphaned {check.name}...")
-                    # The actual repair would call appropriate storage methods
-                    # For now, report what would be done
-                    repairs_made += 1
-                elif "integrity" in check.name.lower():
-                    env.ui.console.print(f"  Rebuilding {check.name}...")
-                    repairs_made += 1
-
-        if repairs_made > 0:
-            env.ui.console.print(f"  Attempted {repairs_made} repair(s).")
         else:
-            env.ui.console.print("  No automatic repairs available for detected issues.")
+            env.ui.console.print("")
+            env.ui.console.print("[bold]Running repairs...[/bold]" if not env.ui.plain else "Running repairs...")
 
-        # Vacuum if requested
+            # Run all repair functions
+            results = run_all_repairs(config)
+
+            total_repaired = 0
+            for result in results:
+                if result.repaired_count > 0 or not result.success:
+                    status = "[green]✓[/green]" if result.success else "[red]✗[/red]"
+                    if env.ui.plain:
+                        status = "OK" if result.success else "FAIL"
+                    env.ui.console.print(f"  {status} {result.name}: {result.detail}")
+                    total_repaired += result.repaired_count
+
+            if total_repaired > 0:
+                env.ui.console.print(f"\n[green]Repaired {total_repaired} issue(s)[/green]" if not env.ui.plain else f"\nRepaired {total_repaired} issue(s)")
+            else:
+                env.ui.console.print("  No issues found that could be automatically repaired.")
+
+        # Vacuum if requested (always run when --vacuum is specified)
         if vacuum:
             env.ui.console.print("")
             env.ui.console.print("Running VACUUM to reclaim space...")

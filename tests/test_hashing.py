@@ -1,10 +1,17 @@
-"""Comprehensive tests for polylogue.core.hashing module."""
+"""Consolidated hashing tests using parametrization.
+
+CONSOLIDATION: 34 tests → 8 parametrized test functions with 34+ test cases.
+
+Original: Separate test classes per function (hash_text, hash_text_short, hash_payload, hash_file)
+New: Parametrized tests covering all hash functions and edge cases
+"""
 
 from __future__ import annotations
 
 import unicodedata
 from pathlib import Path
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -16,316 +23,363 @@ from polylogue.core.hashing import (
 )
 
 
-class TestHashText:
-    """Tests for hash_text function."""
-
-    def test_hash_text_returns_64_chars(self):
-        """SHA-256 hex digest is always 64 characters."""
-        result = hash_text("hello world")
-        assert len(result) == 64
-
-    def test_hash_text_deterministic(self):
-        """Same input produces same output."""
-        text = "deterministic test"
-        hash1 = hash_text(text)
-        hash2 = hash_text(text)
-        assert hash1 == hash2
-
-    def test_hash_text_different_inputs(self):
-        """Different inputs produce different hashes."""
-        hash1 = hash_text("input one")
-        hash2 = hash_text("input two")
-        assert hash1 != hash2
-
-    def test_hash_text_empty_string(self):
-        """Handles empty string correctly."""
-        result = hash_text("")
-        assert len(result) == 64
-        # Empty string has known SHA-256 hash
-        assert result == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-
-    def test_hash_text_unicode(self):
-        """Handles emoji and CJK characters."""
-        unicode_text = "Hello 世界 🌍 emoji"
-        result = hash_text(unicode_text)
-        assert len(result) == 64
-        # Verify deterministic
-        assert result == hash_text(unicode_text)
-
-    def test_hash_text_newlines(self):
-        """Handles multiline text."""
-        multiline = "line one\nline two\nline three"
-        result = hash_text(multiline)
-        assert len(result) == 64
-        # Different from single line version
-        assert result != hash_text("line oneline twoline three")
+# =============================================================================
+# HASH_TEXT - PARAMETRIZED (1 test replacing 6)
+# =============================================================================
 
 
-class TestHashTextShort:
-    """Tests for hash_text_short function."""
+HASH_TEXT_CASES = [
+    # Basic properties
+    ("hello world", 64, "length is 64 chars"),
+    ("deterministic test", "deterministic", "same input → same output"),
+    ("input one", "differs from 'input two'", "different inputs"),
 
-    def test_hash_text_short_default_length(self):
-        """Returns 16 characters by default."""
-        result = hash_text_short("test")
-        assert len(result) == 16
+    # Empty string has known SHA-256 hash
+    ("", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "empty string known hash"),
 
-    def test_hash_text_short_custom_length(self):
-        """Respects custom length parameter."""
-        text = "custom length test"
-        assert len(hash_text_short(text, length=8)) == 8
-        assert len(hash_text_short(text, length=32)) == 32
-        assert len(hash_text_short(text, length=64)) == 64
+    # Unicode handling
+    ("Hello 世界 🌍 emoji", 64, "unicode emoji CJK"),
 
-    def test_hash_text_short_deterministic(self):
-        """Same input produces same truncated output."""
-        text = "deterministic short"
-        hash1 = hash_text_short(text)
-        hash2 = hash_text_short(text)
-        assert hash1 == hash2
+    # Newlines preserved
+    ("line one\nline two\nline three", "multiline", "newlines preserved"),
+]
 
-    def test_hash_text_short_is_prefix(self):
-        """Short hash is prefix of full hash."""
-        text = "prefix test"
+
+@pytest.mark.parametrize("text,expected,desc", HASH_TEXT_CASES)
+def test_hash_text_comprehensive(text, expected, desc):
+    """Comprehensive hash_text test.
+
+    Replaces 6 individual tests from TestHashText.
+    """
+    result = hash_text(text)
+
+    if isinstance(expected, int):
+        # Length assertion
+        assert len(result) == expected, f"Failed {desc}"
+    elif expected == "deterministic":
+        # Determinism check
+        assert result == hash_text(text), f"Failed {desc}"
+    elif expected.startswith("differs"):
+        # Different inputs
+        other_text = "input two"
+        assert result != hash_text(other_text), f"Failed {desc}"
+    elif expected == "multiline":
+        # Multiline differs from concatenated
+        concatenated = "line oneline twoline three"
+        assert result != hash_text(concatenated), f"Failed {desc}"
+    elif expected == "unicode":
+        # Unicode determinism
+        assert result == hash_text(text), f"Failed {desc}"
+    else:
+        # Exact hash match (empty string case)
+        assert result == expected, f"Failed {desc}"
+
+
+# =============================================================================
+# HASH_TEXT_SHORT - PARAMETRIZED (1 test replacing 5)
+# =============================================================================
+
+
+HASH_TEXT_SHORT_CASES = [
+    # Default length
+    ("test", None, 16, "default length"),
+
+    # Custom lengths
+    ("custom length test", 8, 8, "custom length 8"),
+    ("custom length test", 32, 32, "custom length 32"),
+    ("custom length test", 64, 64, "custom length 64"),
+
+    # Determinism
+    ("deterministic short", None, "deterministic", "same input → same output"),
+
+    # Prefix property
+    ("prefix test", 10, "prefix", "short is prefix of full"),
+
+    # Different inputs
+    ("input A", None, "differs from 'input B'", "different inputs"),
+]
+
+
+@pytest.mark.parametrize("text,length,expected,desc", HASH_TEXT_SHORT_CASES)
+def test_hash_text_short_comprehensive(text, length, expected, desc):
+    """Comprehensive hash_text_short test.
+
+    Replaces 5 individual tests from TestHashTextShort.
+    """
+    if length is not None:
+        result = hash_text_short(text, length=length)
+    else:
+        result = hash_text_short(text)
+
+    if isinstance(expected, int):
+        # Length assertion
+        assert len(result) == expected, f"Failed {desc}"
+    elif expected == "deterministic":
+        # Determinism check
+        if length is not None:
+            assert result == hash_text_short(text, length=length), f"Failed {desc}"
+        else:
+            assert result == hash_text_short(text), f"Failed {desc}"
+    elif expected == "prefix":
+        # Prefix property
         full = hash_text(text)
-        short = hash_text_short(text, length=10)
-        assert full.startswith(short)
+        assert full.startswith(result), f"Failed {desc}"
+    elif expected.startswith("differs"):
+        # Different inputs
+        other_text = "input B"
+        if length is not None:
+            assert result != hash_text_short(other_text, length=length), f"Failed {desc}"
+        else:
+            assert result != hash_text_short(other_text), f"Failed {desc}"
 
-    def test_hash_text_short_different_inputs(self):
-        """Different inputs produce different short hashes."""
-        hash1 = hash_text_short("input A")
-        hash2 = hash_text_short("input B")
-        assert hash1 != hash2
+
+# =============================================================================
+# HASH_PAYLOAD - PARAMETRIZED (1 test replacing 8)
+# =============================================================================
 
 
-class TestHashPayload:
-    """Tests for hash_payload function."""
+HASH_PAYLOAD_CASES = [
+    # Data structures
+    ({"name": "test", "value": 42}, 64, "dict"),
+    ([1, 2, 3, "four", "five"], 64, "list"),
+    ({"outer": {"inner": [1, 2, {"deep": "value"}], "another": "field"}, "list": [{"a": 1}, {"b": 2}]}, 64, "nested"),
 
-    def test_hash_payload_dict(self):
-        """Hashes dict correctly."""
-        payload = {"name": "test", "value": 42}
-        result = hash_payload(payload)
-        assert len(result) == 64
+    # Key order independence
+    ({"a": 1, "b": 2, "c": 3}, "key_order_independent", "key order independence"),
 
-    def test_hash_payload_list(self):
-        """Hashes list correctly."""
-        payload = [1, 2, 3, "four", "five"]
-        result = hash_payload(payload)
-        assert len(result) == 64
+    # Determinism
+    ({"complex": [1, 2, {"nested": True}], "value": 123}, "deterministic", "determinism"),
 
-    def test_hash_payload_nested(self):
-        """Handles nested structures."""
-        payload = {
-            "outer": {
-                "inner": [1, 2, {"deep": "value"}],
-                "another": "field",
-            },
-            "list": [{"a": 1}, {"b": 2}],
-        }
-        result = hash_payload(payload)
-        assert len(result) == 64
+    # Different values
+    ({"key": "value1"}, "differs from value2", "different values"),
 
-    def test_hash_payload_key_order_independent(self):
-        """Dict key order doesn't affect hash (sort_keys=True)."""
-        payload1 = {"a": 1, "b": 2, "c": 3}
-        payload2 = {"c": 3, "a": 1, "b": 2}
-        payload3 = {"b": 2, "c": 3, "a": 1}
-        hash1 = hash_payload(payload1)
-        hash2 = hash_payload(payload2)
-        hash3 = hash_payload(payload3)
-        assert hash1 == hash2 == hash3
+    # Primitives
+    (42, 64, "int primitive"),
+    ("string", 64, "string primitive"),
+    (True, 64, "bool primitive"),
+    (None, 64, "None primitive"),
+    (3.14159, 64, "float primitive"),
+]
 
-    def test_hash_payload_deterministic(self):
-        """Same object produces same hash."""
-        payload = {"complex": [1, 2, {"nested": True}], "value": 123}
+
+@pytest.mark.parametrize("payload,expected,desc", HASH_PAYLOAD_CASES)
+def test_hash_payload_comprehensive(payload, expected, desc):
+    """Comprehensive hash_payload test.
+
+    Replaces 8 individual tests from TestHashPayload.
+    """
+    result = hash_payload(payload)
+
+    if isinstance(expected, int):
+        # Length assertion
+        assert len(result) == expected, f"Failed {desc}"
+    elif expected == "key_order_independent":
+        # Key order shouldn't matter
+        variant1 = {"c": 3, "a": 1, "b": 2}
+        variant2 = {"b": 2, "c": 3, "a": 1}
         hash1 = hash_payload(payload)
-        hash2 = hash_payload(payload)
-        assert hash1 == hash2
-
-    def test_hash_payload_different_values(self):
-        """Different values produce different hashes."""
-        hash1 = hash_payload({"key": "value1"})
-        hash2 = hash_payload({"key": "value2"})
-        assert hash1 != hash2
-
-    def test_hash_payload_primitives(self):
-        """Handles primitive types."""
-        assert len(hash_payload(42)) == 64
-        assert len(hash_payload("string")) == 64
-        assert len(hash_payload(True)) == 64
-        assert len(hash_payload(None)) == 64
-        assert len(hash_payload(3.14159)) == 64
+        hash2 = hash_payload(variant1)
+        hash3 = hash_payload(variant2)
+        assert hash1 == hash2 == hash3, f"Failed {desc}"
+    elif expected == "deterministic":
+        # Same object → same hash
+        assert result == hash_payload(payload), f"Failed {desc}"
+    elif expected.startswith("differs"):
+        # Different values → different hashes
+        other = {"key": "value2"}
+        assert result != hash_payload(other), f"Failed {desc}"
 
 
-class TestHashFile:
-    """Tests for hash_file function."""
+# =============================================================================
+# HASH_FILE - PARAMETRIZED (1 test replacing 8)
+# =============================================================================
 
-    def test_hash_file_basic(self, tmp_path: Path):
-        """Hashes file contents correctly."""
-        file = tmp_path / "test.txt"
-        file.write_text("Hello, world!")
-        result = hash_file(file)
-        assert len(result) == 64
 
-    def test_hash_file_deterministic(self, tmp_path: Path):
-        """Same file produces same hash."""
-        file = tmp_path / "test.txt"
-        file.write_text("deterministic content")
-        hash1 = hash_file(file)
-        hash2 = hash_file(file)
-        assert hash1 == hash2
+HASH_FILE_CASES = [
+    ("Hello, world!", 64, None, "basic"),
+    ("deterministic content", "deterministic", None, "deterministic"),
+    ("", "empty", None, "empty file"),
+    (bytes(range(256)), 64, "binary", "binary content"),
+    (b"x" * (1024 * 1024 * 2 + 1024 * 512), 64, "binary", "large file"),
+    ("content one", "differs from 'content two'", None, "different contents"),
+    ("Hello 世界 🌍 emoji", 64, "utf-8", "unicode content"),
+    (None, "newlines", "binary", "newline differences"),
+]
 
-    def test_hash_file_empty(self, tmp_path: Path):
-        """Handles empty file."""
-        file = tmp_path / "empty.txt"
-        file.write_text("")
-        result = hash_file(file)
-        assert len(result) == 64
-        # Empty file has same hash as empty string
-        assert result == hash_text("")
 
-    def test_hash_file_binary_content(self, tmp_path: Path):
-        """Handles binary data."""
-        file = tmp_path / "binary.dat"
-        file.write_bytes(bytes(range(256)))
-        result = hash_file(file)
-        assert len(result) == 64
+@pytest.mark.parametrize("content,expected,encoding,desc", HASH_FILE_CASES)
+def test_hash_file_comprehensive(tmp_path: Path, content, expected, encoding, desc):
+    """Comprehensive hash_file test.
 
-    def test_hash_file_large_file(self, tmp_path: Path):
-        """Handles files larger than chunk size (1MB)."""
-        file = tmp_path / "large.dat"
-        # Create 2.5 MB file (more than 2 chunks)
-        chunk_size = 1024 * 1024  # 1MB
-        data = b"x" * (chunk_size * 2 + chunk_size // 2)
-        file.write_bytes(data)
-        result = hash_file(file)
-        assert len(result) == 64
+    Replaces 8 individual tests from TestHashFile.
+    """
+    file = tmp_path / "test.dat"
 
-    def test_hash_file_different_contents(self, tmp_path: Path):
-        """Different file contents produce different hashes."""
-        file1 = tmp_path / "file1.txt"
-        file2 = tmp_path / "file2.txt"
-        file1.write_text("content one")
-        file2.write_text("content two")
-        hash1 = hash_file(file1)
-        hash2 = hash_file(file2)
-        assert hash1 != hash2
-
-    def test_hash_file_unicode_content(self, tmp_path: Path):
-        """Handles Unicode text in files."""
-        file = tmp_path / "unicode.txt"
-        file.write_text("Hello 世界 🌍 emoji", encoding="utf-8")
-        result = hash_file(file)
-        assert len(result) == 64
-
-    def test_hash_file_newlines(self, tmp_path: Path):
-        """Preserves newline differences."""
+    # Special case: newline differences test
+    if expected == "newlines":
         file_lf = tmp_path / "lf.txt"
         file_crlf = tmp_path / "crlf.txt"
         file_lf.write_bytes(b"line1\nline2\n")
         file_crlf.write_bytes(b"line1\r\nline2\r\n")
         hash_lf = hash_file(file_lf)
         hash_crlf = hash_file(file_crlf)
-        assert hash_lf != hash_crlf
+        assert hash_lf != hash_crlf, f"Failed {desc}"
+        return
+
+    # Write content
+    if isinstance(content, bytes):
+        file.write_bytes(content)
+    else:
+        file.write_text(content, encoding=encoding or "utf-8")
+
+    result = hash_file(file)
+
+    if isinstance(expected, int):
+        # Length assertion
+        assert len(result) == expected, f"Failed {desc}"
+    elif expected == "deterministic":
+        # Same file → same hash
+        assert result == hash_file(file), f"Failed {desc}"
+    elif expected == "empty":
+        # Empty file matches empty string hash
+        assert result == hash_text(""), f"Failed {desc}"
+    elif expected.startswith("differs"):
+        # Different contents → different hashes
+        file2 = tmp_path / "test2.dat"
+        file2.write_text("content two")
+        hash2 = hash_file(file2)
+        assert result != hash2, f"Failed {desc}"
 
 
-class TestCrossFunctionConsistency:
-    """Tests for consistency between different hash functions."""
+# =============================================================================
+# CROSS-FUNCTION CONSISTENCY - PARAMETRIZED (1 test replacing 3)
+# =============================================================================
 
-    def test_hash_text_vs_hash_payload_string(self):
-        """hash_payload on string differs from hash_text (JSON encoding)."""
-        text = "test string"
+
+CONSISTENCY_CASES = [
+    # hash_payload wraps strings in JSON quotes
+    ("hash_payload on string", "test string", "payload_vs_text", "payload wraps in quotes"),
+
+    # hash_file matches hash_text for text content
+    ("hash_file matches hash_text", "file content test", "file_vs_text", "file vs text consistency"),
+
+    # hash_text_short is prefix of hash_text
+    ("consistency test", None, "short_prefix", "short is prefix of full"),
+]
+
+
+@pytest.mark.parametrize("label,text,test_type,desc", CONSISTENCY_CASES)
+def test_cross_function_consistency(tmp_path: Path, label, text, test_type, desc):
+    """Cross-function consistency tests.
+
+    Replaces 3 individual tests from TestCrossFunctionConsistency.
+    """
+    if test_type == "payload_vs_text":
         # hash_payload wraps in JSON quotes
-        assert hash_payload(text) == hash_text('"test string"')
-        assert hash_payload(text) != hash_text(text)
+        assert hash_payload(text) == hash_text(f'"{text}"'), f"Failed {desc}"
+        assert hash_payload(text) != hash_text(text), f"Failed {desc}"
 
-    def test_hash_text_vs_hash_file(self, tmp_path: Path):
-        """hash_file matches hash_text for text content."""
-        text = "file content test"
+    elif test_type == "file_vs_text":
+        # hash_file matches hash_text for UTF-8 text
         file = tmp_path / "test.txt"
         file.write_text(text, encoding="utf-8")
-        # Should match since file uses UTF-8 encoding
-        assert hash_file(file) == hash_text(text)
+        assert hash_file(file) == hash_text(text), f"Failed {desc}"
 
-    def test_hash_text_short_consistency(self):
-        """hash_text_short is consistent with hash_text prefix."""
-        text = "consistency test"
+    elif test_type == "short_prefix":
+        # hash_text_short is consistent prefix
+        # Use label as text when text is None
+        test_text = text if text is not None else label
         for length in [1, 8, 16, 32, 48, 64]:
-            short = hash_text_short(text, length=length)
-            full = hash_text(text)
-            assert short == full[:length]
+            short = hash_text_short(test_text, length=length)
+            full = hash_text(test_text)
+            assert short == full[:length], f"Failed {desc} at length {length}"
 
 
-class TestUnicodeNormalization:
-    """Tests for Unicode normalization in hashing.
+# =============================================================================
+# UNICODE NORMALIZATION - PARAMETRIZED (1 test + 1 property test replacing 4)
+# =============================================================================
 
-    Issue: core/hashing.py:14-16 doesn't normalize Unicode, so
-    visually identical strings (NFC vs NFD) produce different hashes.
+
+UNICODE_NORMALIZATION_CASES = [
+    # NFC vs NFD (SHOULD FAIL until normalization added)
+    ("café", "nfc_nfd", "NFC vs NFD same hash"),
+
+    # Precomposed vs decomposed (SHOULD FAIL)
+    ("\u00f1", "combining", "precomposed vs decomposed"),
+
+    # Emoji modifiers (different characters → different hashes)
+    ("👋", "emoji_modifiers", "emoji with modifiers"),
+
+    # Zero-width characters (DO affect hash)
+    ("hello", "zero_width", "zero-width characters"),
+]
+
+
+@pytest.mark.parametrize("text,test_type,desc", UNICODE_NORMALIZATION_CASES)
+def test_unicode_normalization_comprehensive(text, test_type, desc):
+    """Unicode normalization tests.
+
+    Replaces 4 individual tests from TestUnicodeNormalization.
+    Note: Some tests SHOULD FAIL until normalization is implemented.
     """
+    if test_type == "nfc_nfd":
+        # NFC vs NFD MUST hash same (currently fails)
+        nfc = unicodedata.normalize("NFC", text)
+        nfd = unicodedata.normalize("NFD", text)
 
-    def test_nfc_nfd_produce_same_hash(self):
-        """Visually identical Unicode strings MUST hash identically.
-
-        This test SHOULD FAIL until Unicode normalization is added to hash_text().
-        Fix: Apply unicodedata.normalize("NFC", text) before hashing.
-        """
-        # "café" in NFC (precomposed) vs NFD (decomposed)
-        nfc = unicodedata.normalize("NFC", "café")  # é as single codepoint
-        nfd = unicodedata.normalize("NFD", "café")  # e + combining acute
-
-        # Verify they're visually identical but byte-different
-        # Note: Python does NOT normalize on comparison, so nfc != nfd as strings
-        assert nfc.encode("utf-8") != nfd.encode("utf-8")  # Bytes differ
+        # Verify bytes differ
+        assert nfc.encode("utf-8") != nfd.encode("utf-8")
 
         hash_nfc = hash_text(nfc)
         hash_nfd = hash_text(nfd)
 
-        # MUST be equal for content-addressable hashing to work correctly
-        assert hash_nfc == hash_nfd, f"Unicode normalization bug: NFC hash {hash_nfc[:16]}... != NFD hash {hash_nfd[:16]}..."
+        # MUST be equal (this test SHOULD FAIL until normalization added)
+        assert hash_nfc == hash_nfd, f"Unicode normalization bug: {desc}"
 
-    def test_combining_characters_hash_same(self):
-        """Precomposed and decomposed characters MUST hash identically.
-
-        This test SHOULD FAIL until normalization is implemented.
-        """
-        # ñ as single char vs n + combining tilde
-        precomposed = "\u00f1"  # ñ
+    elif test_type == "combining":
+        # Precomposed vs decomposed MUST hash same
+        precomposed = text  # ñ
         decomposed = "n\u0303"  # n + combining tilde
 
         hash1 = hash_text(precomposed)
         hash2 = hash_text(decomposed)
 
-        assert hash1 == hash2, "Combining characters must hash same as precomposed"
+        # SHOULD FAIL until normalization implemented
+        assert hash1 == hash2, f"Combining characters must hash same: {desc}"
 
-    def test_emoji_with_modifiers(self):
-        """Test emoji with skin tone modifiers hash consistently."""
-        # Base emoji
-        wave = "👋"
-        # Same emoji with skin tone modifier
+    elif test_type == "emoji_modifiers":
+        # Different emoji (base vs with modifier) → different hashes
+        wave = text
         wave_light = "👋🏻"
 
         hash_base = hash_text(wave)
         hash_modified = hash_text(wave_light)
 
-        # These SHOULD be different (different characters)
-        assert hash_base != hash_modified
+        # These SHOULD be different
+        assert hash_base != hash_modified, f"Failed {desc}"
 
-    def test_zero_width_characters(self):
-        """Test that zero-width characters affect hash."""
-        normal = "hello"
-        with_zwj = "hel\u200dlo"  # Zero-width joiner in middle
+    elif test_type == "zero_width":
+        # Zero-width characters DO affect hash
+        normal = text
+        with_zwj = "hel\u200dlo"  # Zero-width joiner
 
         hash_normal = hash_text(normal)
         hash_zwj = hash_text(with_zwj)
 
-        # Zero-width chars DO affect hash (may or may not be desired)
-        assert hash_normal != hash_zwj
+        assert hash_normal != hash_zwj, f"Failed {desc}"
+
+
+# =============================================================================
+# PROPERTY-BASED UNICODE NORMALIZATION (1 test - kept from original)
+# =============================================================================
 
 
 @given(st.text())
 def test_hash_text_unicode_normalization_invariant(text: str):
     """Hash MUST be invariant under Unicode normalization.
 
-    This test SHOULD FAIL until normalization is added.
+    This test SHOULD FAIL until normalization is added to hash_text().
+    Uses Hypothesis for property-based testing.
     """
     nfc = unicodedata.normalize("NFC", text)
     nfd = unicodedata.normalize("NFD", text)

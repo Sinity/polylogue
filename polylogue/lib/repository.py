@@ -79,6 +79,11 @@ class ConversationRepository:
         """
         self._backend = backend
 
+    @property
+    def backend(self) -> StorageBackend:
+        """Access the underlying storage backend."""
+        return self._backend
+
     def resolve_id(self, id_prefix: str) -> ConversationId | None:
         """Resolve a partial ID to a full conversation ID.
 

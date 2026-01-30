@@ -1,0 +1,13 @@
+
+============================================================
+CONVERSATION COST ANALYSIS
+============================================================
+
+Total conversations analyzed: 50
+Conversations with cost data: 0
+Total cost: $0.00
+
+No cost data found in provider metadata.
+Cost tracking is typically available in Claude Code conversations.
+
+Exported to examples/reports/cost_analysis.json

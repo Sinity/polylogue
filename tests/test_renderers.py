@@ -14,48 +14,26 @@ from polylogue.rendering.renderers import (
     list_formats,
 )
 from polylogue.storage.backends.sqlite import open_connection
-from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
+from polylogue.storage.store import store_records
+from tests.helpers import make_conversation, make_message
 
 
 @pytest.fixture
 def sample_conversation_id():
     """Create a sample conversation for testing."""
-    conversation = ConversationRecord(
-        conversation_id="test-conv-1",
+    conversation = make_conversation(
+        "test-conv-1",
         provider_name="test-provider",
-        provider_conversation_id="test-conv-1",
         title="Test Conversation",
         created_at="2024-01-01T10:00:00Z",
         updated_at="2024-01-01T10:00:10Z",
-        content_hash="test-hash-1",
         provider_meta={"source": "test"},
     )
 
     messages = [
-        MessageRecord(
-            message_id="msg1",
-            conversation_id="test-conv-1",
-            role="user",
-            text="Hello, can you help me?",
-            timestamp="2024-01-01T10:00:00Z",
-            content_hash="hash-msg1",
-        ),
-        MessageRecord(
-            message_id="msg2",
-            conversation_id="test-conv-1",
-            role="assistant",
-            text="Of course! How can I help you today?",
-            timestamp="2024-01-01T10:00:05Z",
-            content_hash="hash-msg2",
-        ),
-        MessageRecord(
-            message_id="msg3",
-            conversation_id="test-conv-1",
-            role="user",
-            text="I need help with Python testing",
-            timestamp="2024-01-01T10:00:10Z",
-            content_hash="hash-msg3",
-        ),
+        make_message("msg1", "test-conv-1", text="Hello, can you help me?", timestamp="2024-01-01T10:00:00Z"),
+        make_message("msg2", "test-conv-1", role="assistant", text="Of course! How can I help you today?", timestamp="2024-01-01T10:00:05Z"),
+        make_message("msg3", "test-conv-1", text="I need help with Python testing", timestamp="2024-01-01T10:00:10Z"),
     ]
 
     with open_connection(None) as conn:
@@ -67,34 +45,18 @@ def sample_conversation_id():
 @pytest.fixture
 def sample_conversation_with_json():
     """Create a conversation with JSON content (tool use)."""
-    conversation = ConversationRecord(
-        conversation_id="test-conv-json",
+    conversation = make_conversation(
+        "test-conv-json",
         provider_name="test-provider",
-        provider_conversation_id="test-conv-json",
         title="JSON Test",
         created_at="2024-01-01T10:00:00Z",
         updated_at="2024-01-01T10:00:05Z",
-        content_hash="test-hash-json",
         provider_meta={"source": "test"},
     )
 
     messages = [
-        MessageRecord(
-            message_id="msg1",
-            conversation_id="test-conv-json",
-            role="user",
-            text="Search for Python testing",
-            timestamp="2024-01-01T10:00:00Z",
-            content_hash="hash-json1",
-        ),
-        MessageRecord(
-            message_id="msg2",
-            conversation_id="test-conv-json",
-            role="assistant",
-            text='{"query": "Python testing", "results": ["pytest", "unittest"]}',
-            timestamp="2024-01-01T10:00:05Z",
-            content_hash="hash-json2",
-        ),
+        make_message("msg1", "test-conv-json", text="Search for Python testing", timestamp="2024-01-01T10:00:00Z"),
+        make_message("msg2", "test-conv-json", role="assistant", text='{"query": "Python testing", "results": ["pytest", "unittest"]}', timestamp="2024-01-01T10:00:05Z"),
     ]
 
     with open_connection(None) as conn:

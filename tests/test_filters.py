@@ -219,10 +219,19 @@ class TestConversationFilterTerminal:
         count = ConversationFilter(filter_repo).provider("claude").count()
         assert count == 2
 
-    def test_filter_delete_not_implemented(self, filter_repo):
-        """delete() raises NotImplementedError."""
-        with pytest.raises(NotImplementedError):
-            ConversationFilter(filter_repo).delete()
+    def test_filter_delete_removes_conversations(self, filter_repo):
+        """delete() removes matched conversations."""
+        # First verify we have conversations
+        initial_count = ConversationFilter(filter_repo).count()
+        assert initial_count > 0
+
+        # Delete one conversation via a filter
+        deleted = ConversationFilter(filter_repo).limit(1).delete()
+        assert deleted == 1
+
+        # Verify one fewer conversation
+        final_count = ConversationFilter(filter_repo).count()
+        assert final_count == initial_count - 1
 
 
 class TestConversationFilterSort:

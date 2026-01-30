@@ -13,25 +13,42 @@ def test_iter_source_conversations_handles_codex_json_list(tmp_path: Path):
     # If unpacked, this would look like N conversations with 0 messages each.
     # If not unpacked, it looks like 1 conversation with N messages.
     payload = [
-        {"prompt": "Hello", "completion": "Hi"},
-        {"prompt": "How are you?", "completion": "Good"},
+        {"type": "session_meta", "payload": {"id": "test-session", "timestamp": "2025-01-01"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-1",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Hello"}],
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-2",
+                "role": "assistant",
+                "content": [{"type": "input_text", "text": "Hi"}],
+            },
+        },
     ]
-    
+
     # Write as a single JSON file
     source_file = tmp_path / "codex_export.json"
     source_file.write_text(json.dumps(payload), encoding="utf-8")
 
     # Name hint helps detection
     source = Source(name="codex", path=source_file)
-    
+
     conversations = list(iter_source_conversations(source))
-    
+
     # Should result in ONE conversation with messages, NOT multiple empty ones
     assert len(conversations) == 1
     convo = conversations[0]
     assert convo.provider_name == "codex"
-    # 2 items * 2 messages (prompt+completion) = 4 messages
-    assert len(convo.messages) == 4
+    # 2 response_item messages
+    assert len(convo.messages) == 2
     assert convo.messages[0].text == "Hello"
 
 
