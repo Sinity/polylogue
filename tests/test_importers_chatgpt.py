@@ -122,7 +122,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         assert len(messages) == 2
         assert messages[0].provider_message_id == "msg-1"
@@ -164,7 +164,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         assert len(messages) == 3
         assert messages[0].provider_message_id == "msg-1"
@@ -192,7 +192,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         assert len(messages) == 2
         # When all timestamps are None, order is preserved by index
@@ -230,7 +230,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         assert len(messages) == 3
         # Messages with timestamps come first, sorted by timestamp
@@ -260,7 +260,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         assert len(messages) == 2
         # Zero should be sorted before positive timestamp
@@ -290,7 +290,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         assert len(messages) == 2
         assert messages[0].provider_message_id == "msg-1"
@@ -323,7 +323,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         # All should be skipped
         assert len(messages) == 0
@@ -354,7 +354,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         # Empty parts should still create messages with empty text
         assert len(messages) == 3
@@ -374,7 +374,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         # Should be skipped
         assert len(messages) == 0
@@ -391,7 +391,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         assert len(messages) == 1
         assert messages[0].text == "Part 1\nPart 2\nPart 3"
@@ -408,7 +408,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         assert len(messages) == 1
         # None, empty string, False, and 0 should be filtered out (they are falsy)
@@ -447,7 +447,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         assert len(messages) == 4
         assert messages[0].role == "user"
@@ -480,7 +480,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         assert len(messages) == 3
         # All should default to "user"
@@ -514,7 +514,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         assert len(messages) == 3
         # Should use node id if available
@@ -536,7 +536,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
 
         assert len(messages) == 1
         assert messages[0].provider_meta is not None
@@ -545,9 +545,10 @@ class TestExtractMessagesFromMapping:
         assert messages[0].provider_meta["raw"]["metadata"]["model"] == "gpt-4"
 
     def test_extract_messages_empty_mapping(self):
-        """Test empty mapping returns empty list."""
-        messages = extract_messages_from_mapping({})
+        """Test empty mapping returns empty lists."""
+        messages, attachments = extract_messages_from_mapping({})
         assert messages == []
+        assert attachments == []
 
     def test_extract_messages_no_message_field(self):
         """Test skips nodes without message field."""
@@ -564,7 +565,7 @@ class TestExtractMessagesFromMapping:
             },
         }
 
-        messages = extract_messages_from_mapping(mapping)
+        messages, attachments = extract_messages_from_mapping(mapping)
         assert len(messages) == 0
 
 
