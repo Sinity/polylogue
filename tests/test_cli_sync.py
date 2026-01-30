@@ -12,7 +12,7 @@ from click.testing import CliRunner
 from polylogue.cli.click_app import cli
 from polylogue.config import ConfigError
 from polylogue.ingestion import DriveError
-from polylogue.pipeline.models import PlanResult, RunResult
+from polylogue.storage.store import PlanResult, RunResult
 
 
 @pytest.fixture
