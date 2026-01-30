@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ conversation.title or conversation.id }} | Polylogue</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <p style="margin-bottom: 2rem;"><a href="/" style="color: var(--accent); text-decoration: none;">← Back to
+                    Home</a></p>
+            <h1>{{ conversation.title or "Untitled Conversation" }}</h1>
+            <div class="conversation-meta" style="justify-content: center; margin-top: 1rem;">
+                <span class="badge">{{ conversation.provider }}</span>
+                <span>{{ conversation.created_at or "Unknown Date" }}</span>
+                <span class="id" title="{{ conversation.id }}">{{ conversation.id[:12] }}...</span>
+            </div>
+        </header>
+
+        <div class="chat">
+            {% for msg in conversation.messages %}
+            <div class="message" data-role="{{ msg.role }}">
+                <div class="avatar {% if msg.role == 'user' %}user-avatar{% endif %}">
+                    {{ msg.role[:2] | upper }}
+                </div>
+                <div class="bubble">
+                    <span class="role-label">{{ msg.role }}</span>
+                    <div class="content card">
+                        {{ msg.text | render_markdown | safe }}
+
+                        {% if msg.attachments %}
+                        <div class="attachments" style="margin-top: 2rem; display: flex; flex-wrap: wrap; gap: 0.5rem;">
+                            {% for att in msg.attachments %}
+                            {% if att.path %}
+                            <a href="{{ att.path }}" class="badge" target="_blank"
+                                style="text-decoration: none; display: flex; align-items: center; gap: 0.5rem;">
+                                📎 {{ att.name or att.id[:8] }}
+                            </a>
+                            {% else %}
+                            <span class="badge" style="display: flex; align-items: center; gap: 0.5rem;">
+                                📎 {{ att.name or att.id[:8] }}
+                            </span>
+                            {% endif %}
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</body>
+
+</html>

@@ -12,6 +12,9 @@ Thumbs.db
 
 # Local dev environment
 .direnv/
+.venv/
+venv/
+env/
 
 # Local scratch
 .tmp/
@@ -19,9 +22,25 @@ Thumbs.db
 # Python
 __pycache__
 .pytest_cache/
+.hypothesis/
+.coverage
+coverage.json
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
 
 # Local tool state
 .claude/
+
+# Local test datasets (real data, review before committing)
+tests/datasets/
 
 # Local shell env files
 .env
@@ -30,3 +49,9 @@ __pycache__
 data
 sinex_md/
 polylogue.egg-info/
+
+# Test datasets (review before committing)
+tests/test-datasets/*.json
+tests/test-datasets/*.jsonl
+tests/test-datasets/*.md
+tests/test-datasets/*.txt

@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Polylogue | Personal Knowledge Engine</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Polylogue</h1>
+            <p class="subtitle">Your conversational memory, organized.</p>
+        </header>
+
+        {% if convs %}
+        <div class="conversation-list">
+            {% for conv in convs %}
+            <div class="card">
+                <a href="/view/{{ conv.id }}" class="conversation-link">
+                    <div class="conversation-title">{{ conv.title or "Untitled Conversation" }}</div>
+                    <div class="conversation-meta">
+                        <span class="badge">{{ conv.provider }}</span>
+                        <span class="count">{{ conv.messages|length }} messages</span>
+                        <span class="id">{{ conv.id[:12] }}...</span>
+                    </div>
+                </a>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="card" style="text-align: center;">
+            <p>No conversations found.</p>
+            <p style="margin-top: 1rem; font-size: 0.9rem; color: var(--text-secondary);">
+                Run <code>polylogue sync</code> to ingest your chat histories.
+            </p>
+        </div>
+        {% endif %}
+    </div>
+</body>
+
+</html>

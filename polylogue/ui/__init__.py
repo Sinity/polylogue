@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import math
 import sys
-from typing import Iterable, List, Optional, Set
+from collections.abc import Iterable
+from types import TracebackType
+
+from rich.console import Console
 from rich.progress import (
     BarColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
-    TaskID,
 )
 
-from .facade import Console, ConsoleFacade, ConsoleLike, create_console_facade
+from .facade import ConsoleFacade, ConsoleLike, create_console_facade
 
 __all__ = [
     "UI",
@@ -32,7 +35,7 @@ class UI:
             self._facade: ConsoleFacade = create_console_facade(plain)
         except RuntimeError as exc:
             raise SystemExit(str(exc)) from exc
-        self._plain_warnings: Set[str] = set()
+        self._plain_warnings: set[str] = set()
 
     @property
     def plain(self) -> bool:
@@ -40,14 +43,14 @@ class UI:
 
     @property
     def console(self) -> ConsoleLike:
-        return self._facade.console
+        return self._facade.console  # type: ignore[return-value]
 
     @console.setter
     def console(self, value: ConsoleLike) -> None:
-        self._facade.console = value
+        self._facade.console = value  # type: ignore[assignment]
 
     # Presentation helpers -------------------------------------------------
-    def banner(self, title: str, subtitle: Optional[str] = None) -> None:
+    def banner(self, title: str, subtitle: str | None = None) -> None:
         self._facade.banner(title, subtitle)
 
     def summary(self, title: str, lines: Iterable[str]) -> None:
@@ -76,7 +79,7 @@ class UI:
             return response.lower() in {"y", "yes"}
         return self._facade.confirm(prompt, default=default)
 
-    def choose(self, prompt: str, options: List[str]) -> Optional[str]:
+    def choose(self, prompt: str, options: list[str]) -> str | None:
         if not options:
             return None
         if self.plain:
@@ -99,7 +102,7 @@ class UI:
             return None
         return self._facade.choose(prompt, options)
 
-    def input(self, prompt: str, *, default: Optional[str] = None) -> Optional[str]:
+    def input(self, prompt: str, *, default: str | None = None) -> str | None:
         if self.plain:
             if not sys.stdin.isatty():
                 self._abort_plain_prompt("text input")
@@ -112,7 +115,7 @@ class UI:
         return self._facade.input(prompt, default=default)
 
     # Progress -------------------------------------------------------------
-    def progress(self, description: str, total: Optional[int] = None):
+    def progress(self, description: str, total: int | None = None) -> _PlainProgressTracker | _RichProgressTracker:
         if self.plain:
             return _PlainProgressTracker(self.console, description, total)
         count_format = "{task.completed:.0f}/{task.total:.0f}" if total is not None else "{task.completed:.0f}"
@@ -124,7 +127,9 @@ class UI:
             TimeElapsedColumn(),
             TimeRemainingColumn(),
         )
-        progress = Progress(*columns, console=self.console if isinstance(self.console, Console) else None, transient=True)
+        progress = Progress(
+            *columns, console=self.console if isinstance(self.console, Console) else None, transient=True
+        )
         task_id: TaskID = progress.add_task(description, total=total)
         return _RichProgressTracker(progress, task_id)
 
@@ -133,9 +138,7 @@ class UI:
         if topic in self._plain_warnings:
             return
         self._plain_warnings.add(topic)
-        self._print_notice(
-            f"Plain mode cannot prompt for {topic}; rerun with --interactive or pass explicit flags."
-        )
+        self._print_notice(f"Plain mode cannot prompt for {topic}; rerun with --interactive or pass explicit flags.")
 
     def _abort_plain_prompt(self, topic: str) -> None:
         self._warn_plain(topic)
@@ -153,10 +156,11 @@ def create_ui(plain: bool) -> UI:
 
 
 class _PlainProgressTracker:
-    def __init__(self, console: ConsoleLike, description: str, total: Optional[int]) -> None:
+    def __init__(self, console: ConsoleLike, description: str, total: int | None) -> None:
         self._console = console
         self._description = description
-        self._total = self._coerce_int(total) if total is not None else None
+        coerced = self._coerce_int(total) if total is not None else None
+        self._total: int | float | None = coerced
         if self._total is None and total is not None:
             self._total = float(total)
             self._completed: float | int = 0.0
@@ -166,7 +170,7 @@ class _PlainProgressTracker:
             self._use_float = False
         self._console.print(f"{description}...")
 
-    def __enter__(self):
+    def __enter__(self) -> _PlainProgressTracker:
         return self
 
     def advance(self, advance: float = 1) -> None:
@@ -177,7 +181,7 @@ class _PlainProgressTracker:
             self._use_float = True
             self._completed = float(self._completed) + float(advance)
 
-    def update(self, *, total: Optional[int] = None, description: Optional[str] = None) -> None:
+    def update(self, *, total: int | None = None, description: str | None = None) -> None:
         if description and description != self._description:
             self._description = description
             self._console.print(f"{description}...")
@@ -189,7 +193,7 @@ class _PlainProgressTracker:
                 self._total = float(total)
                 self._use_float = True
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None) -> None:
         status = "aborted" if exc_type else "complete"
         suffix = ""
         if self._total is not None:
@@ -197,7 +201,7 @@ class _PlainProgressTracker:
         self._console.print(f"{self._description} {status}{suffix}")
 
     @staticmethod
-    def _coerce_int(value: Optional[float]) -> Optional[int]:
+    def _coerce_int(value: float | None) -> int | None:
         if isinstance(value, int):
             return value
         if isinstance(value, float):
@@ -222,21 +226,18 @@ class _RichProgressTracker:
         self._progress = progress
         self._task_id = task_id
 
-    def __enter__(self):
+    def __enter__(self) -> _RichProgressTracker:
         self._progress.__enter__()
         return self
 
     def advance(self, advance: float = 1) -> None:
         self._progress.advance(self._task_id, advance)
 
-    def update(self, *, total: Optional[int] = None, description: Optional[str] = None) -> None:
-        kwargs = {}
+    def update(self, *, total: int | None = None, description: str | None = None) -> None:
         if total is not None:
-            kwargs["total"] = total
+            self._progress.update(self._task_id, total=total)
         if description is not None:
-            kwargs["description"] = description
-        if kwargs:
-            self._progress.update(self._task_id, **kwargs)
+            self._progress.update(self._task_id, description=description)
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None) -> None:
         self._progress.__exit__(exc_type, exc, tb)
