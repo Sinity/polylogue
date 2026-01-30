@@ -19,6 +19,7 @@ from polylogue.storage.store import (
     upsert_conversation,
     upsert_message,
 )
+from tests.helpers import make_attachment, make_conversation, make_message
 
 
 @pytest.fixture
@@ -39,23 +40,8 @@ def test_conn(test_db):
 
 def test_store_records_inserts_new_conversation(test_conn):
     """store_records() inserts a new conversation with messages."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test Conversation",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash123",
-    )
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="Hello",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="msghash1",
-    )
+    conv = make_conversation("conv1", content_hash="hash123")
+    msg = make_message("msg1", "conv1", text="Hello")
 
     counts = store_records(conversation=conv, messages=[msg], attachments=[], conn=test_conn)
 
@@ -76,15 +62,7 @@ def test_store_records_inserts_new_conversation(test_conn):
 
 def test_store_records_skips_duplicate_conversation(test_conn):
     """store_records() skips duplicate conversations with same content_hash."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Same Title",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="samehash",
-    )
+    conv = make_conversation("conv1", title="Same Title", content_hash="samehash")
 
     # First insert
     counts1 = store_records(conversation=conv, messages=[], attachments=[], conn=test_conn)
@@ -98,27 +76,11 @@ def test_store_records_skips_duplicate_conversation(test_conn):
 
 def test_store_records_updates_changed_conversation(test_conn):
     """store_records() updates conversation when content changes."""
-    conv1 = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Original Title",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-    )
+    conv1 = make_conversation("conv1", title="Original Title", content_hash="hash1")
     store_records(conversation=conv1, messages=[], attachments=[], conn=test_conn)
 
     # Update with different content
-    conv2 = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Updated Title",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-02T00:00:00Z",
-        content_hash="hash2",  # Different hash
-    )
+    conv2 = make_conversation("conv1", title="Updated Title", content_hash="hash2")
     counts = store_records(conversation=conv2, messages=[], attachments=[], conn=test_conn)
 
     assert counts["conversations"] == 1
@@ -132,25 +94,9 @@ def test_store_records_updates_changed_conversation(test_conn):
 
 def test_store_records_handles_multiple_messages(test_conn):
     """store_records() correctly handles multiple messages."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Multi Message",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash1",
-    )
-
+    conv = make_conversation("conv1", title="Multi Message")
     messages = [
-        MessageRecord(
-            message_id=f"msg{i}",
-            conversation_id="conv1",
-            role="user" if i % 2 == 0 else "assistant",
-            text=f"Message {i}",
-            timestamp=datetime.now(timezone.utc).isoformat(),
-            content_hash=f"hash{i}",
-        )
+        make_message(f"msg{i}", "conv1", role="user" if i % 2 == 0 else "assistant", text=f"Message {i}")
         for i in range(5)
     ]
 
@@ -166,33 +112,9 @@ def test_store_records_handles_multiple_messages(test_conn):
 
 def test_store_records_attachment_ref_counting(test_conn):
     """store_records() correctly maintains attachment ref_count."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Attachment Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash1",
-    )
-
-    msg1 = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        provider_message_id="ext-msg1",
-        role="user",
-        text="Test message",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash-msg1",
-    )
-
-    att1 = AttachmentRecord(
-        attachment_id="att1",
-        conversation_id="conv1",
-        message_id="msg1",
-        mime_type="image/png",
-        size_bytes=1024,
-    )
+    conv = make_conversation("conv1", title="Attachment Test")
+    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
+    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
 
     counts = store_records(conversation=conv, messages=[msg1], attachments=[att1], conn=test_conn)
 
@@ -210,49 +132,11 @@ def test_store_records_attachment_ref_counting(test_conn):
 def test_prune_attachment_refs_removes_old_refs(test_conn):
     """_prune_attachment_refs() removes refs not in keep_ref_ids set."""
     # Setup: Insert conversation and attachments
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Prune Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash1",
-    )
-
-    msg1 = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        provider_message_id="ext-msg1",
-        role="user",
-        text="First message",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash-msg1",
-    )
-    msg2 = MessageRecord(
-        message_id="msg2",
-        conversation_id="conv1",
-        provider_message_id="ext-msg2",
-        role="user",
-        text="Second message",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash-msg2",
-    )
-
-    att1 = AttachmentRecord(
-        attachment_id="att1",
-        conversation_id="conv1",
-        message_id="msg1",
-        mime_type="image/png",
-        size_bytes=1024,
-    )
-    att2 = AttachmentRecord(
-        attachment_id="att2",
-        conversation_id="conv1",
-        message_id="msg2",
-        mime_type="image/jpeg",
-        size_bytes=2048,
-    )
+    conv = make_conversation("conv1", title="Prune Test")
+    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1", text="First message")
+    msg2 = make_message("msg2", "conv1", provider_message_id="ext-msg2", text="Second message")
+    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
+    att2 = make_attachment("att2", "conv1", "msg2", mime_type="image/jpeg", size_bytes=2048)
 
     store_records(conversation=conv, messages=[msg1, msg2], attachments=[att1, att2], conn=test_conn)
 
@@ -284,50 +168,13 @@ def test_prune_attachment_refs_removes_old_refs(test_conn):
 
 def test_prune_attachment_refs_updates_ref_count(test_conn):
     """_prune_attachment_refs() updates attachment ref_count correctly."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="RefCount Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash1",
-    )
+    conv = make_conversation("conv1", title="RefCount Test")
+    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1", text="First message")
+    msg2 = make_message("msg2", "conv1", provider_message_id="ext-msg2", text="Second message")
 
-    msg1 = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        provider_message_id="ext-msg1",
-        role="user",
-        text="First message",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash-msg1",
-    )
-    msg2 = MessageRecord(
-        message_id="msg2",
-        conversation_id="conv1",
-        provider_message_id="ext-msg2",
-        role="user",
-        text="Second message",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash-msg2",
-    )
-
-    # Same attachment referenced twice
-    att1 = AttachmentRecord(
-        attachment_id="att1",
-        conversation_id="conv1",
-        message_id="msg1",
-        mime_type="image/png",
-        size_bytes=1024,
-    )
-    att2 = AttachmentRecord(
-        attachment_id="att1",  # Same attachment_id
-        conversation_id="conv1",
-        message_id="msg2",  # Different message
-        mime_type="image/png",
-        size_bytes=1024,
-    )
+    # Same attachment referenced twice (different messages)
+    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
+    att2 = make_attachment("att1", "conv1", "msg2", mime_type="image/png")  # Same att_id, different msg
 
     store_records(conversation=conv, messages=[msg1, msg2], attachments=[att1, att2], conn=test_conn)
 
@@ -346,33 +193,9 @@ def test_prune_attachment_refs_updates_ref_count(test_conn):
 
 def test_prune_attachment_refs_deletes_zero_ref_attachments(test_conn):
     """_prune_attachment_refs() deletes attachments with ref_count <= 0."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Delete Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash1",
-    )
-
-    msg1 = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        provider_message_id="ext-msg1",
-        role="user",
-        text="Test message",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash-msg1",
-    )
-
-    att = AttachmentRecord(
-        attachment_id="att1",
-        conversation_id="conv1",
-        message_id="msg1",
-        mime_type="image/png",
-        size_bytes=1024,
-    )
+    conv = make_conversation("conv1", title="Delete Test")
+    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
+    att = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
 
     store_records(conversation=conv, messages=[msg1], attachments=[att], conn=test_conn)
 
@@ -390,15 +213,16 @@ def test_prune_attachment_refs_deletes_zero_ref_attachments(test_conn):
 
 def test_upsert_conversation_missing_optional_fields(test_conn):
     """upsert_conversation() handles None values for optional fields."""
+    # Manual construction to test explicit None handling (not using helper)
     conv = ConversationRecord(
         conversation_id="conv1",
         provider_name="test",
         provider_conversation_id="ext-conv1",
-        title=None,  # Optional
-        created_at=None,  # Optional
-        updated_at=None,  # Optional
+        title=None,
+        created_at=None,
+        updated_at=None,
         content_hash="hash1",
-        provider_meta=None,  # Optional
+        provider_meta=None,
     )
 
     updated = upsert_conversation(test_conn, conv)
@@ -414,27 +238,10 @@ def test_upsert_conversation_missing_optional_fields(test_conn):
 def test_upsert_message_missing_optional_fields(test_conn):
     """upsert_message() handles None values for optional fields."""
     # First insert conversation
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash1",
-    )
+    conv = make_conversation("conv1")
     upsert_conversation(test_conn, conv)
 
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        provider_message_id=None,  # Optional
-        role=None,  # Optional
-        text=None,  # Optional
-        timestamp=None,  # Optional
-        content_hash="msghash1",
-        provider_meta=None,  # Optional
-    )
+    msg = make_message("msg1", "conv1", role=None, text=None, timestamp=None, provider_message_id=None, provider_meta=None)
 
     updated = upsert_message(test_conn, msg)
     assert updated
@@ -448,37 +255,14 @@ def test_upsert_message_missing_optional_fields(test_conn):
 
 def test_upsert_attachment_duplicate_ref_skipped(test_conn):
     """upsert_attachment() skips duplicate refs (INSERT OR IGNORE)."""
-    # Setup conversation
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash1",
-    )
+    # Setup conversation and message
+    conv = make_conversation("conv1")
     upsert_conversation(test_conn, conv)
 
-    # Setup message
-    msg1 = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        provider_message_id="ext-msg1",
-        role="user",
-        text="Test message",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash-msg1",
-    )
+    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
     upsert_message(test_conn, msg1)
 
-    att = AttachmentRecord(
-        attachment_id="att1",
-        conversation_id="conv1",
-        message_id="msg1",
-        mime_type="image/png",
-        size_bytes=1024,
-    )
+    att = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
 
     # First insert
     updated1 = upsert_attachment(test_conn, att)
@@ -522,25 +306,9 @@ def test_write_lock_prevents_concurrent_writes(test_db):
 
     def write_conversation(conv_id: int):
         try:
-            conv = ConversationRecord(
-                conversation_id=f"conv{conv_id}",
-                provider_name="test",
-                provider_conversation_id=f"ext-conv{conv_id}",
-                title=f"Conversation {conv_id}",
-                created_at=datetime.now(timezone.utc).isoformat(),
-                updated_at=datetime.now(timezone.utc).isoformat(),
-                content_hash=uuid4().hex,
-            )
-
+            conv = make_conversation(f"conv{conv_id}", title=f"Conversation {conv_id}")
             messages = [
-                MessageRecord(
-                    message_id=f"msg{conv_id}-{i}",
-                    conversation_id=f"conv{conv_id}",
-                    role="user",
-                    text=f"Message {i}",
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                    content_hash=uuid4().hex,
-                )
+                make_message(f"msg{conv_id}-{i}", f"conv{conv_id}", text=f"Message {i}")
                 for i in range(3)
             ]
 
@@ -572,29 +340,23 @@ def test_write_lock_prevents_concurrent_writes(test_db):
         assert msg_count == 30  # 10 conversations × 3 messages
 
 
-def test_store_records_without_connection_creates_own(test_db):
+def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeypatch):
     """store_records() works without explicit connection parameter."""
-    # Set the DB path in environment so default_db_path() returns test_db
-    import os
+    import shutil
 
-    os.environ["XDG_STATE_HOME"] = str(test_db.parent.parent)
+    # Create a temp location for "default" storage within tmp_path to avoid cross-device issues
+    state_home = tmp_path / "state"
+    state_home.mkdir()
+    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
 
     # Move test DB to default location
     from polylogue.storage.backends.sqlite import default_db_path
 
     default_path = default_db_path()
     default_path.parent.mkdir(parents=True, exist_ok=True)
-    test_db.rename(default_path)
+    shutil.move(str(test_db), str(default_path))
 
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="No Conn Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash1",
-    )
+    conv = make_conversation("conv1", title="No Conn Test")
 
     # Call without conn parameter
     counts = store_records(conversation=conv, messages=[], attachments=[])
@@ -609,59 +371,22 @@ def test_store_records_without_connection_creates_own(test_db):
 
 def test_upsert_attachment_updates_existing_metadata(test_conn):
     """upsert_attachment() updates existing attachment metadata."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash1",
-    )
+    conv = make_conversation("conv1")
     upsert_conversation(test_conn, conv)
 
     # Setup messages
-    msg1 = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        provider_message_id="ext-msg1",
-        role="user",
-        text="Test message",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash-msg1",
-    )
+    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
     upsert_message(test_conn, msg1)
 
-    msg2 = MessageRecord(
-        message_id="msg2",
-        conversation_id="conv1",
-        provider_message_id="ext-msg2",
-        role="user",
-        text="Second message",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash-msg2",
-    )
+    msg2 = make_message("msg2", "conv1", provider_message_id="ext-msg2", text="Second message")
     upsert_message(test_conn, msg2)
 
     # First insert
-    att1 = AttachmentRecord(
-        attachment_id="att1",
-        conversation_id="conv1",
-        message_id="msg1",
-        mime_type="image/png",
-        size_bytes=1024,
-    )
+    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
     upsert_attachment(test_conn, att1)
 
-    # Update with new path and size
-    att2 = AttachmentRecord(
-        attachment_id="att1",
-        conversation_id="conv1",
-        message_id="msg2",  # Different message (new ref)
-        mime_type="image/jpeg",  # Updated
-        size_bytes=2048,  # Updated
-        path="/new/path.jpg",  # Updated
-    )
+    # Update with new path and size (different message = new ref)
+    att2 = make_attachment("att1", "conv1", "msg2", mime_type="image/jpeg", size_bytes=2048, path="/new/path.jpg")
     upsert_attachment(test_conn, att2)
 
     # Verify updates
@@ -675,43 +400,15 @@ def test_upsert_attachment_updates_existing_metadata(test_conn):
 def test_prune_attachment_refs_transactional_rollback(test_conn):
     """_prune_attachment_refs() rolls back on error, maintaining consistent ref_count."""
     # Setup: Create conversation with attachments
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Transaction Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash1",
-    )
+    conv = make_conversation("conv1", title="Transaction Test")
     upsert_conversation(test_conn, conv)
 
-    msg1 = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        provider_message_id="ext-msg1",
-        role="user",
-        text="Test message",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash-msg1",
-    )
+    msg1 = make_message("msg1", "conv1", provider_message_id="ext-msg1")
     upsert_message(test_conn, msg1)
 
     # Create two attachments
-    att1 = AttachmentRecord(
-        attachment_id="att1",
-        conversation_id="conv1",
-        message_id="msg1",
-        mime_type="image/png",
-        size_bytes=1024,
-    )
-    att2 = AttachmentRecord(
-        attachment_id="att2",
-        conversation_id="conv1",
-        message_id="msg1",
-        mime_type="image/jpeg",
-        size_bytes=2048,
-    )
+    att1 = make_attachment("att1", "conv1", "msg1", mime_type="image/png")
+    att2 = make_attachment("att2", "conv1", "msg1", mime_type="image/jpeg", size_bytes=2048)
     upsert_attachment(test_conn, att1)
     upsert_attachment(test_conn, att2)
 
@@ -763,33 +460,10 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
     SHARED_ATTACHMENT_ID = "shared-attachment-race-test"
 
     def create_conversation(i: int):
-        conv = ConversationRecord(
-            conversation_id=f"race-conv-{i}",
-            provider_name="test",
-            provider_conversation_id=f"race-{i}",
-            title=f"Race Test {i}",
-            created_at=None,
-            updated_at=None,
-            content_hash=f"hash-{i}",
-        )
-        msg = MessageRecord(
-            message_id=f"race-msg-{i}",
-            conversation_id=f"race-conv-{i}",
-            role="user",
-            text="test",
-            timestamp=None,
-            provider_meta=None,
-            content_hash=f"msg-hash-{i}",
-        )
+        conv = make_conversation(f"race-conv-{i}", title=f"Race Test {i}", created_at=None, updated_at=None, content_hash=f"hash-{i}")
+        msg = make_message(f"race-msg-{i}", f"race-conv-{i}", text="test", timestamp=None, provider_meta=None)
         # Each conversation references the SAME attachment_id
-        attachment = AttachmentRecord(
-            attachment_id=SHARED_ATTACHMENT_ID,
-            conversation_id=f"race-conv-{i}",
-            message_id=f"race-msg-{i}",
-            mime_type="text/plain",
-            size_bytes=100,
-            provider_meta=None,
-        )
+        attachment = make_attachment(SHARED_ATTACHMENT_ID, f"race-conv-{i}", f"race-msg-{i}", mime_type="text/plain", size_bytes=100, provider_meta=None)
         with open_connection(test_db) as conn:
             store_records(conversation=conv, messages=[msg], attachments=[attachment], conn=conn)
 
