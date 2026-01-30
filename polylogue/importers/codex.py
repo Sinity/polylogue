@@ -14,9 +14,6 @@ def looks_like(payload: list[object]) -> bool:
         {"id":"...","timestamp":"...","git":{...}}
         {"record_type":"state"}
         {"type":"message","role":"user","content":[...]}
-
-    Old format (JSON array with prompt/completion pairs):
-        [{"prompt": "...", "completion": "..."}]
     """
     if not isinstance(payload, list):
         return False
@@ -32,9 +29,6 @@ def looks_like(payload: list[object]) -> bool:
             return True
         if item.get("type") == "message":
             return True
-        # Old format: prompt/completion pairs
-        if "prompt" in item and "completion" in item:
-            return True
 
     return False
 
@@ -42,7 +36,7 @@ def looks_like(payload: list[object]) -> bool:
 def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
     """Parse Codex JSONL session file.
 
-    Supports three format generations:
+    Supports two format generations:
 
     Newest (envelope format):
         {"type":"session_meta","payload":{"id":"...","timestamp":"...","git":{...}}}
@@ -52,9 +46,6 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
         {"id":"...","timestamp":"...","git":{...}}
         {"record_type":"state"}
         {"type":"message","role":"user","content":[...]}
-
-    Old (prompt/completion):
-        [{"prompt":"...","completion":"..."}]
     """
     messages: list[ParsedMessage] = []
     session_id = fallback_id
@@ -115,31 +106,6 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
                         role=role,
                         text="\n".join(text_parts),
                         timestamp=item.get("timestamp"),
-                    )
-                )
-
-        # Fallback: old format with prompt/completion
-        elif "prompt" in item or "completion" in item:
-            prompt = item.get("prompt")
-            completion = item.get("completion")
-            timestamp = item.get("timestamp")
-
-            if isinstance(prompt, str) and prompt:
-                messages.append(
-                    ParsedMessage(
-                        provider_message_id=f"prompt-{idx}",
-                        role="user",
-                        text=prompt,
-                        timestamp=str(timestamp) if timestamp else None,
-                    )
-                )
-            if isinstance(completion, str) and completion:
-                messages.append(
-                    ParsedMessage(
-                        provider_message_id=f"completion-{idx}",
-                        role="assistant",
-                        text=completion,
-                        timestamp=str(timestamp) if timestamp else None,
                     )
                 )
 

@@ -1,0 +1,10 @@
+test_code_detection_consolidated.py: 124 tests
+test_core_json_consolidated.py: 60 tests
+test_hashing_consolidated.py: 40 tests
+test_importers_chatgpt_consolidated.py: 56 tests
+test_importers_claude_consolidated.py: 71 tests
+test_message_classification_consolidated.py: 35 tests
+test_projections_consolidated.py: 30 tests
+test_rendering_core_consolidated.py: 31 tests
+test_search_consolidated.py: 39 tests
+test_timestamps_consolidated.py: 24 tests
