@@ -19,6 +19,7 @@ from polylogue.importers.claude import (
     parse_ai,
     parse_code,
 )
+from tests.helpers import make_claude_chat_message
 
 
 # =============================================================================
@@ -110,42 +111,21 @@ def test_extract_text_from_segments_comprehensive(segments, expected_contains, d
 # =============================================================================
 
 
-def make_chat_message(uuid, sender, text, attachments=None, files=None, timestamp=None):
-    """Helper to create chat_messages entries."""
-    msg = {
-        "uuid": uuid,
-        "text": text,
-    }
-
-    # Role field variants
-    if sender:
-        msg["sender"] = sender
-
-    if attachments:
-        msg["attachments"] = attachments
-    if files:
-        msg["files"] = files
-    if timestamp:
-        msg["created_at"] = timestamp
-
-    return msg
-
-
 EXTRACT_CHAT_MESSAGES_CASES = [
     # Basic
-    ([make_chat_message("u1", "human", "Hello")], 1, "basic message"),
+    ([make_claude_chat_message("u1", "human", "Hello")], 1, "basic message"),
 
     # Attachments variants
-    ([make_chat_message("u1", "human", "Hi", attachments=[{"file_name": "doc.pdf"}])], 1, "attachments field"),
-    ([make_chat_message("u1", "human", "Hi", files=[{"file_name": "doc.pdf"}])], 1, "files field"),
+    ([make_claude_chat_message("u1", "human", "Hi", attachments=[{"file_name": "doc.pdf"}])], 1, "attachments field"),
+    ([make_claude_chat_message("u1", "human", "Hi", files=[{"file_name": "doc.pdf"}])], 1, "files field"),
 
     # Role variants
-    ([make_chat_message("u1", "human", "Hi")], "user", "human role"),
-    ([make_chat_message("u1", "assistant", "Hi")], "assistant", "assistant role"),
-    ([make_chat_message("u1", None, "Hi")], "message", "missing sender defaults"),
+    ([make_claude_chat_message("u1", "human", "Hi")], "user", "human role"),
+    ([make_claude_chat_message("u1", "assistant", "Hi")], "assistant", "assistant role"),
+    ([make_claude_chat_message("u1", None, "Hi")], "message", "missing sender defaults"),
 
     # Timestamp variants
-    ([make_chat_message("u1", "human", "Hi", timestamp="2024-01-01T00:00:00Z")], 1, "created_at"),
+    ([make_claude_chat_message("u1", "human", "Hi", timestamp="2024-01-01T00:00:00Z")], 1, "created_at"),
     ([{"uuid": "u1", "text": "Hi", "create_time": 1704067200}], 1, "create_time"),
     ([{"uuid": "u1", "text": "Hi", "timestamp": 1704067200}], 1, "timestamp field"),
 
@@ -206,10 +186,10 @@ def make_ai_conv(chat_messages, **kwargs):
 
 PARSE_AI_CASES = [
     # Basic
-    (make_ai_conv([make_chat_message("u1", "human", "Hello")]), 1, "basic"),
+    (make_ai_conv([make_claude_chat_message("u1", "human", "Hello")]), 1, "basic"),
 
     # With attachments
-    (make_ai_conv([make_chat_message("u1", "human", "Hi", files=[{"file_name": "doc.pdf"}])]), 1, "with files"),
+    (make_ai_conv([make_claude_chat_message("u1", "human", "Hi", files=[{"file_name": "doc.pdf"}])]), 1, "with files"),
 
     # Title extraction
     (make_ai_conv([], name="Test Title"), "Test Title", "title extraction"),
