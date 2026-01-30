@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from polylogue.config import Config, Source
-from polylogue.pipeline.models import PlanResult
+from polylogue.storage.store import PlanResult
 from polylogue.pipeline.runner import (
     _all_conversation_ids,
     _iter_source_conversations_safe,
@@ -20,7 +20,7 @@ from polylogue.pipeline.runner import (
     plan_sources,
     run_sources,
 )
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.store import ConversationRecord, store_records
 
 
@@ -33,7 +33,7 @@ class TestRenderFailureTracking:
         This test SHOULD FAIL until failure tracking is implemented.
         """
         from polylogue.config import Config
-        from polylogue.pipeline.models import RunResult
+        from polylogue.storage.store import RunResult
         from polylogue.pipeline.runner import run_sources
 
         # Create a minimal config
