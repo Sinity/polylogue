@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pathlib import Path
+from pydantic import BaseModel, Field, field_validator
 
 from polylogue.core.hashing import hash_text
 
@@ -21,6 +22,99 @@ class ParsedAttachment(BaseModel):
     size_bytes: int | None = None
     path: str | None = None
     provider_meta: dict[str, object] | None = None
+
+    @field_validator("path")
+    @classmethod
+    def sanitize_path(cls, v: str | None) -> str | None:
+        """Sanitize path to prevent traversal attacks and other security issues."""
+        if v is None:
+            return v
+
+        original_v = v
+
+        # Remove null bytes
+        v = v.replace("\x00", "")
+
+        # Remove control characters (ASCII < 32 and 127)
+        v = "".join(c for c in v if ord(c) >= 32 and ord(c) != 127)
+
+        # Detect threats:
+        # 1. Traversal attempts (..)
+        # 2. Symlinks in path (potential traversal bypass)
+        has_traversal = ".." in original_v
+
+        # Check for symlinks in the path by checking path components
+        has_symlink = False
+        try:
+            p = Path(v)
+            # Check each parent in the path to see if it's a symlink
+            # This prevents traversal via symlinks
+            for parent in [p] + list(p.parents):
+                if parent.is_symlink():
+                    has_symlink = True
+                    break
+        except Exception:
+            # If we can't check, assume it's safe
+            pass
+
+        # If traversal or symlinks were detected, hash to prevent re-assembly
+        if has_traversal or has_symlink:
+            from polylogue.core.hashing import hash_text
+            # Hash the original to prevent reconstruction
+            original_hash = hash_text(original_v)[:12]
+            v = f"_blocked_{original_hash}"
+        else:
+            # Normal path: clean up path components
+            is_absolute = v.startswith("/")
+
+            # Safe directories that can use absolute paths (for testing/temp files)
+            # Check before path cleaning
+            safe_dirs = ("/tmp/", "/var/tmp/")
+            is_safe_absolute = is_absolute and any(original_v.startswith(safe_dir) for safe_dir in safe_dirs)
+
+            try:
+                parts = []
+                for component in v.split("/"):
+                    component = component.strip()
+                    # Skip empty or special dot components
+                    if component and component not in (".", ".."):
+                        parts.append(component)
+
+                if parts:
+                    v = "/".join(parts)
+
+                    # For absolute paths:
+                    # - If in safe directory (like /tmp/), preserve absolute path
+                    # - Otherwise, convert to relative for sandboxing
+                    if is_absolute:
+                        if is_safe_absolute and not v.startswith("/"):
+                            v = "/" + v
+                        elif not is_safe_absolute and v.startswith("/"):
+                            v = v.lstrip("/")
+            except Exception:
+                pass
+
+        return v if v else None
+
+    @field_validator("name")
+    @classmethod
+    def sanitize_name(cls, v: str | None) -> str | None:
+        """Sanitize filename to prevent control chars and invalid names."""
+        if v is None:
+            return v
+
+        # Remove null bytes
+        v = v.replace("\x00", "")
+
+        # Remove control characters (ASCII < 32 and 127)
+        v = "".join(c for c in v if ord(c) >= 32 and ord(c) != 127)
+
+        # Reject dots-only names
+        if v and v.strip(".") == "":
+            # Return a default name instead of empty
+            v = "file"
+
+        return v if v else None
 
 
 class ParsedConversation(BaseModel):
@@ -59,7 +153,7 @@ def attachment_from_meta(meta: object, message_id: str | None, index: int) -> Pa
     if not isinstance(meta, dict):
         return None
     attachment_id = meta.get("id") or meta.get("file_id") or meta.get("fileId") or meta.get("uuid")
-    name = meta.get("name") or meta.get("filename")
+    name = meta.get("name") or meta.get("filename") or meta.get("file_name")
     if not attachment_id:
         if not name:
             return None
