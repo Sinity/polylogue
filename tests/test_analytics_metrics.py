@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from polylogue.analytics.metrics import ProviderMetrics, compute_provider_comparison
-from polylogue.storage.store import ConversationRecord, MessageRecord
+from tests.helpers import make_conversation, make_message
 
 
 class TestProviderMetrics:
@@ -95,38 +95,10 @@ class TestComputeProviderComparison:
         """Single provider aggregation."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        # Create a conversation
-        conv = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Test",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="hash1",
-            provider_meta={"source": "inbox"},
-        )
+        conv = make_conversation("conv-1", provider_name="claude", provider_meta={"source": "inbox"})
         msgs = [
-            MessageRecord(
-                message_id="msg-1",
-                conversation_id="conv-1",
-                provider_message_id="pmsg-1",
-                role="user",
-                text="Hello world test",
-                timestamp="1000",
-                content_hash="mhash1",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="msg-2",
-                conversation_id="conv-1",
-                provider_message_id="pmsg-2",
-                role="assistant",
-                text="Response with more words for testing average calculation",
-                timestamp="1001",
-                content_hash="mhash2",
-                provider_meta=None,
-            ),
+            make_message("msg-1", "conv-1", text="Hello world test"),
+            make_message("msg-2", "conv-1", role="assistant", text="Response with more words for testing average calculation"),
         ]
         storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -145,54 +117,14 @@ class TestComputeProviderComparison:
 
         # Create 2 claude conversations
         for i in range(2):
-            conv = ConversationRecord(
-                conversation_id=f"claude-{i}",
-                provider_name="claude",
-                provider_conversation_id=f"pc-{i}",
-                title=f"Claude {i}",
-                created_at="1000",
-                updated_at="1000",
-                content_hash=f"chash-{i}",
-                provider_meta={"source": "inbox"},
-            )
-            msgs = [
-                MessageRecord(
-                    message_id=f"cmsg-{i}",
-                    conversation_id=f"claude-{i}",
-                    provider_message_id=f"cpmsg-{i}",
-                    role="user",
-                    text="Hello",
-                    timestamp="1000",
-                    content_hash=f"cmhash-{i}",
-                    provider_meta=None,
-                ),
-            ]
+            conv = make_conversation(f"claude-{i}", provider_name="claude", title=f"Claude {i}", provider_meta={"source": "inbox"})
+            msgs = [make_message(f"cmsg-{i}", f"claude-{i}", text="Hello")]
             storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
         # Create 3 chatgpt conversations
         for i in range(3):
-            conv = ConversationRecord(
-                conversation_id=f"chatgpt-{i}",
-                provider_name="chatgpt",
-                provider_conversation_id=f"gp-{i}",
-                title=f"ChatGPT {i}",
-                created_at="1000",
-                updated_at="1000",
-                content_hash=f"ghash-{i}",
-                provider_meta={"source": "inbox"},
-            )
-            msgs = [
-                MessageRecord(
-                    message_id=f"gmsg-{i}",
-                    conversation_id=f"chatgpt-{i}",
-                    provider_message_id=f"gpmsg-{i}",
-                    role="user",
-                    text="Hi",
-                    timestamp="1000",
-                    content_hash=f"gmhash-{i}",
-                    provider_meta=None,
-                ),
-            ]
+            conv = make_conversation(f"chatgpt-{i}", provider_name="chatgpt", title=f"ChatGPT {i}", provider_meta={"source": "inbox"})
+            msgs = [make_message(f"gmsg-{i}", f"chatgpt-{i}", text="Hi")]
             storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
         result = compute_provider_comparison(db_path=db_path)
@@ -208,57 +140,12 @@ class TestComputeProviderComparison:
         """User and assistant messages are counted separately."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        conv = ConversationRecord(
-            conversation_id="conv-roles",
-            provider_name="test",
-            provider_conversation_id="prov-roles",
-            title="Roles Test",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="rolehash",
-            provider_meta={"source": "inbox"},
-        )
+        conv = make_conversation("conv-roles", title="Roles Test", provider_meta={"source": "inbox"})
         msgs = [
-            MessageRecord(
-                message_id="rmsg-1",
-                conversation_id="conv-roles",
-                provider_message_id="rpmsg-1",
-                role="user",
-                text="User one",
-                timestamp="1000",
-                content_hash="rmhash1",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="rmsg-2",
-                conversation_id="conv-roles",
-                provider_message_id="rpmsg-2",
-                role="assistant",
-                text="Assistant one",
-                timestamp="1001",
-                content_hash="rmhash2",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="rmsg-3",
-                conversation_id="conv-roles",
-                provider_message_id="rpmsg-3",
-                role="user",
-                text="User two",
-                timestamp="1002",
-                content_hash="rmhash3",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="rmsg-4",
-                conversation_id="conv-roles",
-                provider_message_id="rpmsg-4",
-                role="assistant",
-                text="Assistant two three four",
-                timestamp="1003",
-                content_hash="rmhash4",
-                provider_meta=None,
-            ),
+            make_message("rmsg-1", "conv-roles", text="User one"),
+            make_message("rmsg-2", "conv-roles", role="assistant", text="Assistant one"),
+            make_message("rmsg-3", "conv-roles", text="User two"),
+            make_message("rmsg-4", "conv-roles", role="assistant", text="Assistant two three four"),
         ]
         storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -274,92 +161,20 @@ class TestComputeProviderComparison:
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         # Conv 1: 2 messages
-        conv1 = ConversationRecord(
-            conversation_id="avg-1",
-            provider_name="test",
-            provider_conversation_id="pavg-1",
-            title="Avg 1",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="avghash1",
-            provider_meta={"source": "inbox"},
-        )
+        conv1 = make_conversation("avg-1", title="Avg 1", provider_meta={"source": "inbox"})
         msgs1 = [
-            MessageRecord(
-                message_id="avg-msg-1a",
-                conversation_id="avg-1",
-                provider_message_id="avgpmsg-1a",
-                role="user",
-                text="Hi",
-                timestamp="1000",
-                content_hash="avgmhash1a",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="avg-msg-1b",
-                conversation_id="avg-1",
-                provider_message_id="avgpmsg-1b",
-                role="assistant",
-                text="Hello",
-                timestamp="1001",
-                content_hash="avgmhash1b",
-                provider_meta=None,
-            ),
+            make_message("avg-msg-1a", "avg-1", text="Hi"),
+            make_message("avg-msg-1b", "avg-1", role="assistant", text="Hello"),
         ]
         storage_repository.save_conversation(conversation=conv1, messages=msgs1, attachments=[])
 
         # Conv 2: 4 messages
-        conv2 = ConversationRecord(
-            conversation_id="avg-2",
-            provider_name="test",
-            provider_conversation_id="pavg-2",
-            title="Avg 2",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="avghash2",
-            provider_meta={"source": "inbox"},
-        )
+        conv2 = make_conversation("avg-2", title="Avg 2", provider_meta={"source": "inbox"})
         msgs2 = [
-            MessageRecord(
-                message_id="avg-msg-2a",
-                conversation_id="avg-2",
-                provider_message_id="avgpmsg-2a",
-                role="user",
-                text="Q1",
-                timestamp="1000",
-                content_hash="avgmhash2a",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="avg-msg-2b",
-                conversation_id="avg-2",
-                provider_message_id="avgpmsg-2b",
-                role="assistant",
-                text="A1",
-                timestamp="1001",
-                content_hash="avgmhash2b",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="avg-msg-2c",
-                conversation_id="avg-2",
-                provider_message_id="avgpmsg-2c",
-                role="user",
-                text="Q2",
-                timestamp="1002",
-                content_hash="avgmhash2c",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="avg-msg-2d",
-                conversation_id="avg-2",
-                provider_message_id="avgpmsg-2d",
-                role="assistant",
-                text="A2",
-                timestamp="1003",
-                content_hash="avgmhash2d",
-                provider_meta=None,
-            ),
+            make_message("avg-msg-2a", "avg-2", text="Q1"),
+            make_message("avg-msg-2b", "avg-2", role="assistant", text="A1"),
+            make_message("avg-msg-2c", "avg-2", text="Q2"),
+            make_message("avg-msg-2d", "avg-2", role="assistant", text="A2"),
         ]
         storage_repository.save_conversation(conversation=conv2, messages=msgs2, attachments=[])
 
@@ -373,31 +188,10 @@ class TestComputeProviderComparison:
         """Tool use is detected from content_blocks."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        conv = ConversationRecord(
-            conversation_id="tool-conv",
-            provider_name="claude",
-            provider_conversation_id="ptool",
-            title="Tool Use Test",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="toolhash",
-            provider_meta={"source": "inbox"},
-        )
+        conv = make_conversation("tool-conv", provider_name="claude", title="Tool Use Test", provider_meta={"source": "inbox"})
         msgs = [
-            MessageRecord(
-                message_id="tool-msg-1",
-                conversation_id="tool-conv",
-                provider_message_id="tpmsg-1",
-                role="assistant",
-                text="Let me search for that",
-                timestamp="1000",
-                content_hash="toolmhash1",
-                provider_meta={
-                    "content_blocks": [
-                        {"type": "tool_use", "name": "search", "id": "toolu_123"}
-                    ]
-                },
-            ),
+            make_message("tool-msg-1", "tool-conv", role="assistant", text="Let me search for that",
+                        provider_meta={"content_blocks": [{"type": "tool_use", "name": "search", "id": "toolu_123"}]}),
         ]
         storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -412,31 +206,10 @@ class TestComputeProviderComparison:
         """Thinking is detected from content_blocks."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        conv = ConversationRecord(
-            conversation_id="think-conv",
-            provider_name="claude",
-            provider_conversation_id="pthink",
-            title="Thinking Test",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="thinkhash",
-            provider_meta={"source": "inbox"},
-        )
+        conv = make_conversation("think-conv", provider_name="claude", title="Thinking Test", provider_meta={"source": "inbox"})
         msgs = [
-            MessageRecord(
-                message_id="think-msg-1",
-                conversation_id="think-conv",
-                provider_message_id="thpmsg-1",
-                role="assistant",
-                text="Let me think about this",
-                timestamp="1000",
-                content_hash="thinkmhash1",
-                provider_meta={
-                    "content_blocks": [
-                        {"type": "thinking", "thinking": "Reasoning..."}
-                    ]
-                },
-            ),
+            make_message("think-msg-1", "think-conv", role="assistant", text="Let me think about this",
+                        provider_meta={"content_blocks": [{"type": "thinking", "thinking": "Reasoning..."}]}),
         ]
         storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -451,37 +224,12 @@ class TestComputeProviderComparison:
         """Multiple tool uses in same conversation counted once."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
-        conv = ConversationRecord(
-            conversation_id="multi-tool",
-            provider_name="claude",
-            provider_conversation_id="pmtool",
-            title="Multi Tool",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="mtoolhash",
-            provider_meta={"source": "inbox"},
-        )
+        conv = make_conversation("multi-tool", provider_name="claude", title="Multi Tool", provider_meta={"source": "inbox"})
         msgs = [
-            MessageRecord(
-                message_id="mt-msg-1",
-                conversation_id="multi-tool",
-                provider_message_id="mtpmsg-1",
-                role="assistant",
-                text="Tool 1",
-                timestamp="1000",
-                content_hash="mtmhash1",
-                provider_meta={"content_blocks": [{"type": "tool_use", "name": "a"}]},
-            ),
-            MessageRecord(
-                message_id="mt-msg-2",
-                conversation_id="multi-tool",
-                provider_message_id="mtpmsg-2",
-                role="assistant",
-                text="Tool 2",
-                timestamp="1001",
-                content_hash="mtmhash2",
-                provider_meta={"content_blocks": [{"type": "tool_use", "name": "b"}]},
-            ),
+            make_message("mt-msg-1", "multi-tool", role="assistant", text="Tool 1",
+                        provider_meta={"content_blocks": [{"type": "tool_use", "name": "a"}]}),
+            make_message("mt-msg-2", "multi-tool", role="assistant", text="Tool 2",
+                        provider_meta={"content_blocks": [{"type": "tool_use", "name": "b"}]}),
         ]
         storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -497,28 +245,8 @@ class TestComputeProviderComparison:
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         # Conversation with system-only messages (no user/assistant)
-        conv = ConversationRecord(
-            conversation_id="zero-div",
-            provider_name="test",
-            provider_conversation_id="pzero",
-            title="Zero Division",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="zerohash",
-            provider_meta={"source": "inbox"},
-        )
-        msgs = [
-            MessageRecord(
-                message_id="zero-msg-1",
-                conversation_id="zero-div",
-                provider_message_id="zpmsg-1",
-                role="system",
-                text="System message",
-                timestamp="1000",
-                content_hash="zeromhash1",
-                provider_meta=None,
-            ),
-        ]
+        conv = make_conversation("zero-div", title="Zero Division", provider_meta={"source": "inbox"})
+        msgs = [make_message("zero-msg-1", "zero-div", role="system", text="System message")]
         storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
         result = compute_provider_comparison(db_path=db_path)
