@@ -89,6 +89,15 @@ def attachment_content_id(
         OSError: If attachment file move fails (FileNotFoundError, PermissionError, etc).
     """
     meta = dict(attachment.provider_meta or {})
+
+    # Extract name from nested raw metadata if present (e.g., ChatGPT format)
+    if "raw" in meta and isinstance(meta["raw"], dict) and "name" in meta["raw"]:
+        meta.setdefault("name", meta["raw"]["name"])
+
+    # Preserve original name if already at top level
+    if attachment.name:
+        meta.setdefault("name", attachment.name)
+
     updated_path = attachment.path
     for key in ("sha256", "digest", "hash"):
         value = meta.get(key)
