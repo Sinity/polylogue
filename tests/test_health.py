@@ -8,6 +8,8 @@ import stat
 import time
 from pathlib import Path
 
+import pytest
+
 
 class TestHealthCacheErrorHandling:
     """Tests for health check cache error handling."""
@@ -69,30 +71,26 @@ class TestHealthCacheErrorHandling:
             # Restore permissions for cleanup
             os.chmod(cache_file, stat.S_IRUSR | stat.S_IWUSR)
 
-    def test_cache_read_logs_corruption_warning(self, tmp_path: Path, caplog):
+    def test_cache_read_logs_corruption_warning(self, tmp_path: Path, capsys):
         """Cache read errors should be logged as warnings."""
-        import logging
-
         from polylogue.health import _load_cached
 
         # Create corrupted cache file (must be named health.json)
         cache_file = tmp_path / "health.json"
         cache_file.write_text("{ invalid json")
 
-        with caplog.at_level(logging.WARNING):
-            result = _load_cached(tmp_path)
+        result = _load_cached(tmp_path)
 
         # Should return None
         assert result is None
-        # Should have logged a warning about the corruption
-        assert any("cache" in record.message.lower() for record in caplog.records), (
-            f"Expected warning log about cache, got: {[r.message for r in caplog.records]}"
+        # Should have logged a warning about the corruption (structlog outputs to stdout)
+        captured = capsys.readouterr()
+        assert "cache" in captured.out.lower() or "cache" in captured.err.lower(), (
+            f"Expected warning log about cache, got stdout: {captured.out}, stderr: {captured.err}"
         )
 
-    def test_cache_read_logs_permission_error(self, tmp_path: Path, caplog):
+    def test_cache_read_logs_permission_error(self, tmp_path: Path, capsys):
         """Permission errors should be logged."""
-        import logging
-
         from polylogue.health import _load_cached
 
         cache_file = tmp_path / "health.json"
@@ -101,15 +99,16 @@ class TestHealthCacheErrorHandling:
         try:
             os.chmod(cache_file, 0o000)
 
-            with caplog.at_level(logging.WARNING):
-                result = _load_cached(tmp_path)
+            result = _load_cached(tmp_path)
 
             # Should return None
             assert result is None
-            # Should have logged something about the error
-            assert any(
-                "permission" in record.message.lower() or "cache" in record.message.lower() for record in caplog.records
-            ), f"Expected warning about permission, got: {[r.message for r in caplog.records]}"
+            # Should have logged something about the error (structlog outputs to stdout)
+            captured = capsys.readouterr()
+            assert (
+                "permission" in captured.out.lower() or "cache" in captured.out.lower()
+                or "permission" in captured.err.lower() or "cache" in captured.err.lower()
+            ), f"Expected warning about permission/cache, got stdout: {captured.out}, stderr: {captured.err}"
         finally:
             os.chmod(cache_file, stat.S_IRUSR | stat.S_IWUSR)
 
@@ -130,10 +129,8 @@ class TestHealthCacheErrorHandling:
         content = json.loads(cache_file.read_text())
         assert content.get("status") == "ok"
 
-    def test_cache_write_error_logged_not_raised(self, tmp_path: Path, caplog, monkeypatch):
+    def test_cache_write_error_logged_not_raised(self, tmp_path: Path, capsys, monkeypatch):
         """Cache write errors should be logged, not raised."""
-        import logging
-
         from polylogue.health import _write_cache
 
         # Mock Path.write_text to raise an OSError
@@ -144,15 +141,16 @@ class TestHealthCacheErrorHandling:
                 raise OSError("Simulated write error")
             return original_write(self, data, encoding=encoding)
 
-        with caplog.at_level(logging.WARNING):
-            monkeypatch.setattr(Path, "write_text", failing_write)
-            # Should not raise, just log warning
-            _write_cache(tmp_path, {"status": "ok"})
+        monkeypatch.setattr(Path, "write_text", failing_write)
+        # Should not raise, just log warning
+        _write_cache(tmp_path, {"status": "ok"})
 
-        # Should have logged a warning
-        assert any(
-            "failed" in record.message.lower() or "cache" in record.message.lower() for record in caplog.records
-        ), f"Expected warning about write failure, got: {[r.message for r in caplog.records]}"
+        # Should have logged a warning (structlog outputs to stdout)
+        captured = capsys.readouterr()
+        assert (
+            "failed" in captured.out.lower() or "cache" in captured.out.lower()
+            or "failed" in captured.err.lower() or "cache" in captured.err.lower()
+        ), f"Expected warning about write failure, got stdout: {captured.out}, stderr: {captured.err}"
 
     def test_cache_with_valid_json_returns_dict(self, tmp_path: Path):
         """Valid cache file should return the dict."""
@@ -169,23 +167,24 @@ class TestHealthCacheErrorHandling:
 
         assert result == test_data, "Valid cache should return the dict"
 
-    def test_cache_read_unicode_errors_handled(self, tmp_path: Path, caplog):
+    def test_cache_read_unicode_errors_handled(self, tmp_path: Path, capsys):
         """Unicode decode errors in cache should be handled gracefully."""
-        import logging
-
         from polylogue.health import _load_cached
 
         # Write binary data that isn't valid UTF-8
         cache_file = tmp_path / "health.json"
         cache_file.write_bytes(b"\xff\xfe invalid utf8")
 
-        with caplog.at_level(logging.WARNING):
-            result = _load_cached(tmp_path)
+        result = _load_cached(tmp_path)
 
         # Should return None
         assert result is None
-        # Should have logged a warning
-        assert any("cache" in record.message.lower() or "error" in record.message.lower() for record in caplog.records)
+        # Should have logged a warning (structlog outputs to stdout)
+        captured = capsys.readouterr()
+        assert (
+            "cache" in captured.out.lower() or "error" in captured.out.lower()
+            or "cache" in captured.err.lower() or "error" in captured.err.lower()
+        ), f"Expected warning about cache/error, got stdout: {captured.out}, stderr: {captured.err}"
 
 
 class TestHealthCheck:
@@ -380,8 +379,6 @@ class TestGetHealth:
 
     def test_get_health_returns_cached_when_valid(self, cli_workspace):
         """get_health should return cached result when valid."""
-        import time
-
         from polylogue.config import load_config
         from polylogue.health import get_health
 
@@ -391,10 +388,8 @@ class TestGetHealth:
         result1 = get_health(config)
         timestamp1 = result1.timestamp
 
-        # Brief sleep to ensure timestamp would differ
-        time.sleep(0.1)
-
         # Second call should return cached result (same timestamp)
+        # Cache TTL validation doesn't require delay; we verify cache is used via the cached flag
         result2 = get_health(config)
         timestamp2 = result2.timestamp
 
