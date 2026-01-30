@@ -6,7 +6,11 @@ from .base import ParsedConversation, ParsedMessage
 def looks_like(payload: list[object]) -> bool:
     """Detect Codex JSONL format.
 
-    New format (JSONL with session metadata + messages):
+    Newest format (envelope with typed payloads):
+        {"type":"session_meta","payload":{"id":"...","timestamp":"...","git":{...}}}
+        {"type":"response_item","payload":{"type":"message","role":"user","content":[...]}}
+
+    Intermediate format (JSONL with session metadata + messages):
         {"id":"...","timestamp":"...","git":{...}}
         {"record_type":"state"}
         {"type":"message","role":"user","content":[...]}
@@ -20,7 +24,10 @@ def looks_like(payload: list[object]) -> bool:
     for item in payload:
         if not isinstance(item, dict):
             continue
-        # New format: session metadata or message records
+        # Newest format: envelope types
+        if item.get("type") in ("session_meta", "response_item"):
+            return True
+        # Intermediate format: session metadata or message records
         if "id" in item and "timestamp" in item:
             return True
         if item.get("type") == "message":
@@ -35,12 +42,19 @@ def looks_like(payload: list[object]) -> bool:
 def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
     """Parse Codex JSONL session file.
 
-    Format:
-        Line 1: {"id":"session-id","timestamp":"...","git":{...}}
-        Line N: {"record_type":"state"} or {"type":"message",...}
+    Supports three format generations:
 
-    Messages have structure:
-        {"type":"message","role":"user/assistant","content":[{"type":"input_text","text":"..."}]}
+    Newest (envelope format):
+        {"type":"session_meta","payload":{"id":"...","timestamp":"...","git":{...}}}
+        {"type":"response_item","payload":{"type":"message","role":"user","content":[...]}}
+
+    Intermediate (direct records):
+        {"id":"...","timestamp":"...","git":{...}}
+        {"record_type":"state"}
+        {"type":"message","role":"user","content":[...]}
+
+    Old (prompt/completion):
+        [{"prompt":"...","completion":"..."}]
     """
     messages: list[ParsedMessage] = []
     session_id = fallback_id
@@ -50,17 +64,33 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
         if not isinstance(item, dict):
             continue
 
-        # Skip state markers
+        # Newest format: envelope with "session_meta" type
+        if item.get("type") == "session_meta":
+            envelope_payload = item.get("payload", {})
+            if isinstance(envelope_payload, dict):
+                session_id = envelope_payload.get("id", session_id)
+                session_timestamp = envelope_payload.get("timestamp", session_timestamp)
+            continue
+
+        # Newest format: envelope with "response_item" type
+        if item.get("type") == "response_item":
+            envelope_payload = item.get("payload", {})
+            if isinstance(envelope_payload, dict) and envelope_payload.get("type") == "message":
+                # Unwrap and process as message
+                item = envelope_payload
+                # Fall through to message processing below
+
+        # Skip state markers (intermediate format)
         if item.get("record_type") == "state":
             continue
 
-        # Extract session metadata (first line)
+        # Extract session metadata (intermediate format - first line)
         if "id" in item and "timestamp" in item and not item.get("type"):
             session_id = item["id"]
             session_timestamp = item.get("timestamp")
             continue
 
-        # Parse message records
+        # Parse message records (both newest and intermediate formats)
         if item.get("type") == "message":
             role = item.get("role")
             content = item.get("content", [])
