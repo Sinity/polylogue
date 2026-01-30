@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.index import ensure_index, rebuild_index, update_index_for_conversations
 from polylogue.storage.search import search_messages
 from polylogue.storage.store import ConversationRecord, MessageRecord, store_records

@@ -5,7 +5,7 @@ import time
 
 from polylogue.config import Source, default_config, write_config
 from polylogue.pipeline.runner import plan_sources, run_sources
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import open_connection
 
 
 def test_plan_and_run_sources(workspace_env, tmp_path):
@@ -134,7 +134,7 @@ def test_run_rerenders_when_content_changes(workspace_env, tmp_path):
     convo_path = next(config.render_root.rglob("conversation.md"))
     first_mtime = convo_path.stat().st_mtime
 
-    time.sleep(0.01)  # Ensure fs timestamp resolution
+    # Modify content - content hash difference triggers re-render regardless of fs timestamp
     payload["messages"][0]["content"] = "hello world"
     source_file.write_text(json.dumps(payload), encoding="utf-8")
     run_sources(config=config, stage="all")

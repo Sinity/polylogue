@@ -15,8 +15,7 @@ import pytest
 from polylogue.ingestion import IngestBundle, ingest_bundle
 from polylogue.lib.repository import ConversationRepository
 from polylogue.rendering.renderers import HTMLRenderer
-from polylogue.storage.backends.sqlite import SQLiteBackend
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
 from polylogue.storage.store import ConversationRecord, MessageRecord
 from tests.factories import DbFactory
 

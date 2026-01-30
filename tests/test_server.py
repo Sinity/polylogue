@@ -66,14 +66,12 @@ def test_web_view(test_client):
 def test_api_search_returns_503_when_fts_missing(tmp_path):
     """GET /api/search returns 503 with helpful message when index not built."""
     # Reload modules to ensure consistent DatabaseError class identity
-    # This is needed when other tests in the suite reload polylogue.storage.db
+    # This is needed when other tests in the suite reload polylogue.storage.backends.sqlite
     # Order: db first (defines DatabaseError), then backends, then api
     import importlib
 
     import polylogue.server.api
     import polylogue.storage.backends.sqlite
-    import polylogue.storage.db
-    importlib.reload(polylogue.storage.db)
     importlib.reload(polylogue.storage.backends.sqlite)
     importlib.reload(polylogue.server.api)
 

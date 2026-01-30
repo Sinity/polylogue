@@ -7,7 +7,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
@@ -580,7 +580,7 @@ def test_store_records_without_connection_creates_own(test_db):
     os.environ["XDG_STATE_HOME"] = str(test_db.parent.parent)
 
     # Move test DB to default location
-    from polylogue.storage.db import default_db_path
+    from polylogue.storage.backends.sqlite import default_db_path
 
     default_path = default_db_path()
     default_path.parent.mkdir(parents=True, exist_ok=True)

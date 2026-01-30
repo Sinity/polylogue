@@ -11,6 +11,8 @@ class DbFactory:
 
     def __init__(self, db_path: Path):
         self.db_path = db_path
+        # Ensure parent directory exists
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def create_conversation(
         self,
@@ -71,7 +73,7 @@ class DbFactory:
                             )
                         )
 
-        from polylogue.storage.db import open_connection
+        from polylogue.storage.backends.sqlite import open_connection
 
         with open_connection(self.db_path) as conn:
             store_records(

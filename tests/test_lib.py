@@ -3,7 +3,7 @@ import pytest
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.repository import ConversationRepository
 from polylogue.storage.backends.sqlite import SQLiteBackend
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import open_connection
 
 
 @pytest.fixture

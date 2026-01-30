@@ -13,7 +13,7 @@ from polylogue.rendering.renderers import (
     create_renderer,
     list_formats,
 )
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
 
 

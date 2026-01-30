@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.store import ConversationRecord, MessageRecord, store_records

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import zipfile
 
+import pytest
+
 from polylogue.config import Source
 from polylogue.ingestion import iter_source_conversations, parse_drive_payload
 
@@ -487,7 +489,6 @@ class TestIterSourceConversations:
         assert len(convs) == 2
         assert {c.provider_conversation_id for c in convs} == {"v1", "v2"}
 
-        # SHOULD FAIL until failure tracking is implemented:
         # The invalid file should be tracked as failed in cursor_state
         # This prevents re-processing on next run and allows reporting of failures
         assert "failed_count" in cursor_state, "Failed files should be tracked in cursor_state"

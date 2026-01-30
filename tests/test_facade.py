@@ -182,9 +182,16 @@ class TestPolylogueIngest:
 
     def test_ingest_sources(self, workspace_env, sample_chatgpt_file, sample_claude_file):
         """Test ingesting multiple sources."""
+        db_path = workspace_env["data_root"] / "polylogue.db"
+
+        # Initialize database with WAL mode before concurrent ingestion
+        from polylogue.storage.backends.sqlite import open_connection
+        with open_connection(db_path) as conn:
+            conn.execute("SELECT 1").fetchone()
+
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
-            db_path=workspace_env["data_root"] / "polylogue.db",
+            db_path=db_path,
         )
 
         sources = [

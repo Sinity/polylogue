@@ -58,8 +58,8 @@ def test_health_cached(workspace_env):
     loaded = load_config()
     get_health(loaded)
     second = get_health(loaded)
-    assert second.get("cached") is True
-    assert second.get("age_seconds") is not None
+    assert second.cached is True
+    assert second.age_seconds is not None
 
 
 def test_search_invalid_query_reports_error(monkeypatch, workspace_env):
@@ -440,7 +440,7 @@ def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_wit
     archive_root = workspace_env["archive_root"]
 
     # Monkey-patch to use the db without FTS
-    from polylogue.storage import db
+    from polylogue.storage.backends import sqlite as db
 
     monkeypatch.setattr(db, "default_db_path", lambda: db_without_fts)
 

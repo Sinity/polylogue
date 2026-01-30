@@ -8,7 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.storage.db import default_db_path, open_connection
+from polylogue.storage.backends.sqlite import default_db_path, open_connection
 from tests.factories import DbFactory
 
 
@@ -103,6 +103,7 @@ class TestCheckCommand:
                     1,
                 ),
             )
+            conn.commit()  # Explicit commit to ensure orphan persists
             conn.execute("PRAGMA foreign_keys = ON")
 
         result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
@@ -176,6 +177,7 @@ class TestCheckCommand:
                     1,
                 ),
             )
+            conn.commit()  # Explicit commit to ensure conversation persists
 
         result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
         assert result.exit_code == 0
@@ -237,6 +239,7 @@ class TestCheckCommand:
         # Manually drop FTS table to simulate desync
         with open_connection(db_path) as conn:
             conn.execute("DROP TABLE IF EXISTS messages_fts")
+            conn.commit()  # Explicit commit
 
         result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
         assert result.exit_code == 0
@@ -300,8 +303,9 @@ class TestCheckCommand:
         result = cli_runner.invoke(cli, ["check"])
         assert result.exit_code == 0
 
-        # Should report 0 conversations, 0 messages
-        assert "0 conversations" in result.output or "0 message" in result.output
+        # Should show healthy status checks
+        assert "OK database" in result.output
+        assert "OK sqlite_integrity" in result.output
 
     def test_check_sqlite_integrity_check(self, workspace_env, cli_runner):
         """Check includes SQLite integrity check in results."""

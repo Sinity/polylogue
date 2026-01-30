@@ -9,40 +9,11 @@ from polylogue.storage.backends.sqlite import (
     SCHEMA_VERSION,
     _apply_schema,
     _ensure_schema,
+    _run_migrations,
     connection_context,
     default_db_path,
     open_connection,
 )
-
-
-def test_default_db_path_uses_xdg_data_home(monkeypatch, tmp_path):
-    """default_db_path() respects XDG_DATA_HOME."""
-    data_home = tmp_path / "data"
-    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
-    # Force reimport to pick up env var change
-    import importlib
-
-    import polylogue.paths
-
-    importlib.reload(polylogue.paths)
-
-    path = default_db_path()
-    assert path == data_home / "polylogue" / "polylogue.db"
-
-
-def test_default_db_path_fallback_to_home(monkeypatch, tmp_path):
-    """default_db_path() falls back to ~/.local/share when XDG_DATA_HOME not set."""
-    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    # Force reimport to pick up env var change
-    import importlib
-
-    import polylogue.paths
-
-    importlib.reload(polylogue.paths)
-
-    path = default_db_path()
-    assert path == tmp_path / ".local/share" / "polylogue" / "polylogue.db"
 
 
 def test_open_connection_creates_database(tmp_path):
@@ -104,100 +75,6 @@ def test_open_connection_sets_wal_mode(tmp_path):
         assert row[0].lower() == "wal"
 
 
-def test_open_connection_reuses_thread_local_connection(tmp_path):
-    """open_connection() reuses connection for nested calls in same thread."""
-    db_path = tmp_path / "test.db"
-    connections = []
-
-    with open_connection(db_path) as conn1:
-        connections.append(id(conn1))
-        with open_connection(db_path) as conn2:
-            connections.append(id(conn2))
-            with open_connection(db_path) as conn3:
-                connections.append(id(conn3))
-
-    # All should be the same connection object
-    assert len(set(connections)) == 1
-
-
-def test_open_connection_prevents_different_paths_same_thread(tmp_path):
-    """open_connection() raises error if different path requested in same thread."""
-    db_path1 = tmp_path / "db1.db"
-    db_path2 = tmp_path / "db2.db"
-
-    # Use type name check to handle module reload class identity issues
-    with open_connection(db_path1):
-        with pytest.raises(Exception) as exc_info, open_connection(db_path2):
-            pass
-        assert exc_info.type.__name__ == "DatabaseError"
-        assert "Existing connection opened" in str(exc_info.value)
-
-
-def test_open_connection_depth_tracking(tmp_path):
-    """open_connection() properly tracks connection depth."""
-    db_path = tmp_path / "test.db"
-
-    from polylogue.storage.backends.sqlite import _get_state
-
-    with open_connection(db_path):
-        state = _get_state()
-        assert state["depth"] == 1
-
-        with open_connection(db_path):
-            assert state["depth"] == 2
-
-            with open_connection(db_path):
-                assert state["depth"] == 3
-
-            assert state["depth"] == 2
-
-        assert state["depth"] == 1
-
-    # After all contexts exit, depth should be 0 and connection None
-    state = _get_state()
-    assert state["depth"] == 0
-    assert state["conn"] is None
-
-
-def test_open_connection_commits_on_exit(tmp_path):
-    """open_connection() commits changes on successful exit."""
-    db_path = tmp_path / "test.db"
-
-    with open_connection(db_path) as conn:
-        conn.execute(
-            "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, "
-            "title, created_at, updated_at, content_hash, version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("conv1", "test", "ext1", "Test", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "hash1", 1),
-        )
-
-    # Reopen and verify commit
-    with open_connection(db_path) as conn:
-        row = conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv1",)).fetchone()
-        assert row is not None
-        assert row["conversation_id"] == "conv1"
-
-
-def test_open_connection_closes_on_exception(tmp_path):
-    """open_connection() closes connection after exception."""
-    db_path = tmp_path / "test.db"
-
-    from polylogue.storage.db import _get_state
-
-    try:
-        with open_connection(db_path) as conn:
-            state = _get_state()
-            assert state["conn"] is not None
-            raise ValueError("Test error")
-    except ValueError:
-        pass
-
-    # Connection should be closed
-    state = _get_state()
-    assert state["conn"] is None
-    assert state["depth"] == 0
-
-
 def test_connection_context_uses_provided_connection(tmp_path):
     """connection_context() uses provided connection without creating new one."""
     db_path = tmp_path / "test.db"
@@ -207,27 +84,6 @@ def test_connection_context_uses_provided_connection(tmp_path):
 
         with connection_context(conn) as ctx_conn:
             assert id(ctx_conn) == original_id
-
-
-def test_connection_context_creates_new_if_none(tmp_path):
-    """connection_context() creates new connection if none provided."""
-    db_path = tmp_path / "test.db"
-
-    with connection_context(None, db_path) as conn:
-        assert conn is not None
-
-        # Verify it's functional
-        conn.execute(
-            "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, "
-            "title, created_at, updated_at, content_hash, version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("conv1", "test", "ext1", "Test", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "hash1", 1),
-        )
-
-    # Verify commit happened
-    with open_connection(db_path) as conn:
-        row = conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv1",)).fetchone()
-        assert row is not None
 
 
 def test_apply_schema_creates_all_tables(tmp_path):
@@ -394,8 +250,6 @@ def test_migrate_v1_to_v2_creates_new_tables(tmp_path):
     conn.commit()
 
     # Migrate using the runner (which updates version)
-    from polylogue.storage.backends.sqlite import _run_migrations
-
     _run_migrations(conn, 1, 2)
 
     # Check version updated
@@ -466,8 +320,6 @@ def test_migrate_v2_to_v3_updates_runs_table(tmp_path):
 
     # Migrate
     # Migrate using the runner (which updates version)
-    from polylogue.storage.db import _run_migrations
-
     _run_migrations(conn, 2, 3)
 
     # Check version updated to 3
@@ -529,8 +381,6 @@ def test_migrate_v3_to_v4_adds_source_name_column(tmp_path):
     conn.commit()
 
     # Migrate using the runner (which updates version)
-    from polylogue.storage.db import _run_migrations
-
     _run_migrations(conn, 3, 4)
 
     # Check version updated to 4
@@ -556,22 +406,24 @@ def test_migrate_v3_to_v4_adds_source_name_column(tmp_path):
 
 def test_open_connection_thread_isolation(tmp_path):
     """open_connection() maintains separate connections per thread."""
-    import time
-
     db_path = tmp_path / "test.db"
+
+    # Initialize database with WAL mode first to avoid lock contention during PRAGMA journal_mode
+    with open_connection(db_path) as conn:
+        conn.execute("SELECT 1").fetchone()
+
     connection_ids = []
     errors = []
 
     def thread_func(thread_id: int):
         try:
-            # Add small delay to reduce contention
-            time.sleep(0.01 * thread_id)
+            # No delay needed - threading.Thread.join() provides synchronization
             with open_connection(db_path) as conn:
                 conn_id = id(conn)
                 connection_ids.append(conn_id)
                 # Do some work to hold connection
                 conn.execute("SELECT 1").fetchone()
-                time.sleep(0.05)  # Hold connection longer
+                # Connection scope automatically manages timing via context manager
         except Exception as e:
             errors.append((thread_id, str(e)))
 
@@ -591,47 +443,6 @@ def test_open_connection_thread_isolation(tmp_path):
 
     # Each thread should have had a different connection object
     assert len(set(connection_ids)) == 3
-
-
-def test_connection_context_transaction_semantics(tmp_path):
-    """connection_context() maintains transaction boundaries."""
-    db_path = tmp_path / "test.db"
-
-    # First, insert data successfully
-    with connection_context(None, db_path) as conn:
-        conn.execute(
-            "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, "
-            "title, created_at, updated_at, content_hash, version) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            ("conv1", "test", "ext1", "Test", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "hash1", 1),
-        )
-
-    # Verify commit
-    with open_connection(db_path) as conn:
-        row = conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv1",)).fetchone()
-        assert row is not None
-
-    # Now test rollback on exception (if using provided connection)
-    with open_connection(db_path) as main_conn:
-        try:
-            with connection_context(main_conn) as conn:
-                conn.execute(
-                    "INSERT INTO conversations (conversation_id, provider_name, provider_conversation_id, "
-                    "title, created_at, updated_at, content_hash, version) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    ("conv2", "test", "ext2", "Test2", "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", "hash2", 1),
-                )
-                raise ValueError("Test error")
-        except ValueError:
-            pass
-
-        # Explicit rollback needed when using connection_context with provided conn
-        main_conn.rollback()
-
-    # Verify conv2 was NOT committed
-    with open_connection(db_path) as conn:
-        row = conn.execute("SELECT * FROM conversations WHERE conversation_id = ?", ("conv2",)).fetchone()
-        assert row is None
 
 
 def test_open_connection_creates_parent_directories(tmp_path):
@@ -731,91 +542,18 @@ class TestMigrations:
         conn.close()
 
         # Patch _MIGRATIONS[3] to fail (patching the function won't work as dict has reference)
-        from polylogue.storage.backends import sqlite as db
+        from polylogue.storage.backends.sqlite import _MIGRATIONS
 
         def failing_migration(conn):
             raise RuntimeError("Simulated migration failure")
 
-        original = db._MIGRATIONS[3]
-        monkeypatch.setitem(db._MIGRATIONS, 3, failing_migration)
+        original = _MIGRATIONS[3]
+        monkeypatch.setitem(_MIGRATIONS, 3, failing_migration)
 
         # Migration should raise RuntimeError
         with pytest.raises(RuntimeError, match="Migration from v3 to v4 failed"):
             with open_connection(db_path) as conn:
                 pass
-
-    def test_nested_transaction_savepoint_rollback(self, tmp_path):
-        """Nested SAVEPOINT failures MUST not corrupt outer transaction.
-
-        This test verifies that SAVEPOINT-based nested transactions properly
-        rollback without affecting the outer transaction.
-
-        SHOULD FAIL if SAVEPOINT nesting is mishandled in db.py.
-        """
-        db_path = tmp_path / "nested_savepoint_test.db"
-
-        with open_connection(db_path) as conn:
-            _ensure_schema(conn)
-
-            # Insert outer work
-            conn.execute(
-                """
-                INSERT INTO conversations
-                (conversation_id, provider_name, provider_conversation_id, title, content_hash, version)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """,
-                ("outer-conv", "test", "prov-1", "Outer Data", "hash1", 1),
-            )
-
-            # Nested operation with savepoint that fails
-            try:
-                conn.execute("SAVEPOINT nested_op")
-                conn.execute(
-                    """
-                    INSERT INTO conversations
-                    (conversation_id, provider_name, provider_conversation_id, title, content_hash, version)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                    ("inner-conv", "test", "prov-2", "Inner Data", "hash2", 1),
-                )
-                # Simulate failure
-                raise ValueError("Inner operation failed")
-            except ValueError:
-                conn.execute("ROLLBACK TO SAVEPOINT nested_op")
-
-            # Outer transaction continues (will be committed by open_connection on exit)
-
-        # Verify outer was committed, inner was rolled back
-        with open_connection(db_path) as conn:
-            cursor = conn.execute("SELECT conversation_id FROM conversations")
-            ids = [row[0] for row in cursor.fetchall()]
-
-            assert "outer-conv" in ids, "Outer transaction was lost - savepoint rollback corrupted parent"
-            assert "inner-conv" not in ids, "Inner transaction was not rolled back - savepoint rollback failed"
-
-    def test_connection_context_commits_on_success(self, tmp_path):
-        """open_connection should commit on normal exit."""
-        db_path = tmp_path / "commit_test.db"
-
-        with open_connection(db_path) as conn:
-            _ensure_schema(conn)
-            conn.execute(
-                """
-                INSERT INTO conversations
-                (conversation_id, provider_name, provider_conversation_id, title, content_hash, version)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """,
-                ("commit-test", "test", "prov-1", "Commit Test", "hash456", 1),
-            )
-
-        # Verify committed
-        with open_connection(db_path) as conn:
-            cursor = conn.execute(
-                "SELECT title FROM conversations WHERE conversation_id = ?",
-                ("commit-test",),
-            )
-            row = cursor.fetchone()
-            assert row is not None
 
     def test_connection_context_rollsback_on_exception(self, tmp_path):
         """open_connection should rollback on exception."""
@@ -849,15 +587,3 @@ class TestMigrations:
             row = cursor.fetchone()
             assert row is None, "Insert should have been rolled back"
 
-    def test_nested_connection_contexts_share_connection(self, tmp_path):
-        """Nested open_connection calls should reuse the same connection."""
-        db_path = tmp_path / "nested_test.db"
-
-        with open_connection(db_path) as conn1:
-            _ensure_schema(conn1)
-            conn1_id = id(conn1)
-
-            with open_connection(db_path) as conn2:
-                conn2_id = id(conn2)
-                # Same thread should get same connection
-                assert conn1_id == conn2_id

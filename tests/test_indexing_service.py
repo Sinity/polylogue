@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from polylogue.config import Config
 from polylogue.pipeline.services.indexing import IndexService
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.store import ConversationRecord, MessageRecord
 
 

@@ -12,7 +12,7 @@ from polylogue.pipeline.ids import (
     message_id,
 )
 from polylogue.pipeline.ingest import prepare_ingest
-from polylogue.storage.db import open_connection
+from polylogue.storage.backends.sqlite import open_connection
 
 # ============================================================================
 # Test conversation_content_hash

@@ -52,7 +52,7 @@ def filter_db(tmp_path):
     )
 
     # Build FTS index
-    from polylogue.storage.db import open_connection
+    from polylogue.storage.backends.sqlite import open_connection
 
     with open_connection(db_path) as conn:
         rebuild_index(conn)

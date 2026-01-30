@@ -69,7 +69,7 @@ class FTS5Provider:
         # Extract unique conversation IDs
         conversation_ids = list({msg.conversation_id for msg in messages})
 
-        with connection_context(None, self.db_path) as conn:
+        with connection_context(self.db_path) as conn:
             self._ensure_index(conn)
 
             # Batch delete existing entries for these conversations
