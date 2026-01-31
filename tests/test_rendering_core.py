@@ -11,7 +11,13 @@ from __future__ import annotations
 import pytest
 
 from polylogue.rendering.core import ConversationFormatter, FormattedConversation
-from tests.helpers import ConversationBuilder, assert_messages_ordered, db_setup
+from tests.helpers import (
+    ConversationBuilder,
+    assert_contains_all,
+    assert_messages_ordered,
+    assert_not_contains_any,
+    db_setup,
+)
 
 
 # =============================================================================
@@ -494,21 +500,21 @@ def test_markdown_structure_comprehensive(workspace_env, label, messages_data, d
 
     if label == "header":
         # Check header structure
-        assert "# My Chat Title" in result.markdown_text
-        assert "Provider: chatgpt" in result.markdown_text
-        assert f"Conversation ID: {conv_id}" in result.markdown_text
+        assert_contains_all(
+            result.markdown_text,
+            "# My Chat Title",
+            "Provider: chatgpt",
+            f"Conversation ID: {conv_id}",
+        )
 
     elif label == "roles":
         # Each role should have section
-        assert "## user" in result.markdown_text
-        assert "## assistant" in result.markdown_text
-        assert "## system" in result.markdown_text
+        assert_contains_all(result.markdown_text, "## user", "## assistant", "## system")
 
     elif label == "empty messages":
         # Only non-empty message should appear
         assert "## user" in result.markdown_text
-        assert "## tool" not in result.markdown_text
-        assert "## system" not in result.markdown_text
+        assert_not_contains_any(result.markdown_text, "## tool", "## system")
 
     elif label == "null role":
         # Null role defaults to 'message'
