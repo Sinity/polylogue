@@ -10,34 +10,14 @@ from polylogue.health import get_health
 from polylogue.ingestion import IngestBundle, ingest_bundle
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.search import search_messages
-from polylogue.storage.store import ConversationRecord, MessageRecord
+from tests.helpers import make_conversation, make_message
 
 
 def _seed_conversation(storage_repository):
     ingest_bundle(
         IngestBundle(
-            conversation=ConversationRecord(
-                conversation_id="conv:hash",
-                provider_name="codex",
-                provider_conversation_id="conv",
-                title="Demo",
-                created_at=None,
-                updated_at=None,
-                content_hash="hash",
-                provider_meta=None,
-            ),
-            messages=[
-                MessageRecord(
-                    message_id="msg:hash",
-                    conversation_id="conv:hash",
-                    provider_message_id="msg",
-                    role="user",
-                    text="hello world",
-                    timestamp=None,
-                    content_hash="hash",
-                    provider_meta=None,
-                )
-            ],
+            conversation=make_conversation("conv:hash", provider_name="codex", title="Demo"),
+            messages=[make_message("msg:hash", "conv:hash", text="hello world")],
             attachments=[],
         ),
         repository=storage_repository,
@@ -103,28 +83,8 @@ def test_search_prefers_legacy_render_when_present(workspace_env, storage_reposi
     provider_name = "legacy-provider"  # Valid provider name (path chars now rejected)
     conversation_id = "conv-one"
     bundle = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id=conversation_id,
-            provider_name=provider_name,
-            provider_conversation_id=conversation_id,
-            title="Legacy",
-            created_at=None,
-            updated_at=None,
-            content_hash="hash",
-            provider_meta=None,
-        ),
-        messages=[
-            MessageRecord(
-                message_id="msg:legacy",
-                conversation_id=conversation_id,
-                provider_message_id="msg",
-                role="user",
-                text="hello legacy",
-                timestamp=None,
-                content_hash="hash",
-                provider_meta=None,
-            )
-        ],
+        conversation=make_conversation(conversation_id, provider_name=provider_name, title="Legacy"),
+        messages=[make_message("msg:legacy", conversation_id, text="hello legacy")],
         attachments=[],
     )
     ingest_bundle(bundle, repository=storage_repository)
@@ -147,37 +107,10 @@ def test_search_since_filters_by_iso_date(workspace_env, storage_repository):
     archive_root = workspace_env["archive_root"]
     # Message with ISO timestamp: 2024-01-15T10:00:00
     bundle = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id="conv:iso",
-            provider_name="test",
-            provider_conversation_id="iso-conv",
-            title="ISO Test",
-            created_at=None,
-            updated_at=None,
-            content_hash="hash-iso",
-            provider_meta=None,
-        ),
+        conversation=make_conversation("conv:iso", title="ISO Test"),
         messages=[
-            MessageRecord(
-                message_id="msg:old-iso",
-                conversation_id="conv:iso",
-                provider_message_id="old",
-                role="user",
-                text="old message iso",
-                timestamp="2024-01-10T10:00:00",  # Before cutoff
-                content_hash="hash1",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="msg:new-iso",
-                conversation_id="conv:iso",
-                provider_message_id="new",
-                role="user",
-                text="new message iso",
-                timestamp="2024-01-20T10:00:00",  # After cutoff
-                content_hash="hash2",
-                provider_meta=None,
-            ),
+            make_message("msg:old-iso", "conv:iso", text="old message iso", timestamp="2024-01-10T10:00:00"),
+            make_message("msg:new-iso", "conv:iso", text="new message iso", timestamp="2024-01-20T10:00:00"),
         ],
         attachments=[],
     )
@@ -202,37 +135,10 @@ def test_search_since_filters_numeric_timestamps(workspace_env, storage_reposito
     # 1704067200.0 = 2024-01-01T00:00:00 UTC
     # 1706227200.0 = 2024-01-26T00:00:00 UTC
     bundle = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id="conv:numeric",
-            provider_name="test",
-            provider_conversation_id="numeric-conv",
-            title="Numeric Test",
-            created_at=None,
-            updated_at=None,
-            content_hash="hash-numeric",
-            provider_meta=None,
-        ),
+        conversation=make_conversation("conv:numeric", title="Numeric Test"),
         messages=[
-            MessageRecord(
-                message_id="msg:old-num",
-                conversation_id="conv:numeric",
-                provider_message_id="old",
-                role="user",
-                text="old message numeric",
-                timestamp="1704067200.0",  # 2024-01-01 - Before cutoff
-                content_hash="hash3",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="msg:new-num",
-                conversation_id="conv:numeric",
-                provider_message_id="new",
-                role="user",
-                text="new message numeric",
-                timestamp="1706227200.0",  # 2024-01-26 - After cutoff
-                content_hash="hash4",
-                provider_meta=None,
-            ),
+            make_message("msg:old-num", "conv:numeric", text="old message numeric", timestamp="1704067200.0"),
+            make_message("msg:new-num", "conv:numeric", text="new message numeric", timestamp="1706227200.0"),
         ],
         attachments=[],
     )
@@ -260,82 +166,22 @@ def test_search_since_handles_mixed_timestamp_formats(workspace_env, storage_rep
 
     # Create conversation with ISO timestamp (after cutoff)
     bundle_iso = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id="conv:iso-new",
-            provider_name="test",
-            provider_conversation_id="iso-conv",
-            title="ISO Test",
-            created_at=None,
-            updated_at=None,
-            content_hash="hash-iso",
-            provider_meta=None,
-        ),
-        messages=[
-            MessageRecord(
-                message_id="msg:iso-new",
-                conversation_id="conv:iso-new",
-                provider_message_id="iso-new",
-                role="user",
-                text="mixedformat gamma",
-                timestamp="2024-01-25T12:00:00",  # ISO - after cutoff
-                content_hash="hash7",
-                provider_meta=None,
-            ),
-        ],
+        conversation=make_conversation("conv:iso-new", title="ISO Test"),
+        messages=[make_message("msg:iso-new", "conv:iso-new", text="mixedformat gamma", timestamp="2024-01-25T12:00:00")],
         attachments=[],
     )
 
     # Create conversation with numeric timestamp (after cutoff)
     bundle_num = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id="conv:num-new",
-            provider_name="test",
-            provider_conversation_id="num-conv",
-            title="Numeric Test",
-            created_at=None,
-            updated_at=None,
-            content_hash="hash-num",
-            provider_meta=None,
-        ),
-        messages=[
-            MessageRecord(
-                message_id="msg:num-new",
-                conversation_id="conv:num-new",
-                provider_message_id="num-new",
-                role="user",
-                text="mixedformat delta",
-                timestamp="1706400000.0",  # 2024-01-28 - after cutoff
-                content_hash="hash8",
-                provider_meta=None,
-            ),
-        ],
+        conversation=make_conversation("conv:num-new", title="Numeric Test"),
+        messages=[make_message("msg:num-new", "conv:num-new", text="mixedformat delta", timestamp="1706400000.0")],
         attachments=[],
     )
 
     # Create conversation with old ISO timestamp (before cutoff)
     bundle_old = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id="conv:old",
-            provider_name="test",
-            provider_conversation_id="old-conv",
-            title="Old Test",
-            created_at=None,
-            updated_at=None,
-            content_hash="hash-old",
-            provider_meta=None,
-        ),
-        messages=[
-            MessageRecord(
-                message_id="msg:iso-old",
-                conversation_id="conv:old",
-                provider_message_id="iso-old",
-                role="user",
-                text="mixedformat alpha",
-                timestamp="2024-01-05T12:00:00",  # ISO - before cutoff
-                content_hash="hash5",
-                provider_meta=None,
-            ),
-        ],
+        conversation=make_conversation("conv:old", title="Old Test"),
+        messages=[make_message("msg:iso-old", "conv:old", text="mixedformat alpha", timestamp="2024-01-05T12:00:00")],
         attachments=[],
     )
 
@@ -387,37 +233,10 @@ def test_search_since_boundary_condition(workspace_env, storage_repository):
     # Before: 2024-01-10 (definitely before, any timezone)
     # After: 2024-01-20 (definitely after, any timezone)
     bundle = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id="conv:boundary",
-            provider_name="test",
-            provider_conversation_id="boundary-conv",
-            title="Boundary Test",
-            created_at=None,
-            updated_at=None,
-            content_hash="hash-boundary",
-            provider_meta=None,
-        ),
+        conversation=make_conversation("conv:boundary", title="Boundary Test"),
         messages=[
-            MessageRecord(
-                message_id="msg:after-cutoff",
-                conversation_id="conv:boundary",
-                provider_message_id="after",
-                role="user",
-                text="boundary after message",
-                timestamp="2024-01-20T12:00:00",  # Clearly after cutoff
-                content_hash="hash9",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="msg:before-cutoff",
-                conversation_id="conv:boundary",
-                provider_message_id="before",
-                role="user",
-                text="boundary before message",
-                timestamp="2024-01-10T12:00:00",  # Clearly before cutoff
-                content_hash="hash10",
-                provider_meta=None,
-            ),
+            make_message("msg:after-cutoff", "conv:boundary", text="boundary after message", timestamp="2024-01-20T12:00:00"),
+            make_message("msg:before-cutoff", "conv:boundary", text="boundary before message", timestamp="2024-01-10T12:00:00"),
         ],
         attachments=[],
     )

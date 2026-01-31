@@ -266,6 +266,7 @@ def make_message(
 
     Usage:
         msg = make_message("m1", role="assistant", text="Reply")
+        msg = make_message("m1", content_hash="explicit-hash")  # Override hash
     """
     return MessageRecord(
         message_id=message_id,
@@ -273,7 +274,7 @@ def make_message(
         role=role,
         text=text,
         timestamp=timestamp or datetime.now(timezone.utc).isoformat(),
-        content_hash=uuid4().hex[:16],
+        content_hash=kwargs.pop("content_hash", uuid4().hex[:16]),
         **kwargs,
     )
 
