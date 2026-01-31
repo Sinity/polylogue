@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from polylogue.storage.backends import SQLiteBackend
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from tests.helpers import make_attachment, make_conversation, make_message
 
 
 @pytest.fixture
@@ -22,15 +21,7 @@ def backend(tmp_path: Path) -> SQLiteBackend:
 
 def test_backend_save_and_get_conversation(backend: SQLiteBackend) -> None:
     """Test saving and retrieving a conversation."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test Conversation",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash123",
-    )
+    conv = make_conversation("conv1", title="Test Conversation", content_hash="hash123")
 
     backend.begin()
     backend.save_conversation(conv)
@@ -45,33 +36,9 @@ def test_backend_save_and_get_conversation(backend: SQLiteBackend) -> None:
 
 def test_backend_save_and_get_messages(backend: SQLiteBackend) -> None:
     """Test saving and retrieving messages."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash123",
-    )
-
-    msg1 = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="Hello",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="msghash1",
-    )
-
-    msg2 = MessageRecord(
-        message_id="msg2",
-        conversation_id="conv1",
-        role="assistant",
-        text="Hi there",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="msghash2",
-    )
+    conv = make_conversation("conv1", title="Test")
+    msg1 = make_message("msg1", "conv1", text="Hello")
+    msg2 = make_message("msg2", "conv1", role="assistant", text="Hi there")
 
     backend.begin()
     backend.save_conversation(conv)
@@ -88,27 +55,8 @@ def test_backend_save_and_get_messages(backend: SQLiteBackend) -> None:
 
 def test_backend_list_conversations(backend: SQLiteBackend) -> None:
     """Test listing conversations."""
-    conv1 = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="First",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        content_hash="hash1",
-        provider_meta={"source": "claude"},
-    )
-
-    conv2 = ConversationRecord(
-        conversation_id="conv2",
-        provider_name="test",
-        provider_conversation_id="ext-conv2",
-        title="Second",
-        created_at="2024-01-02T00:00:00Z",
-        updated_at="2024-01-02T00:00:00Z",
-        content_hash="hash2",
-        provider_meta={"source": "chatgpt"},
-    )
+    conv1 = make_conversation("conv1", title="First", created_at="2024-01-01T00:00:00Z", updated_at="2024-01-01T00:00:00Z", provider_meta={"source": "claude"})
+    conv2 = make_conversation("conv2", title="Second", created_at="2024-01-02T00:00:00Z", updated_at="2024-01-02T00:00:00Z", provider_meta={"source": "chatgpt"})
 
     backend.begin()
     backend.save_conversation(conv1)
@@ -127,32 +75,9 @@ def test_backend_list_conversations(backend: SQLiteBackend) -> None:
 
 def test_backend_save_attachments(backend: SQLiteBackend) -> None:
     """Test saving and retrieving attachments."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash123",
-    )
-
-    msg = MessageRecord(
-        message_id="msg1",
-        conversation_id="conv1",
-        role="user",
-        text="Hello",
-        timestamp=datetime.now(timezone.utc).isoformat(),
-        content_hash="msghash1",
-    )
-
-    att = AttachmentRecord(
-        attachment_id="att1",
-        conversation_id="conv1",
-        message_id="msg1",
-        mime_type="image/png",
-        size_bytes=1024,
-    )
+    conv = make_conversation("conv1", title="Test")
+    msg = make_message("msg1", "conv1", text="Hello")
+    att = make_attachment("att1", "conv1", "msg1", mime_type="image/png", size_bytes=1024)
 
     backend.begin()
     backend.save_conversation(conv)
@@ -169,15 +94,7 @@ def test_backend_save_attachments(backend: SQLiteBackend) -> None:
 
 def test_backend_transaction_rollback(backend: SQLiteBackend) -> None:
     """Test transaction rollback."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash123",
-    )
+    conv = make_conversation("conv1", title="Test")
 
     backend.begin()
     backend.save_conversation(conv)
@@ -190,15 +107,7 @@ def test_backend_transaction_rollback(backend: SQLiteBackend) -> None:
 
 def test_backend_transaction_context_manager(backend: SQLiteBackend) -> None:
     """Test using the transaction context manager."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash123",
-    )
+    conv = make_conversation("conv1", title="Test")
 
     with backend.transaction():
         backend.save_conversation(conv)
@@ -211,15 +120,7 @@ def test_backend_transaction_context_manager(backend: SQLiteBackend) -> None:
 
 def test_backend_transaction_context_manager_exception(backend: SQLiteBackend) -> None:
     """Test transaction context manager rolls back on exception."""
-    conv = ConversationRecord(
-        conversation_id="conv1",
-        provider_name="test",
-        provider_conversation_id="ext-conv1",
-        title="Test",
-        created_at=datetime.now(timezone.utc).isoformat(),
-        updated_at=datetime.now(timezone.utc).isoformat(),
-        content_hash="hash123",
-    )
+    conv = make_conversation("conv1", title="Test")
 
     with pytest.raises(ValueError), backend.transaction():
         backend.save_conversation(conv)
