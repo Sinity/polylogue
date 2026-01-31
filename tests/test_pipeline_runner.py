@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import json
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from uuid import uuid4
 
 from polylogue.config import Config, Source
 from polylogue.storage.store import PlanResult
@@ -21,7 +19,8 @@ from polylogue.pipeline.runner import (
     run_sources,
 )
 from polylogue.storage.backends.sqlite import open_connection
-from polylogue.storage.store import ConversationRecord, store_records
+from polylogue.storage.store import store_records
+from tests.helpers import make_conversation
 
 
 class TestRenderFailureTracking:
@@ -393,15 +392,7 @@ class TestAllConversationIds:
         # Create test conversations
         with open_connection(db_path) as conn:
             for i in range(3):
-                conv = ConversationRecord(
-                    conversation_id=f"conv-{i}",
-                    provider_name="test",
-                    provider_conversation_id=f"ext-{i}",
-                    title=f"Conversation {i}",
-                    created_at=datetime.now(timezone.utc).isoformat(),
-                    updated_at=datetime.now(timezone.utc).isoformat(),
-                    content_hash=uuid4().hex,
-                )
+                conv = make_conversation(f"conv-{i}", title=f"Conversation {i}")
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
         ids = _all_conversation_ids()
@@ -417,15 +408,7 @@ class TestAllConversationIds:
         with open_connection(db_path) as conn:
             # Create conversations with different providers
             for provider, conv_id in [("chatgpt", "chatgpt-1"), ("claude", "claude-1"), ("chatgpt", "chatgpt-2")]:
-                conv = ConversationRecord(
-                    conversation_id=conv_id,
-                    provider_name=provider,
-                    provider_conversation_id=f"ext-{conv_id}",
-                    title=f"Conv {conv_id}",
-                    created_at=datetime.now(timezone.utc).isoformat(),
-                    updated_at=datetime.now(timezone.utc).isoformat(),
-                    content_hash=uuid4().hex,
-                )
+                conv = make_conversation(conv_id, provider_name=provider, title=f"Conv {conv_id}")
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
         ids = _all_conversation_ids(source_names=["chatgpt"])
@@ -441,16 +424,7 @@ class TestAllConversationIds:
         with open_connection(db_path) as conn:
             # Create conversations with source in provider_meta
             for source, conv_id in [("export-a", "a-1"), ("export-b", "b-1"), ("export-a", "a-2")]:
-                conv = ConversationRecord(
-                    conversation_id=conv_id,
-                    provider_name="chatgpt",  # Same provider
-                    provider_conversation_id=f"ext-{conv_id}",
-                    title=f"Conv {conv_id}",
-                    created_at=datetime.now(timezone.utc).isoformat(),
-                    updated_at=datetime.now(timezone.utc).isoformat(),
-                    content_hash=uuid4().hex,
-                    provider_meta={"source": source},
-                )
+                conv = make_conversation(conv_id, provider_name="chatgpt", title=f"Conv {conv_id}", provider_meta={"source": source})
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
         ids = _all_conversation_ids(source_names=["export-a"])
@@ -465,42 +439,15 @@ class TestAllConversationIds:
 
         with open_connection(db_path) as conn:
             # Create conversation with valid provider_meta
-            conv_valid = ConversationRecord(
-                conversation_id="valid-1",
-                provider_name="test",
-                provider_conversation_id="ext-valid",
-                title="Valid",
-                created_at=datetime.now(timezone.utc).isoformat(),
-                updated_at=datetime.now(timezone.utc).isoformat(),
-                content_hash=uuid4().hex,
-                provider_meta={"source": "my-source"},
-            )
+            conv_valid = make_conversation("valid-1", title="Valid", provider_meta={"source": "my-source"})
             store_records(conversation=conv_valid, messages=[], attachments=[], conn=conn)
 
             # Create conversation with null provider_meta
-            conv_null = ConversationRecord(
-                conversation_id="null-meta-1",
-                provider_name="test",
-                provider_conversation_id="ext-null",
-                title="Null Meta",
-                created_at=datetime.now(timezone.utc).isoformat(),
-                updated_at=datetime.now(timezone.utc).isoformat(),
-                content_hash=uuid4().hex,
-                provider_meta=None,
-            )
+            conv_null = make_conversation("null-meta-1", title="Null Meta", provider_meta=None)
             store_records(conversation=conv_null, messages=[], attachments=[], conn=conn)
 
             # Create conversation with empty dict provider_meta
-            conv_empty = ConversationRecord(
-                conversation_id="empty-meta-1",
-                provider_name="test",
-                provider_conversation_id="ext-empty",
-                title="Empty Meta",
-                created_at=datetime.now(timezone.utc).isoformat(),
-                updated_at=datetime.now(timezone.utc).isoformat(),
-                content_hash=uuid4().hex,
-                provider_meta={},
-            )
+            conv_empty = make_conversation("empty-meta-1", title="Empty Meta", provider_meta={})
             store_records(conversation=conv_empty, messages=[], attachments=[], conn=conn)
 
         # Should not raise and filter correctly
