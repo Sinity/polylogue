@@ -383,20 +383,7 @@ def test_message_id_format():
 # ============================================================================
 
 
-@pytest.fixture
-def test_db(tmp_path):
-    """Create a test database."""
-    db_path = tmp_path / "test.db"
-    with open_connection(db_path):
-        pass
-    return db_path
-
-
-@pytest.fixture
-def test_conn(test_db):
-    """Provide a connection to the test database."""
-    with open_connection(test_db) as conn:
-        yield conn
+# test_db and test_conn fixtures are in conftest.py
 
 
 @pytest.fixture
