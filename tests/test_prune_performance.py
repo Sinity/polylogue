@@ -1,5 +1,7 @@
 """Test performance fix for _prune_attachment_refs N+1 query issue."""
 
+import pytest
+
 from polylogue.ingestion import IngestBundle, ingest_bundle
 from polylogue.storage.backends.sqlite import open_connection
 from tests.helpers import make_attachment, make_conversation, make_message
@@ -9,6 +11,7 @@ def _conversation_record():
     return make_conversation("conv:perf", provider_name="codex", title="Perf Test", created_at=None, updated_at=None, content_hash="hash-perf", provider_meta=None)
 
 
+@pytest.mark.slow
 def test_prune_multiple_attachments_correctly(workspace_env, storage_repository):
     """Verify that pruning multiple attachments works correctly.
 

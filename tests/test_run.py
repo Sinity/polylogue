@@ -6,21 +6,20 @@ import time
 from polylogue.config import Source, default_config, write_config
 from polylogue.pipeline.runner import plan_sources, run_sources
 from polylogue.storage.backends.sqlite import open_connection
+from tests.helpers import (
+    ChatGPTExportBuilder,
+    GenericConversationBuilder,
+    InboxBuilder,
+)
 
 
 def test_plan_and_run_sources(workspace_env, tmp_path):
     inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "id": "conv1",
-        "title": "Test",
-        "messages": [
-            {"id": "m1", "role": "user", "content": "hello"},
-            {"id": "m2", "role": "assistant", "content": "world"},
-        ],
-    }
-    source_file = inbox / "conversation.json"
-    source_file.write_text(json.dumps(payload), encoding="utf-8")
+    source_file = (GenericConversationBuilder("conv1")
+                   .title("Test")
+                   .add_user("hello")
+                   .add_assistant("world")
+                   .write_to(inbox / "conversation.json"))
 
     config = default_config()
     config.sources = [Source(name="codex", path=source_file)]
@@ -36,19 +35,15 @@ def test_plan_and_run_sources(workspace_env, tmp_path):
 
 
 def test_run_sources_filtered(workspace_env, tmp_path):
-    inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    payload_a = {"id": "conv-a", "messages": [{"id": "m1", "role": "user", "content": "hello"}]}
-    payload_b = {"id": "conv-b", "messages": [{"id": "m1", "role": "user", "content": "world"}]}
-    source_a = inbox / "a.json"
-    source_b = inbox / "b.json"
-    source_a.write_text(json.dumps(payload_a), encoding="utf-8")
-    source_b.write_text(json.dumps(payload_b), encoding="utf-8")
+    inbox = (InboxBuilder(tmp_path / "inbox")
+             .add_codex_conversation("conv-a", messages=[("user", "hello")], filename="a.json")
+             .add_codex_conversation("conv-b", messages=[("user", "world")], filename="b.json")
+             .build())
 
     config = default_config()
     config.sources = [
-        Source(name="source-a", path=source_a),
-        Source(name="source-b", path=source_b),
+        Source(name="source-a", path=inbox / "a.json"),
+        Source(name="source-b", path=inbox / "b.json"),
     ]
     write_config(config)
 
@@ -58,23 +53,9 @@ def test_run_sources_filtered(workspace_env, tmp_path):
 
 def test_render_filtered_by_source_meta(workspace_env, tmp_path):
     inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "id": "conv-chatgpt",
-        "mapping": {
-            "node-1": {
-                "id": "node-1",
-                "message": {
-                    "id": "msg-1",
-                    "author": {"role": "user"},
-                    "content": {"parts": ["hello"]},
-                    "create_time": 1,
-                },
-            }
-        },
-    }
-    source_file = inbox / "conversation.json"
-    source_file.write_text(json.dumps(payload), encoding="utf-8")
+    source_file = (ChatGPTExportBuilder("conv-chatgpt")
+                   .add_node("user", "hello")
+                   .write_to(inbox / "conversation.json"))
 
     config = default_config()
     config.sources = [Source(name="inbox", path=source_file)]
@@ -88,16 +69,10 @@ def test_render_filtered_by_source_meta(workspace_env, tmp_path):
 
 def test_run_all_skips_render_when_unchanged(workspace_env, tmp_path):
     inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "id": "conv1",
-        "messages": [
-            {"id": "m1", "role": "user", "content": "hello"},
-            {"id": "m2", "role": "assistant", "content": "world"},
-        ],
-    }
-    source_file = inbox / "conversation.json"
-    source_file.write_text(json.dumps(payload), encoding="utf-8")
+    source_file = (GenericConversationBuilder("conv1")
+                   .add_user("hello")
+                   .add_assistant("world")
+                   .write_to(inbox / "conversation.json"))
 
     config = default_config()
     config.sources = [Source(name="inbox", path=source_file)]
@@ -115,15 +90,12 @@ def test_run_all_skips_render_when_unchanged(workspace_env, tmp_path):
 
 def test_run_rerenders_when_content_changes(workspace_env, tmp_path):
     inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "id": "conv1",
-        "messages": [
-            {"id": "m1", "role": "user", "content": "hello"},
-        ],
-    }
     source_file = inbox / "conversation.json"
-    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    # Initial content
+    (GenericConversationBuilder("conv1")
+     .add_user("hello")
+     .write_to(source_file))
 
     config = default_config()
     config.sources = [Source(name="inbox", path=source_file)]
@@ -134,9 +106,10 @@ def test_run_rerenders_when_content_changes(workspace_env, tmp_path):
     convo_path = next(config.render_root.rglob("conversation.md"))
     first_mtime = convo_path.stat().st_mtime
 
-    # Modify content - content hash difference triggers re-render regardless of fs timestamp
-    payload["messages"][0]["content"] = "hello world"
-    source_file.write_text(json.dumps(payload), encoding="utf-8")
+    # Modify content - content hash difference triggers re-render
+    (GenericConversationBuilder("conv1")
+     .add_user("hello world")
+     .write_to(source_file))
     run_sources(config=config, stage="all")
 
     second_mtime = convo_path.stat().st_mtime
@@ -145,16 +118,13 @@ def test_run_rerenders_when_content_changes(workspace_env, tmp_path):
 
 def test_run_rerenders_when_title_changes(workspace_env, tmp_path):
     inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "id": "conv-title",
-        "title": "Old title",
-        "messages": [
-            {"id": "m1", "role": "user", "content": "hello"},
-        ],
-    }
     source_file = inbox / "conversation.json"
-    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    # Initial content with old title
+    (GenericConversationBuilder("conv-title")
+     .title("Old title")
+     .add_user("hello")
+     .write_to(source_file))
 
     config = default_config()
     config.sources = [Source(name="inbox", path=source_file)]
@@ -164,8 +134,11 @@ def test_run_rerenders_when_title_changes(workspace_env, tmp_path):
     convo_path = next(config.render_root.rglob("conversation.md"))
     original = convo_path.read_text(encoding="utf-8")
 
-    payload["title"] = "New title"
-    source_file.write_text(json.dumps(payload), encoding="utf-8")
+    # Update title
+    (GenericConversationBuilder("conv-title")
+     .title("New title")
+     .add_user("hello")
+     .write_to(source_file))
     run_sources(config=config, stage="all")
 
     updated = convo_path.read_text(encoding="utf-8")
@@ -174,19 +147,15 @@ def test_run_rerenders_when_title_changes(workspace_env, tmp_path):
 
 
 def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch):
-    inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    payload_a = {"id": "conv-a", "messages": [{"id": "m1", "role": "user", "text": "alpha"}]}
-    payload_b = {"id": "conv-b", "messages": [{"id": "m1", "role": "user", "text": "beta"}]}
-    source_a = inbox / "a.json"
-    source_b = inbox / "b.json"
-    source_a.write_text(json.dumps(payload_a), encoding="utf-8")
-    source_b.write_text(json.dumps(payload_b), encoding="utf-8")
+    inbox = (InboxBuilder(tmp_path / "inbox")
+             .add_json_file("a.json", {"id": "conv-a", "messages": [{"id": "m1", "role": "user", "text": "alpha"}]})
+             .add_json_file("b.json", {"id": "conv-b", "messages": [{"id": "m1", "role": "user", "text": "beta"}]})
+             .build())
 
     config = default_config()
     config.sources = [
-        Source(name="source-a", path=source_a),
-        Source(name="source-b", path=source_b),
+        Source(name="source-a", path=inbox / "a.json"),
+        Source(name="source-b", path=inbox / "b.json"),
     ]
     write_config(config)
 
@@ -216,24 +185,10 @@ def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch
 
 
 def test_incremental_index_updates(workspace_env, tmp_path, monkeypatch):
-    inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    payload_a = {
-        "id": "conv-a",
-        "messages": [
-            {"id": "m1", "role": "user", "content": "alpha"},
-        ],
-    }
-    payload_b = {
-        "id": "conv-b",
-        "messages": [
-            {"id": "m1", "role": "user", "content": "beta"},
-        ],
-    }
-    source_a = inbox / "a.json"
-    source_b = inbox / "b.json"
-    source_a.write_text(json.dumps(payload_a), encoding="utf-8")
-    source_b.write_text(json.dumps(payload_b), encoding="utf-8")
+    inbox = (InboxBuilder(tmp_path / "inbox")
+             .add_codex_conversation("conv-a", messages=[("user", "alpha")], filename="a.json")
+             .add_codex_conversation("conv-b", messages=[("user", "beta")], filename="b.json")
+             .build())
 
     config = default_config()
     config.sources = [Source(name="inbox", path=inbox)]
@@ -260,15 +215,9 @@ def test_index_failure_is_nonfatal(workspace_env, monkeypatch):
 
 def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypatch):
     inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "id": "conv1",
-        "messages": [
-            {"id": "m1", "role": "user", "content": "hello"},
-        ],
-    }
-    source_file = inbox / "conversation.json"
-    source_file.write_text(json.dumps(payload), encoding="utf-8")
+    source_file = (GenericConversationBuilder("conv1")
+                   .add_user("hello")
+                   .write_to(inbox / "conversation.json"))
 
     config = default_config()
     config.sources = [Source(name="inbox", path=source_file)]
@@ -296,12 +245,9 @@ def test_latest_run_parses_json_columns(workspace_env, tmp_path):
     from polylogue.pipeline.runner import latest_run
 
     inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "id": "conv-latest-run",
-        "messages": [{"id": "m1", "role": "user", "content": "test"}],
-    }
-    (inbox / "conversation.json").write_text(json.dumps(payload), encoding="utf-8")
+    (GenericConversationBuilder("conv-latest-run")
+     .add_user("test")
+     .write_to(inbox / "conversation.json"))
 
     config = default_config()
     config.sources = [Source(name="inbox", path=inbox)]

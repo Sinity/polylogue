@@ -13,6 +13,7 @@ from datetime import datetime
 import pytest
 
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message, Role
+from tests.helpers import assert_contains_all, assert_not_contains_any
 
 # =============================================================================
 # FIXTURES
@@ -697,10 +698,8 @@ def test_to_text_custom_role_prefixes():
     ]
     conv = Conversation(id="c1", provider="test", messages=messages)
     text = conv.to_text(include_role=False)
-    assert "user:" not in text
-    assert "assistant:" not in text
-    assert "Q" in text
-    assert "A" in text
+    assert_not_contains_any(text, "user:", "assistant:")
+    assert_contains_all(text, "Q", "A")
 
 
 def test_to_text_with_thinking_blocks():

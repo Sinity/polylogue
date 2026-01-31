@@ -27,6 +27,7 @@ CLAUDE_ZIP = RAW_DATA_DIR / "claude/claude-ai-data-2025-10-04-20-52-37-batch-000
 CODY_JSON = Path(__file__).parent / "test-datasets/cody-attachments.json"
 
 
+@pytest.mark.slow
 class TestChatGPTRealData:
     """Test ChatGPT ZIP parser with real export."""
 
@@ -70,6 +71,7 @@ class TestChatGPTRealData:
             assert msg.role in ("user", "assistant", "system", "tool")
 
 
+@pytest.mark.slow
 class TestClaudeRealData:
     """Test Claude ZIP parser with real export."""
 
@@ -108,6 +110,7 @@ class TestClaudeRealData:
         assert len(conv.messages) > 0
 
 
+@pytest.mark.slow
 class TestCodyRealData:
     """Test Cody JSON parser with real file attachments."""
 
@@ -161,6 +164,7 @@ class TestProviderDetection:
         assert detected in ("claude", None)
 
 
+@pytest.mark.slow
 class TestRealDataIntegration:
     """Integration tests using real data end-to-end."""
 
@@ -212,6 +216,7 @@ class TestRealDataIntegration:
             assert len(conv.messages) > 0, "Conversation should have messages"
 
 
+@pytest.mark.slow
 class TestEdgeCases:
     """Test edge cases found in real data."""
 

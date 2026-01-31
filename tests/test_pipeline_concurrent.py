@@ -37,39 +37,11 @@ def test_counts_lock_prevents_lost_updates():
     assert counts["messages"] == expected
 
 
-def test_counts_without_lock_may_lose_updates():
-    """Demonstrate that without lock, updates can be lost (race condition)."""
-    # This test demonstrates the bug we're fixing - updates CAN be lost
-    # without proper synchronization. We run multiple iterations to increase
-    # the chance of observing the race.
-    counts = {"value": 0}
-    iterations = 10000
-    workers = 4
-
-    def increment_without_lock():
-        for _ in range(iterations):
-            # Non-atomic read-modify-write
-            current = counts["value"]
-            counts["value"] = current + 1
-
-    # Run the test multiple times to increase chance of race
-    race_observed = False
-    for _ in range(5):
-        counts["value"] = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
-            futures = [executor.submit(increment_without_lock) for _ in range(workers)]
-            for f in futures:
-                f.result()
-
-        expected = iterations * workers
-        if counts["value"] < expected:
-            race_observed = True
-            break
-
-    # We expect to observe the race condition at least sometimes
-    # If this test fails (no race observed), the test itself may need adjustment
-    # but it doesn't indicate a bug in our fix
-    assert race_observed or counts["value"] == expected, "Test may need more iterations to observe race"
+# NOTE: A test_counts_without_lock_may_lose_updates test was removed here.
+# Race condition demonstration tests are inherently non-deterministic -
+# they "may or may not" observe the race depending on thread scheduling.
+# This provides no value in CI and can cause flaky failures.
+# The fix is validated by test_counts_lock_prevents_lost_updates above.
 
 
 def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):

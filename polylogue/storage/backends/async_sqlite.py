@@ -77,7 +77,8 @@ class AsyncSQLiteBackend:
         # Write lock for serializing write operations
         self._write_lock = asyncio.Lock()
 
-        # Track if schema has been ensured
+        # Lock and flag for schema initialization (prevents race condition)
+        self._schema_lock = asyncio.Lock()
         self._schema_ensured = False
 
     @asynccontextmanager
@@ -85,18 +86,25 @@ class AsyncSQLiteBackend:
         """Get async database connection with schema ensured.
 
         Each connection is independent and can be used concurrently.
+        Uses a lock to prevent race conditions during schema initialization.
         """
+        # Ensure schema is initialized before any operation (uses lock to prevent race)
+        if not self._schema_ensured:
+            async with self._schema_lock:
+                # Double-check after acquiring lock
+                if not self._schema_ensured:
+                    async with aiosqlite.connect(self._db_path, timeout=30) as init_conn:
+                        init_conn.row_factory = aiosqlite.Row
+                        await init_conn.execute("PRAGMA journal_mode=WAL")
+                        await init_conn.execute("PRAGMA busy_timeout = 30000")
+                        await self._ensure_schema(init_conn)
+                    self._schema_ensured = True
+
         async with aiosqlite.connect(self._db_path, timeout=30) as conn:
             conn.row_factory = aiosqlite.Row
             await conn.execute("PRAGMA foreign_keys = ON")
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA busy_timeout = 30000")
-
-            # Ensure schema on first connection
-            if not self._schema_ensured:
-                await self._ensure_schema(conn)
-                self._schema_ensured = True
-
             yield conn
 
     async def _ensure_schema(self, conn: aiosqlite.Connection) -> None:

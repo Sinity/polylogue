@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from polylogue.storage.backends import SQLiteBackend
@@ -11,25 +9,13 @@ from polylogue.storage.repository import StorageRepository
 from tests.helpers import make_attachment, make_conversation, make_message
 
 
-@pytest.fixture
-def backend(tmp_path: Path) -> SQLiteBackend:
-    """Create a SQLite backend for testing."""
-    db_path = tmp_path / "test.db"
-    backend = SQLiteBackend(db_path=db_path)
-    yield backend
-    backend.close()
+# sqlite_backend fixture is in conftest.py
 
 
 @pytest.fixture
-def repository_with_backend(backend: SQLiteBackend) -> StorageRepository:
+def repository_with_backend(sqlite_backend: SQLiteBackend) -> StorageRepository:
     """Create a repository using the backend."""
-    return StorageRepository(backend=backend)
-
-
-@pytest.fixture
-def repository_legacy() -> StorageRepository:
-    """Create a repository without backend (legacy mode)."""
-    return StorageRepository()
+    return StorageRepository(backend=sqlite_backend)
 
 
 def test_repository_save_via_backend(repository_with_backend: StorageRepository) -> None:
@@ -90,6 +76,3 @@ def test_repository_with_attachments_via_backend(repository_with_backend: Storag
     assert counts["conversations"] == 1
     assert counts["messages"] == 1
     assert counts["attachments"] == 1
-
-
-# Test removed: Legacy path no longer exists, all operations go through backend

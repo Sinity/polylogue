@@ -406,28 +406,34 @@ def test_migrate_v3_to_v4_adds_source_name_column(tmp_path):
 
 def test_open_connection_thread_isolation(tmp_path):
     """open_connection() maintains separate connections per thread."""
+    from threading import Barrier
+
     db_path = tmp_path / "test.db"
+    num_threads = 3
 
     # Initialize database with WAL mode first to avoid lock contention during PRAGMA journal_mode
     with open_connection(db_path) as conn:
         conn.execute("SELECT 1").fetchone()
 
+    # Barrier ensures all threads hold connections simultaneously
+    # This prevents Python from reusing memory addresses after GC
+    barrier = Barrier(num_threads)
     connection_ids = []
     errors = []
 
     def thread_func(thread_id: int):
         try:
-            # No delay needed - threading.Thread.join() provides synchronization
             with open_connection(db_path) as conn:
                 conn_id = id(conn)
                 connection_ids.append(conn_id)
-                # Do some work to hold connection
+                # All threads wait here with live connections before proceeding
+                barrier.wait()
+                # Do some work to verify connection is usable
                 conn.execute("SELECT 1").fetchone()
-                # Connection scope automatically manages timing via context manager
         except Exception as e:
             errors.append((thread_id, str(e)))
 
-    threads = [threading.Thread(target=thread_func, args=(i,)) for i in range(3)]
+    threads = [threading.Thread(target=thread_func, args=(i,)) for i in range(num_threads)]
 
     for thread in threads:
         thread.start()
@@ -439,10 +445,11 @@ def test_open_connection_thread_isolation(tmp_path):
     assert len(errors) == 0
 
     # All threads should succeed
-    assert len(connection_ids) == 3
+    assert len(connection_ids) == num_threads
 
     # Each thread should have had a different connection object
-    assert len(set(connection_ids)) == 3
+    # (guaranteed because barrier ensures all connections exist simultaneously)
+    assert len(set(connection_ids)) == num_threads
 
 
 def test_open_connection_creates_parent_directories(tmp_path):
