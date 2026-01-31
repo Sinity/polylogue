@@ -66,6 +66,9 @@ polylogue = ["templates/*.html"]
 addopts = "-ra"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]
 
 [tool.coverage.run]
 source = ["polylogue"]

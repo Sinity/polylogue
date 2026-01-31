@@ -9,6 +9,7 @@ from click.testing import CliRunner
 from polylogue.cli import cli
 from polylogue.config import load_config
 from tests.cli_helpers.cli_subprocess import run_cli, setup_isolated_workspace
+from tests.helpers import GenericConversationBuilder
 
 
 def _write_prompt_file(path: Path, entries: list[dict]) -> None:
@@ -47,17 +48,13 @@ def test_cli_sync_and_search(tmp_path):
     workspace = setup_isolated_workspace(tmp_path)
     env = workspace["env"]
     paths = workspace["paths"]
+    inbox = paths["inbox"]
 
     # Create test conversation in inbox
-    inbox = paths["inbox"]
-    payload = {
-        "id": "conv1",
-        "messages": [
-            {"id": "m1", "role": "user", "content": "hello"},
-            {"id": "m2", "role": "assistant", "content": "world"},
-        ],
-    }
-    (inbox / "conversation.json").write_text(json.dumps(payload), encoding="utf-8")
+    (GenericConversationBuilder("conv1")
+     .add_user("hello")
+     .add_assistant("world")
+     .write_to(inbox / "conversation.json"))
 
     # Run sync via subprocess
     result = run_cli(["--plain", "sync", "--stage", "all"], env=env, cwd=tmp_path)
@@ -114,23 +111,15 @@ def test_cli_search_latest_missing_render(tmp_path):
 
 
 def test_cli_search_open_prefers_html(tmp_path):
-    """Test that --open prefers HTML over markdown.
-
-    Note: We can't directly verify webbrowser.open was called via subprocess,
-    but we can verify the CLI runs without error and creates rendered output.
-    """
+    """Test that --open prefers HTML over markdown."""
     workspace = setup_isolated_workspace(tmp_path)
     env = workspace["env"]
     paths = workspace["paths"]
     inbox = paths["inbox"]
 
-    payload = {
-        "id": "conv-html",
-        "messages": [
-            {"id": "m1", "role": "user", "content": "hello html"},
-        ],
-    }
-    (inbox / "conversation.json").write_text(json.dumps(payload), encoding="utf-8")
+    (GenericConversationBuilder("conv-html")
+     .add_user("hello html")
+     .write_to(inbox / "conversation.json"))
 
     # First sync to create conversation and render
     result = run_cli(["--plain", "sync", "--stage", "all"], env=env, cwd=tmp_path)
@@ -142,7 +131,6 @@ def test_cli_search_open_prefers_html(tmp_path):
     assert html_files, "Expected HTML render to be created"
 
     # Query mode with --open - just verify it doesn't crash
-    # (subprocess can't capture webbrowser.open call)
     search_result = run_cli(["--plain", "hello", "--limit", "1"], env=env, cwd=tmp_path)
     # exit_code 0 = found result, exit_code 2 = no results
     assert search_result.exit_code in (0, 2)
@@ -170,13 +158,9 @@ def test_cli_search_latest_returns_path_without_open(tmp_path):
     inbox = paths["inbox"]
 
     # Create a conversation to ingest
-    payload = {
-        "id": "conv1-abc123",
-        "messages": [
-            {"id": "m1", "role": "user", "content": "test content"},
-        ],
-    }
-    (inbox / "conversation.json").write_text(json.dumps(payload), encoding="utf-8")
+    (GenericConversationBuilder("conv1-abc123")
+     .add_user("test content")
+     .write_to(inbox / "conversation.json"))
 
     # First sync
     sync_result = run_cli(["--plain", "sync", "--stage", "all"], env=env, cwd=tmp_path)
@@ -247,7 +231,7 @@ def test_latest_render_path_handles_deleted_file(tmp_path):
     html_file2 = conv_dir2 / "conversation.html"
     html_file2.write_text("<html>test2</html>", encoding="utf-8")
 
-    # Touch html_file2 to make it the newest (stat order is determined by mtime, not creation time)
+    # Touch html_file2 to make it the newest
     html_file2.touch()
 
     # Delete the first file to simulate race condition
@@ -270,11 +254,9 @@ def test_cli_search_open_missing_render_shows_hint(tmp_path):
     inbox = paths["inbox"]
 
     # Create inbox with a conversation but don't run render
-    payload = {
-        "id": "conv-no-render",
-        "messages": [{"id": "m1", "role": "user", "content": "no render"}],
-    }
-    (inbox / "conversation.json").write_text(json.dumps(payload), encoding="utf-8")
+    (GenericConversationBuilder("conv-no-render")
+     .add_user("no render")
+     .write_to(inbox / "conversation.json"))
 
     # Run ingest stage only, skip render
     result = run_cli(["--plain", "sync", "--stage", "ingest"], env=env, cwd=tmp_path)
@@ -283,7 +265,6 @@ def test_cli_search_open_missing_render_shows_hint(tmp_path):
     # Query mode: search and try to open - render doesn't exist
     search_result = run_cli(["--plain", "render", "--open"], env=env, cwd=tmp_path)
     # Should either succeed with a warning or indicate render/sync not found
-    # The exact behavior depends on implementation, but shouldn't crash
     assert (
         search_result.exit_code == 0
         or search_result.exit_code == 2  # no results

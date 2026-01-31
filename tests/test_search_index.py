@@ -7,27 +7,13 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.index import ensure_index, rebuild_index, update_index_for_conversations
 from polylogue.storage.search import search_messages
 from polylogue.storage.store import store_records
 from tests.helpers import make_conversation, make_message
 
 
-@pytest.fixture
-def test_db_with_schema(tmp_path):
-    """Create a test database with schema applied."""
-    db_path = tmp_path / "test.db"
-    with open_connection(db_path) as conn:
-        pass  # Schema applied automatically
-    return db_path
-
-
-@pytest.fixture
-def test_conn(test_db_with_schema):
-    """Provide a connection to test database."""
-    with open_connection(test_db_with_schema) as conn:
-        yield conn
+# test_db and test_conn fixtures are in conftest.py
 
 
 @pytest.fixture
