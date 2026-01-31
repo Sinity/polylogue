@@ -1,171 +1,62 @@
 """Tests for polylogue.cli.editor module security."""
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from polylogue.cli.editor import validate_command
+
+# =============================================================================
+# Parametrized test cases for command validation
+# =============================================================================
+
+UNSAFE_COMMAND_CASES = [
+    ("vim; rm -rf /tmp/pwned", "unsafe shell metacharacters", "semicolon injection"),
+    ("vim | cat /etc/passwd", "unsafe shell metacharacters", "pipe injection"),
+    ("vim `whoami`", "unsafe shell metacharacters", "backtick injection"),
+    ("vim $(cat /etc/passwd)", "unsafe shell metacharacters", "dollar paren injection"),
+    ("vim & malicious_command", "unsafe shell metacharacters", "ampersand background"),
+    ("vim && rm -rf /", "unsafe shell metacharacters", "double ampersand chain"),
+    ("vim || evil_command", "unsafe shell metacharacters", "double pipe fallback"),
+    ("vim > /tmp/output", "unsafe shell metacharacters", "redirect out"),
+    ("vim < /tmp/input", "unsafe shell metacharacters", "redirect in"),
+    ("vim {/tmp/a,/tmp/b}", "unsafe shell metacharacters", "brace expansion"),
+    ("vim /tmp/[abc]", "unsafe shell metacharacters", "bracket glob"),
+    ("vim \\n", "unsafe shell metacharacters", "backslash escape"),
+    ("vim !!", "unsafe shell metacharacters", "history expansion"),
+    ("", "cannot be empty", "empty string"),
+    ("   ", "cannot be empty", "whitespace only"),
+]
+
+SAFE_COMMAND_CASES = [
+    ("vim", "simple vim"),
+    ("/usr/bin/vim", "vim with path"),
+    ("vim -u NONE", "vim with options"),
+    ("nano", "nano editor"),
+    ("nvim", "neovim"),
+    ("code --wait", "vscode with wait"),
+    ("emacs -nw", "emacs terminal mode"),
+]
+
 
 class TestEditorCommandValidation:
-    """Tests for editor command validation."""
+    """Parametrized tests for editor command validation."""
 
-    def test_validate_command_rejects_semicolon(self):
-        """Command with semicolon should be rejected."""
-        from polylogue.cli.editor import validate_command
+    @pytest.mark.parametrize("command,expected_error,description", UNSAFE_COMMAND_CASES)
+    def test_validate_command_rejects_unsafe(self, command: str, expected_error: str, description: str):
+        """Command with unsafe patterns should be rejected."""
+        with pytest.raises(ValueError, match=expected_error):
+            validate_command(command)
 
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim; rm -rf /tmp/pwned")
-
-    def test_validate_command_rejects_pipe(self):
-        """Command with pipe should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim | cat /etc/passwd")
-
-    def test_validate_command_rejects_backticks(self):
-        """Command with backticks should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim `whoami`")
-
-    def test_validate_command_rejects_dollar_parens(self):
-        """Command with $() should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim $(cat /etc/passwd)")
-
-    def test_validate_command_rejects_ampersand(self):
-        """Command with ampersand should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim & malicious_command")
-
-    def test_validate_command_rejects_double_ampersand(self):
-        """Command with && should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim && rm -rf /")
-
-    def test_validate_command_rejects_double_pipe(self):
-        """Command with || should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim || evil_command")
-
-    def test_validate_command_rejects_redirect_out(self):
-        """Command with > redirect should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim > /tmp/output")
-
-    def test_validate_command_rejects_redirect_in(self):
-        """Command with < redirect should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim < /tmp/input")
-
-    def test_validate_command_rejects_brace_expansion(self):
-        """Command with braces should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim {/tmp/a,/tmp/b}")
-
-    def test_validate_command_rejects_bracket_glob(self):
-        """Command with brackets should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim /tmp/[abc]")
-
-    def test_validate_command_rejects_backslash_escape(self):
-        """Command with backslash should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim \\n")
-
-    def test_validate_command_rejects_exclamation(self):
-        """Command with exclamation (history expansion) should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="unsafe shell metacharacters"):
-            validate_command("vim !!")
-
-    def test_validate_command_rejects_empty_string(self):
-        """Empty command should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="cannot be empty"):
-            validate_command("")
-
-    def test_validate_command_rejects_whitespace_only(self):
-        """Whitespace-only command should be rejected."""
-        from polylogue.cli.editor import validate_command
-
-        with pytest.raises(ValueError, match="cannot be empty"):
-            validate_command("   ")
-
-    def test_validate_command_allows_simple_editor(self):
-        """Simple editor name should be allowed."""
-        from polylogue.cli.editor import validate_command
-
+    @pytest.mark.parametrize("command,description", SAFE_COMMAND_CASES)
+    def test_validate_command_allows_safe(self, command: str, description: str):
+        """Safe editor command should be allowed."""
         # Should not raise
-        validate_command("vim")
-
-    def test_validate_command_allows_editor_with_path(self):
-        """Editor with path should be allowed."""
-        from polylogue.cli.editor import validate_command
-
-        # Should not raise
-        validate_command("/usr/bin/vim")
-
-    def test_validate_command_allows_editor_with_options(self):
-        """Editor with safe options should be allowed."""
-        from polylogue.cli.editor import validate_command
-
-        # Should not raise
-        validate_command("vim -u NONE")
-
-    def test_validate_command_allows_nano(self):
-        """nano editor should be allowed."""
-        from polylogue.cli.editor import validate_command
-
-        # Should not raise
-        validate_command("nano")
-
-    def test_validate_command_allows_nvim(self):
-        """nvim editor should be allowed."""
-        from polylogue.cli.editor import validate_command
-
-        # Should not raise
-        validate_command("nvim")
-
-    def test_validate_command_allows_vscode(self):
-        """VS Code with --wait should be allowed."""
-        from polylogue.cli.editor import validate_command
-
-        # Should not raise
-        validate_command("code --wait")
-
-    def test_validate_command_allows_emacs(self):
-        """emacs with options should be allowed."""
-        from polylogue.cli.editor import validate_command
-
-        # Should not raise
-        validate_command("emacs -nw")
+        validate_command(command)
 
     def test_validate_command_custom_context(self):
         """Custom context should appear in error message."""
-        from polylogue.cli.editor import validate_command
-
         with pytest.raises(ValueError, match="CUSTOM_VAR"):
             validate_command("vim; evil", context="$CUSTOM_VAR")
 
@@ -259,8 +150,6 @@ class TestOpenInBrowserSecurity:
 
     def test_open_in_browser_allows_safe_browser(self, tmp_path: Path, monkeypatch):
         """open_in_browser should allow safe POLYLOGUE_BROWSER without throwing."""
-        from unittest.mock import MagicMock, patch
-
         from polylogue.cli.editor import open_in_browser
 
         monkeypatch.setenv("POLYLOGUE_BROWSER", "firefox")
