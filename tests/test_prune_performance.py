@@ -2,20 +2,11 @@
 
 from polylogue.ingestion import IngestBundle, ingest_bundle
 from polylogue.storage.backends.sqlite import open_connection
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from tests.helpers import make_attachment, make_conversation, make_message
 
 
 def _conversation_record():
-    return ConversationRecord(
-        conversation_id="conv:perf",
-        provider_name="codex",
-        provider_conversation_id="conv:perf",
-        title="Perf Test",
-        created_at=None,
-        updated_at=None,
-        content_hash="hash-perf",
-        provider_meta=None,
-    )
+    return make_conversation("conv:perf", provider_name="codex", title="Perf Test", created_at=None, updated_at=None, content_hash="hash-perf", provider_meta=None)
 
 
 def test_prune_multiple_attachments_correctly(workspace_env, storage_repository):
@@ -26,31 +17,13 @@ def test_prune_multiple_attachments_correctly(workspace_env, storage_repository)
     """
     # Create initial conversation with 10 attachments
     attachments = [
-        AttachmentRecord(
-            attachment_id=f"att-{i}",
-            conversation_id="conv:perf",
-            message_id="msg:perf",
-            mime_type="text/plain",
-            size_bytes=10,
-            provider_meta=None,
-        )
+        make_attachment(f"att-{i}", "conv:perf", "msg:perf", mime_type="text/plain", size_bytes=10, provider_meta=None)
         for i in range(10)
     ]
 
     bundle = IngestBundle(
         conversation=_conversation_record(),
-        messages=[
-            MessageRecord(
-                message_id="msg:perf",
-                conversation_id="conv:perf",
-                provider_message_id="msg:perf",
-                role="user",
-                text="hello",
-                timestamp="1",
-                content_hash="msg:perf",
-                provider_meta=None,
-            )
-        ],
+        messages=[make_message("msg:perf", "conv:perf", text="hello", timestamp="1", content_hash="msg:perf", provider_meta=None)],
         attachments=attachments,
     )
     ingest_bundle(bundle, repository=storage_repository)
@@ -71,39 +44,14 @@ def test_prune_multiple_attachments_correctly(workspace_env, storage_repository)
 
     # Now re-ingest with only 2 attachments, which should prune 8
     new_attachments = [
-        AttachmentRecord(
-            attachment_id="att-0",
-            conversation_id="conv:perf",
-            message_id="msg:perf",
-            mime_type="text/plain",
-            size_bytes=10,
-            provider_meta=None,
-        ),
-        AttachmentRecord(
-            attachment_id="att-1",
-            conversation_id="conv:perf",
-            message_id="msg:perf",
-            mime_type="text/plain",
-            size_bytes=10,
-            provider_meta=None,
-        ),
+        make_attachment("att-0", "conv:perf", "msg:perf", mime_type="text/plain", size_bytes=10, provider_meta=None),
+        make_attachment("att-1", "conv:perf", "msg:perf", mime_type="text/plain", size_bytes=10, provider_meta=None),
     ]
 
     ingest_bundle(
         IngestBundle(
             conversation=_conversation_record(),
-            messages=[
-                MessageRecord(
-                    message_id="msg:perf",
-                    conversation_id="conv:perf",
-                    provider_message_id="msg:perf",
-                    role="user",
-                    text="hello",
-                    timestamp="1",
-                    content_hash="msg:perf",
-                    provider_meta=None,
-                )
-            ],
+            messages=[make_message("msg:perf", "conv:perf", text="hello", timestamp="1", content_hash="msg:perf", provider_meta=None)],
             attachments=new_attachments,
         ),
         repository=storage_repository,

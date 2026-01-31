@@ -1,7 +1,6 @@
 """Tests for search provider factory functions and FTS5 provider."""
 
-from unittest.mock import MagicMock, call, patch
-import uuid
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -9,7 +8,7 @@ from polylogue.config import Config, IndexConfig
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.qdrant import QdrantProvider
-from polylogue.storage.store import ConversationRecord, MessageRecord
+from tests.helpers import make_conversation, make_message
 
 
 class TestCreateVectorProvider:
@@ -129,38 +128,10 @@ class TestFTS5Provider:
     @pytest.fixture
     def populated_fts(self, workspace_env, storage_repository, fts_provider):
         """FTS provider with indexed test data."""
-        # Create a conversation with messages
-        conv = ConversationRecord(
-            conversation_id="fts-conv-1",
-            provider_name="claude",
-            provider_conversation_id="pfts-1",
-            title="FTS Test",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="ftshash1",
-            provider_meta={"source": "inbox"},
-        )
+        conv = make_conversation("fts-conv-1", provider_name="claude", title="FTS Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
         msgs = [
-            MessageRecord(
-                message_id="fts-msg-1",
-                conversation_id="fts-conv-1",
-                provider_message_id="ftsp-1",
-                role="user",
-                text="How do I implement quicksort in Python?",
-                timestamp="1000",
-                content_hash="ftsm1",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="fts-msg-2",
-                conversation_id="fts-conv-1",
-                provider_message_id="ftsp-2",
-                role="assistant",
-                text="Quicksort is a divide-and-conquer algorithm for sorting",
-                timestamp="1001",
-                content_hash="ftsm2",
-                provider_meta=None,
-            ),
+            make_message("fts-msg-1", "fts-conv-1", text="How do I implement quicksort in Python?", timestamp="1000"),
+            make_message("fts-msg-2", "fts-conv-1", role="assistant", text="Quicksort is a divide-and-conquer algorithm for sorting", timestamp="1001"),
         ]
         storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
@@ -183,16 +154,7 @@ class TestFTS5Provider:
             pass
 
         # Index with actual message to ensure table creation
-        conv = ConversationRecord(
-            conversation_id="ensure-conv",
-            provider_name="test",
-            provider_conversation_id="pens",
-            title="Ensure Test",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="enshash",
-            provider_meta={"source": "inbox"},
-        )
+        conv = make_conversation("ensure-conv", title="Ensure Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
         # First save the conversation so provider_name lookup works
         from polylogue.storage.backends.sqlite import SQLiteBackend
 
@@ -201,18 +163,7 @@ class TestFTS5Provider:
         backend.save_conversation(conv)
         backend.commit()
 
-        msgs = [
-            MessageRecord(
-                message_id="ens-msg",
-                conversation_id="ensure-conv",
-                provider_message_id="ens-p",
-                role="user",
-                text="Test message",
-                timestamp="1000",
-                content_hash="ens-mhash",
-                provider_meta=None,
-            ),
-        ]
+        msgs = [make_message("ens-msg", "ensure-conv", timestamp="1000")]
 
         fts_provider.index(msgs)
 
@@ -223,28 +174,8 @@ class TestFTS5Provider:
 
     def test_ensure_index_idempotent(self, workspace_env, fts_provider, storage_repository):
         """Calling index multiple times is safe (idempotent)."""
-        conv = ConversationRecord(
-            conversation_id="idem-conv",
-            provider_name="test",
-            provider_conversation_id="pidem",
-            title="Idempotent Test",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="idemhash",
-            provider_meta={"source": "inbox"},
-        )
-        msgs = [
-            MessageRecord(
-                message_id="idem-msg",
-                conversation_id="idem-conv",
-                provider_message_id="idem-p",
-                role="user",
-                text="Idempotent message",
-                timestamp="1000",
-                content_hash="idem-mhash",
-                provider_meta=None,
-            ),
-        ]
+        conv = make_conversation("idem-conv", title="Idempotent Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
+        msgs = [make_message("idem-msg", "idem-conv", text="Idempotent message", timestamp="1000")]
         storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
         # Index twice - should not error or duplicate
@@ -258,30 +189,8 @@ class TestFTS5Provider:
 
     def test_index_deletes_old_entries(self, workspace_env, fts_provider, storage_repository):
         """Incremental indexing removes old entries before inserting."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-
-        conv = ConversationRecord(
-            conversation_id="incr-conv",
-            provider_name="test",
-            provider_conversation_id="pincr",
-            title="Incremental Test",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="incrhash",
-            provider_meta={"source": "inbox"},
-        )
-        msgs_v1 = [
-            MessageRecord(
-                message_id="incr-msg-1",
-                conversation_id="incr-conv",
-                provider_message_id="incr-p-1",
-                role="user",
-                text="Original content about apples",
-                timestamp="1000",
-                content_hash="incr-mhash-1",
-                provider_meta=None,
-            ),
-        ]
+        conv = make_conversation("incr-conv", title="Incremental Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
+        msgs_v1 = [make_message("incr-msg-1", "incr-conv", text="Original content about apples", timestamp="1000")]
         storage_repository.save_conversation(conversation=conv, messages=msgs_v1, attachments=[])
         fts_provider.index(msgs_v1)
 
@@ -290,18 +199,7 @@ class TestFTS5Provider:
         assert len(results) == 1
 
         # Re-index with different content
-        msgs_v2 = [
-            MessageRecord(
-                message_id="incr-msg-1",
-                conversation_id="incr-conv",
-                provider_message_id="incr-p-1",
-                role="user",
-                text="Updated content about oranges",
-                timestamp="1000",
-                content_hash="incr-mhash-2",
-                provider_meta=None,
-            ),
-        ]
+        msgs_v2 = [make_message("incr-msg-1", "incr-conv", text="Updated content about oranges", timestamp="1000")]
         fts_provider.index(msgs_v2)
 
         # "apples" should no longer be found
@@ -314,39 +212,10 @@ class TestFTS5Provider:
 
     def test_index_skips_empty_text(self, workspace_env, fts_provider, storage_repository):
         """Messages with empty text are not indexed."""
-        db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-
-        conv = ConversationRecord(
-            conversation_id="skip-conv",
-            provider_name="test",
-            provider_conversation_id="pskip",
-            title="Skip Test",
-            created_at="1000",
-            updated_at="1000",
-            content_hash="skiphash",
-            provider_meta={"source": "inbox"},
-        )
+        conv = make_conversation("skip-conv", title="Skip Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
         msgs = [
-            MessageRecord(
-                message_id="skip-msg-1",
-                conversation_id="skip-conv",
-                provider_message_id="skip-p-1",
-                role="user",
-                text="",  # Empty text
-                timestamp="1000",
-                content_hash="skip-mhash-1",
-                provider_meta=None,
-            ),
-            MessageRecord(
-                message_id="skip-msg-2",
-                conversation_id="skip-conv",
-                provider_message_id="skip-p-2",
-                role="assistant",
-                text="This has content",
-                timestamp="1001",
-                content_hash="skip-mhash-2",
-                provider_meta=None,
-            ),
+            make_message("skip-msg-1", "skip-conv", text="", timestamp="1000"),  # Empty text
+            make_message("skip-msg-2", "skip-conv", role="assistant", text="This has content", timestamp="1001"),
         ]
         storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
         fts_provider.index(msgs)
@@ -410,19 +279,7 @@ class TestQdrantProviderChunking:
     def test_upsert_chunks_large_request(self, provider):
         """Verify that upsert chunks messages into batches of 64."""
         # Create 150 messages (should be 3 chunks: 64, 64, 22)
-        messages = [
-            MessageRecord(
-                message_id=f"msg-{i}",
-                conversation_id="conv-1",
-                provider_message_id=None,
-                role="user",
-                text=f"Message {i}",
-                timestamp="1000",
-                content_hash="hash",
-                provider_meta=None,
-            )
-            for i in range(150)
-        ]
+        messages = [make_message(f"msg-{i}", "conv-1", text=f"Message {i}", timestamp="1000") for i in range(150)]
 
         # Mock embeddings to return one mock vector per input text
         with patch.object(provider, "_get_embeddings") as mock_embed:
@@ -444,19 +301,7 @@ class TestQdrantProviderChunking:
 
     def test_upsert_handles_single_chunk(self, provider):
         """Verify upsert handling for small lists (<64)."""
-        messages = [
-            MessageRecord(
-                message_id=f"msg-{i}",
-                conversation_id="conv-1",
-                provider_message_id=None,
-                role="user",
-                text=f"Message {i}",
-                timestamp="1000",
-                content_hash="hash",
-                provider_meta=None,
-            )
-            for i in range(10)
-        ]
+        messages = [make_message(f"msg-{i}", "conv-1", text=f"Message {i}", timestamp="1000") for i in range(10)]
 
         with patch.object(provider, "_get_embeddings") as mock_embed:
             mock_embed.return_value = [[0.1] * 1024] * 10

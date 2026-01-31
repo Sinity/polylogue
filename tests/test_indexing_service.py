@@ -5,22 +5,18 @@ from __future__ import annotations
 from polylogue.config import Config
 from polylogue.pipeline.services.indexing import IndexService
 from polylogue.storage.backends.sqlite import open_connection
-from polylogue.storage.store import ConversationRecord, MessageRecord
+from tests.helpers import make_conversation, make_message
 
 
 class TestIndexService:
     """Test IndexService functionality."""
 
-    def test_update_index_empty_list(self, tmp_path, monkeypatch):
+    def test_update_index_empty_list(self, workspace_env):
         """Update index with empty conversation list."""
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
-
         with open_connection(None) as conn:
             config = Config(
-                archive_root=tmp_path / "archive",
-                render_root=tmp_path / "render",
+                archive_root=workspace_env["archive_root"],
+                render_root=workspace_env["archive_root"] / "render",
                 sources=[],
             )
             service = IndexService(config, conn)
@@ -28,33 +24,26 @@ class TestIndexService:
             result = service.update_index([])
             assert result is True
 
-    def test_update_index_with_conversations(self, tmp_path, monkeypatch):
+    def test_update_index_with_conversations(self, workspace_env):
         """Update index with actual conversations."""
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
-
         # Use isolated DB connection context for both save and index
         with open_connection(None) as conn:
-            # Create a conversation directly using the connection
-            conv = ConversationRecord(
-                conversation_id="conv1",
+            # Create test data using helpers
+            conv = make_conversation(
+                "conv1",
                 provider_name="chatgpt",
-                provider_conversation_id="chat123",
                 title="Test",
+                content_hash="hash123",
                 created_at=None,
                 updated_at=None,
-                content_hash="hash123",
                 provider_meta=None,
             )
-            msg = MessageRecord(
-                message_id="msg1",
-                conversation_id="conv1",
-                provider_message_id=None,
-                role="user",
+            msg = make_message(
+                "msg1",
+                "conv1",
                 text="Hello world",
-                timestamp=None,
                 content_hash="msghash1",
+                timestamp=None,
                 provider_meta=None,
             )
             # Insert directly using connection
@@ -76,8 +65,8 @@ class TestIndexService:
             conn.commit()
 
             config = Config(
-                archive_root=tmp_path / "archive",
-                render_root=tmp_path / "render",
+                archive_root=workspace_env["archive_root"],
+                render_root=workspace_env["archive_root"] / "render",
                 sources=[],
             )
             service = IndexService(config, conn=conn)
@@ -85,18 +74,14 @@ class TestIndexService:
             result = service.update_index(["conv1"])
             assert result is True
 
-    def test_rebuild_index_success(self, tmp_path, monkeypatch):
+    def test_rebuild_index_success(self, workspace_env):
         """Rebuild index from scratch."""
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
-
         with open_connection(None):
             pass  # Initialize DB
 
         config = Config(
-            archive_root=tmp_path / "archive",
-            render_root=tmp_path / "render",
+            archive_root=workspace_env["archive_root"],
+            render_root=workspace_env["archive_root"] / "render",
             sources=[],
         )
         service = IndexService(config, conn=None)
@@ -104,16 +89,12 @@ class TestIndexService:
         result = service.rebuild_index()
         assert result is True
 
-    def test_ensure_index_exists_success(self, tmp_path, monkeypatch):
+    def test_ensure_index_exists_success(self, workspace_env):
         """Ensure FTS5 index exists."""
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
-
         with open_connection(None) as conn:
             config = Config(
-                archive_root=tmp_path / "archive",
-                render_root=tmp_path / "render",
+                archive_root=workspace_env["archive_root"],
+                render_root=workspace_env["archive_root"] / "render",
                 sources=[],
             )
             service = IndexService(config, conn)
@@ -121,16 +102,12 @@ class TestIndexService:
             result = service.ensure_index_exists()
             assert result is True
 
-    def test_get_index_status(self, tmp_path, monkeypatch):
+    def test_get_index_status(self, workspace_env):
         """Get index status."""
-        state_dir = tmp_path / "state"
-        state_dir.mkdir()
-        monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
-
         with open_connection(None) as conn:
             config = Config(
-                archive_root=tmp_path / "archive",
-                render_root=tmp_path / "render",
+                archive_root=workspace_env["archive_root"],
+                render_root=workspace_env["archive_root"] / "render",
                 sources=[],
             )
             service = IndexService(config, conn)

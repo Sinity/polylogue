@@ -9,12 +9,9 @@ from __future__ import annotations
 import pytest
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
-from uuid import uuid4
 
-from polylogue.storage.backends.sqlite import SCHEMA_VERSION, connection_context, open_connection
+from polylogue.storage.backends.sqlite import SCHEMA_VERSION, open_connection
 from polylogue.storage.store import (
-    AttachmentRecord,
     ConversationRecord,
     MessageRecord,
     _make_ref_id,
@@ -216,18 +213,7 @@ class TestStoreConversationUpsert:
         """store_records() handles multiple conversations independently."""
         db_path = tmp_path / "test.db"
 
-        conversations = [
-            ConversationRecord(
-                conversation_id=f"c{i}",
-                provider_name="test",
-                provider_conversation_id=f"ext{i}",
-                title=f"Conversation {i}",
-                created_at=datetime.now(timezone.utc).isoformat(),
-                updated_at=datetime.now(timezone.utc).isoformat(),
-                content_hash=f"hash{i}",
-            )
-            for i in range(5)
-        ]
+        conversations = [make_conversation(f"c{i}", title=f"Conversation {i}", content_hash=f"hash{i}") for i in range(5)]
 
         with open_connection(db_path) as conn:
             for conv in conversations:
@@ -348,13 +334,7 @@ class TestAttachmentPruning:
         msg1 = make_message("m1", "c1", text="Message 1")
         msg2 = make_message("m2", "c1", role="assistant", text="Message 2")
         att1 = make_attachment("att1", "c1", "m1", mime_type="image/png")
-        att2 = AttachmentRecord(
-            attachment_id="att2",
-            conversation_id="c1",
-            message_id="m2",
-            mime_type="image/jpeg",
-            size_bytes=2048,
-        )
+        att2 = make_attachment("att2", "c1", "m2", mime_type="image/jpeg", size_bytes=2048)
 
         with open_connection(db_path) as conn:
             store_records(
@@ -494,15 +474,7 @@ class TestEdgeCases:
         """store_records() handles conversation with no messages or attachments."""
         db_path = tmp_path / "test.db"
 
-        conv = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title="Empty Conversation",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            content_hash="hash1",
-        )
+        conv = make_conversation("c1", title="Empty Conversation")
 
         with open_connection(db_path) as conn:
             counts = store_records(conversation=conv, messages=[], attachments=[], conn=conn)
@@ -515,24 +487,9 @@ class TestEdgeCases:
         """Attachments can exist without being tied to a message."""
         db_path = tmp_path / "test.db"
 
-        conv = ConversationRecord(
-            conversation_id="c1",
-            provider_name="test",
-            provider_conversation_id="ext1",
-            title="Test",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            content_hash="hash1",
-        )
-
+        conv = make_conversation("c1", title="Test")
         # Attachment without message_id
-        att = AttachmentRecord(
-            attachment_id="att1",
-            conversation_id="c1",
-            message_id=None,  # No message
-            mime_type="application/pdf",
-            size_bytes=5000,
-        )
+        att = make_attachment("att1", "c1", message_id=None, mime_type="application/pdf", size_bytes=5000)
 
         with open_connection(db_path) as conn:
             counts = store_records(conversation=conv, messages=[], attachments=[att], conn=conn)
@@ -554,63 +511,17 @@ class TestComplexScenarios:
         db_path = tmp_path / "test.db"
 
         # Step 1: Create conversation with one attachment
-        conv_v1 = ConversationRecord(
-            conversation_id="c1",
-            provider_name="claude",
-            provider_conversation_id="ext-c1",
-            title="Analysis Project",
-            created_at="2024-01-01T10:00:00Z",
-            updated_at="2024-01-01T10:00:00Z",
-            content_hash="hash-v1",
-        )
-
-        msg1 = MessageRecord(
-            message_id="m1",
-            conversation_id="c1",
-            role="user",
-            text="Please analyze this image",
-            timestamp="2024-01-01T10:00:00Z",
-            content_hash="msghash-m1",
-        )
-
-        att1 = AttachmentRecord(
-            attachment_id="att-image",
-            conversation_id="c1",
-            message_id="m1",
-            mime_type="image/png",
-            size_bytes=51200,
-        )
+        conv_v1 = make_conversation("c1", provider_name="claude", title="Analysis Project", created_at="2024-01-01T10:00:00Z", updated_at="2024-01-01T10:00:00Z", content_hash="hash-v1")
+        msg1 = make_message("m1", "c1", text="Please analyze this image", timestamp="2024-01-01T10:00:00Z")
+        att1 = make_attachment("att-image", "c1", "m1", mime_type="image/png", size_bytes=51200)
 
         with open_connection(db_path) as conn:
             store_records(conversation=conv_v1, messages=[msg1], attachments=[att1], conn=conn)
 
         # Step 2: Add more messages and attachments
-        msg2 = MessageRecord(
-            message_id="m2",
-            conversation_id="c1",
-            role="assistant",
-            text="The image shows...",
-            timestamp="2024-01-01T10:01:00Z",
-            content_hash="msghash-m2",
-        )
-
-        att2 = AttachmentRecord(
-            attachment_id="att-export",
-            conversation_id="c1",
-            message_id="m2",
-            mime_type="application/json",
-            size_bytes=2048,
-        )
-
-        conv_v2 = ConversationRecord(
-            conversation_id="c1",
-            provider_name="claude",
-            provider_conversation_id="ext-c1",
-            title="Analysis Project",
-            created_at="2024-01-01T10:00:00Z",
-            updated_at="2024-01-01T10:02:00Z",
-            content_hash="hash-v2",  # Different: new message and attachment
-        )
+        msg2 = make_message("m2", "c1", role="assistant", text="The image shows...", timestamp="2024-01-01T10:01:00Z")
+        att2 = make_attachment("att-export", "c1", "m2", mime_type="application/json", size_bytes=2048)
+        conv_v2 = make_conversation("c1", provider_name="claude", title="Analysis Project", created_at="2024-01-01T10:00:00Z", updated_at="2024-01-01T10:02:00Z", content_hash="hash-v2")
 
         with open_connection(db_path) as conn:
             store_records(
@@ -626,15 +537,7 @@ class TestComplexScenarios:
             assert count == 2
 
         # Step 3: Final update removes one attachment
-        conv_v3 = ConversationRecord(
-            conversation_id="c1",
-            provider_name="claude",
-            provider_conversation_id="ext-c1",
-            title="Analysis Project - Final",
-            created_at="2024-01-01T10:00:00Z",
-            updated_at="2024-01-01T10:03:00Z",
-            content_hash="hash-v3",
-        )
+        conv_v3 = make_conversation("c1", provider_name="claude", title="Analysis Project - Final", created_at="2024-01-01T10:00:00Z", updated_at="2024-01-01T10:03:00Z", content_hash="hash-v3")
 
         with open_connection(db_path) as conn:
             store_records(
@@ -656,27 +559,8 @@ class TestComplexScenarios:
         """Conversations from different providers don't interfere."""
         db_path = tmp_path / "test.db"
 
-        # ChatGPT conversation
-        conv_gpt = ConversationRecord(
-            conversation_id="c-gpt",
-            provider_name="chatgpt",
-            provider_conversation_id="gpt-ext-1",
-            title="ChatGPT Conversation",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            content_hash="hash-gpt",
-        )
-
-        # Claude conversation
-        conv_claude = ConversationRecord(
-            conversation_id="c-claude",
-            provider_name="claude",
-            provider_conversation_id="claude-ext-1",
-            title="Claude Conversation",
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-            content_hash="hash-claude",
-        )
+        conv_gpt = make_conversation("c-gpt", provider_name="chatgpt", title="ChatGPT Conversation", content_hash="hash-gpt")
+        conv_claude = make_conversation("c-claude", provider_name="claude", title="Claude Conversation", content_hash="hash-claude")
 
         with open_connection(db_path) as conn:
             store_records(conversation=conv_gpt, messages=[], attachments=[], conn=conn)

@@ -113,7 +113,8 @@ def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
 
 def test_store_records_commits_within_lock(tmp_path: Path):
     """Verify store_records commits inside the lock scope."""
-    from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
+    from polylogue.storage.store import store_records
+    from tests.helpers import make_conversation, make_message
 
     # Create a test database
     db_path = tmp_path / "test.db"
@@ -136,23 +137,8 @@ def test_store_records_commits_within_lock(tmp_path: Path):
     from polylogue.storage.backends.sqlite import open_connection
 
     with open_connection(db_path) as conn:
-        record = ConversationRecord(
-            conversation_id="test:1",
-            provider_name="test",
-            provider_conversation_id="1",
-            title="Test",
-            content_hash="abc123",
-        )
-        messages = [
-            MessageRecord(
-                message_id="test:1:msg1",
-                conversation_id="test:1",
-                provider_message_id="msg1",
-                role="user",
-                text="Hello",
-                content_hash="def456",
-            )
-        ]
+        record = make_conversation("test:1", title="Test", content_hash="abc123")
+        messages = [make_message("test:1:msg1", "test:1", text="Hello")]
         result = store_records(
             conversation=record,
             messages=messages,
@@ -165,30 +151,16 @@ def test_store_records_commits_within_lock(tmp_path: Path):
 def test_concurrent_store_records_no_deadlock(workspace_env):
     """Verify concurrent store_records calls don't deadlock."""
     from polylogue.storage.backends.sqlite import open_connection
-    from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
+    from polylogue.storage.store import store_records
+    from tests.helpers import make_conversation, make_message
 
     # Initialize the database using workspace_env fixture (sets up proper env vars)
     with open_connection(None):
         pass
 
     def store_one(idx: int):
-        record = ConversationRecord(
-            conversation_id=f"test:{idx}",
-            provider_name="test",
-            provider_conversation_id=str(idx),
-            title=f"Test {idx}",
-            content_hash=f"hash{idx}",
-        )
-        messages = [
-            MessageRecord(
-                message_id=f"test:{idx}:msg1",
-                conversation_id=f"test:{idx}",
-                provider_message_id="msg1",
-                role="user",
-                text=f"Hello {idx}",
-                content_hash=f"msghash{idx}",
-            )
-        ]
+        record = make_conversation(f"test:{idx}", title=f"Test {idx}", content_hash=f"hash{idx}")
+        messages = [make_message(f"test:{idx}:msg1", f"test:{idx}", text=f"Hello {idx}")]
         return store_records(
             conversation=record,
             messages=messages,

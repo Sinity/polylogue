@@ -14,6 +14,7 @@ import pytest
 from polylogue.lib.repository import ConversationRepository
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.store import ConversationRecord, MessageRecord
+from tests.helpers import make_conversation, make_message
 
 
 # =============================================================================
@@ -135,21 +136,8 @@ def test_stored_xss_in_conversation_content(temp_repo):
     # Create conversation with XSS in message
     backend = temp_repo._backend
 
-    conv_record = ConversationRecord(
-        conversation_id="xss-test",
-        provider_name="test",
-        provider_conversation_id="xss-test-prov",
-        title="XSS Test",
-        content_hash="hash1",
-    )
-
-    msg_record = MessageRecord(
-        message_id="msg-xss",
-        conversation_id="xss-test",
-        role="user",
-        text=xss_payload,
-        content_hash="hash2",
-    )
+    conv_record = make_conversation("xss-test", title="XSS Test")
+    msg_record = make_message("msg-xss", "xss-test", text=xss_payload)
 
     # Store records
     backend.save_conversation(conv_record)
