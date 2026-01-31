@@ -3,15 +3,9 @@ import pytest
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.repository import ConversationRepository
 from polylogue.storage.backends.sqlite import SQLiteBackend
-from polylogue.storage.backends.sqlite import open_connection
 
 
-@pytest.fixture
-def mock_db(tmp_path):
-    db_path = tmp_path / "test.db"
-    with open_connection(db_path):
-        pass
-    return db_path
+# test_db fixture is in conftest.py
 
 
 def test_semantic_models():
@@ -47,14 +41,14 @@ def test_semantic_models():
     assert conv.user_message_count == 1
 
 
-def test_repository(mock_db):
-    backend = SQLiteBackend(db_path=mock_db)
+def test_repository(test_db):
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
 
     # Seed data
     from tests.factories import DbFactory
 
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
     factory.create_conversation(
         id="c1", provider="chatgpt", messages=[{"id": "m1", "role": "user", "text": "hello world"}]
     )
@@ -72,14 +66,14 @@ def test_repository(mock_db):
     assert lst[0].id == "c1"
 
 
-def test_repository_get_includes_attachment_conversation_id(mock_db):
+def test_repository_get_includes_attachment_conversation_id(test_db):
     """ConversationRepository.get() returns attachments with conversation_id field.
 
     This tests the fix where attachment_refs.conversation_id was missing from SELECT.
     """
     from tests.factories import DbFactory
 
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
     factory.create_conversation(
         id="c-with-att",
         provider="test",
@@ -100,7 +94,7 @@ def test_repository_get_includes_attachment_conversation_id(mock_db):
         ],
     )
 
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
     conv = repo.get("c-with-att")
 
@@ -114,11 +108,11 @@ def test_repository_get_includes_attachment_conversation_id(mock_db):
     assert att.mime_type == "image/png"
 
 
-def test_repository_get_with_multiple_attachments(mock_db):
+def test_repository_get_with_multiple_attachments(test_db):
     """get() correctly groups multiple attachments per message."""
     from tests.factories import DbFactory
 
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
     factory.create_conversation(
         id="c-multi-att",
         provider="test",
@@ -143,7 +137,7 @@ def test_repository_get_with_multiple_attachments(mock_db):
         ],
     )
 
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
     conv = repo.get("c-multi-att")
 
@@ -162,11 +156,11 @@ def test_repository_get_with_multiple_attachments(mock_db):
     assert m2.attachments[0].id == "att3"
 
 
-def test_repository_get_attachment_metadata_decoded(mock_db):
+def test_repository_get_attachment_metadata_decoded(test_db):
     """Attachment provider_meta JSON is properly decoded."""
     from tests.factories import DbFactory
 
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
     # Pass dict directly - factory stores it, store.py serializes to JSON
     meta = {"original_name": "photo.png", "source": "upload"}
     factory.create_conversation(
@@ -188,7 +182,7 @@ def test_repository_get_attachment_metadata_decoded(mock_db):
         ],
     )
 
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
     conv = repo.get("c-att-meta")
 

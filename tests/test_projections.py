@@ -13,24 +13,7 @@ import pytest
 from polylogue.lib.models import Attachment, Conversation, Message
 
 
-# =============================================================================
-# FIXTURES
-# =============================================================================
-
-
-@pytest.fixture
-def sample_conversation():
-    """Create diverse conversation for filter testing."""
-    messages = [
-        Message(id="m1", role="user", text="User question", timestamp=datetime(2024, 1, 1, 10, 0)),
-        Message(id="m2", role="assistant", text="Assistant response", timestamp=datetime(2024, 1, 1, 10, 1)),
-        Message(id="m3", role="system", text="System prompt", timestamp=datetime(2024, 1, 1, 10, 2)),
-        Message(id="m4", role="tool", text="Tool output", timestamp=datetime(2024, 1, 1, 10, 3)),
-        Message(id="m5", role="user", text="Another question with searchterm here", timestamp=datetime(2024, 1, 1, 10, 4)),
-        Message(id="m6", role="assistant", text="ok", timestamp=datetime(2024, 1, 1, 10, 5)),  # Short (noise)
-        Message(id="m7", role="assistant", text="Substantial answer with details", timestamp=datetime(2024, 1, 1, 10, 6)),
-    ]
-    return Conversation(id="conv1", provider="test", messages=messages)
+# sample_conversation fixture is in conftest.py
 
 
 # =============================================================================

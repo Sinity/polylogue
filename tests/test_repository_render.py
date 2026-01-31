@@ -20,13 +20,7 @@ from tests.factories import DbFactory
 from tests.helpers import make_attachment, make_conversation, make_message
 
 
-@pytest.fixture
-def mock_db(tmp_path):
-    """Create a fresh database for testing."""
-    db_path = tmp_path / "test.db"
-    with open_connection(db_path):
-        pass
-    return db_path
+# test_db fixture is in conftest.py
 
 
 # ============================================================================
@@ -34,11 +28,11 @@ def mock_db(tmp_path):
 # ============================================================================
 
 
-def test_repository_get_conversation(mock_db):
+def test_repository_get_conversation(test_db):
     """ConversationRepository.get() returns Conversation with messages loaded."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     # Create a conversation with multiple messages
     factory.create_conversation(
@@ -69,9 +63,9 @@ def test_repository_get_conversation(mock_db):
     assert conv.messages[1].text == "I'm doing well, thanks for asking!"
 
 
-def test_repository_get_nonexistent_returns_none(mock_db):
+def test_repository_get_nonexistent_returns_none(test_db):
     """ConversationRepository.get() returns None for nonexistent ID."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
 
     result = repo.get("nonexistent-id")
@@ -79,11 +73,11 @@ def test_repository_get_nonexistent_returns_none(mock_db):
     assert result is None
 
 
-def test_repository_get_with_provider_meta(mock_db):
+def test_repository_get_with_provider_meta(test_db):
     """Repository correctly deserializes provider_meta JSON."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     factory.create_conversation(
         id="c-meta",
@@ -103,11 +97,11 @@ def test_repository_get_with_provider_meta(mock_db):
 # ============================================================================
 
 
-def test_repository_list_conversations(mock_db):
+def test_repository_list_conversations(test_db):
     """ConversationRepository.list() returns all conversations."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     # Create multiple conversations
     factory.create_conversation(id="c1", provider="chatgpt", title="Conv 1", messages=[])
@@ -122,11 +116,11 @@ def test_repository_list_conversations(mock_db):
     assert ids == {"c1", "c2", "c3"}
 
 
-def test_repository_list_with_limit(mock_db):
+def test_repository_list_with_limit(test_db):
     """ConversationRepository.list() respects limit parameter."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     # Create 5 conversations
     for i in range(5):
@@ -137,11 +131,11 @@ def test_repository_list_with_limit(mock_db):
     assert len(result) == 3
 
 
-def test_repository_list_with_offset(mock_db):
+def test_repository_list_with_offset(test_db):
     """ConversationRepository.list() respects offset parameter."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     # Create 5 conversations
     for i in range(5):
@@ -161,9 +155,9 @@ def test_repository_list_with_offset(mock_db):
     assert first_ids != second_ids
 
 
-def test_repository_list_empty_returns_empty(mock_db):
+def test_repository_list_empty_returns_empty(test_db):
     """ConversationRepository.list() returns empty list when no conversations."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
 
     result = repo.list()
@@ -176,11 +170,11 @@ def test_repository_list_empty_returns_empty(mock_db):
 # ============================================================================
 
 
-def test_repository_list_by_provider(mock_db):
+def test_repository_list_by_provider(test_db):
     """ConversationRepository.list(provider=...) filters by provider."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     # Create conversations with different providers
     factory.create_conversation(id="c1", provider="chatgpt", messages=[])
@@ -195,11 +189,11 @@ def test_repository_list_by_provider(mock_db):
         assert conv.provider == "chatgpt"
 
 
-def test_repository_list_by_provider_excludes_others(mock_db):
+def test_repository_list_by_provider_excludes_others(test_db):
     """ConversationRepository.list(provider=...) excludes other providers."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     factory.create_conversation(id="c1", provider="chatgpt", messages=[])
     factory.create_conversation(id="c2", provider="claude", messages=[])
@@ -212,11 +206,11 @@ def test_repository_list_by_provider_excludes_others(mock_db):
     assert result[0].id == "c2"
 
 
-def test_repository_list_by_provider_returns_empty_when_no_match(mock_db):
+def test_repository_list_by_provider_returns_empty_when_no_match(test_db):
     """ConversationRepository.list(provider=...) returns empty for no matches."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     factory.create_conversation(id="c1", provider="chatgpt", messages=[])
 
@@ -230,11 +224,11 @@ def test_repository_list_by_provider_returns_empty_when_no_match(mock_db):
 # ============================================================================
 
 
-def test_repository_search_returns_matching_conversations(mock_db, workspace_env):
+def test_repository_search_returns_matching_conversations(test_db, workspace_env):
     """ConversationRepository.search() returns conversations matching query."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     # Create conversations with searchable content
     factory.create_conversation(
@@ -245,7 +239,7 @@ def test_repository_search_returns_matching_conversations(mock_db, workspace_env
     )
 
     # Build the FTS index
-    with open_connection(mock_db) as conn:
+    with open_connection(test_db) as conn:
         from polylogue.storage.index import rebuild_index
 
         rebuild_index(conn)
@@ -257,7 +251,7 @@ def test_repository_search_returns_matching_conversations(mock_db, workspace_env
     assert any(c.id == "c1" for c in result)
 
 
-def test_repository_search_raises_when_index_not_built(mock_db, db_without_fts):
+def test_repository_search_raises_when_index_not_built(test_db, db_without_fts):
     """ConversationRepository.search() raises DatabaseError when FTS table doesn't exist."""
     backend = SQLiteBackend(db_path=db_without_fts)
     repo = ConversationRepository(backend=backend)
@@ -281,11 +275,11 @@ def test_repository_search_raises_when_index_not_built(mock_db, db_without_fts):
 # ============================================================================
 
 
-def test_repository_resolve_id_exact_match(mock_db):
+def test_repository_resolve_id_exact_match(test_db):
     """ConversationRepository.resolve_id() returns full ID for exact match."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     factory.create_conversation(id="conv:abc123:full", provider="test", messages=[])
 
@@ -294,11 +288,11 @@ def test_repository_resolve_id_exact_match(mock_db):
     assert result == "conv:abc123:full"
 
 
-def test_repository_resolve_id_prefix_match(mock_db):
+def test_repository_resolve_id_prefix_match(test_db):
     """ConversationRepository.resolve_id() returns full ID for unique prefix."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     factory.create_conversation(id="conv:abc123:full", provider="test", messages=[])
 
@@ -307,11 +301,11 @@ def test_repository_resolve_id_prefix_match(mock_db):
     assert result == "conv:abc123:full"
 
 
-def test_repository_resolve_id_ambiguous_returns_none(mock_db):
+def test_repository_resolve_id_ambiguous_returns_none(test_db):
     """ConversationRepository.resolve_id() returns None for ambiguous prefix."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     factory.create_conversation(id="conv:abc:1", provider="test", messages=[])
     factory.create_conversation(id="conv:abc:2", provider="test", messages=[])
@@ -326,11 +320,11 @@ def test_repository_resolve_id_ambiguous_returns_none(mock_db):
 # ============================================================================
 
 
-def test_repository_view_with_prefix(mock_db):
+def test_repository_view_with_prefix(test_db):
     """ConversationRepository.view() resolves prefix and returns Conversation."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     factory.create_conversation(
         id="claude:conv123abc", provider="claude", messages=[{"id": "m1", "role": "user", "text": "hello"}]
@@ -343,9 +337,9 @@ def test_repository_view_with_prefix(mock_db):
     assert conv.id == "claude:conv123abc"
 
 
-def test_repository_view_returns_none_for_nonexistent(mock_db):
+def test_repository_view_returns_none_for_nonexistent(test_db):
     """ConversationRepository.view() returns None for nonexistent ID."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
 
     result = repo.view("nonexistent")
@@ -638,11 +632,11 @@ def test_render_conversation_writes_html_file(workspace_env, storage_repository)
 # ============================================================================
 
 
-def test_repository_conversation_supports_projections(mock_db):
+def test_repository_conversation_supports_projections(test_db):
     """Conversations from repository support semantic projections."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     factory.create_conversation(
         id="c-proj",
@@ -667,11 +661,11 @@ def test_repository_conversation_supports_projections(mock_db):
     assert all(m.is_user for m in user_conv.messages)
 
 
-def test_repository_conversation_supports_iteration(mock_db):
+def test_repository_conversation_supports_iteration(test_db):
     """Conversations from repository support iteration methods."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     factory.create_conversation(
         id="c-iter",
@@ -691,11 +685,11 @@ def test_repository_conversation_supports_iteration(mock_db):
     assert pairs[0].assistant.text == "Answer! This is also a long enough message to be substantive."
 
 
-def test_repository_conversation_supports_statistics(mock_db):
+def test_repository_conversation_supports_statistics(test_db):
     """Conversations from repository support statistics methods."""
-    backend = SQLiteBackend(db_path=mock_db)
+    backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    factory = DbFactory(mock_db)
+    factory = DbFactory(test_db)
 
     factory.create_conversation(
         id="c-stats",
