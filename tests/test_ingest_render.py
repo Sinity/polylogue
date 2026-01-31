@@ -7,47 +7,18 @@ from polylogue.ingestion import IngestBundle, ingest_bundle
 from polylogue.paths import is_within_root
 from polylogue.rendering.renderers import HTMLRenderer
 from polylogue.storage.backends.sqlite import open_connection
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from tests.helpers import make_attachment, make_conversation, make_message
 
 
 def _conversation_record():
-    return ConversationRecord(
-        conversation_id="conv:hash",
-        provider_name="codex",
-        provider_conversation_id="conv",
-        title="Demo",
-        created_at=None,
-        updated_at=None,
-        content_hash="hash",
-        provider_meta=None,
-    )
+    return make_conversation("conv:hash", provider_name="codex", title="Demo")
 
 
 def test_ingest_idempotent(workspace_env, storage_repository):
     bundle = IngestBundle(
         conversation=_conversation_record(),
-        messages=[
-            MessageRecord(
-                message_id="msg:hash",
-                conversation_id="conv:hash",
-                provider_message_id="msg",
-                role="user",
-                text="hello",
-                timestamp=None,
-                content_hash="hash",
-                provider_meta=None,
-            )
-        ],
-        attachments=[
-            AttachmentRecord(
-                attachment_id="att-hash",
-                conversation_id="conv:hash",
-                message_id="msg:hash",
-                mime_type=None,
-                size_bytes=None,
-                provider_meta=None,
-            )
-        ],
+        messages=[make_message("msg:hash", "conv:hash", text="hello")],
+        attachments=[make_attachment("att-hash", "conv:hash", "msg:hash", mime_type=None, size_bytes=None)],
     )
 
     first = ingest_bundle(bundle, repository=storage_repository)
@@ -62,18 +33,7 @@ def test_render_writes_markdown(workspace_env, storage_repository):
     archive_root = workspace_env["archive_root"]
     bundle = IngestBundle(
         conversation=_conversation_record(),
-        messages=[
-            MessageRecord(
-                message_id="msg:hash",
-                conversation_id="conv:hash",
-                provider_message_id="msg",
-                role="user",
-                text="hello",
-                timestamp=None,
-                content_hash="hash",
-                provider_meta=None,
-            )
-        ],
+        messages=[make_message("msg:hash", "conv:hash", text="hello")],
         attachments=[],
     )
     ingest_bundle(bundle, repository=storage_repository)
@@ -91,28 +51,8 @@ def test_render_writes_markdown(workspace_env, storage_repository):
 def test_render_escapes_html(workspace_env, storage_repository):
     archive_root = workspace_env["archive_root"]
     bundle = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id="conv-html",
-            provider_name="codex",
-            provider_conversation_id="conv-html",
-            title="<script>alert(1)</script>",
-            created_at=None,
-            updated_at=None,
-            content_hash="hash",
-            provider_meta=None,
-        ),
-        messages=[
-            MessageRecord(
-                message_id="msg:hash",
-                conversation_id="conv-html",
-                provider_message_id="msg",
-                role="user",
-                text="<script>alert(2)</script>",
-                timestamp=None,
-                content_hash="hash",
-                provider_meta=None,
-            )
-        ],
+        conversation=make_conversation("conv-html", provider_name="codex", title="<script>alert(1)</script>"),
+        messages=[make_message("msg:hash", "conv-html", text="<script>alert(2)</script>")],
         attachments=[],
     )
     ingest_bundle(bundle, repository=storage_repository)
@@ -134,28 +74,8 @@ def test_render_sanitizes_paths(workspace_env, storage_repository):
     """
     archive_root = workspace_env["archive_root"]
     bundle = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id="../escape",
-            provider_name="test",  # Valid provider name (path chars now rejected)
-            provider_conversation_id="conv-escape",
-            title="Escape",
-            created_at=None,
-            updated_at=None,
-            content_hash="hash",
-            provider_meta=None,
-        ),
-        messages=[
-            MessageRecord(
-                message_id="msg:hash",
-                conversation_id="../escape",
-                provider_message_id="msg",
-                role="user",
-                text="hello",
-                timestamp=None,
-                content_hash="hash",
-                provider_meta=None,
-            )
-        ],
+        conversation=make_conversation("../escape", title="Escape"),
+        messages=[make_message("msg:hash", "../escape", text="hello")],
         attachments=[],
     )
     ingest_bundle(bundle, repository=storage_repository)
@@ -172,28 +92,8 @@ def test_render_includes_orphan_attachments(workspace_env, storage_repository):
     archive_root = workspace_env["archive_root"]
     bundle = IngestBundle(
         conversation=_conversation_record(),
-        messages=[
-            MessageRecord(
-                message_id="msg:hash",
-                conversation_id="conv:hash",
-                provider_message_id="msg",
-                role="user",
-                text="hello",
-                timestamp=None,
-                content_hash="hash",
-                provider_meta=None,
-            )
-        ],
-        attachments=[
-            AttachmentRecord(
-                attachment_id="att-orphan",
-                conversation_id="conv:hash",
-                message_id=None,
-                mime_type="text/plain",
-                size_bytes=12,
-                provider_meta={"name": "notes.txt"},
-            )
-        ],
+        messages=[make_message("msg:hash", "conv:hash", text="hello")],
+        attachments=[make_attachment("att-orphan", "conv:hash", None, mime_type="text/plain", size_bytes=12, provider_meta={"name": "notes.txt"})],
     )
     ingest_bundle(bundle, repository=storage_repository)
 
@@ -210,16 +110,7 @@ def test_export_includes_attachments(workspace_env, tmp_path, storage_repository
     bundle = IngestBundle(
         conversation=_conversation_record(),
         messages=[],
-        attachments=[
-            AttachmentRecord(
-                attachment_id="att-1",
-                conversation_id="conv:hash",
-                message_id=None,
-                mime_type="text/plain",
-                size_bytes=12,
-                provider_meta=None,
-            )
-        ],
+        attachments=[make_attachment("att-1", "conv:hash", None, mime_type="text/plain", size_bytes=12)],
     )
     ingest_bundle(bundle, repository=storage_repository)
     output = export_jsonl(archive_root=workspace_env["archive_root"], output_path=tmp_path / "export.jsonl")
@@ -229,55 +120,15 @@ def test_export_includes_attachments(workspace_env, tmp_path, storage_repository
 
 def test_ingest_updates_metadata(workspace_env, storage_repository):
     bundle = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id="conv-update",
-            provider_name="codex",
-            provider_conversation_id="conv-update",
-            title="Old",
-            created_at=None,
-            updated_at=None,
-            content_hash="hash-old",
-            provider_meta={"source": "inbox"},
-        ),
-        messages=[
-            MessageRecord(
-                message_id="msg-update",
-                conversation_id="conv-update",
-                provider_message_id="msg-update",
-                role="user",
-                text="hello",
-                timestamp="1",
-                content_hash="msg-old",
-                provider_meta={"k": "v"},
-            )
-        ],
+        conversation=make_conversation("conv-update", provider_name="codex", title="Old", content_hash="hash-old", provider_meta={"source": "inbox"}),
+        messages=[make_message("msg-update", "conv-update", text="hello", timestamp="1", content_hash="msg-old", provider_meta={"k": "v"})],
         attachments=[],
     )
     ingest_bundle(bundle, repository=storage_repository)
 
     updated = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id="conv-update",
-            provider_name="codex",
-            provider_conversation_id="conv-update",
-            title="New",
-            created_at=None,
-            updated_at="2",
-            content_hash="hash-new",
-            provider_meta={"source": "inbox", "updated": True},
-        ),
-        messages=[
-            MessageRecord(
-                message_id="msg-update",
-                conversation_id="conv-update",
-                provider_message_id="msg-update",
-                role="assistant",
-                text="hello",
-                timestamp="2",
-                content_hash="msg-new",
-                provider_meta={"k": "v2"},
-            )
-        ],
+        conversation=make_conversation("conv-update", provider_name="codex", title="New", updated_at="2", content_hash="hash-new", provider_meta={"source": "inbox", "updated": True}),
+        messages=[make_message("msg-update", "conv-update", role="assistant", text="hello", timestamp="2", content_hash="msg-new", provider_meta={"k": "v2"})],
         attachments=[],
     )
     ingest_bundle(updated, repository=storage_repository)
@@ -300,57 +151,17 @@ def test_ingest_updates_metadata(workspace_env, storage_repository):
 
 
 def test_ingest_updates_fields_without_hash_changes(workspace_env, storage_repository):
-    base_conversation = ConversationRecord(
-        conversation_id="conv-hash-stable",
-        provider_name="codex",
-        provider_conversation_id="conv-hash-stable",
-        title="Original",
-        created_at=None,
-        updated_at="1",
-        content_hash="hash-stable",
-        provider_meta={"source": "inbox"},
-    )
-    base_message = MessageRecord(
-        message_id="msg-stable",
-        conversation_id="conv-hash-stable",
-        provider_message_id="msg-stable",
-        role="user",
-        text="hello",
-        timestamp="1",
-        content_hash="msg-stable",
-        provider_meta={"k": "v1"},
-    )
+    base_conversation = make_conversation("conv-hash-stable", provider_name="codex", title="Original", updated_at="1", content_hash="hash-stable", provider_meta={"source": "inbox"})
+    base_message = make_message("msg-stable", "conv-hash-stable", text="hello", timestamp="1", content_hash="msg-stable", provider_meta={"k": "v1"})
     ingest_bundle(
-        IngestBundle(
-            conversation=base_conversation,
-            messages=[base_message],
-            attachments=[],
-        ),
+        IngestBundle(conversation=base_conversation, messages=[base_message], attachments=[]),
         repository=storage_repository,
     )
 
     updated = IngestBundle(
-        conversation=ConversationRecord(
-            conversation_id="conv-hash-stable",
-            provider_name="codex",
-            provider_conversation_id="conv-hash-stable",
-            title="Updated title",
-            created_at=None,
-            updated_at="2",
-            content_hash="hash-stable",
-            provider_meta={"source": "inbox", "updated": True},
-        ),
+        conversation=make_conversation("conv-hash-stable", provider_name="codex", title="Updated title", updated_at="2", content_hash="hash-stable", provider_meta={"source": "inbox", "updated": True}),
         messages=[
-            MessageRecord(
-                message_id="msg-stable",
-                conversation_id="conv-hash-stable",
-                provider_message_id="msg-stable",
-                role="assistant",
-                text="hello",
-                timestamp="3",
-                content_hash="msg-stable",
-                provider_meta={"k": "v2"},
-            )
+            make_message("msg-stable", "conv-hash-stable", role="assistant", text="hello", timestamp="3", content_hash="msg-stable", provider_meta={"k": "v2"})
         ],
         attachments=[],
     )
@@ -378,46 +189,15 @@ def test_ingest_updates_fields_without_hash_changes(workspace_env, storage_repos
 def test_ingest_removes_missing_attachments(workspace_env, storage_repository):
     bundle = IngestBundle(
         conversation=_conversation_record(),
-        messages=[
-            MessageRecord(
-                message_id="msg:att",
-                conversation_id="conv:hash",
-                provider_message_id="msg:att",
-                role="user",
-                text="hello",
-                timestamp="1",
-                content_hash="msg:att",
-                provider_meta=None,
-            )
-        ],
-        attachments=[
-            AttachmentRecord(
-                attachment_id="att-old",
-                conversation_id="conv:hash",
-                message_id="msg:att",
-                mime_type="text/plain",
-                size_bytes=10,
-                provider_meta=None,
-            )
-        ],
+        messages=[make_message("msg:att", "conv:hash", text="hello", timestamp="1", content_hash="msg:att")],
+        attachments=[make_attachment("att-old", "conv:hash", "msg:att", mime_type="text/plain", size_bytes=10)],
     )
     ingest_bundle(bundle, repository=storage_repository)
 
     ingest_bundle(
         IngestBundle(
             conversation=_conversation_record(),
-            messages=[
-                MessageRecord(
-                    message_id="msg:att",
-                    conversation_id="conv:hash",
-                    provider_message_id="msg:att",
-                    role="user",
-                    text="hello",
-                    timestamp="1",
-                    content_hash="msg:att",
-                    provider_meta=None,
-                )
-            ],
+            messages=[make_message("msg:att", "conv:hash", text="hello", timestamp="1", content_hash="msg:att")],
             attachments=[],
         ),
         repository=storage_repository,
