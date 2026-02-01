@@ -66,6 +66,7 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
     """Update search indexes for specific conversations.
 
     Updates both FTS5 and Qdrant indexes if configured.
+    Optimized for batch operations using a single provider_map query and executemany.
 
     Args:
         conversation_ids: List of conversation IDs to re-index
@@ -76,22 +77,43 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
 
     def _do(db_conn: sqlite3.Connection) -> None:
         ensure_index(db_conn)
-        # SQLite FTS Update
-        for chunk in _chunked(conversation_ids, size=200):
-            placeholders = ", ".join("?" for _ in chunk)
-            db_conn.execute(
-                f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
-                tuple(chunk),
-            )
-            db_conn.execute(
-                f"""
-                INSERT INTO messages_fts (message_id, conversation_id, provider_name, content)
-                SELECT messages.message_id, messages.conversation_id, conversations.provider_name, messages.text
-                FROM messages
-                JOIN conversations ON conversations.conversation_id = messages.conversation_id
-                WHERE messages.text IS NOT NULL AND messages.conversation_id IN ({placeholders})
-                """,
-                tuple(chunk),
+
+        # Build provider_map in a single query for all conversation IDs
+        all_ids = list(conversation_ids)
+        placeholders = ", ".join("?" for _ in all_ids)
+        provider_map_rows = db_conn.execute(
+            f"SELECT conversation_id, provider_name FROM conversations WHERE conversation_id IN ({placeholders})",
+            tuple(all_ids),
+        ).fetchall()
+        provider_map = {row["conversation_id"]: row["provider_name"] for row in provider_map_rows}
+
+        # SQLite FTS Update - single delete then batch insert
+        db_conn.execute(
+            f"DELETE FROM messages_fts WHERE conversation_id IN ({placeholders})",
+            tuple(all_ids),
+        )
+
+        # Fetch all messages to index in one query
+        message_rows = db_conn.execute(
+            f"""
+            SELECT message_id, conversation_id, text
+            FROM messages
+            WHERE text IS NOT NULL AND conversation_id IN ({placeholders})
+            """,
+            tuple(all_ids),
+        ).fetchall()
+
+        # Build batch for executemany
+        fts_batch = [
+            (row["message_id"], row["conversation_id"], provider_map.get(row["conversation_id"], ""), row["text"])
+            for row in message_rows
+            if row["conversation_id"] in provider_map
+        ]
+
+        if fts_batch:
+            db_conn.executemany(
+                "INSERT INTO messages_fts (message_id, conversation_id, provider_name, content) VALUES (?, ?, ?, ?)",
+                fts_batch,
             )
 
         # Optional Qdrant support via vector provider
@@ -99,7 +121,7 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
         if vector_provider:
             from .index_qdrant import update_qdrant_for_conversations
 
-            update_qdrant_for_conversations(list(conversation_ids), db_conn)
+            update_qdrant_for_conversations(all_ids, db_conn)
 
         db_conn.commit()
 

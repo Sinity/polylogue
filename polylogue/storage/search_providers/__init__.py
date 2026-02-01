@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING
 
 from polylogue.core.env import get_env
 from polylogue.storage.search_providers.fts5 import FTS5Provider
+from polylogue.storage.search_providers.hybrid import (
+    HybridSearchProvider,
+    create_hybrid_provider,
+    reciprocal_rank_fusion,
+)
 from polylogue.storage.search_providers.qdrant import QdrantError, QdrantProvider
 
 if TYPE_CHECKING:
@@ -107,6 +112,9 @@ __all__ = [
     "FTS5Provider",
     "QdrantProvider",
     "QdrantError",
+    "HybridSearchProvider",
+    "reciprocal_rank_fusion",
     "create_search_provider",
     "create_vector_provider",
+    "create_hybrid_provider",
 ]
