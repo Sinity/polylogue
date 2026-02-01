@@ -50,17 +50,20 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
     messages: list[ParsedMessage] = []
     session_id = fallback_id
     session_timestamp = None
+    session_id_set = False  # Only use first session_meta (child sessions include parent meta)
 
     for idx, item in enumerate(payload, start=1):
         if not isinstance(item, dict):
             continue
 
         # Newest format: envelope with "session_meta" type
+        # Use FIRST session_meta only - child sessions include parent session_meta
         if item.get("type") == "session_meta":
             envelope_payload = item.get("payload", {})
-            if isinstance(envelope_payload, dict):
+            if isinstance(envelope_payload, dict) and not session_id_set:
                 session_id = envelope_payload.get("id", session_id)
                 session_timestamp = envelope_payload.get("timestamp", session_timestamp)
+                session_id_set = True
             continue
 
         # Newest format: envelope with "response_item" type
@@ -76,9 +79,10 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             continue
 
         # Extract session metadata (intermediate format - first line)
-        if "id" in item and "timestamp" in item and not item.get("type"):
+        if "id" in item and "timestamp" in item and not item.get("type") and not session_id_set:
             session_id = item["id"]
             session_timestamp = item.get("timestamp")
+            session_id_set = True
             continue
 
         # Parse message records (both newest and intermediate formats)
