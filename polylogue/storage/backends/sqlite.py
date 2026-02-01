@@ -1085,6 +1085,9 @@ class SQLiteBackend:
     def delete_conversation(self, conversation_id: str) -> bool:
         """Delete conversation and all related records.
 
+        Removes conversation, messages, attachment refs, and FTS index entries.
+        Does NOT delete attachments themselves (handled by ref counting).
+
         Args:
             conversation_id: ID of the conversation to delete
 
@@ -1101,6 +1104,16 @@ class SQLiteBackend:
 
         if not exists:
             return False
+
+        # Clean up FTS index entries (if FTS table exists)
+        fts_exists = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+        ).fetchone()
+        if fts_exists:
+            conn.execute(
+                "DELETE FROM messages_fts WHERE conversation_id = ?",
+                (conversation_id,),
+            )
 
         # Delete conversation (CASCADE handles messages automatically)
         conn.execute(

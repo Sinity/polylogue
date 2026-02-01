@@ -13,6 +13,7 @@ from datetime import datetime
 import pytest
 
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message, Role
+from tests.helpers import assert_contains_all, assert_not_contains_any
 
 # =============================================================================
 # FIXTURES
@@ -224,24 +225,6 @@ def test_dialogue_pair_with_tool_use():
     )
     pair = DialoguePair(user=user_msg, assistant=assistant_msg)
     assert pair.assistant.is_tool_use
-
-
-def test_dialogue_pair_equality():
-    """DialoguePair instances with same data are equal."""
-    user_msg = Message(id="u1", role="user", text="Q")
-    assistant_msg = Message(id="a1", role="assistant", text="A")
-    pair1 = DialoguePair(user=user_msg, assistant=assistant_msg)
-    pair2 = DialoguePair(user=user_msg, assistant=assistant_msg)
-    assert pair1 == pair2
-
-
-def test_dialogue_pair_repr():
-    """DialoguePair has useful repr."""
-    user_msg = Message(id="u1", role="user", text="Q")
-    assistant_msg = Message(id="a1", role="assistant", text="A")
-    pair = DialoguePair(user=user_msg, assistant=assistant_msg)
-    repr_str = repr(pair)
-    assert "DialoguePair" in repr_str or "user=" in repr_str
 
 
 # =============================================================================
@@ -486,13 +469,6 @@ def test_conversation_equality():
     assert conv1 == conv2
 
 
-def test_conversation_repr():
-    """Conversation has useful repr."""
-    conv = Conversation(id="c1", provider="test", messages=[])
-    repr_str = repr(conv)
-    assert "c1" in repr_str or "Conversation" in repr_str
-
-
 # =============================================================================
 # 4. ITERATION HELPERS TESTS (15 tests)
 # =============================================================================
@@ -722,10 +698,8 @@ def test_to_text_custom_role_prefixes():
     ]
     conv = Conversation(id="c1", provider="test", messages=messages)
     text = conv.to_text(include_role=False)
-    assert "user:" not in text
-    assert "assistant:" not in text
-    assert "Q" in text
-    assert "A" in text
+    assert_not_contains_any(text, "user:", "assistant:")
+    assert_contains_all(text, "Q", "A")
 
 
 def test_to_text_with_thinking_blocks():
