@@ -125,6 +125,7 @@ class ParsedConversation(BaseModel):
     updated_at: str | None = None
     messages: list[ParsedMessage]
     attachments: list[ParsedAttachment] = Field(default_factory=list)
+    provider_meta: dict[str, object] | None = None
 
 
 # hash_text is now imported from core.hashing
