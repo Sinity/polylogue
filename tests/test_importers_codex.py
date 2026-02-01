@@ -46,7 +46,12 @@ def test_parse_empty_list():
 
 
 def test_parse_envelope_format():
-    """Test parsing envelope format with session_meta and response_item."""
+    """Test parsing envelope format with session_meta and response_item.
+
+    Note: The parser uses the fallback_id (filename) as the conversation ID,
+    not the UUID from session_meta.payload.id. This ensures backwards
+    compatibility with existing database records.
+    """
     payload = [
         {"type": "session_meta", "payload": {"id": "session-123", "timestamp": "2025-01-01T00:00:00Z"}},
         {
@@ -70,10 +75,12 @@ def test_parse_envelope_format():
             },
         },
     ]
-    result = parse(payload, fallback_id="fallback-id")
+    result = parse(payload, fallback_id="rollout-2025-01-01T00-00-00-session-123")
 
     assert result.provider_name == "codex"
-    assert result.provider_conversation_id == "session-123"
+    # Uses fallback_id (filename), not session_meta.payload.id
+    assert result.provider_conversation_id == "rollout-2025-01-01T00-00-00-session-123"
+    # Timestamp is still extracted from session_meta
     assert result.created_at == "2025-01-01T00:00:00Z"
     assert len(result.messages) == 2
 
@@ -88,7 +95,12 @@ def test_parse_envelope_format():
 
 
 def test_parse_intermediate_format():
-    """Test parsing intermediate format with direct records."""
+    """Test parsing intermediate format with direct records.
+
+    Note: The parser uses the fallback_id (filename) as the conversation ID,
+    not the ID from the first metadata line. This ensures backwards
+    compatibility with existing database records.
+    """
     payload = [
         {"id": "session-456", "timestamp": "2025-01-02T00:00:00Z", "git": {}},
         {"record_type": "state"},
@@ -100,10 +112,12 @@ def test_parse_intermediate_format():
             "timestamp": "2025-01-02T00:00:01Z",
         },
     ]
-    result = parse(payload, fallback_id="fallback-id")
+    result = parse(payload, fallback_id="rollout-2025-01-02T00-00-00-session-456")
 
     assert result.provider_name == "codex"
-    assert result.provider_conversation_id == "session-456"
+    # Uses fallback_id (filename), not intermediate format id
+    assert result.provider_conversation_id == "rollout-2025-01-02T00-00-00-session-456"
+    # Timestamp is still extracted from first metadata line
     assert result.created_at == "2025-01-02T00:00:00Z"
     assert len(result.messages) == 1
 
