@@ -27,10 +27,8 @@ except ImportError:
     GENSON_AVAILABLE = False
 
 
-# Default database path - use same location as main storage backend
-from polylogue.storage.backends.sqlite import default_db_path
-
-DEFAULT_DB_PATH = default_db_path()
+# Default database path
+DEFAULT_DB_PATH = Path.home() / ".local/state/polylogue/polylogue.db"
 
 # UUID pattern for detecting dynamic keys
 UUID_PATTERN = re.compile(

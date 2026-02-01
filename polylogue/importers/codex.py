@@ -59,9 +59,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
         if item.get("type") == "session_meta":
             envelope_payload = item.get("payload", {})
             if isinstance(envelope_payload, dict):
-                # NOTE: Don't use payload.id - it's just a UUID and doesn't match
-                # the filename-based IDs used in existing database records.
-                # The fallback_id (from filename) is the canonical identifier.
+                session_id = envelope_payload.get("id", session_id)
                 session_timestamp = envelope_payload.get("timestamp", session_timestamp)
             continue
 
@@ -78,8 +76,8 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             continue
 
         # Extract session metadata (intermediate format - first line)
-        # NOTE: Don't override session_id - use filename-based fallback_id for consistency
         if "id" in item and "timestamp" in item and not item.get("type"):
+            session_id = item["id"]
             session_timestamp = item.get("timestamp")
             continue
 
