@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .base import ParsedConversation, ParsedMessage, normalize_role
+from .base import ParsedAttachment, ParsedConversation, ParsedMessage, normalize_role
 
 
 def _coerce_float(value: object) -> float | None:
@@ -17,8 +17,9 @@ def _coerce_float(value: object) -> float | None:
     return None
 
 
-def extract_messages_from_mapping(mapping: dict[str, object]) -> list[ParsedMessage]:
+def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     entries: list[tuple[float | None, int, ParsedMessage]] = []
+    attachments: list[ParsedAttachment] = []
     for idx, node in enumerate(mapping.values(), start=1):
         if not isinstance(node, dict):
             continue
@@ -37,6 +38,22 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> list[ParsedMess
         msg_id = msg.get("id") or node.get("id") or ""
         if not msg_id:
             msg_id = f"msg-{idx}"
+
+        # Extract attachments from message metadata
+        msg_metadata = msg.get("metadata") or {}
+        if isinstance(msg_metadata, dict):
+            msg_attachments = msg_metadata.get("attachments") or []
+            if isinstance(msg_attachments, list):
+                for attach in msg_attachments:
+                    if isinstance(attach, dict) and attach.get("id"):
+                        attachments.append(ParsedAttachment(
+                            provider_attachment_id=str(attach["id"]),
+                            message_provider_id=str(msg_id),
+                            name=str(attach["name"]) if attach.get("name") else None,
+                            mime_type=str(attach["mime_type"]) if attach.get("mime_type") else None,
+                            size_bytes=int(attach["size"]) if isinstance(attach.get("size"), (int, float)) else None,
+                            provider_meta={"raw": attach},
+                        ))
 
         # Build provider_meta with structured content_blocks
         meta: dict[str, object] = {"raw": msg}
@@ -59,6 +76,12 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> list[ParsedMess
                         "type": "text",
                         "text": part,
                     })
+                elif isinstance(part, dict) and part.get("content_type") == "image_asset_pointer":
+                    # Preserve image attachment references
+                    content_blocks.append({
+                        "type": "image",
+                        "asset_pointer": part.get("asset_pointer"),
+                    })
             if content_blocks:
                 meta["content_blocks"] = content_blocks
 
@@ -73,7 +96,7 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> list[ParsedMess
     if any(value is not None for value, _, _ in entries):
         # Use explicit None check instead of `or` to handle zero/negative timestamps correctly
         entries.sort(key=lambda item: (item[0] is None, item[0] if item[0] is not None else 0.0, item[1]))
-    return [entry[2] for entry in entries]
+    return ([entry[2] for entry in entries], attachments)
 
 
 def looks_like(payload: object) -> bool:
@@ -86,7 +109,7 @@ def parse(payload: dict[str, object], fallback_id: str) -> ParsedConversation:
     mapping = payload.get("mapping") or {}
     if not isinstance(mapping, dict):
         mapping = {}
-    messages = extract_messages_from_mapping(mapping)
+    messages, attachments = extract_messages_from_mapping(mapping)
     title = payload.get("title") or payload.get("name") or fallback_id
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
     return ParsedConversation(
@@ -96,4 +119,5 @@ def parse(payload: dict[str, object], fallback_id: str) -> ParsedConversation:
         created_at=str(payload.get("create_time")) if payload.get("create_time") is not None else None,
         updated_at=str(payload.get("update_time")) if payload.get("update_time") is not None else None,
         messages=messages,
+        attachments=attachments,
     )

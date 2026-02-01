@@ -379,3 +379,127 @@ def mock_media_downloader(monkeypatch):
     monkeypatch.setattr(drive_client, "_import_module", mock_import_module)
 
     return {"MockMediaIoBaseDownload": MockMediaIoBaseDownload}
+
+
+# =============================================================================
+# NEW FIXTURES FOR TEST CONSOLIDATION (added during aggressive parametrization)
+# =============================================================================
+
+
+@pytest.fixture
+def db_path(workspace_env):
+    """Shortcut fixture for database path setup.
+
+    Usage in tests:
+        def test_something(db_path):
+            builder = ConversationBuilder(db_path, "test-conv")
+    """
+    from tests.helpers import db_setup
+
+    return db_setup(workspace_env)
+
+
+@pytest.fixture
+def conversation_builder(db_path):
+    """Fixture that provides ConversationBuilder factory.
+
+    Usage in tests:
+        def test_something(conversation_builder):
+            conv = (conversation_builder("test-conv")
+                   .add_message("m1", text="Hello")
+                   .save())
+    """
+    from tests.helpers import ConversationBuilder
+
+    def _builder(conversation_id: str = "test-conv"):
+        return ConversationBuilder(db_path, conversation_id)
+
+    return _builder
+
+
+# =============================================================================
+# CONSOLIDATED FIXTURES (moved from individual test files)
+# =============================================================================
+
+
+@pytest.fixture
+def test_db(tmp_path):
+    """Create an isolated test database with schema initialized.
+
+    Replaces duplicate fixtures in: test_store.py, test_pipeline.py, test_lib.py,
+    test_repository_render.py, test_search_index.py
+    """
+    from polylogue.storage.backends.sqlite import open_connection
+
+    db_path = tmp_path / "test.db"
+    with open_connection(db_path):
+        pass  # Schema auto-initializes
+    return db_path
+
+
+@pytest.fixture
+def test_conn(test_db):
+    """Provide a connection to the test database.
+
+    Replaces duplicate fixtures in: test_store.py, test_pipeline.py, test_search_index.py
+    """
+    from polylogue.storage.backends.sqlite import open_connection
+
+    with open_connection(test_db) as conn:
+        yield conn
+
+
+@pytest.fixture
+def sqlite_backend(tmp_path):
+    """Create a SQLite backend for testing.
+
+    Replaces duplicate fixtures in: test_backend_sqlite.py, test_repository_backend.py
+    """
+    from pathlib import Path
+
+    from polylogue.storage.backends import SQLiteBackend
+
+    db_path = tmp_path / "test.db"
+    backend = SQLiteBackend(db_path=db_path)
+    yield backend
+    backend.close()
+
+
+@pytest.fixture
+def sample_conversation():
+    """Create a diverse conversation for filter/projection testing.
+
+    Includes:
+    - User messages (m1, m5)
+    - Assistant messages (m2, m6 short, m7 substantive)
+    - System message (m3)
+    - Tool message (m4)
+    - Mix of short/noise and substantive messages
+
+    Replaces duplicate fixtures in: test_projections.py
+    """
+    from datetime import datetime
+
+    from polylogue.lib.models import Conversation, Message
+
+    messages = [
+        Message(id="m1", role="user", text="User question", timestamp=datetime(2024, 1, 1, 10, 0)),
+        Message(id="m2", role="assistant", text="Assistant response", timestamp=datetime(2024, 1, 1, 10, 1)),
+        Message(id="m3", role="system", text="System prompt", timestamp=datetime(2024, 1, 1, 10, 2)),
+        Message(id="m4", role="tool", text="Tool output", timestamp=datetime(2024, 1, 1, 10, 3)),
+        Message(id="m5", role="user", text="Another question with searchterm here", timestamp=datetime(2024, 1, 1, 10, 4)),
+        Message(id="m6", role="assistant", text="ok", timestamp=datetime(2024, 1, 1, 10, 5)),  # Short (noise)
+        Message(id="m7", role="assistant", text="Substantial answer with details", timestamp=datetime(2024, 1, 1, 10, 6)),
+    ]
+    return Conversation(id="conv1", provider="test", messages=messages)
+
+
+@pytest.fixture
+def cli_runner():
+    """Create a CliRunner for testing CLI commands.
+
+    Replaces duplicate definitions across CLI test files.
+    """
+    from click.testing import CliRunner
+
+    return CliRunner()
