@@ -1,0 +1,218 @@
+# Schema Mappings - Declarative specification of how provider fields map to common types
+#
+# This file defines the "viewports" - common abstractions across all providers.
+# The mappings specify how to extract harmonized data from provider-specific formats.
+#
+# Structure:
+#   common_types: Defines the target harmonized types
+#   providers: Maps each provider's fields to common types
+#   extraction_rules: How to transform values during extraction
+
+common_types:
+  MessageMeta:
+    description: Core message metadata shared across all providers
+    fields:
+      id: string
+      timestamp: datetime
+      role: enum[user, assistant, system, tool]
+      model: string?
+      tokens: TokenUsage?
+      cost: CostInfo?
+      duration_ms: int?
+      provider: string
+
+  TokenUsage:
+    description: Token counts for a message
+    fields:
+      input_tokens: int?
+      output_tokens: int?
+      cache_read_tokens: int?
+      cache_write_tokens: int?
+      total_tokens: int?
+
+  CostInfo:
+    description: API cost information
+    fields:
+      total_usd: float?
+      model: string?
+
+  ReasoningTrace:
+    description: Thinking/reasoning blocks
+    fields:
+      text: string
+      duration_ms: int?
+      token_count: int?
+      provider: string
+
+  ToolCall:
+    description: Tool/function invocations
+    fields:
+      name: string
+      id: string?
+      input: dict
+      output: string?
+      success: bool?
+      category: enum[file_read, file_write, file_edit, shell, git, search, web, agent, other]
+
+  ContentBlock:
+    description: Unified content representation
+    fields:
+      type: enum[text, code, image, file, audio, video, tool_use, tool_result, thinking, system, error]
+      text: string?
+      language: string?
+      url: string?
+      mime_type: string?
+
+providers:
+  chatgpt:
+    source_schema: chatgpt.schema.json
+    message_path: $.raw  # Path to message in provider_meta
+
+    mappings:
+      MessageMeta:
+        id: $.id
+        timestamp: $.create_time | unix_to_datetime
+        role: $.author.role | normalize_role
+        model: $.metadata.model_slug
+
+      ContentBlock:
+        - when: $.content.content_type == "text"
+          type: text
+          text: $.content.parts | join("\n")
+        - when: $.content.content_type == "code"
+          type: code
+          text: $.content.parts | join("\n")
+          language: $.content.language
+
+  claude-code:
+    source_schema: claude-code.schema.json
+    message_path: $.raw
+
+    mappings:
+      MessageMeta:
+        id: $.uuid
+        timestamp: $.timestamp | iso_to_datetime
+        role: $.message.role | normalize_role
+        model: $.message.model
+        tokens:
+          input_tokens: $.message.usage.input_tokens
+          output_tokens: $.message.usage.output_tokens
+          cache_read_tokens: $.message.usage.cache_read_input_tokens
+          cache_write_tokens: $.message.usage.cache_creation_input_tokens
+        cost:
+          total_usd: $.costUSD
+        duration_ms: $.durationMs
+
+      ReasoningTrace:
+        - from: $.message.content[]
+          when: $.type == "thinking"
+          text: $.thinking
+          provider: "claude-code"
+
+      ToolCall:
+        - from: $.message.content[]
+          when: $.type == "tool_use"
+          name: $.name
+          id: $.id
+          input: $.input
+          category: $.name | classify_tool
+
+      ContentBlock:
+        - from: $.message.content[]
+          when: $.type == "text"
+          type: text
+          text: $.text
+        - from: $.message.content[]
+          when: $.type == "thinking"
+          type: thinking
+          text: $.thinking
+        - from: $.message.content[]
+          when: $.type == "tool_use"
+          type: tool_use
+        - from: $.message.content[]
+          when: $.type == "tool_result"
+          type: tool_result
+          text: $.content
+
+  claude-ai:
+    source_schema: claude-ai.schema.json
+    message_path: $.raw
+
+    mappings:
+      MessageMeta:
+        id: $.uuid
+        timestamp: $.created_at | iso_to_datetime
+        role: $.sender | normalize_role  # "human" -> "user", "assistant" -> "assistant"
+
+      ContentBlock:
+        - type: text
+          text: $.text
+
+  gemini:
+    source_schema: gemini.schema.json
+    message_path: $.raw
+
+    mappings:
+      MessageMeta:
+        id: null  # Gemini doesn't have message IDs in this format
+        role: $.role | normalize_role  # "model" -> "assistant"
+        tokens:
+          output_tokens: $.tokenCount
+
+      ReasoningTrace:
+        - when: $.isThought == true
+          text: $.text
+          token_count: $.thinkingBudget
+          provider: "gemini"
+
+      ContentBlock:
+        - when: $.isThought == true
+          type: thinking
+          text: $.text
+        - when: $.isThought != true
+          type: text
+          text: $.text
+
+  codex:
+    source_schema: codex.schema.json
+    message_path: $  # Codex records are at top level
+
+    mappings:
+      MessageMeta:
+        id: $.id
+        timestamp: $.timestamp | iso_to_datetime
+        role: $.role | normalize_role
+
+      ContentBlock:
+        - from: $.content[]
+          when: $.type in ["input_text", "output_text", "text"]
+          type: text
+          text: $.text || $.input_text || $.output_text
+
+# Extraction rules - functions used in mappings
+extraction_rules:
+  normalize_role:
+    description: Normalize role strings to canonical values
+    rules:
+      user: [user, human]
+      assistant: [assistant, model, ai]
+      system: [system]
+      tool: [tool, function]
+
+  classify_tool:
+    description: Classify tool names into categories
+    rules:
+      file_read: [Read, View, cat]
+      file_write: [Write, Create]
+      file_edit: [Edit, Patch, sed]
+      shell: [Bash, shell, terminal, run]
+      git: [git]  # Or Bash commands starting with "git "
+      search: [Glob, Grep, Search, Find, file_search]
+      agent: [Task, Agent, subagent]
+      web: [WebFetch, WebSearch, browse]
+
+  unix_to_datetime:
+    description: Convert Unix timestamp to datetime
+
+  iso_to_datetime:
+    description: Convert ISO 8601 string to datetime

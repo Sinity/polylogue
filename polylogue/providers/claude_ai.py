@@ -1,0 +1,126 @@
+"""Claude AI (web) provider-specific typed models.
+
+These models match the Claude AI export format exactly.
+Derived from schema: polylogue/schemas/providers/claude-ai.schema.json
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from polylogue.lib.viewports import ContentBlock, ContentType, MessageMeta
+
+
+class ClaudeAIChatMessage(BaseModel):
+    """A single message in a Claude AI conversation."""
+
+    model_config = ConfigDict(extra="allow")
+
+    uuid: str
+    """Message UUID."""
+
+    text: str
+    """Message text content."""
+
+    sender: str
+    """Sender: human or assistant."""
+
+    created_at: str | None = None
+    """Creation timestamp (ISO format)."""
+
+    updated_at: str | None = None
+    """Update timestamp (ISO format)."""
+
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
+    """File attachments."""
+
+    files: list[dict[str, Any]] = Field(default_factory=list)
+    """Associated files."""
+
+    @property
+    def role_normalized(self) -> str:
+        """Normalize role to standard values."""
+        return "user" if self.sender == "human" else "assistant"
+
+    @property
+    def parsed_timestamp(self) -> datetime | None:
+        """Parse timestamp to datetime."""
+        if not self.created_at:
+            return None
+        try:
+            return datetime.fromisoformat(self.created_at.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    def to_meta(self) -> MessageMeta:
+        """Convert to harmonized MessageMeta."""
+        return MessageMeta(
+            id=self.uuid,
+            timestamp=self.parsed_timestamp,
+            role=self.role_normalized,  # type: ignore
+            provider="claude-ai",
+        )
+
+    def to_content_blocks(self) -> list[ContentBlock]:
+        """Extract harmonized content blocks."""
+        return [ContentBlock(
+            type=ContentType.TEXT,
+            text=self.text,
+            raw={"text": self.text, "sender": self.sender},
+        )]
+
+
+class ClaudeAIConversation(BaseModel):
+    """A complete Claude AI conversation export."""
+
+    model_config = ConfigDict(extra="allow")
+
+    uuid: str
+    """Conversation UUID."""
+
+    name: str
+    """Conversation name/title."""
+
+    created_at: str
+    """Creation timestamp."""
+
+    updated_at: str
+    """Last update timestamp."""
+
+    chat_messages: list[ClaudeAIChatMessage] = Field(default_factory=list)
+    """Messages in the conversation."""
+
+    account: dict[str, Any] | None = None
+    """Account information."""
+
+    summary: str | None = None
+    """Conversation summary (if generated)."""
+
+    @property
+    def title(self) -> str:
+        """Get conversation title."""
+        return self.name
+
+    @property
+    def created_datetime(self) -> datetime | None:
+        """Parse creation timestamp."""
+        try:
+            return datetime.fromisoformat(self.created_at.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    @property
+    def updated_datetime(self) -> datetime | None:
+        """Parse update timestamp."""
+        try:
+            return datetime.fromisoformat(self.updated_at.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    @property
+    def messages(self) -> list[ClaudeAIChatMessage]:
+        """Get messages (alias for chat_messages)."""
+        return self.chat_messages
