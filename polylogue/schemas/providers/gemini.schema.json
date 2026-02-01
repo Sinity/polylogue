@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Gemini AI Studio message format (7K+ messages)",
+  "properties": {
+    "branchChildren": {
+      "items": {
+        "properties": {
+          "displayName": {
+            "type": "string"
+          },
+          "promptId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "displayName",
+          "promptId"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "branchParent": {
+      "properties": {
+        "displayName": {
+          "type": "string"
+        },
+        "promptId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "displayName",
+        "promptId"
+      ],
+      "type": "object"
+    },
+    "codeExecutionResult": {
+      "properties": {
+        "outcome": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "outcome",
+        "output"
+      ],
+      "type": "object"
+    },
+    "errorMessage": {
+      "type": "string"
+    },
+    "executableCode": {
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "language": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "language"
+      ],
+      "type": "object"
+    },
+    "finishReason": {
+      "type": "string"
+    },
+    "grounding": {
+      "properties": {
+        "corroborationSegments": {
+          "items": {
+            "properties": {
+              "footnoteNumber": {
+                "type": "integer"
+              },
+              "index": {
+                "type": "integer"
+              },
+              "uri": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "footnoteNumber",
+              "index",
+              "uri"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "groundingSources": {
+          "items": {
+            "properties": {
+              "referenceNumber": {
+                "type": "integer"
+              },
+              "title": {
+                "type": "string"
+              },
+              "uri": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "referenceNumber",
+              "title",
+              "uri"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "webSearchQueries": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "inlineImage": {
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "data",
+        "mimeType"
+      ],
+      "type": "object"
+    },
+    "isEdited": {
+      "type": "boolean"
+    },
+    "isThought": {
+      "type": "boolean"
+    },
+    "parts": {
+      "items": {
+        "properties": {
+          "codeExecutionResult": {
+            "properties": {
+              "outcome": {
+                "type": "string"
+              },
+              "output": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "output"
+            ],
+            "type": "object"
+          },
+          "executableCode": {
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "language": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "code",
+              "language"
+            ],
+            "type": "object"
+          },
+          "inlineData": {
+            "properties": {
+              "data": {
+                "type": "string"
+              },
+              "mimeType": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "data",
+              "mimeType"
+            ],
+            "type": "object"
+          },
+          "text": {
+            "type": "string"
+          },
+          "thought": {
+            "type": "boolean"
+          },
+          "thoughtSignature": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "role": {
+      "type": "string"
+    },
+    "safetyRatings": {
+      "items": {
+        "properties": {
+          "blocked": {
+            "type": "boolean"
+          },
+          "category": {
+            "type": "string"
+          },
+          "probability": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "probability"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "text": {
+      "type": "string"
+    },
+    "thinkingBudget": {
+      "type": "integer"
+    },
+    "thoughtSignatures": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "tokenCount": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "role"
+  ],
+  "title": "gemini export format",
+  "type": "object"
+}

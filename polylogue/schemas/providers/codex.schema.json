@@ -1,0 +1,565 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "OpenAI Codex CLI session format",
+  "properties": {
+    "arguments": {
+      "type": "string"
+    },
+    "call_id": {
+      "type": "string"
+    },
+    "content": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "items": {
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "text",
+              "type"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      ]
+    },
+    "encrypted_content": {
+      "type": "string"
+    },
+    "git": {
+      "properties": {
+        "branch": {
+          "type": "string"
+        },
+        "commit_hash": {
+          "type": "string"
+        },
+        "repository_url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "branch",
+        "commit_hash"
+      ],
+      "type": "object"
+    },
+    "id": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "instructions": {
+      "type": [
+        "null",
+        "string"
+      ]
+    },
+    "name": {
+      "type": "string"
+    },
+    "output": {
+      "type": "string"
+    },
+    "payload": {
+      "properties": {
+        "approval_policy": {
+          "type": "string"
+        },
+        "arguments": {
+          "type": "string"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "cli_version": {
+          "type": "string"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "items": {
+                "properties": {
+                  "image_url": {
+                    "type": "string"
+                  },
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          ]
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "effort": {
+          "type": "string"
+        },
+        "encrypted_content": {
+          "type": "string"
+        },
+        "ghost_commit": {
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "parent": {
+              "type": "string"
+            },
+            "preexisting_untracked_dirs": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "preexisting_untracked_files": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "parent",
+            "preexisting_untracked_dirs",
+            "preexisting_untracked_files"
+          ],
+          "type": "object"
+        },
+        "git": {
+          "properties": {
+            "branch": {
+              "type": "string"
+            },
+            "commit_hash": {
+              "type": "string"
+            },
+            "repository_url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "branch",
+            "commit_hash"
+          ],
+          "type": "object"
+        },
+        "id": {
+          "type": "string"
+        },
+        "images": {
+          "type": "array"
+        },
+        "info": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "properties": {
+                "last_token_usage": {
+                  "properties": {
+                    "cached_input_tokens": {
+                      "type": "integer"
+                    },
+                    "input_tokens": {
+                      "type": "integer"
+                    },
+                    "output_tokens": {
+                      "type": "integer"
+                    },
+                    "reasoning_output_tokens": {
+                      "type": "integer"
+                    },
+                    "total_tokens": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "cached_input_tokens",
+                    "input_tokens",
+                    "output_tokens",
+                    "reasoning_output_tokens",
+                    "total_tokens"
+                  ],
+                  "type": "object"
+                },
+                "model_context_window": {
+                  "type": "integer"
+                },
+                "total_token_usage": {
+                  "properties": {
+                    "cached_input_tokens": {
+                      "type": "integer"
+                    },
+                    "input_tokens": {
+                      "type": "integer"
+                    },
+                    "output_tokens": {
+                      "type": "integer"
+                    },
+                    "reasoning_output_tokens": {
+                      "type": "integer"
+                    },
+                    "total_tokens": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "cached_input_tokens",
+                    "input_tokens",
+                    "output_tokens",
+                    "reasoning_output_tokens",
+                    "total_tokens"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "last_token_usage",
+                "model_context_window",
+                "total_token_usage"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "input": {
+          "type": "string"
+        },
+        "instructions": {
+          "type": [
+            "null",
+            "string"
+          ]
+        },
+        "kind": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string"
+        },
+        "model_provider": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "originator": {
+          "type": "string"
+        },
+        "output": {
+          "type": "string"
+        },
+        "rate_limits": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "properties": {
+                "credits": {
+                  "properties": {
+                    "balance": {
+                      "type": [
+                        "null",
+                        "string"
+                      ]
+                    },
+                    "has_credits": {
+                      "type": "boolean"
+                    },
+                    "unlimited": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "balance",
+                    "has_credits",
+                    "unlimited"
+                  ],
+                  "type": "object"
+                },
+                "plan_type": {
+                  "type": "null"
+                },
+                "primary": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "properties": {
+                        "resets_at": {
+                          "type": "integer"
+                        },
+                        "resets_in_seconds": {
+                          "type": "integer"
+                        },
+                        "used_percent": {
+                          "type": "number"
+                        },
+                        "window_minutes": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "used_percent",
+                        "window_minutes"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "secondary": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "properties": {
+                        "resets_at": {
+                          "type": "integer"
+                        },
+                        "resets_in_seconds": {
+                          "type": "integer"
+                        },
+                        "used_percent": {
+                          "type": "number"
+                        },
+                        "window_minutes": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "used_percent",
+                        "window_minutes"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "primary",
+                "secondary"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string"
+        },
+        "replacement_history": {
+          "items": {
+            "properties": {
+              "content": {
+                "items": {
+                  "properties": {
+                    "image_url": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "encrypted_content": {
+                "type": "string"
+              },
+              "ghost_commit": {
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "parent": {
+                    "type": "string"
+                  },
+                  "preexisting_untracked_dirs": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "preexisting_untracked_files": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "id",
+                  "parent",
+                  "preexisting_untracked_dirs",
+                  "preexisting_untracked_files"
+                ],
+                "type": "object"
+              },
+              "role": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sandbox_policy": {
+          "properties": {
+            "exclude_slash_tmp": {
+              "type": "boolean"
+            },
+            "exclude_tmpdir_env_var": {
+              "type": "boolean"
+            },
+            "mode": {
+              "type": "string"
+            },
+            "network_access": {
+              "type": "boolean"
+            },
+            "type": {
+              "type": "string"
+            }
+          },
+          "type": "object"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "properties": {
+                "subagent": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "subagent"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "status": {
+          "type": "string"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "text",
+                  "type"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          ]
+        },
+        "text": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "record_type": {
+      "type": "string"
+    },
+    "role": {
+      "type": "string"
+    },
+    "summary": {
+      "items": {
+        "properties": {
+          "text": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "type"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "timestamp": {
+      "type": "string"
+    },
+    "type": {
+      "type": "string"
+    }
+  },
+  "title": "codex export format",
+  "type": "object"
+}
