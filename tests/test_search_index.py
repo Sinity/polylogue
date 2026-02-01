@@ -555,6 +555,84 @@ def test_update_index_deletes_old_entries_from_conversation(test_conn):
     assert new_hits == 1
 
 
+def test_batch_index_10k_messages(test_conn):
+    """Benchmark: update_index_for_conversations handles 10k messages efficiently."""
+    import time
+
+    # Create 100 conversations with 100 messages each = 10,000 messages
+    num_convs = 100
+    msgs_per_conv = 100
+
+    for i in range(num_convs):
+        conv = make_conversation(f"conv{i}", title=f"Benchmark Conv {i}")
+        store_records(conversation=conv, messages=[], attachments=[], conn=test_conn)
+
+        # Batch insert messages directly for speed
+        messages_batch = [
+            (
+                f"msg{i}-{j}",
+                f"conv{i}",
+                "user" if j % 2 == 0 else "assistant",
+                f"message content {i}-{j} with searchable text",
+                f"2024-01-01T{i:02d}:{j:02d}:00Z",
+                f"hash-{i}-{j}",
+                1,
+            )
+            for j in range(msgs_per_conv)
+        ]
+        test_conn.executemany(
+            """INSERT INTO messages
+               (message_id, conversation_id, role, text, timestamp, content_hash, version)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            messages_batch,
+        )
+
+    test_conn.commit()
+
+    # Time the index build
+    conv_ids = [f"conv{i}" for i in range(num_convs)]
+
+    start = time.perf_counter()
+    update_index_for_conversations(conv_ids, test_conn)
+    elapsed = time.perf_counter() - start
+
+    # Verify all indexed
+    count = test_conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+    assert count == num_convs * msgs_per_conv
+
+    # Assert reasonable performance (should complete within 5 seconds)
+    assert elapsed < 5.0, f"Batch indexing 10k messages took too long: {elapsed:.2f}s"
+
+
+def test_batch_index_correct_provider_mapping(test_conn):
+    """Verify batch indexing includes correct provider_name for all messages."""
+    # Create conversations with different providers
+    conv1 = make_conversation("conv1", provider_name="claude", title="Claude Conv")
+    conv2 = make_conversation("conv2", provider_name="chatgpt", title="ChatGPT Conv")
+
+    messages1 = [make_message(f"msg1-{i}", "conv1", text=f"claude text {i}") for i in range(5)]
+    messages2 = [make_message(f"msg2-{i}", "conv2", text=f"chatgpt text {i}") for i in range(5)]
+
+    store_records(conversation=conv1, messages=messages1, attachments=[], conn=test_conn)
+    store_records(conversation=conv2, messages=messages2, attachments=[], conn=test_conn)
+
+    # Run batch indexing for both
+    update_index_for_conversations(["conv1", "conv2"], test_conn)
+
+    # Verify provider names are correct
+    claude_rows = test_conn.execute(
+        "SELECT provider_name FROM messages_fts WHERE conversation_id = ?", ("conv1",)
+    ).fetchall()
+    assert all(row["provider_name"] == "claude" for row in claude_rows)
+    assert len(claude_rows) == 5
+
+    chatgpt_rows = test_conn.execute(
+        "SELECT provider_name FROM messages_fts WHERE conversation_id = ?", ("conv2",)
+    ).fetchall()
+    assert all(row["provider_name"] == "chatgpt" for row in chatgpt_rows)
+    assert len(chatgpt_rows) == 5
+
+
 __all__ = [
     "test_rebuild_index_creates_fts_table",
     "test_rebuild_index_populates_fts_from_messages",
@@ -569,4 +647,6 @@ __all__ = [
     "test_search_with_special_characters",
     "test_search_with_quotes_in_text",
     "test_search_with_unicode_text",
+    "test_batch_index_10k_messages",
+    "test_batch_index_correct_provider_mapping",
 ]

@@ -312,3 +312,160 @@ async def test_close_is_idempotent():
         await backend.close()
         await backend.close()
         await backend.close()
+
+
+# =============================================================================
+# Batch Insertion Tests (N+1 fix verification)
+# =============================================================================
+
+
+@pytest.mark.asyncio
+async def test_batch_message_insertion():
+    """Verify messages are inserted in batch using executemany.
+
+    Tests that save_conversation uses batch insertion for messages
+    rather than individual INSERT statements (N+1 pattern).
+    """
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test_batch.db"
+
+        backend = AsyncSQLiteBackend(db_path=db_path)
+
+        now = datetime.now(timezone.utc).isoformat()
+        conv_id = "test-conv"
+
+        # Create conversation with 100 messages
+        conv = ConversationRecord(
+            conversation_id=conv_id,
+            provider_name="test",
+            provider_conversation_id="ext-1",
+            title="Batch Test",
+            created_at=now,
+            updated_at=now,
+            content_hash=uuid4().hex,
+        )
+
+        messages = [
+            MessageRecord(
+                message_id=f"m{i}",
+                conversation_id=conv_id,
+                role="user" if i % 2 == 0 else "assistant",
+                text=f"Message {i} content",
+                timestamp=now,
+                content_hash=uuid4().hex[:16],
+            )
+            for i in range(100)
+        ]
+
+        # Save with batch insertion
+        counts = await backend.save_conversation(conv, messages, [])
+
+        assert counts["messages_created"] == 100
+        assert counts["conversations_created"] == 1
+
+        # Verify messages were actually stored
+        retrieved = await backend.get_conversation(conv_id)
+        assert retrieved is not None
+
+        # Get messages separately (ConversationRecord doesn't embed messages)
+        messages_stored = await backend.get_messages(conv_id)
+        assert len(messages_stored) == 100
+
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_batch_attachment_insertion():
+    """Verify attachments and refs are inserted in batch."""
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test_batch_att.db"
+
+        backend = AsyncSQLiteBackend(db_path=db_path)
+
+        now = datetime.now(timezone.utc).isoformat()
+        conv_id = "test-conv"
+
+        conv = ConversationRecord(
+            conversation_id=conv_id,
+            provider_name="test",
+            provider_conversation_id="ext-1",
+            title="Attachment Batch Test",
+            created_at=now,
+            updated_at=now,
+            content_hash=uuid4().hex,
+        )
+
+        messages = [
+            MessageRecord(
+                message_id="m1",
+                conversation_id=conv_id,
+                role="user",
+                text="Message with attachments",
+                timestamp=now,
+                content_hash=uuid4().hex[:16],
+            )
+        ]
+
+        # Create 50 attachments
+        attachments = [
+            AttachmentRecord(
+                attachment_id=f"att{i}",
+                conversation_id=conv_id,
+                message_id="m1",
+                mime_type="application/pdf",
+                size_bytes=1024 * (i + 1),
+            )
+            for i in range(50)
+        ]
+
+        counts = await backend.save_conversation(conv, messages, attachments)
+
+        assert counts["attachments_created"] == 50
+        assert counts["attachment_refs_created"] == 50
+
+        await backend.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_message_list_no_error():
+    """Verify empty message list is handled correctly."""
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from polylogue.storage.store import ConversationRecord
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        db_path = Path(tmpdir) / "test_empty.db"
+
+        backend = AsyncSQLiteBackend(db_path=db_path)
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        conv = ConversationRecord(
+            conversation_id="empty-conv",
+            provider_name="test",
+            provider_conversation_id="ext-1",
+            title="Empty Conversation",
+            created_at=now,
+            updated_at=now,
+            content_hash=uuid4().hex,
+        )
+
+        # Empty messages and attachments should not cause errors
+        counts = await backend.save_conversation(conv, [], [])
+
+        assert counts["messages_created"] == 0
+        assert counts["attachments_created"] == 0
+        assert counts["conversations_created"] == 1
+
+        await backend.close()

@@ -193,6 +193,79 @@ def test_projection_transforms(sample_conversation, method_name, arg, expected_p
 # =============================================================================
 
 
+# =============================================================================
+# STRIP METHODS - PARAMETRIZED (1 test replacing 3)
+# =============================================================================
+
+
+def _make_tool_message(id: str, text: str) -> Message:
+    """Create a message marked as tool use via provider_meta."""
+    return Message(
+        id=id,
+        role="assistant",
+        text=text,
+        provider_meta={"content_blocks": [{"type": "tool_use"}]},
+    )
+
+
+def _make_thinking_message(id: str, text: str) -> Message:
+    """Create a message marked as thinking via provider_meta."""
+    return Message(
+        id=id,
+        role="assistant",
+        text=text,
+        provider_meta={"content_blocks": [{"type": "thinking"}]},
+    )
+
+
+STRIP_CASES = [
+    ("strip_tools", "is_tool_use", "tool use message stripped"),
+    ("strip_thinking", "is_thinking", "thinking message stripped"),
+]
+
+
+@pytest.mark.parametrize("method_name,attr_name,desc", STRIP_CASES)
+def test_projection_strip_methods(method_name, attr_name, desc):
+    """Test strip_tools, strip_thinking, strip_all methods."""
+    # Create conversation with tool and thinking messages
+    messages = [
+        Message(id="m1", role="user", text="Hello"),
+        _make_tool_message("m2", "Tool result"),
+        _make_thinking_message("m3", "Thinking..."),
+        Message(id="m4", role="assistant", text="Normal response"),
+    ]
+    conv = Conversation(id="test", provider="test", messages=messages)
+
+    projection = conv.project()
+    filtered = getattr(projection, method_name)()
+    result = filtered.to_list()
+
+    # Check the message type was filtered out
+    assert not any(getattr(m, attr_name, False) for m in result), f"Failed {desc}"
+
+
+def test_projection_strip_all():
+    """Test strip_all() removes both tools and thinking."""
+    messages = [
+        Message(id="m1", role="user", text="Hello"),
+        _make_tool_message("m2", "Tool result"),
+        _make_thinking_message("m3", "Thinking..."),
+        Message(id="m4", role="assistant", text="Normal response"),
+    ]
+    conv = Conversation(id="test", provider="test", messages=messages)
+
+    result = conv.project().strip_all().to_list()
+
+    assert len(result) == 2  # Only m1 and m4
+    assert not any(m.is_tool_use for m in result)
+    assert not any(m.is_thinking for m in result)
+
+
+# =============================================================================
+# EDGE CASES - PARAMETRIZED (1 test replacing 9)
+# =============================================================================
+
+
 EDGE_CASE_CONVERSATIONS = [
     ([], 0, "empty conversation"),
     ([Message(id="m1", role="user", text=None)], 0, "None text"),

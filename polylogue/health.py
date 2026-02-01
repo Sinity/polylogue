@@ -327,4 +327,193 @@ def cached_health_summary(archive_root: Path) -> str:
     return f"cached {age}s ago ({', '.join(parts)})"
 
 
-__all__ = ["get_health", "run_health", "HealthCheck", "HealthReport", "VerifyStatus", "cached_health_summary"]
+@dataclass
+class RepairResult:
+    """Result of a repair operation."""
+
+    name: str
+    repaired_count: int
+    success: bool
+    detail: str = ""
+
+
+def repair_orphaned_messages(config: Config) -> RepairResult:
+    """Delete messages that reference non-existent conversations."""
+    try:
+        with connection_context(None) as conn:
+            result = conn.execute(
+                """
+                DELETE FROM messages
+                WHERE conversation_id NOT IN (SELECT conversation_id FROM conversations)
+                """
+            )
+            conn.commit()
+            count = result.rowcount
+            return RepairResult(
+                name="orphaned_messages",
+                repaired_count=count,
+                success=True,
+                detail=f"Deleted {count} orphaned messages" if count else "No orphaned messages found",
+            )
+    except Exception as exc:
+        return RepairResult(
+            name="orphaned_messages",
+            repaired_count=0,
+            success=False,
+            detail=f"Failed to delete orphaned messages: {exc}",
+        )
+
+
+def repair_empty_conversations(config: Config) -> RepairResult:
+    """Delete conversations that have no messages."""
+    try:
+        with connection_context(None) as conn:
+            result = conn.execute(
+                """
+                DELETE FROM conversations
+                WHERE conversation_id NOT IN (SELECT DISTINCT conversation_id FROM messages)
+                """
+            )
+            conn.commit()
+            count = result.rowcount
+            return RepairResult(
+                name="empty_conversations",
+                repaired_count=count,
+                success=True,
+                detail=f"Deleted {count} empty conversations" if count else "No empty conversations found",
+            )
+    except Exception as exc:
+        return RepairResult(
+            name="empty_conversations",
+            repaired_count=0,
+            success=False,
+            detail=f"Failed to delete empty conversations: {exc}",
+        )
+
+
+def repair_dangling_fts(config: Config) -> RepairResult:
+    """Rebuild FTS index entries that are out of sync with messages table."""
+    try:
+        with connection_context(None) as conn:
+            # Check if FTS table exists
+            fts_exists = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
+            ).fetchone()
+
+            if not fts_exists:
+                return RepairResult(
+                    name="dangling_fts",
+                    repaired_count=0,
+                    success=True,
+                    detail="FTS table does not exist, skipping",
+                )
+
+            # Delete FTS entries that don't have corresponding messages
+            result = conn.execute(
+                """
+                DELETE FROM messages_fts
+                WHERE rowid NOT IN (SELECT rowid FROM messages)
+                """
+            )
+            deleted = result.rowcount
+
+            # Insert missing entries into FTS
+            inserted = conn.execute(
+                """
+                INSERT INTO messages_fts (rowid, text)
+                SELECT rowid, text FROM messages m
+                WHERE m.rowid NOT IN (SELECT rowid FROM messages_fts)
+                """
+            ).rowcount
+
+            conn.commit()
+
+            total = deleted + inserted
+            return RepairResult(
+                name="dangling_fts",
+                repaired_count=total,
+                success=True,
+                detail=f"FTS sync: deleted {deleted} orphaned, added {inserted} missing entries",
+            )
+    except Exception as exc:
+        return RepairResult(
+            name="dangling_fts",
+            repaired_count=0,
+            success=False,
+            detail=f"Failed to repair FTS index: {exc}",
+        )
+
+
+def repair_orphaned_attachments(config: Config) -> RepairResult:
+    """Delete attachments that are not referenced by any message or have orphaned refs."""
+    try:
+        with connection_context(None) as conn:
+            # First, delete attachment_refs that point to non-existent messages
+            ref_result = conn.execute(
+                """
+                DELETE FROM attachment_refs
+                WHERE message_id IS NOT NULL AND message_id NOT IN (SELECT message_id FROM messages)
+                """
+            )
+            refs_deleted = ref_result.rowcount
+
+            # Delete attachment_refs that point to non-existent conversations
+            conv_ref_result = conn.execute(
+                """
+                DELETE FROM attachment_refs
+                WHERE conversation_id NOT IN (SELECT conversation_id FROM conversations)
+                """
+            )
+            conv_refs_deleted = conv_ref_result.rowcount
+
+            # Delete attachments that have no remaining refs
+            att_result = conn.execute(
+                """
+                DELETE FROM attachments
+                WHERE attachment_id NOT IN (SELECT attachment_id FROM attachment_refs)
+                """
+            )
+            atts_deleted = att_result.rowcount
+
+            conn.commit()
+
+            total = refs_deleted + conv_refs_deleted + atts_deleted
+            return RepairResult(
+                name="orphaned_attachments",
+                repaired_count=total,
+                success=True,
+                detail=f"Cleaned {refs_deleted} orphaned refs, {conv_refs_deleted} conv refs, {atts_deleted} attachments",
+            )
+    except Exception as exc:
+        return RepairResult(
+            name="orphaned_attachments",
+            repaired_count=0,
+            success=False,
+            detail=f"Failed to clean orphaned attachments: {exc}",
+        )
+
+
+def run_all_repairs(config: Config) -> list[RepairResult]:
+    """Run all repair operations and return results."""
+    return [
+        repair_orphaned_messages(config),
+        repair_empty_conversations(config),
+        repair_dangling_fts(config),
+        repair_orphaned_attachments(config),
+    ]
+
+
+__all__ = [
+    "get_health",
+    "run_health",
+    "HealthCheck",
+    "HealthReport",
+    "VerifyStatus",
+    "cached_health_summary",
+    "RepairResult",
+    "repair_orphaned_messages",
+    "repair_empty_conversations",
+    "repair_dangling_fts",
+    "repair_orphaned_attachments",
+    "run_all_repairs",
+]

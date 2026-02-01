@@ -235,14 +235,14 @@ class AsyncSQLiteBackend:
             conversation_id: Conversation ID
 
         Returns:
-            List of MessageRecord objects ordered by message_index
+            List of MessageRecord objects ordered by timestamp
         """
         async with self._get_connection() as conn:
             cursor = await conn.execute(
                 """
                 SELECT * FROM messages
                 WHERE conversation_id = ?
-                ORDER BY message_index ASC
+                ORDER BY timestamp
                 """,
                 (conversation_id,),
             )
@@ -405,17 +405,9 @@ class AsyncSQLiteBackend:
                     ),
                 )
 
-                # 2. Save Messages
-                # TODO: Use executemany when aiosqlite supports it properly or loop
-                for i, msg in enumerate(messages):
-                    await conn.execute(
-                        """
-                        INSERT OR REPLACE INTO messages (
-                            message_id, conversation_id, provider_message_id,
-                            role, text, timestamp, content_hash,
-                            provider_meta, version
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
+                # 2. Save Messages (batched with executemany for performance)
+                if messages:
+                    message_data = [
                         (
                             msg.message_id,
                             msg.conversation_id,
@@ -426,53 +418,67 @@ class AsyncSQLiteBackend:
                             msg.content_hash,
                             json.dumps(msg.provider_meta) if msg.provider_meta else None,
                             msg.version or 1,
-                        ),
+                        )
+                        for msg in messages
+                    ]
+                    await conn.executemany(
+                        """
+                        INSERT OR REPLACE INTO messages (
+                            message_id, conversation_id, provider_message_id,
+                            role, text, timestamp, content_hash,
+                            provider_meta, version
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        message_data,
                     )
                 counts["messages_created"] = len(messages)
 
-                # 3. Save Attachments
-                for att in attachments:
-                    await conn.execute(
-                        """
-                        INSERT OR IGNORE INTO attachments (
-                            attachment_id, mime_type, size_bytes,
-                            path, ref_count, provider_meta
-                        ) VALUES (?, ?, ?, ?, 0, ?)
-                        """,
+                # 3. Save Attachments (batched)
+                if attachments:
+                    attachment_data = [
                         (
                             att.attachment_id,
                             att.mime_type,
                             att.size_bytes,
                             str(att.path) if att.path else None,
                             json.dumps(att.provider_meta) if att.provider_meta else None,
-                        ),
+                        )
+                        for att in attachments
+                    ]
+                    await conn.executemany(
+                        """
+                        INSERT OR IGNORE INTO attachments (
+                            attachment_id, mime_type, size_bytes,
+                            path, ref_count, provider_meta
+                        ) VALUES (?, ?, ?, ?, 0, ?)
+                        """,
+                        attachment_data,
                     )
                 counts["attachments_created"] = len(attachments)
 
-                # 4. Save Attachment Refs
+                # 4. Save Attachment Refs (batched)
                 from polylogue.storage.backends.sqlite import _make_ref_id
 
-                # We need to reconstruct refs from attachments list logic or pass explicit refs
-                # For now, just simplistic ref creation based on what we have
-                # This mirrors sync implementation logic if attachments contains all necessary info
-                # But Async backend is simplified. Assuming attachments list is what we want to save.
-                for att in attachments:
-                    ref_id = _make_ref_id(att.attachment_id, att.conversation_id, att.message_id)
-                    await conn.execute(
+                if attachments:
+                    ref_data = [
+                        (
+                            _make_ref_id(att.attachment_id, att.conversation_id, att.message_id),
+                            att.attachment_id,
+                            att.conversation_id,
+                            att.message_id,
+                            json.dumps(att.provider_meta) if att.provider_meta else None,
+                        )
+                        for att in attachments
+                    ]
+                    await conn.executemany(
                         """
                         INSERT OR IGNORE INTO attachment_refs (
                             ref_id, attachment_id, conversation_id, message_id, provider_meta
                         ) VALUES (?, ?, ?, ?, ?)
                         """,
-                        (
-                            ref_id,
-                            att.attachment_id,
-                            att.conversation_id,
-                            att.message_id,
-                            json.dumps(att.provider_meta) if att.provider_meta else None,
-                        ),
+                        ref_data,
                     )
-                    counts["attachment_refs_created"] += 1
+                counts["attachment_refs_created"] = len(attachments)
 
                 await conn.commit()
 

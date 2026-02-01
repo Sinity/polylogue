@@ -121,3 +121,69 @@ def test_backend_transaction_context_manager_exception(sqlite_backend: SQLiteBac
     # Should not exist after rollback
     retrieved = sqlite_backend.get_conversation("conv1")
     assert retrieved is None
+
+
+def test_backend_delete_conversation(sqlite_backend: SQLiteBackend) -> None:
+    """Test deleting a conversation and all related records."""
+    conv = make_conversation("conv1", title="Test")
+    msg1 = make_message("msg1", "conv1", text="Hello")
+    msg2 = make_message("msg2", "conv1", role="assistant", text="Hi there")
+    att = make_attachment("att1", "conv1", "msg1", mime_type="image/png", size_bytes=1024)
+
+    sqlite_backend.begin()
+    sqlite_backend.save_conversation(conv)
+    sqlite_backend.save_messages([msg1, msg2])
+    sqlite_backend.save_attachments([att])
+    sqlite_backend.commit()
+
+    # Verify exists
+    assert sqlite_backend.get_conversation("conv1") is not None
+    assert len(sqlite_backend.get_messages("conv1")) == 2
+    assert len(sqlite_backend.get_attachments("conv1")) == 1
+
+    # Delete
+    result = sqlite_backend.delete_conversation("conv1")
+    assert result is True
+
+    # Verify deleted
+    assert sqlite_backend.get_conversation("conv1") is None
+    assert len(sqlite_backend.get_messages("conv1")) == 0
+    assert len(sqlite_backend.get_attachments("conv1")) == 0
+
+
+def test_backend_delete_conversation_not_found(sqlite_backend: SQLiteBackend) -> None:
+    """Test deleting a non-existent conversation returns False."""
+    result = sqlite_backend.delete_conversation("nonexistent")
+    assert result is False
+
+
+def test_backend_delete_conversation_cleans_fts(sqlite_backend: SQLiteBackend) -> None:
+    """Test that deleting a conversation also cleans up FTS entries."""
+    from polylogue.storage.index import ensure_index, update_index_for_conversations
+
+    # Create and index conversation
+    conv = make_conversation("conv1", title="Test")
+    msg = make_message("msg1", "conv1", text="searchable content here")
+
+    sqlite_backend.begin()
+    sqlite_backend.save_conversation(conv)
+    sqlite_backend.save_messages([msg])
+    sqlite_backend.commit()
+
+    # Build FTS index
+    conn = sqlite_backend._get_connection()
+    ensure_index(conn)
+    update_index_for_conversations(["conv1"], conn)
+    conn.commit()
+
+    # Verify FTS entry exists
+    fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
+    assert fts_count > 0
+
+    # Delete conversation
+    result = sqlite_backend.delete_conversation("conv1")
+    assert result is True
+
+    # Verify FTS entries cleaned up
+    fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
+    assert fts_count == 0

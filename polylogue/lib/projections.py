@@ -135,6 +135,18 @@ class ConversationProjection:
             return m
         return self.transform(truncate)
 
+    def strip_tools(self) -> ConversationProjection:
+        """Filter: exclude tool use messages entirely."""
+        return self.where(lambda m: not m.is_tool_use)
+
+    def strip_thinking(self) -> ConversationProjection:
+        """Filter: exclude thinking/reasoning trace messages entirely."""
+        return self.where(lambda m: not m.is_thinking)
+
+    def strip_all(self) -> ConversationProjection:
+        """Filter: exclude both tool use and thinking messages."""
+        return self.strip_tools().strip_thinking()
+
     # --- Ordering and pagination ---
 
     def limit(self, n: int) -> ConversationProjection:
