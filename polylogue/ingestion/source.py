@@ -14,6 +14,11 @@ from pydantic import BaseModel
 from ..config import Source
 from ..importers import chatgpt, claude, codex, drive
 from ..importers.base import ParsedAttachment, ParsedConversation, ParsedMessage, extract_messages_from_list
+from ..importers.claude import (
+    SessionIndexEntry,
+    enrich_conversation_from_index,
+    parse_sessions_index,
+)
 from ..storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 if TYPE_CHECKING:
@@ -296,6 +301,15 @@ def iter_source_conversations(
     elif base.is_file():
         paths.append(base)
 
+    # Build session index lookup for Claude Code enrichment
+    # Group paths by directory and load sessions-index.json for each
+    session_indices: dict[Path, dict[str, SessionIndexEntry]] = {}
+    for path in paths:
+        parent = path.parent
+        if parent not in session_indices:
+            index_path = parent / "sessions-index.json"
+            session_indices[parent] = parse_sessions_index(index_path)
+
     if cursor_state is not None:
         cursor_state["file_count"] = len(paths)
         cursor_state.setdefault("failed_files", [])
@@ -375,20 +389,35 @@ def iter_source_conversations(
                                             LOGGER.exception("Error processing payload from %s", name)
                                             raise
             else:
+                # Get session index for this directory (for claude-code enrichment)
+                dir_index = session_indices.get(path.parent, {})
+
                 with path.open("rb") as handle:
                     if path.suffix.lower() in (".jsonl", ".ndjson") or path.name.lower().endswith(".jsonl.txt"):
                         if should_group:
                             # Group all lines into one conversation
                             payloads = list(_iter_json_stream(handle, path.name))
                             if payloads:
-                                yield from _parse_json_payload(provider_hint, payloads, path.stem)
+                                for conv in _parse_json_payload(provider_hint, payloads, path.stem):
+                                    # Enrich claude-code with session index metadata
+                                    if provider_hint == "claude-code" and conv.provider_conversation_id in dir_index:
+                                        conv = enrich_conversation_from_index(
+                                            conv, dir_index[conv.provider_conversation_id]
+                                        )
+                                    yield conv
                             continue
 
                     unpack = not (path.suffix.lower() == ".json" and should_group)
                     for payload in _iter_json_stream(handle, path.name, unpack_lists=unpack):
                         try:
                             provider = detect_provider(payload, path) or provider_hint
-                            yield from _parse_json_payload(provider, payload, path.stem)
+                            for conv in _parse_json_payload(provider, payload, path.stem):
+                                # Enrich claude-code with session index metadata
+                                if provider == "claude-code" and conv.provider_conversation_id in dir_index:
+                                    conv = enrich_conversation_from_index(
+                                        conv, dir_index[conv.provider_conversation_id]
+                                    )
+                                yield conv
                         except Exception:
                             LOGGER.exception("Error processing payload from %s", path)
                             raise

@@ -482,13 +482,17 @@ class ConversationFilter:
 
         Returns:
             Number of conversations deleted
-
-        Raises:
-            NotImplementedError: Deletion via filter chain is not yet implemented.
-                Use direct backend methods for now.
         """
-        # TODO: Add delete_conversation to StorageBackend protocol
-        raise NotImplementedError("Deletion via filter chain not yet implemented. Use direct backend methods for now.")
+        # Get all matching conversations
+        results = self.list()
+        deleted_count = 0
+
+        for conv in results:
+            # Access the backend through the repository
+            if self._repo.backend.delete_conversation(str(conv.id)):
+                deleted_count += 1
+
+        return deleted_count
 
     def pick(self) -> Conversation | None:
         """Interactive picker for matching conversations.
