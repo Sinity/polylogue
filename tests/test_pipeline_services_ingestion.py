@@ -282,7 +282,7 @@ class TestIngestionServiceIngestSources:
         assert result.counts["messages"] == 0
         assert len(result.processed_ids) == 0
 
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations")
+    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations_with_raw")
     @patch("polylogue.pipeline.services.ingestion.connection_context")
     @patch("polylogue.pipeline.services.ingestion.prepare_ingest")
     def test_ingest_single_source(self, mock_prepare, mock_conn_ctx, mock_iter_source):
@@ -291,9 +291,9 @@ class TestIngestionServiceIngestSources:
         mock_repo._db_path = Path("/tmp/test.db")
         mock_config = MagicMock(spec=Config)
 
-        # Setup mocks
+        # Setup mocks - iter_source_conversations_with_raw returns (raw_data, conv) tuples
         conv = self._make_parsed_conversation("conv-1")
-        mock_iter_source.return_value = iter([conv])
+        mock_iter_source.return_value = iter([(None, conv)])
         mock_conn_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_conn_ctx.return_value.__exit__ = MagicMock(return_value=None)
         mock_prepare.return_value = (
@@ -315,7 +315,7 @@ class TestIngestionServiceIngestSources:
         assert result.counts["messages"] == 1
         assert "conv-1" in result.processed_ids
 
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations")
+    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations_with_raw")
     @patch("polylogue.pipeline.services.ingestion.connection_context")
     @patch("polylogue.pipeline.services.ingestion.prepare_ingest")
     def test_ingest_multiple_sources(self, mock_prepare, mock_conn_ctx, mock_iter_source):
@@ -324,17 +324,17 @@ class TestIngestionServiceIngestSources:
         mock_repo._db_path = Path("/tmp/test.db")
         mock_config = MagicMock(spec=Config)
 
-        # Each source returns one conversation
+        # Each source returns one conversation (as tuples)
         conv1 = self._make_parsed_conversation("conv-1")
         conv2 = self._make_parsed_conversation("conv-2")
 
         call_count = [0]
 
-        def iter_source_side_effect(source, cursor_state=None):
+        def iter_source_side_effect(source, cursor_state=None, capture_raw=True):
             call_count[0] += 1
             if call_count[0] == 1:
-                return iter([conv1])
-            return iter([conv2])
+                return iter([(None, conv1)])
+            return iter([(None, conv2)])
 
         mock_iter_source.side_effect = iter_source_side_effect
         mock_conn_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
@@ -365,7 +365,7 @@ class TestIngestionServiceIngestSources:
         assert "conv-1" in result.processed_ids
         assert "conv-2" in result.processed_ids
 
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations")
+    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations_with_raw")
     @patch("polylogue.pipeline.services.ingestion.connection_context")
     @patch("polylogue.pipeline.services.ingestion.prepare_ingest")
     def test_progress_callback_called(self, mock_prepare, mock_conn_ctx, mock_iter_source):
@@ -375,7 +375,7 @@ class TestIngestionServiceIngestSources:
         mock_config = MagicMock(spec=Config)
 
         conv = self._make_parsed_conversation("conv-1")
-        mock_iter_source.return_value = iter([conv])
+        mock_iter_source.return_value = iter([(None, conv)])
         mock_conn_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_conn_ctx.return_value.__exit__ = MagicMock(return_value=None)
         mock_prepare.return_value = (
@@ -397,7 +397,7 @@ class TestIngestionServiceIngestSources:
 
         callback.assert_called_with(1, desc="Ingesting")
 
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations")
+    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations_with_raw")
     @patch("polylogue.pipeline.services.ingestion.connection_context")
     @patch("polylogue.pipeline.services.ingestion.prepare_ingest")
     @patch("polylogue.pipeline.services.ingestion.invalidate_search_cache")
@@ -408,7 +408,7 @@ class TestIngestionServiceIngestSources:
         mock_config = MagicMock(spec=Config)
 
         conv = self._make_parsed_conversation("conv-1")
-        mock_iter_source.return_value = iter([conv])
+        mock_iter_source.return_value = iter([(None, conv)])
         mock_conn_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_conn_ctx.return_value.__exit__ = MagicMock(return_value=None)
         mock_prepare.return_value = (
@@ -428,7 +428,7 @@ class TestIngestionServiceIngestSources:
 
         mock_invalidate.assert_called_once()
 
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations")
+    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations_with_raw")
     @patch("polylogue.pipeline.services.ingestion.connection_context")
     @patch("polylogue.pipeline.services.ingestion.prepare_ingest")
     @patch("polylogue.pipeline.services.ingestion.invalidate_search_cache")
@@ -452,7 +452,7 @@ class TestIngestionServiceIngestSources:
 
         mock_invalidate.assert_not_called()
 
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations")
+    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations_with_raw")
     @patch("polylogue.pipeline.services.ingestion.connection_context")
     @patch("polylogue.pipeline.services.ingestion.prepare_ingest")
     def test_error_in_prepare_ingest_propagates(self, mock_prepare, mock_conn_ctx, mock_iter_source):
@@ -462,7 +462,7 @@ class TestIngestionServiceIngestSources:
         mock_config = MagicMock(spec=Config)
 
         conv = self._make_parsed_conversation("conv-1")
-        mock_iter_source.return_value = iter([conv])
+        mock_iter_source.return_value = iter([(None, conv)])
         mock_conn_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
         mock_conn_ctx.return_value.__exit__ = MagicMock(return_value=None)
         mock_prepare.side_effect = ValueError("Test error")

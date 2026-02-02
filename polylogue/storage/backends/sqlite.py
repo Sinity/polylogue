@@ -11,7 +11,13 @@ from pathlib import Path
 from polylogue.core.json import dumps as json_dumps
 from polylogue.core.log import get_logger
 from polylogue.paths import DATA_HOME
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord
+from polylogue.storage.store import (
+    AttachmentRecord,
+    ConversationRecord,
+    MessageRecord,
+    RawConversationRecord,
+    RunRecord,
+)
 from polylogue.types import ConversationId
 
 
@@ -57,7 +63,7 @@ open_connection = connection_context
 
 
 LOGGER = get_logger(__name__)
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def create_default_backend() -> SQLiteBackend:
@@ -186,6 +192,26 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             indexed INTEGER,
             duration_ms INTEGER
         );
+
+        CREATE TABLE IF NOT EXISTS raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            source_index INTEGER,
+            raw_content BLOB NOT NULL,
+            acquired_at TEXT NOT NULL,
+            file_mtime TEXT,
+            parsed_conversation_id TEXT REFERENCES conversations(conversation_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_provider
+        ON raw_conversations(provider_name);
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_source
+        ON raw_conversations(source_path);
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_parsed
+        ON raw_conversations(parsed_conversation_id) WHERE parsed_conversation_id IS NOT NULL;
         """
     )
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -420,6 +446,37 @@ def _migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
+    """Migrate from v7 to v8: add raw_conversations table for raw storage.
+
+    This table stores the original JSON/JSONL bytes before parsing,
+    enabling honest database-driven testing and schema validation.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            source_path TEXT NOT NULL,
+            source_index INTEGER,
+            raw_content BLOB NOT NULL,
+            acquired_at TEXT NOT NULL,
+            file_mtime TEXT,
+            parsed_conversation_id TEXT REFERENCES conversations(conversation_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_provider
+        ON raw_conversations(provider_name);
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_source
+        ON raw_conversations(source_path);
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_parsed
+        ON raw_conversations(parsed_conversation_id) WHERE parsed_conversation_id IS NOT NULL;
+        """
+    )
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
@@ -428,6 +485,7 @@ _MIGRATIONS = {
     4: _migrate_v4_to_v5,
     5: _migrate_v5_to_v6,
     6: _migrate_v6_to_v7,
+    7: _migrate_v7_to_v8,
 }
 
 
@@ -1386,6 +1444,160 @@ class SQLiteBackend:
         except Exception:
             self.rollback()
             raise
+
+    # --- Raw Conversation Storage ---
+
+    def save_raw_conversation(self, record: RawConversationRecord) -> bool:
+        """Save a raw conversation record.
+
+        Uses INSERT OR IGNORE to avoid duplicates (raw_id is SHA256 of content).
+
+        Args:
+            record: Raw conversation record to save
+
+        Returns:
+            True if inserted, False if already exists
+        """
+        conn = self._get_connection()
+        result = conn.execute(
+            """
+            INSERT OR IGNORE INTO raw_conversations (
+                raw_id,
+                provider_name,
+                source_path,
+                source_index,
+                raw_content,
+                acquired_at,
+                file_mtime,
+                parsed_conversation_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.raw_id,
+                record.provider_name,
+                record.source_path,
+                record.source_index,
+                record.raw_content,
+                record.acquired_at,
+                record.file_mtime,
+                record.parsed_conversation_id,
+            ),
+        )
+        return bool(result.rowcount > 0)
+
+    def get_raw_conversation(self, raw_id: str) -> RawConversationRecord | None:
+        """Retrieve a raw conversation by ID.
+
+        Args:
+            raw_id: SHA256 hash of the raw content
+
+        Returns:
+            RawConversationRecord if found, None otherwise
+        """
+        conn = self._get_connection()
+        row = conn.execute(
+            "SELECT * FROM raw_conversations WHERE raw_id = ?",
+            (raw_id,),
+        ).fetchone()
+
+        if row is None:
+            return None
+
+        return RawConversationRecord(
+            raw_id=row["raw_id"],
+            provider_name=row["provider_name"],
+            source_path=row["source_path"],
+            source_index=row["source_index"],
+            raw_content=row["raw_content"],
+            acquired_at=row["acquired_at"],
+            file_mtime=row["file_mtime"],
+            parsed_conversation_id=row["parsed_conversation_id"],
+        )
+
+    def iter_raw_conversations(
+        self,
+        provider: str | None = None,
+        limit: int | None = None,
+    ) -> Iterator[RawConversationRecord]:
+        """Iterate over raw conversation records.
+
+        Args:
+            provider: Optional provider name to filter by
+            limit: Optional maximum number of records to return
+
+        Yields:
+            RawConversationRecord objects
+        """
+        conn = self._get_connection()
+
+        query = "SELECT * FROM raw_conversations"
+        params: list[str | int] = []
+
+        if provider is not None:
+            query += " WHERE provider_name = ?"
+            params.append(provider)
+
+        query += " ORDER BY acquired_at DESC"
+
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+
+        rows = conn.execute(query, tuple(params)).fetchall()
+
+        for row in rows:
+            yield RawConversationRecord(
+                raw_id=row["raw_id"],
+                provider_name=row["provider_name"],
+                source_path=row["source_path"],
+                source_index=row["source_index"],
+                raw_content=row["raw_content"],
+                acquired_at=row["acquired_at"],
+                file_mtime=row["file_mtime"],
+                parsed_conversation_id=row["parsed_conversation_id"],
+            )
+
+    def link_raw_to_parsed(self, raw_id: str, parsed_conversation_id: str) -> bool:
+        """Link a raw conversation record to its parsed conversation.
+
+        Args:
+            raw_id: SHA256 hash of the raw content
+            parsed_conversation_id: ID of the parsed conversation
+
+        Returns:
+            True if updated, False if raw_id not found
+        """
+        conn = self._get_connection()
+        result = conn.execute(
+            """
+            UPDATE raw_conversations
+            SET parsed_conversation_id = ?
+            WHERE raw_id = ?
+            """,
+            (parsed_conversation_id, raw_id),
+        )
+        return bool(result.rowcount > 0)
+
+    def get_raw_conversation_count(self, provider: str | None = None) -> int:
+        """Get count of raw conversations.
+
+        Args:
+            provider: Optional provider name to filter by
+
+        Returns:
+            Count of raw conversation records
+        """
+        conn = self._get_connection()
+
+        if provider is not None:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM raw_conversations WHERE provider_name = ?",
+                (provider,),
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) as cnt FROM raw_conversations").fetchone()
+
+        return row["cnt"]
 
 
 __all__ = ["SQLiteBackend", "DatabaseError", "default_db_path"]
