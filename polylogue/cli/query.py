@@ -5,19 +5,23 @@ This module handles the execution of query-mode operations including:
 - Formatting and outputting results
 - Aggregation operations (--by-month, --by-provider, --by-tag)
 - Modifier operations (--set, --add-tag, --delete)
+- Streaming output for memory-efficient large conversation display
 """
 
 from __future__ import annotations
 
 import json
 import re
+import sys
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
-    from polylogue.lib.models import Conversation
+    from polylogue.lib.models import Conversation, ConversationSummary, Message
+    from polylogue.lib.repository import ConversationRepository
 
 
 def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
@@ -163,6 +167,73 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             fail("query", "--delete requires at least one filter flag for safety")
 
     # Execute query
+    # Determine if we can use lightweight summaries (much faster, less memory)
+    list_mode = params.get("list_mode", False)
+    use_summaries = (
+        list_mode
+        and not params.get("pick")
+        and not params.get("transform")
+        and not params.get("dialogue_only")
+        and not params.get("stream")
+        and not params.get("set_meta")
+        and not params.get("unset")
+        and not params.get("add_tag")
+        and not params.get("rm_tag")
+        and not params.get("delete_matched")
+        and filter_chain.can_use_summaries()
+    )
+
+    if use_summaries:
+        # Fast path: use lightweight summaries (no message loading)
+        summary_results = filter_chain.list_summaries()
+        if not summary_results:
+            env.ui.console.print("No conversations matched.")
+            raise SystemExit(2)
+        _output_summary_list(env, summary_results, params)
+        return
+
+    # Streaming fast path: resolve ID and stream directly without loading full conversation
+    if params.get("stream"):
+        # For streaming, we need exactly one conversation
+        # Try to resolve via ID prefix first (most common case)
+        id_prefix = params.get("id_prefix")
+        if id_prefix:
+            full_id = conv_repo.resolve_id(id_prefix)
+            if not full_id:
+                env.ui.console.print(f"[red]No conversation found matching ID: {id_prefix}[/red]")
+                raise SystemExit(2)
+        elif params.get("latest"):
+            # Get latest conversation ID without loading full content
+            summaries = conv_repo.list_summaries(limit=1)
+            if not summaries:
+                env.ui.console.print("No conversations in archive.")
+                raise SystemExit(2)
+            full_id = str(summaries[0].id)
+        else:
+            # No ID specified, show error with guidance
+            env.ui.console.print(
+                "[yellow]--stream requires a specific conversation. "
+                "Use --id <prefix> or --latest to select one.[/yellow]"
+            )
+            raise SystemExit(1)
+
+        output_format = params.get("output_format") or "plaintext"
+        stream_format = output_format
+        if output_format == "json":
+            stream_format = "json-lines"
+        elif output_format not in ("plaintext", "markdown", "json-lines"):
+            stream_format = "plaintext"
+
+        stream_conversation(
+            env,
+            conv_repo,
+            full_id,
+            output_format=stream_format,
+            dialogue_only=params.get("dialogue_only", False),
+            message_limit=params.get("message_limit"),
+        )
+        return
+
     if params.get("pick"):
         # Interactive picker
         result = filter_chain.pick()
@@ -192,6 +263,10 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if transform:
         results = _apply_transform(results, transform)
 
+    # Apply dialogue-only filter (without --stream, still filter in-memory)
+    if params.get("dialogue_only"):
+        results = [conv.dialogue_only() for conv in results]
+
     # Handle aggregation outputs
     if params.get("by_month"):
         _output_by_month(env, results)
@@ -219,6 +294,9 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if params.get("open_result"):
         _open_result(env, results, params)
         return
+
+    # Note: --stream is handled earlier via the streaming fast path
+    # to avoid loading full conversations into memory
 
     # Regular output
     _output_results(env, results, params)
@@ -574,6 +652,57 @@ def _format_list(
         return "\n".join(lines)
 
 
+def _output_summary_list(
+    env: AppEnv,
+    summaries: list[ConversationSummary],
+    params: dict[str, Any],
+) -> None:
+    """Output a list of conversation summaries (memory-efficient).
+
+    This is the fast path for --list mode that doesn't load messages.
+    """
+    from polylogue.lib.models import ConversationSummary
+
+    output_format = params.get("output_format", "text")
+
+    if output_format == "json":
+        data = [
+            {
+                "id": str(s.id),
+                "provider": s.provider,
+                "title": s.display_title,
+                "date": s.updated_at.isoformat() if s.updated_at else None,
+                "tags": s.tags,
+                "summary": s.summary,
+            }
+            for s in summaries
+        ]
+        env.ui.console.print(json.dumps(data, indent=2))
+    elif output_format == "yaml":
+        import yaml
+
+        data = [
+            {
+                "id": str(s.id),
+                "provider": s.provider,
+                "title": s.display_title,
+                "date": s.updated_at.isoformat() if s.updated_at else None,
+                "tags": s.tags,
+            }
+            for s in summaries
+        ]
+        env.ui.console.print(yaml.dump(data, default_flow_style=False, allow_unicode=True))
+    else:
+        # Plain text format (default)
+        lines = []
+        for s in summaries:
+            date = s.updated_at.strftime("%Y-%m-%d") if s.updated_at else "unknown"
+            title = s.display_title[:50] if s.display_title else str(s.id)[:20]
+            # Note: message count not available in summary - show "?" or skip
+            lines.append(f"{str(s.id)[:24]:24s}  {date:10s}  [{s.provider:12s}]  {title}")
+        env.ui.console.print("\n".join(lines))
+
+
 def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, Any]:
     """Convert conversation to dict, optionally selecting fields."""
     full = {
@@ -723,6 +852,127 @@ def _conv_to_plaintext(conv: Conversation) -> str:
             lines.append("")
 
     return "\n".join(lines).strip()
+
+
+# =============================================================================
+# Streaming Output (Memory-Efficient)
+# =============================================================================
+
+
+def stream_conversation(
+    env: AppEnv,
+    repo: ConversationRepository,
+    conversation_id: str,
+    *,
+    output_format: str = "plaintext",
+    dialogue_only: bool = False,
+    message_limit: int | None = None,
+) -> int:
+    """Stream conversation messages to stdout without buffering.
+
+    This is the memory-efficient alternative to _output_results() for
+    displaying large conversations. Messages are written to stdout one
+    at a time, keeping memory usage constant regardless of conversation size.
+
+    Args:
+        env: Application environment with UI
+        repo: ConversationRepository for data access
+        conversation_id: ID of conversation to stream
+        output_format: Output format - "plaintext", "markdown", or "json-lines"
+        dialogue_only: If True, only stream user/assistant messages
+        message_limit: Maximum messages to output. None = no limit.
+
+    Returns:
+        Number of messages streamed
+    """
+    # Get conversation metadata for header
+    conv_record = repo.backend.get_conversation(conversation_id)
+    if not conv_record:
+        env.ui.console.print(f"[red]Conversation not found: {conversation_id}[/red]")
+        raise SystemExit(1)
+
+    # Get stats for progress indication
+    stats = repo.get_conversation_stats(conversation_id)
+
+    # Print header based on format
+    if output_format == "markdown":
+        title = conv_record.title or conversation_id[:24]
+        sys.stdout.write(f"# {title}\n\n")
+        if dialogue_only and stats:
+            sys.stdout.write(f"_Showing {stats['dialogue_messages']} dialogue messages")
+            if message_limit:
+                sys.stdout.write(f" (limit: {message_limit})")
+            sys.stdout.write(f" of {stats['total_messages']} total_\n\n")
+        sys.stdout.flush()
+    elif output_format == "json-lines":
+        # JSONL header with metadata
+        header = {
+            "type": "header",
+            "conversation_id": conversation_id,
+            "title": conv_record.title,
+            "dialogue_only": dialogue_only,
+            "message_limit": message_limit,
+            "stats": stats,
+        }
+        sys.stdout.write(json.dumps(header) + "\n")
+        sys.stdout.flush()
+
+    # Stream messages
+    count = 0
+    for msg in repo.iter_messages(
+        conversation_id,
+        dialogue_only=dialogue_only,
+        limit=message_limit,
+    ):
+        _write_message_streaming(msg, output_format)
+        count += 1
+
+    # Print footer
+    if output_format == "markdown":
+        sys.stdout.write(f"\n---\n_Streamed {count} messages_\n")
+        sys.stdout.flush()
+    elif output_format == "json-lines":
+        footer = {"type": "footer", "message_count": count}
+        sys.stdout.write(json.dumps(footer) + "\n")
+        sys.stdout.flush()
+
+    return count
+
+
+def _write_message_streaming(msg: Message, output_format: str) -> None:
+    """Write a single message to stdout in streaming mode.
+
+    Args:
+        msg: Message to write
+        output_format: Format - "plaintext", "markdown", or "json-lines"
+    """
+    if output_format == "plaintext":
+        # Simple format: [role] text
+        role_label = msg.role.upper() if msg.role else "UNKNOWN"
+        if msg.text:
+            sys.stdout.write(f"[{role_label}]\n{msg.text}\n\n")
+        sys.stdout.flush()
+
+    elif output_format == "markdown":
+        # Markdown format with headers
+        role_label = msg.role.capitalize() if msg.role else "Unknown"
+        sys.stdout.write(f"## {role_label}\n\n")
+        if msg.text:
+            sys.stdout.write(f"{msg.text}\n\n")
+        sys.stdout.flush()
+
+    elif output_format == "json-lines":
+        # JSONL format - one JSON object per line
+        record = {
+            "type": "message",
+            "id": msg.id,
+            "role": msg.role,
+            "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
+            "text": msg.text,
+            "word_count": msg.word_count,
+        }
+        sys.stdout.write(json.dumps(record, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
 
 
 def _send_output(
