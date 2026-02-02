@@ -645,6 +645,34 @@ class Conversation(BaseModel):
                 if thinking:
                     yield thinking
 
+    def iter_branches(self) -> Iterator[tuple[str, list[Message]]]:
+        """Iterate over branch groups (messages sharing the same parent).
+
+        Yields tuples of (parent_id, branch_messages) for each parent that has
+        multiple children (branches). Only includes actual branches where there
+        are 2+ messages with the same parent_id.
+
+        Example:
+            for parent_id, branches in conv.iter_branches():
+                print(f"Parent {parent_id} has {len(branches)} branches")
+                for msg in branches:
+                    print(f"  Branch {msg.branch_index}: {msg.text[:50]}")
+        """
+        from collections import defaultdict
+
+        # Group messages by parent_id
+        by_parent: dict[str, list[Message]] = defaultdict(list)
+        for m in self.messages:
+            if m.parent_id:
+                by_parent[m.parent_id].append(m)
+
+        # Yield only parents with multiple children (actual branches)
+        for parent_id, children in by_parent.items():
+            if len(children) > 1:
+                # Sort by branch_index for consistent ordering
+                sorted_children = sorted(children, key=lambda m: m.branch_index)
+                yield parent_id, sorted_children
+
     # --- Rendering ---
 
     def to_text(self, include_role: bool = True) -> str:

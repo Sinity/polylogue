@@ -503,3 +503,92 @@ def cli_runner():
     from click.testing import CliRunner
 
     return CliRunner()
+
+
+# =============================================================================
+# SEEDED DATABASE FIXTURE (for tests that need real provider data)
+# =============================================================================
+
+
+@pytest.fixture(scope="session")
+def seeded_db(tmp_path_factory):
+    """Create a database seeded with real fixture data from all providers.
+
+    This fixture ingests actual provider data (ChatGPT, Claude Code, Codex, Gemini)
+    from tests/fixtures/real/ through the full pipeline. Use this instead of
+    hardcoding production database paths.
+
+    Scope is 'session' for efficiency - the seeded DB is created once and reused.
+
+    Returns:
+        Path to the seeded database file
+    """
+    from pathlib import Path
+
+    from polylogue.config import Source
+    from polylogue.ingestion import iter_source_conversations
+    from polylogue.pipeline.ingest import prepare_ingest
+    from polylogue.storage.backends.sqlite import open_connection, SQLiteBackend
+    from polylogue.storage.repository import StorageRepository
+
+    # Create session-scoped temp directory
+    tmp_dir = tmp_path_factory.mktemp("seeded_db")
+    db_path = tmp_dir / "polylogue.db"
+
+    # Initialize schema by opening connection
+    with open_connection(db_path):
+        pass
+
+    # Create a repository that uses our temp database
+    backend = SQLiteBackend(db_path=db_path)
+    repository = StorageRepository(backend=backend)
+
+    # Find fixtures directory
+    fixtures_dir = Path(__file__).parent / "fixtures" / "real"
+
+    # Provider -> fixture paths mapping
+    fixture_files = {
+        "chatgpt": list(fixtures_dir.glob("chatgpt/*.json")),
+        "claude-code": list(fixtures_dir.glob("claude-code/*.jsonl")),
+        "codex": list(fixtures_dir.glob("codex/*.jsonl")),
+        "gemini": list(fixtures_dir.glob("gemini/*.jsonl")),
+    }
+
+    # Ingest each fixture through the full pipeline
+    with open_connection(db_path) as conn:
+        for provider, files in fixture_files.items():
+            for fixture_path in files:
+                if not fixture_path.exists():
+                    continue
+
+                try:
+                    source = Source(name=provider, path=fixture_path)
+                    for convo in iter_source_conversations(source):
+                        archive_root = tmp_dir / "archive"
+                        archive_root.mkdir(exist_ok=True)
+                        prepare_ingest(
+                            convo,
+                            source_name=provider,
+                            archive_root=archive_root,
+                            conn=conn,
+                            repository=repository,  # Pass our repository!
+                        )
+                except Exception as e:
+                    # Log but don't fail - some fixtures may have format issues
+                    import warnings
+                    warnings.warn(f"Failed to ingest {fixture_path}: {e}")
+
+    return db_path
+
+
+@pytest.fixture
+def seeded_repository(seeded_db):
+    """Repository backed by the seeded database.
+
+    Use this when tests need a ConversationRepository with real provider data.
+    """
+    from polylogue.lib.repository import ConversationRepository
+    from polylogue.storage.backends.sqlite import SQLiteBackend
+
+    backend = SQLiteBackend(db_path=seeded_db)
+    return ConversationRepository(backend=backend)
