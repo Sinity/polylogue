@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.importers.base import ParsedConversation, ParsedMessage
 from polylogue.pipeline.services.ingestion import IngestionService, IngestResult
 
 # ============================================================================
@@ -244,30 +241,20 @@ class TestIngestionServiceInit:
 
 
 class TestIngestionServiceIngestSources:
-    """Tests for IngestionService.ingest_sources method."""
+    """Tests for IngestionService.ingest_sources method.
 
-    def _make_parsed_conversation(self, conv_id: str) -> ParsedConversation:
-        """Helper to create a ParsedConversation."""
-        return ParsedConversation(
-            provider_name="test",
-            provider_conversation_id=conv_id,
-            title=f"Conversation {conv_id}",
-            messages=[
-                ParsedMessage(
-                    provider_message_id=f"msg-{conv_id}-1",
-                    role="user",
-                    text="Hello",
-                    timestamp=datetime.now(timezone.utc).isoformat(),
-                )
-            ],
-            created_at=datetime.now(timezone.utc).isoformat(),
-            updated_at=datetime.now(timezone.utc).isoformat(),
-        )
+    ingest_sources() orchestrates:
+    1. ACQUIRE stage via AcquisitionService.acquire_sources()
+    2. PARSE stage via self.ingest_from_raw()
+
+    These tests mock the stage boundaries to verify orchestration logic.
+    """
 
     def test_ingest_empty_sources_returns_empty_result(self):
-        """Empty sources list returns empty IngestResult."""
+        """Empty sources list returns empty IngestResult (no acquisition needed)."""
         mock_repo = MagicMock()
-        mock_repo._db_path = Path("/tmp/test.db")
+        mock_backend = MagicMock()
+        mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
         service = IngestionService(
@@ -276,31 +263,25 @@ class TestIngestionServiceIngestSources:
             config=mock_config,
         )
 
-        result = service.ingest_sources([])
+        with patch("polylogue.pipeline.services.acquisition.AcquisitionService") as mock_acquire_cls:
+            mock_acquire_service = MagicMock()
+            mock_acquire_cls.return_value = mock_acquire_service
+            # Empty sources → empty result from acquire
+            from polylogue.pipeline.services.acquisition import AcquireResult
+            mock_acquire_service.acquire_sources.return_value = AcquireResult()
+
+            result = service.ingest_sources([])
 
         assert result.counts["conversations"] == 0
         assert result.counts["messages"] == 0
         assert len(result.processed_ids) == 0
 
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations_with_raw")
-    @patch("polylogue.pipeline.services.ingestion.connection_context")
-    @patch("polylogue.pipeline.services.ingestion.prepare_ingest")
-    def test_ingest_single_source(self, mock_prepare, mock_conn_ctx, mock_iter_source):
-        """Single file source is processed correctly."""
+    def test_ingest_calls_acquire_then_parse(self):
+        """ingest_sources calls acquire stage, then parse stage with returned raw_ids."""
         mock_repo = MagicMock()
-        mock_repo._db_path = Path("/tmp/test.db")
+        mock_backend = MagicMock()
+        mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
-
-        # Setup mocks - iter_source_conversations_with_raw returns (raw_data, conv) tuples
-        conv = self._make_parsed_conversation("conv-1")
-        mock_iter_source.return_value = iter([(None, conv)])
-        mock_conn_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
-        mock_conn_ctx.return_value.__exit__ = MagicMock(return_value=None)
-        mock_prepare.return_value = (
-            "conv-1",
-            {"conversations": 1, "messages": 1, "attachments": 0, "skipped_conversations": 0, "skipped_messages": 0, "skipped_attachments": 0},
-            True,
-        )
 
         service = IngestionService(
             repository=mock_repo,
@@ -308,165 +289,119 @@ class TestIngestionServiceIngestSources:
             config=mock_config,
         )
 
-        source = Source(name="test-source", path=Path("/tmp/inbox"))
-        result = service.ingest_sources([source])
+        with patch("polylogue.pipeline.services.acquisition.AcquisitionService") as mock_acquire_cls:
+            mock_acquire_service = MagicMock()
+            mock_acquire_cls.return_value = mock_acquire_service
 
-        assert result.counts["conversations"] == 1
-        assert result.counts["messages"] == 1
-        assert "conv-1" in result.processed_ids
+            # Acquisition returns some raw_ids
+            from polylogue.pipeline.services.acquisition import AcquireResult
+            acquire_result = AcquireResult()
+            acquire_result.raw_ids = ["raw-1", "raw-2"]
+            acquire_result.counts["acquired"] = 2
+            mock_acquire_service.acquire_sources.return_value = acquire_result
 
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations_with_raw")
-    @patch("polylogue.pipeline.services.ingestion.connection_context")
-    @patch("polylogue.pipeline.services.ingestion.prepare_ingest")
-    def test_ingest_multiple_sources(self, mock_prepare, mock_conn_ctx, mock_iter_source):
-        """Multiple sources are processed correctly."""
-        mock_repo = MagicMock()
-        mock_repo._db_path = Path("/tmp/test.db")
-        mock_config = MagicMock(spec=Config)
+            # Mock ingest_from_raw
+            mock_ingest_result = IngestResult()
+            mock_ingest_result.counts["conversations"] = 2
+            mock_ingest_result.counts["messages"] = 5
+            mock_ingest_result.processed_ids = {"conv-1", "conv-2"}
+            with patch.object(service, "ingest_from_raw", return_value=mock_ingest_result) as mock_parse:
+                source = Source(name="test-source", path=Path("/tmp/inbox"))
+                result = service.ingest_sources([source])
 
-        # Each source returns one conversation (as tuples)
-        conv1 = self._make_parsed_conversation("conv-1")
-        conv2 = self._make_parsed_conversation("conv-2")
+                # Verify acquire was called
+                mock_acquire_service.acquire_sources.assert_called_once()
 
-        call_count = [0]
-
-        def iter_source_side_effect(source, cursor_state=None, capture_raw=True):
-            call_count[0] += 1
-            if call_count[0] == 1:
-                return iter([(None, conv1)])
-            return iter([(None, conv2)])
-
-        mock_iter_source.side_effect = iter_source_side_effect
-        mock_conn_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
-        mock_conn_ctx.return_value.__exit__ = MagicMock(return_value=None)
-
-        def prepare_side_effect(convo, source_name, **kwargs):
-            return (
-                convo.provider_conversation_id,
-                {"conversations": 1, "messages": 1, "attachments": 0, "skipped_conversations": 0, "skipped_messages": 0, "skipped_attachments": 0},
-                True,
-            )
-
-        mock_prepare.side_effect = prepare_side_effect
-
-        service = IngestionService(
-            repository=mock_repo,
-            archive_root=Path("/tmp/archive"),
-            config=mock_config,
-        )
-
-        sources = [
-            Source(name="source-1", path=Path("/tmp/inbox1")),
-            Source(name="source-2", path=Path("/tmp/inbox2")),
-        ]
-        result = service.ingest_sources(sources)
+                # Verify parse was called with the raw_ids from acquire
+                mock_parse.assert_called_once_with(
+                    raw_ids=["raw-1", "raw-2"],
+                    progress_callback=None,
+                )
 
         assert result.counts["conversations"] == 2
-        assert "conv-1" in result.processed_ids
-        assert "conv-2" in result.processed_ids
+        assert result.counts["messages"] == 5
+        assert result.processed_ids == {"conv-1", "conv-2"}
 
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations_with_raw")
-    @patch("polylogue.pipeline.services.ingestion.connection_context")
-    @patch("polylogue.pipeline.services.ingestion.prepare_ingest")
-    def test_progress_callback_called(self, mock_prepare, mock_conn_ctx, mock_iter_source):
-        """Progress callback is invoked for each conversation."""
+    def test_ingest_skips_parse_when_nothing_acquired(self):
+        """If acquisition returns no raw_ids, parse stage is skipped."""
         mock_repo = MagicMock()
-        mock_repo._db_path = Path("/tmp/test.db")
+        mock_backend = MagicMock()
+        mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
-        conv = self._make_parsed_conversation("conv-1")
-        mock_iter_source.return_value = iter([(None, conv)])
-        mock_conn_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
-        mock_conn_ctx.return_value.__exit__ = MagicMock(return_value=None)
-        mock_prepare.return_value = (
-            "conv-1",
-            {"conversations": 1, "messages": 1, "attachments": 0, "skipped_conversations": 0, "skipped_messages": 0, "skipped_attachments": 0},
-            True,
+        service = IngestionService(
+            repository=mock_repo,
+            archive_root=Path("/tmp/archive"),
+            config=mock_config,
+        )
+
+        with patch("polylogue.pipeline.services.acquisition.AcquisitionService") as mock_acquire_cls:
+            mock_acquire_service = MagicMock()
+            mock_acquire_cls.return_value = mock_acquire_service
+
+            # Acquisition returns empty (e.g., all duplicates skipped)
+            from polylogue.pipeline.services.acquisition import AcquireResult
+            acquire_result = AcquireResult()
+            acquire_result.counts["skipped"] = 5
+            mock_acquire_service.acquire_sources.return_value = acquire_result
+
+            # Mock ingest_from_raw to verify it's NOT called
+            with patch.object(service, "ingest_from_raw") as mock_parse:
+                source = Source(name="test-source", path=Path("/tmp/inbox"))
+                result = service.ingest_sources([source])
+
+                mock_parse.assert_not_called()
+
+        # Empty result returned
+        assert result.counts["conversations"] == 0
+
+    def test_progress_callback_passed_to_both_stages(self):
+        """Progress callback is forwarded to both acquire and parse stages."""
+        mock_repo = MagicMock()
+        mock_backend = MagicMock()
+        mock_repo._backend = mock_backend
+        mock_config = MagicMock(spec=Config)
+
+        service = IngestionService(
+            repository=mock_repo,
+            archive_root=Path("/tmp/archive"),
+            config=mock_config,
         )
 
         callback = MagicMock()
 
-        service = IngestionService(
-            repository=mock_repo,
-            archive_root=Path("/tmp/archive"),
-            config=mock_config,
-        )
+        with patch("polylogue.pipeline.services.acquisition.AcquisitionService") as mock_acquire_cls:
+            mock_acquire_service = MagicMock()
+            mock_acquire_cls.return_value = mock_acquire_service
 
-        source = Source(name="test-source", path=Path("/tmp/inbox"))
-        service.ingest_sources([source], progress_callback=callback)
+            from polylogue.pipeline.services.acquisition import AcquireResult
+            acquire_result = AcquireResult()
+            acquire_result.raw_ids = ["raw-1"]
+            mock_acquire_service.acquire_sources.return_value = acquire_result
 
-        callback.assert_called_with(1, desc="Ingesting")
+            mock_ingest_result = IngestResult()
+            with patch.object(service, "ingest_from_raw", return_value=mock_ingest_result) as mock_parse:
+                source = Source(name="test-source", path=Path("/tmp/inbox"))
+                service.ingest_sources([source], progress_callback=callback)
 
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations_with_raw")
-    @patch("polylogue.pipeline.services.ingestion.connection_context")
-    @patch("polylogue.pipeline.services.ingestion.prepare_ingest")
-    @patch("polylogue.pipeline.services.ingestion.invalidate_search_cache")
-    def test_search_cache_invalidated_on_changes(self, mock_invalidate, mock_prepare, mock_conn_ctx, mock_iter_source):
-        """Search cache is invalidated when conversations are processed."""
+                # Callback passed to acquire
+                mock_acquire_service.acquire_sources.assert_called_once_with(
+                    [source],
+                    progress_callback=callback,
+                )
+
+                # Callback passed to parse
+                mock_parse.assert_called_once_with(
+                    raw_ids=["raw-1"],
+                    progress_callback=callback,
+                )
+
+    def test_backend_not_initialized_raises(self):
+        """RuntimeError raised if repository backend is None."""
         mock_repo = MagicMock()
-        mock_repo._db_path = Path("/tmp/test.db")
+        mock_repo._backend = None
         mock_config = MagicMock(spec=Config)
 
-        conv = self._make_parsed_conversation("conv-1")
-        mock_iter_source.return_value = iter([(None, conv)])
-        mock_conn_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
-        mock_conn_ctx.return_value.__exit__ = MagicMock(return_value=None)
-        mock_prepare.return_value = (
-            "conv-1",
-            {"conversations": 1, "messages": 1, "attachments": 0, "skipped_conversations": 0, "skipped_messages": 0, "skipped_attachments": 0},
-            True,
-        )
-
-        service = IngestionService(
-            repository=mock_repo,
-            archive_root=Path("/tmp/archive"),
-            config=mock_config,
-        )
-
-        source = Source(name="test-source", path=Path("/tmp/inbox"))
-        service.ingest_sources([source])
-
-        mock_invalidate.assert_called_once()
-
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations_with_raw")
-    @patch("polylogue.pipeline.services.ingestion.connection_context")
-    @patch("polylogue.pipeline.services.ingestion.prepare_ingest")
-    @patch("polylogue.pipeline.services.ingestion.invalidate_search_cache")
-    def test_search_cache_not_invalidated_when_no_changes(self, mock_invalidate, mock_prepare, mock_conn_ctx, mock_iter_source):
-        """Search cache is NOT invalidated when no conversations processed."""
-        mock_repo = MagicMock()
-        mock_repo._db_path = Path("/tmp/test.db")
-        mock_config = MagicMock(spec=Config)
-
-        # Empty source
-        mock_iter_source.return_value = iter([])
-
-        service = IngestionService(
-            repository=mock_repo,
-            archive_root=Path("/tmp/archive"),
-            config=mock_config,
-        )
-
-        source = Source(name="test-source", path=Path("/tmp/inbox"))
-        service.ingest_sources([source])
-
-        mock_invalidate.assert_not_called()
-
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations_with_raw")
-    @patch("polylogue.pipeline.services.ingestion.connection_context")
-    @patch("polylogue.pipeline.services.ingestion.prepare_ingest")
-    def test_error_in_prepare_ingest_propagates(self, mock_prepare, mock_conn_ctx, mock_iter_source):
-        """Errors in prepare_ingest are propagated."""
-        mock_repo = MagicMock()
-        mock_repo._db_path = Path("/tmp/test.db")
-        mock_config = MagicMock(spec=Config)
-
-        conv = self._make_parsed_conversation("conv-1")
-        mock_iter_source.return_value = iter([(None, conv)])
-        mock_conn_ctx.return_value.__enter__ = MagicMock(return_value=MagicMock())
-        mock_conn_ctx.return_value.__exit__ = MagicMock(return_value=None)
-        mock_prepare.side_effect = ValueError("Test error")
-
         service = IngestionService(
             repository=mock_repo,
             archive_root=Path("/tmp/archive"),
@@ -475,144 +410,8 @@ class TestIngestionServiceIngestSources:
 
         source = Source(name="test-source", path=Path("/tmp/inbox"))
 
-        with pytest.raises(ValueError, match="Test error"):
+        with pytest.raises(RuntimeError, match="backend is not initialized"):
             service.ingest_sources([source])
-
-
-class TestIterSourceConversationsSafe:
-    """Tests for IngestionService._iter_source_conversations_safe method."""
-
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations")
-    def test_file_source_uses_iter_source_conversations(self, mock_iter_source):
-        """File sources use iter_source_conversations."""
-        mock_repo = MagicMock()
-        mock_config = MagicMock(spec=Config)
-
-        mock_iter_source.return_value = iter([])
-
-        service = IngestionService(
-            repository=mock_repo,
-            archive_root=Path("/tmp/archive"),
-            config=mock_config,
-        )
-
-        source = Source(name="test-source", path=Path("/tmp/inbox"))
-        list(service._iter_source_conversations_safe(source=source, ui=None, download_assets=True))
-
-        mock_iter_source.assert_called_once()
-
-    @patch("polylogue.pipeline.services.ingestion.iter_drive_conversations")
-    def test_drive_source_uses_iter_drive_conversations(self, mock_iter_drive):
-        """Drive sources use iter_drive_conversations."""
-        mock_repo = MagicMock()
-        mock_config = MagicMock(spec=Config)
-        mock_config.drive_config = MagicMock()
-
-        mock_iter_drive.return_value = iter([])
-
-        service = IngestionService(
-            repository=mock_repo,
-            archive_root=Path("/tmp/archive"),
-            config=mock_config,
-        )
-
-        source = Source(name="drive-source", folder="some-folder-id")
-        list(service._iter_source_conversations_safe(source=source, ui=None, download_assets=True))
-
-        mock_iter_drive.assert_called_once()
-
-    @patch("polylogue.pipeline.services.ingestion.iter_drive_conversations")
-    def test_drive_auth_error_handled_gracefully(self, mock_iter_drive):
-        """DriveAuthError is caught and logged, not propagated."""
-        from polylogue.ingestion import DriveAuthError
-
-        mock_repo = MagicMock()
-        mock_config = MagicMock(spec=Config)
-        mock_config.drive_config = MagicMock()
-
-        mock_iter_drive.side_effect = DriveAuthError("Token expired")
-
-        service = IngestionService(
-            repository=mock_repo,
-            archive_root=Path("/tmp/archive"),
-            config=mock_config,
-        )
-
-        source = Source(name="drive-source", folder="some-folder-id")
-        result = list(service._iter_source_conversations_safe(source=source, ui=None, download_assets=True))
-
-        # No exception raised, empty result
-        assert result == []
-
-    @patch("polylogue.pipeline.services.ingestion.iter_drive_conversations")
-    def test_drive_auth_error_updates_cursor_state(self, mock_iter_drive):
-        """DriveAuthError updates cursor_state with error info."""
-        from polylogue.ingestion import DriveAuthError
-
-        mock_repo = MagicMock()
-        mock_config = MagicMock(spec=Config)
-        mock_config.drive_config = MagicMock()
-
-        mock_iter_drive.side_effect = DriveAuthError("Token expired")
-
-        service = IngestionService(
-            repository=mock_repo,
-            archive_root=Path("/tmp/archive"),
-            config=mock_config,
-        )
-
-        source = Source(name="drive-source", folder="some-folder-id")
-        cursor_state: dict[str, Any] = {"error_count": 0}
-
-        list(service._iter_source_conversations_safe(source=source, ui=None, download_assets=True, cursor_state=cursor_state))
-
-        assert cursor_state["error_count"] == 1
-        assert cursor_state["latest_error"] == "Token expired"
-        assert cursor_state["latest_error_source"] == "drive-source"
-
-    @patch("polylogue.pipeline.services.ingestion.iter_source_conversations")
-    def test_cursor_state_passed_to_file_iterator(self, mock_iter_source):
-        """cursor_state is passed through to iter_source_conversations."""
-        mock_repo = MagicMock()
-        mock_config = MagicMock(spec=Config)
-
-        mock_iter_source.return_value = iter([])
-
-        service = IngestionService(
-            repository=mock_repo,
-            archive_root=Path("/tmp/archive"),
-            config=mock_config,
-        )
-
-        source = Source(name="test-source", path=Path("/tmp/inbox"))
-        cursor_state = {"last_processed": "conv-123"}
-
-        list(service._iter_source_conversations_safe(source=source, ui=None, download_assets=True, cursor_state=cursor_state))
-
-        mock_iter_source.assert_called_once_with(source, cursor_state=cursor_state)
-
-    @patch("polylogue.pipeline.services.ingestion.iter_drive_conversations")
-    def test_cursor_state_passed_to_drive_iterator(self, mock_iter_drive):
-        """cursor_state is passed through to iter_drive_conversations."""
-        mock_repo = MagicMock()
-        mock_config = MagicMock(spec=Config)
-        mock_config.drive_config = MagicMock()
-
-        mock_iter_drive.return_value = iter([])
-
-        service = IngestionService(
-            repository=mock_repo,
-            archive_root=Path("/tmp/archive"),
-            config=mock_config,
-        )
-
-        source = Source(name="drive-source", folder="folder-id")
-        cursor_state = {"last_processed": "conv-123"}
-
-        list(service._iter_source_conversations_safe(source=source, ui=None, download_assets=True, cursor_state=cursor_state))
-
-        call_kwargs = mock_iter_drive.call_args.kwargs
-        assert call_kwargs["cursor_state"] is cursor_state
 
 
 # ============================================================================
@@ -682,3 +481,81 @@ class TestIngestionServiceIntegration:
         # Verify results
         assert result.counts["conversations"] >= 1
         assert len(result.processed_ids) >= 1
+
+    def test_ingest_from_raw_parses_stored_conversations(self, cli_workspace, tmp_path):
+        """Full acquire → parse flow using database-driven testing."""
+        import json
+
+        from polylogue.config import Config, Source
+        from polylogue.pipeline.services.acquisition import AcquisitionService
+        from polylogue.storage.backends.sqlite import SQLiteBackend
+        from polylogue.storage.repository import StorageRepository
+
+        # Create test conversation file
+        inbox = cli_workspace["inbox_dir"]
+        conv_data = {
+            "id": "test-conv-raw",
+            "title": "Test Raw Conversation",
+            "create_time": 1700000000,
+            "update_time": 1700000100,
+            "mapping": {
+                "root": {
+                    "id": "root",
+                    "message": None,
+                    "children": ["msg1"],
+                },
+                "msg1": {
+                    "id": "msg1",
+                    "message": {
+                        "id": "msg1",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["Hello from raw!"]},
+                        "create_time": 1700000050,
+                    },
+                    "parent": "root",
+                    "children": [],
+                },
+            },
+        }
+        (inbox / "conversations.json").write_text(json.dumps([conv_data]))
+
+        # Single backend instance - same connection management throughout
+        backend = SQLiteBackend(db_path=cli_workspace["db_path"])
+        repository = StorageRepository(backend=backend)
+
+        config = Config(
+            archive_root=cli_workspace["archive_root"],
+            render_root=cli_workspace["render_root"],
+            sources=[Source(name="test-inbox", path=inbox)],
+        )
+
+        # Step 1: ACQUIRE - store raw bytes
+        acquire_service = AcquisitionService(backend=backend)
+        acquire_result = acquire_service.acquire_sources(config.sources)
+
+        assert acquire_result.counts["acquired"] == 1
+        raw_ids = acquire_result.raw_ids
+
+        # Step 2: PARSE - read from raw_conversations, parse, store
+        # Uses same backend via repository
+        ingest_service = IngestionService(
+            repository=repository,
+            archive_root=cli_workspace["archive_root"],
+            config=config,
+        )
+
+        parse_result = ingest_service.ingest_from_raw(raw_ids=raw_ids)
+
+        # Verify parsing succeeded
+        assert parse_result.counts["conversations"] >= 1
+        assert len(parse_result.processed_ids) >= 1
+
+        # Verify the raw_id link is set on the conversation
+        with backend._get_connection() as conn:
+            row = conn.execute(
+                "SELECT raw_id FROM conversations WHERE conversation_id = ?",
+                (list(parse_result.processed_ids)[0],),
+            ).fetchone()
+
+        assert row is not None
+        assert row["raw_id"] == raw_ids[0]  # Linked to raw source!

@@ -35,6 +35,8 @@ class ConversationRecord(BaseModel):
     # Branching support: links conversations in session trees
     parent_conversation_id: ConversationId | None = None
     branch_type: str | None = None  # "continuation", "sidechain", "fork"
+    # Link to raw source data (FK to raw_conversations.raw_id)
+    raw_id: str | None = None
 
     @field_validator("provider_name")
     @classmethod
@@ -182,15 +184,19 @@ class RawConversationRecord(BaseModel):
 
     This enables honest, database-driven testing by preserving the exact
     input data that was parsed into conversations and messages.
+
+    Note: The link to parsed conversations goes the OTHER way:
+    conversations.raw_id → raw_conversations.raw_id
+    This matches the data flow: acquire raw first, then parse.
     """
     raw_id: str  # SHA256 of raw_content
     provider_name: str
+    source_name: str | None = None  # Config source name (e.g., "inbox"), distinct from provider
     source_path: str
     source_index: int | None = None  # Position in bundle (e.g., conversations[3])
     raw_content: bytes  # Full JSON/JSONL bytes
     acquired_at: str  # ISO timestamp of acquisition
     file_mtime: str | None = None  # File modification time if available
-    parsed_conversation_id: str | None = None  # Link to parsed conversation
 
     @field_validator("raw_id", "provider_name", "source_path")
     @classmethod
@@ -304,8 +310,9 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             provider_meta,
             version,
             parent_conversation_id,
-            branch_type
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            branch_type,
+            raw_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id) DO UPDATE SET
             title = excluded.title,
             created_at = excluded.created_at,
@@ -313,7 +320,8 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             content_hash = excluded.content_hash,
             provider_meta = excluded.provider_meta,
             parent_conversation_id = excluded.parent_conversation_id,
-            branch_type = excluded.branch_type
+            branch_type = excluded.branch_type,
+            raw_id = COALESCE(excluded.raw_id, conversations.raw_id)
         WHERE
             content_hash != excluded.content_hash
             OR IFNULL(title, '') != IFNULL(excluded.title, '')
@@ -322,6 +330,7 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
             OR IFNULL(parent_conversation_id, '') != IFNULL(excluded.parent_conversation_id, '')
             OR IFNULL(branch_type, '') != IFNULL(excluded.branch_type, '')
+            OR IFNULL(raw_id, '') != IFNULL(excluded.raw_id, '')
         """,
         (
             record.conversation_id,
@@ -335,6 +344,7 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             record.version,
             record.parent_conversation_id,
             record.branch_type,
+            record.raw_id,
         ),
     )
     return bool(res.rowcount > 0)
