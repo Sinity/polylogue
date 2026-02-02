@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from polylogue.core.timestamps import parse_timestamp
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Conversation
+    from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.lib.repository import ConversationRepository
     from polylogue.protocols import VectorProvider
 
@@ -468,9 +468,13 @@ class ConversationFilter:
         """Fetch candidate conversations from repository.
 
         Uses FTS search if terms specified, otherwise lists all.
+        Returns lazy Conversation objects for memory efficiency.
+
+        Note: If content-dependent filters are applied, conversations will
+        be materialized on demand when iterating their messages.
 
         Returns:
-            List of candidate conversations
+            List of lazy Conversation objects
         """
         # If we have FTS terms, use search
         if self._fts_terms:
@@ -605,3 +609,183 @@ class ConversationFilter:
             pass
 
         return None
+
+    # --- Lightweight summary methods (memory-efficient) ---
+
+    def _needs_content_loading(self) -> bool:
+        """Check if any filters require loading message content.
+
+        Returns True if we need to load full Conversation objects,
+        False if we can use lightweight ConversationSummary objects.
+        """
+        # These filters require message access
+        if self._has_types:
+            # 'summary' doesn't need messages, but thinking/tools/attachments do
+            needs_messages = any(t in ("thinking", "tools", "attachments") for t in self._has_types)
+            if needs_messages:
+                return True
+
+        if self._negative_fts_terms:
+            return True
+
+        # Custom predicates might need messages - assume they do
+        # unless we add a way to mark them as summary-compatible
+        if self._predicates:
+            return True
+
+        # Sort by messages/words/longest/tokens needs message data
+        if self._sort_field in ("messages", "words", "longest", "tokens"):
+            return True
+
+        return False
+
+    def _fetch_summary_candidates(self) -> list[ConversationSummary]:
+        """Fetch candidate conversation summaries (lightweight, no messages).
+
+        Uses FTS search if terms specified, otherwise lists all summaries.
+
+        Returns:
+            List of ConversationSummary objects
+        """
+        from polylogue.lib.models import ConversationSummary
+
+        # If we have FTS terms, use search
+        if self._fts_terms:
+            query = " ".join(self._fts_terms)
+            try:
+                return self._repo.search_summaries(query)
+            except Exception:
+                pass
+
+        # If we have a provider filter, use filtered list
+        if self._providers and len(self._providers) == 1:
+            return self._repo.list_summaries(limit=1000, provider=self._providers[0])
+
+        # Default: list all summaries
+        return self._repo.list_summaries(limit=1000)
+
+    def _apply_summary_filters(
+        self, summaries: list[ConversationSummary]
+    ) -> list[ConversationSummary]:
+        """Apply filters that work on summaries (no message access needed).
+
+        Args:
+            summaries: List of ConversationSummary objects
+
+        Returns:
+            Filtered list of summaries
+        """
+        from polylogue.lib.models import ConversationSummary
+
+        results = list(summaries)
+
+        # Provider filters
+        if self._providers:
+            results = [s for s in results if s.provider in self._providers]
+        if self._excluded_providers:
+            results = [s for s in results if s.provider not in self._excluded_providers]
+
+        # Tag filters
+        if self._tags:
+            results = [s for s in results if any(t in s.tags for t in self._tags)]
+        if self._excluded_tags:
+            results = [s for s in results if not any(t in s.tags for t in self._excluded_tags)]
+
+        # Date filters
+        if self._since_date:
+            results = [s for s in results if s.updated_at and s.updated_at >= self._since_date]
+        if self._until_date:
+            results = [s for s in results if s.updated_at and s.updated_at <= self._until_date]
+
+        # Title filter
+        if self._title_pattern:
+            pattern_lower = self._title_pattern.lower()
+            results = [s for s in results if s.display_title and pattern_lower in s.display_title.lower()]
+
+        # ID prefix filter
+        if self._id_prefix:
+            results = [s for s in results if str(s.id).startswith(self._id_prefix)]
+
+        # 'summary' has type (doesn't need messages)
+        if "summary" in self._has_types:
+            results = [s for s in results if s.summary]
+
+        return results
+
+    def _apply_summary_sort(
+        self, summaries: list[ConversationSummary]
+    ) -> list[ConversationSummary]:
+        """Apply sorting to summary list (limited to summary-compatible sorts).
+
+        Args:
+            summaries: List of summaries to sort
+
+        Returns:
+            Sorted list
+        """
+        from datetime import timezone
+
+        if self._sort_field == "random":
+            shuffled = list(summaries)
+            random.shuffle(shuffled)
+            return shuffled
+
+        def sort_key(s: ConversationSummary) -> Any:
+            dt_min = datetime.min.replace(tzinfo=timezone.utc)
+            if self._sort_field == "date":
+                return s.updated_at or dt_min
+            # For content-dependent sorts, fall back to date
+            return s.updated_at or dt_min
+
+        return sorted(
+            summaries,
+            key=sort_key,
+            reverse=not self._sort_reverse,
+        )
+
+    def list_summaries(self) -> list[ConversationSummary]:
+        """Execute query and return lightweight summaries (no messages loaded).
+
+        This is the memory-efficient alternative to list() for cases where
+        you don't need message content. Returns ConversationSummary objects
+        that have metadata but no messages.
+
+        Note: If content-dependent filters are set (regex, has:thinking, etc.),
+        this will raise an error. Use list() instead for those cases.
+
+        Returns:
+            List of ConversationSummary objects matching all summary-compatible filters
+        """
+        from polylogue.lib.models import ConversationSummary
+
+        if self._needs_content_loading():
+            raise ValueError(
+                "Cannot use list_summaries() with content-dependent filters "
+                "(regex, has:thinking, has:tools, etc.). Use list() instead."
+            )
+
+        # Fetch lightweight candidates
+        candidates = self._fetch_summary_candidates()
+
+        # Apply summary-compatible filters
+        filtered = self._apply_summary_filters(candidates)
+
+        # Apply sorting
+        sorted_results = self._apply_summary_sort(filtered)
+
+        # Apply sampling
+        if self._sample_count is not None and self._sample_count < len(sorted_results):
+            sorted_results = random.sample(sorted_results, self._sample_count)
+
+        # Apply limit
+        if self._limit_count is not None:
+            sorted_results = sorted_results[: self._limit_count]
+
+        return sorted_results
+
+    def can_use_summaries(self) -> bool:
+        """Check if this filter can use lightweight summaries.
+
+        Returns True if list_summaries() would work, False if list() is required.
+        """
+        return not self._needs_content_loading()
