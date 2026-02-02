@@ -134,6 +134,16 @@ class ConversationBuilder:
         self.conv = self.conv.model_copy(update={"updated_at": updated_at})
         return self
 
+    def parent_conversation(self, parent_id: str) -> ConversationBuilder:
+        """Set parent conversation for continuations/sidechains."""
+        self.conv = self.conv.model_copy(update={"parent_conversation_id": parent_id})
+        return self
+
+    def branch_type(self, branch_type: str) -> ConversationBuilder:
+        """Set branch type: 'continuation', 'sidechain', or 'fork'."""
+        self.conv = self.conv.model_copy(update={"branch_type": branch_type})
+        return self
+
     def add_message(
         self,
         message_id: str | None = None,
@@ -221,6 +231,14 @@ class ConversationBuilder:
                 conn=conn,
             )
         return self.conv
+
+    def build(self):
+        """Save to database and return a full Conversation domain object."""
+        from polylogue import Polylogue
+
+        self.save()
+        p = Polylogue(db_path=self.db_path)
+        return p.repository.get(self.conv.conversation_id)
 
 
 # =============================================================================
@@ -368,11 +386,13 @@ def make_chatgpt_node(
     children: list[str] | None = None,
     timestamp: float | None = None,
     metadata: dict | None = None,
+    parent: str | None = None,
 ) -> dict[str, Any]:
     """Generate ChatGPT mapping node for importer tests.
 
     Usage:
         node = make_chatgpt_node("msg1", "user", ["Hello"], timestamp=1704067200)
+        node = make_chatgpt_node("msg2", "assistant", ["Hi"], parent="node1")
     """
     node = {
         "id": msg_id,
@@ -384,6 +404,8 @@ def make_chatgpt_node(
     }
     if children:
         node["children"] = children
+    if parent:
+        node["parent"] = parent
     if timestamp:
         node["message"]["create_time"] = timestamp
     if metadata:
