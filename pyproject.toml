@@ -55,6 +55,10 @@ ocr = [
   "pillow",
   "pytesseract",
 ]
+fuzz = [
+  "atheris>=2.3.0",  # Google's Python fuzzer
+  "mutmut>=3.0.0",  # Mutation testing
+]
 
 [project.scripts]
 polylogue = "polylogue.cli:main"
