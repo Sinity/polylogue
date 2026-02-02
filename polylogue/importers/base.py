@@ -12,6 +12,8 @@ class ParsedMessage(BaseModel):
     text: str | None = None
     timestamp: str | None = None
     provider_meta: dict[str, object] | None = None
+    parent_message_provider_id: str | None = None
+    branch_index: int = 0
 
 
 class ParsedAttachment(BaseModel):
@@ -126,6 +128,8 @@ class ParsedConversation(BaseModel):
     messages: list[ParsedMessage]
     attachments: list[ParsedAttachment] = Field(default_factory=list)
     provider_meta: dict[str, object] | None = None
+    parent_conversation_provider_id: str | None = None
+    branch_type: str | None = None
 
 
 # hash_text is now imported from core.hashing

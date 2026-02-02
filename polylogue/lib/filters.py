@@ -289,6 +289,78 @@ class ConversationFilter:
         self._predicates.append(predicate)
         return self
 
+    def is_continuation(self, value: bool = True) -> ConversationFilter:
+        """Filter to continuation conversations (or exclude them if value=False).
+
+        Args:
+            value: If True, include only continuations. If False, exclude them.
+
+        Returns:
+            self for chaining
+        """
+        if value:
+            self._predicates.append(lambda c: c.is_continuation)
+        else:
+            self._predicates.append(lambda c: not c.is_continuation)
+        return self
+
+    def is_sidechain(self, value: bool = True) -> ConversationFilter:
+        """Filter to sidechain conversations (or exclude them if value=False).
+
+        Args:
+            value: If True, include only sidechains. If False, exclude them.
+
+        Returns:
+            self for chaining
+        """
+        if value:
+            self._predicates.append(lambda c: c.is_sidechain)
+        else:
+            self._predicates.append(lambda c: not c.is_sidechain)
+        return self
+
+    def is_root(self, value: bool = True) -> ConversationFilter:
+        """Filter to root conversations (those with no parent).
+
+        Args:
+            value: If True, include only roots. If False, exclude roots.
+
+        Returns:
+            self for chaining
+        """
+        if value:
+            self._predicates.append(lambda c: c.is_root)
+        else:
+            self._predicates.append(lambda c: not c.is_root)
+        return self
+
+    def parent(self, conversation_id: str) -> ConversationFilter:
+        """Filter to conversations that are children of the given parent.
+
+        Args:
+            conversation_id: Parent conversation ID
+
+        Returns:
+            self for chaining
+        """
+        self._predicates.append(lambda c: c.parent_id == conversation_id)
+        return self
+
+    def has_branches(self, value: bool = True) -> ConversationFilter:
+        """Filter to conversations that have branching messages.
+
+        Args:
+            value: If True, include only those with branches. If False, exclude them.
+
+        Returns:
+            self for chaining
+        """
+        if value:
+            self._predicates.append(lambda c: any(m.branch_index > 0 for m in c.messages))
+        else:
+            self._predicates.append(lambda c: not any(m.branch_index > 0 for m in c.messages))
+        return self
+
     # --- Terminal methods (execute query) ---
 
     def _apply_filters(self, conversations: list[Conversation]) -> list[Conversation]:

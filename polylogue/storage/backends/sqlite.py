@@ -57,7 +57,7 @@ open_connection = connection_context
 
 
 LOGGER = get_logger(__name__)
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def create_default_backend() -> SQLiteBackend:
@@ -108,7 +108,9 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             provider_meta TEXT,
             metadata TEXT DEFAULT '{}',
             source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
-            version INTEGER NOT NULL
+            version INTEGER NOT NULL,
+            parent_conversation_id TEXT REFERENCES conversations(conversation_id),
+            branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork') OR branch_type IS NULL)
         );
 
         CREATE INDEX IF NOT EXISTS idx_conversations_provider
@@ -116,6 +118,9 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_conversations_source_name
         ON conversations(source_name) WHERE source_name IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_conversations_parent
+        ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS messages (
             message_id TEXT PRIMARY KEY,
@@ -127,12 +132,17 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             content_hash TEXT NOT NULL,
             provider_meta TEXT,
             version INTEGER NOT NULL,
+            parent_message_id TEXT,
+            branch_index INTEGER DEFAULT 0,
             FOREIGN KEY (conversation_id)
                 REFERENCES conversations(conversation_id) ON DELETE CASCADE
         );
 
         CREATE INDEX IF NOT EXISTS idx_messages_conversation
         ON messages(conversation_id);
+
+        CREATE INDEX IF NOT EXISTS idx_messages_parent
+        ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL;
 
         CREATE TABLE IF NOT EXISTS attachments (
             attachment_id TEXT PRIMARY KEY,
@@ -386,6 +396,28 @@ def _migrate_v5_to_v6(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_attachment_refs_attachment ON attachment_refs(attachment_id)")
 
 
+def _migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
+    """Migrate from v6 to v7: add session/message branching support.
+
+    Adds to conversations:
+    - parent_conversation_id: links to parent session (for continuations/sidechains)
+    - branch_type: 'continuation', 'sidechain', or 'fork'
+
+    Adds to messages:
+    - parent_message_id: links to parent message (for edit branches)
+    - branch_index: sibling position (0 = mainline, >0 = branch)
+    """
+    # Add conversation branching columns
+    conn.execute("ALTER TABLE conversations ADD COLUMN parent_conversation_id TEXT REFERENCES conversations(conversation_id)")
+    conn.execute("ALTER TABLE conversations ADD COLUMN branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork') OR branch_type IS NULL)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL")
+
+    # Add message branching columns
+    conn.execute("ALTER TABLE messages ADD COLUMN parent_message_id TEXT")
+    conn.execute("ALTER TABLE messages ADD COLUMN branch_index INTEGER DEFAULT 0")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL")
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
@@ -393,6 +425,7 @@ _MIGRATIONS = {
     3: _migrate_v3_to_v4,
     4: _migrate_v4_to_v5,
     5: _migrate_v5_to_v6,
+    6: _migrate_v6_to_v7,
 }
 
 
@@ -614,6 +647,8 @@ class SQLiteBackend:
             provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
             metadata=json.loads(row["metadata"]) if row["metadata"] else None,
             version=row["version"],
+            parent_conversation_id=row["parent_conversation_id"],
+            branch_type=row["branch_type"],
         )
 
     def list_conversations(
@@ -674,6 +709,8 @@ class SQLiteBackend:
                 provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
                 metadata=json.loads(row["metadata"]) if row["metadata"] else None,
                 version=row["version"],
+                parent_conversation_id=row["parent_conversation_id"],
+                branch_type=row["branch_type"],
             )
             for row in rows
         ]
@@ -697,20 +734,26 @@ class SQLiteBackend:
                 content_hash,
                 provider_meta,
                 metadata,
-                version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                version,
+                parent_conversation_id,
+                branch_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(conversation_id) DO UPDATE SET
                 title = excluded.title,
                 created_at = excluded.created_at,
                 updated_at = excluded.updated_at,
                 content_hash = excluded.content_hash,
-                provider_meta = excluded.provider_meta
+                provider_meta = excluded.provider_meta,
+                parent_conversation_id = excluded.parent_conversation_id,
+                branch_type = excluded.branch_type
             WHERE
                 content_hash != excluded.content_hash
                 OR IFNULL(title, '') != IFNULL(excluded.title, '')
                 OR IFNULL(created_at, '') != IFNULL(excluded.created_at, '')
                 OR IFNULL(updated_at, '') != IFNULL(excluded.updated_at, '')
                 OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
+                OR IFNULL(parent_conversation_id, '') != IFNULL(excluded.parent_conversation_id, '')
+                OR IFNULL(branch_type, '') != IFNULL(excluded.branch_type, '')
             """,
             (
                 record.conversation_id,
@@ -723,6 +766,8 @@ class SQLiteBackend:
                 _json_or_none(record.provider_meta),
                 _json_or_none(record.metadata) or "{}",
                 record.version,
+                record.parent_conversation_id,
+                record.branch_type,
             ),
         )
 
@@ -747,6 +792,8 @@ class SQLiteBackend:
                 content_hash=row["content_hash"],
                 provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
                 version=row["version"],
+                parent_message_id=row["parent_message_id"],
+                branch_index=row["branch_index"] or 0,
             )
             for row in rows
         ]
@@ -766,20 +813,26 @@ class SQLiteBackend:
                 timestamp,
                 content_hash,
                 provider_meta,
-                version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                version,
+                parent_message_id,
+                branch_index
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(message_id) DO UPDATE SET
                 role = excluded.role,
                 text = excluded.text,
                 timestamp = excluded.timestamp,
                 content_hash = excluded.content_hash,
-                provider_meta = excluded.provider_meta
+                provider_meta = excluded.provider_meta,
+                parent_message_id = excluded.parent_message_id,
+                branch_index = excluded.branch_index
             WHERE
                 content_hash != excluded.content_hash
                 OR IFNULL(role, '') != IFNULL(excluded.role, '')
                 OR IFNULL(text, '') != IFNULL(excluded.text, '')
                 OR IFNULL(timestamp, '') != IFNULL(excluded.timestamp, '')
                 OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
+                OR IFNULL(parent_message_id, '') != IFNULL(excluded.parent_message_id, '')
+                OR branch_index != excluded.branch_index
         """
         data = [
             (
@@ -792,6 +845,8 @@ class SQLiteBackend:
                 r.content_hash,
                 _json_or_none(r.provider_meta),
                 r.version,
+                r.parent_message_id,
+                r.branch_index,
             )
             for r in records
         ]
@@ -930,6 +985,45 @@ class SQLiteBackend:
                 """,
                 (aid, aid),
             )
+
+    def list_conversations_by_parent(self, parent_id: str) -> list[ConversationRecord]:
+        """List all conversations that have the given conversation as parent.
+
+        Args:
+            parent_id: The parent conversation ID
+
+        Returns:
+            List of child conversation records
+        """
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT * FROM conversations
+            WHERE parent_conversation_id = ?
+            ORDER BY created_at ASC
+            """,
+            (parent_id,),
+        ).fetchall()
+
+        import json
+
+        return [
+            ConversationRecord(
+                conversation_id=row["conversation_id"],
+                provider_name=row["provider_name"],
+                provider_conversation_id=row["provider_conversation_id"],
+                title=row["title"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                content_hash=row["content_hash"],
+                provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+                version=row["version"],
+                parent_conversation_id=row["parent_conversation_id"],
+                branch_type=row["branch_type"],
+            )
+            for row in rows
+        ]
 
     def resolve_id(self, id_prefix: str) -> str | None:
         """Resolve a partial conversation ID to a full ID.

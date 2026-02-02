@@ -281,6 +281,8 @@ class Message(BaseModel):
     timestamp: datetime | None = None
     attachments: list[Attachment] = Field(default_factory=list)
     provider_meta: dict[str, object] | None = None
+    parent_id: str | None = None
+    branch_index: int = 0
 
     @classmethod
     def from_record(cls, record: MessageRecord, attachments: list[AttachmentRecord]) -> Message:
@@ -292,7 +294,16 @@ class Message(BaseModel):
             timestamp=ts,
             attachments=[Attachment.from_record(a) for a in attachments],
             provider_meta=record.provider_meta,
+            parent_id=record.parent_message_id,
+            branch_index=record.branch_index,
         )
+
+    # --- Branching properties ---
+
+    @property
+    def is_branch(self) -> bool:
+        """True if this message is a branch (not mainline)."""
+        return self.branch_index > 0
 
     # --- Role classification ---
 
@@ -485,6 +496,8 @@ class Conversation(BaseModel):
     updated_at: datetime | None = None
     provider_meta: dict[str, object] | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
+    parent_id: ConversationId | None = None
+    branch_type: str | None = None  # "continuation", "sidechain", "fork"
 
     @classmethod
     def from_records(
@@ -512,7 +525,26 @@ class Conversation(BaseModel):
             updated_at=parse_timestamp(conversation.updated_at),
             provider_meta=conversation.provider_meta,
             metadata=conversation.metadata or {},
+            parent_id=conversation.parent_conversation_id,
+            branch_type=conversation.branch_type,
         )
+
+    # --- Branching properties ---
+
+    @property
+    def is_continuation(self) -> bool:
+        """True if this is a continuation of another session."""
+        return self.branch_type == "continuation"
+
+    @property
+    def is_sidechain(self) -> bool:
+        """True if this is a sidechain conversation."""
+        return self.branch_type == "sidechain"
+
+    @property
+    def is_root(self) -> bool:
+        """True if this conversation has no parent (is a root)."""
+        return self.parent_id is None
 
     # --- Metadata properties ---
 
@@ -575,6 +607,10 @@ class Conversation(BaseModel):
         """Return a view with attachments stripped from messages."""
         new_msgs = [m.model_copy(update={"attachments": []}) for m in self.messages]
         return self.model_copy(update={"messages": new_msgs})
+
+    def mainline_messages(self) -> list[Message]:
+        """Return only mainline messages (branch_index == 0)."""
+        return [m for m in self.messages if m.branch_index == 0]
 
     # --- Iteration helpers ---
 

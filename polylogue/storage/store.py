@@ -32,6 +32,9 @@ class ConversationRecord(BaseModel):
     provider_meta: dict[str, object] | None = None
     metadata: dict[str, object] | None = None
     version: int = 1
+    # Branching support: links conversations in session trees
+    parent_conversation_id: ConversationId | None = None
+    branch_type: str | None = None  # "continuation", "sidechain", "fork"
 
     @field_validator("provider_name")
     @classmethod
@@ -64,6 +67,9 @@ class MessageRecord(BaseModel):
     content_hash: ContentHash
     provider_meta: dict[str, object] | None = None
     version: int = 1
+    # Branching support: links messages in conversation trees
+    parent_message_id: MessageId | None = None
+    branch_index: int = 0  # 0 = mainline, >0 = branch sibling position
 
     @field_validator("message_id", "conversation_id", "content_hash")
     @classmethod
@@ -266,20 +272,26 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             updated_at,
             content_hash,
             provider_meta,
-            version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            version,
+            parent_conversation_id,
+            branch_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(conversation_id) DO UPDATE SET
             title = excluded.title,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at,
             content_hash = excluded.content_hash,
-            provider_meta = excluded.provider_meta
+            provider_meta = excluded.provider_meta,
+            parent_conversation_id = excluded.parent_conversation_id,
+            branch_type = excluded.branch_type
         WHERE
             content_hash != excluded.content_hash
             OR IFNULL(title, '') != IFNULL(excluded.title, '')
             OR IFNULL(created_at, '') != IFNULL(excluded.created_at, '')
             OR IFNULL(updated_at, '') != IFNULL(excluded.updated_at, '')
             OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
+            OR IFNULL(parent_conversation_id, '') != IFNULL(excluded.parent_conversation_id, '')
+            OR IFNULL(branch_type, '') != IFNULL(excluded.branch_type, '')
         """,
         (
             record.conversation_id,
@@ -291,6 +303,8 @@ def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) ->
             record.content_hash,
             _json_or_none(record.provider_meta),
             record.version,
+            record.parent_conversation_id,
+            record.branch_type,
         ),
     )
     return bool(res.rowcount > 0)
@@ -308,20 +322,26 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             timestamp,
             content_hash,
             provider_meta,
-            version
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            version,
+            parent_message_id,
+            branch_index
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(message_id) DO UPDATE SET
             role = excluded.role,
             text = excluded.text,
             timestamp = excluded.timestamp,
             content_hash = excluded.content_hash,
-            provider_meta = excluded.provider_meta
+            provider_meta = excluded.provider_meta,
+            parent_message_id = excluded.parent_message_id,
+            branch_index = excluded.branch_index
         WHERE
             content_hash != excluded.content_hash
             OR IFNULL(role, '') != IFNULL(excluded.role, '')
             OR IFNULL(text, '') != IFNULL(excluded.text, '')
             OR IFNULL(timestamp, '') != IFNULL(excluded.timestamp, '')
             OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
+            OR IFNULL(parent_message_id, '') != IFNULL(excluded.parent_message_id, '')
+            OR branch_index != excluded.branch_index
         """,
         (
             record.message_id,
@@ -333,6 +353,8 @@ def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
             record.content_hash,
             _json_or_none(record.provider_meta),
             record.version,
+            record.parent_message_id,
+            record.branch_index,
         ),
     )
     return bool(res.rowcount > 0)

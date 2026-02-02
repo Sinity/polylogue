@@ -652,6 +652,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
                 text=text,
                 timestamp=timestamp,
                 provider_meta=meta,
+                parent_message_provider_id=item.get("parentUuid"),
             )
         )
 
@@ -684,6 +685,13 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     if total_duration > 0:
         conv_meta["total_duration_ms"] = total_duration
 
+    # Detect if any message has isSidechain flag
+    has_sidechain = any(
+        m.provider_meta and m.provider_meta.get("isSidechain")
+        for m in messages
+    )
+    branch_type = "sidechain" if has_sidechain else None
+
     return ParsedConversation(
         provider_name="claude-code",
         provider_conversation_id=str(conv_id),
@@ -692,6 +700,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         updated_at=updated_at,
         messages=messages,
         provider_meta=conv_meta if conv_meta else None,
+        branch_type=branch_type,
     )
 
 

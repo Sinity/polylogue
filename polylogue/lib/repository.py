@@ -271,6 +271,91 @@ class ConversationRepository:
         # Fallback: empty mapping
         return {}
 
+    def get_parent(self, conversation_id: str) -> Conversation | None:
+        """Get the parent conversation if one exists.
+
+        Args:
+            conversation_id: ID of the child conversation
+
+        Returns:
+            Parent Conversation or None if no parent
+        """
+        conv = self.get(conversation_id)
+        if not conv or not conv.parent_id:
+            return None
+        return self.get(str(conv.parent_id))
+
+    def get_children(self, conversation_id: str) -> list[Conversation]:
+        """Get all direct children of a conversation.
+
+        Args:
+            conversation_id: Parent conversation ID
+
+        Returns:
+            List of child Conversation objects
+        """
+        # Use the backend's list_conversations_by_parent method
+        from polylogue.storage.backends.sqlite import SQLiteBackend
+
+        if isinstance(self._backend, SQLiteBackend):
+            child_records = self._backend.list_conversations_by_parent(conversation_id)
+            return self._get_many([str(r.conversation_id) for r in child_records])
+        return []
+
+    def get_session_tree(self, conversation_id: str) -> list[Conversation]:
+        """Get the full session tree containing this conversation.
+
+        Returns all conversations in the tree from root to leaves,
+        including the given conversation.
+
+        Args:
+            conversation_id: Any conversation ID in the tree
+
+        Returns:
+            List of all Conversation objects in the tree, ordered root-first
+        """
+        root = self.get_root(conversation_id)
+        if not root:
+            return []
+
+        # BFS to collect all nodes
+        result = [root]
+        queue = [str(root.id)]
+        seen = {str(root.id)}
+
+        while queue:
+            current_id = queue.pop(0)
+            children = self.get_children(current_id)
+            for child in children:
+                if str(child.id) not in seen:
+                    seen.add(str(child.id))
+                    result.append(child)
+                    queue.append(str(child.id))
+
+        return result
+
+    def get_root(self, conversation_id: str) -> Conversation | None:
+        """Get the root conversation of the tree containing this conversation.
+
+        Args:
+            conversation_id: Any conversation ID in the tree
+
+        Returns:
+            Root Conversation or None if not found
+        """
+        conv = self.get(conversation_id)
+        if not conv:
+            return None
+
+        # Walk up to root
+        while conv.parent_id:
+            parent = self.get(str(conv.parent_id))
+            if not parent:
+                break
+            conv = parent
+
+        return conv
+
     def filter(self) -> filters.ConversationFilter:
         """Create a filter builder for chainable queries.
 

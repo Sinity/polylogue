@@ -138,6 +138,107 @@ def test_extract_messages_comprehensive(mapping, expected_count, desc):
 
 
 # =============================================================================
+# PARENT & BRANCH INDEX EXTRACTION - PARAMETRIZED (NEW)
+# =============================================================================
+
+
+PARENT_BRANCH_CASES = [
+    # No parent (root message)
+    (
+        {"node1": make_chatgpt_node("msg1", "user", ["Hello"])},
+        [None],
+        [0],
+        "root message no parent"
+    ),
+
+    # Simple linear chain
+    (
+        {
+            "node1": make_chatgpt_node("msg1", "user", ["Hello"], children=["msg2"]),
+            "node2": make_chatgpt_node("msg2", "assistant", ["Hi"], parent="node1"),
+        },
+        [None, "node1"],
+        [0, 0],
+        "linear chain parent references"
+    ),
+
+    # Branching: one parent with multiple children
+    (
+        {
+            "node1": make_chatgpt_node("msg1", "user", ["Question"], children=["msg2", "msg3"]),
+            "node2": make_chatgpt_node("msg2", "assistant", ["Answer 1"], parent="node1"),
+            "node3": make_chatgpt_node("msg3", "assistant", ["Answer 2"], parent="node1"),
+        },
+        [None, "node1", "node1"],
+        [0, 0, 1],
+        "branching with branch indexes"
+    ),
+
+    # Three-way branch
+    (
+        {
+            "node1": make_chatgpt_node("msg1", "user", ["Q"], children=["msg2", "msg3", "msg4"]),
+            "node2": make_chatgpt_node("msg2", "assistant", ["A1"], parent="node1"),
+            "node3": make_chatgpt_node("msg3", "assistant", ["A2"], parent="node1"),
+            "node4": make_chatgpt_node("msg4", "assistant", ["A3"], parent="node1"),
+        },
+        [None, "node1", "node1", "node1"],
+        [0, 0, 1, 2],
+        "three-way branch indexes"
+    ),
+
+    # No parent field in node
+    (
+        {"node1": make_chatgpt_node("msg1", "user", ["Hello"])},
+        [None],
+        [0],
+        "missing parent field defaults to None"
+    ),
+
+    # Parent node missing from mapping (orphaned node)
+    (
+        {"node2": make_chatgpt_node("msg2", "assistant", ["Hi"], parent="node1")},
+        ["node1"],
+        [0],
+        "orphaned node with missing parent"
+    ),
+
+    # Mixed chain and branch
+    (
+        {
+            "node1": make_chatgpt_node("msg1", "user", ["Start"], children=["msg2"]),
+            "node2": make_chatgpt_node("msg2", "assistant", ["Response"], children=["msg3", "msg4"], parent="node1"),
+            "node3": make_chatgpt_node("msg3", "user", ["Follow 1"], parent="node2"),
+            "node4": make_chatgpt_node("msg4", "user", ["Follow 2"], parent="node2"),
+        },
+        [None, "node1", "node2", "node2"],
+        [0, 0, 0, 1],
+        "mixed chain and branch structure"
+    ),
+]
+
+
+@pytest.mark.parametrize("mapping,expected_parents,expected_indexes,desc", PARENT_BRANCH_CASES)
+def test_extract_parent_and_branch_index(mapping, expected_parents, expected_indexes, desc):
+    """Test extraction of parent_message_provider_id and branch_index.
+
+    NEW: Validates parent message references and branch position calculation.
+    """
+    messages, _ = extract_messages_from_mapping(mapping)
+
+    assert len(messages) == len(expected_parents), \
+        f"Failed {desc}: expected {len(expected_parents)} messages, got {len(messages)}"
+
+    for msg, expected_parent, expected_index in zip(messages, expected_parents, expected_indexes):
+        assert msg.parent_message_provider_id == expected_parent, \
+            f"Failed {desc}: message {msg.provider_message_id} expected parent {expected_parent}, " \
+            f"got {msg.parent_message_provider_id}"
+        assert msg.branch_index == expected_index, \
+            f"Failed {desc}: message {msg.provider_message_id} expected branch_index {expected_index}, " \
+            f"got {msg.branch_index}"
+
+
+# =============================================================================
 # METADATA EXTRACTION - PARAMETRIZED (NEW - was implicit in extraction tests)
 # =============================================================================
 
