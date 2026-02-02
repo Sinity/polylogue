@@ -96,8 +96,11 @@ def parse_chunked_prompt(provider: str, payload: dict[str, object], fallback_id:
         text = extract_text_from_chunk(chunk_obj)
         if not text:
             continue
+        # Role is required - skip chunks without one
         role_val = chunk_obj.get("role") or chunk_obj.get("author")
-        role = normalize_role(role_val if isinstance(role_val, str) else None)
+        if not isinstance(role_val, str) or not role_val:
+            continue
+        role = normalize_role(role_val)
         msg_id = str(chunk_obj.get("id") or f"chunk-{idx}")
         # Preserve useful metadata (isThought for Gemini thinking traces, tokenCount, etc.)
         meta: dict[str, object] = {"raw": chunk_obj}
