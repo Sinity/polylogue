@@ -122,30 +122,30 @@ EXTRACT_CHAT_MESSAGES_CASES = [
     # Role variants
     ([make_claude_chat_message("u1", "human", "Hi")], "user", "human role"),
     ([make_claude_chat_message("u1", "assistant", "Hi")], "assistant", "assistant role"),
-    ([make_claude_chat_message("u1", None, "Hi")], "user", "missing sender defaults to user"),
+    ([make_claude_chat_message("u1", None, "Hi")], 0, "missing sender skipped"),
 
-    # Timestamp variants
+    # Timestamp variants (with role)
     ([make_claude_chat_message("u1", "human", "Hi", timestamp="2024-01-01T00:00:00Z")], 1, "created_at"),
-    ([{"uuid": "u1", "text": "Hi", "create_time": 1704067200}], 1, "create_time"),
-    ([{"uuid": "u1", "text": "Hi", "timestamp": 1704067200}], 1, "timestamp field"),
+    ([{"uuid": "u1", "sender": "human", "text": "Hi", "create_time": 1704067200}], 1, "create_time"),
+    ([{"uuid": "u1", "sender": "human", "text": "Hi", "timestamp": 1704067200}], 1, "timestamp field"),
 
-    # ID variants
-    ([{"uuid": "u1", "text": "Hi"}], "u1", "uuid field"),
-    ([{"id": "i1", "text": "Hi"}], "i1", "id field"),
-    ([{"message_id": "m1", "text": "Hi"}], "m1", "message_id field"),
+    # ID variants (with role)
+    ([{"uuid": "u1", "sender": "human", "text": "Hi"}], "u1", "uuid field"),
+    ([{"id": "i1", "sender": "human", "text": "Hi"}], "i1", "id field"),
+    ([{"message_id": "m1", "sender": "human", "text": "Hi"}], "m1", "message_id field"),
 
-    # Content variants
-    ([{"uuid": "u1", "text": ["list", "of", "parts"]}], 0, "text as list skipped"),
-    ([{"uuid": "u1", "content": {"text": "nested text"}}], 1, "content dict with text"),
-    ([{"uuid": "u1", "content": {"parts": ["part1", "part2"]}}], 1, "content dict with parts"),
+    # Content variants (with role)
+    ([{"uuid": "u1", "sender": "human", "text": ["list", "of", "parts"]}], 0, "text as list skipped"),
+    ([{"uuid": "u1", "sender": "human", "content": {"text": "nested text"}}], 1, "content dict with text"),
+    ([{"uuid": "u1", "sender": "human", "content": {"parts": ["part1", "part2"]}}], 1, "content dict with parts"),
 
-    # Missing text
-    ([{"uuid": "u1"}], 0, "missing text skipped"),
-    ([{"uuid": "u1", "text": ""}], 0, "empty text skipped"),
-    ([{"uuid": "u1", "text": None}], 0, "None text skipped"),
+    # Missing text (with role)
+    ([{"uuid": "u1", "sender": "human"}], 0, "missing text skipped"),
+    ([{"uuid": "u1", "sender": "human", "text": ""}], 0, "empty text skipped"),
+    ([{"uuid": "u1", "sender": "human", "text": None}], 0, "None text skipped"),
 
-    # Non-dict items
-    (["not a dict", {"uuid": "u1", "text": "Valid"}], 1, "skip non-dict"),
+    # Non-dict items (valid one has role)
+    (["not a dict", {"uuid": "u1", "sender": "human", "text": "Valid"}], 1, "skip non-dict"),
 
     # Empty list
     ([], 0, "empty list"),
@@ -197,12 +197,13 @@ PARSE_AI_CASES = [
     # Empty chat_messages
     (make_ai_conv([]), 0, "empty messages"),
 
-    # Content variants
-    ({"chat_messages": [{"uuid": "u1", "content": {"text": "nested"}}]}, 1, "content dict"),
-    ({"chat_messages": [{"uuid": "u1", "content": {"parts": ["p1"]}}]}, 1, "content parts"),
+    # Content variants (with role)
+    ({"chat_messages": [{"uuid": "u1", "sender": "human", "content": {"text": "nested"}}]}, 1, "content dict"),
+    ({"chat_messages": [{"uuid": "u1", "sender": "human", "content": {"parts": ["p1"]}}]}, 1, "content parts"),
 
-    # Missing text skipped
-    (make_ai_conv([{"uuid": "u1"}]), 0, "missing text"),
+    # Missing text/role skipped
+    (make_ai_conv([{"uuid": "u1", "sender": "human"}]), 0, "missing text"),
+    (make_ai_conv([{"uuid": "u1", "text": "no role"}]), 0, "missing role"),
 ]
 
 
