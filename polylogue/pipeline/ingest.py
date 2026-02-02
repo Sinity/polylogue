@@ -48,6 +48,7 @@ def prepare_ingest(
     archive_root: Path,
     conn: sqlite3.Connection | None = None,
     repository: StorageRepository | None = None,
+    raw_id: str | None = None,
 ) -> tuple[str, dict[str, int], bool]:
     # Create default repository if none provided
     if repository is None:
@@ -105,6 +106,7 @@ def prepare_ingest(
         provider_meta=merged_provider_meta,
         parent_conversation_id=parent_conversation_id,
         branch_type=convo.branch_type,
+        raw_id=raw_id,
     )
 
     messages: list[MessageRecord] = []

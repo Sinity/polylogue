@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,7 +30,6 @@ class TestRawConversationStorage:
             raw_content=b'{"test": "data"}',
             acquired_at=datetime.now(timezone.utc).isoformat(),
             file_mtime=None,
-            parsed_conversation_id=None,
         )
 
         result = backend.save_raw_conversation(record)
@@ -57,7 +55,6 @@ class TestRawConversationStorage:
 
     def test_get_raw_conversation(self, backend: SQLiteBackend) -> None:
         """Retrieve a saved raw conversation by ID."""
-        # Create without parsed_conversation_id to avoid FK constraint
         original = RawConversationRecord(
             raw_id="xyz789",
             provider_name="chatgpt",
@@ -66,7 +63,6 @@ class TestRawConversationStorage:
             raw_content=b'{"id": "conv-123", "messages": []}',
             acquired_at="2026-02-02T12:00:00+00:00",
             file_mtime="2026-01-15T08:30:00+00:00",
-            parsed_conversation_id=None,  # FK requires actual conversation to exist
         )
 
         backend.save_raw_conversation(original)
@@ -80,7 +76,6 @@ class TestRawConversationStorage:
         assert retrieved.raw_content == original.raw_content
         assert retrieved.acquired_at == original.acquired_at
         assert retrieved.file_mtime == original.file_mtime
-        assert retrieved.parsed_conversation_id is None
 
     def test_get_raw_conversation_not_found(self, backend: SQLiteBackend) -> None:
         """Retrieving non-existent raw conversation returns None."""
@@ -145,60 +140,66 @@ class TestRawConversationStorage:
         limited = list(backend.iter_raw_conversations(limit=3))
         assert len(limited) == 3
 
-    def test_link_raw_to_parsed(self, backend: SQLiteBackend) -> None:
-        """Link a raw conversation to its parsed counterpart."""
+    def test_conversation_links_to_raw(self, backend: SQLiteBackend) -> None:
+        """Conversations can link to their raw source via raw_id.
+
+        The link goes: conversations.raw_id → raw_conversations.raw_id
+        (data flows from raw to parsed, FK points backward to origin)
+        """
         from polylogue.storage.store import ConversationRecord
 
-        # First create a real conversation to link to (FK constraint)
+        # First store the raw conversation
+        raw_record = RawConversationRecord(
+            raw_id="raw-abc123",
+            provider_name="test",
+            source_path="/test.json",
+            raw_content=b'{"id": "test-conv"}',
+            acquired_at=datetime.now(timezone.utc).isoformat(),
+        )
+        backend.save_raw_conversation(raw_record)
+
+        # Then store parsed conversation with link to raw
         conv = ConversationRecord(
             conversation_id="conv-link-test",
             provider_name="test",
             provider_conversation_id="test-123",
             content_hash="hash123",
+            raw_id="raw-abc123",  # Link to raw source
         )
         backend.save_conversation(conv)
 
-        record = RawConversationRecord(
-            raw_id="link-test",
-            provider_name="test",
-            source_path="/test.json",
-            raw_content=b'{}',
-            acquired_at=datetime.now(timezone.utc).isoformat(),
-            parsed_conversation_id=None,
-        )
+        # Verify the link exists in database
+        with backend._get_connection() as conn:
+            row = conn.execute(
+                "SELECT raw_id FROM conversations WHERE conversation_id = ?",
+                ("conv-link-test",),
+            ).fetchone()
 
-        backend.save_raw_conversation(record)
+        assert row is not None
+        assert row["raw_id"] == "raw-abc123"
 
-        # Initially no link
-        retrieved = backend.get_raw_conversation("link-test")
-        assert retrieved is not None
-        assert retrieved.parsed_conversation_id is None
-
-        # Link to parsed (using actual conversation ID)
-        result = backend.link_raw_to_parsed("link-test", "conv-link-test")
-        assert result is True
-
-        # Verify link
-        retrieved = backend.get_raw_conversation("link-test")
-        assert retrieved is not None
-        assert retrieved.parsed_conversation_id == "conv-link-test"
-
-    def test_link_raw_to_parsed_not_found(self, backend: SQLiteBackend) -> None:
-        """Linking non-existent raw conversation returns False."""
+    def test_conversation_without_raw_id(self, backend: SQLiteBackend) -> None:
+        """Conversations can be saved without raw_id (e.g., direct file ingest)."""
         from polylogue.storage.store import ConversationRecord
 
-        # Create a conversation first (FK constraint)
         conv = ConversationRecord(
-            conversation_id="conv-123",
+            conversation_id="conv-no-raw",
             provider_name="test",
             provider_conversation_id="test-456",
-            content_hash="hash789",
+            content_hash="hash456",
+            # raw_id is None (default)
         )
         backend.save_conversation(conv)
 
-        # Linking a non-existent raw conversation returns False
-        result = backend.link_raw_to_parsed("nonexistent", "conv-123")
-        assert result is False
+        # Verify it saved correctly
+        with backend._get_connection() as conn:
+            row = conn.execute(
+                "SELECT raw_id FROM conversations WHERE conversation_id = ?",
+                ("conv-no-raw",),
+            ).fetchone()
+
+        assert row is not None
+        assert row["raw_id"] is None
 
     def test_get_raw_conversation_count(self, backend: SQLiteBackend) -> None:
         """Count raw conversations."""

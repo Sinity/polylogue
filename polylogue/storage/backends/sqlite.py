@@ -63,7 +63,7 @@ open_connection = connection_context
 
 
 LOGGER = get_logger(__name__)
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def create_default_backend() -> SQLiteBackend:
@@ -103,6 +103,23 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS raw_conversations (
+            raw_id TEXT PRIMARY KEY,
+            provider_name TEXT NOT NULL,
+            source_name TEXT,
+            source_path TEXT NOT NULL,
+            source_index INTEGER,
+            raw_content BLOB NOT NULL,
+            acquired_at TEXT NOT NULL,
+            file_mtime TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_provider
+        ON raw_conversations(provider_name);
+
+        CREATE INDEX IF NOT EXISTS idx_raw_conv_source
+        ON raw_conversations(source_path);
+
         CREATE TABLE IF NOT EXISTS conversations (
             conversation_id TEXT PRIMARY KEY,
             provider_name TEXT NOT NULL,
@@ -116,7 +133,8 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
             version INTEGER NOT NULL,
             parent_conversation_id TEXT REFERENCES conversations(conversation_id),
-            branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork') OR branch_type IS NULL)
+            branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork') OR branch_type IS NULL),
+            raw_id TEXT REFERENCES raw_conversations(raw_id)
         );
 
         CREATE INDEX IF NOT EXISTS idx_conversations_provider
@@ -193,25 +211,8 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             duration_ms INTEGER
         );
 
-        CREATE TABLE IF NOT EXISTS raw_conversations (
-            raw_id TEXT PRIMARY KEY,
-            provider_name TEXT NOT NULL,
-            source_path TEXT NOT NULL,
-            source_index INTEGER,
-            raw_content BLOB NOT NULL,
-            acquired_at TEXT NOT NULL,
-            file_mtime TEXT,
-            parsed_conversation_id TEXT REFERENCES conversations(conversation_id)
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_raw_conv_provider
-        ON raw_conversations(provider_name);
-
-        CREATE INDEX IF NOT EXISTS idx_raw_conv_source
-        ON raw_conversations(source_path);
-
-        CREATE INDEX IF NOT EXISTS idx_raw_conv_parsed
-        ON raw_conversations(parsed_conversation_id) WHERE parsed_conversation_id IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS idx_conversations_raw_id
+        ON conversations(raw_id) WHERE raw_id IS NOT NULL;
         """
     )
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -447,22 +448,24 @@ def _migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
 
 
 def _migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
-    """Migrate from v7 to v8: add raw_conversations table for raw storage.
+    """Migrate from v7 to v8: add raw storage with proper FK direction.
 
-    This table stores the original JSON/JSONL bytes before parsing,
-    enabling honest database-driven testing and schema validation.
+    Creates raw_conversations table for storing original JSON/JSONL bytes,
+    and adds raw_id column to conversations (FK points FROM conversations TO raw).
+
+    Data flow: raw_conversations → conversations (not the reverse).
     """
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS raw_conversations (
             raw_id TEXT PRIMARY KEY,
             provider_name TEXT NOT NULL,
+            source_name TEXT,
             source_path TEXT NOT NULL,
             source_index INTEGER,
             raw_content BLOB NOT NULL,
             acquired_at TEXT NOT NULL,
-            file_mtime TEXT,
-            parsed_conversation_id TEXT REFERENCES conversations(conversation_id)
+            file_mtime TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_provider
@@ -470,10 +473,26 @@ def _migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_raw_conv_source
         ON raw_conversations(source_path);
-
-        CREATE INDEX IF NOT EXISTS idx_raw_conv_parsed
-        ON raw_conversations(parsed_conversation_id) WHERE parsed_conversation_id IS NOT NULL;
         """
+    )
+
+    # Add raw_id to conversations (FK to raw_conversations)
+    conn.execute(
+        "ALTER TABLE conversations ADD COLUMN raw_id TEXT REFERENCES raw_conversations(raw_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_raw_id ON conversations(raw_id) WHERE raw_id IS NOT NULL"
+    )
+
+
+def _migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
+    """Migrate from v8 to v9: add source_name to raw_conversations.
+
+    The source_name field stores the config source name (e.g., "inbox")
+    separately from provider_name (e.g., "chatgpt") and source_path (file path).
+    """
+    conn.execute(
+        "ALTER TABLE raw_conversations ADD COLUMN source_name TEXT"
     )
 
 
@@ -486,6 +505,7 @@ _MIGRATIONS = {
     5: _migrate_v5_to_v6,
     6: _migrate_v6_to_v7,
     7: _migrate_v7_to_v8,
+    8: _migrate_v8_to_v9,
 }
 
 
@@ -712,6 +732,7 @@ class SQLiteBackend:
             version=row["version"],
             parent_conversation_id=row["parent_conversation_id"],
             branch_type=row["branch_type"],
+            raw_id=row["raw_id"],
         )
 
     def list_conversations(
@@ -774,6 +795,7 @@ class SQLiteBackend:
                 version=row["version"],
                 parent_conversation_id=row["parent_conversation_id"],
                 branch_type=row["branch_type"],
+                raw_id=row["raw_id"],
             )
             for row in rows
         ]
@@ -799,8 +821,9 @@ class SQLiteBackend:
                 metadata,
                 version,
                 parent_conversation_id,
-                branch_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                branch_type,
+                raw_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(conversation_id) DO UPDATE SET
                 title = excluded.title,
                 created_at = excluded.created_at,
@@ -808,7 +831,8 @@ class SQLiteBackend:
                 content_hash = excluded.content_hash,
                 provider_meta = excluded.provider_meta,
                 parent_conversation_id = excluded.parent_conversation_id,
-                branch_type = excluded.branch_type
+                branch_type = excluded.branch_type,
+                raw_id = COALESCE(excluded.raw_id, conversations.raw_id)
             WHERE
                 content_hash != excluded.content_hash
                 OR IFNULL(title, '') != IFNULL(excluded.title, '')
@@ -817,6 +841,7 @@ class SQLiteBackend:
                 OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
                 OR IFNULL(parent_conversation_id, '') != IFNULL(excluded.parent_conversation_id, '')
                 OR IFNULL(branch_type, '') != IFNULL(excluded.branch_type, '')
+                OR IFNULL(raw_id, '') != IFNULL(excluded.raw_id, '')
             """,
             (
                 record.conversation_id,
@@ -831,6 +856,7 @@ class SQLiteBackend:
                 record.version,
                 record.parent_conversation_id,
                 record.branch_type,
+                record.raw_id,
             ),
         )
 
@@ -1084,6 +1110,7 @@ class SQLiteBackend:
                 version=row["version"],
                 parent_conversation_id=row["parent_conversation_id"],
                 branch_type=row["branch_type"],
+                raw_id=row["raw_id"],
             )
             for row in rows
         ]
@@ -1464,23 +1491,23 @@ class SQLiteBackend:
             INSERT OR IGNORE INTO raw_conversations (
                 raw_id,
                 provider_name,
+                source_name,
                 source_path,
                 source_index,
                 raw_content,
                 acquired_at,
-                file_mtime,
-                parsed_conversation_id
+                file_mtime
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record.raw_id,
                 record.provider_name,
+                record.source_name,
                 record.source_path,
                 record.source_index,
                 record.raw_content,
                 record.acquired_at,
                 record.file_mtime,
-                record.parsed_conversation_id,
             ),
         )
         return bool(result.rowcount > 0)
@@ -1506,12 +1533,12 @@ class SQLiteBackend:
         return RawConversationRecord(
             raw_id=row["raw_id"],
             provider_name=row["provider_name"],
+            source_name=row["source_name"],
             source_path=row["source_path"],
             source_index=row["source_index"],
             raw_content=row["raw_content"],
             acquired_at=row["acquired_at"],
             file_mtime=row["file_mtime"],
-            parsed_conversation_id=row["parsed_conversation_id"],
         )
 
     def iter_raw_conversations(
@@ -1549,34 +1576,13 @@ class SQLiteBackend:
             yield RawConversationRecord(
                 raw_id=row["raw_id"],
                 provider_name=row["provider_name"],
+                source_name=row["source_name"],
                 source_path=row["source_path"],
                 source_index=row["source_index"],
                 raw_content=row["raw_content"],
                 acquired_at=row["acquired_at"],
                 file_mtime=row["file_mtime"],
-                parsed_conversation_id=row["parsed_conversation_id"],
             )
-
-    def link_raw_to_parsed(self, raw_id: str, parsed_conversation_id: str) -> bool:
-        """Link a raw conversation record to its parsed conversation.
-
-        Args:
-            raw_id: SHA256 hash of the raw content
-            parsed_conversation_id: ID of the parsed conversation
-
-        Returns:
-            True if updated, False if raw_id not found
-        """
-        conn = self._get_connection()
-        result = conn.execute(
-            """
-            UPDATE raw_conversations
-            SET parsed_conversation_id = ?
-            WHERE raw_id = ?
-            """,
-            (parsed_conversation_id, raw_id),
-        )
-        return bool(result.rowcount > 0)
 
     def get_raw_conversation_count(self, provider: str | None = None) -> int:
         """Get count of raw conversations.
