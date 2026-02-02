@@ -390,10 +390,15 @@ def test_attachment_extraction_preserves_metadata(attachment_meta: dict):
 
     assert result is not None
     assert result.provider_attachment_id == attachment_meta["id"]
-    # Name may be sanitized (control chars removed)
+    # Name may be sanitized (control chars removed, dots-only → "file")
     if result.name:
-        # Should contain some of the original text
-        assert any(c in result.name for c in attachment_meta["name"] if c.isprintable())
+        original_name = attachment_meta["name"]
+        # Dots-only names (e.g., ".", "...", etc.) are replaced with "file" for security
+        if original_name.strip(".") == "":
+            assert result.name == "file"
+        else:
+            # Should contain some of the original printable text
+            assert any(c in result.name for c in original_name if c.isprintable())
     assert result.mime_type == attachment_meta["mime_type"]
     assert result.size_bytes == attachment_meta["size"]
 
