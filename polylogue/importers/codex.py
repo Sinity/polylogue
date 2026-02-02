@@ -50,20 +50,24 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
     messages: list[ParsedMessage] = []
     session_id = fallback_id
     session_timestamp = None
-    session_id_set = False  # Only use first session_meta (child sessions include parent meta)
+    session_metas_seen: list[str] = []  # Collect all session_meta IDs for parent tracking
 
     for idx, item in enumerate(payload, start=1):
         if not isinstance(item, dict):
             continue
 
         # Newest format: envelope with "session_meta" type
-        # Use FIRST session_meta only - child sessions include parent session_meta
+        # Collect ALL session_meta IDs - child sessions include parent session_meta
         if item.get("type") == "session_meta":
             envelope_payload = item.get("payload", {})
-            if isinstance(envelope_payload, dict) and not session_id_set:
-                session_id = envelope_payload.get("id", session_id)
-                session_timestamp = envelope_payload.get("timestamp", session_timestamp)
-                session_id_set = True
+            if isinstance(envelope_payload, dict):
+                meta_id = envelope_payload.get("id")
+                if meta_id and meta_id not in session_metas_seen:
+                    session_metas_seen.append(meta_id)
+                    # First session_meta sets the conversation ID
+                    if len(session_metas_seen) == 1:
+                        session_id = meta_id
+                        session_timestamp = envelope_payload.get("timestamp", session_timestamp)
             continue
 
         # Newest format: envelope with "response_item" type
@@ -79,10 +83,14 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             continue
 
         # Extract session metadata (intermediate format - first line)
-        if "id" in item and "timestamp" in item and not item.get("type") and not session_id_set:
-            session_id = item["id"]
-            session_timestamp = item.get("timestamp")
-            session_id_set = True
+        if "id" in item and "timestamp" in item and not item.get("type"):
+            meta_id = item["id"]
+            if meta_id and meta_id not in session_metas_seen:
+                session_metas_seen.append(meta_id)
+                # First session_meta sets the conversation ID
+                if len(session_metas_seen) == 1:
+                    session_id = meta_id
+                    session_timestamp = item.get("timestamp")
             continue
 
         # Parse message records (both newest and intermediate formats)
@@ -113,6 +121,10 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
                     )
                 )
 
+    # Second session_meta ID (if present) is the parent session
+    parent_id = session_metas_seen[1] if len(session_metas_seen) > 1 else None
+    branch_type = "continuation" if parent_id else None
+
     return ParsedConversation(
         provider_name="codex",
         provider_conversation_id=session_id,
@@ -120,4 +132,6 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
         created_at=session_timestamp,
         updated_at=None,
         messages=messages,
+        parent_conversation_provider_id=parent_id,
+        branch_type=branch_type,
     )
