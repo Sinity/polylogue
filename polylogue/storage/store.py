@@ -177,6 +177,36 @@ class RunRecord(BaseModel):
     duration_ms: int | None = None
 
 
+class RawConversationRecord(BaseModel):
+    """Record storing original raw JSON/JSONL bytes before parsing.
+
+    This enables honest, database-driven testing by preserving the exact
+    input data that was parsed into conversations and messages.
+    """
+    raw_id: str  # SHA256 of raw_content
+    provider_name: str
+    source_path: str
+    source_index: int | None = None  # Position in bundle (e.g., conversations[3])
+    raw_content: bytes  # Full JSON/JSONL bytes
+    acquired_at: str  # ISO timestamp of acquisition
+    file_mtime: str | None = None  # File modification time if available
+    parsed_conversation_id: str | None = None  # Link to parsed conversation
+
+    @field_validator("raw_id", "provider_name", "source_path")
+    @classmethod
+    def non_empty_string(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Field cannot be empty")
+        return v
+
+    @field_validator("raw_content")
+    @classmethod
+    def non_empty_bytes(cls, v: bytes) -> bytes:
+        if not v:
+            raise ValueError("raw_content cannot be empty")
+        return v
+
+
 class PlanResult(BaseModel):
     timestamp: int
     counts: dict[str, int]
@@ -494,6 +524,7 @@ __all__ = [
     "MessageRecord",
     "AttachmentRecord",
     "RunRecord",
+    "RawConversationRecord",
     "MAX_ATTACHMENT_SIZE",
     "record_run",
     "store_records",
