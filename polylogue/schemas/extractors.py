@@ -23,7 +23,7 @@ Example:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Callable
 
 # glom import - will be available after adding to devshell
@@ -35,7 +35,9 @@ except ImportError:
     # Stub for type hints
     def glom(target: Any, spec: Any) -> Any: ...  # noqa: E704
 
-from polylogue.schemas.common import Role, CommonMessage, CommonToolCall
+from polylogue.core.timestamps import parse_timestamp
+from polylogue.core.roles import Role, normalize_role as _normalize_role_str
+from polylogue.schemas.common import CommonMessage, CommonToolCall
 
 
 # =============================================================================
@@ -44,29 +46,30 @@ from polylogue.schemas.common import Role, CommonMessage, CommonToolCall
 
 
 def parse_iso_timestamp(ts: str | None) -> datetime | None:
-    """Parse ISO 8601 timestamp with Z suffix handling."""
-    if not ts:
-        return None
-    try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
+    """Parse ISO 8601 timestamp with Z suffix handling.
+
+    Delegates to core.timestamps.parse_timestamp for unified handling.
+    """
+    return parse_timestamp(ts)
 
 
 def parse_unix_timestamp(ts: float | int | None) -> datetime | None:
-    """Parse Unix timestamp (seconds since epoch)."""
-    if ts is None:
-        return None
-    try:
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
-    except (ValueError, TypeError, OSError):
-        return None
+    """Parse Unix timestamp (seconds since epoch).
+
+    Delegates to core.timestamps.parse_timestamp for unified handling.
+    """
+    return parse_timestamp(ts)
 
 
-def normalize_role(raw: str | None) -> Role:
-    """Normalize provider role string to canonical Role."""
-    if not raw:
-        return Role.USER
+def normalize_role(raw: str) -> Role:
+    """Normalize provider role string to canonical Role.
+
+    Args:
+        raw: Role string. Must be non-empty.
+
+    Raises:
+        ValueError: If raw is empty. Use Coalesce with default in glom specs.
+    """
     return Role.normalize(raw)
 
 
@@ -185,7 +188,7 @@ if GLOM_AVAILABLE:
 
     # Claude AI (web) spec
     CLAUDE_AI_SPEC = {
-        "role": ("sender", normalize_role),
+        "role": ("sender", normalize_role),  # Required - fails if missing
         "text": Coalesce("text", default=""),
         "timestamp": ("created_at", parse_iso_timestamp),
         "id": Coalesce("uuid", default=None),
@@ -198,7 +201,7 @@ if GLOM_AVAILABLE:
 
     # ChatGPT spec
     CHATGPT_SPEC = {
-        "role": ("author.role", normalize_role),
+        "role": ("author.role", normalize_role),  # Required - fails if missing
         "text": ("content", extract_chatgpt_text),
         "timestamp": ("create_time", parse_unix_timestamp),
         "id": Coalesce("id", default=None),
@@ -211,7 +214,7 @@ if GLOM_AVAILABLE:
 
     # Gemini spec
     GEMINI_SPEC = {
-        "role": ("role", normalize_role),
+        "role": ("role", normalize_role),  # Required - fails if missing
         "text": Coalesce("text", default=""),
         "timestamp": const(None),  # Gemini doesn't have timestamps in export
         "id": const(None),
@@ -224,10 +227,14 @@ if GLOM_AVAILABLE:
 
     # Codex spec - handles envelope vs direct format
     def _get_codex_role(raw: dict) -> str:
-        """Get role from Codex record (envelope or direct)."""
+        """Get role from Codex record (envelope or direct). Raises if missing."""
         if "payload" in raw:
-            return raw["payload"].get("role", "user")
-        return raw.get("role", "user")
+            role = raw["payload"].get("role")
+        else:
+            role = raw.get("role")
+        if not role:
+            raise ValueError("Codex record missing role")
+        return role
 
     def _get_codex_content(raw: dict) -> list:
         """Get content from Codex record (envelope or direct)."""
