@@ -132,6 +132,19 @@ class ParsedConversation(BaseModel):
     branch_type: str | None = None
 
 
+class RawConversationData(BaseModel):
+    """Container for raw conversation bytes with metadata.
+
+    Used to pass raw data through the ingestion pipeline alongside
+    the parsed conversation, enabling honest database-driven testing.
+    """
+    raw_bytes: bytes
+    source_path: str
+    source_index: int | None = None
+    file_mtime: str | None = None
+    provider_hint: str | None = None  # Provider detected from path/content
+
+
 # hash_text is now imported from core.hashing
 
 
