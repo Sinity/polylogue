@@ -327,14 +327,23 @@ def test_write_lock_prevents_concurrent_writes(test_db):
 
 def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeypatch):
     """store_records() works without explicit connection parameter."""
+    import importlib
     import shutil
 
     # Create a temp location for "default" storage within tmp_path to avoid cross-device issues
-    state_home = tmp_path / "state"
-    state_home.mkdir()
-    monkeypatch.setenv("XDG_STATE_HOME", str(state_home))
+    # NOTE: default_db_path() uses XDG_DATA_HOME, not XDG_STATE_HOME
+    data_home = tmp_path / "data"
+    data_home.mkdir()
+    monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
 
-    # Move test DB to default location
+    # Reload paths and sqlite modules to pick up new XDG_DATA_HOME
+    import polylogue.paths
+    import polylogue.storage.backends.sqlite
+
+    importlib.reload(polylogue.paths)
+    importlib.reload(polylogue.storage.backends.sqlite)
+
+    # Now import default_db_path AFTER reload
     from polylogue.storage.backends.sqlite import default_db_path
 
     default_path = default_db_path()
