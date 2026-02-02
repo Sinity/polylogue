@@ -52,30 +52,24 @@ if TYPE_CHECKING:
 
 # =============================================================================
 # Claude Code Semantic Models
+#
+# NOTE: For cross-provider harmonized types, use polylogue.lib.viewports:
+#   - ReasoningTrace: Harmonized thinking/reasoning (replaces ThinkingTrace)
+#   - ToolCall: Harmonized tool invocations
+#
+# The types below are Claude Code-specific with semantic properties.
 # =============================================================================
 
 
-class ThinkingTrace(BaseModel):
-    """Structured thinking block with metadata.
-
-    Represents Claude's internal reasoning as captured in <thinking> blocks.
-    """
-
-    text: str
-    """The thinking/reasoning content."""
-
-    duration_ms: int | None = None
-    """Duration of the thinking phase in milliseconds (if available)."""
-
-    token_count: int | None = None
-    """Approximate token count of the thinking content."""
-
-
 class ToolInvocation(BaseModel):
-    """Structured tool use with parsed semantics.
+    """Claude Code-specific tool invocation with semantic properties.
 
-    Represents a single tool call from Claude Code sessions,
-    with derived semantic properties.
+    This is distinct from viewports.ToolCall:
+    - ToolCall (viewports.py): Cross-provider harmonized type for rendering
+    - ToolInvocation (this): Claude Code-specific with computed properties
+
+    Use ToolInvocation when you need semantic analysis (is_file_operation,
+    affected_paths, etc.). Use ToolCall for provider-agnostic rendering.
     """
 
     tool_name: str

@@ -124,7 +124,7 @@ def _display_result(
 
     if result.index_error:
         error_line = f"Index error: {result.index_error}"
-        hint_line = "Hint: run `polylogue sync --stage index` to rebuild the index."
+        hint_line = "Hint: run `polylogue run --stage index` to rebuild the index."
         if env.ui.plain:
             env.ui.console.print(error_line)
             env.ui.console.print(hint_line)
@@ -175,9 +175,15 @@ def _webhook_on_new(webhook_url: str, count: int) -> None:
         pass  # Silently fail on webhook errors
 
 
-@click.command("sync")
+@click.command("run")
 @click.option("--preview", is_flag=True, help="Preview work without writing")
-@click.option("--stage", type=click.Choice(["ingest", "render", "index", "all"]), default="all", show_default=True)
+@click.option(
+    "--stage",
+    type=click.Choice(["acquire", "parse", "render", "index", "generate-schemas", "all"]),
+    default="all",
+    show_default=True,
+    help="Pipeline stage: acquire (store raw), parse (raw→conversations), render, index, or all",
+)
 @click.option(
     "--source",
     "sources",
@@ -192,13 +198,13 @@ def _webhook_on_new(webhook_url: str, count: int) -> None:
     show_default=True,
     help="Output format for rendering (markdown or html)",
 )
-@click.option("--watch", is_flag=True, help="Watch sources for changes and sync continuously")
+@click.option("--watch", is_flag=True, help="Watch sources for changes and run continuously")
 @click.option("--notify", is_flag=True, help="Desktop notification on new conversations (requires --watch)")
 @click.option("--exec", "exec_cmd", help="Execute command on new conversations (requires --watch)")
 @click.option("--webhook", help="Call webhook URL on new conversations (requires --watch)")
 @click.option("-p", "--provider", help="Limit to specific provider")
 @click.pass_obj
-def sync_command(
+def run_command(
     env: AppEnv,
     preview: bool,
     stage: str,
@@ -210,15 +216,15 @@ def sync_command(
     webhook: str | None,
     provider: str | None,
 ) -> None:
-    """Sync conversations from configured sources."""
+    """Run pipeline stages on configured sources."""
     # Validate watch-related flags
     if (notify or exec_cmd or webhook) and not watch:
-        fail("sync", "--notify, --exec, and --webhook require --watch mode")
+        fail("run", "--notify, --exec, and --webhook require --watch mode")
 
     cfg = create_config()
 
-    selected_sources = resolve_sources(cfg, sources, "sync")
-    selected_sources = maybe_prompt_sources(env, cfg, selected_sources, "sync")
+    selected_sources = resolve_sources(cfg, sources, "run")
+    selected_sources = maybe_prompt_sources(env, cfg, selected_sources, "run")
 
     # Preview mode
     plan_snapshot = None
@@ -226,7 +232,7 @@ def sync_command(
         try:
             plan_snapshot = plan_sources(cfg, ui=env.ui, source_names=selected_sources)
         except DriveError as exc:
-            fail("sync", str(exc))
+            fail("run", str(exc))
         plan_lines = []
         if selected_sources:
             plan_lines.append(f"Sources: {', '.join(selected_sources)}")
@@ -242,8 +248,8 @@ def sync_command(
 
     # Interactive confirmation (non-preview, non-watch)
     if not watch and not plan_snapshot and not env.ui.plain:
-        if not env.ui.confirm("Proceed with sync?", default=True):
-            env.ui.console.print("Sync cancelled.")
+        if not env.ui.confirm("Proceed?", default=True):
+            env.ui.console.print("Cancelled.")
             return
 
     # Watch mode
@@ -276,7 +282,7 @@ def sync_command(
         try:
             result = _run_sync_once(cfg, env, stage, selected_sources, render_format, plan_snapshot)
         except DriveError as exc:
-            fail("sync", str(exc))
+            fail("run", str(exc))
         _display_result(env, cfg, result, stage, selected_sources)
 
 
@@ -307,3 +313,51 @@ def sources_command(env: AppEnv, json_output: bool) -> None:
         else:
             lines.append(f"{source.name}: (missing path)")
     env.ui.summary("Sources", lines)
+
+
+# Deprecated alias for backwards compatibility
+@click.command("sync", deprecated=True, hidden=True)
+@click.option("--preview", is_flag=True)
+@click.option("--stage", type=click.Choice(["ingest", "render", "index", "all"]), default="all")
+@click.option("--source", "sources", multiple=True)
+@click.option("--format", "render_format", type=click.Choice(["markdown", "html"]), default="html")
+@click.option("--watch", is_flag=True)
+@click.option("--notify", is_flag=True)
+@click.option("--exec", "exec_cmd")
+@click.option("--webhook")
+@click.option("-p", "--provider")
+@click.pass_context
+def sync_command(
+    ctx: click.Context,
+    preview: bool,
+    stage: str,
+    sources: tuple[str, ...],
+    render_format: str,
+    watch: bool,
+    notify: bool,
+    exec_cmd: str | None,
+    webhook: str | None,
+    provider: str | None,
+) -> None:
+    """[DEPRECATED] Use 'polylogue run' instead."""
+    env: AppEnv = ctx.obj
+
+    # Map old stage names to new
+    stage_map = {"ingest": "parse"}  # "ingest" → "parse" (acquire+parse)
+    mapped_stage = stage_map.get(stage, stage)
+
+    env.ui.console.print("[yellow]Warning: 'sync' is deprecated. Use 'polylogue run' instead.[/yellow]")
+
+    # Forward to run_command using ctx.invoke
+    ctx.invoke(
+        run_command,
+        preview=preview,
+        stage=mapped_stage,
+        sources=sources,
+        render_format=render_format,
+        watch=watch,
+        notify=notify,
+        exec_cmd=exec_cmd,
+        webhook=webhook,
+        provider=provider,
+    )

@@ -140,7 +140,13 @@ def run_sources(
 
     Args:
         config: Application configuration
-        stage: Pipeline stage ("ingest", "render", "index", or "all")
+        stage: Pipeline stage:
+            - "acquire": Store raw bytes only (no parsing)
+            - "parse": Full acquire→parse flow (replaces old "ingest")
+            - "render": Generate markdown/HTML from conversations
+            - "index": Build/update FTS index
+            - "generate-schemas": Generate provider schemas from data
+            - "all": Full pipeline (acquire→parse→render→index)
         plan: Optional plan result for drift detection
         ui: Optional UI object for user interaction
         source_names: Optional list of source names to process
@@ -179,8 +185,26 @@ def run_sources(
     processed_ids: set[str] = set()
 
     with connection_context(None) as conn:
-        # Ingestion stage
-        if stage in {"ingest", "all"}:
+        # Acquire stage (raw storage only)
+        if stage == "acquire":
+            from polylogue.pipeline.services.acquisition import AcquisitionService
+            from polylogue.storage.backends.sqlite import SQLiteBackend
+
+            backend = container.storage()._backend
+            if backend is None:
+                raise RuntimeError("Repository backend is not initialized")
+
+            acquire_service = AcquisitionService(backend=backend)
+            sources = _select_sources(config, source_names)
+            acquire_result = acquire_service.acquire_sources(
+                sources,
+                progress_callback=progress_callback,
+            )
+            counts["acquired"] = acquire_result.counts["acquired"]
+            counts["skipped"] = acquire_result.counts["skipped"]
+
+        # Parse stage (acquire + parse, replaces old "ingest")
+        elif stage in {"parse", "ingest", "all"}:
             sources = _select_sources(config, source_names)
             ingest_result = ingestion_service.ingest_sources(
                 sources,
@@ -194,6 +218,15 @@ def run_sources(
                 counts[key] = value
             changed_counts.update(ingest_result.changed_counts)
             processed_ids = ingest_result.processed_ids
+
+        # Schema generation stage
+        if stage == "generate-schemas":
+            from polylogue.schemas.schema_inference import generate_all_schemas
+
+            output_dir = config.archive_root.parent / "schemas"
+            results = generate_all_schemas(output_dir=output_dir, db_path=None)
+            counts["schemas_generated"] = sum(1 for r in results if r.success)
+            counts["schemas_failed"] = sum(1 for r in results if not r.success)
 
         # Rendering stage
         render_failures: list[dict[str, str]] = []
