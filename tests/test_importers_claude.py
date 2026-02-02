@@ -122,7 +122,7 @@ EXTRACT_CHAT_MESSAGES_CASES = [
     # Role variants
     ([make_claude_chat_message("u1", "human", "Hi")], "user", "human role"),
     ([make_claude_chat_message("u1", "assistant", "Hi")], "assistant", "assistant role"),
-    ([make_claude_chat_message("u1", None, "Hi")], "message", "missing sender defaults"),
+    ([make_claude_chat_message("u1", None, "Hi")], "user", "missing sender defaults to user"),
 
     # Timestamp variants
     ([make_claude_chat_message("u1", "human", "Hi", timestamp="2024-01-01T00:00:00Z")], 1, "created_at"),
