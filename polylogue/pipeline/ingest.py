@@ -82,6 +82,18 @@ def prepare_ingest(
         cid = make_conversation_id(convo.provider_name, convo.provider_conversation_id)
         changed = False
 
+    # Resolve parent conversation ID if present (provider ID → internal polylogue ID)
+    parent_conversation_id = None
+    if convo.parent_conversation_provider_id:
+        parent_conversation_id = make_conversation_id(
+            convo.provider_name, convo.parent_conversation_provider_id
+        )
+
+    # Merge source into provider_meta rather than overwriting
+    merged_provider_meta: dict[str, object] = {"source": source_name}
+    if convo.provider_meta:
+        merged_provider_meta.update(convo.provider_meta)
+
     conversation_record = ConversationRecord(
         conversation_id=cid,
         provider_name=convo.provider_name,
@@ -90,7 +102,9 @@ def prepare_ingest(
         created_at=convo.created_at,
         updated_at=convo.updated_at,
         content_hash=content_hash,
-        provider_meta={"source": source_name},
+        provider_meta=merged_provider_meta,
+        parent_conversation_id=parent_conversation_id,
+        branch_type=convo.branch_type,
     )
 
     messages: list[MessageRecord] = []
@@ -99,9 +113,6 @@ def prepare_ingest(
     # Retrieve existing message ID mapping using the same connection
     existing_message_ids: dict[str, MessageId] = {}
     if conn:
-        # Optimization: Reuse conn if available
-        # But _existing_message_map uses its own connection context.
-        # Use inline query here to reuse `conn`?
         rows = conn.execute(
             """
             SELECT provider_message_id, message_id
@@ -114,11 +125,22 @@ def prepare_ingest(
             str(row["provider_message_id"]): MessageId(row["message_id"]) for row in rows if row["provider_message_id"]
         }
 
+    # First pass: build complete message_ids mapping (needed for parent resolution)
     for idx, msg in enumerate(convo.messages, start=1):
         provider_message_id = msg.provider_message_id or f"msg-{idx}"
         mid: MessageId = existing_message_ids.get(provider_message_id) or make_message_id(cid, provider_message_id)
-        message_hash = message_content_hash(msg, provider_message_id)
         message_ids[str(provider_message_id)] = mid
+
+    # Second pass: create MessageRecords with resolved parent IDs
+    for idx, msg in enumerate(convo.messages, start=1):
+        provider_message_id = msg.provider_message_id or f"msg-{idx}"
+        mid = message_ids[str(provider_message_id)]
+        message_hash = message_content_hash(msg, provider_message_id)
+
+        # Resolve parent message ID if present
+        parent_message_id: MessageId | None = None
+        if msg.parent_message_provider_id:
+            parent_message_id = message_ids.get(str(msg.parent_message_provider_id))
 
         # Enrich provider_meta with code language detection
         enriched_meta = enrich_message_metadata(msg.provider_meta)
@@ -133,6 +155,8 @@ def prepare_ingest(
                 timestamp=msg.timestamp,
                 content_hash=message_hash,
                 provider_meta=enriched_meta,
+                parent_message_id=parent_message_id,
+                branch_index=msg.branch_index,
             )
         )
 
