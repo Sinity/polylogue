@@ -155,7 +155,12 @@ class TestPolylogueIngest:
         assert len(conversations) > 0
 
     def test_ingest_duplicate_is_idempotent(self, workspace_env, sample_chatgpt_file):
-        """Test that re-ingesting the same file skips duplicates."""
+        """Test that re-ingesting the same file skips duplicates.
+
+        With stage-based ingestion (acquire → parse), duplicates are skipped
+        at the acquire stage (raw_id already exists), so the parse stage
+        is never called and returns an empty result.
+        """
         archive = Polylogue(
             archive_root=workspace_env["archive_root"],
             db_path=workspace_env["data_root"] / "polylogue.db",
@@ -163,12 +168,17 @@ class TestPolylogueIngest:
 
         # First ingest
         result1 = archive.ingest_file(sample_chatgpt_file)
-        assert result1.counts["conversations"] > 0
+        first_count = result1.counts["conversations"]
+        assert first_count > 0
 
-        # Second ingest (should skip)
+        # Second ingest (acquire stage skips duplicate raw_id)
         result2 = archive.ingest_file(sample_chatgpt_file)
-        assert result2.counts["skipped_conversations"] > 0
-        assert result2.counts["conversations"] == 0  # No new conversations
+        # With stage architecture, no parsing happens when acquire skips
+        assert result2.counts["conversations"] == 0
+
+        # Verify DB still has same number of conversations (idempotent)
+        conversations = archive.list_conversations()
+        assert len(conversations) == first_count
 
     def test_ingest_with_custom_source_name(self, workspace_env, sample_chatgpt_file):
         """Test ingesting with a custom source name."""
