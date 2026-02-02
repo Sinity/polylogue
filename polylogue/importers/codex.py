@@ -1,10 +1,19 @@
+"""Codex JSONL session importer using typed Pydantic models.
+
+Uses CodexRecord from polylogue.providers.codex for type-safe parsing
+with automatic validation and normalization.
+"""
+
 from __future__ import annotations
 
+from pydantic import ValidationError
+
+from polylogue.providers.codex import CodexRecord
 from .base import ParsedConversation, ParsedMessage
 
 
 def looks_like(payload: list[object]) -> bool:
-    """Detect Codex JSONL format.
+    """Detect Codex JSONL format using typed validation.
 
     Newest format (envelope with typed payloads):
         {"type":"session_meta","payload":{"id":"...","timestamp":"...","git":{...}}}
@@ -21,105 +30,103 @@ def looks_like(payload: list[object]) -> bool:
     for item in payload:
         if not isinstance(item, dict):
             continue
-        # Newest format: envelope types
-        if item.get("type") in ("session_meta", "response_item"):
-            return True
-        # Intermediate format: session metadata or message records
-        if "id" in item and "timestamp" in item:
-            return True
-        if item.get("type") == "message":
-            return True
+
+        try:
+            record = CodexRecord.model_validate(item)
+            # Check for known Codex format indicators
+            if record.format_type in ("envelope", "direct", "state"):
+                return True
+            # Session metadata (first line of intermediate format)
+            if record.id and record.timestamp:
+                return True
+        except ValidationError:
+            continue
 
     return False
 
 
 def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
-    """Parse Codex JSONL session file.
+    """Parse Codex JSONL session file using typed CodexRecord model.
 
-    Supports two format generations:
+    Supports two format generations via CodexRecord.format_type:
+    - "envelope": {"type":"session_meta"|"response_item", "payload":{...}}
+    - "direct": {"type":"message", "role":"...", "content":[...]}
+    - "state": {"record_type":"state"} (skip markers)
 
-    Newest (envelope format):
-        {"type":"session_meta","payload":{"id":"...","timestamp":"...","git":{...}}}
-        {"type":"response_item","payload":{"type":"message","role":"user","content":[...]}}
-
-    Intermediate (direct records):
-        {"id":"...","timestamp":"...","git":{...}}
-        {"record_type":"state"}
-        {"type":"message","role":"user","content":[...]}
+    The CodexRecord model handles format normalization via properties:
+    - effective_role: Normalized role from any format
+    - text_content: Extracted text from any format
+    - format_type: Detected format generation
     """
     messages: list[ParsedMessage] = []
     session_id = fallback_id
-    session_timestamp = None
+    session_timestamp: str | None = None
     session_metas_seen: list[str] = []  # Collect all session_meta IDs for parent tracking
 
     for idx, item in enumerate(payload, start=1):
         if not isinstance(item, dict):
             continue
 
-        # Newest format: envelope with "session_meta" type
-        # Collect ALL session_meta IDs - child sessions include parent session_meta
-        if item.get("type") == "session_meta":
-            envelope_payload = item.get("payload", {})
-            if isinstance(envelope_payload, dict):
-                meta_id = envelope_payload.get("id")
-                if meta_id and meta_id not in session_metas_seen:
-                    session_metas_seen.append(meta_id)
-                    # First session_meta sets the conversation ID
-                    if len(session_metas_seen) == 1:
-                        session_id = meta_id
-                        session_timestamp = envelope_payload.get("timestamp", session_timestamp)
+        try:
+            record = CodexRecord.model_validate(item)
+        except ValidationError:
+            # Skip invalid records
             continue
 
-        # Newest format: envelope with "response_item" type
-        if item.get("type") == "response_item":
-            envelope_payload = item.get("payload", {})
-            if isinstance(envelope_payload, dict) and envelope_payload.get("type") == "message":
-                # Unwrap and process as message
-                item = envelope_payload
-                # Fall through to message processing below
-
-        # Skip state markers (intermediate format)
-        if item.get("record_type") == "state":
-            continue
-
-        # Extract session metadata (intermediate format - first line)
-        if "id" in item and "timestamp" in item and not item.get("type"):
-            meta_id = item["id"]
+        # Handle session metadata (envelope format)
+        if record.type == "session_meta" and record.payload:
+            meta_id = record.payload.get("id")
             if meta_id and meta_id not in session_metas_seen:
                 session_metas_seen.append(meta_id)
                 # First session_meta sets the conversation ID
                 if len(session_metas_seen) == 1:
-                    session_id = meta_id
-                    session_timestamp = item.get("timestamp")
+                    session_id = str(meta_id)
+                    session_timestamp = record.payload.get("timestamp")
             continue
 
-        # Parse message records (both newest and intermediate formats)
-        if item.get("type") == "message":
-            role = item.get("role")
-            content = item.get("content", [])
+        # Handle session metadata (intermediate format - first line with id+timestamp)
+        if record.id and record.timestamp and not record.type:
+            if record.id not in session_metas_seen:
+                session_metas_seen.append(record.id)
+                if len(session_metas_seen) == 1:
+                    session_id = record.id
+                    session_timestamp = record.timestamp
+            continue
 
-            if not role or not content:
+        # Skip state markers
+        if record.format_type == "state":
+            continue
+
+        # Handle messages - either from envelope or direct format
+        if record.type == "response_item" and record.payload:
+            # Envelope format: unwrap payload and create new record for message
+            inner_payload = record.payload
+            if inner_payload.get("type") == "message":
+                try:
+                    record = CodexRecord.model_validate(inner_payload)
+                except ValidationError:
+                    continue
+
+        # Parse message records using typed properties
+        if record.is_message:
+            role = record.effective_role
+            text = record.text_content
+
+            if not role or role == "unknown" or not text:
                 continue
 
-            # Extract text from content array
-            # Content is list of {"type":"input_text","text":"..."}
-            text_parts = []
-            for content_item in content:
-                if isinstance(content_item, dict):
-                    if content_item.get("type") == "input_text":
-                        text = content_item.get("text", "")
-                        if text:
-                            text_parts.append(text)
+            # Get message ID from the record
+            msg_id = record.id or f"msg-{idx}"
 
-            if text_parts:
-                messages.append(
-                    ParsedMessage(
-                        provider_message_id=item.get("id") or f"msg-{idx}",
-                        role=role,
-                        text="\n".join(text_parts),
-                        timestamp=item.get("timestamp"),
-                    )
+            messages.append(
+                ParsedMessage(
+                    provider_message_id=msg_id,
+                    role=role,
+                    text=text,
+                    timestamp=record.timestamp,
+                    provider_meta={"raw": item},  # Preserve original for re-parsing
                 )
+            )
 
     # Second session_meta ID (if present) is the parent session
     parent_id = session_metas_seen[1] if len(session_metas_seen) > 1 else None

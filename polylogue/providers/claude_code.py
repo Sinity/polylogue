@@ -154,8 +154,8 @@ class ClaudeCodeRecord(BaseModel):
     parentUuid: str | None = None
     """Parent record UUID (for tree structure)."""
 
-    timestamp: str | None = None
-    """ISO timestamp."""
+    timestamp: str | int | float | None = None
+    """Timestamp - can be ISO string or Unix milliseconds."""
 
     sessionId: str | None = None
     """Session identifier."""
@@ -195,13 +195,21 @@ class ClaudeCodeRecord(BaseModel):
     @property
     def parsed_timestamp(self) -> datetime | None:
         """Parse timestamp to datetime."""
-        if not self.timestamp:
+        if self.timestamp is None:
             return None
         try:
+            # Handle numeric timestamps (Unix milliseconds)
+            if isinstance(self.timestamp, (int, float)):
+                # If > 1e11, assume milliseconds and convert to seconds
+                ts_val = float(self.timestamp)
+                if ts_val > 1e11:
+                    ts_val = ts_val / 1000.0
+                return datetime.fromtimestamp(ts_val)
+
             # Handle ISO format with Z suffix
-            ts = self.timestamp.replace("Z", "+00:00")
+            ts = str(self.timestamp).replace("Z", "+00:00")
             return datetime.fromisoformat(ts)
-        except ValueError:
+        except (ValueError, OSError):
             return None
 
     @property
