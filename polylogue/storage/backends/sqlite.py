@@ -194,7 +194,6 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
 
 def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     """Migrate from v1 to v2: add attachment reference counting."""
-    conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute("ALTER TABLE attachments RENAME TO attachment_refs_old")
     conn.executescript(
         """
@@ -281,12 +280,10 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP TABLE attachment_refs_old")
-    conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     """Migrate from v2 to v3: update runs table schema."""
-    conn.execute("PRAGMA foreign_keys = OFF")
     conn.execute("ALTER TABLE runs RENAME TO runs_old")
     conn.executescript(
         """
@@ -324,12 +321,10 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP TABLE runs_old")
-    conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     """Migrate from v3 to v4: add computed source_name column."""
-    conn.execute("PRAGMA foreign_keys = OFF")
     # Drop existing index before renaming table to avoid conflicts
     conn.execute("DROP INDEX IF EXISTS idx_conversations_provider")
     conn.execute("ALTER TABLE conversations RENAME TO conversations_old")
@@ -382,7 +377,6 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
         """
     )
     conn.execute("DROP TABLE conversations_old")
-    conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _migrate_v4_to_v5(conn: sqlite3.Connection) -> None:
@@ -408,14 +402,22 @@ def _migrate_v6_to_v7(conn: sqlite3.Connection) -> None:
     - branch_index: sibling position (0 = mainline, >0 = branch)
     """
     # Add conversation branching columns
-    conn.execute("ALTER TABLE conversations ADD COLUMN parent_conversation_id TEXT REFERENCES conversations(conversation_id)")
-    conn.execute("ALTER TABLE conversations ADD COLUMN branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork') OR branch_type IS NULL)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL")
+    conn.execute(
+        "ALTER TABLE conversations ADD COLUMN parent_conversation_id TEXT REFERENCES conversations(conversation_id)"
+    )
+    conn.execute(
+        "ALTER TABLE conversations ADD COLUMN branch_type TEXT CHECK (branch_type IN ('continuation', 'sidechain', 'fork') OR branch_type IS NULL)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL"
+    )
 
     # Add message branching columns
     conn.execute("ALTER TABLE messages ADD COLUMN parent_message_id TEXT")
     conn.execute("ALTER TABLE messages ADD COLUMN branch_index INTEGER DEFAULT 0")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_message_id) WHERE parent_message_id IS NOT NULL"
+    )
 
 
 # Migration registry: maps source version to migration function
@@ -432,12 +434,9 @@ _MIGRATIONS = {
 def _run_migrations(conn: sqlite3.Connection, current_version: int, target_version: int) -> None:
     """Run migrations from current_version to target_version.
 
-    Note: SQLite DDL statements (ALTER TABLE, CREATE TABLE, etc.) auto-commit
-    and cannot be rolled back. If a migration fails mid-way, the database may
-    be in an inconsistent state. Always backup before migrations.
-
-    Each successful migration updates the schema version before proceeding to
-    the next, so partial progress is preserved.
+    Each migration step is committed individually (ratcheting), ensuring that
+    even if the full sequence fails, the database remains in a valid intermediate
+    state (the last successful version).
 
     Args:
         conn: Database connection
@@ -445,8 +444,7 @@ def _run_migrations(conn: sqlite3.Connection, current_version: int, target_versi
         target_version: Target schema version
 
     Raises:
-        RuntimeError: If any migration fails, with details about which migration
-                     failed and at what version the database remains.
+        RuntimeError: If any migration fails.
     """
     if current_version >= target_version:
         return
@@ -461,12 +459,13 @@ def _run_migrations(conn: sqlite3.Connection, current_version: int, target_versi
         try:
             migration_func(conn)
             conn.execute(f"PRAGMA user_version = {version + 1}")
+            conn.commit()  # Commit each step successfully
             LOGGER.info("Migration v%d -> v%d completed", version, version + 1)
         except Exception as exc:
             LOGGER.error("Migration v%d -> v%d failed: %s", version, version + 1, exc)
+            conn.rollback()  # Rollback changes from the failed step
             raise RuntimeError(
-                f"Migration from v{version} to v{version + 1} failed. "
-                f"Database may be in inconsistent state. Error: {exc}"
+                f"Migration from v{version} to v{version + 1} failed. Database remains at v{version}. Error: {exc}"
             ) from exc
 
 
@@ -474,7 +473,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     """Ensure database schema is at current version, running migrations if needed.
 
     For fresh databases (version 0), creates the schema directly.
-    For existing databases, runs migrations sequentially with rollback support.
+    For existing databases, runs migrations sequentially.
 
     Args:
         conn: Database connection
@@ -491,13 +490,19 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         return
 
     if current_version < SCHEMA_VERSION:
-        # Run migrations with rollback support
+        # To perform schema changes (especially recreations), we disable FKs.
+        # This requires no active transaction.
+        if conn.in_transaction:
+            conn.commit()
+
+        # Disable foreign keys globally for the migration process
+        conn.execute("PRAGMA foreign_keys = OFF")
+
         try:
             _run_migrations(conn, current_version, SCHEMA_VERSION)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
+        finally:
+            # Always re-enable foreign keys
+            conn.execute("PRAGMA foreign_keys = ON")
         return
 
     if current_version != SCHEMA_VERSION:
@@ -1220,6 +1225,143 @@ class SQLiteBackend:
 
         conn.commit()
         return True
+
+    def iter_messages(
+        self,
+        conversation_id: str,
+        *,
+        chunk_size: int = 100,
+        dialogue_only: bool = False,
+        limit: int | None = None,
+    ) -> Iterator[MessageRecord]:
+        """Stream messages in chunks instead of loading all at once.
+
+        This is the memory-efficient alternative to get_messages() for large
+        conversations. Uses cursor-based pagination with LIMIT/OFFSET to
+        avoid loading the entire result set into memory.
+
+        Args:
+            conversation_id: ID of the conversation to stream messages from
+            chunk_size: Number of messages to fetch per database round-trip.
+                       Larger values = fewer queries but more memory per chunk.
+            dialogue_only: If True, only yield user/assistant messages (skip
+                          tool, system, etc.). Filtered at SQL level for efficiency.
+            limit: Maximum total messages to yield. None = no limit.
+
+        Yields:
+            MessageRecord objects one at a time
+        """
+        import json
+
+        conn = self._get_connection()
+        offset = 0
+        yielded = 0
+
+        while True:
+            # Build query with optional role filter
+            query = "SELECT * FROM messages WHERE conversation_id = ?"
+            params: list[str | int] = [conversation_id]
+
+            if dialogue_only:
+                query += " AND role IN ('user', 'assistant', 'human')"
+
+            query += " ORDER BY timestamp"
+
+            # Calculate how many to fetch this round
+            fetch_limit = chunk_size
+            if limit is not None:
+                remaining = limit - yielded
+                if remaining <= 0:
+                    break
+                fetch_limit = min(chunk_size, remaining)
+
+            query += f" LIMIT {fetch_limit} OFFSET {offset}"
+
+            rows = conn.execute(query, tuple(params)).fetchall()
+            if not rows:
+                break
+
+            for row in rows:
+                yield MessageRecord(
+                    message_id=row["message_id"],
+                    conversation_id=row["conversation_id"],
+                    provider_message_id=row["provider_message_id"],
+                    role=row["role"],
+                    text=row["text"],
+                    timestamp=row["timestamp"],
+                    content_hash=row["content_hash"],
+                    provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                    version=row["version"],
+                    parent_message_id=row["parent_message_id"],
+                    branch_index=row["branch_index"] or 0,
+                )
+                yielded += 1
+
+                if limit is not None and yielded >= limit:
+                    return
+
+            offset += len(rows)
+
+            # If we got fewer rows than requested, we've reached the end
+            if len(rows) < fetch_limit:
+                break
+
+    def get_conversation_stats(self, conversation_id: str) -> dict[str, int]:
+        """Get message counts without loading messages.
+
+        Useful for UI display and deciding whether to use streaming.
+
+        Args:
+            conversation_id: ID of the conversation
+
+        Returns:
+            Dict with counts: total_messages, dialogue_messages, tool_messages
+        """
+        conn = self._get_connection()
+
+        # Total messages
+        total = conn.execute(
+            "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ?",
+            (conversation_id,),
+        ).fetchone()["cnt"]
+
+        # Dialogue messages (user + assistant)
+        dialogue = conn.execute(
+            "SELECT COUNT(*) as cnt FROM messages WHERE conversation_id = ? AND role IN ('user', 'assistant', 'human')",
+            (conversation_id,),
+        ).fetchone()["cnt"]
+
+        return {
+            "total_messages": total,
+            "dialogue_messages": dialogue,
+            "tool_messages": total - dialogue,
+        }
+
+    def get_message_counts_batch(self, conversation_ids: list[str]) -> dict[str, int]:
+        """Get message counts for multiple conversations in a single query.
+
+        Args:
+            conversation_ids: List of conversation IDs
+
+        Returns:
+            Dict mapping conversation_id to message count
+        """
+        if not conversation_ids:
+            return {}
+
+        conn = self._get_connection()
+        placeholders = ",".join("?" for _ in conversation_ids)
+        rows = conn.execute(
+            f"""
+            SELECT conversation_id, COUNT(*) as cnt
+            FROM messages
+            WHERE conversation_id IN ({placeholders})
+            GROUP BY conversation_id
+            """,
+            conversation_ids,
+        ).fetchall()
+
+        return {row["conversation_id"]: row["cnt"] for row in rows}
 
     def close(self) -> None:
         """Close the database connection for this thread."""

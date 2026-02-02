@@ -35,41 +35,19 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterator
 from datetime import datetime
-from enum import Enum
 from functools import cached_property
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from polylogue.core.roles import Role
 from polylogue.core.timestamps import parse_timestamp
+from polylogue.lib.messages import MessageCollection, MessageSource
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 from polylogue.types import ConversationId, MessageId
 
 if TYPE_CHECKING:
     from polylogue.lib.projections import ConversationProjection
-
-
-class Role(str, Enum):
-    """Canonical message roles across all providers."""
-    USER = "user"
-    ASSISTANT = "assistant"
-    SYSTEM = "system"
-    TOOL = "tool"
-    UNKNOWN = "unknown"
-
-    @classmethod
-    def from_string(cls, role: str) -> Role:
-        """Convert role string to Role enum."""
-        role_lower = role.lower() if role else ""
-        mapping = {
-            "user": cls.USER,
-            "human": cls.USER,
-            "assistant": cls.ASSISTANT,
-            "model": cls.ASSISTANT,
-            "system": cls.SYSTEM,
-            "tool": cls.TOOL,
-        }
-        return mapping.get(role_lower, cls.UNKNOWN)
 
 
 # =============================================================================
@@ -227,21 +205,6 @@ class ContextCompaction(BaseModel):
 
     messages_compacted: int | None = None
     """Number of messages that were compacted."""
-    def from_string(cls, value: str | None) -> Role:
-        """Normalize various role strings to canonical Role."""
-        if not value:
-            return cls.UNKNOWN
-        normalized = value.lower().strip()
-        # Handle provider variations
-        if normalized in ("assistant", "model"):
-            return cls.ASSISTANT
-        if normalized in ("user", "human"):
-            return cls.USER
-        # Direct match
-        try:
-            return cls(normalized)
-        except ValueError:
-            return cls.UNKNOWN
 
 
 class Attachment(BaseModel):
@@ -310,7 +273,7 @@ class Message(BaseModel):
     @cached_property
     def role_enum(self) -> Role:
         """Get the normalized Role enum for this message."""
-        return Role.from_string(self.role)
+        return Role.normalize(self.role)
 
     @property
     def is_user(self) -> bool:
@@ -487,17 +450,111 @@ class DialoguePair(BaseModel):
         return f"User: {self.user.text}\n\nAssistant: {self.assistant.text}"
 
 
-class Conversation(BaseModel):
+class ConversationSummary(BaseModel):
+    """Lightweight conversation metadata without messages.
+
+    Use this for listing/filtering operations that don't need message content.
+    Much more memory efficient than loading full Conversation objects.
+    """
+
     id: ConversationId
     provider: str
     title: str | None = None
-    messages: list[Message]
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    provider_meta: dict[str, object] | None = None
+    metadata: dict[str, object] = Field(default_factory=dict)
+    parent_id: ConversationId | None = None
+    branch_type: str | None = None
+    # Cached stats (populated from get_conversation_stats if available)
+    message_count: int | None = None
+    dialogue_count: int | None = None
+
+    @classmethod
+    def from_record(cls, record: ConversationRecord) -> ConversationSummary:
+        """Create summary from ConversationRecord without loading messages."""
+        return cls(
+            id=record.conversation_id,
+            provider=record.provider_name,
+            title=record.title,
+            created_at=parse_timestamp(record.created_at),
+            updated_at=parse_timestamp(record.updated_at),
+            provider_meta=record.provider_meta,
+            metadata=record.metadata or {},
+            parent_id=record.parent_conversation_id,
+            branch_type=record.branch_type,
+        )
+
+    @property
+    def display_title(self) -> str:
+        """Display title with precedence: user_title > title > truncated ID."""
+        user_title = self.metadata.get("title")
+        if user_title:
+            return str(user_title)
+        if self.title:
+            return self.title
+        return self.id[:8]
+
+    @property
+    def tags(self) -> list[str]:
+        """List of tags from metadata."""
+        tags = self.metadata.get("tags", [])
+        if isinstance(tags, list):
+            return [str(t) for t in tags]
+        return []
+
+    @property
+    def summary(self) -> str | None:
+        """User-defined summary from metadata."""
+        summary = self.metadata.get("summary")
+        return str(summary) if summary is not None else None
+
+    @property
+    def is_continuation(self) -> bool:
+        return self.branch_type == "continuation"
+
+    @property
+    def is_sidechain(self) -> bool:
+        return self.branch_type == "sidechain"
+
+    @property
+    def is_root(self) -> bool:
+        return self.parent_id is None
+
+
+class Conversation(BaseModel):
+    """A conversation with messages and metadata.
+
+    The `messages` field is a `MessageCollection` which supports both lazy
+    and eager loading:
+
+    - **Lazy mode**: Messages stream from the database on iteration, using
+      O(1) memory regardless of conversation size. Created by `Conversation.from_lazy()`.
+
+    - **Eager mode**: Messages are pre-loaded in memory. Created by
+      `Conversation.from_records()` or filter operations.
+
+    Both modes support the same API: iteration, len(), and indexing.
+    Indexing in lazy mode will materialize the full list on first access.
+
+    For backward compatibility, you can also pass a list of Message objects
+    directly, which will be auto-wrapped in an eager MessageCollection.
+    """
+
+    id: ConversationId
+    provider: str
+    title: str | None = None
+    messages: MessageCollection
     created_at: datetime | None = None
     updated_at: datetime | None = None
     provider_meta: dict[str, object] | None = None
     metadata: dict[str, object] = Field(default_factory=dict)
     parent_id: ConversationId | None = None
     branch_type: str | None = None  # "continuation", "sidechain", "fork"
+
+    # Allow MessageCollection which is not a standard Pydantic type
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
 
     @classmethod
     def from_records(
@@ -506,6 +563,19 @@ class Conversation(BaseModel):
         messages: list[MessageRecord],
         attachments: list[AttachmentRecord],
     ) -> Conversation:
+        """Create a Conversation with eager-loaded messages.
+
+        This is the traditional constructor that loads all messages into memory.
+        Used for filtered views, tests, and when full message access is needed.
+
+        Args:
+            conversation: Conversation metadata record
+            messages: List of message records
+            attachments: List of attachment records
+
+        Returns:
+            Conversation with messages in eager mode
+        """
         att_map: dict[MessageId, list[AttachmentRecord]] = {}
         for att in attachments:
             if att.message_id:
@@ -520,7 +590,41 @@ class Conversation(BaseModel):
             id=conversation.conversation_id,
             provider=conversation.provider_name,
             title=conversation.title,
-            messages=rich_messages,
+            messages=MessageCollection(messages=rich_messages),
+            created_at=parse_timestamp(conversation.created_at),
+            updated_at=parse_timestamp(conversation.updated_at),
+            provider_meta=conversation.provider_meta,
+            metadata=conversation.metadata or {},
+            parent_id=conversation.parent_conversation_id,
+            branch_type=conversation.branch_type,
+        )
+
+    @classmethod
+    def from_lazy(
+        cls,
+        conversation: ConversationRecord,
+        source: MessageSource,
+    ) -> Conversation:
+        """Create a Conversation with lazy-loaded messages.
+
+        Messages will be streamed from the database on iteration, using O(1)
+        memory regardless of conversation size. len() uses a COUNT(*) query.
+
+        Args:
+            conversation: Conversation metadata record
+            source: MessageSource for streaming messages
+
+        Returns:
+            Conversation with messages in lazy mode
+        """
+        return cls(
+            id=conversation.conversation_id,
+            provider=conversation.provider_name,
+            title=conversation.title,
+            messages=MessageCollection(
+                conversation_id=conversation.conversation_id,
+                source=source,
+            ),
             created_at=parse_timestamp(conversation.created_at),
             updated_at=parse_timestamp(conversation.updated_at),
             provider_meta=conversation.provider_meta,
@@ -580,8 +684,13 @@ class Conversation(BaseModel):
     # --- Filtering views ---
 
     def filter(self, predicate: Callable[[Message], bool]) -> Conversation:
-        """Return a view with messages matching predicate."""
-        return self.model_copy(update={"messages": [m for m in self.messages if predicate(m)]})
+        """Return a view with messages matching predicate.
+
+        Note: This materializes messages to apply the filter, returning
+        a new Conversation with an eager MessageCollection.
+        """
+        filtered = [m for m in self.messages if predicate(m)]
+        return self.model_copy(update={"messages": MessageCollection(messages=filtered)})
 
     def user_only(self) -> Conversation:
         """Return a view with only user messages."""
@@ -604,9 +713,12 @@ class Conversation(BaseModel):
         return self.filter(lambda m: m.is_substantive)
 
     def without_attachments(self) -> Conversation:
-        """Return a view with attachments stripped from messages."""
+        """Return a view with attachments stripped from messages.
+
+        Note: This materializes messages to apply the transformation.
+        """
         new_msgs = [m.model_copy(update={"attachments": []}) for m in self.messages]
-        return self.model_copy(update={"messages": new_msgs})
+        return self.model_copy(update={"messages": MessageCollection(messages=new_msgs)})
 
     def mainline_messages(self) -> list[Message]:
         """Return only mainline messages (branch_index == 0)."""

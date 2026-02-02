@@ -35,6 +35,7 @@ Example usage:
 """
 
 from polylogue.lib.filters import ConversationFilter
+from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message, Role
 from polylogue.lib.projections import ConversationProjection
 from polylogue.lib.repository import ConversationRepository
@@ -47,5 +48,6 @@ __all__ = [
     "ConversationRepository",
     "DialoguePair",
     "Message",
+    "MessageCollection",
     "Role",
 ]

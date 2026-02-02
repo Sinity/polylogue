@@ -1,5 +1,6 @@
 import pytest
 
+from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.repository import ConversationRepository
 from polylogue.storage.backends.sqlite import SQLiteBackend
@@ -12,7 +13,7 @@ def test_semantic_models():
     # Test rich methods
     msg_user = Message(id="1", role="user", text="hello, how are you today?")
     msg_bot = Message(id="2", role="assistant", text="I'm doing well, thanks for asking!")
-    conv = Conversation(id="c1", provider="test", messages=[msg_user, msg_bot])
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=[msg_user, msg_bot]))
 
     # Test filtering
     user_only = conv.user_only()
@@ -67,9 +68,10 @@ def test_repository(test_db):
 
 
 def test_repository_get_includes_attachment_conversation_id(test_db):
-    """ConversationRepository.get() returns attachments with conversation_id field.
+    """ConversationRepository.get_eager() returns attachments with conversation_id field.
 
     This tests the fix where attachment_refs.conversation_id was missing from SELECT.
+    Note: get_eager() is required for attachments since lazy get() doesn't load them.
     """
     from tests.factories import DbFactory
 
@@ -96,7 +98,8 @@ def test_repository_get_includes_attachment_conversation_id(test_db):
 
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    conv = repo.get("c-with-att")
+    # Use get_eager() to load attachments
+    conv = repo.get_eager("c-with-att")
 
     assert conv is not None
     # Attachments are on messages
@@ -109,7 +112,7 @@ def test_repository_get_includes_attachment_conversation_id(test_db):
 
 
 def test_repository_get_with_multiple_attachments(test_db):
-    """get() correctly groups multiple attachments per message."""
+    """get_eager() correctly groups multiple attachments per message."""
     from tests.factories import DbFactory
 
     factory = DbFactory(test_db)
@@ -139,7 +142,8 @@ def test_repository_get_with_multiple_attachments(test_db):
 
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    conv = repo.get("c-multi-att")
+    # Use get_eager() to load attachments
+    conv = repo.get_eager("c-multi-att")
 
     assert conv is not None
     assert len(conv.messages) == 2
@@ -184,7 +188,8 @@ def test_repository_get_attachment_metadata_decoded(test_db):
 
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    conv = repo.get("c-att-meta")
+    # Use get_eager() to load attachments
+    conv = repo.get_eager("c-att-meta")
 
     assert conv is not None
     assert len(conv.messages) == 1
