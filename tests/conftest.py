@@ -4,6 +4,8 @@ import json
 
 import pytest
 
+from polylogue.lib.messages import MessageCollection
+
 
 @pytest.fixture(autouse=True)
 def _clear_polylogue_env(monkeypatch):
@@ -491,7 +493,7 @@ def sample_conversation():
         Message(id="m6", role="assistant", text="ok", timestamp=datetime(2024, 1, 1, 10, 5)),  # Short (noise)
         Message(id="m7", role="assistant", text="Substantial answer with details", timestamp=datetime(2024, 1, 1, 10, 6)),
     ]
-    return Conversation(id="conv1", provider="test", messages=messages)
+    return Conversation(id="conv1", provider="test", messages=MessageCollection(messages=messages))
 
 
 @pytest.fixture
