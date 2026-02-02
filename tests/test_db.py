@@ -477,40 +477,61 @@ def test_open_connection_busy_timeout_set(tmp_path):
 class TestMigrations:
     """Tests for database migration behavior."""
 
-    def test_migration_failure_preserves_original_state(self, tmp_path):
+    def test_migration_failure_preserves_original_state(self, tmp_path, monkeypatch):
         """Failed migration should not leave database in inconsistent state.
 
-        Issue: db.py:314-331 migrations don't have rollback on failure.
         This test verifies that if a migration step fails, the database
-        remains usable at its previous version.
+        remains at the last successful version (ratcheting behavior).
         """
-        db_path = tmp_path / "test.db"
+        db_path = tmp_path / "test_state_preservation.db"
 
-        # Initialize database at current schema
-        with open_connection(db_path) as conn:
-            _ensure_schema(conn)
-            # Verify it's at current version
-            cursor = conn.execute("PRAGMA user_version")
-            version = cursor.fetchone()[0]
-            assert version == SCHEMA_VERSION
-
-            # Insert some test data
-            conn.execute(
-                """
-                INSERT INTO conversations
-                (conversation_id, provider_name, provider_conversation_id, title, content_hash, version)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """,
-                ("test-conv", "test", "prov-1", "Test Title", "hash123", 1),
+        # Initialize database at v1 (past version)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA user_version = 1")
+        # Minimal v1 schema to satisfy _migrate_v1_to_v2
+        conn.execute(
+            """
+            CREATE TABLE attachments (
+                attachment_id TEXT PRIMARY KEY,
+                mime_type TEXT,
+                size_bytes INTEGER,
+                path TEXT,
+                provider_meta TEXT,
+                conversation_id TEXT,
+                message_id TEXT
             )
-            conn.commit()
+            """
+        )
+        conn.commit()
+        conn.close()
 
-        # Verify data persists
-        with open_connection(db_path) as conn:
-            cursor = conn.execute("SELECT title FROM conversations WHERE conversation_id = ?", ("test-conv",))
-            row = cursor.fetchone()
-            assert row is not None
-            assert row[0] == "Test Title"
+        # Patch _MIGRATIONS[2] to fail (simulating v2->v3 failure)
+        # We allow v1->v2 to succeed
+        from polylogue.storage.backends.sqlite import _MIGRATIONS
+
+        def failing_migration(conn):
+            raise RuntimeError("Simulated migration v2->v3 failure")
+
+        # Copy dict to avoid polluting other tests
+        patched_migrations = _MIGRATIONS.copy()
+        patched_migrations[2] = failing_migration
+        monkeypatch.setattr("polylogue.storage.backends.sqlite._MIGRATIONS", patched_migrations)
+
+        # Run connection open which triggers _ensure_schema
+        # It should raise DatabaseError or RuntimeError from the migration
+        with pytest.raises(Exception, match="Simulated migration v2->v3 failure"):
+            with open_connection(db_path) as conn:
+                pass
+
+        # Verify database state
+        conn = sqlite3.connect(db_path)
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+
+        # Should be at version 2 (because v1->v2 succeeded and committed)
+        # The failing v2->v3 rolled back its changes (if any) and didn't bump version
+        assert version == 2
+        conn.close()
 
     def test_migration_failure_raises_runtime_error(self, tmp_path, monkeypatch):
         """Failed migration raises RuntimeError with details.
@@ -593,4 +614,3 @@ class TestMigrations:
             )
             row = cursor.fetchone()
             assert row is None, "Insert should have been rolled back"
-
