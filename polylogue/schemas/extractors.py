@@ -238,7 +238,7 @@ if GLOM_AVAILABLE:
     CODEX_SPEC = {
         "role": (_get_codex_role, normalize_role),
         "text": (_get_codex_content, extract_codex_text),
-        "timestamp": ("timestamp", parse_iso_timestamp),
+        "timestamp": Coalesce(("timestamp", parse_iso_timestamp), default=None),
         "id": Coalesce("id", default=None),
         "model": const(None),
         "tokens": const(None),
