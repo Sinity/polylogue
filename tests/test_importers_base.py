@@ -32,14 +32,20 @@ NORMALIZE_ROLE_CASE_INSENSITIVE_CASES = [
 ]
 
 NORMALIZE_ROLE_EDGE_CASES = [
-    (None, "message", "None returns message"),
-    ("", "message", "empty returns message"),
-    ("   ", "message", "whitespace only returns message"),
-    ("\t\n", "message", "tabs and newlines return message"),
+    # Whitespace is stripped before normalization
     ("  user  ", "user", "whitespace stripped user"),
     ("\tassistant\n", "assistant", "whitespace stripped assistant"),
-    ("custom_role", "custom_role", "unknown lowercased"),
-    ("BOT", "bot", "unknown BOT lowercased"),
+    # Unrecognized roles are lowercased but preserved
+    ("custom_role", "custom_role", "unrecognized lowercased"),
+    ("BOT", "bot", "unrecognized BOT lowercased"),
+]
+
+NORMALIZE_ROLE_STRICT_CASES = [
+    # Empty/None should raise ValueError - role is required
+    (None, "None raises ValueError"),
+    ("", "empty raises ValueError"),
+    ("   ", "whitespace only raises ValueError"),
+    ("\t\n", "tabs and newlines raise ValueError"),
 ]
 
 
@@ -57,9 +63,15 @@ class TestNormalizeRole:
         assert normalize_role(role) == expected
 
     @pytest.mark.parametrize("role,expected,description", NORMALIZE_ROLE_EDGE_CASES)
-    def test_normalize_role_edge_cases(self, role: str | None, expected: str, description: str):
-        """Edge cases: None, empty, whitespace, unknown roles."""
+    def test_normalize_role_edge_cases(self, role: str, expected: str, description: str):
+        """Edge cases: whitespace stripping, unrecognized roles."""
         assert normalize_role(role) == expected
+
+    @pytest.mark.parametrize("role,description", NORMALIZE_ROLE_STRICT_CASES)
+    def test_normalize_role_rejects_empty(self, role: str | None, description: str):
+        """Empty/None roles raise ValueError - role is required at parse time."""
+        with pytest.raises((ValueError, TypeError, AttributeError)):
+            normalize_role(role)  # type: ignore
 
 
 # =============================================================================

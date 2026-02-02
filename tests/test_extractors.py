@@ -88,11 +88,16 @@ class TestNormalizeRole:
         assert normalize_role("tool") == Role.TOOL
         assert normalize_role("function") == Role.TOOL
 
-    def test_none_defaults_to_user(self):
-        assert normalize_role(None) == Role.USER
+    def test_none_raises_attribute_error(self):
+        """None is not a valid role - handle missing roles at parse time."""
+        import pytest
+        with pytest.raises(AttributeError):
+            normalize_role(None)
 
-    def test_unknown_defaults_to_user(self):
-        assert normalize_role("unknown_role") == Role.USER
+    def test_unknown_returns_unknown(self):
+        # Unknown/unrecognized roles should be flagged as UNKNOWN, not silently
+        # converted to USER. This preserves data integrity for later analysis.
+        assert normalize_role("unknown_role") == Role.UNKNOWN
 
 
 # =============================================================================

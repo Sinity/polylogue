@@ -52,9 +52,9 @@ def test_normalize_role_is_idempotent(role: str):
     assert once == twice
 
 
-@given(st.text(max_size=100))
+@given(st.text(min_size=1, max_size=100).filter(lambda s: s.strip()))
 def test_normalize_role_never_crashes(role: str):
-    """normalize_role handles any input without crashing."""
+    """normalize_role handles any non-empty input without crashing."""
     result = normalize_role(role)
     assert isinstance(result, str)
     assert len(result) > 0  # Always returns something
