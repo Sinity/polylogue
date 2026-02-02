@@ -12,8 +12,15 @@ import ijson
 from pydantic import BaseModel
 
 from ..config import Source
+from ..core.json import dumps as json_dumps
 from ..importers import chatgpt, claude, codex, drive
-from ..importers.base import ParsedAttachment, ParsedConversation, ParsedMessage, extract_messages_from_list
+from ..importers.base import (
+    ParsedAttachment,
+    ParsedConversation,
+    ParsedMessage,
+    RawConversationData,
+    extract_messages_from_list,
+)
 from ..importers.claude import (
     SessionIndexEntry,
     enrich_conversation_from_index,
@@ -444,10 +451,248 @@ def iter_source_conversations(
             continue
 
 
+def iter_source_conversations_with_raw(
+    source: Source, *, cursor_state: dict[str, Any] | None = None, capture_raw: bool = True
+) -> Iterable[tuple[RawConversationData | None, ParsedConversation]]:
+    """Iterate over conversations with optional raw byte capture.
+
+    This is the raw-capturing version of iter_source_conversations(). It yields
+    tuples of (raw_data, parsed_conversation) where raw_data contains the original
+    JSON bytes that produced the conversation.
+
+    For JSONL files where one file = one conversation (claude-code, codex), the
+    entire file is captured. For bundle files (chatgpt conversations.json), each
+    conversation dict is re-serialized to capture individual raw bytes.
+
+    Args:
+        source: Source configuration to iterate
+        cursor_state: Optional state dict for tracking progress
+        capture_raw: Whether to capture raw bytes (True by default)
+
+    Yields:
+        Tuples of (RawConversationData | None, ParsedConversation)
+    """
+    if not source.path:
+        return
+    base = source.path.expanduser()
+    paths: list[Path] = []
+    if base.is_dir():
+        import os
+        paths = []
+        for root, _, files in os.walk(base, followlinks=True):
+            for filename in files:
+                file_path = Path(root) / filename
+                if _has_ingest_extension(file_path):
+                    paths.append(file_path)
+        paths = sorted(paths)
+    elif base.is_file():
+        paths.append(base)
+
+    # Build session index lookup for Claude Code enrichment
+    session_indices: dict[Path, dict[str, SessionIndexEntry]] = {}
+    for path in paths:
+        parent = path.parent
+        if parent not in session_indices:
+            index_path = parent / "sessions-index.json"
+            session_indices[parent] = parse_sessions_index(index_path)
+
+    if cursor_state is not None:
+        cursor_state["file_count"] = len(paths)
+        cursor_state.setdefault("failed_files", [])
+        cursor_state.setdefault("failed_count", 0)
+        if paths:
+            try:
+                latest = max(paths, key=lambda p: p.stat().st_mtime)
+                cursor_state["latest_mtime"] = latest.stat().st_mtime
+                cursor_state["latest_path"] = str(latest)
+            except OSError:
+                pass
+
+    for path in paths:
+        try:
+            # Detect provider from path name first
+            provider_hint = detect_provider(None, path) or source.name
+            group_providers = {"claude-code", "codex", "gemini", "drive"}
+            should_group = provider_hint in group_providers
+
+            # Get file mtime for raw capture
+            file_mtime: str | None = None
+            if capture_raw:
+                try:
+                    stat = path.stat()
+                    from datetime import datetime, timezone
+                    file_mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+                except OSError:
+                    pass
+
+            if path.suffix.lower() == ".zip":
+                # For ZIP files, we don't capture raw for now (complexity)
+                with zipfile.ZipFile(path) as zf:
+                    for info in zf.infolist():
+                        if info.is_dir():
+                            continue
+                        name = info.filename
+                        lower_name = name.lower()
+
+                        # ZIP bomb protection
+                        if info.compress_size > 0:
+                            ratio = info.file_size / info.compress_size
+                            if ratio > MAX_COMPRESSION_RATIO:
+                                LOGGER.warning(
+                                    "Skipping suspicious file %s in %s: compression ratio %.1f exceeds limit",
+                                    name, path, ratio,
+                                )
+                                if cursor_state is not None:
+                                    cursor_state["failed_files"].append({
+                                        "path": f"{path}:{name}",
+                                        "error": f"Suspicious compression ratio: {ratio:.1f}",
+                                    })
+                                    cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
+                                continue
+
+                        if info.file_size > MAX_UNCOMPRESSED_SIZE:
+                            LOGGER.warning(
+                                "Skipping oversized file %s in %s: %d bytes exceeds limit",
+                                name, path, info.file_size
+                            )
+                            if cursor_state is not None:
+                                cursor_state["failed_files"].append({
+                                    "path": f"{path}:{name}",
+                                    "error": f"File size {info.file_size} exceeds limit"
+                                })
+                                cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
+                            continue
+
+                        if lower_name.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
+                            with zf.open(name) as handle:
+                                if lower_name.endswith((".jsonl", ".jsonl.txt", ".ndjson")) and should_group:
+                                    payloads = list(_iter_json_stream(handle, name))
+                                    if payloads:
+                                        for conv in _parse_json_payload(provider_hint, payloads, path.stem):
+                                            yield (None, conv)  # No raw capture for ZIP
+                                else:
+                                    unpack = not (lower_name.endswith(".json") and should_group)
+                                    for payload in _iter_json_stream(handle, name, unpack_lists=unpack):
+                                        try:
+                                            provider = detect_provider(payload, path) or provider_hint
+                                            for conv in _parse_json_payload(provider, payload, path.stem):
+                                                yield (None, conv)
+                                        except Exception:
+                                            LOGGER.exception("Error processing payload from %s", name)
+                                            raise
+            else:
+                dir_index = session_indices.get(path.parent, {})
+
+                # For raw capture: read entire file at once for grouped providers
+                if capture_raw and should_group:
+                    raw_bytes = path.read_bytes()
+                    raw_data = RawConversationData(
+                        raw_bytes=raw_bytes,
+                        source_path=str(path),
+                        source_index=None,  # Single conversation per file
+                        file_mtime=file_mtime,
+                        provider_hint=provider_hint,
+                    )
+
+                    # Parse and yield with raw
+                    from io import BytesIO
+                    handle = BytesIO(raw_bytes)
+                    if path.suffix.lower() in (".jsonl", ".ndjson") or path.name.lower().endswith(".jsonl.txt"):
+                        payloads = list(_iter_json_stream(handle, path.name))
+                        if payloads:
+                            for conv in _parse_json_payload(provider_hint, payloads, path.stem):
+                                if provider_hint == "claude-code" and conv.provider_conversation_id in dir_index:
+                                    conv = enrich_conversation_from_index(
+                                        conv, dir_index[conv.provider_conversation_id]
+                                    )
+                                yield (raw_data, conv)
+                    else:
+                        unpack = not (path.suffix.lower() == ".json" and should_group)
+                        for payload in _iter_json_stream(handle, path.name, unpack_lists=unpack):
+                            try:
+                                provider = detect_provider(payload, path) or provider_hint
+                                for conv in _parse_json_payload(provider, payload, path.stem):
+                                    if provider == "claude-code" and conv.provider_conversation_id in dir_index:
+                                        conv = enrich_conversation_from_index(
+                                            conv, dir_index[conv.provider_conversation_id]
+                                        )
+                                    yield (raw_data, conv)
+                            except Exception:
+                                LOGGER.exception("Error processing payload from %s", path)
+                                raise
+                else:
+                    # Non-grouped providers or no raw capture
+                    with path.open("rb") as handle:
+                        if path.suffix.lower() in (".jsonl", ".ndjson") or path.name.lower().endswith(".jsonl.txt"):
+                            if should_group:
+                                payloads = list(_iter_json_stream(handle, path.name))
+                                if payloads:
+                                    for conv in _parse_json_payload(provider_hint, payloads, path.stem):
+                                        if provider_hint == "claude-code" and conv.provider_conversation_id in dir_index:
+                                            conv = enrich_conversation_from_index(
+                                                conv, dir_index[conv.provider_conversation_id]
+                                            )
+                                        yield (None, conv)
+                                continue
+
+                        unpack = not (path.suffix.lower() == ".json" and should_group)
+                        source_index = 0
+                        for payload in _iter_json_stream(handle, path.name, unpack_lists=unpack):
+                            try:
+                                provider = detect_provider(payload, path) or provider_hint
+
+                                # Capture raw for individual items in bundles
+                                raw_data_item: RawConversationData | None = None
+                                if capture_raw:
+                                    # Re-serialize individual payload to JSON bytes
+                                    # Uses json_dumps which handles Decimal from ijson
+                                    raw_bytes_item = json_dumps(payload).encode("utf-8")
+                                    raw_data_item = RawConversationData(
+                                        raw_bytes=raw_bytes_item,
+                                        source_path=str(path),
+                                        source_index=source_index,
+                                        file_mtime=file_mtime,
+                                        provider_hint=provider,
+                                    )
+
+                                for conv in _parse_json_payload(provider, payload, path.stem):
+                                    if provider == "claude-code" and conv.provider_conversation_id in dir_index:
+                                        conv = enrich_conversation_from_index(
+                                            conv, dir_index[conv.provider_conversation_id]
+                                        )
+                                    yield (raw_data_item, conv)
+                                source_index += 1
+                            except Exception:
+                                LOGGER.exception("Error processing payload from %s", path)
+                                raise
+        except FileNotFoundError as exc:
+            LOGGER.warning("File disappeared during processing (TOCTOU race): %s", path)
+            if cursor_state is not None:
+                cursor_state["failed_files"].append({
+                    "path": str(path), "error": f"File not found (may have been deleted): {exc}"
+                })
+                cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
+            continue
+        except (json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
+            LOGGER.warning("Failed to parse %s: %s", path, exc)
+            if cursor_state is not None:
+                cursor_state["failed_files"].append({"path": str(path), "error": str(exc)})
+                cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
+            continue
+        except Exception as exc:
+            LOGGER.error("Unexpected error processing %s: %s", path, exc)
+            if cursor_state is not None:
+                cursor_state["failed_files"].append({"path": str(path), "error": str(exc)})
+                cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
+            continue
+
+
 __all__ = [
     "ParsedConversation",
     "ParsedMessage",
     "ParsedAttachment",
+    "RawConversationData",
     "iter_source_conversations",
+    "iter_source_conversations_with_raw",
     "parse_drive_payload",
 ]
