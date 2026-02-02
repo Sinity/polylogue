@@ -8,7 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.storage.backends.sqlite import default_db_path, open_connection
+from polylogue.storage.backends.sqlite import open_connection
 from tests.factories import DbFactory
 
 
@@ -32,9 +32,8 @@ def _extract_json(output: str) -> dict:
 class TestCheckCommand:
     """Tests for polylogue check command."""
 
-    def test_check_clean_database(self, workspace_env, cli_runner):
+    def test_check_clean_database(self, db_path, cli_runner):
         """Check command succeeds on clean database with valid data."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create valid conversation with messages
@@ -52,9 +51,8 @@ class TestCheckCommand:
         assert result.exit_code == 0
         assert "ok" in result.output.lower() or "✓" in result.output
 
-    def test_check_json_output(self, workspace_env, cli_runner):
+    def test_check_json_output(self, db_path, cli_runner):
         """Check --json flag produces valid JSON."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         factory.create_conversation(
@@ -78,9 +76,8 @@ class TestCheckCommand:
         assert "warning" in data["summary"]
         assert "error" in data["summary"]
 
-    def test_check_detects_orphan_messages(self, workspace_env, cli_runner):
+    def test_check_detects_orphan_messages(self, db_path, cli_runner):
         """Check detects messages without conversations."""
-        db_path = default_db_path()
 
         # Disable foreign key constraints temporarily to insert orphan message
         with open_connection(db_path) as conn:
@@ -123,9 +120,8 @@ class TestCheckCommand:
         # Summary should show at least one error
         assert data["summary"]["error"] >= 1
 
-    def test_check_verbose_output(self, workspace_env, cli_runner):
+    def test_check_verbose_output(self, db_path, cli_runner):
         """Check -v flag increases detail with provider breakdown."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create conversations from multiple providers
@@ -152,9 +148,8 @@ class TestCheckCommand:
         # (provider_distribution check always has breakdown)
         assert "chatgpt" in result_verbose.output or "claude" in result_verbose.output
 
-    def test_check_detects_empty_conversations(self, workspace_env, cli_runner):
+    def test_check_detects_empty_conversations(self, db_path, cli_runner):
         """Check detects conversations with no messages (warning status)."""
-        db_path = default_db_path()
 
         # Create a conversation with no messages
         with open_connection(db_path) as conn:
@@ -193,9 +188,8 @@ class TestCheckCommand:
         assert empty_check["status"] == "warning"
         assert empty_check["count"] == 1
 
-    def test_check_no_duplicate_conversation_ids(self, workspace_env, cli_runner):
+    def test_check_no_duplicate_conversation_ids(self, db_path, cli_runner):
         """Check duplicate_conversations check passes when there are no duplicates."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create unique conversations (duplicates prevented by UNIQUE constraint)
@@ -224,9 +218,8 @@ class TestCheckCommand:
         assert dup_check["status"] == "ok"
         assert dup_check["count"] == 0  # No duplicates found
 
-    def test_check_detects_fts_sync_issues(self, workspace_env, cli_runner):
+    def test_check_detects_fts_sync_issues(self, db_path, cli_runner):
         """Check detects FTS sync issues when FTS table is missing."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create some messages
@@ -255,9 +248,8 @@ class TestCheckCommand:
         # Should be warning due to missing FTS table
         assert fts_check["status"] == "warning"
 
-    def test_check_plain_output_format(self, workspace_env, cli_runner):
+    def test_check_plain_output_format(self, db_path, cli_runner):
         """Check --plain flag produces plain text output without colors."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         factory.create_conversation(
@@ -275,9 +267,8 @@ class TestCheckCommand:
         assert "[green]" not in result.output
         assert "[red]" not in result.output
 
-    def test_check_summary_counts(self, workspace_env, cli_runner):
+    def test_check_summary_counts(self, db_path, cli_runner):
         """Check summary shows correct counts of ok/warning/error checks."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         # Create valid data
@@ -296,9 +287,9 @@ class TestCheckCommand:
         assert "warnings" in result.output or "warning" in result.output
         assert "errors" in result.output or "error" in result.output
 
-    def test_check_empty_database(self, workspace_env, cli_runner):
+    def test_check_empty_database(self, db_path, cli_runner):
         """Check command succeeds on empty database."""
-        # Don't create any data - just verify empty DB
+        # Don't create any data - just verify empty DB (db_path fixture ensures DB exists)
 
         result = cli_runner.invoke(cli, ["check"])
         assert result.exit_code == 0
@@ -307,9 +298,8 @@ class TestCheckCommand:
         assert "OK database" in result.output
         assert "OK sqlite_integrity" in result.output
 
-    def test_check_sqlite_integrity_check(self, workspace_env, cli_runner):
+    def test_check_sqlite_integrity_check(self, db_path, cli_runner):
         """Check includes SQLite integrity check in results."""
-        db_path = default_db_path()
         factory = DbFactory(db_path)
 
         factory.create_conversation(
