@@ -33,7 +33,11 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
         if not isinstance(parts, list):
             continue
         text = "\n".join(str(part) for part in parts if part)
-        role = normalize_role((msg.get("author") or {}).get("role") or "user")
+        # Role is required - skip messages without one
+        raw_role = (msg.get("author") or {}).get("role")
+        if not raw_role:
+            continue
+        role = normalize_role(raw_role)
         timestamp = msg.get("create_time")
         msg_id = msg.get("id") or node.get("id") or ""
         if not msg_id:

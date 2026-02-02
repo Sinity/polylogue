@@ -286,7 +286,7 @@ def test_parse_empty_chunks_list():
 
 
 def test_parse_alternating_user_assistant():
-    """Chunks without role info become 'message' role."""
+    """Chunks without role info default to 'user' role."""
     prompt = {
         "chunkedPrompt": {
             "chunks": [
@@ -299,11 +299,10 @@ def test_parse_alternating_user_assistant():
     }
     result = parse_chunked_prompt("gemini", prompt, "test-id")
 
-    # Without explicit role, chunks become 'message' role
+    # Without explicit role, chunks default to 'user' role (canonical default)
     roles = [m.role for m in result.messages]
     assert len(roles) == 4
-    # All should be 'message' since no roles specified
-    assert all(r == "message" for r in roles)
+    assert all(r == "user" for r in roles)
 
 
 def test_parse_skips_chunks_without_text():

@@ -25,6 +25,11 @@ from polylogue.lib.viewports import (
     ToolCategory,
     classify_tool,
 )
+from polylogue.schemas.unified import (
+    extract_reasoning_traces as _extract_reasoning_traces,
+    extract_tool_calls as _extract_tool_calls,
+    extract_content_blocks as _extract_content_blocks,
+)
 
 
 class ClaudeCodeToolUse(BaseModel):
@@ -280,85 +285,15 @@ class ClaudeCodeRecord(BaseModel):
 
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
         """Extract all thinking/reasoning traces from this record."""
-        traces = []
-        for block in self.content_blocks_raw:
-            if isinstance(block, dict) and block.get("type") == "thinking":
-                traces.append(ReasoningTrace(
-                    text=block.get("thinking", ""),
-                    provider="claude-code",
-                    raw=block,
-                ))
-        return traces
+        return _extract_reasoning_traces(self.content_blocks_raw, "claude-code")
 
     def extract_tool_calls(self) -> list[ToolCall]:
         """Extract all tool invocations from this record."""
-        calls = []
-        for block in self.content_blocks_raw:
-            if isinstance(block, dict) and block.get("type") == "tool_use":
-                calls.append(ToolCall(
-                    name=block.get("name", ""),
-                    id=block.get("id"),
-                    input=block.get("input", {}),
-                    category=classify_tool(block.get("name", ""), block.get("input", {})),
-                    provider="claude-code",
-                    raw=block,
-                ))
-        return calls
+        return _extract_tool_calls(self.content_blocks_raw, "claude-code")
 
     def extract_content_blocks(self) -> list[ContentBlock]:
         """Extract harmonized content blocks."""
-        blocks = []
-        for raw_block in self.content_blocks_raw:
-            if not isinstance(raw_block, dict):
-                continue
-
-            block_type = raw_block.get("type", "")
-
-            if block_type == "text":
-                blocks.append(ContentBlock(
-                    type=ContentType.TEXT,
-                    text=raw_block.get("text", ""),
-                    raw=raw_block,
-                ))
-            elif block_type == "thinking":
-                blocks.append(ContentBlock(
-                    type=ContentType.THINKING,
-                    text=raw_block.get("thinking", ""),
-                    raw=raw_block,
-                ))
-            elif block_type == "tool_use":
-                tool_call = ToolCall(
-                    name=raw_block.get("name", ""),
-                    id=raw_block.get("id"),
-                    input=raw_block.get("input", {}),
-                    category=classify_tool(
-                        raw_block.get("name", ""),
-                        raw_block.get("input", {}),
-                    ),
-                    provider="claude-code",
-                    raw=raw_block,
-                )
-                blocks.append(ContentBlock(
-                    type=ContentType.TOOL_USE,
-                    tool_call=tool_call,
-                    raw=raw_block,
-                ))
-            elif block_type == "tool_result":
-                content = raw_block.get("content", "")
-                if isinstance(content, list):
-                    content = "\n".join(str(c) for c in content)
-                blocks.append(ContentBlock(
-                    type=ContentType.TOOL_RESULT,
-                    text=str(content),
-                    raw=raw_block,
-                ))
-            else:
-                blocks.append(ContentBlock(
-                    type=ContentType.UNKNOWN,
-                    raw=raw_block,
-                ))
-
-        return blocks
+        return _extract_content_blocks(self.content_blocks_raw)
 
     def to_meta(self) -> MessageMeta:
         """Convert to harmonized MessageMeta."""

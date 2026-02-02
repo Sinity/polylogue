@@ -33,6 +33,13 @@ except ImportError:
     GLOM_AVAILABLE = False
     def glom(target: Any, spec: Any) -> Any: ...  # noqa: E704
 
+from polylogue.core.timestamps import parse_timestamp
+from polylogue.core.roles import normalize_role, ROLE_MAP
+from polylogue.schemas.extractors import (
+    extract_claude_code_text,
+    extract_chatgpt_text,
+    extract_codex_text,
+)
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
@@ -43,6 +50,11 @@ from polylogue.lib.viewports import (
     ToolCategory,
     classify_tool,
 )
+
+
+def _missing_role() -> str:
+    """Called when role is missing - raises error to surface data quality issues."""
+    raise ValueError("Message has no role. Data should be validated at import time.")
 
 
 # =============================================================================
@@ -99,49 +111,9 @@ class HarmonizedMessage(BaseModel):
         return [t for t in self.tool_calls if t.is_git_operation]
 
 
-# =============================================================================
-# Transform Functions
-# =============================================================================
-
-
-def parse_iso_timestamp(ts: str | None) -> datetime | None:
-    """Parse ISO 8601 timestamp with Z suffix handling."""
-    if not ts:
-        return None
-    try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
-
-
-def parse_unix_timestamp(ts: float | int | None) -> datetime | None:
-    """Parse Unix timestamp (seconds since epoch)."""
-    if ts is None:
-        return None
-    try:
-        from datetime import timezone
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
-    except (ValueError, TypeError, OSError):
-        return None
-
-
-ROLE_MAP = {
-    "user": "user",
-    "human": "user",
-    "assistant": "assistant",
-    "model": "assistant",
-    "ai": "assistant",
-    "system": "system",
-    "tool": "tool",
-    "function": "tool",
-}
-
-
-def normalize_role(raw: str | None) -> str:
-    """Normalize provider role string to canonical role."""
-    if not raw:
-        return "user"
-    return ROLE_MAP.get(raw.lower(), raw.lower())
+# Transform functions now imported from core modules:
+# - parse_timestamp from polylogue.core.timestamps
+# - normalize_role, ROLE_MAP from polylogue.core.roles
 
 
 # =============================================================================
@@ -277,27 +249,10 @@ def extract_token_usage(usage: dict | None) -> TokenUsage | None:
 # Provider Extraction
 # =============================================================================
 
-
-def _extract_claude_code_text(content: list[dict] | None) -> str:
-    """Extract text from Claude Code content blocks."""
-    if not content:
-        return ""
-    parts = []
-    for block in content:
-        if isinstance(block, dict):
-            if block.get("type") == "text":
-                parts.append(block.get("text", ""))
-            elif block.get("type") == "thinking":
-                parts.append(block.get("thinking", ""))
-    return "\n".join(filter(None, parts))
-
-
-def _extract_chatgpt_text(content: dict | None) -> str:
-    """Extract text from ChatGPT content structure."""
-    if not content:
-        return ""
-    parts = content.get("parts", [])
-    return "\n".join(str(p) for p in parts if isinstance(p, str))
+# Text extraction helpers imported from polylogue.schemas.extractors:
+# - extract_claude_code_text
+# - extract_chatgpt_text
+# - extract_codex_text
 
 
 def extract_harmonized_message(provider: str, raw: dict) -> HarmonizedMessage:
@@ -331,9 +286,9 @@ def _extract_claude_code(raw: dict) -> HarmonizedMessage:
 
     return HarmonizedMessage(
         id=raw.get("uuid"),
-        role=normalize_role(msg.get("role") if isinstance(msg, dict) else raw.get("type")),
-        text=_extract_claude_code_text(content),
-        timestamp=parse_iso_timestamp(raw.get("timestamp")),
+        role=normalize_role((msg.get("role") if isinstance(msg, dict) else raw.get("type")) or _missing_role()),
+        text=extract_claude_code_text(content),
+        timestamp=parse_timestamp(raw.get("timestamp")),
         reasoning_traces=extract_reasoning_traces(content, "claude-code"),
         tool_calls=extract_tool_calls(content, "claude-code"),
         content_blocks=extract_content_blocks(content),
@@ -350,9 +305,9 @@ def _extract_claude_ai(raw: dict) -> HarmonizedMessage:
     """Extract from Claude AI (web) format."""
     return HarmonizedMessage(
         id=raw.get("uuid"),
-        role=normalize_role(raw.get("sender")),
+        role=normalize_role(raw.get("sender") or _missing_role()),
         text=raw.get("text", ""),
-        timestamp=parse_iso_timestamp(raw.get("created_at")),
+        timestamp=parse_timestamp(raw.get("created_at")),
         provider="claude-ai",
         raw=raw,
     )
@@ -366,9 +321,9 @@ def _extract_chatgpt(raw: dict) -> HarmonizedMessage:
 
     return HarmonizedMessage(
         id=raw.get("id"),
-        role=normalize_role(author.get("role") if isinstance(author, dict) else None),
-        text=_extract_chatgpt_text(content) if isinstance(content, dict) else "",
-        timestamp=parse_unix_timestamp(raw.get("create_time")),
+        role=normalize_role((author.get("role") if isinstance(author, dict) else None) or _missing_role()),
+        text=extract_chatgpt_text(content) if isinstance(content, dict) else "",
+        timestamp=parse_timestamp(raw.get("create_time")),
         model=metadata.get("model_slug") if isinstance(metadata, dict) else None,
         provider="chatgpt",
         raw=raw,
@@ -381,7 +336,7 @@ def _extract_gemini(raw: dict) -> HarmonizedMessage:
 
     return HarmonizedMessage(
         id=None,  # Gemini doesn't have message IDs in export
-        role=normalize_role(raw.get("role")),
+        role=normalize_role(raw.get("role") or _missing_role()),
         text=raw.get("text", ""),
         timestamp=None,  # Gemini doesn't have timestamps in export
         reasoning_traces=[ReasoningTrace(
@@ -419,7 +374,7 @@ def _extract_codex(raw: dict) -> HarmonizedMessage:
         id=raw.get("id"),
         role=normalize_role(role),
         text="\n".join(text_parts),
-        timestamp=parse_iso_timestamp(raw.get("timestamp")),
+        timestamp=parse_timestamp(raw.get("timestamp")),
         provider="codex",
         raw=raw,
     )

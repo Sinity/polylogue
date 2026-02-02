@@ -191,7 +191,11 @@ def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[li
         if not isinstance(item, dict):
             continue
         message_id = str(item.get("uuid") or item.get("id") or item.get("message_id") or f"msg-{idx}")
-        role = normalize_role(item.get("sender") or item.get("role"))
+        # Role is required - skip messages without one
+        raw_role = item.get("sender") or item.get("role")
+        if not raw_role:
+            continue
+        role = normalize_role(raw_role)
 
         raw_ts = item.get("created_at") or item.get("create_time") or item.get("timestamp")
         timestamp = normalize_timestamp(raw_ts)
