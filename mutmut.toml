@@ -1,0 +1,55 @@
+# Mutation testing configuration for polylogue
+#
+# IMPORTANT: Due to mutmut's architecture of creating a mutants/ directory,
+# running mutation tests requires being in the nix develop shell:
+#
+#   nix develop -c uvx mutmut run
+#
+# Or for a quick test on a single file:
+#   nix develop -c uvx mutmut run --max-children=4
+#
+# View results: uvx mutmut results
+# See surviving mutants: uvx mutmut show <id>
+#
+# Target mutation score: >80% kill rate
+
+[mutmut]
+# Paths containing code to mutate (security-critical modules)
+paths_to_mutate = [
+    "polylogue/importers/base.py",       # Path sanitization
+    "polylogue/storage/search.py",       # FTS5 escape
+    "polylogue/core/timestamps.py",      # Timestamp parsing
+    "polylogue/core/hashing.py",         # Content hashing
+]
+
+# Tests to run for mutation detection
+tests_dir = "tests/"
+
+# Runner configuration
+# Note: mutmut copies files to mutants/ directory, so runner must work from there
+runner = "pytest"
+
+# Mutation testing is slow, so we use minimal pytest output
+# -x stops at first failure (faster feedback per mutant)
+pytest_args = "-x -q --tb=no"
+
+# Dictionary configuration for project-specific keywords
+# This improves mutation quality by using domain-specific strings
+[mutmut.dict]
+strings = [
+    "user",
+    "assistant",
+    "system",
+    "tool",
+    "chatgpt",
+    "claude",
+    "codex",
+    "claude-code",
+    "gemini",
+    "AND",
+    "OR",
+    "NOT",
+    "NEAR",
+    "MATCH",
+    "_blocked_",
+]

@@ -10,6 +10,7 @@ from datetime import datetime
 
 import pytest
 
+from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, Message
 
 
@@ -234,7 +235,7 @@ def test_projection_strip_methods(method_name, attr_name, desc):
         _make_thinking_message("m3", "Thinking..."),
         Message(id="m4", role="assistant", text="Normal response"),
     ]
-    conv = Conversation(id="test", provider="test", messages=messages)
+    conv = Conversation(id="test", provider="test", messages=MessageCollection(messages=messages))
 
     projection = conv.project()
     filtered = getattr(projection, method_name)()
@@ -252,7 +253,7 @@ def test_projection_strip_all():
         _make_thinking_message("m3", "Thinking..."),
         Message(id="m4", role="assistant", text="Normal response"),
     ]
-    conv = Conversation(id="test", provider="test", messages=messages)
+    conv = Conversation(id="test", provider="test", messages=MessageCollection(messages=messages))
 
     result = conv.project().strip_all().to_list()
 
@@ -280,7 +281,7 @@ def test_projection_edge_cases(messages, expected_count, desc):
 
     Replaces 9 edge case tests.
     """
-    conv = Conversation(id="test", provider="test", messages=messages)
+    conv = Conversation(id="test", provider="test", messages=MessageCollection(messages=messages))
     result = conv.project().to_list()
 
     # Should handle gracefully
