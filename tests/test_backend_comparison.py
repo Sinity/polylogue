@@ -104,13 +104,13 @@ class TestBackendComparison:
     """Compare old vs new extraction backends."""
 
     def test_role_normalization_equivalence(self):
-        """Old and new role normalization should produce same results."""
+        """Old and new role normalization should produce same results for valid inputs."""
+        # Only test valid roles - empty/None are now rejected at parse time
         test_roles = [
             "user", "human", "USER",
             "assistant", "model", "ai",
             "system",
             "tool", "function",
-            None, "",
         ]
 
         differences = []

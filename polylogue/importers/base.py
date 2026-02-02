@@ -135,19 +135,8 @@ class ParsedConversation(BaseModel):
 # hash_text is now imported from core.hashing
 
 
-def normalize_role(role: str | None) -> str:
-    if not role:
-        return "message"
-    lowered = str(role).strip().lower()
-    if not lowered:  # Handle whitespace-only strings
-        return "message"
-    if lowered in {"assistant", "model"}:
-        return "assistant"
-    if lowered in {"user", "human"}:
-        return "user"
-    if lowered in {"system"}:
-        return "system"
-    return lowered
+# Re-export from canonical location
+from polylogue.core.roles import normalize_role
 
 
 def _make_attachment_id(seed: str) -> str:
