@@ -222,9 +222,10 @@ def run_sources(
         # Schema generation stage
         if stage == "generate-schemas":
             from polylogue.schemas.schema_inference import generate_all_schemas
+            from polylogue.paths import DB_PATH
 
             output_dir = config.archive_root.parent / "schemas"
-            results = generate_all_schemas(output_dir=output_dir, db_path=None)
+            results = generate_all_schemas(output_dir=output_dir, db_path=DB_PATH)
             counts["schemas_generated"] = sum(1 for r in results if r.success)
             counts["schemas_failed"] = sum(1 for r in results if not r.success)
 

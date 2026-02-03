@@ -114,15 +114,20 @@ def detect_provider(payload: Any, path: Path) -> str | None:
         if codex.looks_like(payload):
             return "codex"
 
+    # Check filename and parent directory for provider hints
     name = path.name.lower()
-    if "chatgpt" in name:
+    path_str = str(path).lower()
+
+    if "chatgpt" in name or "chatgpt" in path_str:
         return "chatgpt"
-    if "claude-code" in name or "claude_code" in name:
+    if "claude-code" in name or "claude_code" in name or "claude-code" in path_str:
         return "claude-code"
-    if "claude" in name:
+    if "claude" in name or "/claude/" in path_str:
         return "claude"
-    if "codex" in name:
+    if "codex" in name or "codex" in path_str:
         return "codex"
+    if "gemini" in name or "gemini" in path_str:
+        return "gemini"
     return None
 
 
@@ -146,6 +151,13 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str) -> list[P
                 return [codex.parse([payload], fallback_id)]
     if provider == "gemini" or provider == "drive":
         if isinstance(payload, list):
+            # Check if items are conversation dicts (have 'chunks' key) or raw chunks
+            if payload and isinstance(payload[0], dict) and "chunks" in payload[0]:
+                # List of conversation dicts from grouped JSONL - parse each one
+                results = []
+                for i, item in enumerate(payload):
+                    results.extend(_parse_json_payload(provider, item, f"{fallback_id}-{i}"))
+                return results
             # Treat list as chunks for a single conversation
             return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
 
@@ -526,13 +538,28 @@ def iter_source_conversations_with_raw(
                     pass
 
             if path.suffix.lower() == ".zip":
-                # For ZIP files, we don't capture raw for now (complexity)
+                # Get ZIP mtime for raw capture
+                zip_mtime: str | None = None
+                if capture_raw:
+                    try:
+                        stat = path.stat()
+                        from datetime import datetime, timezone
+                        zip_mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
+                    except OSError:
+                        pass
+
                 with zipfile.ZipFile(path) as zf:
                     for info in zf.infolist():
                         if info.is_dir():
                             continue
                         name = info.filename
                         lower_name = name.lower()
+
+                        # Filter Claude AI ZIP: only process conversations.json
+                        if provider_hint in ("claude", "claude-ai"):
+                            basename = lower_name.split("/")[-1]
+                            if basename not in ("conversations.json",):
+                                continue
 
                         # ZIP bomb protection
                         if info.compress_size > 0:
@@ -566,17 +593,44 @@ def iter_source_conversations_with_raw(
                         if lower_name.endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")):
                             with zf.open(name) as handle:
                                 if lower_name.endswith((".jsonl", ".jsonl.txt", ".ndjson")) and should_group:
-                                    payloads = list(_iter_json_stream(handle, name))
+                                    # Grouped JSONL - read entire file for raw capture
+                                    raw_bytes = handle.read() if capture_raw else None
+                                    from io import BytesIO
+                                    stream = BytesIO(raw_bytes) if raw_bytes else handle
+                                    payloads = list(_iter_json_stream(stream, name))
                                     if payloads:
+                                        raw_data = RawConversationData(
+                                            raw_bytes=raw_bytes,
+                                            source_path=f"{path}:{name}",
+                                            source_index=None,
+                                            file_mtime=zip_mtime,
+                                            provider_hint=provider_hint,
+                                        ) if capture_raw and raw_bytes else None
                                         for conv in _parse_json_payload(provider_hint, payloads, path.stem):
-                                            yield (None, conv)  # No raw capture for ZIP
+                                            yield (raw_data, conv)
                                 else:
+                                    # Individual items - capture each separately
                                     unpack = not (lower_name.endswith(".json") and should_group)
+                                    source_index = 0
                                     for payload in _iter_json_stream(handle, name, unpack_lists=unpack):
                                         try:
                                             provider = detect_provider(payload, path) or provider_hint
+
+                                            # Capture raw for each individual conversation
+                                            raw_data_item: RawConversationData | None = None
+                                            if capture_raw:
+                                                raw_bytes_item = json_dumps(payload).encode("utf-8")
+                                                raw_data_item = RawConversationData(
+                                                    raw_bytes=raw_bytes_item,
+                                                    source_path=f"{path}:{name}",
+                                                    source_index=source_index,
+                                                    file_mtime=zip_mtime,
+                                                    provider_hint=provider,
+                                                )
+
                                             for conv in _parse_json_payload(provider, payload, path.stem):
-                                                yield (None, conv)
+                                                yield (raw_data_item, conv)
+                                            source_index += 1
                                         except Exception:
                                             LOGGER.exception("Error processing payload from %s", name)
                                             raise
