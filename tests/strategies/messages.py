@@ -149,6 +149,118 @@ def parsed_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
 
 
 # =============================================================================
+# Typed Strategies (return actual model instances)
+# =============================================================================
+
+
+@st.composite
+def parsed_message_model_strategy(draw: st.DrawFn):
+    """Generate a ParsedMessage model instance for property testing."""
+    from polylogue.importers.base import ParsedMessage
+
+    return ParsedMessage(
+        provider_message_id=draw(st.uuids()).hex[:12],
+        role=draw(st.sampled_from(["user", "assistant", "system"])),
+        text=draw(st.text(min_size=0, max_size=500)),
+        timestamp=draw(st.one_of(
+            st.none(),
+            st.datetimes(
+                min_value=datetime(2020, 1, 1),
+                max_value=datetime(2030, 1, 1),
+                timezones=st.just(timezone.utc),
+            ).map(lambda dt: dt.isoformat()),
+        )),
+    )
+
+
+@st.composite
+def parsed_attachment_model_strategy(draw: st.DrawFn):
+    """Generate a ParsedAttachment model instance for property testing."""
+    from polylogue.importers.base import ParsedAttachment
+
+    return ParsedAttachment(
+        provider_attachment_id=draw(st.uuids()).hex[:12],
+        message_provider_id=draw(st.uuids()).hex[:12],
+        name=draw(st.one_of(st.none(), st.text(min_size=1, max_size=50))),
+        mime_type=draw(st.one_of(
+            st.none(),
+            st.sampled_from([
+                "text/plain",
+                "application/pdf",
+                "image/png",
+                "image/jpeg",
+                "application/json",
+            ]),
+        )),
+        size_bytes=draw(st.one_of(st.none(), st.integers(min_value=0, max_value=100_000_000))),
+    )
+
+
+@st.composite
+def parsed_conversation_model_strategy(
+    draw: st.DrawFn,
+    min_messages: int = 0,
+    max_messages: int = 10,
+    with_attachments: bool = False,
+):
+    """Generate a ParsedConversation model instance for property testing.
+
+    This strategy creates actual ParsedConversation objects (not dicts),
+    enabling property-based testing of pipeline hashing functions.
+
+    Args:
+        min_messages: Minimum number of messages
+        max_messages: Maximum number of messages
+        with_attachments: Whether to include attachments
+    """
+    from polylogue.importers.base import ParsedConversation
+
+    providers = ["chatgpt", "claude", "claude-code", "codex", "gemini"]
+
+    messages = draw(st.lists(
+        parsed_message_model_strategy(),
+        min_size=min_messages,
+        max_size=max_messages,
+    ))
+
+    # Ensure alternating user/assistant for realism
+    for i, msg in enumerate(messages):
+        object.__setattr__(msg, "role", "user" if i % 2 == 0 else "assistant")
+
+    attachments = []
+    if with_attachments:
+        attachments = draw(st.lists(
+            parsed_attachment_model_strategy(),
+            min_size=0,
+            max_size=3,
+        ))
+
+    return ParsedConversation(
+        provider_name=draw(st.sampled_from(providers)),
+        provider_conversation_id=draw(st.uuids()).hex,
+        title=draw(st.one_of(st.none(), st.text(min_size=1, max_size=100))),
+        created_at=draw(st.one_of(
+            st.none(),
+            st.datetimes(
+                min_value=datetime(2020, 1, 1),
+                max_value=datetime(2030, 1, 1),
+                timezones=st.just(timezone.utc),
+            ).map(lambda dt: dt.isoformat()),
+        )),
+        updated_at=draw(st.one_of(
+            st.none(),
+            st.datetimes(
+                min_value=datetime(2020, 1, 1),
+                max_value=datetime(2030, 1, 1),
+                timezones=st.just(timezone.utc),
+            ).map(lambda dt: dt.isoformat()),
+        )),
+        messages=messages,
+        attachments=attachments,
+    )
+
+
+# =============================================================================
 # Conversation Strategies
 # =============================================================================
 

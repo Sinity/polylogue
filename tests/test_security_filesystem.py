@@ -483,3 +483,69 @@ def test_attachment_record_empty_ids_rejected():
             mime_type="text/plain",
             size_bytes=1024,
         )
+
+
+# =============================================================================
+# PROPERTY-BASED SECURITY TESTS (using adversarial strategies)
+# =============================================================================
+
+
+from hypothesis import given, settings
+from tests.strategies.adversarial import (
+    path_traversal_strategy,
+    symlink_path_strategy,
+    control_char_strategy,
+)
+
+
+@given(path_traversal_strategy())
+@settings(max_examples=100)
+def test_path_traversal_creates_valid_attachment(malicious_path: str):
+    """Property: Path traversal inputs don't crash ParsedAttachment creation.
+
+    NOTE: This test verifies that attachment creation doesn't crash.
+    Path sanitization happens at a different layer (storage/file operations).
+    """
+    att = ParsedAttachment(
+        provider_attachment_id="att-traversal",
+        path=malicious_path,
+        name=malicious_path,
+    )
+
+    # Should create without crashing
+    assert att is not None
+    # Name should be set (may not be sanitized at this layer)
+    assert att.name is not None or att.path is not None
+
+
+@given(symlink_path_strategy())
+@settings(max_examples=50)
+def test_symlink_paths_create_valid_attachment(symlink_path: str):
+    """Property: Symlink path inputs don't crash attachment creation."""
+    att = ParsedAttachment(
+        provider_attachment_id="att-symlink",
+        path=symlink_path,
+        name=symlink_path,
+    )
+
+    # Should create without crashing
+    assert att is not None
+
+
+@given(control_char_strategy())
+@settings(max_examples=100)
+def test_control_characters_stripped(text_with_control: str):
+    """Property: Control characters are stripped from filenames."""
+    att = ParsedAttachment(
+        provider_attachment_id="att-control",
+        path=text_with_control,
+        name=text_with_control,
+    )
+
+    sanitized = att.name or ""
+
+    # Control characters (0x00-0x1f, 0x7f) should be removed
+    for char in sanitized:
+        ord_char = ord(char)
+        assert ord_char >= 0x20 and ord_char != 0x7f, \
+            f"Control char not stripped: {repr(char)} (0x{ord_char:02x})"
