@@ -2,21 +2,37 @@
 
 Tests cover: run, auth, check, reset, completions, serve, mcp commands.
 Uses subprocess isolation for proper environment handling.
+
+CONSOLIDATED: This file merges tests from:
+- test_cli_completions.py (CliRunner unit tests)
+- test_cli_mcp.py (CliRunner unit tests)
+- test_cli_reset.py (CliRunner unit tests)
+- test_cli_serve.py (CliRunner unit tests)
+
+The subprocess integration tests provide end-to-end validation, while
+the CliRunner unit tests provide faster, more detailed coverage.
 """
 
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
+from click.testing import CliRunner
 
+from polylogue.cli import cli
+from polylogue.cli.click_app import cli as click_cli
+from polylogue.cli.commands.completions import completions_command
+from polylogue.cli.commands.mcp import mcp_command
 from tests.cli_helpers.cli_subprocess import run_cli, setup_isolated_workspace
 from tests.helpers import GenericConversationBuilder
 
 
 # =============================================================================
-# RUN COMMAND TESTS
+# SUBPROCESS INTEGRATION TESTS - RUN COMMAND
 # =============================================================================
 
 
@@ -98,7 +114,7 @@ class TestRunCommand:
 
 
 # =============================================================================
-# AUTH COMMAND TESTS
+# SUBPROCESS INTEGRATION TESTS - AUTH COMMAND
 # =============================================================================
 
 
@@ -137,7 +153,7 @@ class TestAuthCommand:
 
 
 # =============================================================================
-# CHECK COMMAND TESTS
+# SUBPROCESS INTEGRATION TESTS - CHECK COMMAND
 # =============================================================================
 
 
@@ -190,12 +206,12 @@ class TestCheckCommand:
 
 
 # =============================================================================
-# RESET COMMAND TESTS
+# SUBPROCESS INTEGRATION TESTS - RESET COMMAND
 # =============================================================================
 
 
-class TestResetCommand:
-    """Tests for the reset command."""
+class TestResetCommandSubprocess:
+    """Subprocess integration tests for the reset command."""
 
     def test_reset_requires_target(self, tmp_path):
         """reset without flags fails with helpful message."""
@@ -247,12 +263,12 @@ class TestResetCommand:
 
 
 # =============================================================================
-# COMPLETIONS COMMAND TESTS
+# SUBPROCESS INTEGRATION TESTS - COMPLETIONS COMMAND
 # =============================================================================
 
 
-class TestCompletionsCommand:
-    """Tests for the completions command."""
+class TestCompletionsCommandSubprocess:
+    """Subprocess integration tests for the completions command."""
 
     def test_completions_bash(self, tmp_path):
         """completions --shell bash outputs bash completion script."""
@@ -291,7 +307,7 @@ class TestCompletionsCommand:
 
 
 # =============================================================================
-# SOURCES COMMAND TESTS
+# SUBPROCESS INTEGRATION TESTS - SOURCES COMMAND
 # =============================================================================
 
 
@@ -323,12 +339,12 @@ class TestSourcesCommand:
 
 
 # =============================================================================
-# MCP COMMAND TESTS
+# SUBPROCESS INTEGRATION TESTS - MCP COMMAND
 # =============================================================================
 
 
-class TestMcpCommand:
-    """Tests for the mcp command."""
+class TestMcpCommandSubprocess:
+    """Subprocess integration tests for the mcp command."""
 
     def test_mcp_unsupported_transport(self, tmp_path):
         """mcp with unsupported transport fails."""
@@ -344,12 +360,12 @@ class TestMcpCommand:
 
 
 # =============================================================================
-# SERVE COMMAND TESTS
+# SUBPROCESS INTEGRATION TESTS - SERVE COMMAND
 # =============================================================================
 
 
-class TestServeCommand:
-    """Tests for the serve command."""
+class TestServeCommandSubprocess:
+    """Subprocess integration tests for the serve command."""
 
     def test_serve_help(self, tmp_path):
         """serve --help shows options."""
@@ -363,3 +379,544 @@ class TestServeCommand:
 
     # Note: We don't test serve actually starting because it blocks.
     # The command structure is tested via help.
+
+
+# =============================================================================
+# CLIRUNNER UNIT TESTS - COMPLETIONS COMMAND
+# =============================================================================
+
+
+class TestCompletionsCommandUnit:
+    """Unit tests for the completions command using CliRunner."""
+
+    def test_bash_completion_generates_script(self, cli_runner):
+        """Bash completion generates a valid script."""
+        result = cli_runner.invoke(click_cli, ["completions", "--shell", "bash"])
+
+        assert result.exit_code == 0
+        # Bash completion scripts contain specific markers
+        assert "_polylogue_completion" in result.output.lower() or "complete" in result.output.lower()
+
+    def test_zsh_completion_generates_script(self, cli_runner):
+        """Zsh completion generates a valid script."""
+        result = cli_runner.invoke(click_cli, ["completions", "--shell", "zsh"])
+
+        assert result.exit_code == 0
+        # Zsh completion scripts contain specific markers
+        assert "compdef" in result.output.lower() or "polylogue" in result.output
+
+    def test_fish_completion_generates_script(self, cli_runner):
+        """Fish completion generates a valid script."""
+        result = cli_runner.invoke(click_cli, ["completions", "--shell", "fish"])
+
+        assert result.exit_code == 0
+        # Fish completion scripts contain specific markers
+        assert "complete" in result.output.lower()
+
+    def test_shell_option_is_required(self, cli_runner):
+        """--shell option is required."""
+        result = cli_runner.invoke(click_cli, ["completions"])
+
+        assert result.exit_code != 0
+        assert "missing option" in result.output.lower() or "required" in result.output.lower()
+
+    def test_invalid_shell_rejected(self, cli_runner):
+        """Invalid shell type is rejected."""
+        result = cli_runner.invoke(click_cli, ["completions", "--shell", "powershell"])
+
+        assert result.exit_code != 0
+        assert "invalid value" in result.output.lower() or "choice" in result.output.lower()
+
+    def test_completion_uses_prog_name_polylogue(self, cli_runner):
+        """Completion script uses 'polylogue' as program name."""
+        result = cli_runner.invoke(click_cli, ["completions", "--shell", "bash"])
+
+        assert result.exit_code == 0
+        assert "polylogue" in result.output.lower()
+
+
+# =============================================================================
+# CLIRUNNER UNIT TESTS - MCP COMMAND
+# =============================================================================
+
+
+class TestMcpCommandUnit:
+    """Unit tests for the mcp command using CliRunner."""
+
+    @pytest.fixture
+    def mock_env(self):
+        """Create mock AppEnv for tests."""
+        mock_ui = MagicMock()
+        mock_ui.plain = True
+        mock_ui.console = MagicMock()
+
+        env = MagicMock()
+        env.ui = mock_ui
+        return env
+
+    def test_default_transport_is_stdio(self, cli_runner, mock_env):
+        """Default transport is stdio."""
+        with patch("polylogue.mcp.server.serve_stdio") as mock_serve:
+            result = cli_runner.invoke(mcp_command, [], obj=mock_env)
+
+            # Should call serve_stdio
+            mock_serve.assert_called_once()
+            assert result.exit_code == 0
+
+    def test_explicit_stdio_transport_works(self, cli_runner, mock_env):
+        """--transport stdio works."""
+        with patch("polylogue.mcp.server.serve_stdio") as mock_serve:
+            result = cli_runner.invoke(mcp_command, ["--transport", "stdio"], obj=mock_env)
+
+            mock_serve.assert_called_once()
+            assert result.exit_code == 0
+
+    def test_missing_mcp_dependencies_error(self, cli_runner, mock_env):
+        """Missing MCP dependencies show helpful error."""
+        # Patch the import to raise ImportError
+        with patch.dict(sys.modules, {"polylogue.mcp.server": None}):
+            # Force ImportError by patching the actual import
+            def mock_import(*args, **kwargs):
+                raise ImportError("No module named 'mcp'")
+
+            with patch("builtins.__import__", side_effect=mock_import):
+                result = cli_runner.invoke(mcp_command, [], obj=mock_env)
+
+                # Should fail with helpful message
+                assert result.exit_code != 0 or mock_env.ui.console.print.called
+
+    def test_unsupported_transport_error(self, cli_runner, mock_env):
+        """Unsupported transport type raises error."""
+        # The Click choice validation should reject this
+        result = cli_runner.invoke(click_cli, ["mcp", "--transport", "http"])
+
+        assert result.exit_code != 0
+
+    def test_mcp_help_shows_description(self, cli_runner):
+        """MCP help shows useful description."""
+        result = cli_runner.invoke(click_cli, ["mcp", "--help"])
+
+        assert result.exit_code == 0
+        assert "mcp" in result.output.lower()
+        assert "server" in result.output.lower() or "protocol" in result.output.lower()
+
+
+class TestMcpServerIntegration:
+    """Integration tests for MCP server (when dependencies are available)."""
+
+    def test_serve_stdio_can_be_imported(self):
+        """serve_stdio can be imported if mcp is installed."""
+        try:
+            from polylogue.mcp.server import serve_stdio
+            assert callable(serve_stdio)
+        except ImportError:
+            # MCP not installed, skip
+            pytest.skip("MCP dependencies not installed")
+
+    def test_mcp_server_module_exists(self):
+        """MCP server module exists in package."""
+        import polylogue.mcp as mcp_module
+        assert hasattr(mcp_module, "__file__")
+
+
+# =============================================================================
+# CLIRUNNER UNIT TESTS - RESET COMMAND
+# =============================================================================
+
+
+class TestResetCommandValidation:
+    """Tests for reset command validation."""
+
+    def test_no_flags_shows_error(self, tmp_path, monkeypatch):
+        """Reset without any target flags shows error."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["reset"])
+
+        assert result.exit_code == 1
+        assert "specify" in result.output.lower()
+
+    def test_all_flag_sets_all_targets(self, tmp_path, monkeypatch):
+        """--all enables all reset targets."""
+        # Patch paths to point to tmp_path
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        # Create mock path constants for the test
+        with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path / "data"), \
+             patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "render"), \
+             patch("polylogue.cli.commands.reset.CACHE_HOME", tmp_path / "cache"), \
+             patch("polylogue.cli.commands.reset.DRIVE_TOKEN_PATH", tmp_path / "token.json"):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--all", "--force"])
+
+            # Should not error even if files don't exist
+            assert result.exit_code == 0
+
+
+class TestResetCommandDeletion:
+    """Tests for reset file/directory deletion."""
+
+    def test_database_flag_deletes_db(self, tmp_path, monkeypatch):
+        """--database deletes the database file."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        db_path = tmp_path / "polylogue.db"
+        db_path.write_text("test database", encoding="utf-8")
+        assert db_path.exists()
+
+        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--database", "--force"])
+
+            assert result.exit_code == 0
+            assert not db_path.exists()
+
+    def test_assets_flag_deletes_assets(self, tmp_path, monkeypatch):
+        """--assets deletes the assets directory."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        data_home = tmp_path / "data"
+        assets_dir = data_home / "assets"
+        assets_dir.mkdir(parents=True)
+        (assets_dir / "test.png").write_bytes(b"test")
+        assert assets_dir.exists()
+
+        with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", data_home):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--assets", "--force"])
+
+            assert result.exit_code == 0
+            assert not assets_dir.exists()
+
+    def test_render_flag_deletes_render(self, tmp_path, monkeypatch):
+        """--render deletes the render directory."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        render_dir = tmp_path / "render"
+        render_dir.mkdir(parents=True)
+        (render_dir / "test.html").write_text("<html>test</html>", encoding="utf-8")
+        assert render_dir.exists()
+
+        with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path), \
+             patch("polylogue.cli.commands.reset.RENDER_ROOT", render_dir):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--render", "--force"])
+
+            assert result.exit_code == 0
+            assert not render_dir.exists()
+
+    def test_cache_flag_deletes_cache(self, tmp_path, monkeypatch):
+        """--cache deletes the cache directory."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(parents=True)
+        (cache_dir / "index").write_text("index data", encoding="utf-8")
+        assert cache_dir.exists()
+
+        with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path), \
+             patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "nonexistent"), \
+             patch("polylogue.cli.commands.reset.CACHE_HOME", cache_dir):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--cache", "--force"])
+
+            assert result.exit_code == 0
+            assert not cache_dir.exists()
+
+    def test_auth_flag_deletes_token(self, tmp_path, monkeypatch):
+        """--auth deletes the OAuth token."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        token_path = tmp_path / "token.json"
+        token_path.write_text(json.dumps({"token": "test"}), encoding="utf-8")
+        assert token_path.exists()
+
+        with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path), \
+             patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "nonexistent"), \
+             patch("polylogue.cli.commands.reset.CACHE_HOME", tmp_path / "nonexistent"), \
+             patch("polylogue.cli.commands.reset.DRIVE_TOKEN_PATH", token_path):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--auth", "--force"])
+
+            assert result.exit_code == 0
+            assert not token_path.exists()
+
+    def test_multiple_flags(self, tmp_path, monkeypatch):
+        """Multiple flags delete specified targets."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        db_path = tmp_path / "polylogue.db"
+        db_path.write_text("test database", encoding="utf-8")
+
+        render_dir = tmp_path / "render"
+        render_dir.mkdir(parents=True)
+        (render_dir / "test.html").write_text("<html>test</html>", encoding="utf-8")
+
+        data_home = tmp_path / "data"
+        assets_dir = data_home / "assets"
+        assets_dir.mkdir(parents=True)
+        (assets_dir / "keep.png").write_bytes(b"keep")
+
+        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", data_home), \
+             patch("polylogue.cli.commands.reset.RENDER_ROOT", render_dir):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--database", "--render", "--force"])
+
+            assert result.exit_code == 0
+            assert not db_path.exists()
+            assert not render_dir.exists()
+            # Assets should still exist
+            assert assets_dir.exists()
+
+
+class TestResetConfirmation:
+    """Tests for reset confirmation flow."""
+
+    def test_without_force_in_plain_mode_skips(self, tmp_path, monkeypatch):
+        """Without --force in plain mode, shows message and skips."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        db_path = tmp_path / "polylogue.db"
+        db_path.write_text("test database", encoding="utf-8")
+
+        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--database"])
+
+            # In plain mode without --force, should not delete
+            assert result.exit_code == 0
+            assert db_path.exists()
+            assert "force" in result.output.lower()
+
+    def test_force_bypasses_confirmation(self, tmp_path, monkeypatch):
+        """--force bypasses confirmation prompt."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        db_path = tmp_path / "polylogue.db"
+        db_path.write_text("test database", encoding="utf-8")
+
+        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--database", "--force"])
+
+            assert result.exit_code == 0
+            assert not db_path.exists()
+
+
+class TestResetEmptyTargets:
+    """Tests for reset when targets don't exist."""
+
+    def test_nothing_to_reset(self, tmp_path, monkeypatch):
+        """When no files exist, shows 'nothing to reset'."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path / "nonexistent"), \
+             patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "nonexistent"), \
+             patch("polylogue.cli.commands.reset.CACHE_HOME", tmp_path / "nonexistent"), \
+             patch("polylogue.cli.commands.reset.DRIVE_TOKEN_PATH", tmp_path / "nonexistent.json"):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--all", "--force"])
+
+            assert result.exit_code == 0
+            assert "nothing to reset" in result.output.lower()
+
+    def test_partial_targets_exist(self, tmp_path, monkeypatch):
+        """Only deletes targets that exist."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        db_path = tmp_path / "polylogue.db"
+        db_path.write_text("test database", encoding="utf-8")
+
+        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path / "nonexistent"):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--database", "--assets", "--force"])
+
+            assert result.exit_code == 0
+            assert not db_path.exists()
+            assert "database" in result.output.lower()
+
+
+class TestResetErrorHandling:
+    """Tests for reset error handling."""
+
+    def test_deletion_failure_shows_error(self, tmp_path, monkeypatch):
+        """Deletion failure shows error but continues."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        db_path = tmp_path / "polylogue.db"
+        db_path.write_text("test", encoding="utf-8")
+
+        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path), \
+             patch("pathlib.Path.unlink") as mock_unlink:
+            mock_unlink.side_effect = OSError("Permission denied")
+
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--database", "--force"])
+
+            # Should report failure but not crash
+            assert "failed" in result.output.lower() or result.exit_code == 0
+
+    def test_shows_what_will_be_deleted(self, tmp_path, monkeypatch):
+        """Shows summary of what will be deleted."""
+        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+
+        db_path = tmp_path / "polylogue.db"
+        db_path.write_text("test", encoding="utf-8")
+
+        data_home = tmp_path / "data"
+        assets_dir = data_home / "assets"
+        assets_dir.mkdir(parents=True)
+        (assets_dir / "test.png").write_bytes(b"test")
+
+        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
+             patch("polylogue.cli.commands.reset.DATA_HOME", data_home):
+            runner = CliRunner()
+            result = runner.invoke(cli, ["reset", "--database", "--assets"])
+
+            # Should show paths in output
+            assert "database" in result.output.lower()
+            assert "assets" in result.output.lower()
+
+
+# =============================================================================
+# CLIRUNNER UNIT TESTS - SERVE COMMAND
+# =============================================================================
+
+
+class TestServeCommandUnit:
+    """Unit tests for the serve command using CliRunner."""
+
+    @pytest.fixture
+    def mock_uvicorn(self):
+        """Create a mock uvicorn module."""
+        mock = MagicMock()
+        mock.run = MagicMock()
+        return mock
+
+    @pytest.fixture
+    def mock_config(self, cli_workspace):
+        """Create a mock config object."""
+        config = MagicMock()
+        config.archive_root = cli_workspace["archive_root"]
+        return config
+
+    def test_serve_missing_uvicorn_fails(self, cli_runner, cli_workspace):
+        """Missing uvicorn shows helpful error message."""
+        # Remove uvicorn from sys.modules to simulate it not being installed
+        original_modules = sys.modules.copy()
+
+        # Make uvicorn import fail
+        def mock_import(name, *args, **kwargs):
+            if name == "uvicorn" or name.startswith("uvicorn."):
+                raise ImportError("No module named 'uvicorn'")
+            return original_modules.get(name) or __import__(name, *args, **kwargs)
+
+        with patch.dict(sys.modules):
+            # Remove uvicorn if it exists
+            for key in list(sys.modules.keys()):
+                if key == "uvicorn" or key.startswith("uvicorn."):
+                    del sys.modules[key]
+
+            with patch("builtins.__import__", side_effect=mock_import):
+                result = cli_runner.invoke(click_cli, ["serve"])
+
+        assert result.exit_code != 0
+
+    def test_serve_loads_config(self, cli_runner, cli_workspace, mock_uvicorn, mock_config):
+        """load_effective_config() is called."""
+        with patch.dict(sys.modules, {"uvicorn": mock_uvicorn}):
+            with patch("polylogue.cli.commands.serve.load_effective_config", return_value=mock_config) as mock_load:
+                result = cli_runner.invoke(click_cli, ["serve"], catch_exceptions=False)
+
+        mock_load.assert_called_once()
+
+    def test_serve_sets_archive_root_env(self, cli_runner, cli_workspace, mock_uvicorn, mock_config, monkeypatch):
+        """POLYLOGUE_ARCHIVE_ROOT is set from config."""
+        # Clear env var first
+        monkeypatch.delenv("POLYLOGUE_ARCHIVE_ROOT", raising=False)
+
+        with patch.dict(sys.modules, {"uvicorn": mock_uvicorn}):
+            with patch("polylogue.cli.commands.serve.load_effective_config", return_value=mock_config):
+                result = cli_runner.invoke(click_cli, ["serve"], catch_exceptions=False)
+
+        # Check that uvicorn.run was called (meaning we got past env setup)
+        mock_uvicorn.run.assert_called_once()
+
+    def test_serve_default_host_port(self, cli_runner, cli_workspace, mock_uvicorn, mock_config):
+        """Default host is 127.0.0.1 and port is 8000."""
+        with patch.dict(sys.modules, {"uvicorn": mock_uvicorn}):
+            with patch("polylogue.cli.commands.serve.load_effective_config", return_value=mock_config):
+                result = cli_runner.invoke(click_cli, ["serve"], catch_exceptions=False)
+
+        mock_uvicorn.run.assert_called_once()
+        call_args = mock_uvicorn.run.call_args
+        assert call_args.kwargs.get("host") == "127.0.0.1"
+        assert call_args.kwargs.get("port") == 8000
+
+    def test_serve_custom_host_port(self, cli_runner, cli_workspace, mock_uvicorn, mock_config):
+        """Custom --host and --port are forwarded to uvicorn."""
+        with patch.dict(sys.modules, {"uvicorn": mock_uvicorn}):
+            with patch("polylogue.cli.commands.serve.load_effective_config", return_value=mock_config):
+                result = cli_runner.invoke(click_cli, ["serve", "--host", "0.0.0.0", "--port", "9000"], catch_exceptions=False)
+
+        mock_uvicorn.run.assert_called_once()
+        call_args = mock_uvicorn.run.call_args
+        assert call_args.kwargs.get("host") == "0.0.0.0"
+        assert call_args.kwargs.get("port") == 9000
+
+    def test_serve_prints_startup_message(self, cli_runner, cli_workspace, mock_uvicorn, mock_config):
+        """Startup message shows host and port."""
+        with patch.dict(sys.modules, {"uvicorn": mock_uvicorn}):
+            with patch("polylogue.cli.commands.serve.load_effective_config", return_value=mock_config):
+                result = cli_runner.invoke(click_cli, ["serve"], catch_exceptions=False)
+
+        # Should print a startup message with URL
+        assert "Starting server" in result.output
+        assert "127.0.0.1:8000" in result.output
+
+    def test_serve_exception_shows_error(self, cli_runner, cli_workspace, mock_uvicorn, mock_config):
+        """Exceptions from uvicorn.run are caught and displayed."""
+        mock_uvicorn.run.side_effect = RuntimeError("Port already in use")
+
+        with patch.dict(sys.modules, {"uvicorn": mock_uvicorn}):
+            with patch("polylogue.cli.commands.serve.load_effective_config", return_value=mock_config):
+                result = cli_runner.invoke(click_cli, ["serve"])
+
+        assert result.exit_code != 0
+        assert "Port already in use" in result.output
+
+
+class TestServeCommandEdgeCases:
+    """Tests for serve command edge cases."""
+
+    @pytest.fixture
+    def mock_uvicorn(self):
+        """Create a mock uvicorn module."""
+        mock = MagicMock()
+        mock.run = MagicMock()
+        return mock
+
+    def test_serve_no_archive_root_still_works(self, cli_runner, cli_workspace, mock_uvicorn):
+        """Server starts even if archive_root is None (edge case)."""
+        mock_config = MagicMock()
+        mock_config.archive_root = None  # Edge case
+
+        with patch.dict(sys.modules, {"uvicorn": mock_uvicorn}):
+            with patch("polylogue.cli.commands.serve.load_effective_config", return_value=mock_config):
+                result = cli_runner.invoke(click_cli, ["serve"], catch_exceptions=False)
+
+        # Should still call uvicorn.run
+        mock_uvicorn.run.assert_called_once()
