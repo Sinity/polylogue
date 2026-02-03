@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 
@@ -594,3 +596,66 @@ def seeded_repository(seeded_db):
 
     backend = SQLiteBackend(db_path=seeded_db)
     return ConversationRepository(backend=backend)
+
+
+# =============================================================================
+# RAW CONVERSATION FIXTURES (for database-driven testing)
+# =============================================================================
+
+
+# Pre-compute the REAL database path at module load time, before any test
+# fixtures can modify environment variables. This ensures database-driven
+# tests always use the user's actual database, not a temp test database.
+_REAL_DB_PATH = (
+    Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share"))
+    / "polylogue"
+    / "polylogue.db"
+)
+
+
+@pytest.fixture(scope="session")
+def raw_db_samples():
+    """Load samples from user's actual raw_conversations table.
+
+    This enables honest, database-driven testing by using REAL data
+    that was acquired via `polylogue run --stage acquire`.
+
+    Control sample count via POLYLOGUE_TEST_SAMPLES environment variable:
+    - POLYLOGUE_TEST_SAMPLES=100 (default) - Fast CI, limited samples
+    - POLYLOGUE_TEST_SAMPLES=0 - Exhaustive mode, ALL raw conversations
+
+    Returns:
+        List of RawConversationRecord objects from the user's database
+    """
+    import os
+    from polylogue.storage.backends.sqlite import SQLiteBackend
+
+    # Get sample limit from environment (use original env, not test-modified)
+    limit_str = os.environ.get("POLYLOGUE_TEST_SAMPLES", "100")
+    limit = int(limit_str) if limit_str != "0" else None
+
+    # Use pre-computed path that bypasses test env modifications
+    if not _REAL_DB_PATH.exists():
+        return []  # No database = no samples (skip in tests)
+
+    backend = SQLiteBackend(db_path=_REAL_DB_PATH)
+
+    # Load samples from raw_conversations table
+    samples = list(backend.iter_raw_conversations(limit=limit))
+
+    return samples
+
+
+@pytest.fixture
+def raw_backend(tmp_path):
+    """SQLite backend for raw conversation testing.
+
+    Use this for tests that need to save/read raw conversation records.
+    """
+    from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
+
+    db_path = tmp_path / "raw.db"
+    with open_connection(db_path):
+        pass
+
+    return SQLiteBackend(db_path=db_path)

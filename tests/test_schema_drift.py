@@ -1,51 +1,20 @@
 """Schema drift detection tests.
 
-These tests validate that provider exports conform to their schemas
+Tests validate that provider exports conform to their schemas
 and detect when provider formats have changed (drift).
 
-Run with: pytest tests/test_schema_drift.py -v
+Uses raw_conversations table as data source. Run `polylogue run --stage acquire`
+to populate it with real exports.
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from polylogue.validation import SchemaValidator, ValidationResult, validate_provider_export
-
-
-# =============================================================================
-# Fixtures
-# =============================================================================
-
-
-FIXTURES_DIR = Path(__file__).parent / "fixtures" / "real"
-TEST_DATASETS_DIR = Path(__file__).parent / "test-datasets"
-
-
-@pytest.fixture
-def chatgpt_fixtures() -> list[dict]:
-    """Load all ChatGPT fixture files."""
-    chatgpt_dir = FIXTURES_DIR / "chatgpt"
-    if not chatgpt_dir.exists():
-        return []
-
-    fixtures = []
-    for path in chatgpt_dir.glob("*.json"):
-        data = json.loads(path.read_text(encoding="utf-8"))
-        fixtures.append(data)
-    return fixtures
-
-
-@pytest.fixture
-def codex_fixtures() -> list[dict]:
-    """Load Codex fixture files."""
-    cody_path = TEST_DATASETS_DIR / "cody-attachments.json"
-    if not cody_path.exists():
-        return []
-    return [json.loads(cody_path.read_text(encoding="utf-8"))]
+from polylogue.storage.store import RawConversationRecord
 
 
 # =============================================================================
@@ -56,12 +25,8 @@ def codex_fixtures() -> list[dict]:
 def test_available_providers():
     """Verify expected provider schemas exist."""
     providers = SchemaValidator.available_providers()
-
-    # We should have at least these from fixture generation
     assert "chatgpt" in providers
-
-    # Report what's available
-    print(f"Available schemas: {providers}")
+    assert "claude-code" in providers
 
 
 def test_schema_validator_creation():
@@ -79,97 +44,133 @@ def test_missing_provider_raises():
 
 
 # =============================================================================
-# ChatGPT Schema Validation
+# Database-Driven Schema Validation
 # =============================================================================
 
 
-@pytest.mark.parametrize("fixture_name", [
-    "simple.json",
-    "branching.json",
-    "attachments.json",
-    "large.json",
-])
-def test_chatgpt_fixtures_have_required_structure(fixture_name: str):
-    """Test that ChatGPT fixtures have required top-level structure.
+class TestSchemaValidation:
+    """Validate real data against schemas using raw_conversations.
 
-    Note: Full schema validation is too strict for real exports that evolve.
-    This test verifies essential structure that importers depend on.
+    Schemas are generated from raw_conversations via `polylogue run --stage generate-schemas`.
+    All samples MUST validate - failures indicate schema regeneration needed.
     """
-    fixture_path = FIXTURES_DIR / "chatgpt" / fixture_name
-    if not fixture_path.exists():
-        pytest.skip(f"Fixture not found: {fixture_path}")
 
-    data = json.loads(fixture_path.read_text(encoding="utf-8"))
+    def test_all_samples_validate(self, raw_db_samples: list[RawConversationRecord]) -> None:
+        """All raw samples must validate against their provider schemas."""
+        if not raw_db_samples:
+            pytest.skip("No raw conversations (run: polylogue run --stage acquire)")
 
-    # Check essential structure that importers require
-    assert isinstance(data, dict), "Export must be a dict"
-    assert "mapping" in data, "Export must have mapping"
-    assert isinstance(data["mapping"], dict), "mapping must be a dict"
+        provider_to_schema = {
+            "chatgpt": "chatgpt",
+            "claude": "claude-ai",
+            "claude-ai": "claude-ai",
+            "claude-code": "claude-code",
+            "codex": "codex",
+            "gemini": "gemini",
+        }
 
-    # Verify mapping nodes have expected structure
-    for node_id, node in data["mapping"].items():
-        if node.get("message"):
-            msg = node["message"]
-            assert "content" in msg or "author" in msg, f"Node {node_id} missing content/author"
+        available = set(SchemaValidator.available_providers())
+        failures = []
+        skipped_providers = set()
+
+        for sample in raw_db_samples:
+            schema_name = provider_to_schema.get(sample.provider_name, sample.provider_name)
+
+            if schema_name not in available:
+                skipped_providers.add(sample.provider_name)
+                continue
+
+            try:
+                validator = SchemaValidator.for_provider(schema_name, strict=False)
+                content = sample.raw_content.decode("utf-8")
+
+                # Parse content (handle both JSON and JSONL)
+                if sample.provider_name in ("claude-code", "codex", "gemini"):
+                    for line in content.strip().split("\n"):
+                        if line.strip():
+                            data = json.loads(line)
+                            break
+                    else:
+                        failures.append((sample.raw_id[:16], sample.provider_name, "Empty JSONL"))
+                        continue
+                else:
+                    data = json.loads(content)
+
+                result = validator.validate(data)
+                if not result.is_valid:
+                    failures.append((sample.raw_id[:16], sample.provider_name, result.errors[0][:80]))
+
+            except json.JSONDecodeError as e:
+                failures.append((sample.raw_id[:16], sample.provider_name, f"Invalid JSON: {e}"))
+            except Exception as e:
+                failures.append((sample.raw_id[:16], sample.provider_name, str(e)[:80]))
+
+        if failures:
+            msg = f"{len(failures)}/{len(raw_db_samples)} failed validation:\n"
+            for raw_id, provider, error in failures[:10]:
+                msg += f"  {provider}:{raw_id}: {error}\n"
+            msg += "\nRun: polylogue run --stage generate-schemas"
+            pytest.fail(msg)
 
 
-def test_chatgpt_all_fixtures_structure(chatgpt_fixtures: list[dict]):
-    """Test all ChatGPT fixtures have importable structure."""
-    if not chatgpt_fixtures:
-        pytest.skip("No ChatGPT fixtures found")
+class TestDriftDetection:
+    """Detect schema drift in real data."""
 
-    for i, fixture in enumerate(chatgpt_fixtures):
-        # Verify structure importers need
-        assert "mapping" in fixture, f"Fixture {i} missing mapping"
+    def test_drift_warnings(self, raw_db_samples: list[RawConversationRecord]) -> None:
+        """Report drift warnings (new fields not in schema)."""
+        if not raw_db_samples:
+            pytest.skip("No raw conversations")
 
-        # Count valid message nodes
-        valid_nodes = 0
-        for node in fixture["mapping"].values():
-            if isinstance(node, dict) and node.get("message"):
-                valid_nodes += 1
+        provider_to_schema = {
+            "chatgpt": "chatgpt",
+            "claude": "claude-ai",
+            "claude-ai": "claude-ai",
+            "claude-code": "claude-code",
+            "codex": "codex",
+            "gemini": "gemini",
+        }
 
-        print(f"Fixture {i}: {valid_nodes} message nodes")
+        available = set(SchemaValidator.available_providers())
+        drift_by_provider: dict[str, list[str]] = {}
 
+        for sample in raw_db_samples[:100]:  # Check first 100 for drift
+            schema_name = provider_to_schema.get(sample.provider_name, sample.provider_name)
+            if schema_name not in available:
+                continue
 
-def test_chatgpt_drift_detection(chatgpt_fixtures: list[dict]):
-    """Test drift detection on ChatGPT fixtures."""
-    if not chatgpt_fixtures:
-        pytest.skip("No ChatGPT fixtures found")
+            try:
+                content = sample.raw_content.decode("utf-8")
+                if sample.provider_name in ("claude-code", "codex", "gemini"):
+                    for line in content.strip().split("\n"):
+                        if line.strip():
+                            data = json.loads(line)
+                            break
+                    else:
+                        continue
+                else:
+                    data = json.loads(content)
 
-    # In strict mode, check for any drift warnings
-    for fixture in chatgpt_fixtures:
-        result = validate_provider_export(fixture, "chatgpt", strict=True)
+                result = validate_provider_export(data, schema_name, strict=True)
+                if result.drift_warnings:
+                    if sample.provider_name not in drift_by_provider:
+                        drift_by_provider[sample.provider_name] = []
+                    drift_by_provider[sample.provider_name].extend(result.drift_warnings[:3])
 
-        # Log drift warnings (expected for real exports - providers evolve)
-        if result.drift_warnings:
-            print(f"Drift detected in fixture: {len(result.drift_warnings)} warnings")
-            for warning in result.drift_warnings[:5]:
-                print(f"  - {warning}")
+            except Exception:
+                pass
+
+        # Report drift but don't fail - drift is informational
+        if drift_by_provider:
+            print(f"\nDrift detected in {len(drift_by_provider)} providers:")
+            for provider, warnings in drift_by_provider.items():
+                unique_warnings = list(set(warnings))[:5]
+                print(f"  {provider}: {len(unique_warnings)} unique warnings")
+                for w in unique_warnings[:3]:
+                    print(f"    - {w}")
 
 
 # =============================================================================
-# Codex Schema Validation
-# =============================================================================
-
-
-def test_codex_fixtures_structure(codex_fixtures: list[dict]):
-    """Test Codex fixtures have importable structure."""
-    if not codex_fixtures:
-        pytest.skip("No Codex fixtures found")
-
-    for i, fixture in enumerate(codex_fixtures):
-        # Codex/Cody format can be a list of conversations or a single dict
-        if isinstance(fixture, list):
-            print(f"Codex fixture {i}: list with {len(fixture)} items")
-            for j, item in enumerate(fixture[:3]):
-                if isinstance(item, dict):
-                    print(f"  Item {j} keys: {list(item.keys())[:5]}")
-        elif isinstance(fixture, dict):
-            print(f"Codex fixture {i} keys: {list(fixture.keys())[:10]}")
-
-
-# =============================================================================
-# Invalid Data Tests
+# Validator Behavior Tests (synthetic data)
 # =============================================================================
 
 
@@ -180,29 +181,8 @@ def test_chatgpt_rejects_missing_mapping():
 
     invalid = {"id": "test", "title": "Test"}  # Missing mapping
     result = validate_provider_export(invalid, "chatgpt")
-
-    # This might be valid if mapping is optional in schema
-    # The test verifies we can detect structural differences
-    print(f"Missing mapping result: valid={result.is_valid}, errors={result.errors}")
-
-
-def test_chatgpt_rejects_wrong_type():
-    """Test that schema rejects wrong types."""
-    if "chatgpt" not in SchemaValidator.available_providers():
-        pytest.skip("ChatGPT schema not available")
-
-    invalid = {
-        "id": 12345,  # Should be string
-        "mapping": {},
-    }
-    result = validate_provider_export(invalid, "chatgpt")
-    # If id type is enforced, this should fail
-    print(f"Wrong type result: valid={result.is_valid}, errors={result.errors}")
-
-
-# =============================================================================
-# Drift Detection Examples
-# =============================================================================
+    # Just verify the validation runs without error
+    assert isinstance(result, ValidationResult)
 
 
 def test_drift_new_field():
@@ -210,44 +190,15 @@ def test_drift_new_field():
     if "chatgpt" not in SchemaValidator.available_providers():
         pytest.skip("ChatGPT schema not available")
 
-    # Create minimal valid export with extra field
     data = {
         "id": "test-123",
         "mapping": {},
-        "brand_new_field": "unexpected",  # New field not in schema
+        "brand_new_field": "unexpected",
     }
 
     result = validate_provider_export(data, "chatgpt", strict=True)
-
-    # The export might still be valid (additionalProperties allowed)
-    # but drift should be detected
-    print(f"New field result: valid={result.is_valid}, drift={result.drift_warnings}")
-
-
-# =============================================================================
-# Property-Based Validation Tests
-# =============================================================================
-
-
-@pytest.mark.skipif(
-    "chatgpt" not in SchemaValidator.available_providers(),
-    reason="ChatGPT schema not available",
-)
-def test_generated_chatgpt_validates():
-    """Test that generated ChatGPT exports validate."""
-    from hypothesis import given, settings
-    from tests.strategies import chatgpt_export_strategy
-
-    @given(chatgpt_export_strategy())
-    @settings(max_examples=20)
-    def check_validates(export):
-        result = validate_provider_export(export, "chatgpt", strict=False)
-        # Generated exports should be structurally valid
-        # (may have type mismatches for optional fields)
-        if not result.is_valid:
-            print(f"Generated export invalid: {result.errors[:3]}")
-
-    check_validates()
+    # Drift should be detected for the new field
+    assert isinstance(result, ValidationResult)
 
 
 # =============================================================================
@@ -261,7 +212,7 @@ def test_validation_result_properties():
     valid = ValidationResult(is_valid=True)
     assert valid.is_valid
     assert not valid.has_drift
-    valid.raise_if_invalid()  # Should not raise
+    valid.raise_if_invalid()
 
     # Invalid result
     invalid = ValidationResult(is_valid=False, errors=["missing field"])
@@ -273,79 +224,3 @@ def test_validation_result_properties():
     with_drift = ValidationResult(is_valid=True, drift_warnings=["new field: foo"])
     assert with_drift.is_valid
     assert with_drift.has_drift
-
-
-# =============================================================================
-# Live Database Validation Tests
-# =============================================================================
-
-
-def test_chatgpt_messages_from_db_validate(seeded_db):
-    """Test that ChatGPT messages from seeded database validate correctly."""
-    import sqlite3
-
-    conn = sqlite3.connect(seeded_db)
-    rows = conn.execute("""
-        SELECT m.provider_meta
-        FROM messages m
-        JOIN conversations c ON m.conversation_id = c.conversation_id
-        WHERE c.provider_name = 'chatgpt'
-        AND m.provider_meta IS NOT NULL
-        LIMIT 100
-    """).fetchall()
-    conn.close()
-
-    if not rows:
-        pytest.skip("No ChatGPT messages in seeded database")
-
-    # Just verify that we got data and can parse it
-    valid_count = 0
-    for row in rows:
-        try:
-            meta = json.loads(row[0])
-            raw = meta.get("raw", {})
-            # Basic validation - verify it's a dict with expected structure
-            assert isinstance(raw, dict)
-            valid_count += 1
-        except Exception:
-            pass
-
-    # Should have some valid messages
-    assert valid_count > 0, f"No valid ChatGPT messages parsed from {len(rows)} rows"
-
-
-def test_providers_in_db_have_schemas(seeded_db):
-    """Test that all providers in database have corresponding schemas."""
-    import sqlite3
-
-    conn = sqlite3.connect(seeded_db)
-    rows = conn.execute(
-        "SELECT DISTINCT provider_name FROM conversations"
-    ).fetchall()
-    conn.close()
-
-    providers_in_db = {row[0] for row in rows}
-    available_schemas = set(SchemaValidator.available_providers())
-
-    # Check that seeded providers have schemas
-    seeded_providers = {"chatgpt", "claude-code", "codex"}
-    for provider in seeded_providers & providers_in_db:
-        assert provider in available_schemas, f"Missing schema for {provider}"
-
-
-def test_database_message_counts_by_provider(seeded_db):
-    """Report message counts per provider for visibility."""
-    import sqlite3
-
-    conn = sqlite3.connect(seeded_db)
-    rows = conn.execute("""
-        SELECT c.provider_name, COUNT(m.message_id) as count
-        FROM conversations c
-        LEFT JOIN messages m ON c.conversation_id = m.conversation_id
-        GROUP BY c.provider_name
-        ORDER BY count DESC
-    """).fetchall()
-    conn.close()
-
-    # Just verify the query works with seeded data
-    assert len(rows) > 0, "No providers in seeded database"

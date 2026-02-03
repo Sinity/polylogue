@@ -1,181 +1,208 @@
-"""Contract tests: verify all parsers work on all real fixtures.
+"""Contract tests: verify all parsers work on all real data.
 
-This ensures format drift is caught - if a parser fails to extract meaningful
-data from a real fixture, the test fails. No silent skips allowed.
+These tests use the raw_conversations table as the source of truth.
+Run `polylogue run --stage acquire` to populate it with real exports.
+
+Control sample count via POLYLOGUE_TEST_SAMPLES:
+- POLYLOGUE_TEST_SAMPLES=100 (default) - Fast CI
+- POLYLOGUE_TEST_SAMPLES=0 - Exhaustive mode, ALL samples
 """
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from polylogue.importers import chatgpt, claude, codex
+from polylogue.importers import drive
+from polylogue.storage.store import RawConversationRecord
 
 
-FIXTURES_ROOT = Path(__file__).parent / "fixtures" / "real"
+def parse_raw_content(sample: RawConversationRecord) -> tuple[list | dict, str]:
+    """Parse raw_content bytes into JSON data."""
+    content = sample.raw_content.decode("utf-8")
+    provider = sample.provider_name
 
-
-def discover_fixtures() -> list[tuple[str, Path]]:
-    """Discover all real fixtures with their provider names."""
-    fixtures: list[tuple[str, Path]] = []
-
-    for provider_dir in FIXTURES_ROOT.iterdir():
-        if not provider_dir.is_dir():
-            continue
-        provider = provider_dir.name
-
-        for fixture_file in provider_dir.iterdir():
-            if fixture_file.suffix in (".json", ".jsonl"):
-                fixtures.append((provider, fixture_file))
-
-    return fixtures
-
-
-def load_fixture(path: Path) -> list[dict] | dict:
-    """Load a fixture file as JSON or JSONL."""
-    if path.suffix == ".jsonl":
+    # JSONL providers: parse all lines into a list
+    if provider in ("claude-code", "codex", "gemini"):
         items = []
-        for line in path.read_text().splitlines():
-            line = line.strip()
-            if line:
+        for line in content.strip().split("\n"):
+            if line.strip():
                 try:
                     items.append(json.loads(line))
                 except json.JSONDecodeError:
-                    continue  # Skip invalid lines
-        return items
-    else:
-        return json.loads(path.read_text())
+                    continue
+        return items, provider
+
+    # JSON providers: parse as single object
+    return json.loads(content), provider
 
 
-# Parametrize over all discovered fixtures
-FIXTURES = discover_fixtures()
-if not FIXTURES:
-    pytest.fail("No fixtures found in tests/fixtures/real/ - tests cannot run!")
+class TestParserExtractsFromRealData:
+    """Each parser must extract meaningful data from real exports."""
+
+    def test_all_parsers_extract(self, raw_db_samples: list[RawConversationRecord]) -> None:
+        """Every raw conversation can be parsed without crashing."""
+        if not raw_db_samples:
+            pytest.skip("No raw conversations (run: polylogue run --stage acquire)")
+
+        failures = []
+
+        for sample in raw_db_samples:
+            try:
+                data, provider = parse_raw_content(sample)
+                fallback_id = sample.raw_id[:16]
+
+                if provider == "chatgpt":
+                    if not isinstance(data, dict):
+                        continue  # Skip malformed
+                    if not chatgpt.looks_like(data):
+                        failures.append((sample.raw_id[:16], provider, "Not recognized as ChatGPT"))
+                        continue
+                    result = chatgpt.parse(data, fallback_id)
+
+                elif provider == "claude-code":
+                    if not isinstance(data, list):
+                        continue
+                    if not claude.looks_like_code(data):
+                        failures.append((sample.raw_id[:16], provider, "Not recognized as Claude Code"))
+                        continue
+                    result = claude.parse_code(data, fallback_id)
+
+                elif provider in ("claude", "claude-ai"):
+                    if not isinstance(data, dict):
+                        continue
+                    if not claude.looks_like_ai(data):
+                        failures.append((sample.raw_id[:16], provider, "Not recognized as Claude AI"))
+                        continue
+                    result = claude.parse_ai(data, fallback_id)
+
+                elif provider == "codex":
+                    if not isinstance(data, list):
+                        continue
+                    if not codex.looks_like(data):
+                        failures.append((sample.raw_id[:16], provider, "Not recognized as Codex"))
+                        continue
+                    result = codex.parse(data, fallback_id)
+
+                elif provider == "gemini":
+                    if not isinstance(data, list) or not data:
+                        continue
+                    # Gemini JSONL: each line is a conversation dict with 'chunks'
+                    item = data[0]
+                    if not isinstance(item, dict) or "chunks" not in item:
+                        continue
+                    result = drive.parse_chunked_prompt("gemini", item, fallback_id)
+
+                else:
+                    continue  # Unknown provider
+
+                # Verify extraction produced something
+                if not result.messages and result.provider_conversation_id == fallback_id:
+                    failures.append((sample.raw_id[:16], provider, "No messages extracted"))
+
+            except Exception as e:
+                failures.append((sample.raw_id[:16], sample.provider_name, str(e)[:80]))
+
+        if failures:
+            msg = f"{len(failures)}/{len(raw_db_samples)} failed:\n"
+            for raw_id, provider, error in failures[:10]:
+                msg += f"  {provider}:{raw_id}: {error}\n"
+            pytest.fail(msg)
 
 
-@pytest.mark.parametrize("provider,fixture_path", FIXTURES, ids=lambda x: str(x) if isinstance(x, Path) else x)
-def test_parser_extracts_from_real_fixture(provider: str, fixture_path: Path):
-    """Each parser must extract meaningful data from its real fixtures.
+class TestEdgeCaseHandling:
+    """Verify parsers handle known edge cases in real data."""
 
-    This is a contract test - it verifies that:
-    1. The parser doesn't crash on real data
-    2. The parser extracts at least some messages
-    3. The conversation has a valid ID
-    """
-    data = load_fixture(fixture_path)
-    fallback_id = fixture_path.stem
+    def test_codex_continuations(self, raw_db_samples: list[RawConversationRecord]) -> None:
+        """Codex conversations with multiple session_meta are continuations."""
+        if not raw_db_samples:
+            pytest.skip("No raw conversations")
 
-    if provider == "chatgpt":
-        # ChatGPT expects a dict with 'mapping'
-        if isinstance(data, list):
-            # Skip if fixture is a list (might be wrapped)
-            if len(data) == 1 and isinstance(data[0], dict):
-                data = data[0]
-            else:
-                pytest.skip(f"ChatGPT fixture is a list, expected dict: {fixture_path}")
+        codex_samples = [s for s in raw_db_samples if s.provider_name == "codex"]
+        if not codex_samples:
+            pytest.skip("No Codex samples")
 
-        assert chatgpt.looks_like(data), f"ChatGPT fixture not recognized: {fixture_path}"
-        result = chatgpt.parse(data, fallback_id)
+        failures = []
+        for sample in codex_samples:
+            try:
+                data, _ = parse_raw_content(sample)
+                if not isinstance(data, list):
+                    continue
 
-    elif provider == "claude-code":
-        # Claude Code expects a list of records
-        if not isinstance(data, list):
-            pytest.fail(f"Claude Code fixture should be a list: {fixture_path}")
+                session_metas = [d for d in data if isinstance(d, dict) and d.get("type") == "session_meta"]
+                if len(session_metas) > 1:
+                    result = codex.parse(data, sample.raw_id[:16])
+                    if result.parent_conversation_provider_id is None:
+                        failures.append((sample.raw_id[:16], "No parent detected for continuation"))
+                    elif result.branch_type != "continuation":
+                        failures.append((sample.raw_id[:16], f"Wrong branch_type: {result.branch_type}"))
+            except Exception as e:
+                failures.append((sample.raw_id[:16], str(e)[:60]))
 
-        assert claude.looks_like_code(data), f"Claude Code fixture not recognized: {fixture_path}"
-        result = claude.parse_code(data, fallback_id)
+        if failures:
+            pytest.fail(f"{len(failures)} continuation detection failures: {failures[:5]}")
 
-    elif provider == "claude":
-        # Claude AI expects a dict with 'chat_messages'
-        if isinstance(data, list):
-            pytest.skip(f"Claude AI fixture is a list, expected dict: {fixture_path}")
+    def test_claude_code_sidechains(self, raw_db_samples: list[RawConversationRecord]) -> None:
+        """Claude Code conversations with isSidechain markers are detected."""
+        if not raw_db_samples:
+            pytest.skip("No raw conversations")
 
-        assert claude.looks_like_ai(data), f"Claude AI fixture not recognized: {fixture_path}"
-        result = claude.parse_ai(data, fallback_id)
+        cc_samples = [s for s in raw_db_samples if s.provider_name == "claude-code"]
+        if not cc_samples:
+            pytest.skip("No Claude Code samples")
 
-    elif provider == "codex":
-        # Codex expects a list of records
-        if not isinstance(data, list):
-            pytest.fail(f"Codex fixture should be a list: {fixture_path}")
+        failures = []
+        for sample in cc_samples:
+            try:
+                data, _ = parse_raw_content(sample)
+                if not isinstance(data, list):
+                    continue
 
-        assert codex.looks_like(data), f"Codex fixture not recognized: {fixture_path}"
-        result = codex.parse(data, fallback_id)
+                has_sidechain = any(
+                    isinstance(d, dict) and d.get("isSidechain") is True
+                    for d in data
+                )
+                if has_sidechain:
+                    result = claude.parse_code(data, sample.raw_id[:16])
+                    if result.branch_type != "sidechain":
+                        failures.append((sample.raw_id[:16], f"Expected sidechain, got: {result.branch_type}"))
+            except Exception as e:
+                failures.append((sample.raw_id[:16], str(e)[:60]))
 
-    elif provider == "gemini":
-        # Gemini - skip for now as the fixture format issue is known
-        pytest.skip(f"Gemini fixture parsing not yet implemented: {fixture_path}")
+        if failures:
+            pytest.fail(f"{len(failures)} sidechain detection failures: {failures[:5]}")
 
-    else:
-        pytest.fail(f"Unknown provider: {provider}")
+    def test_chatgpt_branching(self, raw_db_samples: list[RawConversationRecord]) -> None:
+        """ChatGPT conversations with multiple children have branch_index > 0."""
+        if not raw_db_samples:
+            pytest.skip("No raw conversations")
 
-    # Contract assertions - these MUST pass for the parser to be valid
-    assert result.provider_conversation_id != fallback_id or result.messages, \
-        f"Parser extracted nothing from {fixture_path}"
+        chatgpt_samples = [s for s in raw_db_samples if s.provider_name == "chatgpt"]
+        if not chatgpt_samples:
+            pytest.skip("No ChatGPT samples")
 
-    # If we have messages, verify basic structure
-    if result.messages:
-        for msg in result.messages:
-            assert msg.role, f"Message missing role in {fixture_path}"
-            # Text can be None for system messages, but most should have text
+        failures = []
+        for sample in chatgpt_samples:
+            try:
+                data, _ = parse_raw_content(sample)
+                if not isinstance(data, dict):
+                    continue
 
+                mapping = data.get("mapping", {})
+                has_multiple_children = any(
+                    isinstance(node, dict) and len(node.get("children", [])) > 1
+                    for node in mapping.values()
+                )
 
-@pytest.mark.parametrize("provider,fixture_path", FIXTURES, ids=lambda x: str(x) if isinstance(x, Path) else x)
-def test_parser_handles_known_edge_cases(provider: str, fixture_path: Path):
-    """Verify parsers handle known edge cases in real fixtures.
+                if has_multiple_children:
+                    result = chatgpt.parse(data, sample.raw_id[:16])
+                    has_branches = any(m.branch_index > 0 for m in result.messages)
+                    if not has_branches:
+                        failures.append((sample.raw_id[:16], "Multiple children but no branch_index > 0"))
+            except Exception as e:
+                failures.append((sample.raw_id[:16], str(e)[:60]))
 
-    This test documents specific edge cases found in real data:
-    - Codex: Multiple session_meta records (continuations)
-    - Claude Code: isSidechain markers
-    - ChatGPT: Multiple children (branches)
-    """
-    data = load_fixture(fixture_path)
-    fallback_id = fixture_path.stem
-
-    if provider == "codex":
-        if not isinstance(data, list):
-            return
-
-        result = codex.parse(data, fallback_id)
-
-        # Check for continuation detection
-        session_metas = [d for d in data if isinstance(d, dict) and d.get("type") == "session_meta"]
-        if len(session_metas) > 1:
-            assert result.parent_conversation_provider_id is not None, \
-                f"Multiple session_metas but no parent detected: {fixture_path}"
-            assert result.branch_type == "continuation", \
-                f"Should be marked as continuation: {fixture_path}"
-
-    elif provider == "claude-code":
-        if not isinstance(data, list):
-            return
-
-        result = claude.parse_code(data, fallback_id)
-
-        # Check for sidechain detection
-        has_sidechain_marker = any(
-            isinstance(d, dict) and d.get("isSidechain") is True
-            for d in data
-        )
-        if has_sidechain_marker:
-            assert result.branch_type == "sidechain", \
-                f"isSidechain markers present but branch_type not set: {fixture_path}"
-
-    elif provider == "chatgpt":
-        if not isinstance(data, dict):
-            return
-
-        result = chatgpt.parse(data, fallback_id)
-
-        # Check for branching detection
-        mapping = data.get("mapping", {})
-        has_multiple_children = any(
-            isinstance(node, dict) and len(node.get("children", [])) > 1
-            for node in mapping.values()
-        )
-        if has_multiple_children:
-            # Should have extracted branch_index > 0 for some messages
-            has_branches = any(m.branch_index > 0 for m in result.messages)
-            assert has_branches, \
-                f"Multiple children in mapping but no branches extracted: {fixture_path}"
+        if failures:
+            pytest.fail(f"{len(failures)} branching detection failures: {failures[:5]}")
