@@ -20,7 +20,7 @@ from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.serve import serve_command
-from polylogue.cli.commands.run import run_command, sources_command, sync_command
+from polylogue.cli.commands.run import run_command, sources_command
 from polylogue.cli.formatting import announce_plain_mode, should_use_plain
 from polylogue.cli.types import AppEnv
 from polylogue.ui import create_ui
@@ -342,7 +342,6 @@ def cli(
 
 # Register subcommands
 cli.add_command(run_command)
-cli.add_command(sync_command)  # Deprecated alias for run
 cli.add_command(sources_command)
 cli.add_command(check_command)
 cli.add_command(reset_command)
