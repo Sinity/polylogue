@@ -1,306 +1,310 @@
-"""Tests for polylogue.types module - NewType IDs and Provider enum."""
+"""Property-based tests for polylogue.types module.
+
+SYSTEMATIZATION: 45 spot checks → 5 property tests + 3 parametrized tests.
+
+NewType wrappers (ConversationId, MessageId, AttachmentId, ContentHash) are
+compile-time markers that become str at runtime. Property tests verify:
+1. String semantics preserved
+2. Equality reflects underlying string
+3. Hash/dict/set behavior matches str
+
+Provider enum tests verify the from_string() normalization logic.
+"""
 from __future__ import annotations
 
-from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
-
-
-class TestConversationId:
-    """Test ConversationId NewType."""
-
-    def test_creation_from_string(self) -> None:
-        """ConversationId can be created from string."""
-        cid = ConversationId("conv-123")
-        assert cid == "conv-123"
-
-    def test_is_string_type(self) -> None:
-        """ConversationId is a string at runtime."""
-        cid = ConversationId("conv-123")
-        assert isinstance(cid, str)
-
-    def test_equality_same_value(self) -> None:
-        """Two ConversationIds with same value are equal."""
-        cid1 = ConversationId("conv-123")
-        cid2 = ConversationId("conv-123")
-        assert cid1 == cid2
-
-    def test_inequality_different_value(self) -> None:
-        """Two ConversationIds with different values are not equal."""
-        cid1 = ConversationId("conv-123")
-        cid2 = ConversationId("conv-456")
-        assert cid1 != cid2
-
-    def test_use_as_dict_key(self) -> None:
-        """ConversationId can be used as dict key."""
-        cid = ConversationId("conv-123")
-        d = {cid: "metadata"}
-        assert d[cid] == "metadata"
-
-    def test_use_in_set(self) -> None:
-        """ConversationId can be used in sets with deduplication."""
-        cid1 = ConversationId("conv-123")
-        cid2 = ConversationId("conv-123")
-        cid3 = ConversationId("conv-456")
-        s = {cid1, cid2, cid3}
-        assert len(s) == 2
-
-    def test_string_methods_available(self) -> None:
-        """ConversationId supports string methods."""
-        cid = ConversationId("conv-123")
-        assert cid.startswith("conv")
-        assert "123" in cid
-        assert cid.upper() == "CONV-123"
-        assert cid.replace("conv", "conversation") == "conversation-123"
-
-    def test_empty_string_valid(self) -> None:
-        """Empty string is valid ConversationId (no validation)."""
-        cid = ConversationId("")
-        assert cid == ""
-        assert isinstance(cid, str)
-
-    def test_special_characters(self) -> None:
-        """ConversationId handles special characters."""
-        cid = ConversationId("conv-🎯-123")
-        assert "🎯" in cid
-        assert len(cid) > 0
-
-
-class TestMessageId:
-    """Test MessageId NewType."""
-
-    def test_creation_from_string(self) -> None:
-        """MessageId can be created from string."""
-        mid = MessageId("msg-456")
-        assert mid == "msg-456"
-
-    def test_is_string_type(self) -> None:
-        """MessageId is a string at runtime."""
-        mid = MessageId("msg-456")
-        assert isinstance(mid, str)
-
-    def test_equality_same_value(self) -> None:
-        """Two MessageIds with same value are equal."""
-        mid1 = MessageId("msg-456")
-        mid2 = MessageId("msg-456")
-        assert mid1 == mid2
-
-    def test_inequality_different_value(self) -> None:
-        """Two MessageIds with different values are not equal."""
-        mid1 = MessageId("msg-456")
-        mid2 = MessageId("msg-789")
-        assert mid1 != mid2
-
-    def test_use_as_dict_key(self) -> None:
-        """MessageId can be used as dict key."""
-        mid = MessageId("msg-456")
-        d = {mid: "content"}
-        assert d[mid] == "content"
-
-    def test_string_methods_available(self) -> None:
-        """MessageId supports string methods."""
-        mid = MessageId("msg-456")
-        assert mid.startswith("msg")
-        assert "456" in mid
-
-
-class TestAttachmentId:
-    """Test AttachmentId NewType."""
-
-    def test_creation_from_string(self) -> None:
-        """AttachmentId can be created from string."""
-        aid = AttachmentId("att-789")
-        assert aid == "att-789"
-
-    def test_is_string_type(self) -> None:
-        """AttachmentId is a string at runtime."""
-        aid = AttachmentId("att-789")
-        assert isinstance(aid, str)
-
-    def test_equality_same_value(self) -> None:
-        """Two AttachmentIds with same value are equal."""
-        aid1 = AttachmentId("att-789")
-        aid2 = AttachmentId("att-789")
-        assert aid1 == aid2
-
-    def test_inequality_different_value(self) -> None:
-        """Two AttachmentIds with different values are not equal."""
-        aid1 = AttachmentId("att-789")
-        aid2 = AttachmentId("att-012")
-        assert aid1 != aid2
-
-    def test_use_in_set(self) -> None:
-        """AttachmentId can be used in sets."""
-        aid1 = AttachmentId("att-789")
-        aid2 = AttachmentId("att-789")
-        aid3 = AttachmentId("att-012")
-        s = {aid1, aid2, aid3}
-        assert len(s) == 2
-
-
-class TestContentHash:
-    """Test ContentHash NewType."""
-
-    def test_creation_from_string(self) -> None:
-        """ContentHash can be created from string."""
-        ch = ContentHash("abc123def456")
-        assert ch == "abc123def456"
-
-    def test_is_string_type(self) -> None:
-        """ContentHash is a string at runtime."""
-        ch = ContentHash("abc123def456")
-        assert isinstance(ch, str)
-
-    def test_equality_same_value(self) -> None:
-        """Two ContentHashes with same value are equal."""
-        ch1 = ContentHash("abc123def456")
-        ch2 = ContentHash("abc123def456")
-        assert ch1 == ch2
-
-    def test_use_as_dict_key(self) -> None:
-        """ContentHash can be used as dict key."""
-        ch = ContentHash("abc123def456")
-        d = {ch: "conversation_id"}
-        assert d[ch] == "conversation_id"
-
-
-class TestProviderEnum:
-    """Test Provider enum."""
-
-    def test_enum_values(self) -> None:
-        """Provider enum has expected values."""
-        assert Provider.CHATGPT.value == "chatgpt"
-        assert Provider.CLAUDE.value == "claude"
-        assert Provider.CLAUDE_CODE.value == "claude-code"
-        assert Provider.CODEX.value == "codex"
-        assert Provider.GEMINI.value == "gemini"
-        assert Provider.DRIVE.value == "drive"
-        assert Provider.UNKNOWN.value == "unknown"
-
-    def test_is_string_enum(self) -> None:
-        """Provider inherits from str and Enum."""
-        assert isinstance(Provider.CHATGPT, str)
-        assert isinstance(Provider.CLAUDE, str)
-
-    def test_string_methods_available(self) -> None:
-        """Provider supports string methods."""
-        assert Provider.CHATGPT.startswith("chat")
-        assert "gpt" in Provider.CHATGPT
-        assert Provider.CHATGPT.upper() == "CHATGPT"
-
-    def test_str_representation(self) -> None:
-        """str(Provider) returns value."""
-        assert str(Provider.CHATGPT) == "chatgpt"
-        assert str(Provider.CLAUDE) == "claude"
-        assert str(Provider.UNKNOWN) == "unknown"
-
-
-class TestProviderFromString:
-    """Test Provider.from_string() class method."""
-
-    def test_exact_match_chatgpt(self) -> None:
-        """Exact match returns correct enum."""
-        assert Provider.from_string("chatgpt") == Provider.CHATGPT
-
-    def test_exact_match_claude(self) -> None:
-        """Exact match for claude returns CLAUDE."""
-        assert Provider.from_string("claude") == Provider.CLAUDE
-
-    def test_exact_match_claude_code(self) -> None:
-        """Exact match for claude-code returns CLAUDE_CODE."""
-        assert Provider.from_string("claude-code") == Provider.CLAUDE_CODE
-
-    def test_exact_match_codex(self) -> None:
-        """Exact match for codex returns CODEX."""
-        assert Provider.from_string("codex") == Provider.CODEX
-
-    def test_exact_match_gemini(self) -> None:
-        """Exact match for gemini returns GEMINI."""
-        assert Provider.from_string("gemini") == Provider.GEMINI
-
-    def test_exact_match_drive(self) -> None:
-        """Exact match for drive returns DRIVE."""
-        assert Provider.from_string("drive") == Provider.DRIVE
-
-    def test_case_insensitive_match(self) -> None:
-        """Matching is case-insensitive."""
-        assert Provider.from_string("CHATGPT") == Provider.CHATGPT
-        assert Provider.from_string("ClAuDe") == Provider.CLAUDE
-        assert Provider.from_string("GEMINI") == Provider.GEMINI
-
-    def test_whitespace_stripped(self) -> None:
-        """Leading/trailing whitespace is stripped."""
-        assert Provider.from_string("  chatgpt  ") == Provider.CHATGPT
-        assert Provider.from_string("\tclaude\n") == Provider.CLAUDE
-
-    def test_gpt_alias(self) -> None:
-        """'gpt' and 'openai' are aliases for CHATGPT."""
-        assert Provider.from_string("gpt") == Provider.CHATGPT
-        assert Provider.from_string("openai") == Provider.CHATGPT
-        assert Provider.from_string("GPT") == Provider.CHATGPT
-        assert Provider.from_string("OPENAI") == Provider.CHATGPT
-
-    def test_claude_ai_alias(self) -> None:
-        """'claude-ai' and 'anthropic' are aliases for CLAUDE."""
-        assert Provider.from_string("claude-ai") == Provider.CLAUDE
-        assert Provider.from_string("anthropic") == Provider.CLAUDE
-        assert Provider.from_string("CLAUDE-AI") == Provider.CLAUDE
-        assert Provider.from_string("ANTHROPIC") == Provider.CLAUDE
-
-    def test_unknown_for_invalid(self) -> None:
-        """Invalid provider returns UNKNOWN."""
-        assert Provider.from_string("invalid-provider") == Provider.UNKNOWN
-        assert Provider.from_string("foobar") == Provider.UNKNOWN
-
-    def test_none_returns_unknown(self) -> None:
-        """None returns UNKNOWN."""
-        assert Provider.from_string(None) == Provider.UNKNOWN
-
-    def test_empty_string_returns_unknown(self) -> None:
-        """Empty string returns UNKNOWN."""
-        assert Provider.from_string("") == Provider.UNKNOWN
-
-    def test_whitespace_only_returns_unknown(self) -> None:
-        """Whitespace-only string returns UNKNOWN."""
-        assert Provider.from_string("   ") == Provider.UNKNOWN
-        assert Provider.from_string("\t\n") == Provider.UNKNOWN
-
-
-class TestTypeInteroperability:
-    """Test NewType IDs work together in realistic scenarios."""
-
-    def test_all_ids_as_dict_keys(self) -> None:
-        """All ID types can be used as dict keys simultaneously."""
-        cid = ConversationId("conv-1")
-        mid = MessageId("msg-1")
-        aid = AttachmentId("att-1")
-        ch = ContentHash("hash-1")
-
-        data = {
-            cid: {"messages": [mid], "attachments": [aid]},
-            ch: "dedup-info",
-        }
-
-        assert data[cid]["messages"][0] == mid
-        assert data[ch] == "dedup-info"
-
-    def test_ids_in_list_and_set(self) -> None:
-        """ID types work in collections."""
-        cids = [
-            ConversationId("conv-1"),
-            ConversationId("conv-2"),
-            ConversationId("conv-1"),
-        ]
-        unique_cids = set(cids)
-
-        assert len(cids) == 3
-        assert len(unique_cids) == 2
-
-    def test_provider_enum_interop_with_ids(self) -> None:
-        """Provider enum works with ID types in data structures."""
-        cid = ConversationId("conv-1")
-        provider = Provider.CLAUDE
-
-        metadata = {"conversation_id": cid, "provider": provider}
-
-        assert metadata["conversation_id"] == cid
-        assert metadata["provider"] == Provider.CLAUDE
-        assert str(metadata["provider"]) == "claude"
+import pytest
+from hypothesis import given
+from hypothesis import strategies as st
+
+from polylogue.types import (
+    AttachmentId,
+    ContentHash,
+    ConversationId,
+    MessageId,
+    Provider,
+)
+
+
+# =============================================================================
+# NewType Property Tests (replacing 36 spot checks with 4 property tests)
+# =============================================================================
+
+# All NewType string wrappers share identical runtime behavior
+NEWTYPE_WRAPPERS = [ConversationId, MessageId, AttachmentId, ContentHash]
+NEWTYPE_IDS = ["ConversationId", "MessageId", "AttachmentId", "ContentHash"]
+
+
+@pytest.mark.parametrize("wrapper", NEWTYPE_WRAPPERS, ids=NEWTYPE_IDS)
+@given(st.text())
+def test_newtype_preserves_string_semantics(wrapper, text: str) -> None:
+    """NewType wrappers are str at runtime - all string operations work.
+
+    Subsumes: test_creation_from_string, test_is_string_type, test_string_methods_available
+    for all 4 NewType wrappers (12 spot checks).
+    """
+    wrapped = wrapper(text)
+
+    # Runtime type is str
+    assert isinstance(wrapped, str)
+
+    # Value equality
+    assert wrapped == text
+
+    # String methods work
+    assert wrapped.upper() == text.upper()
+    assert wrapped.lower() == text.lower()
+    assert len(wrapped) == len(text)
+
+    # Containment check
+    if text:
+        assert text[0] in wrapped
+
+
+@pytest.mark.parametrize("wrapper", NEWTYPE_WRAPPERS, ids=NEWTYPE_IDS)
+@given(st.text(), st.text())
+def test_newtype_equality_reflects_string(wrapper, a: str, b: str) -> None:
+    """Equality between wrapped values reflects underlying string equality.
+
+    Subsumes: test_equality_same_value, test_inequality_different_value
+    for all 4 wrappers (8 spot checks).
+    """
+    wrapped_a = wrapper(a)
+    wrapped_b = wrapper(b)
+
+    # Equality matches string equality
+    assert (wrapped_a == wrapped_b) == (a == b)
+
+    # Inequality is the opposite
+    assert (wrapped_a != wrapped_b) == (a != b)
+
+
+@pytest.mark.parametrize("wrapper", NEWTYPE_WRAPPERS, ids=NEWTYPE_IDS)
+@given(st.text())
+def test_newtype_hashable_as_string(wrapper, text: str) -> None:
+    """NewType values hash identically to their underlying string.
+
+    Subsumes: test_use_as_dict_key, test_use_in_set for all 4 wrappers (8 spot checks).
+    """
+    wrapped = wrapper(text)
+
+    # Hash matches string hash
+    assert hash(wrapped) == hash(text)
+
+    # Works as dict key
+    d = {wrapped: "value"}
+    assert d[text] == "value"  # Can look up via plain string
+    assert d[wrapped] == "value"
+
+    # Works in set
+    s = {wrapped}
+    assert text in s
+    assert wrapped in s
+
+
+@pytest.mark.parametrize("wrapper", NEWTYPE_WRAPPERS, ids=NEWTYPE_IDS)
+@given(st.lists(st.text(), min_size=0, max_size=20))
+def test_newtype_set_deduplication(wrapper, texts: list[str]) -> None:
+    """Set deduplication works correctly with NewType values.
+
+    Subsumes: test_use_in_set with deduplication logic (4 spot checks).
+    """
+    wrapped_values = [wrapper(t) for t in texts]
+    wrapped_set = set(wrapped_values)
+    string_set = set(texts)
+
+    # Same number of unique values
+    assert len(wrapped_set) == len(string_set)
+
+
+# =============================================================================
+# Provider Enum Property Tests (replacing 9 spot checks with property tests)
+# =============================================================================
+
+
+@given(st.sampled_from(list(Provider)))
+def test_provider_is_string_enum(provider: Provider) -> None:
+    """Provider enum inherits from str - string operations work.
+
+    Subsumes: test_is_string_enum, test_string_methods_available.
+    """
+    # Is a string
+    assert isinstance(provider, str)
+
+    # String value matches
+    assert str(provider) == provider.value
+
+    # String methods available
+    assert provider.upper() == provider.value.upper()
+    assert provider.lower() == provider.value.lower()
+
+
+def test_provider_enum_values() -> None:
+    """Provider enum has all expected values.
+
+    Kept as explicit test - enumerates all known providers.
+    """
+    assert Provider.CHATGPT.value == "chatgpt"
+    assert Provider.CLAUDE.value == "claude"
+    assert Provider.CLAUDE_CODE.value == "claude-code"
+    assert Provider.CODEX.value == "codex"
+    assert Provider.GEMINI.value == "gemini"
+    assert Provider.DRIVE.value == "drive"
+    assert Provider.UNKNOWN.value == "unknown"
+
+
+# =============================================================================
+# Provider.from_string() Property Tests (replacing 19 spot checks)
+# =============================================================================
+
+
+# Known valid provider values that should parse to their enum
+PROVIDER_EXACT_MATCHES = [
+    ("chatgpt", Provider.CHATGPT),
+    ("claude", Provider.CLAUDE),
+    ("claude-code", Provider.CLAUDE_CODE),
+    ("codex", Provider.CODEX),
+    ("gemini", Provider.GEMINI),
+    ("drive", Provider.DRIVE),
+]
+
+
+@pytest.mark.parametrize("value,expected", PROVIDER_EXACT_MATCHES)
+def test_provider_from_string_exact_match(value: str, expected: Provider) -> None:
+    """Exact match returns correct enum."""
+    assert Provider.from_string(value) == expected
+
+
+# Alias mappings
+PROVIDER_ALIASES = [
+    # ChatGPT aliases
+    ("gpt", Provider.CHATGPT),
+    ("openai", Provider.CHATGPT),
+    ("GPT", Provider.CHATGPT),
+    ("OPENAI", Provider.CHATGPT),
+    # Claude aliases
+    ("claude-ai", Provider.CLAUDE),
+    ("anthropic", Provider.CLAUDE),
+    ("CLAUDE-AI", Provider.CLAUDE),
+    ("ANTHROPIC", Provider.CLAUDE),
+]
+
+
+@pytest.mark.parametrize("alias,expected", PROVIDER_ALIASES)
+def test_provider_from_string_alias(alias: str, expected: Provider) -> None:
+    """Aliases map to correct provider."""
+    assert Provider.from_string(alias) == expected
+
+
+@given(st.sampled_from([p.value for p in Provider]))
+def test_provider_from_string_case_insensitive(value: str) -> None:
+    """Provider matching is case-insensitive.
+
+    Subsumes: test_case_insensitive_match.
+    """
+    # Various case transformations should all work
+    assert Provider.from_string(value.upper()).value == value.lower()
+    assert Provider.from_string(value.lower()).value == value.lower()
+    assert Provider.from_string(value.title()).value == value.lower()
+
+
+@given(st.sampled_from([p.value for p in Provider]))
+def test_provider_from_string_whitespace_stripped(value: str) -> None:
+    """Whitespace is stripped before matching.
+
+    Subsumes: test_whitespace_stripped.
+    """
+    # With various whitespace
+    assert Provider.from_string(f"  {value}  ").value == value
+    assert Provider.from_string(f"\t{value}\n").value == value
+    assert Provider.from_string(f" {value}").value == value
+
+
+@given(st.text().filter(lambda s: s.strip().lower() not in [
+    "chatgpt", "claude", "claude-code", "codex", "gemini", "drive", "unknown",
+    "gpt", "openai", "claude-ai", "anthropic"
+]))
+def test_provider_from_string_unknown_fallback(value: str) -> None:
+    """Unknown provider strings return UNKNOWN.
+
+    Subsumes: test_unknown_for_invalid.
+    """
+    result = Provider.from_string(value)
+    assert result == Provider.UNKNOWN
+
+
+@pytest.mark.parametrize("empty_value", [None, "", "   ", "\t\n"])
+def test_provider_from_string_empty_returns_unknown(empty_value) -> None:
+    """Empty/None values return UNKNOWN.
+
+    Subsumes: test_none_returns_unknown, test_empty_string_returns_unknown,
+    test_whitespace_only_returns_unknown.
+    """
+    assert Provider.from_string(empty_value) == Provider.UNKNOWN
+
+
+# =============================================================================
+# Interoperability Tests (kept - tests realistic usage patterns)
+# =============================================================================
+
+
+@given(st.data())
+def test_all_id_types_as_dict_keys(data) -> None:
+    """All ID types work together as dict keys.
+
+    Subsumes: test_all_ids_as_dict_keys.
+    """
+    conv_str = data.draw(st.text(min_size=1, max_size=50), label="conv_str")
+    msg_str = data.draw(st.text(min_size=1, max_size=50), label="msg_str")
+    att_str = data.draw(st.text(min_size=1, max_size=50), label="att_str")
+    # Ensure hash_str differs from conv_str to avoid dict key collision
+    hash_str = data.draw(
+        st.text(min_size=1, max_size=50).filter(lambda s: s != conv_str),
+        label="hash_str"
+    )
+
+    cid = ConversationId(conv_str)
+    mid = MessageId(msg_str)
+    aid = AttachmentId(att_str)
+    ch = ContentHash(hash_str)
+
+    # Build a realistic data structure
+    d = {
+        cid: {"messages": [mid], "attachments": [aid]},
+        ch: "dedup-info",
+    }
+
+    # Access works
+    assert d[cid]["messages"][0] == mid
+    assert d[ch] == "dedup-info"
+
+
+@given(st.lists(st.text(), min_size=1, max_size=10))
+def test_ids_in_list_and_set(texts: list[str]) -> None:
+    """ID types work correctly in collections.
+
+    Subsumes: test_ids_in_list_and_set.
+    """
+    cids = [ConversationId(t) for t in texts]
+
+    # List preserves all
+    assert len(cids) == len(texts)
+
+    # Set deduplicates correctly
+    unique_cids = set(cids)
+    unique_texts = set(texts)
+    assert len(unique_cids) == len(unique_texts)
+
+
+@given(st.sampled_from(list(Provider)), st.text(min_size=1, max_size=50))
+def test_provider_enum_interop_with_ids(provider: Provider, conv_str: str) -> None:
+    """Provider enum works with ID types in data structures.
+
+    Subsumes: test_provider_enum_interop_with_ids.
+    """
+    cid = ConversationId(conv_str)
+
+    metadata = {"conversation_id": cid, "provider": provider}
+
+    assert metadata["conversation_id"] == cid
+    assert metadata["provider"] == provider
+    assert str(metadata["provider"]) == provider.value

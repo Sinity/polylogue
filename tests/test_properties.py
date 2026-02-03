@@ -550,3 +550,277 @@ def test_hash_payload_never_crashes(d: dict) -> None:
     result = hash_payload(d)
     assert isinstance(result, str)
     assert len(result) == 64  # SHA-256 hex digest
+
+
+# =============================================================================
+# Pipeline Hashing Properties (Phase 7 - Test Systematization)
+# =============================================================================
+#
+# These property tests subsume many spot checks from test_pipeline.py and
+# test_pipeline_ids.py by testing invariants that hold for ALL inputs.
+
+
+from tests.strategies import (
+    parsed_conversation_model_strategy,
+    parsed_message_model_strategy,
+)
+from polylogue.pipeline.ids import (
+    conversation_content_hash,
+    message_content_hash,
+    conversation_id,
+    message_id,
+)
+
+
+@given(parsed_conversation_model_strategy(min_messages=0, max_messages=5))
+def test_conversation_content_hash_deterministic(conv) -> None:
+    """Same conversation always produces same hash.
+
+    Subsumes: test_conversation_content_hash_deterministic in test_pipeline.py
+    """
+    hash1 = conversation_content_hash(conv)
+    hash2 = conversation_content_hash(conv)
+
+    assert hash1 == hash2
+    assert isinstance(hash1, str)
+    assert len(hash1) == 64  # SHA-256 hex digest
+
+
+@given(parsed_conversation_model_strategy(min_messages=0, max_messages=5))
+def test_conversation_content_hash_valid_hex(conv) -> None:
+    """Conversation hash is valid lowercase hex."""
+    result = conversation_content_hash(conv)
+    assert all(c in "0123456789abcdef" for c in result)
+
+
+@given(parsed_message_model_strategy())
+def test_message_content_hash_deterministic(msg) -> None:
+    """Same message always produces same hash.
+
+    Subsumes: test_message_content_hash_deterministic in test_pipeline.py
+    """
+    msg_id = msg.provider_message_id or "fallback"
+    hash1 = message_content_hash(msg, msg_id)
+    hash2 = message_content_hash(msg, msg_id)
+
+    assert hash1 == hash2
+    assert isinstance(hash1, str)
+    assert len(hash1) == 64
+
+
+@given(st.data())
+def test_conversation_hash_sensitive_to_title(data) -> None:
+    """Different titles produce different hashes.
+
+    Subsumes: test_conversation_content_hash_changes_on_title_edit
+    """
+    conv = data.draw(parsed_conversation_model_strategy(min_messages=1, max_messages=3))
+    title1 = data.draw(st.text(min_size=1, max_size=50))
+    title2 = data.draw(st.text(min_size=1, max_size=50).filter(lambda t: t != title1))
+
+    # Create modified conversation with different title
+    from polylogue.importers.base import ParsedConversation
+    conv1 = ParsedConversation(
+        provider_name=conv.provider_name,
+        provider_conversation_id=conv.provider_conversation_id,
+        title=title1,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+        messages=conv.messages,
+        attachments=conv.attachments,
+    )
+    conv2 = ParsedConversation(
+        provider_name=conv.provider_name,
+        provider_conversation_id=conv.provider_conversation_id,
+        title=title2,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+        messages=conv.messages,
+        attachments=conv.attachments,
+    )
+
+    assert conversation_content_hash(conv1) != conversation_content_hash(conv2)
+
+
+@given(st.data())
+def test_message_hash_sensitive_to_text(data) -> None:
+    """Different text produces different hashes.
+
+    Subsumes: test_message_content_hash_changes_on_text_edit
+    """
+    from polylogue.importers.base import ParsedMessage
+
+    text1 = data.draw(st.text(min_size=1, max_size=100))
+    text2 = data.draw(st.text(min_size=1, max_size=100).filter(lambda t: t != text1))
+
+    msg1 = ParsedMessage(
+        provider_message_id="msg-1",
+        role="user",
+        text=text1,
+        timestamp="2024-01-01T00:00:00Z",
+    )
+    msg2 = ParsedMessage(
+        provider_message_id="msg-1",
+        role="user",
+        text=text2,
+        timestamp="2024-01-01T00:00:00Z",
+    )
+
+    assert message_content_hash(msg1, "msg-1") != message_content_hash(msg2, "msg-1")
+
+
+@given(st.data())
+def test_message_hash_sensitive_to_role(data) -> None:
+    """Different roles produce different hashes.
+
+    Subsumes: test_message_content_hash_changes_on_role_edit
+    """
+    from polylogue.importers.base import ParsedMessage
+
+    role1 = data.draw(st.sampled_from(["user", "assistant", "system"]))
+    role2 = data.draw(st.sampled_from(["user", "assistant", "system"]).filter(lambda r: r != role1))
+
+    msg1 = ParsedMessage(
+        provider_message_id="msg-1",
+        role=role1,
+        text="same text",
+        timestamp="2024-01-01T00:00:00Z",
+    )
+    msg2 = ParsedMessage(
+        provider_message_id="msg-1",
+        role=role2,
+        text="same text",
+        timestamp="2024-01-01T00:00:00Z",
+    )
+
+    assert message_content_hash(msg1, "msg-1") != message_content_hash(msg2, "msg-1")
+
+
+@given(
+    st.text(min_size=1, max_size=20).filter(lambda s: s.strip()),
+    st.text(min_size=1, max_size=50).filter(lambda s: s.strip()),
+)
+def test_conversation_id_deterministic(provider: str, conv_id: str) -> None:
+    """conversation_id is deterministic for same inputs.
+
+    Subsumes: test_conversation_id_format, TestConversationId.test_generates_deterministic_id
+
+    Note: conversation_id validates inputs - empty/whitespace strings raise ValueError.
+    """
+    id1 = conversation_id(provider, conv_id)
+    id2 = conversation_id(provider, conv_id)
+
+    assert id1 == id2
+    assert ":" in id1  # Contains separator
+    assert provider in id1
+    assert conv_id in id1
+
+
+@given(
+    st.text(min_size=1, max_size=30).filter(lambda s: s.strip()),
+    st.text(min_size=1, max_size=30).filter(lambda s: s.strip()),
+    st.text(min_size=1, max_size=30).filter(lambda s: s.strip()),
+)
+def test_message_id_deterministic(provider: str, conv_id: str, msg_id: str) -> None:
+    """message_id is deterministic for same inputs.
+
+    Subsumes: test_message_id_format
+
+    Note: conversation_id validates inputs - empty/whitespace strings raise ValueError.
+    """
+    cid = conversation_id(provider, conv_id)
+    mid1 = message_id(cid, msg_id)
+    mid2 = message_id(cid, msg_id)
+
+    assert mid1 == mid2
+    assert mid1.count(":") >= 2  # At least 2 separators
+    assert msg_id in mid1
+
+
+@given(st.data())
+def test_conversation_hash_sensitive_to_message_order(data) -> None:
+    """Reordering messages changes the hash.
+
+    Subsumes: test_conversation_content_hash_changes_on_message_reorder
+    """
+    from polylogue.importers.base import ParsedConversation, ParsedMessage
+
+    # Create two distinct messages
+    msg1 = ParsedMessage(
+        provider_message_id="msg-1",
+        role="user",
+        text=data.draw(st.text(min_size=1, max_size=50)),
+        timestamp="2024-01-01T00:00:00Z",
+    )
+    msg2 = ParsedMessage(
+        provider_message_id="msg-2",
+        role="assistant",
+        text=data.draw(st.text(min_size=1, max_size=50)),
+        timestamp="2024-01-01T00:00:01Z",
+    )
+
+    conv_order1 = ParsedConversation(
+        provider_name="test",
+        provider_conversation_id="conv-1",
+        title="Test",
+        created_at=None,
+        updated_at=None,
+        messages=[msg1, msg2],
+    )
+    conv_order2 = ParsedConversation(
+        provider_name="test",
+        provider_conversation_id="conv-1",
+        title="Test",
+        created_at=None,
+        updated_at=None,
+        messages=[msg2, msg1],
+    )
+
+    assert conversation_content_hash(conv_order1) != conversation_content_hash(conv_order2)
+
+
+@given(parsed_conversation_model_strategy(min_messages=0, max_messages=3, with_attachments=True))
+def test_conversation_hash_includes_attachments(conv) -> None:
+    """Hash changes when attachments are added.
+
+    Subsumes: test_conversation_content_hash_includes_attachments
+    """
+    from polylogue.importers.base import ParsedConversation, ParsedAttachment
+
+    # Create same conversation without attachments
+    conv_no_att = ParsedConversation(
+        provider_name=conv.provider_name,
+        provider_conversation_id=conv.provider_conversation_id,
+        title=conv.title,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+        messages=conv.messages,
+        attachments=[],
+    )
+
+    # Create same conversation with an attachment
+    conv_with_att = ParsedConversation(
+        provider_name=conv.provider_name,
+        provider_conversation_id=conv.provider_conversation_id,
+        title=conv.title,
+        created_at=conv.created_at,
+        updated_at=conv.updated_at,
+        messages=conv.messages,
+        attachments=[ParsedAttachment(
+            provider_attachment_id="att-test",
+            message_provider_id=None,
+            name="test.txt",
+            mime_type="text/plain",
+            size_bytes=100,
+        )],
+    )
+
+    assert conversation_content_hash(conv_no_att) != conversation_content_hash(conv_with_att)
+
+
+@given(parsed_message_model_strategy())
+def test_message_hash_valid_hex(msg) -> None:
+    """Message hash is valid lowercase hex."""
+    result = message_content_hash(msg, msg.provider_message_id or "fallback")
+    assert all(c in "0123456789abcdef" for c in result)
+    assert len(result) == 64
