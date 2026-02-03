@@ -384,18 +384,26 @@ def test_real_sample_has_thinking_blocks(gemini_sample_file):
     reason="Real Gemini sample not available"
 )
 def test_real_sample_has_tool_references(gemini_sample_file):
-    """Real sample parsing doesn't error even with non-Gemini format."""
+    """Real Gemini sample with tool references parses successfully."""
     with open(gemini_sample_file) as f:
         data = json.loads(f.readline())
 
-    # Should not raise an error even if format doesn't match
     result = parse_chunked_prompt("gemini", data, "test-id")
 
-    # Verify it's a valid ParsedConversation
+    # Verify it's a valid ParsedConversation with messages
     assert result.provider_name == "gemini"
     assert isinstance(result.messages, list)
-    # Non-Gemini format means no messages extracted
-    assert len(result.messages) == 0
+    assert len(result.messages) > 0, "Expected messages in valid Gemini fixture"
+
+    # Check that messages have tool-related metadata (grounding, code execution, etc.)
+    has_tool_features = any(
+        msg.provider_meta.get("raw", {}).get("grounding")
+        or msg.provider_meta.get("raw", {}).get("executableCode")
+        or msg.provider_meta.get("raw", {}).get("codeExecutionResult")
+        for msg in result.messages
+        if msg.provider_meta
+    )
+    assert has_tool_features, "Expected tool-related features in Gemini fixture"
 
 
 @pytest.mark.skipif(

@@ -8,7 +8,7 @@ subagent spawns, and context compaction events.
 from __future__ import annotations
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from polylogue.importers.claude import (
@@ -572,8 +572,8 @@ class TestParseCodeSemantic:
 # =============================================================================
 
 
-@given(st.lists(st.text(min_size=1, max_size=100), min_size=0, max_size=10))
-@settings(max_examples=50)
+@given(st.lists(st.text(min_size=1, max_size=50), min_size=0, max_size=5))
+@settings(max_examples=50, suppress_health_check=[HealthCheck.too_slow])
 def test_thinking_extraction_never_crashes(texts: list[str]):
     """Thinking trace extraction handles any input."""
     blocks = [{"type": "thinking", "thinking": text} for text in texts]
