@@ -1,0 +1,61 @@
+{
+  "uuid": "conv-02J9K0L1M2N3O4P5Q6R7S8T9",
+  "name": "Code Review with File Attachment",
+  "created_at": "2024-02-20T14:00:00Z",
+  "updated_at": "2024-02-20T14:10:00Z",
+  "chat_messages": [
+    {
+      "uuid": "msg-05O6P7Q8R9S0T1U2V3W4X5",
+      "text": "Can you review this Python file I've attached?",
+      "sender": "human",
+      "created_at": "2024-02-20T14:00:00Z",
+      "updated_at": "2024-02-20T14:00:00Z",
+      "attachments": [
+        {
+          "id": "att-001",
+          "file_name": "utils.py",
+          "file_size": 1234,
+          "file_type": "text/x-python",
+          "extracted_content": "def parse_config(path):\n    with open(path) as f:\n        return json.load(f)\n\ndef save_config(path, data):\n    with open(path, 'w') as f:\n        json.dump(data, f)"
+        }
+      ],
+      "files": [
+        {
+          "file_name": "utils.py",
+          "file_type": "text/x-python"
+        }
+      ]
+    },
+    {
+      "uuid": "msg-06Y7Z8A9B0C1D2E3F4G5H6",
+      "text": "I've reviewed your `utils.py` file. Here are my observations:\n\n**Issues Found:**\n1. Missing `import json` at the top\n2. No error handling for file operations\n3. No type hints\n\n**Suggested Improvements:**\n\n```python\nimport json\nfrom pathlib import Path\nfrom typing import Any\n\ndef parse_config(path: str | Path) -> dict[str, Any]:\n    \"\"\"Parse JSON config file.\"\"\"\n    try:\n        with open(path) as f:\n            return json.load(f)\n    except (FileNotFoundError, json.JSONDecodeError) as e:\n        raise ConfigError(f\"Failed to parse config: {e}\") from e\n\ndef save_config(path: str | Path, data: dict[str, Any]) -> None:\n    \"\"\"Save data to JSON config file.\"\"\"\n    with open(path, 'w') as f:\n        json.dump(data, f, indent=2)\n```\n\nWould you like me to explain any of these changes?",
+      "sender": "assistant",
+      "created_at": "2024-02-20T14:05:00Z",
+      "updated_at": "2024-02-20T14:05:00Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg-07I8J9K0L1M2N3O4P5Q6R7",
+      "text": "Thanks! What's the benefit of using Path instead of str?",
+      "sender": "human",
+      "created_at": "2024-02-20T14:08:00Z",
+      "updated_at": "2024-02-20T14:08:00Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg-08S9T0U1V2W3X4Y5Z6A7B8",
+      "text": "`pathlib.Path` offers several advantages:\n\n1. **Object-oriented**: Methods like `.exists()`, `.read_text()`, `.parent`\n2. **Cross-platform**: Handles path separators automatically\n3. **Type safety**: Clear distinction from regular strings\n4. **Composability**: `path / 'subdir' / 'file.txt'` instead of `os.path.join()`\n\nUsing `str | Path` in type hints accepts both, giving callers flexibility.",
+      "sender": "assistant",
+      "created_at": "2024-02-20T14:10:00Z",
+      "updated_at": "2024-02-20T14:10:00Z",
+      "attachments": [],
+      "files": []
+    }
+  ],
+  "account": {
+    "uuid": "acc-987654321"
+  },
+  "summary": "Code review discussion about Python utility functions"
+}
