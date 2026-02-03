@@ -1,6 +1,6 @@
 """Tests for CLI commands with zero coverage.
 
-Tests cover: sync, auth, check, reset, completions, serve, mcp commands.
+Tests cover: run, auth, check, reset, completions, serve, mcp commands.
 Uses subprocess isolation for proper environment handling.
 """
 
@@ -16,15 +16,15 @@ from tests.helpers import GenericConversationBuilder
 
 
 # =============================================================================
-# SYNC COMMAND TESTS
+# RUN COMMAND TESTS
 # =============================================================================
 
 
-class TestSyncCommand:
-    """Tests for the sync command."""
+class TestRunCommand:
+    """Tests for the run command."""
 
-    def test_sync_preview_shows_plan(self, tmp_path):
-        """sync --preview shows what would be done without writing."""
+    def test_run_preview_shows_plan(self, tmp_path):
+        """run --preview shows what would be done without writing."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
         inbox = workspace["paths"]["inbox"]
@@ -34,66 +34,66 @@ class TestSyncCommand:
          .add_user("preview test")
          .write_to(inbox / "test.json"))
 
-        result = run_cli(["--plain", "sync", "--preview"], env=env)
+        result = run_cli(["--plain", "run", "--preview"], env=env)
         # Preview should succeed (exit 0) or fail gracefully
         assert result.exit_code in (0, 1)
         # Should mention preview or snapshot
         output_lower = result.output.lower()
         assert "preview" in output_lower or "snapshot" in output_lower or "source" in output_lower
 
-    def test_sync_stage_ingest_only(self, tmp_path):
-        """sync --stage ingest only does ingestion."""
+    def test_run_stage_parse_only(self, tmp_path):
+        """run --stage parse only does parsing."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
         inbox = workspace["paths"]["inbox"]
 
         (GenericConversationBuilder("conv1")
-         .add_user("ingest only")
+         .add_user("parse only")
          .write_to(inbox / "test.json"))
 
-        result = run_cli(["--plain", "sync", "--stage", "ingest"], env=env)
+        result = run_cli(["--plain", "run", "--stage", "parse"], env=env)
         assert result.exit_code == 0
 
-    def test_sync_stage_render_only(self, tmp_path):
-        """sync --stage render only does rendering."""
+    def test_run_stage_render_only(self, tmp_path):
+        """run --stage render only does rendering."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
 
-        result = run_cli(["--plain", "sync", "--stage", "render"], env=env)
+        result = run_cli(["--plain", "run", "--stage", "render"], env=env)
         # Should succeed even with no data
         assert result.exit_code == 0
 
-    def test_sync_stage_index_only(self, tmp_path):
-        """sync --stage index only does indexing."""
+    def test_run_stage_index_only(self, tmp_path):
+        """run --stage index only does indexing."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
 
-        result = run_cli(["--plain", "sync", "--stage", "index"], env=env)
+        result = run_cli(["--plain", "run", "--stage", "index"], env=env)
         assert result.exit_code == 0
 
-    def test_sync_with_source_filter(self, tmp_path):
-        """sync --source filters to specific source."""
+    def test_run_with_source_filter(self, tmp_path):
+        """run --source filters to specific source."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
 
         # Should handle nonexistent source gracefully
-        result = run_cli(["--plain", "sync", "--source", "nonexistent"], env=env)
+        result = run_cli(["--plain", "run", "--source", "nonexistent"], env=env)
         # Either fails with error or succeeds with no-op
         assert result.exit_code in (0, 1)
 
-    def test_sync_watch_flags_require_watch(self, tmp_path):
+    def test_run_watch_flags_require_watch(self, tmp_path):
         """--notify, --exec, --webhook require --watch."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
 
-        result = run_cli(["--plain", "sync", "--notify"], env=env)
+        result = run_cli(["--plain", "run", "--notify"], env=env)
         assert result.exit_code != 0
         assert "watch" in result.output.lower()
 
-        result = run_cli(["--plain", "sync", "--exec", "echo test"], env=env)
+        result = run_cli(["--plain", "run", "--exec", "echo test"], env=env)
         assert result.exit_code != 0
 
-        result = run_cli(["--plain", "sync", "--webhook", "http://example.com"], env=env)
+        result = run_cli(["--plain", "run", "--webhook", "http://example.com"], env=env)
         assert result.exit_code != 0
 
 
@@ -228,7 +228,7 @@ class TestResetCommand:
         (GenericConversationBuilder("to-delete")
          .add_user("will be deleted")
          .write_to(inbox / "test.json"))
-        run_cli(["--plain", "sync", "--stage", "ingest"], env=env)
+        run_cli(["--plain", "run", "--stage", "parse"], env=env)
 
         # Now reset
         result = run_cli(["--plain", "reset", "--database", "--force"], env=env)

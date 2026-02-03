@@ -43,8 +43,8 @@ def test_cli_config_init_interactive_adds_drive(tmp_path, monkeypatch):
     assert drive_sources[0].folder == "Google AI Studio"
 
 
-def test_cli_sync_and_search(tmp_path):
-    """Test CLI sync and search with isolated workspace."""
+def test_cli_run_and_search(tmp_path):
+    """Test CLI run and search with isolated workspace."""
     workspace = setup_isolated_workspace(tmp_path)
     env = workspace["env"]
     paths = workspace["paths"]
@@ -56,8 +56,8 @@ def test_cli_sync_and_search(tmp_path):
      .add_assistant("world")
      .write_to(inbox / "conversation.json"))
 
-    # Run sync via subprocess
-    result = run_cli(["--plain", "sync", "--stage", "all"], env=env, cwd=tmp_path)
+    # Run pipeline via subprocess
+    result = run_cli(["--plain", "run", "--stage", "all"], env=env, cwd=tmp_path)
     assert result.exit_code == 0, result.output
 
     render_root = paths["render_root"]
@@ -121,8 +121,8 @@ def test_cli_search_open_prefers_html(tmp_path):
      .add_user("hello html")
      .write_to(inbox / "conversation.json"))
 
-    # First sync to create conversation and render
-    result = run_cli(["--plain", "sync", "--stage", "all"], env=env, cwd=tmp_path)
+    # First run to create conversation and render
+    result = run_cli(["--plain", "run", "--stage", "all"], env=env, cwd=tmp_path)
     assert result.exit_code == 0, result.output
 
     # Verify render was created
@@ -162,9 +162,9 @@ def test_cli_search_latest_returns_path_without_open(tmp_path):
      .add_user("test content")
      .write_to(inbox / "conversation.json"))
 
-    # First sync
-    sync_result = run_cli(["--plain", "sync", "--stage", "all"], env=env, cwd=tmp_path)
-    assert sync_result.exit_code == 0, sync_result.output
+    # First run
+    run_result = run_cli(["--plain", "run", "--stage", "all"], env=env, cwd=tmp_path)
+    assert run_result.exit_code == 0, run_result.output
 
     # Query mode: --latest
     result = run_cli(["--plain", "--latest"], env=env, cwd=tmp_path)
@@ -247,7 +247,7 @@ def test_latest_render_path_handles_deleted_file(tmp_path):
 
 
 def test_cli_search_open_missing_render_shows_hint(tmp_path):
-    """--open with missing render shows 'Run polylogue sync' hint."""
+    """--open with missing render shows hint to run polylogue."""
     workspace = setup_isolated_workspace(tmp_path)
     env = workspace["env"]
     paths = workspace["paths"]
@@ -258,16 +258,16 @@ def test_cli_search_open_missing_render_shows_hint(tmp_path):
      .add_user("no render")
      .write_to(inbox / "conversation.json"))
 
-    # Run ingest stage only, skip render
-    result = run_cli(["--plain", "sync", "--stage", "ingest"], env=env, cwd=tmp_path)
+    # Run parse stage only, skip render
+    result = run_cli(["--plain", "run", "--stage", "parse"], env=env, cwd=tmp_path)
     assert result.exit_code == 0
 
     # Query mode: search and try to open - render doesn't exist
     search_result = run_cli(["--plain", "render", "--open"], env=env, cwd=tmp_path)
-    # Should either succeed with a warning or indicate render/sync not found
+    # Should either succeed with a warning or indicate render/run not found
     assert (
         search_result.exit_code == 0
         or search_result.exit_code == 2  # no results
         or "render" in search_result.output.lower()
-        or "sync" in search_result.output.lower()
+        or "run" in search_result.output.lower()
     )
