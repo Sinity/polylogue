@@ -1,4 +1,8 @@
-"""Tests for raw_conversations storage functionality."""
+"""Tests for raw_conversations storage functionality.
+
+Storage API tests use temp databases. Hash integrity tests use real data.
+For parsing/schema tests, see test_fixtures_contract.py and test_schema_drift.py.
+"""
 
 from __future__ import annotations
 
@@ -275,3 +279,41 @@ class TestRawConversationRecordValidation:
                 raw_content=b'',
                 acquired_at="2026-02-02T12:00:00Z",
             )
+
+
+# =============================================================================
+# DATABASE-DRIVEN TESTS (hash integrity)
+# =============================================================================
+
+
+class TestContentHashing:
+    """Tests for raw conversation content hashing.
+
+    These tests verify the hash integrity of stored raw conversations.
+    For parsing tests, see test_fixtures_contract.py.
+    """
+
+    def test_raw_ids_are_sha256(self, raw_db_samples: list[RawConversationRecord]) -> None:
+        """Raw IDs are valid SHA256 hashes."""
+        if not raw_db_samples:
+            pytest.skip("No raw conversations in database")
+
+        for sample in raw_db_samples:
+            assert len(sample.raw_id) == 64, f"Invalid hash length: {sample.raw_id}"
+            assert all(c in "0123456789abcdef" for c in sample.raw_id)
+
+    def test_content_matches_hash(self, raw_db_samples: list[RawConversationRecord]) -> None:
+        """Content hashes match stored raw_id."""
+        if not raw_db_samples:
+            pytest.skip("No raw conversations in database")
+
+        import hashlib
+
+        mismatches = []
+        for sample in raw_db_samples:
+            computed = hashlib.sha256(sample.raw_content).hexdigest()
+            if computed != sample.raw_id:
+                mismatches.append((sample.raw_id[:16], computed[:16]))
+
+        if mismatches:
+            pytest.fail(f"{len(mismatches)} hash mismatches: {mismatches[:5]}")
