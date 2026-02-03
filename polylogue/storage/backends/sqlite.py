@@ -491,9 +491,13 @@ def _migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
     The source_name field stores the config source name (e.g., "inbox")
     separately from provider_name (e.g., "chatgpt") and source_path (file path).
     """
-    conn.execute(
-        "ALTER TABLE raw_conversations ADD COLUMN source_name TEXT"
-    )
+    # Check if column already exists (idempotent migration)
+    cursor = conn.execute("PRAGMA table_info(raw_conversations)")
+    columns = {row[1] for row in cursor.fetchall()}
+    if "source_name" not in columns:
+        conn.execute(
+            "ALTER TABLE raw_conversations ADD COLUMN source_name TEXT"
+        )
 
 
 # Migration registry: maps source version to migration function
