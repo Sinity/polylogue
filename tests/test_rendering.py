@@ -176,7 +176,9 @@ class TestHTMLRenderer:
         assert "<html" in content
         assert "<head>" in content
         assert "<body>" in content
-        assert "<title>Test Conversation</title>" in content
+        # Title includes " | Polylogue" suffix in new renderer
+        assert "Test Conversation" in content
+        assert "<title>" in content
 
         # Verify content is present (rendered from markdown)
         assert "Test Conversation" in content
@@ -199,9 +201,10 @@ class TestHTMLRenderer:
         result_path = renderer.render(sample_conversation_with_json, output_path)
         content = result_path.read_text()
 
-        # JSON should be in code block
-        assert "<code>" in content or "<pre>" in content
+        # JSON content is rendered as text (not auto-detected as code block)
+        # The new renderer only highlights fenced code blocks in markdown
         assert "Python testing" in content
+        assert "query" in content  # JSON content present
 
 
 class TestRendererFactory:

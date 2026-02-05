@@ -37,6 +37,7 @@ def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -
 
     Yields:
         An open sqlite3.Connection with Row factory and WAL mode enabled.
+        sqlite-vec extension is loaded if available.
     """
     if isinstance(db_path, sqlite3.Connection):
         yield db_path
@@ -51,6 +52,8 @@ def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout = 30000")  # 30 seconds for lock contention
+        # Load sqlite-vec extension if available (optional for vector search)
+        _load_sqlite_vec(conn)
         # Ensure schema exists and is at current version
         _ensure_schema(conn)
         yield conn
@@ -63,7 +66,24 @@ open_connection = connection_context
 
 
 LOGGER = get_logger(__name__)
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
+
+
+def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
+    """Attempt to load sqlite-vec extension.
+
+    Returns True if loaded successfully, False otherwise.
+    The extension is optional - vector search is simply unavailable without it.
+    Silent on failure since this is called on every connection.
+    """
+    try:
+        import sqlite_vec
+        sqlite_vec.load(conn)
+        return True
+    except ImportError:
+        return False
+    except Exception:
+        return False
 
 
 def create_default_backend() -> SQLiteBackend:
@@ -225,8 +245,52 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             INSERT OR IGNORE INTO messages_fts(rowid, message_id, conversation_id, content)
             VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
         END;
+
+        -- v10: Embedding metadata table (always created)
+        CREATE TABLE IF NOT EXISTS embeddings_meta (
+            target_id TEXT PRIMARY KEY,
+            target_type TEXT NOT NULL CHECK (target_type IN ('message', 'conversation')),
+            model TEXT NOT NULL,
+            dimension INTEGER NOT NULL,
+            embedded_at TEXT NOT NULL,
+            content_hash TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_embeddings_meta_type
+        ON embeddings_meta(target_type);
+
+        -- v10: Embedding status tracking per conversation
+        CREATE TABLE IF NOT EXISTS embedding_status (
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_count_embedded INTEGER DEFAULT 0,
+            last_embedded_at TEXT,
+            needs_reindex INTEGER DEFAULT 1,
+            error_message TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_embedding_status_needs
+        ON embedding_status(needs_reindex) WHERE needs_reindex = 1;
         """
     )
+
+    # v10: Create vec0 table if sqlite-vec is available
+    vec_available = False
+    try:
+        conn.execute("SELECT vec_version()")
+        vec_available = True
+    except sqlite3.OperationalError:
+        pass
+
+    if vec_available:
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
+                message_id TEXT PRIMARY KEY,
+                embedding float[1024],
+                +provider_name TEXT,
+                +conversation_id TEXT
+            )
+        """)
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
 
@@ -508,6 +572,74 @@ def _migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE raw_conversations ADD COLUMN source_name TEXT")
 
 
+def _migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
+    """Migrate from v9 to v10: add sqlite-vec vector storage tables.
+
+    Creates:
+    - embeddings_meta: Tracks embedding provenance (model, dimension, timestamps)
+    - message_embeddings: vec0 virtual table for message-level embeddings (if sqlite-vec available)
+
+    The vec0 tables are only created if sqlite-vec extension is loaded.
+    Without the extension, the metadata table is still created but vector
+    search will be unavailable.
+    """
+    # Metadata table for embedding provenance (always created)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS embeddings_meta (
+            target_id TEXT PRIMARY KEY,
+            target_type TEXT NOT NULL CHECK (target_type IN ('message', 'conversation')),
+            model TEXT NOT NULL,
+            dimension INTEGER NOT NULL,
+            embedded_at TEXT NOT NULL,
+            content_hash TEXT
+        )
+    """)
+
+    # Check if sqlite-vec is available by trying to create a vec0 table
+    vec_available = False
+    try:
+        # Test if vec0 module is available
+        conn.execute("SELECT vec_version()")
+        vec_available = True
+    except sqlite3.OperationalError:
+        LOGGER.info("sqlite-vec not available, skipping vec0 table creation")
+
+    if vec_available:
+        # vec0 virtual table for message embeddings
+        # Using 1024 dimensions as default for voyage-4
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
+                message_id TEXT PRIMARY KEY,
+                embedding float[1024],
+                +provider_name TEXT,
+                +conversation_id TEXT
+            )
+        """)
+
+        # Index on conversation_id for filtering
+        # Note: vec0 tables handle their own indexing, but we add metadata for filtering
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_embeddings_meta_type
+            ON embeddings_meta(target_type)
+        """)
+
+    # Embedding status tracking per conversation
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS embedding_status (
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_count_embedded INTEGER DEFAULT 0,
+            last_embedded_at TEXT,
+            needs_reindex INTEGER DEFAULT 1,
+            error_message TEXT
+        )
+    """)
+
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_embedding_status_needs
+        ON embedding_status(needs_reindex) WHERE needs_reindex = 1
+    """)
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
@@ -518,6 +650,7 @@ _MIGRATIONS = {
     6: _migrate_v6_to_v7,
     7: _migrate_v7_to_v8,
     8: _migrate_v8_to_v9,
+    9: _migrate_v9_to_v10,
 }
 
 
@@ -639,6 +772,7 @@ class SQLiteBackend:
         """Get or create thread-local database connection.
 
         Each thread gets its own connection for thread safety.
+        sqlite-vec extension is loaded if available.
         """
         # Check if this thread has a connection
         if not hasattr(self._local, "conn") or self._local.conn is None:
@@ -647,6 +781,8 @@ class SQLiteBackend:
             self._local.conn.execute("PRAGMA foreign_keys = ON")
             self._local.conn.execute("PRAGMA journal_mode=WAL;")
             self._local.conn.execute("PRAGMA busy_timeout = 30000")
+            # Load sqlite-vec extension if available (optional for vector search)
+            _load_sqlite_vec(self._local.conn)
             _ensure_schema(self._local.conn)
             self._local.transaction_depth = 0
         conn: sqlite3.Connection = self._local.conn

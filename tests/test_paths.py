@@ -226,44 +226,43 @@ class TestIndexConfig:
 
     def test_from_env_defaults(self, monkeypatch):
         """Default IndexConfig has FTS enabled, no external services."""
-        monkeypatch.delenv("POLYLOGUE_QDRANT_URL", raising=False)
-        monkeypatch.delenv("QDRANT_URL", raising=False)
-        monkeypatch.delenv("POLYLOGUE_QDRANT_API_KEY", raising=False)
-        monkeypatch.delenv("QDRANT_API_KEY", raising=False)
         monkeypatch.delenv("POLYLOGUE_VOYAGE_API_KEY", raising=False)
         monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+        monkeypatch.delenv("POLYLOGUE_VOYAGE_MODEL", raising=False)
+        monkeypatch.delenv("POLYLOGUE_VOYAGE_DIMENSION", raising=False)
+        monkeypatch.delenv("POLYLOGUE_AUTO_EMBED", raising=False)
         config = IndexConfig.from_env()
         assert config.fts_enabled is True
-        assert config.qdrant_url is None
-        assert config.qdrant_api_key is None
         assert config.voyage_api_key is None
+        assert config.voyage_model == "voyage-4"
+        assert config.voyage_dimension is None
+        assert config.auto_embed is False
 
     def test_from_env_polylogue_prefixed(self, monkeypatch):
         """POLYLOGUE_* env vars are picked up."""
-        monkeypatch.setenv("POLYLOGUE_QDRANT_URL", "http://localhost:6333")
-        monkeypatch.setenv("POLYLOGUE_QDRANT_API_KEY", "secret")
         monkeypatch.setenv("POLYLOGUE_VOYAGE_API_KEY", "voyage-key")
+        monkeypatch.setenv("POLYLOGUE_VOYAGE_MODEL", "voyage-4-large")
+        monkeypatch.setenv("POLYLOGUE_VOYAGE_DIMENSION", "512")
+        monkeypatch.setenv("POLYLOGUE_AUTO_EMBED", "true")
         config = IndexConfig.from_env()
-        assert config.qdrant_url == "http://localhost:6333"
-        assert config.qdrant_api_key == "secret"
         assert config.voyage_api_key == "voyage-key"
+        assert config.voyage_model == "voyage-4-large"
+        assert config.voyage_dimension == 512
+        assert config.auto_embed is True
 
     def test_from_env_unprefixed_fallback(self, monkeypatch):
         """Unprefixed env vars used when POLYLOGUE_* not set."""
-        monkeypatch.delenv("POLYLOGUE_QDRANT_URL", raising=False)
         monkeypatch.delenv("POLYLOGUE_VOYAGE_API_KEY", raising=False)
-        monkeypatch.setenv("QDRANT_URL", "http://qdrant:6333")
         monkeypatch.setenv("VOYAGE_API_KEY", "fallback-key")
         config = IndexConfig.from_env()
-        assert config.qdrant_url == "http://qdrant:6333"
         assert config.voyage_api_key == "fallback-key"
 
     def test_from_env_prefixed_takes_precedence(self, monkeypatch):
         """POLYLOGUE_* vars take precedence over unprefixed."""
-        monkeypatch.setenv("POLYLOGUE_QDRANT_URL", "http://preferred:6333")
-        monkeypatch.setenv("QDRANT_URL", "http://fallback:6333")
+        monkeypatch.setenv("POLYLOGUE_VOYAGE_API_KEY", "preferred-key")
+        monkeypatch.setenv("VOYAGE_API_KEY", "fallback-key")
         config = IndexConfig.from_env()
-        assert config.qdrant_url == "http://preferred:6333"
+        assert config.voyage_api_key == "preferred-key"
 
 
 # =============================================================================

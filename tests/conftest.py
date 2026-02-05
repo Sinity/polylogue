@@ -44,9 +44,9 @@ def _clear_polylogue_env(monkeypatch):
         "POLYLOGUE_RENDER_ROOT",
         "POLYLOGUE_TEMPLATE_PATH",
         "POLYLOGUE_DECLARATIVE",
-        # Prevent tests from hitting external Qdrant
-        "QDRANT_URL",
-        "QDRANT_API_KEY",
+        # Prevent tests from hitting external Voyage API
+        "VOYAGE_API_KEY",
+        "POLYLOGUE_VOYAGE_API_KEY",
         # Clear Drive credentials to ensure test isolation
         "POLYLOGUE_CREDENTIAL_PATH",
         "POLYLOGUE_TOKEN_PATH",
