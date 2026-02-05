@@ -8,7 +8,7 @@ from typing import Any
 
 from polylogue.assets import asset_path
 from polylogue.lib.hashing import hash_file, hash_payload, hash_text
-from polylogue.ingestion import ParsedAttachment, ParsedConversation, ParsedMessage
+from polylogue.sources import ParsedAttachment, ParsedConversation, ParsedMessage
 from polylogue.types import ContentHash, ConversationId, MessageId
 
 # Sentinel values to distinguish None from empty in hash computations

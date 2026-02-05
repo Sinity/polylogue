@@ -1,6 +1,6 @@
 """Claude importer using typed Pydantic models.
 
-Uses ClaudeCodeRecord from polylogue.providers.claude_code for type-safe parsing
+Uses ClaudeCodeRecord from polylogue.sources.providers.claude_code for type-safe parsing
 with automatic validation and normalized property access.
 """
 
@@ -13,7 +13,8 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from polylogue.providers.claude_code import ClaudeCodeRecord
+from polylogue.sources.providers.claude_code import ClaudeCodeRecord
+
 from .base import ParsedAttachment, ParsedConversation, ParsedMessage, attachment_from_meta, normalize_role
 
 
@@ -34,7 +35,7 @@ class SessionIndexEntry:
     file_mtime: int | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SessionIndexEntry":
+    def from_dict(cls, data: dict[str, Any]) -> SessionIndexEntry:
         return cls(
             session_id=data.get("sessionId", ""),
             full_path=data.get("fullPath", ""),
