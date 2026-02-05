@@ -2,8 +2,15 @@
 
 ## Project Structure & Modules
 
-- `polylogue/cli/`: CLI entrypoint modules for ingesting and rendering AI chat exports.
-- `polylogue/`: implementation modules (commands, importers, rendering, UI utilities).
+- `polylogue/cli/`: CLI commands (run, check, dashboard, mcp, auth, reset, completions).
+- `polylogue/sources/`: Source detection, provider parsers (ChatGPT, Claude, Codex, Gemini), Drive integration.
+- `polylogue/pipeline/`: Ingestion → rendering → indexing orchestration.
+- `polylogue/storage/`: SQLite backend, async repository, FTS5/Qdrant search providers.
+- `polylogue/schemas/`: Unified schema, provider-specific models, schema inference.
+- `polylogue/lib/`: Core domain models, filters, projections, hashing, dates.
+- `polylogue/rendering/`: Markdown/HTML output renderers.
+- `polylogue/ui/`: Terminal UI (Rich-based plain + Textual TUI).
+- `polylogue/mcp/`: Model Context Protocol server.
 - `nix/devshell.nix`: dev shell defining the Python dependencies and common CLI helpers.
 - Provider walkthroughs and sample workflows live under `docs/` (see `docs/providers/`).
 
@@ -25,7 +32,7 @@
 - Non-interactive paths automatically drop into a plain UI when stdout/stderr aren’t TTYs. Set `POLYLOGUE_FORCE_PLAIN=1` when you need deterministic plain mode in CI, use `--plain` to force it, or pass `--interactive` to re-enable the interactive prompts even without a TTY.
 - Smoke test with `POLYLOGUE_FORCE_PLAIN=1 uv run polylogue run --preview --source inbox` (or any configured source).
 - Run `pytest` regularly; new tests should live under `tests/`.
-- Use `polylogue config show --json` to confirm resolved config/output paths while debugging CI or support issues.
+- Use `polylogue run --preview` to confirm resolved sources and output paths while debugging CI or support issues.
 
 ## Style & Naming
 

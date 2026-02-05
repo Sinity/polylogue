@@ -57,7 +57,7 @@ class Search(Container):
         if not message.row_key:
             return
 
-        conv_id = message.row_key.value
+        conv_id = str(message.row_key.value)
         self.load_conversation(conv_id)
 
     def load_conversation(self, conversation_id: str) -> None:
@@ -69,7 +69,7 @@ class Search(Container):
             self.query_one("#search-viewer", MarkdownWidget).update(f"Error: Could not load {conversation_id}")
             return
 
-        md_lines = [f"# {conv.title or 'Untitled'}", f"*{conv.timestamp}*", ""]
+        md_lines = [f"# {conv.title or 'Untitled'}", f"*{conv.created_at}*", ""]
 
         for msg in conv.messages:
             role_icon = "👤" if msg.role == "user" else "🤖"
