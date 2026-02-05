@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.core.content_enrichment import enrich_message_metadata
+from polylogue.pipeline.enrichment import enrich_message_metadata
 from polylogue.ingestion import IngestBundle, ParsedConversation, ingest_bundle
 from polylogue.pipeline.ids import (
     attachment_content_id,
@@ -19,13 +19,12 @@ from polylogue.pipeline.ids import (
 from polylogue.pipeline.ids import (
     message_id as make_message_id,
 )
-from polylogue.storage.store import ExistingConversation
 from polylogue.storage.backends.sqlite import connection_context
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+from polylogue.storage.store import AttachmentRecord, ConversationRecord, ExistingConversation, MessageRecord
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
 if TYPE_CHECKING:
-    from polylogue.storage.repository import StorageRepository
+    from polylogue.storage.repository import ConversationRepository
 
 
 def _existing_message_map(conversation_id: str) -> dict[str, str]:
@@ -47,16 +46,16 @@ def prepare_ingest(
     *,
     archive_root: Path,
     conn: sqlite3.Connection | None = None,
-    repository: StorageRepository | None = None,
+    repository: ConversationRepository | None = None,
     raw_id: str | None = None,
 ) -> tuple[str, dict[str, int], bool]:
     # Create default repository if none provided
     if repository is None:
         from polylogue.storage.backends.sqlite import create_default_backend
-        from polylogue.storage.repository import StorageRepository
+        from polylogue.storage.repository import ConversationRepository
 
         backend = create_default_backend()
-        repository = StorageRepository(backend=backend)
+        repository = ConversationRepository(backend=backend)
 
     content_hash = conversation_content_hash(convo)
 
@@ -86,9 +85,7 @@ def prepare_ingest(
     # Resolve parent conversation ID if present (provider ID → internal polylogue ID)
     parent_conversation_id = None
     if convo.parent_conversation_provider_id:
-        parent_conversation_id = make_conversation_id(
-            convo.provider_name, convo.parent_conversation_provider_id
-        )
+        parent_conversation_id = make_conversation_id(convo.provider_name, convo.parent_conversation_provider_id)
 
     # Merge source into provider_meta rather than overwriting
     merged_provider_meta: dict[str, object] = {"source": source_name}

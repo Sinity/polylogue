@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import TYPE_CHECKING
 
-from polylogue.core.log import get_logger
+from polylogue.lib.log import get_logger
 from polylogue.storage.index import ensure_index, index_status, rebuild_index, update_index_for_conversations
 
 if TYPE_CHECKING:

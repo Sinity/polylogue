@@ -5,7 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 from pathlib import Path
 
-from polylogue.core.log import get_logger
+from polylogue.lib.log import get_logger
 from polylogue.protocols import OutputRenderer
 
 logger = get_logger(__name__)

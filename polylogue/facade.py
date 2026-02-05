@@ -33,17 +33,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import Config, Source, get_config
-from polylogue.container import ApplicationContainer
 from polylogue.lib.filters import ConversationFilter
-from polylogue.lib.repository import ConversationRepository
+from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.search import SearchResult, search_messages
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.pipeline.services.indexing import IndexService
     from polylogue.pipeline.services.ingestion import IngestionService, IngestResult
-    from polylogue.protocols import StorageBackend
-    from polylogue.storage.repository import StorageRepository
 
 
 class ArchiveStats:
@@ -114,21 +112,17 @@ class Polylogue:
         """
         # Get hardcoded config (zero-config)
         self._config: Config = get_config()
-        self._container: ApplicationContainer | None = None
 
         # Override archive_root if provided
         if archive_root is not None:
             self._config.archive_root = Path(archive_root).expanduser().resolve()
 
-        # Create storage backend (single source of truth for database access)
-        from polylogue.storage.backends.sqlite import SQLiteBackend
-
+        # Create storage backend directly
         self._db_path = Path(db_path).expanduser().resolve() if db_path else None
-        self._backend: StorageBackend = SQLiteBackend(db_path=self._db_path)
+        self._backend = SQLiteBackend(db_path=self._db_path)
 
-        # Create repositories using shared backend
+        # Create repo using shared backend
         self._repository = ConversationRepository(backend=self._backend)
-        self._storage_repository: StorageRepository | None = None  # Lazy-initialized
 
         # Services (lazy-initialized)
         self._ingestion_service: IngestionService | None = None
@@ -248,22 +242,13 @@ class Polylogue:
         """
         # Lazy-initialize ingestion service
         if self._ingestion_service is None:
-            if self._container is not None:
-                self._ingestion_service = self._container.ingestion_service()
-            else:
-                from polylogue.pipeline.services.ingestion import IngestionService
-                from polylogue.storage.repository import StorageRepository
+            from polylogue.pipeline.services.ingestion import IngestionService
 
-                # Create storage repository for multi-threaded ingestion
-                # Uses the same backend (SQLiteBackend is internally thread-safe)
-                if self._storage_repository is None:
-                    self._storage_repository = StorageRepository(backend=self._backend)
-
-                self._ingestion_service = IngestionService(
-                    repository=self._storage_repository,
-                    archive_root=self._config.archive_root,
-                    config=self._config,
-                )
+            self._ingestion_service = IngestionService(
+                repository=self._repository,
+                archive_root=self._config.archive_root,
+                config=self._config,
+            )
 
         # Convert path
         file_path = Path(path).expanduser().resolve()
@@ -307,22 +292,13 @@ class Polylogue:
         """
         # Lazy-initialize ingestion service
         if self._ingestion_service is None:
-            if self._container is not None:
-                self._ingestion_service = self._container.ingestion_service()
-            else:
-                from polylogue.pipeline.services.ingestion import IngestionService
-                from polylogue.storage.repository import StorageRepository
+            from polylogue.pipeline.services.ingestion import IngestionService
 
-                # Create storage repository for multi-threaded ingestion
-                # Uses the same backend (SQLiteBackend is internally thread-safe)
-                if self._storage_repository is None:
-                    self._storage_repository = StorageRepository(backend=self._backend)
-
-                self._ingestion_service = IngestionService(
-                    repository=self._storage_repository,
-                    archive_root=self._config.archive_root,
-                    config=self._config,
-                )
+            self._ingestion_service = IngestionService(
+                repository=self._repository,
+                archive_root=self._config.archive_root,
+                config=self._config,
+            )
 
         # Use configured sources if none provided
         if sources is None:
@@ -391,15 +367,12 @@ class Polylogue:
         """
         # Lazy-initialize indexing service
         if self._indexing_service is None:
-            if self._container is not None:
-                self._indexing_service = self._container.indexing_service()
-            else:
-                from polylogue.pipeline.services.indexing import IndexService
+            from polylogue.pipeline.services.indexing import IndexService
 
-                self._indexing_service = IndexService(
-                    config=self._config,
-                    conn=None,
-                )
+            self._indexing_service = IndexService(
+                config=self._config,
+                conn=None,
+            )
 
         self._indexing_service.rebuild_index()
 
@@ -424,11 +397,12 @@ class Polylogue:
         """
         # Get vector provider if available (may be None)
         vector_provider = None
-        if self._container is not None:
-            try:
-                vector_provider = self._container.vector_provider()
-            except Exception:
-                pass  # Vector provider not configured
+        try:
+            from polylogue.storage.search_providers import create_vector_provider
+
+            vector_provider = create_vector_provider(self._config)
+        except (ValueError, ImportError):
+            pass  # Vector provider not configured
 
         return ConversationFilter(self._repository, vector_provider=vector_provider)
 

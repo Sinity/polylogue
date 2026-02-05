@@ -7,7 +7,6 @@ import time
 
 import click
 
-from polylogue.cli.container import create_config
 from polylogue.cli.formatting import (
     format_counts,
     format_cursors,
@@ -20,10 +19,10 @@ from polylogue.cli.helpers import (
 )
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
-from polylogue.core.timestamps import format_timestamp
+from polylogue.lib.timestamps import format_timestamp
 from polylogue.ingestion import DriveError
-from polylogue.storage.store import PlanResult, RunResult
 from polylogue.pipeline.runner import plan_sources, run_sources
+from polylogue.storage.store import PlanResult, RunResult
 
 
 def _run_sync_once(
@@ -221,7 +220,9 @@ def run_command(
     if (notify or exec_cmd or webhook) and not watch:
         fail("run", "--notify, --exec, and --webhook require --watch mode")
 
-    cfg = create_config()
+    from polylogue.services import get_service_config
+
+    cfg = get_service_config()
 
     selected_sources = resolve_sources(cfg, sources, "run")
     selected_sources = maybe_prompt_sources(env, cfg, selected_sources, "run")
@@ -291,7 +292,9 @@ def run_command(
 @click.pass_obj
 def sources_command(env: AppEnv, json_output: bool) -> None:
     """List configured sources."""
-    cfg = create_config()
+    from polylogue.services import get_service_config
+
+    cfg = get_service_config()
     if json_output:
         payload = [
             {

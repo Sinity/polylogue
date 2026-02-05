@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 from pydantic import BaseModel, Field, field_validator
 
-from polylogue.core.hashing import hash_text
+from polylogue.lib.hashing import hash_text
 
 
 class ParsedMessage(BaseModel):
@@ -61,7 +62,7 @@ class ParsedAttachment(BaseModel):
 
         # If traversal or symlinks were detected, hash to prevent re-assembly
         if has_traversal or has_symlink:
-            from polylogue.core.hashing import hash_text
+            from polylogue.lib.hashing import hash_text
             # Hash the original to prevent reconstruction
             original_hash = hash_text(original_v)[:12]
             v = f"_blocked_{original_hash}"
@@ -149,7 +150,7 @@ class RawConversationData(BaseModel):
 
 
 # Re-export from canonical location
-from polylogue.core.roles import normalize_role
+from polylogue.lib.roles import normalize_role
 
 
 def _make_attachment_id(seed: str) -> str:

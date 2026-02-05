@@ -3,25 +3,24 @@
 SYSTEMATIZATION: Merged from test_core_json.py, test_core_utilities.py, test_lib.py
 
 This file contains tests for:
-- JSON encoding/decoding with Decimal support (polylogue.core.json)
-- Environment variable handling (polylogue.core.env)
-- Date parsing and formatting (polylogue.core.dates)
+- JSON encoding/decoding with Decimal support (polylogue.lib.json)
+- Environment variable handling (polylogue.lib.env)
+- Date parsing and formatting (polylogue.lib.dates)
 - Version info (polylogue.version)
 - Export functions (polylogue.export)
 - Semantic models and repository (polylogue.lib)
 """
+
 from __future__ import annotations
 
 import json
-from decimal import Decimal
 from datetime import datetime, timezone
-from pathlib import Path
+from decimal import Decimal
 from typing import Any
 
 import pytest
 
-from polylogue.core import json as core_json
-
+from polylogue.lib import json as core_json
 
 # =============================================================================
 # JSON DUMPS - PARAMETRIZED
@@ -33,12 +32,13 @@ DUMPS_CASES = [
     ({"key": "value"}, "simple dict"),
     ([1, 2, 3], "simple list"),
     ({"outer": {"inner": [1, 2, 3]}}, "nested structure"),
-
     # Decimal handling
     ({"value": Decimal("1.25")}, "handles Decimal"),
     ({"price": Decimal("99.99")}, "Decimal as float not string"),
-    ({"value1": Decimal("10.5"), "value2": Decimal("20.75"), "nested": {"value3": Decimal("30.25")}}, "multiple Decimals"),
-
+    (
+        {"value1": Decimal("10.5"), "value2": Decimal("20.75"), "nested": {"value3": Decimal("30.25")}},
+        "multiple Decimals",
+    ),
     # Special values
     ({"key": None}, "None value"),
     ({"true_val": True, "false_val": False}, "boolean values"),
@@ -46,11 +46,9 @@ DUMPS_CASES = [
     ({}, "empty dict"),
     ([], "empty list"),
     ({"123": "value"}, "numeric keys as strings"),
-
     # Custom default handler
     ("custom_type", "custom default handler"),
     ("custom_handler_fallback", "custom handler fallback to encoder"),
-
     # Numbers and special chars
     ({"zero": 0, "negative": -42, "float": 3.14, "large": 999999999999}, "special numbers"),
     ({"text": 'Line 1\nLine 2\tTabbed"Quoted"'}, "escaped characters"),
@@ -61,6 +59,7 @@ DUMPS_CASES = [
 def test_dumps_comprehensive(payload, desc):
     """Comprehensive dumps test."""
     if desc == "custom default handler":
+
         class CustomType:
             def __init__(self, value):
                 self.value = value
@@ -77,6 +76,7 @@ def test_dumps_comprehensive(payload, desc):
         return
 
     elif desc == "custom handler fallback to encoder":
+
         def custom_handler(obj: Any) -> Any:
             raise TypeError("Not handled")
 
@@ -109,8 +109,11 @@ def test_dumps_comprehensive(payload, desc):
 
     else:
         if "Decimal" in desc:
-            assert all(isinstance(v, float) if isinstance(payload[k], Decimal) else True
-                      for k, v in data.items() if isinstance(payload, dict))
+            assert all(
+                isinstance(v, float) if isinstance(payload[k], Decimal) else True
+                for k, v in data.items()
+                if isinstance(payload, dict)
+            )
         else:
             assert data == payload
 
@@ -206,12 +209,15 @@ EDGE_CASES = [
     ({"path": "C:\\Users\\test"}, "string with backslash"),
     ("many_keys", "dict with many keys"),
     ("many_elements", "array with many elements"),
-    ("""
+    (
+        """
     {
         "key"   :   "value"  ,
         "array" : [ 1 , 2 , 3 ]
     }
-    """, "whitespace handling"),
+    """,
+        "whitespace handling",
+    ),
     ("custom_decimal_override", "custom handler for Decimal override"),
     ({"empty_dict": {}, "empty_list": [], "nested": {"deep_empty": {}}}, "empty nested structures"),
     ("true", "primitive true"),
@@ -297,6 +303,7 @@ def test_edge_cases_comprehensive(payload, desc):
         assert result == {"key": "value", "array": [1, 2, 3]}
 
     elif desc == "custom handler for Decimal override":
+
         def custom_handler(obj: Any) -> Any:
             if isinstance(obj, Decimal):
                 return str(obj)
@@ -348,6 +355,7 @@ ENCODER_FALLBACK_CASES = [
 def test_encoder_fallback_comprehensive(scenario, desc):
     """Comprehensive encoder fallback test."""
     if scenario == "unhandled_type":
+
         class UnhandledType:
             pass
 
@@ -359,6 +367,7 @@ def test_encoder_fallback_comprehensive(scenario, desc):
             core_json.dumps(obj, default=custom_handler)
 
     elif scenario == "decimal_when_custom_fails":
+
         def custom_handler(obj: Any) -> Any:
             if isinstance(obj, str):
                 return obj.upper()
@@ -380,7 +389,7 @@ class TestGetEnv:
 
     def test_get_env_returns_prefixed_first(self, monkeypatch):
         """POLYLOGUE_* variable takes precedence over unprefixed."""
-        from polylogue.core.env import get_env
+        from polylogue.lib.env import get_env
 
         monkeypatch.setenv("QDRANT_URL", "http://global:6333")
         monkeypatch.setenv("POLYLOGUE_QDRANT_URL", "http://local:6333")
@@ -390,7 +399,7 @@ class TestGetEnv:
 
     def test_get_env_falls_back_to_unprefixed(self, monkeypatch):
         """Falls back to unprefixed when prefixed not set."""
-        from polylogue.core.env import get_env
+        from polylogue.lib.env import get_env
 
         monkeypatch.setenv("QDRANT_URL", "http://global:6333")
         monkeypatch.delenv("POLYLOGUE_QDRANT_URL", raising=False)
@@ -400,7 +409,7 @@ class TestGetEnv:
 
     def test_get_env_returns_default(self, monkeypatch):
         """Returns default when neither variable is set."""
-        from polylogue.core.env import get_env
+        from polylogue.lib.env import get_env
 
         monkeypatch.delenv("MISSING_VAR", raising=False)
         monkeypatch.delenv("POLYLOGUE_MISSING_VAR", raising=False)
@@ -410,7 +419,7 @@ class TestGetEnv:
 
     def test_get_env_returns_none_without_default(self, monkeypatch):
         """Returns None when neither variable is set and no default given."""
-        from polylogue.core.env import get_env
+        from polylogue.lib.env import get_env
 
         monkeypatch.delenv("TOTALLY_MISSING", raising=False)
         monkeypatch.delenv("POLYLOGUE_TOTALLY_MISSING", raising=False)
@@ -420,7 +429,7 @@ class TestGetEnv:
 
     def test_get_env_empty_string_is_falsy(self, monkeypatch):
         """Empty string values are treated as falsy (falls through)."""
-        from polylogue.core.env import get_env
+        from polylogue.lib.env import get_env
 
         monkeypatch.setenv("POLYLOGUE_EMPTY", "")
         monkeypatch.setenv("EMPTY", "real_value")
@@ -434,7 +443,7 @@ class TestGetEnvMulti:
 
     def test_get_env_multi_prefixed_first(self, monkeypatch):
         """Prefixed variable takes precedence over all."""
-        from polylogue.core.env import get_env_multi
+        from polylogue.lib.env import get_env_multi
 
         monkeypatch.setenv("POLYLOGUE_GOOGLE_API_KEY", "polylogue_key")
         monkeypatch.setenv("GOOGLE_API_KEY", "google_key")
@@ -445,7 +454,7 @@ class TestGetEnvMulti:
 
     def test_get_env_multi_unprefixed_primary(self, monkeypatch):
         """Unprefixed primary takes precedence over alternatives."""
-        from polylogue.core.env import get_env_multi
+        from polylogue.lib.env import get_env_multi
 
         monkeypatch.delenv("POLYLOGUE_GOOGLE_API_KEY", raising=False)
         monkeypatch.setenv("GOOGLE_API_KEY", "google_key")
@@ -456,7 +465,7 @@ class TestGetEnvMulti:
 
     def test_get_env_multi_falls_to_alternative(self, monkeypatch):
         """Falls back to alternative when primary not set."""
-        from polylogue.core.env import get_env_multi
+        from polylogue.lib.env import get_env_multi
 
         monkeypatch.delenv("POLYLOGUE_GOOGLE_API_KEY", raising=False)
         monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
@@ -467,7 +476,7 @@ class TestGetEnvMulti:
 
     def test_get_env_multi_returns_default(self, monkeypatch):
         """Returns default when no variables are set."""
-        from polylogue.core.env import get_env_multi
+        from polylogue.lib.env import get_env_multi
 
         monkeypatch.delenv("POLYLOGUE_MISSING", raising=False)
         monkeypatch.delenv("MISSING", raising=False)
@@ -478,7 +487,7 @@ class TestGetEnvMulti:
 
     def test_get_env_multi_no_alternatives(self, monkeypatch):
         """Works with no alternative names provided."""
-        from polylogue.core.env import get_env_multi
+        from polylogue.lib.env import get_env_multi
 
         monkeypatch.setenv("SINGLE_KEY", "single_value")
         monkeypatch.delenv("POLYLOGUE_SINGLE_KEY", raising=False)
@@ -497,7 +506,7 @@ class TestParseDate:
 
     def test_parse_date_iso_format(self):
         """Parses ISO format dates correctly."""
-        from polylogue.core.dates import parse_date
+        from polylogue.lib.dates import parse_date
 
         result = parse_date("2024-01-15")
         assert result is not None
@@ -508,7 +517,7 @@ class TestParseDate:
 
     def test_parse_date_iso_with_time(self):
         """Parses ISO format with time correctly."""
-        from polylogue.core.dates import parse_date
+        from polylogue.lib.dates import parse_date
 
         result = parse_date("2024-01-15T10:30:00")
         assert result is not None
@@ -517,7 +526,7 @@ class TestParseDate:
 
     def test_parse_date_natural_yesterday(self):
         """Parses 'yesterday' naturally."""
-        from polylogue.core.dates import parse_date
+        from polylogue.lib.dates import parse_date
 
         result = parse_date("yesterday")
         assert result is not None
@@ -525,7 +534,7 @@ class TestParseDate:
 
     def test_parse_date_natural_relative(self):
         """Parses relative dates like '2 days ago'."""
-        from polylogue.core.dates import parse_date
+        from polylogue.lib.dates import parse_date
 
         result = parse_date("2 days ago")
         assert result is not None
@@ -534,14 +543,14 @@ class TestParseDate:
 
     def test_parse_date_invalid_returns_none(self):
         """Returns None for unparseable input."""
-        from polylogue.core.dates import parse_date
+        from polylogue.lib.dates import parse_date
 
         result = parse_date("not a date at all xyz123")
         assert result is None
 
     def test_parse_date_returns_utc_aware(self):
         """All returned dates are UTC-aware."""
-        from polylogue.core.dates import parse_date
+        from polylogue.lib.dates import parse_date
 
         result = parse_date("2024-06-15")
         assert result is not None
@@ -553,7 +562,7 @@ class TestFormatDateIso:
 
     def test_format_date_iso_basic(self):
         """Formats datetime as ISO string."""
-        from polylogue.core.dates import format_date_iso
+        from polylogue.lib.dates import format_date_iso
 
         dt = datetime(2024, 1, 15, 10, 30, 45)
         result = format_date_iso(dt)
@@ -561,7 +570,7 @@ class TestFormatDateIso:
 
     def test_format_date_iso_midnight(self):
         """Formats midnight correctly."""
-        from polylogue.core.dates import format_date_iso
+        from polylogue.lib.dates import format_date_iso
 
         dt = datetime(2024, 12, 25, 0, 0, 0)
         result = format_date_iso(dt)
@@ -569,7 +578,7 @@ class TestFormatDateIso:
 
     def test_format_date_iso_with_timezone(self):
         """Works with timezone-aware datetime."""
-        from polylogue.core.dates import format_date_iso
+        from polylogue.lib.dates import format_date_iso
 
         dt = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
         result = format_date_iso(dt)
@@ -685,15 +694,17 @@ class TestExportJsonl:
 
     def test_export_jsonl_with_conversation(self, workspace_env, db_path):
         """Exports conversation with messages and attachments."""
-        from tests.helpers import ConversationBuilder
         from polylogue.export import export_jsonl
+        from tests.helpers import ConversationBuilder
 
-        (ConversationBuilder(db_path, "test-conv")
-         .title("Export Test")
-         .provider("chatgpt")
-         .add_message("m1", role="user", text="Hello")
-         .add_message("m2", role="assistant", text="Hi there!")
-         .save())
+        (
+            ConversationBuilder(db_path, "test-conv")
+            .title("Export Test")
+            .provider("chatgpt")
+            .add_message("m1", role="user", text="Hello")
+            .add_message("m2", role="assistant", text="Hi there!")
+            .save()
+        )
 
         archive_root = workspace_env["archive_root"]
         result_path = export_jsonl(archive_root=archive_root)
@@ -729,8 +740,8 @@ class TestExportJsonl:
 
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
-from polylogue.lib.repository import ConversationRepository
 from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.repository import ConversationRepository
 
 
 def test_semantic_models():

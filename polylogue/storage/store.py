@@ -5,11 +5,11 @@ import re
 import sqlite3
 import threading
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, field_validator
 
-from polylogue.core.json import dumps as json_dumps
-from typing import Any
+from polylogue.lib.json import dumps as json_dumps
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId
 
 # Valid provider name pattern: starts with letter, contains only letters, numbers, hyphens, underscores

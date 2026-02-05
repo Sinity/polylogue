@@ -116,7 +116,7 @@ class AsyncPolylogue:
         msg_records = await self._backend.get_messages(conversation_id)
 
         # Convert to Conversation model
-        from polylogue.lib.repository import _records_to_conversation
+        from polylogue.storage.repository import _records_to_conversation
 
         return _records_to_conversation(conv_record, msg_records, [])
 
@@ -182,7 +182,8 @@ class AsyncPolylogue:
 
         # Fetch messages for each conversation in parallel
         import asyncio
-        from polylogue.lib.repository import _records_to_conversation
+
+        from polylogue.storage.repository import _records_to_conversation
 
         # Define helper with explicit types
         from polylogue.storage.store import ConversationRecord

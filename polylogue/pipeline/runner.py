@@ -9,16 +9,13 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from dependency_injector import providers
-
 from polylogue.config import Config, Source
-from polylogue.core.json import dumps, loads
-from polylogue.core.log import get_logger
+from polylogue.lib.json import dumps, loads
+from polylogue.lib.log import get_logger
 from polylogue.ingestion import DriveAuthError, iter_drive_conversations, iter_source_conversations
 from polylogue.ingestion.source import ParsedConversation
-from polylogue.storage.store import PlanResult, RunResult
 from polylogue.storage.backends.sqlite import connection_context
-from polylogue.storage.store import RunRecord
+from polylogue.storage.store import PlanResult, RunRecord, RunResult
 
 logger = get_logger(__name__)
 
@@ -158,14 +155,17 @@ def run_sources(
     """
     start = time.perf_counter()
 
-    from polylogue.container import create_container
+    from polylogue.pipeline.services.ingestion import IngestionService
+    from polylogue.storage.backends.sqlite import create_default_backend
+    from polylogue.storage.repository import ConversationRepository
 
-    container = create_container()
-    # Override config singleton if a different config was passed
-    container.config.override(config)
-
-    repository = container.storage()
-    ingestion_service = container.ingestion_service()
+    backend = create_default_backend()
+    repository = ConversationRepository(backend=backend)
+    ingestion_service = IngestionService(
+        repository=repository,
+        archive_root=config.archive_root,
+        config=config,
+    )
 
     # Track counts for reporting
     counts = {
@@ -188,11 +188,6 @@ def run_sources(
         # Acquire stage (raw storage only)
         if stage == "acquire":
             from polylogue.pipeline.services.acquisition import AcquisitionService
-            from polylogue.storage.backends.sqlite import SQLiteBackend
-
-            backend = container.storage()._backend
-            if backend is None:
-                raise RuntimeError("Repository backend is not initialized")
 
             acquire_service = AcquisitionService(backend=backend)
             sources = _select_sources(config, source_names)
@@ -221,8 +216,8 @@ def run_sources(
 
         # Schema generation stage
         if stage == "generate-schemas":
-            from polylogue.schemas.schema_inference import generate_all_schemas
             from polylogue.paths import DB_PATH
+            from polylogue.schemas.schema_inference import generate_all_schemas
 
             output_dir = config.archive_root.parent / "schemas"
             results = generate_all_schemas(output_dir=output_dir, db_path=DB_PATH)
@@ -233,14 +228,11 @@ def run_sources(
         render_failures: list[dict[str, str]] = []
         if stage in {"render", "all"}:
             ids = _all_conversation_ids(source_names) if stage == "render" else list(processed_ids)
-            # Use rendering service from container (which uses correct config)
-            # We can optionally override the renderer format if needed
-            if render_format == "markdown":
-                from polylogue.rendering.renderers import create_renderer
+            from polylogue.pipeline.services.rendering import RenderService
+            from polylogue.rendering.renderers import create_renderer
 
-                container.renderer.override(providers.Factory(create_renderer, format="markdown", config=config))
-
-            render_service = container.rendering_service()
+            renderer = create_renderer(format=render_format, config=config)
+            render_service = RenderService(renderer=renderer, render_root=config.archive_root / "render")
             render_result = render_service.render_conversations(ids)
             counts["rendered"] = render_result.rendered_count
             render_failures = render_result.failures
@@ -250,7 +242,9 @@ def run_sources(
         # Indexing stage
         indexed = False
         index_error: str | None = None
-        index_service = container.indexing_service()
+        from polylogue.pipeline.services.indexing import IndexService
+
+        index_service = IndexService(config=config)
         # Ensure we use the active connection if provided
         index_service.conn = conn
 
@@ -316,9 +310,9 @@ def run_sources(
             RunRecord(
                 run_id=run_id,
                 timestamp=str(run_payload["timestamp"]),
-                plan_snapshot=plan.counts if plan else None,  # type: ignore[arg-type]
-                counts=counts,  # type: ignore[arg-type]
-                drift=drift,  # type: ignore[arg-type]
+                plan_snapshot=plan.counts if plan else None,
+                counts=counts,
+                drift=drift,
                 indexed=indexed,
                 duration_ms=duration_ms,
             ),

@@ -36,12 +36,12 @@ import re
 from collections.abc import Callable, Iterator
 from datetime import datetime
 from functools import cached_property
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from polylogue.core.roles import Role
-from polylogue.core.timestamps import parse_timestamp
+from polylogue.lib.roles import Role
+from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.messages import MessageCollection, MessageSource
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 from polylogue.types import ConversationId, MessageId

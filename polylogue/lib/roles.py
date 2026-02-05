@@ -18,7 +18,7 @@ class Role(str, Enum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def normalize(cls, raw: str) -> "Role":
+    def normalize(cls, raw: str) -> Role:
         """Normalize a provider role string to a canonical Role.
 
         Args:

@@ -28,12 +28,12 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from polylogue.core.timestamps import parse_timestamp
+from polylogue.lib.timestamps import parse_timestamp
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
-    from polylogue.lib.repository import ConversationRepository
     from polylogue.protocols import VectorProvider
+    from polylogue.storage.repository import ConversationRepository
 
 # Sort field options
 SortField = Literal["date", "tokens", "messages", "words", "longest", "random"]
@@ -647,7 +647,6 @@ class ConversationFilter:
         Returns:
             List of ConversationSummary objects
         """
-        from polylogue.lib.models import ConversationSummary
 
         # If we have FTS terms, use search
         if self._fts_terms:
@@ -664,9 +663,7 @@ class ConversationFilter:
         # Default: list all summaries
         return self._repo.list_summaries(limit=1000)
 
-    def _apply_summary_filters(
-        self, summaries: list[ConversationSummary]
-    ) -> list[ConversationSummary]:
+    def _apply_summary_filters(self, summaries: list[ConversationSummary]) -> list[ConversationSummary]:
         """Apply filters that work on summaries (no message access needed).
 
         Args:
@@ -675,7 +672,6 @@ class ConversationFilter:
         Returns:
             Filtered list of summaries
         """
-        from polylogue.lib.models import ConversationSummary
 
         results = list(summaries)
 
@@ -712,9 +708,7 @@ class ConversationFilter:
 
         return results
 
-    def _apply_summary_sort(
-        self, summaries: list[ConversationSummary]
-    ) -> list[ConversationSummary]:
+    def _apply_summary_sort(self, summaries: list[ConversationSummary]) -> list[ConversationSummary]:
         """Apply sorting to summary list (limited to summary-compatible sorts).
 
         Args:
@@ -756,7 +750,6 @@ class ConversationFilter:
         Returns:
             List of ConversationSummary objects matching all summary-compatible filters
         """
-        from polylogue.lib.models import ConversationSummary
 
         if self._needs_content_loading():
             raise ValueError(

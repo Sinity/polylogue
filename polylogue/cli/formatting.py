@@ -8,14 +8,12 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from polylogue.config import Source
-from polylogue.core.timestamps import format_timestamp
+from polylogue.lib.timestamps import format_timestamp
 
 
-def should_use_plain(*, plain: bool, interactive: bool) -> bool:
+def should_use_plain(*, plain: bool) -> bool:
     if plain:
         return True
-    if interactive:
-        return False
     env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
     if env_force and env_force.lower() not in {"0", "false", "no"}:
         return True
@@ -23,7 +21,7 @@ def should_use_plain(*, plain: bool, interactive: bool) -> bool:
 
 
 def announce_plain_mode() -> None:
-    sys.stderr.write("Plain output active (non-TTY). Use --interactive from a TTY to re-enable prompts.\n")
+    sys.stderr.write("Plain output active (non-TTY).\n")
 
 
 def format_cursors(cursors: Mapping[str, object]) -> str | None:

@@ -24,7 +24,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from polylogue.schemas.extractors import parse_iso_timestamp
+from polylogue.lib.timestamps import parse_timestamp
 
 
 class RecordType(str, Enum):
@@ -99,7 +99,7 @@ class ProgressRecord:
     raw: dict = field(default_factory=dict)
 
     @classmethod
-    def from_raw(cls, raw: dict) -> "ProgressRecord":
+    def from_raw(cls, raw: dict) -> ProgressRecord:
         """Extract ProgressRecord from raw Claude Code record."""
         data = raw.get("data", {})
         return cls(
@@ -107,7 +107,7 @@ class ProgressRecord:
             hook_name=data.get("hookName"),
             tool_use_id=raw.get("toolUseID"),
             parent_tool_use_id=raw.get("parentToolUseID"),
-            timestamp=parse_iso_timestamp(raw.get("timestamp")),
+            timestamp=parse_timestamp(raw.get("timestamp")),
             session_id=raw.get("sessionId"),
             raw=raw,
         )
@@ -141,7 +141,7 @@ class FileHistorySnapshot:
     raw: dict = field(default_factory=dict)
 
     @classmethod
-    def from_raw(cls, raw: dict) -> "FileHistorySnapshot":
+    def from_raw(cls, raw: dict) -> FileHistorySnapshot:
         """Extract FileHistorySnapshot from raw Claude Code record."""
         snapshot = raw.get("snapshot", {})
         backups = snapshot.get("trackedFileBackups", {})
@@ -153,7 +153,7 @@ class FileHistorySnapshot:
 
         return cls(
             message_id=raw.get("messageId", ""),
-            timestamp=parse_iso_timestamp(snapshot.get("timestamp")),
+            timestamp=parse_timestamp(snapshot.get("timestamp")),
             tracked_files=tracked,
             is_snapshot_update=raw.get("isSnapshotUpdate", False),
             raw=raw,
@@ -177,11 +177,11 @@ class QueueOperationRecord:
     raw: dict = field(default_factory=dict)
 
     @classmethod
-    def from_raw(cls, raw: dict) -> "QueueOperationRecord":
+    def from_raw(cls, raw: dict) -> QueueOperationRecord:
         """Extract QueueOperationRecord from raw Claude Code record."""
         return cls(
             operation=raw.get("operation", ""),
-            timestamp=parse_iso_timestamp(raw.get("timestamp")),
+            timestamp=parse_timestamp(raw.get("timestamp")),
             session_id=raw.get("sessionId"),
             content=raw.get("content"),
             raw=raw,

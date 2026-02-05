@@ -11,17 +11,14 @@ This module handles the execution of query-mode operations including:
 from __future__ import annotations
 
 import json
-import re
 import sys
-from collections import Counter
-from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary, Message
-    from polylogue.lib.repository import ConversationRepository
+    from polylogue.storage.repository import ConversationRepository
 
 
 def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
@@ -31,10 +28,10 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         env: Application environment with UI and config
         params: Parsed CLI parameters
     """
-    from polylogue.cli.container import create_repository
     from polylogue.cli.helpers import fail, load_effective_config
     from polylogue.config import ConfigError
-    from polylogue.lib.repository import ConversationRepository
+    from polylogue.services import get_repository
+    from polylogue.storage.search_providers import create_vector_provider
 
     # Load config
     try:
@@ -42,18 +39,19 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     except ConfigError as exc:
         fail("query", str(exc))
 
-    # Build filter chain - create_repository returns StorageBackend
-    from polylogue.cli.container import get_container
+    # Build repository and vector provider
+    conv_repo = get_repository()
 
-    backend = create_repository(config)
-    conv_repo = ConversationRepository(backend)
-
-    # Get vector provider from container (may be None)
-    container = get_container()
-    vector_provider = container.vector_provider()
+    # Get vector provider (may be None if not configured)
+    vector_provider = None
+    try:
+        vector_provider = create_vector_provider(config)
+    except (ValueError, ImportError):
+        pass
 
     # Create filter chain with vector provider
     from polylogue.lib.filters import ConversationFilter
+
     filter_chain = ConversationFilter(conv_repo, vector_provider=vector_provider)
 
     # Apply query terms (positional args)
@@ -69,23 +67,13 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     for term in params.get("no_contains", ()):
         filter_chain = filter_chain.no_contains(term)
 
-    # Apply --regex (in-memory predicate)
-    for pattern in params.get("regex", ()):
-        compiled = re.compile(pattern)
+    # Apply --contains (already applied via query_terms above but keeping for explicit contains if needed)
+    for term in params.get("contains", ()):
+        filter_chain = filter_chain.contains(term)
 
-        def _matches_regex(c: Conversation, pat: re.Pattern[str] = compiled) -> bool:
-            return any(pat.search(m.text) for m in c.messages if m.text)
-
-        filter_chain = filter_chain.where(_matches_regex)
-
-    # Apply --no-regex (in-memory predicate)
-    for pattern in params.get("no_regex", ()):
-        compiled = re.compile(pattern)
-
-        def _not_matches_regex(c: Conversation, pat: re.Pattern[str] = compiled) -> bool:
-            return not any(pat.search(m.text) for m in c.messages if m.text)
-
-        filter_chain = filter_chain.where(_not_matches_regex)
+    # Apply --no-contains
+    for term in params.get("no_contains", ()):
+        filter_chain = filter_chain.no_contains(term)
 
     # Apply --provider (comma-separated)
     if params.get("provider"):
@@ -123,10 +111,6 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if params.get("until"):
         filter_chain = filter_chain.until(params["until"])
 
-    # Apply --id
-    if params.get("id_prefix"):
-        filter_chain = filter_chain.id(params["id_prefix"])
-
     # Apply --latest (= --sort date --limit 1)
     if params.get("latest"):
         filter_chain = filter_chain.sort("date").limit(1)
@@ -147,44 +131,21 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if params.get("sample"):
         filter_chain = filter_chain.sample(params["sample"])
 
-    # Apply --similar (future: vector search)
-    if params.get("similar"):
-        filter_chain = filter_chain.similar(params["similar"])
-
-    # Check for delete with no filters (safety)
-    if params.get("delete_matched"):
-        has_filters = any([
-            query_terms,
-            params.get("contains"),
-            params.get("provider"),
-            params.get("tag"),
-            params.get("since"),
-            params.get("until"),
-            params.get("id_prefix"),
-            params.get("has_type"),
-        ])
-        if not has_filters:
-            fail("query", "--delete requires at least one filter flag for safety")
-
     # Execute query
-    # Determine if we can use lightweight summaries (much faster, less memory)
+    # Determine if we can use lightweight summaries
     list_mode = params.get("list_mode", False)
     use_summaries = (
         list_mode
-        and not params.get("pick")
         and not params.get("transform")
         and not params.get("dialogue_only")
         and not params.get("stream")
         and not params.get("set_meta")
-        and not params.get("unset")
         and not params.get("add_tag")
-        and not params.get("rm_tag")
         and not params.get("delete_matched")
         and filter_chain.can_use_summaries()
     )
 
     if use_summaries:
-        # Fast path: use lightweight summaries (no message loading)
         summary_results = filter_chain.list_summaries()
         if not summary_results:
             env.ui.console.print("No conversations matched.")
@@ -192,37 +153,33 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         _output_summary_list(env, summary_results, params)
         return
 
-    # Streaming fast path: resolve ID and stream directly without loading full conversation
+    # Streaming path
     if params.get("stream"):
-        # For streaming, we need exactly one conversation
-        # Try to resolve via ID prefix first (most common case)
-        id_prefix = params.get("id_prefix")
-        if id_prefix:
-            full_id = conv_repo.resolve_id(id_prefix)
-            if not full_id:
-                env.ui.console.print(f"[red]No conversation found matching ID: {id_prefix}[/red]")
-                raise SystemExit(2)
-        elif params.get("latest"):
-            # Get latest conversation ID without loading full content
+        if params.get("latest"):
             summaries = conv_repo.list_summaries(limit=1)
             if not summaries:
                 env.ui.console.print("No conversations in archive.")
                 raise SystemExit(2)
             full_id = str(summaries[0].id)
         else:
-            # No ID specified, show error with guidance
-            env.ui.console.print(
-                "[yellow]--stream requires a specific conversation. "
-                "Use --id <prefix> or --latest to select one.[/yellow]"
-            )
-            raise SystemExit(1)
+            # Try to resolve first query term as ID
+            if query_terms:
+                full_id = conv_repo.resolve_id(query_terms[0])
+                if not full_id:
+                    env.ui.console.print(f"[red]No conversation found matching: {query_terms[0]}[/red]")
+                    raise SystemExit(2)
+            else:
+                env.ui.console.print(
+                    "[yellow]--stream requires a specific conversation. Use --latest or specify an ID.[/yellow]"
+                )
+                raise SystemExit(1)
 
         output_format = params.get("output_format") or "plaintext"
-        stream_format = output_format
-        if output_format == "json":
-            stream_format = "json-lines"
-        elif output_format not in ("plaintext", "markdown", "json-lines"):
+        stream_format = "json-lines" if output_format == "json" else output_format
+        if stream_format not in ("plaintext", "markdown", "json-lines"):
             stream_format = "plaintext"
+
+        from polylogue.cli.query import stream_conversation
 
         stream_conversation(
             env,
@@ -230,23 +187,13 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             full_id,
             output_format=stream_format,
             dialogue_only=params.get("dialogue_only", False),
-            message_limit=params.get("message_limit"),
         )
         return
 
-    if params.get("pick"):
-        # Interactive picker
-        result = filter_chain.pick()
-        if result:
-            results = [result]
-        else:
-            env.ui.console.print("No selection made.")
-            return
-    else:
-        results = filter_chain.list()
+    results = filter_chain.list()
 
     # Handle modifiers (write operations)
-    if params.get("set_meta") or params.get("unset") or params.get("add_tag") or params.get("rm_tag"):
+    if params.get("set_meta") or params.get("add_tag"):
         _apply_modifiers(env, results, params)
         return
 
@@ -254,40 +201,18 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         _delete_conversations(env, results, params)
         return
 
-    if params.get("annotate"):
-        _annotate_conversations(env, results, params)
-        return
-
-    # Apply transforms if specified
+    # Apply transforms
     transform = params.get("transform")
     if transform:
         results = _apply_transform(results, transform)
 
-    # Apply dialogue-only filter (without --stream, still filter in-memory)
+    # Apply dialogue-only filter
     if params.get("dialogue_only"):
         results = [conv.dialogue_only() for conv in results]
-
-    # Handle aggregation outputs
-    if params.get("by_month"):
-        _output_by_month(env, results)
-        return
-
-    if params.get("by_provider"):
-        _output_by_provider(env, results)
-        return
-
-    if params.get("by_tag"):
-        _output_by_tag(env, results)
-        return
 
     # Handle stats-only output
     if params.get("stats_only"):
         _output_stats(env, results)
-        return
-
-    # Handle --csv output
-    if params.get("csv_path"):
-        _output_csv(env, results, params["csv_path"])
         return
 
     # Handle --open (open in browser/editor)
@@ -308,8 +233,7 @@ def _apply_modifiers(
     params: dict[str, Any],
 ) -> None:
     """Apply metadata modifiers to matched conversations."""
-    from polylogue.cli.container import create_repository
-    from polylogue.cli.helpers import load_effective_config
+    from polylogue.services import get_repository
 
     if not results:
         env.ui.console.print("No conversations matched.")
@@ -324,12 +248,8 @@ def _apply_modifiers(
     if params.get("set_meta"):
         keys = [kv[0] for kv in params["set_meta"]]
         operations.append(f"set metadata: {', '.join(keys)}")
-    if params.get("unset"):
-        operations.append(f"unset: {', '.join(params['unset'])}")
     if params.get("add_tag"):
         operations.append(f"add tags: {', '.join(params['add_tag'])}")
-    if params.get("rm_tag"):
-        operations.append(f"remove tags: {', '.join(params['rm_tag'])}")
 
     op_desc = "; ".join(operations)
 
@@ -341,8 +261,6 @@ def _apply_modifiers(
         for conv in results[:5]:
             title = conv.display_title[:40] if conv.display_title else conv.id[:20]
             env.ui.console.print(f"  - {conv.id[:24]} [{conv.provider}] {title}")
-        if count > 5:
-            env.ui.console.print(f"  ... and {count - 5} more")
         return
 
     # Confirmation for bulk operations (>10 items)
@@ -352,51 +270,32 @@ def _apply_modifiers(
         env.ui.console.print("\nUse --force to skip this prompt, or --dry-run to preview.")
         raise SystemExit(1)
 
-    # Load backend
-    config = load_effective_config(env)
-    backend = create_repository(config)
+    # Load repository
+    repo = get_repository()
 
     # Track counts for reporting
     tags_added = 0
-    tags_removed = 0
     meta_set = 0
-    meta_unset = 0
 
     # Apply modifiers
     for conv in results:
         if params.get("set_meta"):
             for kv in params["set_meta"]:
                 key, value = kv[0], kv[1]
-                backend.update_metadata(str(conv.id), key, value)
+                repo.update_metadata(str(conv.id), key, value)
                 meta_set += 1
-
-        if params.get("unset"):
-            for key in params["unset"]:
-                backend.delete_metadata(str(conv.id), key)
-                meta_unset += 1
 
         if params.get("add_tag"):
             for tag in params["add_tag"]:
-                backend.add_tag(str(conv.id), tag)
+                repo.add_tag(str(conv.id), tag)
                 tags_added += 1
-
-        if params.get("rm_tag"):
-            for tag in params["rm_tag"]:
-                backend.remove_tag(str(conv.id), tag)
-                tags_removed += 1
 
     # Report results
     reports: list[str] = []
     if tags_added:
-        tag_names = ", ".join(params["add_tag"])
-        reports.append(f"Added '{tag_names}' to {count} conversations")
-    if tags_removed:
-        tag_names = ", ".join(params["rm_tag"])
-        reports.append(f"Removed '{tag_names}' from {count} conversations")
+        reports.append(f"Added tags to {count} conversations")
     if meta_set:
         reports.append(f"Set {meta_set} metadata field(s)")
-    if meta_unset:
-        reports.append(f"Unset {meta_unset} metadata field(s)")
 
     for report in reports:
         env.ui.console.print(f"[green]{report}[/green]")
@@ -408,8 +307,7 @@ def _delete_conversations(
     params: dict[str, Any],
 ) -> None:
     """Delete matched conversations."""
-    from polylogue.cli.container import create_repository
-    from polylogue.cli.helpers import load_effective_config
+    from polylogue.services import get_repository
 
     if not results:
         env.ui.console.print("No conversations matched.")
@@ -422,58 +320,32 @@ def _delete_conversations(
     # Dry-run mode: show preview and exit
     if dry_run:
         env.ui.console.print(f"[yellow]DRY-RUN: Would delete {count} conversation(s)[/yellow]")
-        env.ui.console.print("\nSample of conversations to delete:")
+        env.ui.console.print("\nSample of conversations to be deleted:")
         for conv in results[:5]:
             title = conv.display_title[:40] if conv.display_title else conv.id[:20]
-            date = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else "unknown"
-            env.ui.console.print(f"  - {conv.id[:24]} [{conv.provider}] {date} {title}")
-        if count > 5:
-            env.ui.console.print(f"  ... and {count - 5} more")
+            env.ui.console.print(f"  - {conv.id[:24]} [{conv.provider}] {title}")
         return
 
     # Confirmation for bulk operations (>10 items)
     if count > 10 and not force:
         env.ui.console.print(f"[red]About to DELETE {count} conversations[/red]")
-        env.ui.console.print("\nSample of conversations to delete:")
-        for conv in results[:5]:
-            title = conv.display_title[:40] if conv.display_title else conv.id[:20]
-            env.ui.console.print(f"  - {conv.id[:24]} [{conv.provider}] {title}")
-        if count > 5:
-            env.ui.console.print(f"  ... and {count - 5} more")
-        env.ui.console.print("\nUse --force to confirm deletion, or --dry-run to preview.")
+        env.ui.console.print("\nUse --force to skip this prompt, or --dry-run to preview.")
         raise SystemExit(1)
 
-    # Load backend
-    config = load_effective_config(env)
-    backend = create_repository(config)
-
-    # Delete conversations
-    deleted = 0
-    for conv in results:
-        if backend.delete_conversation(str(conv.id)):
-            deleted += 1
-
-    env.ui.console.print(f"[red]Deleted {deleted} conversation(s)[/red]")
-
-
-def _annotate_conversations(
-    env: AppEnv,
-    results: list[Conversation],
-    params: dict[str, Any],
-) -> None:
-    """Run LLM annotation on matched conversations.
-
-    Note: Annotation requires LLM integration and metadata storage.
-    Currently shows what would be annotated without actual annotation.
-    """
-    if not results:
-        env.ui.console.print("No conversations matched.")
+    # Individual confirmation if not bulk but not forced
+    if not force and not env.ui.confirm("Are you sure you want to delete these conversations?", default=False):
+        env.ui.console.print("Aborted.")
         return
 
-    count = len(results)
-    prompt = params.get("annotate", "")
-    env.ui.console.print("[yellow]LLM annotation not yet implemented.[/yellow]")
-    env.ui.console.print(f"Would annotate {count} conversation(s) with prompt: {prompt}")
+    # Load repository
+    repo = get_repository()
+
+    deleted_count = 0
+    for conv in results:
+        if repo.delete_conversation(str(conv.id)):
+            deleted_count += 1
+
+    env.ui.console.print(f"[green]Deleted {deleted_count} conversation(s)[/green]")
 
 
 def _apply_transform(results: list[Conversation], transform: str) -> list[Conversation]:
@@ -500,52 +372,6 @@ def _apply_transform(results: list[Conversation], transform: str) -> list[Conver
         transformed.append(proj.execute())
 
     return transformed
-
-
-def _output_by_month(env: AppEnv, results: list[Conversation]) -> None:
-    """Output aggregation by month."""
-    by_month: Counter[str] = Counter()
-    for conv in results:
-        if conv.updated_at:
-            month_key = conv.updated_at.strftime("%Y-%m")
-            by_month[month_key] += 1
-        else:
-            by_month["unknown"] += 1
-
-    env.ui.console.print(f"\nConversations by month ({len(results)} total):\n")
-    for month, count in sorted(by_month.items()):
-        bar = "#" * min(count, 50)
-        env.ui.console.print(f"  {month}: {count:4d} {bar}")
-
-
-def _output_by_provider(env: AppEnv, results: list[Conversation]) -> None:
-    """Output aggregation by provider."""
-    by_provider: Counter[str] = Counter()
-    for conv in results:
-        by_provider[conv.provider] += 1
-
-    env.ui.console.print(f"\nConversations by provider ({len(results)} total):\n")
-    for provider, count in sorted(by_provider.items(), key=lambda x: -x[1]):
-        pct = 100 * count / len(results) if results else 0
-        bar = "#" * int(pct / 2)
-        env.ui.console.print(f"  {provider:15s}: {count:4d} ({pct:5.1f}%) {bar}")
-
-
-def _output_by_tag(env: AppEnv, results: list[Conversation]) -> None:
-    """Output aggregation by tag."""
-    by_tag: Counter[str] = Counter()
-    untagged = 0
-    for conv in results:
-        if conv.tags:
-            for tag in conv.tags:
-                by_tag[tag] += 1
-        else:
-            untagged += 1
-
-    env.ui.console.print(f"\nConversations by tag ({len(results)} total, {untagged} untagged):\n")
-    for tag, count in sorted(by_tag.items(), key=lambda x: -x[1]):
-        bar = "#" * min(count, 50)
-        env.ui.console.print(f"  {tag:20s}: {count:4d} {bar}")
 
 
 def _output_stats(env: AppEnv, results: list[Conversation]) -> None:
@@ -641,7 +467,10 @@ def _format_list(
         return json.dumps([_conv_to_dict(c, fields) for c in results], indent=2)
     elif output_format == "yaml":
         import yaml
+
         return yaml.dump([_conv_to_dict(c, fields) for c in results], default_flow_style=False, allow_unicode=True)
+    elif output_format == "csv":
+        return _conv_to_csv(results)
     else:
         lines = []
         for conv in results:
@@ -661,7 +490,6 @@ def _output_summary_list(
 
     This is the fast path for --list mode that doesn't load messages.
     """
-    from polylogue.lib.models import ConversationSummary
 
     output_format = params.get("output_format", "text")
 
@@ -701,6 +529,31 @@ def _output_summary_list(
             # Note: message count not available in summary - show "?" or skip
             lines.append(f"{str(s.id)[:24]:24s}  {date:10s}  [{s.provider:12s}]  {title}")
         env.ui.console.print("\n".join(lines))
+
+
+def _conv_to_csv(results: list[Conversation]) -> str:
+    """Convert conversations to CSV string."""
+    import csv
+    import io
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["id", "date", "provider", "title", "messages", "words"])
+
+    for conv in results:
+        date = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else ""
+        writer.writerow(
+            [
+                str(conv.id),
+                date,
+                conv.provider,
+                conv.display_title or "",
+                len(conv.messages),
+                sum(m.word_count for m in conv.messages),
+            ]
+        )
+
+    return output.getvalue()
 
 
 def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, Any]:
@@ -764,7 +617,7 @@ def _conv_to_html(conv: Conversation) -> str:
 </head>
 <body>
     <h1>{title}</h1>
-    {''.join(messages_html)}
+    {"".join(messages_html)}
 </body>
 </html>"""
 
@@ -1058,40 +911,6 @@ def _copy_to_clipboard(env: AppEnv, content: str) -> None:
     env.ui.console.print("[yellow]Could not copy to clipboard (no clipboard tool found).[/yellow]")
 
 
-def _output_csv(env: AppEnv, results: list[Conversation], csv_path: Path) -> None:
-    """Write results to CSV file."""
-    import csv
-
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        # Write header - match old search command format for compatibility
-        writer.writerow([
-            "source", "provider", "conversation_id", "message_id",
-            "role", "timestamp", "word_count", "text_preview"
-        ])
-
-        # Write rows for each message in each conversation
-        for conv in results:
-            source = conv.provider_meta.get("source", "") if conv.provider_meta else ""
-            for msg in conv.messages:
-                preview = (msg.text or "")[:100].replace("\n", " ")
-                timestamp = msg.timestamp.isoformat() if msg.timestamp else ""
-                writer.writerow([
-                    source,
-                    conv.provider,
-                    str(conv.id),
-                    str(msg.id),
-                    msg.role,
-                    timestamp,
-                    msg.word_count,
-                    preview,
-                ])
-
-    env.ui.console.print(f"Wrote {len(results)} conversations to {csv_path}")
-
-
 def _open_result(
     env: AppEnv,
     results: list[Conversation],
@@ -1119,6 +938,7 @@ def _open_result(
     else:
         # Try environment variable
         import os
+
         render_root_env = os.environ.get("POLYLOGUE_RENDER_ROOT")
         if render_root_env:
             render_root = Path(render_root_env)
@@ -1142,6 +962,7 @@ def _open_result(
     else:
         # Fallback: find most recent render
         from polylogue.cli.helpers import latest_render_path
+
         render_file = latest_render_path(render_root)
 
     if not render_file:
@@ -1151,5 +972,6 @@ def _open_result(
 
     # Open in browser
     import webbrowser
+
     webbrowser.open(f"file://{render_file}")
     env.ui.console.print(f"Opened: {render_file}")

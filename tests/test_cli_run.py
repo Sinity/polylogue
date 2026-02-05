@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -10,7 +9,6 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.config import ConfigError
 from polylogue.ingestion import DriveError
 from polylogue.storage.store import PlanResult, RunResult
 
@@ -51,11 +49,14 @@ class TestRunCommandPreviewMode:
 
     def test_run_preview_calls_plan_sources(self, runner, cli_workspace, mock_plan_result):
         """Preview mode calls plan_sources()."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from polylogue.services import get_service_config
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.plan_sources") as mock_plan:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
-                        mock_create_config.return_value = MagicMock(sources=[])
                         mock_plan.return_value = mock_plan_result
 
                         result = runner.invoke(cli, ["run", "--preview"])
@@ -65,15 +66,17 @@ class TestRunCommandPreviewMode:
 
     def test_run_preview_displays_plan_snapshot(self, runner, cli_workspace, mock_plan_result):
         """Preview mode displays snapshot information."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.plan_sources") as mock_plan:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=["test-inbox"]):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["test-inbox"]):
-                        with patch("polylogue.cli.commands.run.format_counts", return_value="5 conversations, 50 messages"):
+                        with patch(
+                            "polylogue.cli.commands.run.format_counts", return_value="5 conversations, 50 messages"
+                        ):
                             with patch("polylogue.cli.commands.run.format_cursors", return_value=""):
-                                mock_config = MagicMock()
-                                mock_config.sources = []
-                                mock_create_config.return_value = mock_config
                                 mock_plan.return_value = mock_plan_result
 
                                 result = runner.invoke(cli, ["run", "--preview"])
@@ -83,13 +86,13 @@ class TestRunCommandPreviewMode:
 
     def test_run_preview_with_plain_mode_skips_confirm(self, runner, cli_workspace, mock_plan_result):
         """Preview mode in plain mode skips confirmation."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.plan_sources") as mock_plan:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
-                        mock_config = MagicMock()
-                        mock_config.sources = []
-                        mock_create_config.return_value = mock_config
                         mock_plan.return_value = mock_plan_result
 
                         result = runner.invoke(cli, ["run", "--preview"])
@@ -99,13 +102,13 @@ class TestRunCommandPreviewMode:
 
     def test_run_preview_drive_error_fails(self, runner, cli_workspace):
         """Preview mode propagates DriveError."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.plan_sources") as mock_plan:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=["google-drive"]):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["google-drive"]):
-                        mock_config = MagicMock()
-                        mock_config.sources = []
-                        mock_create_config.return_value = mock_config
                         mock_plan.side_effect = DriveError("OAuth token expired")
 
                         result = runner.invoke(cli, ["run", "--preview"])
@@ -113,19 +116,20 @@ class TestRunCommandPreviewMode:
         assert result.exit_code != 0
         assert "OAuth token expired" in result.output
 
+
 class TestRunCommandNonPreviewMode:
     """Tests for normal (non-preview) sync mode."""
 
     def test_run_calls_run_sources(self, runner, cli_workspace, mock_run_result):
         """Non-preview mode calls run_sources()."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run"])
@@ -135,14 +139,14 @@ class TestRunCommandNonPreviewMode:
 
     def test_run_displays_duration(self, runner, cli_workspace, mock_run_result):
         """Run displays duration in milliseconds."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run"])
@@ -153,14 +157,16 @@ class TestRunCommandNonPreviewMode:
 
     def test_run_displays_counts(self, runner, cli_workspace, mock_run_result):
         """Run displays counts."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
-                        with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations, 30 messages"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
+                        with patch(
+                            "polylogue.cli.commands.run.format_counts", return_value="3 conversations, 30 messages"
+                        ):
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run"])
@@ -170,13 +176,13 @@ class TestRunCommandNonPreviewMode:
 
     def test_run_drive_error_fails(self, runner, cli_workspace):
         """Non-preview mode propagates DriveError."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=["google-drive"]):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["google-drive"]):
-                        mock_config = MagicMock()
-                        mock_config.sources = []
-                        mock_create_config.return_value = mock_config
                         mock_run.side_effect = DriveError("Drive API rate limit exceeded")
 
                         result = runner.invoke(cli, ["run"])
@@ -190,14 +196,14 @@ class TestRunCommandStageOption:
 
     def test_run_stage_ingest_only(self, runner, cli_workspace, mock_run_result):
         """--stage parse passes stage to run_sources()."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run", "--stage", "parse"])
@@ -209,14 +215,14 @@ class TestRunCommandStageOption:
 
     def test_run_stage_render_only(self, runner, cli_workspace, mock_run_result):
         """--stage render passes stage to run_sources()."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run", "--stage", "render"])
@@ -227,14 +233,14 @@ class TestRunCommandStageOption:
 
     def test_run_stage_index_only(self, runner, cli_workspace, mock_run_result):
         """--stage index passes stage to run_sources()."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run", "--stage", "index"])
@@ -245,14 +251,14 @@ class TestRunCommandStageOption:
 
     def test_run_stage_all_default(self, runner, cli_workspace, mock_run_result):
         """--stage all is the default."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run"])
@@ -271,14 +277,14 @@ class TestRunCommandStageOption:
             index_error=None,
             duration_ms=800,
         )
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_index_status") as mock_format_idx:
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = result_indexed
                             mock_format_idx.return_value = "Index status: indexed"
 
@@ -293,14 +299,14 @@ class TestRunCommandSourceOption:
 
     def test_run_source_single(self, runner, cli_workspace, mock_run_result):
         """--source filters to single source."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.services.get_service_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources") as mock_resolve:
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["test-inbox"]):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_resolve.return_value = ["test-inbox"]
                             mock_run.return_value = mock_run_result
 
@@ -311,20 +317,18 @@ class TestRunCommandSourceOption:
 
     def test_run_source_multiple(self, runner, cli_workspace, mock_run_result):
         """--source can be repeated for multiple sources."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources") as mock_resolve:
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["test-inbox", "drive"]):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="8 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_resolve.return_value = ["test-inbox", "drive"]
                             mock_run.return_value = mock_run_result
 
-                            result = runner.invoke(
-                                cli, ["run", "--source", "test-inbox", "--source", "drive"]
-                            )
+                            result = runner.invoke(cli, ["run", "--source", "test-inbox", "--source", "drive"])
 
         assert result.exit_code == 0
         # Verify that resolve_sources was called with both sources
@@ -334,14 +338,14 @@ class TestRunCommandSourceOption:
 
     def test_run_source_displays_in_title(self, runner, cli_workspace, mock_run_result):
         """Selected sources are displayed in run title."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=["my-source"]):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["my-source"]):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="5 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run", "--source", "my-source"])
@@ -356,14 +360,14 @@ class TestRunCommandFormatOption:
 
     def test_run_format_markdown(self, runner, cli_workspace, mock_run_result):
         """--format markdown passes format to run_sources()."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run", "--format", "markdown"])
@@ -374,14 +378,14 @@ class TestRunCommandFormatOption:
 
     def test_run_format_html_default(self, runner, cli_workspace, mock_run_result):
         """--format html is the default."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run"])
@@ -396,14 +400,14 @@ class TestRunCommandProgressOutput:
 
     def test_run_plain_mode_shows_progress(self, runner, cli_workspace, mock_run_result):
         """Plain mode displays periodic progress updates."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run"])
@@ -426,15 +430,15 @@ class TestRunCommandIndexError:
             index_error="Qdrant connection timeout",
             duration_ms=1200,
         )
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="2 conversations"):
                             with patch("polylogue.cli.commands.run.format_index_status") as mock_format_idx:
-                                mock_config = MagicMock()
-                                mock_config.sources = []
-                                mock_create_config.return_value = mock_config
                                 mock_run.return_value = result_with_error
                                 mock_format_idx.return_value = "Index error: Qdrant connection timeout"
 
@@ -455,14 +459,14 @@ class TestRunCommandIndexError:
             index_error="Vector database unavailable",
             duration_ms=500,
         )
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_index_status") as mock_format_idx:
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = result_with_error
                             mock_format_idx.return_value = "Index error: Vector database unavailable"
 
@@ -477,16 +481,16 @@ class TestRunCommandRenderOutput:
 
     def test_run_displays_latest_render_path_for_render_stage(self, runner, cli_workspace, mock_run_result):
         """Run displays latest render path when render stage included."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
                             with patch("polylogue.cli.helpers.latest_render_path") as mock_latest:
-                                mock_config = MagicMock()
-                                mock_config.sources = []
                                 mock_config.render_root = Path("/render")
-                                mock_create_config.return_value = mock_config
                                 mock_run.return_value = mock_run_result
                                 mock_latest.return_value = Path("/render/conv1/conversation.html")
 
@@ -497,15 +501,15 @@ class TestRunCommandRenderOutput:
 
     def test_run_skips_latest_render_for_non_render_stage(self, runner, cli_workspace, mock_run_result):
         """Run skips render path display for index-only stage."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_index_status") as mock_format_idx:
                             with patch("polylogue.cli.helpers.latest_render_path") as mock_latest:
-                                mock_config = MagicMock()
-                                mock_config.sources = []
-                                mock_create_config.return_value = mock_config
                                 mock_run.return_value = mock_run_result
                                 mock_format_idx.return_value = "Indexed"
 
@@ -521,14 +525,14 @@ class TestRunCommandTitle:
 
     def test_run_title_includes_stage_when_not_all(self, runner, cli_workspace, mock_run_result):
         """Run title includes stage name when stage is not 'all'."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run", "--stage", "render"])
@@ -539,14 +543,14 @@ class TestRunCommandTitle:
 
     def test_run_title_includes_sources_when_filtered(self, runner, cli_workspace, mock_run_result):
         """Run title includes source names when sources are filtered."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=["my-inbox"]):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["my-inbox"]):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="5 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_run.return_value = mock_run_result
 
                             result = runner.invoke(cli, ["run", "--source", "my-inbox"])
@@ -561,14 +565,14 @@ class TestRunCommandCombinations:
 
     def test_run_preview_with_stage_ingest(self, runner, cli_workspace, mock_plan_result):
         """Preview mode with specific stage still works."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.plan_sources") as mock_plan:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="5 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_plan.return_value = mock_plan_result
 
                             result = runner.invoke(cli, ["run", "--preview", "--stage", "parse"])
@@ -578,14 +582,14 @@ class TestRunCommandCombinations:
 
     def test_run_preview_with_format_markdown(self, runner, cli_workspace, mock_plan_result):
         """Preview mode with format flag still works."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.plan_sources") as mock_plan:
                 with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="5 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_plan.return_value = mock_plan_result
 
                             result = runner.invoke(cli, ["run", "--preview", "--format", "markdown"])
@@ -595,14 +599,14 @@ class TestRunCommandCombinations:
 
     def test_run_stage_render_with_source_filter(self, runner, cli_workspace, mock_run_result):
         """Stage and source filters can be combined."""
-        with patch("polylogue.cli.commands.run.create_config") as mock_create_config:
+        from unittest.mock import patch
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
             with patch("polylogue.cli.commands.run.run_sources") as mock_run:
                 with patch("polylogue.cli.commands.run.resolve_sources") as mock_resolve:
                     with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=["test"]):
                         with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
-                            mock_config = MagicMock()
-                            mock_config.sources = []
-                            mock_create_config.return_value = mock_config
                             mock_resolve.return_value = ["test"]
                             mock_run.return_value = mock_run_result
 

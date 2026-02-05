@@ -29,12 +29,20 @@ Example:
 # High-level API
 # Core types for library users
 from polylogue.config import Source
-from polylogue.core.async_facade import AsyncPolylogue
-from polylogue.core.facade import ArchiveStats, Polylogue
+from polylogue.async_facade import AsyncPolylogue
+from polylogue.facade import ArchiveStats, Polylogue
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, Message
-from polylogue.lib.repository import ConversationRepository
 from polylogue.storage.search import SearchHit, SearchResult
+
+
+def __getattr__(name: str) -> object:
+    if name == "ConversationRepository":
+        from polylogue.storage.repository import ConversationRepository
+
+        return ConversationRepository
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     # Main facade
