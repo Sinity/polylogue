@@ -16,22 +16,19 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
-from polylogue.config import Source
-from polylogue.ingestion import iter_source_conversations
-from polylogue.pipeline.ingest import prepare_ingest
-from polylogue.storage.backends.sqlite import open_connection, SQLiteBackend
-from polylogue.storage.repository import StorageRepository
 from polylogue import Polylogue
-
+from polylogue.config import Source
+from polylogue.pipeline.ingest import prepare_ingest
+from polylogue.sources import iter_source_conversations
+from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
+from polylogue.storage.repository import ConversationRepository
 from tests.helpers import db_setup
 
 
-def _make_test_repository(db_path: Path) -> StorageRepository:
+def _make_test_repository(db_path: Path) -> ConversationRepository:
     """Create a repository for testing with a specific db_path."""
     backend = SQLiteBackend(db_path=db_path)
-    return StorageRepository(backend=backend)
+    return ConversationRepository(backend=backend)
 
 
 class TestCodexContinuationPipeline:
@@ -107,7 +104,10 @@ class TestCodexContinuationPipeline:
         # Now create and ingest the child session (continuation)
         child_payload = [
             {"type": "session_meta", "payload": {"id": "child-uuid", "timestamp": "2025-01-02T10:00:00Z"}},
-            {"type": "session_meta", "payload": {"id": "parent-uuid", "timestamp": "2025-01-01T10:00:00Z"}},  # Parent context
+            {
+                "type": "session_meta",
+                "payload": {"id": "parent-uuid", "timestamp": "2025-01-01T10:00:00Z"},
+            },  # Parent context
             {
                 "type": "response_item",
                 "payload": {
@@ -419,7 +419,7 @@ class TestPrepareIngestParentResolution:
         db_path = db_setup(workspace_env)
         repository = _make_test_repository(db_path)
 
-        from polylogue.importers.base import ParsedConversation, ParsedMessage
+        from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 
         # First create the parent conversation (FK constraint requires parent to exist)
         parent_parsed = ParsedConversation(
@@ -479,7 +479,7 @@ class TestPrepareIngestParentResolution:
         db_path = db_setup(workspace_env)
         repository = _make_test_repository(db_path)
 
-        from polylogue.importers.base import ParsedConversation, ParsedMessage
+        from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 
         # Create messages with parent references (like ChatGPT branches)
         parsed = ParsedConversation(

@@ -18,12 +18,10 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.pipeline.services.ingestion import IngestionService
 from polylogue.pipeline.runner import run_sources
-from polylogue.lib.repository import ConversationRepository
+from polylogue.pipeline.services.ingestion import IngestionService
 from polylogue.storage.backends.sqlite import SQLiteBackend
-from polylogue.storage.repository import StorageRepository
-
+from polylogue.storage.repository import ConversationRepository
 
 # =============================================================================
 # FIXTURES
@@ -56,7 +54,7 @@ def temp_config_and_repo(tmp_path):
         _ensure_schema(conn)
 
     backend = SQLiteBackend(db_path=db_path)
-    storage_repo = StorageRepository(backend=backend)
+    storage_repo = ConversationRepository(backend=backend)
     conv_repo = ConversationRepository(backend=backend)
 
     yield config, storage_repo, conv_repo, archive_root, db_path
@@ -85,15 +83,22 @@ def gemini_sample_source():
 # =============================================================================
 
 
-@pytest.mark.parametrize("provider,sample_name", [
-    ("chatgpt", "simple.json"),
-    ("chatgpt", "branching.json"),
-    pytest.param("claude", "basic.jsonl", marks=pytest.mark.skip(reason="No Claude samples extracted")),
-    pytest.param("gemini", "sample-with-tools.jsonl", marks=pytest.mark.skipif(
-        not Path(__file__).parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
-        reason="Gemini sample not available"
-    )),
-])
+@pytest.mark.parametrize(
+    "provider,sample_name",
+    [
+        ("chatgpt", "simple.json"),
+        ("chatgpt", "branching.json"),
+        pytest.param("claude", "basic.jsonl", marks=pytest.mark.skip(reason="No Claude samples extracted")),
+        pytest.param(
+            "gemini",
+            "sample-with-tools.jsonl",
+            marks=pytest.mark.skipif(
+                not Path(__file__).parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
+                reason="Gemini sample not available",
+            ),
+        ),
+    ],
+)
 def test_full_workflow_per_provider(provider, sample_name, temp_config_and_repo):
     """Import → Store → Query → Render for each provider.
 
@@ -127,7 +132,7 @@ def test_full_workflow_per_provider(provider, sample_name, temp_config_and_repo)
     assert result.counts["conversations"] > 0, f"No conversations imported from {provider}"
     # Some providers may not have messages in the sample format (e.g., Gemini)
     if provider == "gemini" and result.counts["messages"] == 0:
-        pytest.skip(f"Gemini sample has no importable messages (format issue)")
+        pytest.skip("Gemini sample has no importable messages (format issue)")
     assert result.counts["messages"] > 0, f"No messages imported from {provider}"
 
     # 2. STORE: Query back from database
@@ -166,8 +171,7 @@ def test_full_workflow_per_provider(provider, sample_name, temp_config_and_repo)
             db_path=db_path,  # Use test database, not user's real database
         )
         found_ids = {r.conversation_id for r in result.hits}
-        assert conv.id in found_ids, \
-            f"Search failed for '{search_term}'"
+        assert conv.id in found_ids, f"Search failed for '{search_term}'"
 
 
 # =============================================================================
@@ -404,7 +408,7 @@ def test_multi_source_concurrent_sync(temp_config_and_repo, chatgpt_sample_sourc
         archive_root=archive_root,
         config=config,
     )
-    result = service.ingest_sources(sources)
+    service.ingest_sources(sources)
 
     # Should have conversations from both
     all_convs = conv_repo.list()
@@ -460,10 +464,12 @@ def test_multi_source_isolated_namespaces(temp_config_and_repo):
             archive_root=archive_root,
             config=config,
         )
-        service.ingest_sources([
-            Source(name="source1", path=path1),
-            Source(name="source2", path=path2),
-        ])
+        service.ingest_sources(
+            [
+                Source(name="source1", path=path1),
+                Source(name="source2", path=path2),
+            ]
+        )
 
         # Should have 2 conversations from different sources
         all_convs = conv_repo.list()
@@ -577,8 +583,8 @@ def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_source
     service.ingest_sources([chatgpt_sample_source])
 
     # Build search index
-    from polylogue.storage.index import rebuild_index
     from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.index import rebuild_index
 
     with open_connection(db_path) as conn:
         rebuild_index(conn)
@@ -599,10 +605,11 @@ def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_source
     search_term = " ".join(words[:3])
     from polylogue.storage.search import search_messages
 
-    result = search_messages(search_term, archive_root=archive_root, render_root_path=config.render_root, db_path=db_path)
+    result = search_messages(
+        search_term, archive_root=archive_root, render_root_path=config.render_root, db_path=db_path
+    )
     result_ids = {r.conversation_id for r in result.hits}
-    assert target_conv.id in result_ids, \
-        f"Failed to find conversation with '{search_term}'"
+    assert target_conv.id in result_ids, f"Failed to find conversation with '{search_term}'"
 
 
 def test_search_with_special_characters(temp_config_and_repo):
@@ -627,8 +634,8 @@ def test_search_with_special_characters(temp_config_and_repo):
                     "message": {
                         "id": "m2",
                         "author": {"role": "assistant"},
-                        "content": {"parts": ["Answer with \"quotes\" and {braces}"]},
-                    }
+                        "content": {"parts": ['Answer with "quotes" and {braces}']},
+                    },
                 },
             },
         }
@@ -644,8 +651,8 @@ def test_search_with_special_characters(temp_config_and_repo):
         service.ingest_sources([Source(name="test", path=path)])
 
         # Build search index
-        from polylogue.storage.index import rebuild_index
         from polylogue.storage.backends.sqlite import open_connection
+        from polylogue.storage.index import rebuild_index
 
         with open_connection(db_path) as conn:
             rebuild_index(conn)
@@ -653,15 +660,19 @@ def test_search_with_special_characters(temp_config_and_repo):
         from polylogue.storage.search import search_messages
 
         # Search with special chars (should be escaped)
-        result1 = search_messages("quotes", archive_root=archive_root, render_root_path=config.render_root, db_path=db_path)
+        result1 = search_messages(
+            "quotes", archive_root=archive_root, render_root_path=config.render_root, db_path=db_path
+        )
         assert len(result1.hits) > 0
 
-        result2 = search_messages("braces", archive_root=archive_root, render_root_path=config.render_root, db_path=db_path)
+        result2 = search_messages(
+            "braces", archive_root=archive_root, render_root_path=config.render_root, db_path=db_path
+        )
         assert len(result2.hits) > 0
 
         # FTS5 operators should be escaped and not cause errors
         # (*, ?, OR, AND, NOT, etc.)
-        result3 = search_messages("*", archive_root=archive_root, render_root_path=config.render_root, db_path=db_path)
+        search_messages("*", archive_root=archive_root, render_root_path=config.render_root, db_path=db_path)
         # Should not crash
 
     finally:
@@ -678,9 +689,9 @@ def test_pipeline_runner_e2e(workspace_env, chatgpt_sample_source):
     if chatgpt_sample_source is None:
         pytest.skip("ChatGPT sample not available")
 
-    from polylogue.config import load_config
+    from polylogue.config import get_config
 
-    config = load_config()
+    config = get_config()
     config.sources = [chatgpt_sample_source]
 
     # Use run_sources function
@@ -696,9 +707,9 @@ def test_pipeline_runner_with_preview_mode(workspace_env, chatgpt_sample_source)
     if chatgpt_sample_source is None:
         pytest.skip("ChatGPT sample not available")
 
-    from polylogue.config import load_config
+    from polylogue.config import get_config
 
-    config = load_config()
+    config = get_config()
     config.sources = [chatgpt_sample_source]
 
     # Run ingestion stage
