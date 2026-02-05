@@ -31,7 +31,7 @@ Polylogue is a **local-first AI chat archive** that ingests exports from multipl
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                         CLI Layer                                │
-│  (commands/, click_app.py)                                       │
+│  (commands/, click_app.py, query.py)                             │
 └────────────────────────┬─────────────────────────────────────────┘
                          │
                          ▼
@@ -152,26 +152,41 @@ All operations are designed to be safely re-runnable:
 polylogue/
 ├── cli/                      # CLI Layer
 │   ├── commands/             # Command implementations
-│   │   ├── run.py           # Main pipeline command
-│   │   ├── search.py        # FTS5 search
-│   │   ├── view.py          # Conversation viewer
-│   │   ├── verify.py        # Data integrity checks
-│   │   ├── config.py        # Configuration management
-│   │   ├── index.py         # Manual indexing
-│   │   ├── export.py        # Data export
-│   │   ├── serve.py         # Web server
-│   │   ├── state.py         # State management
-│   │   └── completions.py  # Shell completions
-│   ├── click_app.py         # Click application setup
-│   ├── formatting.py        # Output formatting
+│   │   ├── run.py           # Main pipeline command (ingest → render → index)
+│   │   ├── check.py         # Integrity checks, repair, vacuum
+│   │   ├── dashboard.py     # TUI dashboard
+│   │   ├── mcp.py           # MCP server command
+│   │   ├── auth.py          # OAuth flow for Google Drive
+│   │   ├── reset.py         # Database reset
+│   │   └── completions.py   # Shell completions
+│   ├── click_app.py         # QueryFirstGroup (positional args → query mode)
+│   ├── query.py             # Filter chain, output formatting, modifiers
 │   ├── helpers.py           # CLI utilities
-│   └── types.py             # CLI type definitions
+│   └── editor.py            # Shell command validation, browser/editor opening
+│
+├── sources/                  # Source Detection & Parsing
+│   ├── parsers/             # Provider-specific parsers
+│   │   ├── base.py          # ParsedConversation types, normalize_role
+│   │   ├── chatgpt.py       # ChatGPT UUID graph traversal
+│   │   ├── claude.py        # Claude AI (JSONL) + Claude Code (JSON)
+│   │   ├── codex.py         # Codex sessions
+│   │   └── drive.py         # Gemini chunkedPrompt
+│   ├── providers/           # Pydantic models for raw provider JSON
+│   │   ├── chatgpt.py       # ChatGPT data models
+│   │   ├── claude_ai.py     # Claude AI data models
+│   │   ├── claude_code.py   # Claude Code data models
+│   │   ├── codex.py         # Codex data models
+│   │   └── gemini.py        # Gemini data models
+│   ├── source.py            # detect_provider(), local file ingestion
+│   ├── drive.py             # Google Drive ingestion
+│   └── drive_client.py      # Drive OAuth + API client
 │
 ├── pipeline/                 # Pipeline Layer
 │   ├── services/            # Service implementations
-│   │   ├── ingestion.py    # IngestionService
-│   │   ├── indexing.py     # IndexService
-│   │   └── rendering.py    # RenderService
+│   │   ├── ingestion.py    # IngestionService (parallel, bounded)
+│   │   ├── indexing.py     # IndexService (FTS5/Qdrant)
+│   │   ├── rendering.py    # RenderService (parallel output)
+│   │   └── acquisition.py  # Source acquisition
 │   ├── runner.py            # Pipeline orchestrator
 │   ├── ingest.py            # Ingest preparation
 │   ├── ids.py               # Content hash generation
@@ -179,77 +194,68 @@ polylogue/
 │
 ├── storage/                  # Storage Layer
 │   ├── backends/            # Backend implementations
-│   │   └── sqlite.py       # SQLiteBackend
+│   │   ├── sqlite.py       # SQLiteBackend (only backend, schema v5)
+│   │   └── async_sqlite.py # AsyncSQLiteBackend
 │   ├── search_providers/    # Search implementations
 │   │   ├── fts5.py         # FTS5Provider
-│   │   └── qdrant.py       # QdrantProvider
-│   ├── db.py                # Database connections, schema
-│   ├── store.py             # Record types, low-level ops
-│   ├── repository.py        # StorageRepository
+│   │   └── qdrant.py       # QdrantProvider (vector search)
+│   ├── store.py             # Record types, _WRITE_LOCK
+│   ├── repository.py        # ConversationRepository (write coordination)
+│   ├── async_repository.py  # Async facade
 │   ├── index.py             # FTS5 indexing
-│   ├── index_qdrant.py      # Qdrant indexing (deprecated)
-│   └── search.py            # Search utilities
+│   └── search.py            # Search utilities, FTS5 escaping
 │
-├── ingestion/                # Ingestion Layer
-│   ├── source.py            # Local file ingestion
-│   ├── drive.py             # Google Drive ingestion
-│   ├── drive_client.py      # Drive OAuth + API
-│   └── ingest.py            # Ingest utilities
-│
-├── importers/                # Provider Parsers
-│   ├── base.py              # ParsedConversation types
-│   ├── chatgpt.py           # ChatGPT graph traversal
-│   ├── claude.py            # Claude AI + Code
-│   ├── codex.py             # Codex sessions
-│   └── drive.py             # Gemini chunkedPrompt
+├── schemas/                  # Schema Layer
+│   ├── unified.py           # Unified schema with glom transforms
+│   ├── common.py            # Shared schema types
+│   ├── claude_code_records.py # Claude Code record schemas
+│   ├── schema_inference.py  # JSON schema inference from samples
+│   └── validator.py         # Schema validation utilities
 │
 ├── lib/                      # Domain Layer
-│   ├── models.py            # Conversation, Message
-│   ├── projections.py       # ConversationProjection
-│   └── repository.py        # ConversationRepository
-│
-├── core/                     # Core Layer
+│   ├── models.py            # Conversation, Message, Attachment
+│   ├── messages.py          # MessageCollection, MessageSource protocol
+│   ├── projections.py       # ConversationProjection (fluent API)
+│   ├── filters.py           # ConversationFilter (chainable queries)
 │   ├── hashing.py           # NFC-normalized SHA-256
-│   ├── json.py              # JSON utilities
-│   ├── timestamps.py        # Timestamp parsing
-│   └── log.py               # Logging setup
+│   ├── json.py              # orjson utilities
+│   ├── dates.py             # Timestamp parsing
+│   ├── roles.py             # Role enum/literal
+│   └── log.py               # structlog setup
+│
+├── rendering/                # Rendering Layer
+│   ├── renderers/           # Output renderers
+│   │   ├── markdown.py     # Markdown renderer
+│   │   └── html.py         # HTML renderer
+│   ├── core.py              # Rendering orchestration
+│   └── render_paths.py      # Output path resolution
 │
 ├── ui/                       # UI Components
-│   └── facade.py            # Progress display
+│   ├── facade.py            # ConsoleFacade, ConsoleLike protocol, PlainConsole
+│   ├── tui/                 # Textual TUI
+│   │   ├── app.py          # Textual application
+│   │   ├── screens/        # TUI screens (browser, search, dashboard)
+│   │   └── widgets/        # Custom widgets
+│   └── __init__.py          # UI class (high-level abstraction)
 │
-├── server/                   # Web Server (experimental)
-│   ├── app.py               # FastAPI app
-│   ├── api.py               # API routes
-│   ├── web.py               # Web routes
-│   └── deps.py              # Server dependencies
-│
-├── templates/                # Jinja2 Templates
-│   ├── conversation.md.j2   # Markdown template
-│   └── conversation.html.j2 # HTML template
+├── mcp/                      # MCP Server
+│   └── server.py            # Model Context Protocol implementation
 │
 ├── config.py                 # Configuration (Config, IndexConfig, DriveConfig)
-├── container.py              # Dependency Injection container
+├── services.py               # Singleton factories: get_backend(), get_repository()
+├── facade.py                 # Polylogue — top-level library API
+├── async_facade.py           # AsyncPolylogue — async library API
 ├── paths.py                  # XDG path resolution
-├── protocols.py              # Protocol definitions
-├── types.py                  # NewType definitions
-├── assets.py                 # Attachment path utilities (deprecated)
-├── render_paths.py           # Render path utilities (deprecated)
-├── render.py                 # Rendering logic (deprecated)
-├── verify.py                 # Verification utilities
-├── export.py                 # Export logic
-├── health.py                 # Health checks
-├── run.py                    # Run utilities (deprecated)
-└── version.py                # Version info
+├── protocols.py              # SearchProvider, VectorProvider protocols
+├── types.py                  # NewType definitions (ConversationId, MessageId, etc.)
+└── templates/                # Jinja2 Templates
+    ├── conversation.md.j2   # Markdown template
+    └── conversation.html.j2 # HTML template
 ```
 
-### Migration Notes
-
-**Legacy modules** (backward compatibility, can be deprecated in future):
-
-- `render.py`, `render_paths.py`, `assets.py`: Legacy rendering API (use `rendering/renderers/` instead)
-- `run.py`: Legacy pipeline API (use `pipeline/runner.py` + services instead)
-
 ---
+
+> **Note**: The detailed layer descriptions, protocol references, and extension points below are from a previous architecture revision. Some module paths and abstractions (e.g., `StorageBackend` protocol, `ingestion/`, `importers/`, `core/`, `container.py`) have been superseded by the current structure shown in the Package Structure section above. For the authoritative current reference, see [docs/CLAUDE.md](./CLAUDE.md).
 
 ## Layer Architecture
 
@@ -1273,28 +1279,19 @@ def test_parallel_ingestion_thread_safety():
 
 ## Summary
 
-Polylogue's post-refactoring architecture achieves:
+Polylogue's architecture achieves:
 
-✅ **Clear separation of concerns**: 7 distinct layers with single responsibilities
-✅ **Protocol-based abstraction**: Swappable backends via runtime-checkable protocols (StorageBackend, SearchProvider, OutputRenderer, VectorProvider)
-✅ **Dependency injection**: Services receive dependencies explicitly via dependency-injector framework
-✅ **Testability**: 1.93:1 test-to-source ratio, 951 tests, 69% overall coverage (83% core)
-✅ **Thread safety**: Bounded parallelism, explicit locking, thread-local connections
-✅ **Idempotency**: Content hashing enables safe re-runs
-✅ **Extensibility**: Clear extension points for backends, providers, renderers
-✅ **Type safety**: 100% mypy strict mode compliance (0 errors, 85 files)
-✅ **Performance**: 21,343x search cache speedup, parallel ingestion, incremental indexing
+- **Clear separation of concerns**: 9 packages with distinct responsibilities (cli, sources, pipeline, storage, schemas, lib, rendering, ui, mcp)
+- **Protocol-based search**: SearchProvider and VectorProvider protocols for FTS5 and Qdrant backends
+- **Direct storage**: SQLiteBackend as the single storage implementation (no protocol abstraction overhead)
+- **Singleton services**: `polylogue.services` module provides factory functions for backend + repository
+- **Thread safety**: Bounded parallelism, `_WRITE_LOCK` in store.py, thread-local connections
+- **Idempotency**: NFC-normalized content hashing enables safe re-runs
+- **Type safety**: mypy strict mode, 0 errors across 100 source files
 
-**Completed (Priorities 1-4)**:
+For the authoritative current reference, see:
 
-- ✅ Priority 1: Module organization, repository pattern, protocols, NewType IDs
-- ✅ Priority 2: Config objects, pipeline services, search abstraction, backend abstraction
-- ✅ Priority 3: Dependency injection framework, renderer abstraction
-- ✅ Priority 4: Type safety hardening (211 → 0 mypy errors), test coverage (83% core), performance benchmarking
-
-For detailed implementation notes, see:
-
-- [Refactoring Plan](./refactoring-plan.md) - Complete refactoring roadmap
-- [Storage Backend Abstraction](./storage-backend-abstraction.md) - Backend protocol details
-- [CLAUDE.md](../CLAUDE.md) - Developer guide with critical patterns
-- [Performance Guide](./performance.md) - Benchmarking results and optimization strategies
+- [docs/CLAUDE.md](./CLAUDE.md) — Developer guide with critical patterns, invariants, and API reference
+- [Architecture Roadmap](./architecture-roadmap.md) — Future enhancements
+- [Performance Guide](./performance.md) — Benchmarking results
+- Historical documents archived in [docs/archive/](./archive/)

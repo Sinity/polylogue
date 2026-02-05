@@ -16,7 +16,7 @@ Polylogue is a local-first tool for archiving AI conversations from multiple pro
 
 ### Design Philosophy
 
-- **Zero-config by default**: Just drop exports in `~/.local/share/polylogue/inbox/` and run `polylogue sync`
+- **Zero-config by default**: Just drop exports in `~/.local/share/polylogue/inbox/` and run `polylogue run`
 - **Library-first**: The Python API (`polylogue.lib`) is primary; CLI is a thin wrapper
 - **Filter-chaining**: Query with composable filters, not memorized subcommands
 - **Local-first**: All data stays on your machine. Sync TO local, never upload.
@@ -55,10 +55,10 @@ cp ~/Downloads/conversations.json ~/.local/share/polylogue/inbox/chatgpt/
 ln -s ~/.claude/projects ~/.local/share/polylogue/inbox/claude-code
 ```
 
-### 3. Sync
+### 3. Run
 
 ```bash
-polylogue sync
+polylogue run
 ```
 
 ### 4. Search
@@ -77,7 +77,7 @@ That's it. No config file needed.
 
 ```bash
 polylogue [QUERY...] [FILTERS...] [OUTPUT...]    # Query mode (default)
-polylogue sync [OPTIONS...]                       # Sync mode
+polylogue run [OPTIONS...]                        # Run pipeline (ingest → render → index)
 polylogue mcp                                     # MCP server mode
 polylogue check                                   # Health check
 polylogue auth                                    # OAuth flow (Drive)
@@ -227,34 +227,24 @@ polylogue -p claude --since "last month" --annotate "Focus on technical decision
 
 **ID prefix matching**: Minimum 4 characters. If prefix is ambiguous (matches multiple), error with list of matches. Use longer prefix or `--pick` to disambiguate.
 
-### Sync Mode
+### Run Mode
 
 ```bash
-polylogue sync                       # Sync all sources
-polylogue sync -p claude             # Sync only from claude inbox subdirs
-polylogue sync --watch               # Watch mode (continuous)
-polylogue sync --clipboard           # Import from clipboard
-polylogue sync --file path.json      # Import specific file
-polylogue sync --force-render        # Re-render all existing conversations
-
-# Watch mode enhancements
-polylogue sync --watch --notify                    # Desktop notification on new
-polylogue sync --watch --exec "echo {id} >> log"   # Run command on new
-polylogue sync --watch --webhook https://...       # POST to webhook on new
+polylogue run                        # Run pipeline on all sources
+polylogue run --source claude        # Run only for claude source
+polylogue run --preview              # Preview counts without writing
+polylogue run --stage ingest         # Run only ingest stage
+polylogue run --stage all            # Run all stages (ingest → render → index)
+polylogue run --force-render         # Re-render all existing conversations
 ```
 
-**Watch mode**: Polls inbox every 5 seconds for new/modified files. Logs sync activity to stderr. Ctrl+C to stop. Does not watch Drive (use manual sync for Drive). The `--notify`, `--exec`, and `--webhook` flags trigger on each new conversation.
+**Pipeline stages**: `ingest` → `render` → `index`. Default runs all stages. Use `--stage` to run specific stages.
+
+**Source scoping**: Use `--source NAME` (repeatable) to process only specific sources. Use `--source last` to reuse the previous interactive selection.
 
 **Deduplication**: Conversations are identified by content hash (SHA-256 of normalized content). Re-importing the same conversation is a no-op. Modified conversations (same provider ID, different content) update the existing record.
 
-**Partial failures**: Sync continues on individual file failures, reports errors at end. Exit code 0 if any files succeeded, non-zero only if all failed.
-
-**Rendering**: Markdown and HTML are generated during sync for new/modified conversations. To force re-render:
-
-```bash
-polylogue sync --force-render        # Re-render all
-polylogue sync --force-render -i abc # Re-render specific conversation
-```
+**Partial failures**: Pipeline continues on individual file failures, reports errors at end. Exit code 0 if any files succeeded, non-zero only if all failed.
 
 **Delete/prune**: To remove conversations from the archive:
 
@@ -407,10 +397,10 @@ polylogue --tag project:polylogue --list
 # LLM annotation
 polylogue -p claude --since "last month" --annotate "Technical focus, suggest tags from: project:*, lang:*"
 
-# Sync
-polylogue sync
-polylogue sync --watch --notify
-polylogue sync --clipboard
+# Run pipeline
+polylogue run
+polylogue run --source claude
+polylogue run --preview
 
 # Maintenance
 polylogue check --vacuum
@@ -509,37 +499,15 @@ conv.open()                # Open in browser
 conv.copy()                # Copy to clipboard
 ```
 
-### Sync and Import
+### Pipeline (Run)
 
 ```python
-# Sync all
-poly.sync()
+from polylogue.pipeline.runner import PipelineRunner
+from polylogue.config import Config
 
-# Sync specific providers
-poly.sync(providers=["claude"])
-
-# Watch mode
-poly.sync(watch=True)  # Blocking, continuous
-
-# Import
-poly.import_file(Path("~/Downloads/conversations.json"))
-poly.import_clipboard()
-```
-
-### Custom Backends
-
-```python
-from polylogue import Polylogue
-from polylogue.backends import SQLiteBackend, MemoryBackend
-
-# Default (XDG path)
-poly = Polylogue()
-
-# Custom database path
-poly = Polylogue(backend=SQLiteBackend("/custom/path/polylogue.db"))
-
-# In-memory (testing)
-poly = Polylogue(backend=MemoryBackend())
+config = Config()
+runner = PipelineRunner(config)
+result = runner.run()  # Returns RunResult with counts
 ```
 
 ## Data Model
@@ -800,25 +768,22 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 ```
 polylogue/
-├── lib/               # Core library (models, repository, projections)
-├── storage/           # Storage layer (SQLite, FTS5, backends)
-├── ingestion/         # Import from providers (ChatGPT, Claude, etc.)
-├── pipeline/          # Async ingestion pipeline (runner, services)
-├── rendering/         # Output rendering (Markdown, HTML)
-├── cli/               # CLI wrapper
-├── mcp/               # MCP server
-├── server/            # FastAPI backend server
-├── ui/                # Terminal UI facade (Rich, Textual)
-├── health.py          # System health checks
-├── verify.py          # Data quality verification
-└── analytics/         # Usage metrics and statistics
+├── cli/               # CLI commands (run, check, mcp, auth, reset, completions)
+├── sources/           # Source detection, provider parsers, Drive integration
+├── pipeline/          # Ingestion → rendering → indexing orchestration
+├── storage/           # SQLite backend, async repository, FTS5/Qdrant search
+├── schemas/           # Unified schema, provider models, schema inference
+├── lib/               # Core domain models, filters, projections, hashing
+├── rendering/         # Markdown/HTML output renderers
+├── ui/                # Terminal UI (Rich-based plain + Textual TUI)
+└── mcp/               # Model Context Protocol server
 ```
 
 ### Key Abstractions
 
-- **StorageBackend**: Protocol for database operations (SQLite, Memory, future: DuckDB)
-- **SearchProvider**: Protocol for search (FTS5, future: embeddings)
-- **Polylogue**: Main entry point, wraps storage + search + sync
+- **SearchProvider**: Protocol for search (FTS5 local, Qdrant vector)
+- **VectorProvider**: Protocol for embedding-based similarity search
+- **Polylogue**: Main entry point, wraps storage + search + pipeline
 
 ### Schema and Migrations
 
@@ -856,9 +821,7 @@ See `ARCHITECTURE.md` for detailed documentation.
 **Stdin support**:
 
 ```bash
-cat export.json | polylogue sync --file -
-pbpaste | polylogue sync --clipboard   # macOS
-xclip -o | polylogue sync --clipboard  # Linux (auto-detected)
+cat export.json | polylogue run --file -
 ```
 
 ## Development

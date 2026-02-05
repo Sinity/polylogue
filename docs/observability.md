@@ -10,14 +10,11 @@ Polylogue writes run metadata to disk and keeps a SQLite history so automation c
 
 ## Health checks
 
-- `polylogue health` validates config, archive root, DB reachability, index status, and Drive credential/token presence.
-- Results are cached in `archive_root/health.json` for roughly 10 minutes.
-
-## Exports
-
-- `polylogue export --out /path/to/export.jsonl` dumps conversations, messages, and attachments as JSONL.
-- Use this for dashboards or downstream processing.
+- `polylogue check` validates config, archive root, DB reachability, index status, and Drive credential/token presence.
+- `polylogue check --repair` fixes issues that can be auto-fixed.
+- `polylogue check --vacuum` compacts the database and reclaims space.
 
 ## Path inspection
 
-- `polylogue config show` prints a short summary; use `polylogue config show --json` for raw config values and env overrides.
+- `polylogue run --preview` prints resolved sources and output paths.
+- Use `POLYLOGUE_RENDER_ROOT` to override render output without editing config.
