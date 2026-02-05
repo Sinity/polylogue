@@ -20,7 +20,7 @@ dependencies = [
   "markdown-it-py",
   "pygments",
   "ijson",
-  "qdrant-client",
+  "sqlite-vec>=0.1.6",  # Self-contained vector search
   "questionary>=2.0.0",
   "click>=8.1.0,<9.0",
   "tenacity>=8.0.0",
@@ -78,10 +78,6 @@ markers = [
 [tool.coverage.run]
 source = ["polylogue"]
 branch = true
-omit = [
-    "polylogue/storage/index_qdrant.py",
-    "polylogue/storage/search_providers/qdrant.py",
-]
 
 [tool.coverage.report]
 skip_empty = true

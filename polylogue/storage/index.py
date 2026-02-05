@@ -24,9 +24,7 @@ def ensure_index(conn: sqlite3.Connection) -> None:
 
 
 def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
-    """Rebuild the entire search index from scratch.
-
-    Rebuilds both FTS5 and Qdrant indexes if configured.
+    """Rebuild the entire FTS5 search index from scratch.
 
     Args:
         conn: Optional SQLite connection. If None, creates a new connection.
@@ -43,28 +41,16 @@ def rebuild_index(conn: sqlite3.Connection | None = None) -> None:
             WHERE messages.text IS NOT NULL
             """
         )
-
-        # Optional Qdrant support via vector provider
         db_conn.commit()
-
-        # Optional Qdrant support via vector provider
-        # vector_provider = create_vector_provider()
-        # if vector_provider:
-        #     from .index_qdrant import update_qdrant_for_conversations
-        #
-        #     rows = db_conn.execute("SELECT conversation_id FROM conversations").fetchall()
-        #     ids = [row["conversation_id"] for row in rows]
-        #     update_qdrant_for_conversations(ids, db_conn)
 
     with connection_context(conn) as db_conn:
         _do(db_conn)
 
 
 def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite3.Connection | None = None) -> None:
-    """Update search indexes for specific conversations.
+    """Update FTS5 search index for specific conversations.
 
-    Updates both FTS5 and Qdrant indexes if configured.
-    Optimized for batch operations using a single provider_map query and executemany.
+    Optimized for batch operations using a single delete then batch insert.
 
     Args:
         conversation_ids: List of conversation IDs to re-index
@@ -103,14 +89,6 @@ def update_index_for_conversations(conversation_ids: Sequence[str], conn: sqlite
                 "INSERT INTO messages_fts (message_id, conversation_id, content) VALUES (?, ?, ?)",
                 fts_batch,
             )
-
-        # Optional Qdrant support via vector provider
-        # Optional Qdrant support via vector provider
-        # vector_provider = create_vector_provider()
-        # if vector_provider:
-        #     from .index_qdrant import update_qdrant_for_conversations
-        #
-        #     update_qdrant_for_conversations(all_ids, db_conn)
 
         db_conn.commit()
 

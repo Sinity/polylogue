@@ -427,7 +427,7 @@ class TestRunCommandIndexError:
             counts={"conversations": 2},
             drift={},
             indexed=False,
-            index_error="Qdrant connection timeout",
+            index_error="FTS5 index error",
             duration_ms=1200,
         )
         from unittest.mock import patch
@@ -440,13 +440,13 @@ class TestRunCommandIndexError:
                         with patch("polylogue.cli.commands.run.format_counts", return_value="2 conversations"):
                             with patch("polylogue.cli.commands.run.format_index_status") as mock_format_idx:
                                 mock_run.return_value = result_with_error
-                                mock_format_idx.return_value = "Index error: Qdrant connection timeout"
+                                mock_format_idx.return_value = "Index error: FTS5 index error"
 
                                 result = runner.invoke(cli, ["run"])
 
         assert result.exit_code == 0
         # Should display error and hint
-        assert "Qdrant connection timeout" in result.output or "Index error" in result.output
+        assert "FTS5 index error" in result.output or "Index error" in result.output
         assert "rebuild" in result.output.lower() or "--stage index" in result.output
 
     def test_run_stage_index_displays_error(self, runner, cli_workspace):
