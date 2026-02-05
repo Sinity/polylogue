@@ -110,10 +110,7 @@ class SchemaValidator:
         """List providers with available schemas."""
         if not SCHEMA_DIR.exists():
             return []
-        return sorted(
-            p.stem.replace(".schema", "")
-            for p in SCHEMA_DIR.glob("*.schema.json")
-        )
+        return sorted(p.stem.replace(".schema", "") for p in SCHEMA_DIR.glob("*.schema.json"))
 
     def validate(self, data: Any) -> ValidationResult:
         """Validate data against the schema with drift detection.
@@ -171,28 +168,22 @@ class SchemaValidator:
                     # Schema allows any additional properties - no warning
                     pass
                 elif isinstance(has_additional, dict):
-                    # Schema has additionalProperties schema - recurse if dict
+                    # Field is allowed by additionalProperties schema but not named -> Drift
+                    warnings.append(f"Unexpected field: {current_path}")
+                    # Recurse if value is dict to find nested drift
                     if isinstance(value, dict):
-                        warnings.extend(
-                            self._detect_drift(value, has_additional, current_path)
-                        )
+                        warnings.extend(self._detect_drift(value, has_additional, current_path))
             else:
                 # Known property - recurse into nested objects
                 prop_schema = schema["properties"][key]
                 if isinstance(value, dict) and "properties" in prop_schema:
-                    warnings.extend(
-                        self._detect_drift(value, prop_schema, current_path)
-                    )
+                    warnings.extend(self._detect_drift(value, prop_schema, current_path))
                 elif isinstance(value, list) and "items" in prop_schema:
                     items_schema = prop_schema["items"]
                     if isinstance(items_schema, dict) and "properties" in items_schema:
                         for i, item in enumerate(value):
                             if isinstance(item, dict):
-                                warnings.extend(
-                                    self._detect_drift(
-                                        item, items_schema, f"{current_path}[{i}]"
-                                    )
-                                )
+                                warnings.extend(self._detect_drift(item, items_schema, f"{current_path}[{i}]"))
 
         return warnings
 
@@ -209,9 +200,7 @@ class SchemaValidator:
         if "items" in schema and isinstance(schema["items"], dict):
             props.update(self._extract_known_properties(schema["items"]))
 
-        if "additionalProperties" in schema and isinstance(
-            schema["additionalProperties"], dict
-        ):
+        if "additionalProperties" in schema and isinstance(schema["additionalProperties"], dict):
             props.update(self._extract_known_properties(schema["additionalProperties"]))
 
         return props

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from polylogue.lib.repository import ConversationRepository
+from polylogue.storage.repository import ConversationRepository
 
 
 @dataclass

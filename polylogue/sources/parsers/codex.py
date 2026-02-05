@@ -1,6 +1,6 @@
 """Codex JSONL session importer using typed Pydantic models.
 
-Uses CodexRecord from polylogue.providers.codex for type-safe parsing
+Uses CodexRecord from polylogue.sources.providers.codex for type-safe parsing
 with automatic validation and normalization.
 """
 
@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from polylogue.providers.codex import CodexRecord
+from polylogue.sources.providers.codex import CodexRecord
+
 from .base import ParsedConversation, ParsedMessage
 
 

@@ -16,19 +16,21 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.lib.viewports import (
     ContentBlock,
-    ContentType,
     CostInfo,
     MessageMeta,
     ReasoningTrace,
     TokenUsage,
     ToolCall,
-    ToolCategory,
     classify_tool,
 )
 from polylogue.schemas.unified import (
-    extract_reasoning_traces as _extract_reasoning_traces,
-    extract_tool_calls as _extract_tool_calls,
     extract_content_blocks as _extract_content_blocks,
+)
+from polylogue.schemas.unified import (
+    extract_reasoning_traces as _extract_reasoning_traces,
+)
+from polylogue.schemas.unified import (
+    extract_tool_calls as _extract_tool_calls,
 )
 
 

@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import polylogue.ingestion.drive_client as drive_client
-from polylogue.ingestion import DriveAuthError, DriveClient
+import polylogue.sources.drive_client as drive_client
+from polylogue.sources import DriveAuthError, DriveClient
 
 
 def test_drive_client_reports_missing_dependency(monkeypatch):
@@ -215,21 +215,21 @@ class TestCredentialsResolution:
 
     def test_default_credentials_path(self):
         """Get default credentials path."""
-        from polylogue.ingestion.drive_client import default_credentials_path
+        from polylogue.sources.drive_client import default_credentials_path
 
         path = default_credentials_path()
         assert "credentials.json" in str(path)
 
     def test_default_token_path(self):
         """Get default token path."""
-        from polylogue.ingestion.drive_client import default_token_path
+        from polylogue.sources.drive_client import default_token_path
 
         path = default_token_path()
         assert "token.json" in str(path)
 
     def test_resolve_credentials_from_env(self, tmp_path, monkeypatch):
         """Resolve credentials path from environment variable."""
-        from polylogue.ingestion.drive_client import _resolve_credentials_path
+        from polylogue.sources.drive_client import _resolve_credentials_path
 
         creds_path = tmp_path / "my_creds.json"
         creds_path.write_text('{"installed": {}}')
@@ -240,7 +240,7 @@ class TestCredentialsResolution:
 
     def test_resolve_credentials_missing_raises(self, monkeypatch, tmp_path):
         """Raise error when credentials not found."""
-        from polylogue.ingestion.drive_client import _resolve_credentials_path
+        from polylogue.sources.drive_client import _resolve_credentials_path
 
         # Ensure no env var is set
         monkeypatch.delenv("POLYLOGUE_CREDENTIAL_PATH", raising=False)
@@ -248,7 +248,7 @@ class TestCredentialsResolution:
         # Mock default path to non-existent location
         nonexistent_path = tmp_path / "nonexistent" / "credentials.json"
         monkeypatch.setattr(
-            "polylogue.ingestion.drive_client.default_credentials_path",
+            "polylogue.sources.drive_client.default_credentials_path",
             lambda config: nonexistent_path
         )
 
@@ -257,7 +257,7 @@ class TestCredentialsResolution:
 
     def test_resolve_token_from_env(self, tmp_path, monkeypatch):
         """Resolve token path from environment variable."""
-        from polylogue.ingestion.drive_client import _resolve_token_path
+        from polylogue.sources.drive_client import _resolve_token_path
 
         token_path = tmp_path / "my_token.json"
         monkeypatch.setenv("POLYLOGUE_TOKEN_PATH", str(token_path))
@@ -267,7 +267,7 @@ class TestCredentialsResolution:
 
     def test_resolve_retries_from_env(self, monkeypatch):
         """Resolve retry count from environment."""
-        from polylogue.ingestion.drive_client import _resolve_retries
+        from polylogue.sources.drive_client import _resolve_retries
 
         monkeypatch.setenv("POLYLOGUE_DRIVE_RETRIES", "5")
         result = _resolve_retries(value=None, config=None)
@@ -275,14 +275,14 @@ class TestCredentialsResolution:
 
     def test_resolve_retries_default(self):
         """Use default retry count when not specified."""
-        from polylogue.ingestion.drive_client import _resolve_retries
+        from polylogue.sources.drive_client import _resolve_retries
 
         result = _resolve_retries(value=None, config=None)
         assert result >= 0  # Should be a reasonable default
 
     def test_resolve_retries_explicit_value(self):
         """Use explicit retry value when provided."""
-        from polylogue.ingestion.drive_client import _resolve_retries
+        from polylogue.sources.drive_client import _resolve_retries
 
         result = _resolve_retries(value=10, config=None)
         assert result == 10
@@ -371,14 +371,14 @@ class TestRetryLogic:
 
     def test_auth_error_not_retried(self):
         """Auth errors should not be retried."""
-        from polylogue.ingestion.drive_client import _is_retryable_error
+        from polylogue.sources.drive_client import _is_retryable_error
 
         auth_error = DriveAuthError("Invalid credentials")
         assert not _is_retryable_error(auth_error)
 
     def test_generic_error_is_retryable(self):
         """Generic errors should be retried."""
-        from polylogue.ingestion.drive_client import _is_retryable_error
+        from polylogue.sources.drive_client import _is_retryable_error
 
         generic_error = RuntimeError("Network timeout")
         assert _is_retryable_error(generic_error)
@@ -430,7 +430,7 @@ class TestAPIOperations:
 
     def test_resolve_folder_id_not_found(self, drive_client_with_service):
         """Raise error when folder not found."""
-        from polylogue.ingestion import DriveNotFoundError
+        from polylogue.sources import DriveNotFoundError
 
         client, mock_service = drive_client_with_service
 

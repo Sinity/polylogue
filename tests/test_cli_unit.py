@@ -13,6 +13,7 @@ This file contains unit tests for:
 - Check command
 - Editor/browser security
 """
+
 from __future__ import annotations
 
 import json
@@ -24,8 +25,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from polylogue.cli import cli
-from polylogue.cli import helpers
+from polylogue.cli import cli, helpers
 from polylogue.cli.commands.check import check_command
 from polylogue.cli.editor import validate_command
 from polylogue.cli.formatting import (
@@ -51,13 +51,10 @@ from polylogue.health import (
 )
 from polylogue.storage.backends.sqlite import create_default_backend
 
-
 # =============================================================================
 # CLI UTILITIES TESTS (from test_cli_utilities.py)
 # =============================================================================
-
-from polylogue.storage.repository import StorageRepository
-
+from polylogue.storage.repository import ConversationRepository
 
 # ============================================================================
 # Fixtures
@@ -81,6 +78,7 @@ def helpers_workspace(tmp_path, monkeypatch):
 
     # Reload paths module
     import importlib
+
     import polylogue.paths
 
     importlib.reload(polylogue.paths)
@@ -102,20 +100,17 @@ class TestShouldUsePlain:
 
     def test_explicit_plain_true(self):
         """Explicit plain=True returns True."""
-        assert should_use_plain(plain=True, interactive=False) is True
+        assert should_use_plain(plain=True) is True
 
-    def test_explicit_interactive_true(self):
-        """Explicit interactive=True returns False."""
-        assert should_use_plain(plain=False, interactive=True) is False
-
-    def test_plain_takes_precedence_over_interactive(self):
-        """plain=True takes precedence over interactive=True."""
-        assert should_use_plain(plain=True, interactive=True) is True
+    def test_explicit_plain_false_on_tty(self):
+        """Explicit plain=False on TTY returns False."""
+        with patch("sys.stdout.isatty", return_value=True), patch("sys.stderr.isatty", return_value=True):
+            assert should_use_plain(plain=False) is False
 
     def test_env_var_force_plain(self, monkeypatch):
         """POLYLOGUE_FORCE_PLAIN env var enables plain mode."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-        assert should_use_plain(plain=False, interactive=False) is True
+        assert should_use_plain(plain=False) is True
 
     def test_env_var_false_values(self, monkeypatch):
         """POLYLOGUE_FORCE_PLAIN with 0/false/no doesn't force plain."""
@@ -123,7 +118,7 @@ class TestShouldUsePlain:
             monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", val)
             # Result depends on TTY status, but env var doesn't force plain
             # We can't easily test TTY, so we just verify no crash
-            result = should_use_plain(plain=False, interactive=False)
+            result = should_use_plain(plain=False)
             assert isinstance(result, bool)
 
     def test_non_tty_returns_true(self, monkeypatch):
@@ -132,7 +127,7 @@ class TestShouldUsePlain:
         # Mock stdout/stderr as non-TTY
         with patch.object(sys.stdout, "isatty", return_value=False):
             with patch.object(sys.stderr, "isatty", return_value=False):
-                assert should_use_plain(plain=False, interactive=False) is True
+                assert should_use_plain(plain=False) is True
 
 
 class TestAnnouncePlainMode:
@@ -145,7 +140,6 @@ class TestAnnouncePlainMode:
             announce_plain_mode()
         output = captured.getvalue()
         assert "Plain output active" in output
-        assert "--interactive" in output
 
 
 class TestFormatCursors:
@@ -196,10 +190,12 @@ class TestFormatCursors:
 
     def test_multiple_cursors(self):
         """Multiple cursors are joined with semicolons."""
-        result = format_cursors({
-            "inbox": {"file_count": 5},
-            "drive": {"file_count": 3},
-        })
+        result = format_cursors(
+            {
+                "inbox": {"file_count": 5},
+                "drive": {"file_count": 3},
+            }
+        )
         assert result is not None
         assert "inbox" in result
         assert "drive" in result
@@ -310,10 +306,7 @@ class TestFormatSourcesSummary:
 
     def test_truncates_long_lists(self):
         """Lists > 8 items are truncated."""
-        sources = [
-            Source(name=f"source{i}", path=Path(f"/src{i}"))
-            for i in range(12)
-        ]
+        sources = [Source(name=f"source{i}", path=Path(f"/src{i}")) for i in range(12)]
         result = format_sources_summary(sources)
         assert "+4 more" in result
         # Should have 8 names plus the "+4 more"
@@ -448,6 +441,7 @@ class TestLoadSaveLastSource:
         """save_last_source creates parent directories."""
         # Remove the state dir
         import shutil
+
         shutil.rmtree(helpers_workspace["state_dir"])
 
         helpers.save_last_source("new-source")
@@ -774,24 +768,25 @@ class TestLoadEffectiveConfig:
 # ============================================================================
 
 
-def test_create_storage_repository() -> None:
-    """Test creating storage repository returns StorageRepository instance."""
+def test_create_conversation_repository() -> None:
+    """Test creating conversation repository returns ConversationRepository instance."""
     backend = create_default_backend()
-    repository = StorageRepository(backend=backend)
+    repository = ConversationRepository(backend=backend)
 
-    assert isinstance(repository, StorageRepository)
+    assert isinstance(repository, ConversationRepository)
     assert hasattr(repository, "_write_lock")
 
 
-def test_create_storage_repository_independent_instances() -> None:
+def test_create_conversation_repository_independent_instances() -> None:
     """Test that each call creates a new independent repository instance."""
     backend1 = create_default_backend()
     backend2 = create_default_backend()
-    repo1 = StorageRepository(backend=backend1)
-    repo2 = StorageRepository(backend=backend2)
+    repo1 = ConversationRepository(backend=backend1)
+    repo2 = ConversationRepository(backend=backend2)
 
     assert repo1 is not repo2
     assert repo1._write_lock is not repo2._write_lock
+
 
 # =============================================================================
 # AUTH COMMAND TESTS (from test_cli_auth.py)
@@ -812,29 +807,33 @@ def auth_workspace(tmp_path, monkeypatch):
     # Create credentials.json (OAuth client config)
     creds_path = creds_dir / "credentials.json"
     creds_path.write_text(
-        json.dumps({
-            "installed": {
-                "client_id": "test_client.apps.googleusercontent.com",
-                "client_secret": "test_secret",
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": ["http://localhost"],
+        json.dumps(
+            {
+                "installed": {
+                    "client_id": "test_client.apps.googleusercontent.com",
+                    "client_secret": "test_secret",
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": ["http://localhost"],
+                }
             }
-        }),
+        ),
         encoding="utf-8",
     )
 
     # Create token.json (OAuth tokens)
     token_path = creds_dir / "token.json"
     token_path.write_text(
-        json.dumps({
-            "token": "test_access_token",
-            "refresh_token": "test_refresh_token",
-            "token_uri": "https://oauth2.googleapis.com/token",
-            "client_id": "test_client.apps.googleusercontent.com",
-            "client_secret": "test_secret",
-            "scopes": ["https://www.googleapis.com/auth/drive.readonly"],
-        }),
+        json.dumps(
+            {
+                "token": "test_access_token",
+                "refresh_token": "test_refresh_token",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "client_id": "test_client.apps.googleusercontent.com",
+                "client_secret": "test_secret",
+                "scopes": ["https://www.googleapis.com/auth/drive.readonly"],
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -846,8 +845,9 @@ def auth_workspace(tmp_path, monkeypatch):
 
     # Reload modules to pick up new environment
     import importlib
-    import polylogue.paths
+
     import polylogue.config
+    import polylogue.paths
 
     importlib.reload(polylogue.paths)
     importlib.reload(polylogue.config)
@@ -873,7 +873,6 @@ class TestAuthCommand:
     def test_revoke_removes_token(self, auth_workspace, monkeypatch):
         """--revoke removes the token file."""
         # Use the config-level token path setting
-        from polylogue.ingestion.drive_client import default_token_path
 
         token_path = auth_workspace["token_path"]
         assert token_path.exists()
@@ -903,7 +902,7 @@ class TestAuthCommand:
         assert token_path.exists()
 
         # Mock DriveClient to avoid actual OAuth - need to patch at import location
-        with patch("polylogue.ingestion.drive_client.DriveClient") as mock_client_class:
+        with patch("polylogue.sources.drive_client.DriveClient") as mock_client_class:
             mock_client = MagicMock()
             mock_client_class.return_value = mock_client
 
@@ -926,13 +925,15 @@ class TestDriveOAuthFlow:
         result = runner.invoke(cli, ["auth"])
         assert result.exit_code == 1
         # May fail with credentials missing or OAuth error
-        assert ("credentials" in result.output.lower() or
-                "missing" in result.output.lower() or
-                "oauth" in result.output.lower())
+        assert (
+            "credentials" in result.output.lower()
+            or "missing" in result.output.lower()
+            or "oauth" in result.output.lower()
+        )
 
     def test_successful_auth_with_cached_token(self, auth_workspace):
         """Existing token uses cached credentials."""
-        with patch("polylogue.ingestion.drive_client.DriveClient") as mock_client_class:
+        with patch("polylogue.sources.drive_client.DriveClient") as mock_client_class:
             mock_client = MagicMock()
             mock_client_class.return_value = mock_client
 
@@ -944,7 +945,7 @@ class TestDriveOAuthFlow:
 
     def test_auth_failure_shows_error(self, auth_workspace):
         """Auth failure shows error message."""
-        with patch("polylogue.ingestion.drive_client.DriveClient") as mock_client_class:
+        with patch("polylogue.sources.drive_client.DriveClient") as mock_client_class:
             mock_client_class.side_effect = Exception("OAuth failed: invalid_grant")
 
             runner = CliRunner()
@@ -963,7 +964,7 @@ class TestDriveOAuthFlow:
                 raise Exception("Token refresh failed")
             return MagicMock()
 
-        with patch("polylogue.ingestion.drive_client.DriveClient") as mock_client_class:
+        with patch("polylogue.sources.drive_client.DriveClient") as mock_client_class:
             mock_client_class.side_effect = side_effect
 
             runner = CliRunner()
@@ -1039,6 +1040,7 @@ class TestRevokeCredentials:
         assert result.exit_code == 0
         assert "no token" in result.output.lower()
 
+
 # =============================================================================
 # CHECK COMMAND TESTS (from test_cli_check.py)
 # =============================================================================
@@ -1098,8 +1100,10 @@ class TestCheckCommand:
 
     def test_check_displays_health_status(self, runner, mock_env, healthy_report):
         """Check command displays health status."""
-        with patch("polylogue.cli.commands.check.load_effective_config"), \
-             patch("polylogue.cli.commands.check.get_health", return_value=healthy_report):
+        with (
+            patch("polylogue.cli.commands.check.load_effective_config"),
+            patch("polylogue.cli.commands.check.get_health", return_value=healthy_report),
+        ):
             result = runner.invoke(check_command, obj=mock_env)
 
             assert result.exit_code == 0
@@ -1108,8 +1112,10 @@ class TestCheckCommand:
 
     def test_check_json_output(self, runner, mock_env, healthy_report):
         """Check --json outputs JSON format."""
-        with patch("polylogue.cli.commands.check.load_effective_config"), \
-             patch("polylogue.cli.commands.check.get_health", return_value=healthy_report):
+        with (
+            patch("polylogue.cli.commands.check.load_effective_config"),
+            patch("polylogue.cli.commands.check.get_health", return_value=healthy_report),
+        ):
             result = runner.invoke(check_command, ["--json"], obj=mock_env)
 
             assert result.exit_code == 0
@@ -1126,8 +1132,10 @@ class TestCheckCommand:
 
     def test_check_repair_on_healthy_db(self, runner, mock_env, healthy_report):
         """Repair mode on healthy database shows no issues."""
-        with patch("polylogue.cli.commands.check.load_effective_config"), \
-             patch("polylogue.cli.commands.check.get_health", return_value=healthy_report):
+        with (
+            patch("polylogue.cli.commands.check.load_effective_config"),
+            patch("polylogue.cli.commands.check.get_health", return_value=healthy_report),
+        ):
             result = runner.invoke(check_command, ["--repair"], obj=mock_env)
 
             assert result.exit_code == 0
@@ -1144,9 +1152,11 @@ class TestCheckCommand:
             RepairResult("orphaned_attachments", 0, True, "No orphaned attachments"),
         ]
 
-        with patch("polylogue.cli.commands.check.load_effective_config"), \
-             patch("polylogue.cli.commands.check.get_health", return_value=sample_health_report), \
-             patch("polylogue.cli.commands.check.run_all_repairs", return_value=repair_results):
+        with (
+            patch("polylogue.cli.commands.check.load_effective_config"),
+            patch("polylogue.cli.commands.check.get_health", return_value=sample_health_report),
+            patch("polylogue.cli.commands.check.run_all_repairs", return_value=repair_results),
+        ):
             result = runner.invoke(check_command, ["--repair"], obj=mock_env)
 
             assert result.exit_code == 0
@@ -1161,11 +1171,13 @@ class TestCheckCommand:
             RepairResult("orphaned_messages", 5, True, "Deleted 5 orphaned messages"),
         ]
 
-        with patch("polylogue.cli.commands.check.load_effective_config"), \
-             patch("polylogue.cli.commands.check.get_health", return_value=sample_health_report), \
-             patch("polylogue.cli.commands.check.run_all_repairs", return_value=repair_results), \
-             patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn, \
-             patch("polylogue.storage.backends.sqlite.default_db_path", return_value=Path("/tmp/test.db")):
+        with (
+            patch("polylogue.cli.commands.check.load_effective_config"),
+            patch("polylogue.cli.commands.check.get_health", return_value=sample_health_report),
+            patch("polylogue.cli.commands.check.run_all_repairs", return_value=repair_results),
+            patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn,
+            patch("polylogue.storage.backends.sqlite.default_db_path", return_value=Path("/tmp/test.db")),
+        ):
             # Create mock connection that properly handles context manager
             mock_connection = MagicMock()
             mock_conn.return_value.__enter__ = MagicMock(return_value=mock_connection)
@@ -1202,7 +1214,9 @@ class TestRepairFunctions:
             conn.execute("PRAGMA foreign_keys = ON")
 
             # Verify it exists
-            count = conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", ("non-existent-conv",)).fetchone()[0]
+            count = conn.execute(
+                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?", ("non-existent-conv",)
+            ).fetchone()[0]
             assert count == 1
 
         config = MagicMock(spec=Config)
@@ -1231,7 +1245,9 @@ class TestRepairFunctions:
             conn.commit()
 
             # Verify it exists
-            count = conn.execute("SELECT COUNT(*) FROM conversations WHERE conversation_id = ?", ("empty-conv-1",)).fetchone()[0]
+            count = conn.execute(
+                "SELECT COUNT(*) FROM conversations WHERE conversation_id = ?", ("empty-conv-1",)
+            ).fetchone()[0]
             assert count == 1
 
         config = MagicMock(spec=Config)
@@ -1298,10 +1314,12 @@ class TestRepairFunctions:
 
         config = MagicMock(spec=Config)
 
-        with patch("polylogue.health.repair_orphaned_messages") as mock_orphan, \
-             patch("polylogue.health.repair_empty_conversations") as mock_empty, \
-             patch("polylogue.health.repair_dangling_fts") as mock_fts, \
-             patch("polylogue.health.repair_orphaned_attachments") as mock_att:
+        with (
+            patch("polylogue.health.repair_orphaned_messages") as mock_orphan,
+            patch("polylogue.health.repair_empty_conversations") as mock_empty,
+            patch("polylogue.health.repair_dangling_fts") as mock_fts,
+            patch("polylogue.health.repair_orphaned_attachments") as mock_att,
+        ):
             mock_orphan.return_value = RepairResult("orphaned_messages", 0, True, "OK")
             mock_empty.return_value = RepairResult("empty_conversations", 0, True, "OK")
             mock_fts.return_value = RepairResult("dangling_fts", 0, True, "OK")
@@ -1331,13 +1349,16 @@ class TestVerboseMode:
             summary={"ok": 0, "warning": 1, "error": 0},
         )
 
-        with patch("polylogue.cli.commands.check.load_effective_config"), \
-             patch("polylogue.cli.commands.check.get_health", return_value=report):
+        with (
+            patch("polylogue.cli.commands.check.load_effective_config"),
+            patch("polylogue.cli.commands.check.get_health", return_value=report),
+        ):
             result = runner.invoke(check_command, ["--verbose"], obj=mock_env)
 
             assert result.exit_code == 0
             # In verbose mode, summary should be called with breakdown info
             assert mock_env.ui.summary.called
+
 
 # =============================================================================
 # EDITOR SECURITY TESTS (from test_cli_editor.py)
