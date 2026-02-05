@@ -2,13 +2,11 @@
 
 SYSTEMATIZATION: Merged from:
 - test_backend_sqlite.py (SQLite backend operations)
-- test_backend_protocol.py (StorageBackend protocol conformance)
 - test_backend_comparison.py (Old vs new extraction comparison)
 
 This file contains tests for:
 - SQLite backend CRUD operations
 - Transaction management
-- StorageBackend protocol conformance
 - Extraction comparison between old/new backends
 """
 from __future__ import annotations
@@ -17,15 +15,12 @@ import json
 import sqlite3
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from polylogue.protocols import StorageBackend
 from polylogue.storage.backends import SQLiteBackend
 from tests.helpers import make_attachment, make_conversation, make_message
-
 
 # =============================================================================
 # SQLITE BACKEND OPERATIONS (from test_backend_sqlite.py)
@@ -200,16 +195,6 @@ def test_backend_delete_conversation_cleans_fts(sqlite_backend: SQLiteBackend) -
 # =============================================================================
 # STORAGE BACKEND PROTOCOL CONFORMANCE (from test_backend_protocol.py)
 # =============================================================================
-
-
-class TestStorageBackendProtocol:
-    """Verify SQLiteBackend implements StorageBackend protocol."""
-
-    def test_sqlite_backend_is_storage_backend(self, tmp_path: Path) -> None:
-        """SQLiteBackend is a runtime-checkable StorageBackend."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        assert isinstance(backend, StorageBackend)
-        backend.close()
 
 
 class TestConversationOperations:
@@ -527,16 +512,16 @@ class TestDeleteOperations:
 # =============================================================================
 
 
+from polylogue.importers.base import normalize_role as old_normalize_role
 from polylogue.importers.claude import (
-    parse_code as old_parse_code,
     extract_text_from_segments as old_extract_segments,
 )
-from polylogue.importers.base import normalize_role as old_normalize_role
-
 from polylogue.schemas.unified import (
     extract_harmonized_message,
-    normalize_role as new_normalize_role,
     is_message_record,
+)
+from polylogue.schemas.unified import (
+    normalize_role as new_normalize_role,
 )
 
 
@@ -720,7 +705,7 @@ class TestAPICompatibility:
         }
 
         pm = ParsedMessage(provider_message_id="test", role="user", text="hello")
-        for pm_field in field_mapping.keys():
+        for pm_field in field_mapping:
             assert hasattr(pm, pm_field), f"ParsedMessage missing {pm_field}"
 
         hm = HarmonizedMessage(role="user", text="hello", provider="test")

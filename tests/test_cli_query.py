@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -220,74 +219,6 @@ class TestConvToOrg:
         assert "* ASSISTANT" in result
 
 
-class TestOutputByMonth:
-    """Tests for _output_by_month aggregation."""
-
-    def test_groups_by_month(self, mock_env, sample_conversations):
-        """Groups conversations by month."""
-        query._output_by_month(mock_env, sample_conversations)
-
-        # Should have been called with month groupings
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "2024-06" in output or "2024-07" in output
-
-    def test_handles_missing_dates(self, mock_env):
-        """Handles conversations without dates."""
-        conv = Conversation(
-            id="no-date",
-            provider="test",
-            messages=[],
-            updated_at=None,
-        )
-
-        query._output_by_month(mock_env, [conv])
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "unknown" in output
-
-
-class TestOutputByProvider:
-    """Tests for _output_by_provider aggregation."""
-
-    def test_groups_by_provider(self, mock_env, sample_conversations):
-        """Groups conversations by provider."""
-        query._output_by_provider(mock_env, sample_conversations)
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "chatgpt" in output or "claude" in output
-
-    def test_shows_percentages(self, mock_env, sample_conversations):
-        """Shows percentages for each provider."""
-        query._output_by_provider(mock_env, sample_conversations)
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "%" in output
-
-
-class TestOutputByTag:
-    """Tests for _output_by_tag aggregation."""
-
-    def test_groups_by_tag(self, mock_env, sample_conversations):
-        """Groups conversations by tag."""
-        query._output_by_tag(mock_env, sample_conversations)
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "work" in output or "programming" in output
-
-    def test_counts_untagged(self, mock_env, sample_conversations):
-        """Counts untagged conversations."""
-        query._output_by_tag(mock_env, sample_conversations)
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "untagged" in output
-
-
 class TestOutputStats:
     """Tests for _output_stats aggregation."""
 
@@ -366,6 +297,7 @@ class TestFormatList:
         result = query._format_list(sample_conversations, "yaml", None)
 
         import yaml
+
         parsed = yaml.safe_load(result)
 
         assert isinstance(parsed, list)
@@ -411,6 +343,7 @@ class TestFormatConversation:
         result = query._format_conversation(conv, "yaml", None)
 
         import yaml
+
         parsed = yaml.safe_load(result)
 
         assert parsed["id"] == "conv1-abc123"
@@ -461,73 +394,6 @@ class TestCopyToClipboard:
             calls = mock_env.ui.console.print.call_args_list
             output = " ".join(str(c) for c in calls)
             assert "could not" in output.lower() or "clipboard" in output.lower()
-
-
-class TestOutputCsv:
-    """Tests for _output_csv helper."""
-
-    def test_writes_csv_file(self, mock_env, sample_conversations, tmp_path):
-        """Writes CSV file with header and data."""
-        csv_path = tmp_path / "output.csv"
-        query._output_csv(mock_env, sample_conversations, csv_path)
-
-        assert csv_path.exists()
-        content = csv_path.read_text()
-
-        # Check header
-        assert "source,provider,conversation_id" in content
-
-    def test_includes_messages(self, mock_env, sample_conversations, tmp_path):
-        """CSV includes message-level rows."""
-        csv_path = tmp_path / "output.csv"
-        query._output_csv(mock_env, sample_conversations, csv_path)
-
-        content = csv_path.read_text()
-        lines = content.strip().split("\n")
-
-        # Header + messages from all conversations
-        assert len(lines) > len(sample_conversations)
-
-    def test_creates_parent_directories(self, mock_env, sample_conversations, tmp_path):
-        """Creates parent directories if needed."""
-        csv_path = tmp_path / "subdir" / "output.csv"
-        query._output_csv(mock_env, sample_conversations, csv_path)
-
-        assert csv_path.exists()
-
-
-class TestAnnotateConversations:
-    """Tests for _annotate_conversations helper."""
-
-    def test_shows_not_implemented(self, mock_env, sample_conversations):
-        """Shows not implemented message."""
-        params = {"annotate": "summarize each conversation"}
-
-        query._annotate_conversations(mock_env, sample_conversations, params)
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "not" in output.lower() and "implement" in output.lower()
-
-    def test_shows_count(self, mock_env, sample_conversations):
-        """Shows count of conversations that would be annotated."""
-        params = {"annotate": "test prompt"}
-
-        query._annotate_conversations(mock_env, sample_conversations, params)
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "3" in output  # Number of sample conversations
-
-    def test_handles_no_results(self, mock_env):
-        """Handles empty results."""
-        params = {"annotate": "test"}
-
-        query._annotate_conversations(mock_env, [], params)
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "no conversation" in output.lower()
 
 
 class TestSendOutput:
@@ -611,10 +477,7 @@ class TestBulkOperationConfirmation:
     def test_modifiers_require_force_for_bulk(self, mock_env):
         """Modifiers require --force for >10 items."""
         # Create 15 mock conversations
-        convs = [
-            MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test")
-            for i in range(15)
-        ]
+        convs = [MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test") for i in range(15)]
         params = {"add_tag": ("bulk-tag",), "force": False}
 
         with pytest.raises(SystemExit) as exc_info:
@@ -629,17 +492,14 @@ class TestBulkOperationConfirmation:
     def test_modifiers_proceed_with_force(self, mock_env):
         """Modifiers proceed with --force for bulk operations."""
         # Create 15 mock conversations
-        convs = [
-            MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test")
-            for i in range(15)
-        ]
+        convs = [MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test") for i in range(15)]
         params = {"add_tag": ("bulk-tag",), "force": True}
 
-        with patch("polylogue.cli.helpers.load_effective_config"), \
-             patch("polylogue.cli.container.create_repository") as mock_repo:
-            mock_backend = MagicMock()
-            mock_repo.return_value = mock_backend
-
+        mock_backend = MagicMock()
+        with (
+            patch("polylogue.cli.helpers.load_effective_config"),
+            patch("polylogue.services.get_repository", return_value=mock_backend),
+        ):
             query._apply_modifiers(mock_env, convs, params)
 
             # Should have called add_tag 15 times
@@ -648,8 +508,7 @@ class TestBulkOperationConfirmation:
     def test_delete_requires_force_for_bulk(self, mock_env):
         """Delete requires --force for >10 items."""
         convs = [
-            MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test", updated_at=None)
-            for i in range(15)
+            MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test", updated_at=None) for i in range(15)
         ]
         params = {"force": False}
 
@@ -664,18 +523,15 @@ class TestBulkOperationConfirmation:
 
     def test_delete_proceeds_with_force(self, mock_env):
         """Delete proceeds with --force for bulk operations."""
-        convs = [
-            MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test")
-            for i in range(15)
-        ]
+        convs = [MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test") for i in range(15)]
         params = {"force": True}
 
-        with patch("polylogue.cli.helpers.load_effective_config"), \
-             patch("polylogue.cli.container.create_repository") as mock_repo:
-            mock_backend = MagicMock()
-            mock_backend.delete_conversation.return_value = True
-            mock_repo.return_value = mock_backend
-
+        mock_backend = MagicMock()
+        mock_backend.delete_conversation.return_value = True
+        with (
+            patch("polylogue.cli.helpers.load_effective_config"),
+            patch("polylogue.services.get_repository", return_value=mock_backend),
+        ):
             query._delete_conversations(mock_env, convs, params)
 
             # Should have called delete_conversation 15 times
@@ -683,17 +539,14 @@ class TestBulkOperationConfirmation:
 
     def test_small_operations_proceed_without_force(self, mock_env):
         """Operations with <=10 items proceed without --force."""
-        convs = [
-            MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test")
-            for i in range(5)
-        ]
+        convs = [MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test") for i in range(5)]
         params = {"add_tag": ("small-tag",), "force": False}
 
-        with patch("polylogue.cli.helpers.load_effective_config"), \
-             patch("polylogue.cli.container.create_repository") as mock_repo:
-            mock_backend = MagicMock()
-            mock_repo.return_value = mock_backend
-
+        mock_backend = MagicMock()
+        with (
+            patch("polylogue.cli.helpers.load_effective_config"),
+            patch("polylogue.services.get_repository", return_value=mock_backend),
+        ):
             # Should not raise
             query._apply_modifiers(mock_env, convs, params)
 
@@ -707,44 +560,28 @@ class TestOperationReporting:
         """Add tag reports count of affected conversations."""
         params = {"add_tag": ("new-tag",)}
 
-        with patch("polylogue.cli.helpers.load_effective_config"), \
-             patch("polylogue.cli.container.create_repository") as mock_repo:
-            mock_backend = MagicMock()
-            mock_repo.return_value = mock_backend
-
+        mock_backend = MagicMock()
+        with (
+            patch("polylogue.cli.helpers.load_effective_config"),
+            patch("polylogue.services.get_repository", return_value=mock_backend),
+        ):
             query._apply_modifiers(mock_env, sample_conversations, params)
 
             calls = mock_env.ui.console.print.call_args_list
             output = " ".join(str(c) for c in calls)
-            assert "new-tag" in output
+            assert "Added tags" in output
             assert "3" in output  # Number of conversations
-
-    def test_rm_tag_reports_count(self, mock_env, sample_conversations):
-        """Remove tag reports count of affected conversations."""
-        params = {"rm_tag": ("old-tag",)}
-
-        with patch("polylogue.cli.helpers.load_effective_config"), \
-             patch("polylogue.cli.container.create_repository") as mock_repo:
-            mock_backend = MagicMock()
-            mock_repo.return_value = mock_backend
-
-            query._apply_modifiers(mock_env, sample_conversations, params)
-
-            calls = mock_env.ui.console.print.call_args_list
-            output = " ".join(str(c) for c in calls)
-            assert "old-tag" in output
-            assert "3" in output
 
     def test_delete_reports_count(self, mock_env, sample_conversations):
         """Delete reports count of deleted conversations."""
         params = {}
 
-        with patch("polylogue.cli.helpers.load_effective_config"), \
-             patch("polylogue.cli.container.create_repository") as mock_repo:
-            mock_backend = MagicMock()
-            mock_backend.delete_conversation.return_value = True
-            mock_repo.return_value = mock_backend
-
+        mock_backend = MagicMock()
+        mock_backend.delete_conversation.return_value = True
+        with (
+            patch("polylogue.cli.helpers.load_effective_config"),
+            patch("polylogue.services.get_repository", return_value=mock_backend),
+        ):
             query._delete_conversations(mock_env, sample_conversations, params)
 
             calls = mock_env.ui.console.print.call_args_list

@@ -27,19 +27,17 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 try:
-    from glom import glom, Coalesce
+    from glom import Coalesce, glom
+
     GLOM_AVAILABLE = True
 except ImportError:
     GLOM_AVAILABLE = False
+
     def glom(target: Any, spec: Any) -> Any: ...  # noqa: E704
 
-from polylogue.core.timestamps import parse_timestamp
-from polylogue.core.roles import normalize_role, ROLE_MAP
-from polylogue.schemas.extractors import (
-    extract_claude_code_text,
-    extract_chatgpt_text,
-    extract_codex_text,
-)
+
+from polylogue.lib.roles import normalize_role
+from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
@@ -47,7 +45,6 @@ from polylogue.lib.viewports import (
     ReasoningTrace,
     TokenUsage,
     ToolCall,
-    ToolCategory,
     classify_tool,
 )
 
@@ -112,8 +109,8 @@ class HarmonizedMessage(BaseModel):
 
 
 # Transform functions now imported from core modules:
-# - parse_timestamp from polylogue.core.timestamps
-# - normalize_role, ROLE_MAP from polylogue.core.roles
+# - parse_timestamp from polylogue.lib.timestamps
+# - normalize_role, ROLE_MAP from polylogue.lib.roles
 
 
 # =============================================================================
@@ -140,11 +137,13 @@ def extract_reasoning_traces(content: list[dict] | None, provider: str) -> list[
             text = block.get("text")
 
         if text:
-            traces.append(ReasoningTrace(
-                text=text,
-                provider=provider,
-                raw=block,
-            ))
+            traces.append(
+                ReasoningTrace(
+                    text=text,
+                    provider=provider,
+                    raw=block,
+                )
+            )
 
     return traces
 
@@ -165,14 +164,16 @@ def extract_tool_calls(content: list[dict] | None, provider: str) -> list[ToolCa
         name = block.get("name", "")
         input_data = block.get("input", {})
 
-        calls.append(ToolCall(
-            name=name,
-            id=block.get("id"),
-            input=input_data if isinstance(input_data, dict) else {},
-            category=classify_tool(name, input_data if isinstance(input_data, dict) else {}),
-            provider=provider,
-            raw=block,
-        ))
+        calls.append(
+            ToolCall(
+                name=name,
+                id=block.get("id"),
+                input=input_data if isinstance(input_data, dict) else {},
+                category=classify_tool(name, input_data if isinstance(input_data, dict) else {}),
+                provider=provider,
+                raw=block,
+            )
+        )
 
     return calls
 
@@ -190,43 +191,53 @@ def extract_content_blocks(content: list[dict] | None) -> list[ContentBlock]:
         block_type = block.get("type", "text")
 
         if block_type == "text":
-            blocks.append(ContentBlock(
-                type=ContentType.TEXT,
-                text=block.get("text"),
-                raw=block,
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.TEXT,
+                    text=block.get("text"),
+                    raw=block,
+                )
+            )
         elif block_type == "thinking":
-            blocks.append(ContentBlock(
-                type=ContentType.THINKING,
-                text=block.get("thinking") or block.get("text"),
-                raw=block,
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.THINKING,
+                    text=block.get("thinking") or block.get("text"),
+                    raw=block,
+                )
+            )
         elif block_type == "tool_use":
             name = block.get("name", "")
             input_data = block.get("input", {})
-            blocks.append(ContentBlock(
-                type=ContentType.TOOL_USE,
-                tool_call=ToolCall(
-                    name=name,
-                    id=block.get("id"),
-                    input=input_data if isinstance(input_data, dict) else {},
-                    category=classify_tool(name, input_data if isinstance(input_data, dict) else {}),
-                ),
-                raw=block,
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.TOOL_USE,
+                    tool_call=ToolCall(
+                        name=name,
+                        id=block.get("id"),
+                        input=input_data if isinstance(input_data, dict) else {},
+                        category=classify_tool(name, input_data if isinstance(input_data, dict) else {}),
+                    ),
+                    raw=block,
+                )
+            )
         elif block_type == "tool_result":
-            blocks.append(ContentBlock(
-                type=ContentType.TOOL_RESULT,
-                text=str(block.get("content", "")),
-                raw=block,
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.TOOL_RESULT,
+                    text=str(block.get("content", "")),
+                    raw=block,
+                )
+            )
         elif block_type == "code":
-            blocks.append(ContentBlock(
-                type=ContentType.CODE,
-                text=block.get("text") or block.get("code"),
-                language=block.get("language"),
-                raw=block,
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.CODE,
+                    text=block.get("text") or block.get("code"),
+                    language=block.get("language"),
+                    raw=block,
+                )
+            )
 
     return blocks
 
@@ -246,13 +257,59 @@ def extract_token_usage(usage: dict | None) -> TokenUsage | None:
 
 
 # =============================================================================
-# Provider Extraction
+# Text Extraction Helpers
 # =============================================================================
 
-# Text extraction helpers imported from polylogue.schemas.extractors:
-# - extract_claude_code_text
-# - extract_chatgpt_text
-# - extract_codex_text
+
+def extract_claude_code_text(content: list[dict] | None) -> str:
+    """Extract text from Claude Code content blocks.
+
+    Handles: text blocks, thinking blocks (concatenated).
+    """
+    if not content:
+        return ""
+
+    parts = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            parts.append(block.get("text", ""))
+        elif block_type == "thinking":
+            parts.append(block.get("thinking", ""))
+
+    return "\n".join(filter(None, parts))
+
+
+def extract_chatgpt_text(content: dict | None) -> str:
+    """Extract text from ChatGPT content structure."""
+    if not content:
+        return ""
+    parts = content.get("parts", [])
+    return "\n".join(str(p) for p in parts if isinstance(p, str))
+
+
+def extract_codex_text(content: list[dict] | None) -> str:
+    """Extract text from Codex content blocks."""
+    if not content or not isinstance(content, list):
+        return ""
+
+    parts = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        # Codex has multiple text field names
+        text = block.get("text", "") or block.get("input_text", "") or block.get("output_text", "")
+        if text:
+            parts.append(text)
+
+    return "\n".join(parts)
+
+
+# =============================================================================
+# Provider Extraction
+# =============================================================================
 
 
 def extract_harmonized_message(provider: str, raw: dict) -> HarmonizedMessage:
@@ -339,12 +396,16 @@ def _extract_gemini(raw: dict) -> HarmonizedMessage:
         role=normalize_role(raw.get("role") or _missing_role()),
         text=raw.get("text", ""),
         timestamp=None,  # Gemini doesn't have timestamps in export
-        reasoning_traces=[ReasoningTrace(
-            text=raw.get("text", ""),
-            token_count=raw.get("thinkingBudget"),
-            provider="gemini",
-            raw=raw,
-        )] if is_thinking else [],
+        reasoning_traces=[
+            ReasoningTrace(
+                text=raw.get("text", ""),
+                token_count=raw.get("thinkingBudget"),
+                provider="gemini",
+                raw=raw,
+            )
+        ]
+        if is_thinking
+        else [],
         tokens=TokenUsage(output_tokens=raw.get("tokenCount")) if raw.get("tokenCount") else None,
         provider="gemini",
         raw=raw,

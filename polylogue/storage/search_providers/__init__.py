@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.core.env import get_env
+from polylogue.lib.env import get_env
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.hybrid import (
     HybridSearchProvider,

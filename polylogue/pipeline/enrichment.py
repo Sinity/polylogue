@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from polylogue.core.code_detection import detect_language
+from polylogue.schemas.code_detection import detect_language
 
 
 def enrich_content_blocks(content_blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:

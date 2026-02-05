@@ -5,14 +5,13 @@ import logging
 import zipfile
 from collections.abc import Iterable
 from pathlib import Path
-from typing import IO, Any, BinaryIO, TYPE_CHECKING
+from typing import IO, TYPE_CHECKING, Any, BinaryIO
 
 import ijson
-
 from pydantic import BaseModel
 
 from ..config import Source
-from ..core.json import dumps as json_dumps
+from ..lib.json import dumps as json_dumps
 from ..importers import chatgpt, claude, codex, drive
 from ..importers.base import (
     ParsedAttachment,
@@ -29,7 +28,7 @@ from ..importers.claude import (
 from ..storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 if TYPE_CHECKING:
-    from ..storage.repository import StorageRepository
+    from ..storage.repository import ConversationRepository
 
 LOGGER = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ class IngestResult(BaseModel):
     skipped_attachments: int
 
 
-def ingest_bundle(bundle: IngestBundle, repository: StorageRepository) -> IngestResult:
+def ingest_bundle(bundle: IngestBundle, repository: ConversationRepository) -> IngestResult:
     """Ingest a bundle of records into the repository.
 
     Args:
@@ -310,6 +309,7 @@ def iter_source_conversations(
         # Iterate all files and filter by extension (case-insensitive)
         # Use os.walk with followlinks=True to traverse symlinked directories
         import os
+
         paths = []
         for root, _, files in os.walk(base, followlinks=True):
             for filename in files:
@@ -490,6 +490,7 @@ def iter_source_conversations_with_raw(
     paths: list[Path] = []
     if base.is_dir():
         import os
+
         paths = []
         for root, _, files in os.walk(base, followlinks=True):
             for filename in files:
@@ -533,6 +534,7 @@ def iter_source_conversations_with_raw(
                 try:
                     stat = path.stat()
                     from datetime import datetime, timezone
+
                     file_mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
                 except OSError:
                     pass
@@ -544,6 +546,7 @@ def iter_source_conversations_with_raw(
                     try:
                         stat = path.stat()
                         from datetime import datetime, timezone
+
                         zip_mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
                     except OSError:
                         pass
@@ -567,26 +570,28 @@ def iter_source_conversations_with_raw(
                             if ratio > MAX_COMPRESSION_RATIO:
                                 LOGGER.warning(
                                     "Skipping suspicious file %s in %s: compression ratio %.1f exceeds limit",
-                                    name, path, ratio,
+                                    name,
+                                    path,
+                                    ratio,
                                 )
                                 if cursor_state is not None:
-                                    cursor_state["failed_files"].append({
-                                        "path": f"{path}:{name}",
-                                        "error": f"Suspicious compression ratio: {ratio:.1f}",
-                                    })
+                                    cursor_state["failed_files"].append(
+                                        {
+                                            "path": f"{path}:{name}",
+                                            "error": f"Suspicious compression ratio: {ratio:.1f}",
+                                        }
+                                    )
                                     cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
                                 continue
 
                         if info.file_size > MAX_UNCOMPRESSED_SIZE:
                             LOGGER.warning(
-                                "Skipping oversized file %s in %s: %d bytes exceeds limit",
-                                name, path, info.file_size
+                                "Skipping oversized file %s in %s: %d bytes exceeds limit", name, path, info.file_size
                             )
                             if cursor_state is not None:
-                                cursor_state["failed_files"].append({
-                                    "path": f"{path}:{name}",
-                                    "error": f"File size {info.file_size} exceeds limit"
-                                })
+                                cursor_state["failed_files"].append(
+                                    {"path": f"{path}:{name}", "error": f"File size {info.file_size} exceeds limit"}
+                                )
                                 cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
                             continue
 
@@ -596,16 +601,21 @@ def iter_source_conversations_with_raw(
                                     # Grouped JSONL - read entire file for raw capture
                                     raw_bytes = handle.read() if capture_raw else None
                                     from io import BytesIO
+
                                     stream = BytesIO(raw_bytes) if raw_bytes else handle
                                     payloads = list(_iter_json_stream(stream, name))
                                     if payloads:
-                                        raw_data = RawConversationData(
-                                            raw_bytes=raw_bytes,
-                                            source_path=f"{path}:{name}",
-                                            source_index=None,
-                                            file_mtime=zip_mtime,
-                                            provider_hint=provider_hint,
-                                        ) if capture_raw and raw_bytes else None
+                                        raw_data = (
+                                            RawConversationData(
+                                                raw_bytes=raw_bytes,
+                                                source_path=f"{path}:{name}",
+                                                source_index=None,
+                                                file_mtime=zip_mtime,
+                                                provider_hint=provider_hint,
+                                            )
+                                            if capture_raw and raw_bytes
+                                            else None
+                                        )
                                         for conv in _parse_json_payload(provider_hint, payloads, path.stem):
                                             yield (raw_data, conv)
                                 else:
@@ -650,6 +660,7 @@ def iter_source_conversations_with_raw(
 
                     # Parse and yield with raw
                     from io import BytesIO
+
                     handle = BytesIO(raw_bytes)
                     if path.suffix.lower() in (".jsonl", ".ndjson") or path.name.lower().endswith(".jsonl.txt"):
                         payloads = list(_iter_json_stream(handle, path.name))
@@ -682,7 +693,10 @@ def iter_source_conversations_with_raw(
                                 payloads = list(_iter_json_stream(handle, path.name))
                                 if payloads:
                                     for conv in _parse_json_payload(provider_hint, payloads, path.stem):
-                                        if provider_hint == "claude-code" and conv.provider_conversation_id in dir_index:
+                                        if (
+                                            provider_hint == "claude-code"
+                                            and conv.provider_conversation_id in dir_index
+                                        ):
                                             conv = enrich_conversation_from_index(
                                                 conv, dir_index[conv.provider_conversation_id]
                                             )
@@ -722,9 +736,9 @@ def iter_source_conversations_with_raw(
         except FileNotFoundError as exc:
             LOGGER.warning("File disappeared during processing (TOCTOU race): %s", path)
             if cursor_state is not None:
-                cursor_state["failed_files"].append({
-                    "path": str(path), "error": f"File not found (may have been deleted): {exc}"
-                })
+                cursor_state["failed_files"].append(
+                    {"path": str(path), "error": f"File not found (may have been deleted): {exc}"}
+                )
                 cursor_state["failed_count"] = cursor_state.get("failed_count", 0) + 1
             continue
         except (json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
