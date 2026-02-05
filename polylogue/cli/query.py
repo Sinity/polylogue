@@ -155,10 +155,11 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         else:
             # Try to resolve first query term as ID
             if query_terms:
-                full_id = conv_repo.resolve_id(query_terms[0])
-                if not full_id:
+                resolved = conv_repo.resolve_id(query_terms[0])
+                if not resolved:
                     env.ui.console.print(f"[red]No conversation found matching: {query_terms[0]}[/red]")
                     raise SystemExit(2)
+                full_id = str(resolved)
             else:
                 env.ui.console.print(
                     "[yellow]--stream requires a specific conversation. Use --latest or specify an ID.[/yellow]"
@@ -457,9 +458,9 @@ def _format_list(
     if output_format == "json":
         return json.dumps([_conv_to_dict(c, fields) for c in results], indent=2)
     elif output_format == "yaml":
-        import yaml
+        import yaml  # type: ignore[import-untyped]
 
-        return yaml.dump([_conv_to_dict(c, fields) for c in results], default_flow_style=False, allow_unicode=True)
+        return str(yaml.dump([_conv_to_dict(c, fields) for c in results], default_flow_style=False, allow_unicode=True))
     elif output_format == "csv":
         return _conv_to_csv(results)
     else:
@@ -672,7 +673,7 @@ def _conv_to_yaml(conv: Conversation, fields: str | None) -> str:
             for msg in conv.messages
         ]
 
-    return yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return str(yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False))
 
 
 def _conv_to_plaintext(conv: Conversation) -> str:

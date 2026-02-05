@@ -201,6 +201,8 @@ class IngestionService:
         items_to_process: list[tuple[ParsedConversation, str, str]] = []  # (convo, source_name, raw_id)
 
         for raw_record in raw_records:
+            if raw_record is None:
+                continue
             try:
                 parsed_convos = self._parse_raw_record(raw_record)
                 # Use source_name (config source), fallback to source_path for older records

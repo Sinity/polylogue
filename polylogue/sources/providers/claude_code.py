@@ -323,7 +323,7 @@ class ClaudeCodeRecord(BaseModel):
         return MessageMeta(
             id=self.uuid,
             timestamp=self.parsed_timestamp,
-            role=self.role,  # type: ignore
+            role=self.role,
             model=model,
             tokens=tokens,
             cost=cost,
