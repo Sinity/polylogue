@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from polylogue.core.log import get_logger
+from polylogue.lib.log import get_logger
 from polylogue.ingestion.source import _parse_json_payload
 from polylogue.pipeline.ingest import prepare_ingest
 from polylogue.storage.search_cache import invalidate_search_cache
@@ -25,7 +25,7 @@ from polylogue.storage.store import RawConversationRecord
 if TYPE_CHECKING:
     from polylogue.config import Config, Source
     from polylogue.importers.base import ParsedConversation
-    from polylogue.storage.repository import StorageRepository
+    from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 
@@ -88,7 +88,7 @@ class IngestionService:
 
     def __init__(
         self,
-        repository: StorageRepository,
+        repository: ConversationRepository,
         archive_root: Path,
         config: Config,
         drive_client_factory: Any | None = None,
@@ -184,10 +184,7 @@ class IngestionService:
 
         # Collect raw records to process (materialize to list before writes)
         if raw_ids is not None:
-            raw_records = [
-                backend.get_raw_conversation(raw_id)
-                for raw_id in raw_ids
-            ]
+            raw_records = [backend.get_raw_conversation(raw_id) for raw_id in raw_ids]
             raw_records = [r for r in raw_records if r is not None]
         else:
             # Get all raw conversations, optionally filtered by provider
@@ -252,9 +249,7 @@ class IngestionService:
 
             for convo, source_name, raw_id in items_to_process:
                 while len(futures) > 16:
-                    done, _ = concurrent.futures.wait(
-                        futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED
-                    )
+                    done, _ = concurrent.futures.wait(futures.keys(), return_when=concurrent.futures.FIRST_COMPLETED)
                     for fut in done:
                         try:
                             _handle_future(fut)

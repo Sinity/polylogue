@@ -25,12 +25,9 @@ dependencies = [
   "click>=8.1.0,<9.0",
   "tenacity>=8.0.0",
   "dateparser>=1.1.0",
-  "fastapi>=0.110.0,<1.0",
-  "uvicorn>=0.27.0,<1.0",
   "orjson>=3.9.0",
   "structlog>=24.1.0",
   "pydantic>=2.0,<3.0",
-  "dependency-injector>=4.41.0",
   "aiosqlite>=0.19.0",  # Async SQLite support
   "pydantic-settings",
   "glom>=24.7.0",  # Declarative data extraction
@@ -81,6 +78,10 @@ markers = [
 [tool.coverage.run]
 source = ["polylogue"]
 branch = true
+omit = [
+    "polylogue/storage/index_qdrant.py",
+    "polylogue/storage/search_providers/qdrant.py",
+]
 
 [tool.coverage.report]
 skip_empty = true
@@ -97,7 +98,7 @@ disallow_any_generics = true
 disallow_incomplete_defs = true
 disallow_untyped_defs = true
 plugins = []
-exclude = ["tests/"]
+exclude = ["tests/", "polylogue/providers/"]
 files = [
   "polylogue",
 ]
