@@ -43,11 +43,11 @@ class UI:
 
     @property
     def console(self) -> ConsoleLike:
-        return self._facade.console
+        return self._facade.console  # type: ignore[return-value]
 
     @console.setter
     def console(self, value: ConsoleLike) -> None:
-        self._facade.console = value
+        self._facade.console = value  # type: ignore[assignment]
 
     # Presentation helpers -------------------------------------------------
     def banner(self, title: str, subtitle: str | None = None) -> None:

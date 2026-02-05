@@ -50,7 +50,7 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
 
         # Calculate branch_index from parent's children array position
         if parent_message_provider_id:
-            parent_node = mapping.get(parent_id)
+            parent_node = mapping.get(str(parent_id))
             if isinstance(parent_node, dict):
                 children = parent_node.get("children")
                 if isinstance(children, list):
@@ -99,7 +99,7 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
                     # Preserve image attachment references
                     content_blocks.append({
                         "type": "image",
-                        "asset_pointer": part.get("asset_pointer"),
+                        "asset_pointer": str(part.get("asset_pointer", "")),
                     })
             if content_blocks:
                 meta["content_blocks"] = content_blocks

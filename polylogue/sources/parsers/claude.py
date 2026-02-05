@@ -317,7 +317,7 @@ def extract_tool_invocations(content_blocks: list[dict[str, Any]]) -> list[dict[
 
                 # Check for git operations in Bash
                 if tool_name == "Bash":
-                    cmd = invocation["input"].get("command", "")
+                    cmd = (invocation.get("input") or {}).get("command", "")
                     invocation["is_git_operation"] = isinstance(cmd, str) and cmd.strip().startswith("git ")
 
             invocations.append(invocation)
@@ -680,7 +680,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
 
     # Aggregate statistics from messages
     total_cost = sum(
-        float(m.provider_meta.get("costUSD", 0))
+        float(str(m.provider_meta.get("costUSD", 0)))
         for m in messages
         if m.provider_meta and m.provider_meta.get("costUSD")
     )
@@ -688,7 +688,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         conv_meta["total_cost_usd"] = total_cost
 
     total_duration = sum(
-        int(m.provider_meta.get("durationMs", 0))
+        int(str(m.provider_meta.get("durationMs", 0)))
         for m in messages
         if m.provider_meta and m.provider_meta.get("durationMs")
     )

@@ -60,7 +60,7 @@ class ClaudeAIChatMessage(BaseModel):
         return MessageMeta(
             id=self.uuid,
             timestamp=self.parsed_timestamp,
-            role=self.role_normalized,  # type: ignore
+            role=self.role_normalized,
             provider="claude-ai",
         )
 
