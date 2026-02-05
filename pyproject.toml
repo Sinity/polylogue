@@ -98,11 +98,17 @@ disallow_any_generics = true
 disallow_incomplete_defs = true
 disallow_untyped_defs = true
 plugins = []
-exclude = ["tests/", "polylogue/providers/"]
+exclude = ["tests/", "polylogue/sources/providers/"]
 files = [
   "polylogue",
 ]
 ignore_missing_imports = true
+disallow_subclassing_any = false  # Pydantic BaseModel seen as Any (plugin incompatible with nix mypy 1.17)
+disallow_untyped_decorators = false  # Click decorators are inherently untyped
+
+[[tool.mypy.overrides]]
+module = "polylogue.sources.providers.*"
+follow_imports = "skip"  # Provider parsers use dynamic role strings from JSON; exclude doesn't cover imports
 
 [tool.ruff]
 line-length = 120

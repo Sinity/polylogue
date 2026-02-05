@@ -33,7 +33,7 @@ try:
 except ImportError:
     GLOM_AVAILABLE = False
 
-    def glom(target: Any, spec: Any) -> Any: ...  # type: ignore[no-redef]
+    def glom(target: Any, spec: Any) -> Any: ...
 
 
 from polylogue.lib.roles import normalize_role
@@ -118,7 +118,7 @@ class HarmonizedMessage(BaseModel):
 # =============================================================================
 
 
-def extract_reasoning_traces(content: list[dict] | None, provider: str) -> list[ReasoningTrace]:
+def extract_reasoning_traces(content: list[dict[str, Any]] | None, provider: str) -> list[ReasoningTrace]:
     """Extract reasoning traces from content blocks."""
     if not content:
         return []
@@ -148,7 +148,7 @@ def extract_reasoning_traces(content: list[dict] | None, provider: str) -> list[
     return traces
 
 
-def extract_tool_calls(content: list[dict] | None, provider: str) -> list[ToolCall]:
+def extract_tool_calls(content: list[dict[str, Any]] | None, provider: str) -> list[ToolCall]:
     """Extract tool calls from content blocks."""
     if not content:
         return []
@@ -178,7 +178,7 @@ def extract_tool_calls(content: list[dict] | None, provider: str) -> list[ToolCa
     return calls
 
 
-def extract_content_blocks(content: list[dict] | None) -> list[ContentBlock]:
+def extract_content_blocks(content: list[dict[str, Any]] | None) -> list[ContentBlock]:
     """Extract content blocks with type classification."""
     if not content:
         return []
@@ -242,7 +242,7 @@ def extract_content_blocks(content: list[dict] | None) -> list[ContentBlock]:
     return blocks
 
 
-def extract_token_usage(usage: dict | None) -> TokenUsage | None:
+def extract_token_usage(usage: dict[str, Any] | None) -> TokenUsage | None:
     """Extract token usage from usage dict."""
     if not usage:
         return None
@@ -261,7 +261,7 @@ def extract_token_usage(usage: dict | None) -> TokenUsage | None:
 # =============================================================================
 
 
-def extract_claude_code_text(content: list[dict] | None) -> str:
+def extract_claude_code_text(content: list[dict[str, Any]] | None) -> str:
     """Extract text from Claude Code content blocks.
 
     Handles: text blocks, thinking blocks (concatenated).
@@ -282,7 +282,7 @@ def extract_claude_code_text(content: list[dict] | None) -> str:
     return "\n".join(filter(None, parts))
 
 
-def extract_chatgpt_text(content: dict | None) -> str:
+def extract_chatgpt_text(content: dict[str, Any] | None) -> str:
     """Extract text from ChatGPT content structure."""
     if not content:
         return ""
@@ -290,7 +290,7 @@ def extract_chatgpt_text(content: dict | None) -> str:
     return "\n".join(str(p) for p in parts if isinstance(p, str))
 
 
-def extract_codex_text(content: list[dict] | None) -> str:
+def extract_codex_text(content: list[dict[str, Any]] | None) -> str:
     """Extract text from Codex content blocks."""
     if not content or not isinstance(content, list):
         return ""
@@ -312,7 +312,7 @@ def extract_codex_text(content: list[dict] | None) -> str:
 # =============================================================================
 
 
-def extract_harmonized_message(provider: str, raw: dict) -> HarmonizedMessage:
+def extract_harmonized_message(provider: str, raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract HarmonizedMessage from raw provider data.
 
     Args:
@@ -336,7 +336,7 @@ def extract_harmonized_message(provider: str, raw: dict) -> HarmonizedMessage:
         raise ValueError(f"Unknown provider: {provider}")
 
 
-def _extract_claude_code(raw: dict) -> HarmonizedMessage:
+def _extract_claude_code(raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract from Claude Code format."""
     msg = raw.get("message", {})
     content = msg.get("content", []) if isinstance(msg, dict) else []
@@ -358,7 +358,7 @@ def _extract_claude_code(raw: dict) -> HarmonizedMessage:
     )
 
 
-def _extract_claude_ai(raw: dict) -> HarmonizedMessage:
+def _extract_claude_ai(raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract from Claude AI (web) format."""
     return HarmonizedMessage(
         id=raw.get("uuid"),
@@ -370,7 +370,7 @@ def _extract_claude_ai(raw: dict) -> HarmonizedMessage:
     )
 
 
-def _extract_chatgpt(raw: dict) -> HarmonizedMessage:
+def _extract_chatgpt(raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract from ChatGPT format."""
     author = raw.get("author", {})
     content = raw.get("content", {})
@@ -387,7 +387,7 @@ def _extract_chatgpt(raw: dict) -> HarmonizedMessage:
     )
 
 
-def _extract_gemini(raw: dict) -> HarmonizedMessage:
+def _extract_gemini(raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract from Gemini format."""
     is_thinking = raw.get("isThought", False)
 
@@ -412,7 +412,7 @@ def _extract_gemini(raw: dict) -> HarmonizedMessage:
     )
 
 
-def _extract_codex(raw: dict) -> HarmonizedMessage:
+def _extract_codex(raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract from Codex format."""
     # Handle envelope vs direct format
     if "payload" in raw:
@@ -446,7 +446,7 @@ def _extract_codex(raw: dict) -> HarmonizedMessage:
 # =============================================================================
 
 
-def extract_from_provider_meta(provider: str, provider_meta: dict) -> HarmonizedMessage:
+def extract_from_provider_meta(provider: str, provider_meta: dict[str, Any]) -> HarmonizedMessage:
     """Extract HarmonizedMessage from polylogue database format.
 
     The database stores pre-processed data with original format in 'raw' key.
@@ -462,7 +462,7 @@ def extract_from_provider_meta(provider: str, provider_meta: dict) -> Harmonized
     return extract_harmonized_message(provider, raw)
 
 
-def is_message_record(provider: str, raw: dict) -> bool:
+def is_message_record(provider: str, raw: dict[str, Any]) -> bool:
     """Check if a record is an actual message (vs metadata).
 
     Some providers (like Claude Code) include metadata records
@@ -509,7 +509,7 @@ def harmonize_parsed_message(
 
 def bulk_harmonize(
     provider: str,
-    parsed_messages: list,
+    parsed_messages: list[Any],
 ) -> list[HarmonizedMessage]:
     """Bulk convert ParsedMessages to HarmonizedMessages.
 

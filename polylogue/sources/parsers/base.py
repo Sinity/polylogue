@@ -7,6 +7,16 @@ from pydantic import BaseModel, Field, field_validator
 from polylogue.lib.hashing import hash_text
 from polylogue.lib.roles import normalize_role
 
+__all__ = [
+    "ParsedMessage",
+    "ParsedAttachment",
+    "ParsedConversation",
+    "RawConversationData",
+    "normalize_role",
+    "extract_messages_from_list",
+    "attachment_from_meta",
+]
+
 
 class ParsedMessage(BaseModel):
     provider_message_id: str
@@ -190,12 +200,15 @@ def extract_messages_from_list(items: list[object]) -> list[ParsedMessage]:
         payload = message_val if isinstance(message_val, dict) else item
 
         role = normalize_role(
-            payload.get("role")
-            or item.get("role")
-            or payload.get("sender")
-            or item.get("sender")
-            or payload.get("author")
-            or item.get("author")
+            str(
+                payload.get("role")
+                or item.get("role")
+                or payload.get("sender")
+                or item.get("sender")
+                or payload.get("author")
+                or item.get("author")
+                or "unknown"
+            )
         )
 
         timestamp = (

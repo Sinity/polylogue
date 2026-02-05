@@ -7,8 +7,13 @@ IndexService, etc.) stays in the CLI commands where they're instantiated.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from polylogue.storage.backends.sqlite import SQLiteBackend, create_default_backend
 from polylogue.storage.repository import ConversationRepository
+
+if TYPE_CHECKING:
+    from polylogue.config import Config
 
 _backend: SQLiteBackend | None = None
 _repository: ConversationRepository | None = None
@@ -28,7 +33,7 @@ def get_repository() -> ConversationRepository:
     return _repository
 
 
-def get_service_config():
+def get_service_config() -> Config:
     """Return the application configuration."""
     from polylogue.config import get_config
 

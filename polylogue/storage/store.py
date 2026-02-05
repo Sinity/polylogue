@@ -172,9 +172,9 @@ class AttachmentRecord(BaseModel):
 class RunRecord(BaseModel):
     run_id: str
     timestamp: str
-    plan_snapshot: dict[str, object] | None = None
-    counts: dict[str, object] | None = None
-    drift: dict[str, object] | None = None
+    plan_snapshot: dict[str, Any] | None = None
+    counts: dict[str, Any] | None = None
+    drift: dict[str, Any] | None = None
     indexed: bool | None = None
     duration_ms: int | None = None
 

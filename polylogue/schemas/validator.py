@@ -24,9 +24,9 @@ try:
     import jsonschema
     from jsonschema import Draft202012Validator, ValidationError
 except ImportError:
-    jsonschema = None  # type: ignore
-    Draft202012Validator = None  # type: ignore
-    ValidationError = Exception  # type: ignore
+    jsonschema = None
+    Draft202012Validator = None
+    ValidationError = Exception
 
 
 # Schema directory relative to this file

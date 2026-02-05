@@ -31,7 +31,7 @@ Polylogue is a **local-first AI chat archive** that ingests exports from multipl
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │                         CLI Layer                                │
-│  (commands/, container.py, click_app.py)                        │
+│  (commands/, click_app.py)                                       │
 └────────────────────────┬─────────────────────────────────────────┘
                          │
                          ▼
@@ -87,6 +87,7 @@ All external dependencies are defined as **runtime-checkable protocols** (`polyl
 - `Renderer`: Output generation (Jinja2 templates, future: custom renderers)
 
 This enables:
+
 - **Testing**: Mock implementations via protocols
 - **Flexibility**: Swap backends without code changes
 - **Type safety**: Runtime interface validation
@@ -109,6 +110,7 @@ class IngestionService:
 ```
 
 Benefits:
+
 - **Testability**: Easy to inject test doubles
 - **Explicitness**: Dependencies visible in signatures
 - **Lifetime management**: Clear ownership of resources
@@ -160,7 +162,6 @@ polylogue/
 │   │   ├── serve.py         # Web server
 │   │   ├── state.py         # State management
 │   │   └── completions.py  # Shell completions
-│   ├── container.py         # DI container
 │   ├── click_app.py         # Click application setup
 │   ├── formatting.py        # Output formatting
 │   ├── helpers.py           # CLI utilities
@@ -227,6 +228,7 @@ polylogue/
 │   └── conversation.html.j2 # HTML template
 │
 ├── config.py                 # Configuration (Config, IndexConfig, DriveConfig)
+├── container.py              # Dependency Injection container
 ├── paths.py                  # XDG path resolution
 ├── protocols.py              # Protocol definitions
 ├── types.py                  # NewType definitions
@@ -243,6 +245,7 @@ polylogue/
 ### Migration Notes
 
 **Legacy modules** (backward compatibility, can be deprecated in future):
+
 - `render.py`, `render_paths.py`, `assets.py`: Legacy rendering API (use `rendering/renderers/` instead)
 - `run.py`: Legacy pipeline API (use `pipeline/runner.py` + services instead)
 
@@ -255,23 +258,25 @@ polylogue/
 **Responsibility**: User interface, command parsing, output formatting
 
 **Key Components**:
+
 - `click_app.py`: Click application setup, command registration
-- `container.py`: Dependency injection factories
 - `commands/*.py`: Individual command implementations
 - `formatting.py`: Rich/plain text formatting
 
 **Dependencies**: Pipeline, Storage, Lib
 
 **Example**:
+
 ```python
 # cli/commands/run.py
-from polylogue.cli.container import create_config, create_storage_repository
+from polylogue.container import get_container
 from polylogue.pipeline.runner import run_pipeline
 
 @click.command()
 def run(source_names, preview, stage):
-    config = create_config()
-    repository = create_storage_repository()
+    container = get_container()
+    config = container.config()
+    repository = container.storage()
     result = run_pipeline(
         config=config,
         repository=repository,
@@ -287,6 +292,7 @@ def run(source_names, preview, stage):
 **Responsibility**: Orchestration of ingestion → indexing → rendering workflow
 
 **Key Components**:
+
 - `runner.py`: Top-level orchestrator (plan → ingest → index → render)
 - `services/ingestion.py`: IngestionService (parallel ingest with bounded submission)
 - `services/indexing.py`: IndexService (FTS5 + Qdrant coordination)
@@ -295,6 +301,7 @@ def run(source_names, preview, stage):
 **Dependencies**: Storage, Ingestion, Rendering, Domain
 
 **Service Pattern**:
+
 ```python
 class IngestionService:
     def __init__(
@@ -323,19 +330,23 @@ class IngestionService:
 **Key Components**:
 
 #### Database Operations
+
 - `db.py`: Thread-local connections, schema v4, migrations
 - `store.py`: Record types (ConversationRecord, MessageRecord, AttachmentRecord), low-level CRUD
 - `repository.py`: StorageRepository (high-level API, write lock)
 
 #### Backends
+
 - `backends/sqlite.py`: SQLiteBackend (implements StorageBackend protocol)
 - Future: `backends/postgresql.py`, `backends/duckdb.py`
 
 #### Search Providers
+
 - `search_providers/fts5.py`: FTS5Provider (implements SearchProvider protocol)
 - `search_providers/qdrant.py`: QdrantProvider (implements VectorProvider protocol)
 
 **Protocol Example**:
+
 ```python
 @runtime_checkable
 class StorageBackend(Protocol):
@@ -347,6 +358,7 @@ class StorageBackend(Protocol):
 ```
 
 **Repository Pattern**:
+
 ```python
 class StorageRepository:
     def __init__(self):
@@ -368,11 +380,13 @@ class StorageRepository:
 **Responsibility**: Source discovery, parsing, content extraction
 
 **Key Components**:
+
 - `source.py`: Local file ingestion (JSON/JSONL/ZIP), auto-detection
 - `drive.py`: Google Drive ingestion (folder traversal, export detection)
 - `drive_client.py`: OAuth flow, Drive API client
 
 **Provider Detection** (`source.py`):
+
 ```python
 def detect_provider(payload: Any, fallback_id: str) -> ParsedConversation:
     """Auto-detect provider format and parse."""
@@ -389,11 +403,13 @@ def detect_provider(payload: Any, fallback_id: str) -> ParsedConversation:
 **Responsibility**: Business logic, semantic projections, query API
 
 **Key Components**:
+
 - `models.py`: Conversation, Message (with semantic properties)
 - `projections.py`: ConversationProjection (fluent filtering API)
 - `repository.py`: ConversationRepository (high-level query interface)
 
 **Semantic Properties** (`models.py`):
+
 ```python
 class Message:
     @property
@@ -415,6 +431,7 @@ class Message:
 ```
 
 **Fluent Projection API** (`projections.py`):
+
 ```python
 # Lazy-evaluated, composable filters
 conversation.project()
@@ -438,6 +455,7 @@ for msg in conversation.project().contains("error").iter():
 **Templates**: Jinja2 templates in `templates/`
 
 **Example**:
+
 ```python
 from polylogue.rendering.renderers import HTMLRenderer
 
@@ -451,12 +469,14 @@ def render_conversation(conversation_id: str, output_path: Path, archive_root: P
 **Responsibility**: Shared utilities (no business logic)
 
 **Key Components**:
+
 - `hashing.py`: NFC-normalized SHA-256 for content deduplication
 - `json.py`: JSON serialization utilities
 - `timestamps.py`: ISO 8601 parsing
 - `log.py`: Structured logging setup
 
 **Critical Utility** (`hashing.py`):
+
 ```python
 import unicodedata
 import hashlib
@@ -480,6 +500,7 @@ def hash_text(text: str) -> str:
 **Purpose**: Decouple application from database implementation
 
 **Interface**:
+
 ```python
 @runtime_checkable
 class StorageBackend(Protocol):
@@ -501,11 +522,13 @@ class StorageBackend(Protocol):
 ```
 
 **Implementations**:
+
 - `storage.backends.sqlite.SQLiteBackend` (default)
 - Future: `storage.backends.postgresql.PostgreSQLBackend`
 - Future: `storage.backends.duckdb.DuckDBBackend`
 
 **Factory**:
+
 ```python
 from polylogue.storage.backends import create_backend
 
@@ -522,6 +545,7 @@ backend = create_backend(config=config)
 ### 2. SearchProvider / VectorProvider Protocols
 
 **SearchProvider** (full-text search):
+
 ```python
 @runtime_checkable
 class SearchProvider(Protocol):
@@ -535,6 +559,7 @@ class SearchProvider(Protocol):
 ```
 
 **VectorProvider** (semantic search):
+
 ```python
 @runtime_checkable
 class VectorProvider(Protocol):
@@ -548,10 +573,12 @@ class VectorProvider(Protocol):
 ```
 
 **Implementations**:
+
 - `storage.search_providers.fts5.FTS5Provider` (default)
 - `storage.search_providers.qdrant.QdrantProvider` (optional, requires Voyage AI)
 
 **Factory**:
+
 ```python
 from polylogue.storage.search_providers import create_search_provider, create_vector_provider
 
@@ -567,6 +594,7 @@ vector = create_vector_provider(config)  # Returns None if not configured
 **Purpose**: Decouple rendering from template engine
 
 **Interface**:
+
 ```python
 @runtime_checkable
 class OutputRenderer(Protocol):
@@ -580,16 +608,18 @@ class OutputRenderer(Protocol):
 ```
 
 **Implementations**:
+
 - `rendering.renderers.markdown.MarkdownRenderer` (stdlib only, .md output)
 - `rendering.renderers.html.HTMLRenderer` (Jinja2-based, .html + .md output)
 
-**Factory**: `create_renderer(format, config)` in rendering/renderers/__init__.py
+**Factory**: `create_renderer(format, config)` in rendering/renderers/**init**.py
 
 ### 4. Service Pattern
 
 **Pattern**: Focused services with constructor DI
 
 **Example** (IngestionService):
+
 ```python
 class IngestionService:
     """Service for ingesting conversations from sources."""
@@ -619,6 +649,7 @@ class IngestionService:
 ```
 
 **Benefits**:
+
 - **Testability**: Easy to inject mocks
 - **Explicitness**: Dependencies visible in signature
 - **Composability**: Services can depend on other services
@@ -715,6 +746,7 @@ values      parsing      IndexConfig,    IndexService,
 **Priority**: Explicit args > Config file > Env vars > Defaults
 
 **Config Objects** (`config.py`):
+
 ```python
 @dataclass
 class IndexConfig:
@@ -775,7 +807,7 @@ class PostgreSQLBackend:
     # ... implement remaining protocol methods
 ```
 
-3. Update factory (`storage/backends/__init__.py`):
+1. Update factory (`storage/backends/__init__.py`):
 
 ```python
 def create_backend(config: Config | None = None) -> StorageBackend:
@@ -784,7 +816,7 @@ def create_backend(config: Config | None = None) -> StorageBackend:
     return SQLiteBackend(db_path=config.db_path)
 ```
 
-4. Runtime verification:
+1. Runtime verification:
 
 ```python
 from polylogue.protocols import StorageBackend
@@ -829,7 +861,7 @@ class ElasticsearchProvider:
         return [hit["_id"] for hit in result["hits"]["hits"]]
 ```
 
-3. Update factory (`storage/search_providers/__init__.py`):
+1. Update factory (`storage/search_providers/__init__.py`):
 
 ```python
 def create_search_provider(config: Config | None = None) -> SearchProvider:
@@ -870,7 +902,7 @@ class CustomRenderer:
         ...
 ```
 
-3. Use in RenderService:
+1. Use in RenderService:
 
 ```python
 from polylogue.rendering.renderers.custom import CustomRenderer
@@ -925,7 +957,7 @@ def parse(payload: dict, fallback_id: str) -> ParsedConversation:
     )
 ```
 
-3. Register in `ingestion/source.py`:
+1. Register in `ingestion/source.py`:
 
 ```python
 import polylogue.importers.newprovider as newprovider
@@ -975,38 +1007,46 @@ def detect_provider(payload: Any, fallback_id: str) -> ParsedConversation:
 ### Package Dependencies
 
 **CLI** (`cli/`):
+
 - Depends on: Pipeline, Storage, Lib, Core
 - No dependents (top-level)
 
 **Pipeline** (`pipeline/`):
+
 - Depends on: Storage, Ingestion, Lib, Core
 - Depended on by: CLI
 
 **Storage** (`storage/`):
+
 - Depends on: Lib (models), Core
 - Depended on by: Pipeline, CLI
 
 **Ingestion** (`ingestion/`):
+
 - Depends on: Importers, Core
 - Depended on by: Pipeline
 
 **Lib** (`lib/`):
+
 - Depends on: Core, Storage (records only)
 - Depended on by: Storage, Pipeline, CLI
 
 **Core** (`core/`):
+
 - Depends on: Standard library only
 - Depended on by: All layers
 
 ### External Dependencies
 
 **Required**:
+
 - `click`: CLI framework
 - `rich`: Terminal formatting
 - `jinja2`: Template engine
 - `sqlite3`: Database (stdlib)
 
 **Optional**:
+
 - `google-auth`, `google-auth-oauthlib`, `google-api-python-client`: Google Drive
 - `qdrant-client`: Vector search
 - `voyageai`: Embeddings for Qdrant
@@ -1044,12 +1084,14 @@ ThreadPoolExecutor (max_workers=4)
 ### Rules
 
 ✅ **DO**:
+
 - Parallelize pure operations (hashing, parsing, rendering)
 - Use `_write_lock` for all database writes
 - Use thread-local connections (`db.get_connection()`)
 - Bound in-flight futures (max 16 to prevent memory explosion)
 
 ❌ **DON'T**:
+
 - Mutate shared state without locks
 - Hold `_write_lock` during I/O operations
 - Share database connections across threads
@@ -1057,6 +1099,7 @@ ThreadPoolExecutor (max_workers=4)
 ### Example
 
 **Correct** (parallel hashing, serial writes):
+
 ```python
 def ingest_sources(self, sources: list[Source]) -> IngestResult:
     result = IngestResult()
@@ -1082,6 +1125,7 @@ def ingest_sources(self, sources: list[Source]) -> IngestResult:
 ```
 
 **Incorrect** (unbounded submission, no lock):
+
 ```python
 # ❌ Memory explosion + race conditions
 futures = [executor.submit(process, conv) for conv in conversations]
@@ -1097,6 +1141,7 @@ for fut in as_completed(futures):
 ### Coverage
 
 **Metrics**:
+
 - Test lines: 17,371
 - Source lines: 9,022
 - Ratio: 1.93:1 (exceptionally high)
@@ -1162,6 +1207,7 @@ def db_factory(test_conn):
 ### Testing Patterns
 
 **Unit Tests** (pure functions):
+
 ```python
 def test_hash_stability():
     text = "café"
@@ -1175,6 +1221,7 @@ def test_nfc_normalization():
 ```
 
 **Integration Tests** (with database):
+
 ```python
 def test_save_and_retrieve_conversation(db_factory):
     conversation = db_factory.create_conversation(
@@ -1188,6 +1235,7 @@ def test_save_and_retrieve_conversation(db_factory):
 ```
 
 **Property-Based Tests** (Hypothesis):
+
 ```python
 from hypothesis import given
 from hypothesis.strategies import text
@@ -1205,6 +1253,7 @@ def test_hash_collision_resistance(input_text):
 ```
 
 **Concurrency Tests**:
+
 ```python
 def test_parallel_ingestion_thread_safety():
     """Verify no race conditions during parallel ingest."""
@@ -1237,12 +1286,14 @@ Polylogue's post-refactoring architecture achieves:
 ✅ **Performance**: 21,343x search cache speedup, parallel ingestion, incremental indexing
 
 **Completed (Priorities 1-4)**:
+
 - ✅ Priority 1: Module organization, repository pattern, protocols, NewType IDs
 - ✅ Priority 2: Config objects, pipeline services, search abstraction, backend abstraction
 - ✅ Priority 3: Dependency injection framework, renderer abstraction
 - ✅ Priority 4: Type safety hardening (211 → 0 mypy errors), test coverage (83% core), performance benchmarking
 
 For detailed implementation notes, see:
+
 - [Refactoring Plan](./refactoring-plan.md) - Complete refactoring roadmap
 - [Storage Backend Abstraction](./storage-backend-abstraction.md) - Backend protocol details
 - [CLAUDE.md](../CLAUDE.md) - Developer guide with critical patterns

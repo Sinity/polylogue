@@ -708,7 +708,7 @@ def iter_source_conversations_with_raw(
                                 provider = detect_provider(payload, path) or provider_hint
 
                                 # Capture raw for individual items in bundles
-                                raw_data_item: RawConversationData | None = None
+                                raw_data_item: RawConversationData | None = None  # type: ignore[no-redef]
                                 if capture_raw:
                                     # Re-serialize individual payload to JSON bytes
                                     # Uses json_dumps which handles Decimal from ijson

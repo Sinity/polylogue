@@ -96,10 +96,10 @@ class ProgressRecord:
     session_id: str | None
 
     # Original data
-    raw: dict = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_raw(cls, raw: dict) -> ProgressRecord:
+    def from_raw(cls, raw: dict[str, Any]) -> ProgressRecord:
         """Extract ProgressRecord from raw Claude Code record."""
         data = raw.get("data", {})
         return cls(
@@ -138,10 +138,10 @@ class FileHistorySnapshot:
     is_snapshot_update: bool
 
     # Original data
-    raw: dict = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_raw(cls, raw: dict) -> FileHistorySnapshot:
+    def from_raw(cls, raw: dict[str, Any]) -> FileHistorySnapshot:
         """Extract FileHistorySnapshot from raw Claude Code record."""
         snapshot = raw.get("snapshot", {})
         backups = snapshot.get("trackedFileBackups", {})
@@ -174,10 +174,10 @@ class QueueOperationRecord:
     content: Any | None  # The queued content, if present
 
     # Original data
-    raw: dict = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_raw(cls, raw: dict) -> QueueOperationRecord:
+    def from_raw(cls, raw: dict[str, Any]) -> QueueOperationRecord:
         """Extract QueueOperationRecord from raw Claude Code record."""
         return cls(
             operation=raw.get("operation", ""),
@@ -194,7 +194,7 @@ class QueueOperationRecord:
 
 
 def extract_metadata_record(
-    raw: dict,
+    raw: dict[str, Any],
 ) -> ProgressRecord | FileHistorySnapshot | QueueOperationRecord | None:
     """Extract metadata record from raw Claude Code data.
 
@@ -214,7 +214,7 @@ def extract_metadata_record(
         return None  # Unknown type
 
 
-def classify_record(raw: dict) -> tuple[str, str]:
+def classify_record(raw: dict[str, Any]) -> tuple[str, str]:
     """Classify a Claude Code record.
 
     Returns:

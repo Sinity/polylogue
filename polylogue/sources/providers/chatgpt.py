@@ -6,6 +6,7 @@ Derived from schema: polylogue/schemas/providers/chatgpt.schema.json
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
 
@@ -137,14 +138,14 @@ class ChatGPTMessage(BaseModel):
         return MessageMeta(
             id=self.id,
             timestamp=self.timestamp,
-            role=self.role_normalized,  # type: ignore
+            role=self.role_normalized,
             model=self.metadata.get("model_slug"),
             provider="chatgpt",
         )
 
     def to_content_blocks(self) -> list[ContentBlock]:
         """Extract harmonized content blocks."""
-        blocks = []
+        blocks: list[ContentBlock] = []
 
         if not self.content:
             return blocks
@@ -258,12 +259,12 @@ class ChatGPTConversation(BaseModel):
     @property
     def messages(self) -> list[ChatGPTMessage]:
         """Extract messages in order (following the tree from root)."""
-        messages = []
+        messages: list[ChatGPTMessage] = []
 
         # Find root node (no parent or parent is "client-created-root")
         root_id = None
-        for node_id, node in self.mapping.items():
-            if node.parent is None or node.parent == "client-created-root":
+        for node_id, entry in self.mapping.items():
+            if entry.parent is None or entry.parent == "client-created-root":
                 root_id = node_id
                 break
 
@@ -276,7 +277,7 @@ class ChatGPTConversation(BaseModel):
 
         while current_id and current_id not in visited:
             visited.add(current_id)
-            node = self.mapping.get(current_id)
+            node: ChatGPTNode | None = self.mapping.get(current_id)
             if not node:
                 break
 
@@ -307,7 +308,7 @@ class ChatGPTConversation(BaseModel):
         except (ValueError, OSError):
             return None
 
-    def iter_user_assistant_pairs(self):
+    def iter_user_assistant_pairs(self) -> Iterator[tuple[ChatGPTMessage, ChatGPTMessage]]:
         """Iterate over (user_message, assistant_message) pairs."""
         messages = self.messages
         i = 0

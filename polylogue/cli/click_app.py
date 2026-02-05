@@ -80,7 +80,7 @@ class QueryFirstGroup(click.Group):
                 new_args.extend(["--query-term", arg])
             i += 1
 
-        return super().parse_args(ctx, new_args)
+        return list(super().parse_args(ctx, new_args))
 
     def invoke(self, ctx: click.Context) -> Any:
         """Invoke the group, dispatching to query or stats mode if no subcommand."""
@@ -99,7 +99,7 @@ class QueryFirstGroup(click.Group):
         with ctx:
             ctx.invoke(self.callback, **ctx.params)
 
-        return _handle_query_mode(ctx)
+        _handle_query_mode(ctx)
 
 
 def _handle_query_mode(ctx: click.Context) -> None:

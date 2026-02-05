@@ -1620,7 +1620,7 @@ class SQLiteBackend:
         else:
             row = conn.execute("SELECT COUNT(*) as cnt FROM raw_conversations").fetchone()
 
-        return row["cnt"]
+        return int(row["cnt"])
 
 
 __all__ = ["SQLiteBackend", "DatabaseError", "default_db_path"]

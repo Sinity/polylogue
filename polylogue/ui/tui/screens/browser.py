@@ -55,10 +55,10 @@ class Browser(Container):
                 # Store ID in data for retrieval
                 provider_node.add_leaf(label, data=summary.id)
 
-    async def on_tree_node_selected(self, message: Tree.NodeSelected) -> None:
+    async def on_tree_node_selected(self, message: Tree.NodeSelected[str]) -> None:
         """Handle tree node selection."""
         if not message.node.allow_expand and message.node.data:
-            conv_id = message.node.data
+            conv_id = str(message.node.data)
             self.load_conversation(conv_id)
 
     def load_conversation(self, conversation_id: str) -> None:
@@ -74,7 +74,7 @@ class Browser(Container):
         # We can use our existing render logic or just simple dump for now.
         # A simple formatting:
 
-        md_lines = [f"# {conv.title or 'Untitled'}", f"*{conv.timestamp}*", ""]
+        md_lines = [f"# {conv.title or 'Untitled'}", f"*{conv.created_at}*", ""]
 
         for msg in conv.messages:
             role_icon = "👤" if msg.role == "user" else "🤖"

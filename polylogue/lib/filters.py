@@ -23,6 +23,7 @@ Example:
 
 from __future__ import annotations
 
+import builtins
 import random
 from collections.abc import Callable
 from datetime import datetime
@@ -363,7 +364,7 @@ class ConversationFilter:
 
     # --- Terminal methods (execute query) ---
 
-    def _apply_filters(self, conversations: list[Conversation]) -> list[Conversation]:
+    def _apply_filters(self, conversations: builtins.list[Conversation]) -> builtins.list[Conversation]:
         """Apply in-memory filters to conversation list.
 
         Args:
@@ -425,7 +426,7 @@ class ConversationFilter:
 
         return results
 
-    def _apply_sort(self, conversations: list[Conversation]) -> list[Conversation]:
+    def _apply_sort(self, conversations: builtins.list[Conversation]) -> builtins.list[Conversation]:
         """Apply sorting to conversation list.
 
         Args:
@@ -464,7 +465,7 @@ class ConversationFilter:
             reverse=not self._sort_reverse,  # Default is descending
         )
 
-    def _fetch_candidates(self) -> list[Conversation]:
+    def _fetch_candidates(self) -> builtins.list[Conversation]:
         """Fetch candidate conversations from repository.
 
         Uses FTS search if terms specified, otherwise lists all.
@@ -493,7 +494,7 @@ class ConversationFilter:
         # Default: list all (with reasonable limit)
         return self._repo.list(limit=1000)
 
-    def list(self) -> list[Conversation]:
+    def list(self) -> builtins.list[Conversation]:
         """Execute query and return matching conversations.
 
         Returns:
@@ -636,7 +637,7 @@ class ConversationFilter:
         # Sort by messages/words/longest/tokens needs message data
         return self._sort_field in ("messages", "words", "longest", "tokens")
 
-    def _fetch_summary_candidates(self) -> list[ConversationSummary]:
+    def _fetch_summary_candidates(self) -> builtins.list[ConversationSummary]:
         """Fetch candidate conversation summaries (lightweight, no messages).
 
         Uses FTS search if terms specified, otherwise lists all summaries.
@@ -660,7 +661,7 @@ class ConversationFilter:
         # Default: list all summaries
         return self._repo.list_summaries(limit=1000)
 
-    def _apply_summary_filters(self, summaries: list[ConversationSummary]) -> list[ConversationSummary]:
+    def _apply_summary_filters(self, summaries: builtins.list[ConversationSummary]) -> builtins.list[ConversationSummary]:
         """Apply filters that work on summaries (no message access needed).
 
         Args:
@@ -670,7 +671,7 @@ class ConversationFilter:
             Filtered list of summaries
         """
 
-        results = list(summaries)
+        results: builtins.list[ConversationSummary] = list(summaries)
 
         # Provider filters
         if self._providers:
@@ -705,7 +706,7 @@ class ConversationFilter:
 
         return results
 
-    def _apply_summary_sort(self, summaries: list[ConversationSummary]) -> list[ConversationSummary]:
+    def _apply_summary_sort(self, summaries: builtins.list[ConversationSummary]) -> builtins.list[ConversationSummary]:
         """Apply sorting to summary list (limited to summary-compatible sorts).
 
         Args:
@@ -717,7 +718,7 @@ class ConversationFilter:
         from datetime import timezone
 
         if self._sort_field == "random":
-            shuffled = list(summaries)
+            shuffled: builtins.list[ConversationSummary] = list(summaries)
             random.shuffle(shuffled)
             return shuffled
 
@@ -734,7 +735,7 @@ class ConversationFilter:
             reverse=not self._sort_reverse,
         )
 
-    def list_summaries(self) -> list[ConversationSummary]:
+    def list_summaries(self) -> builtins.list[ConversationSummary]:
         """Execute query and return lightweight summaries (no messages loaded).
 
         This is the memory-efficient alternative to list() for cases where

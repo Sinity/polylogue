@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 # Re-export Role from the canonical location
 from polylogue.lib.roles import Role
@@ -37,7 +38,7 @@ class CommonMessage:
 
     # Preserve original for debugging
     provider: str = ""
-    raw: dict = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -45,9 +46,9 @@ class CommonToolCall:
     """Tool invocation common subset."""
 
     name: str
-    input: dict
+    input: dict[str, Any]
     output: str | None = None
     success: bool | None = None
 
     provider: str = ""
-    raw: dict = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)

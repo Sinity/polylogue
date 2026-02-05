@@ -114,7 +114,7 @@ class CodexRecord(BaseModel):
     def effective_role(self) -> str:
         """Get normalized role from any format."""
         if self.format_type == "envelope" and self.payload:
-            return self.payload.get("role", "unknown")
+            return str(self.payload.get("role", "unknown"))
         if self.role:
             return self.role
         return "unknown"
@@ -171,7 +171,7 @@ class CodexRecord(BaseModel):
         return MessageMeta(
             id=self.id,
             timestamp=self.parsed_timestamp,
-            role=role_normalized,  # type: ignore
+            role=role_normalized,
             provider="codex",
         )
 

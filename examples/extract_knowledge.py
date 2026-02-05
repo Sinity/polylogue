@@ -184,7 +184,7 @@ def main():
         print(f"  Found {len(discussions)} conversations mentioning '{args.topic}'")
 
         if discussions:
-            print(f"\n  Top discussions:")
+            print("\n  Top discussions:")
             for disc in discussions[:5]:
                 print(f"    - {disc['title']} ({disc['mention_count']} mentions)")
 
