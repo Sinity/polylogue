@@ -862,10 +862,10 @@ def auth_workspace(tmp_path, monkeypatch):
 class TestAuthCommand:
     """Tests for the auth command."""
 
-    def test_unknown_provider_fails(self, auth_workspace):
-        """Unknown auth provider shows error."""
+    def test_unknown_service_fails(self, auth_workspace):
+        """Unknown auth service shows error."""
         runner = CliRunner()
-        result = runner.invoke(cli, ["auth", "--provider", "unknown"])
+        result = runner.invoke(cli, ["auth", "--service", "unknown"])
         assert result.exit_code == 1
         assert "unknown" in result.output.lower()
         assert "drive" in result.output.lower()

@@ -63,16 +63,8 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     for term in params.get("contains", ()):
         filter_chain = filter_chain.contains(term)
 
-    # Apply --no-contains
-    for term in params.get("no_contains", ()):
-        filter_chain = filter_chain.no_contains(term)
-
-    # Apply --contains (already applied via query_terms above but keeping for explicit contains if needed)
-    for term in params.get("contains", ()):
-        filter_chain = filter_chain.contains(term)
-
-    # Apply --no-contains
-    for term in params.get("no_contains", ()):
+    # Apply --exclude-text
+    for term in params.get("exclude_text", ()):
         filter_chain = filter_chain.no_contains(term)
 
     # Apply --provider (comma-separated)
@@ -80,9 +72,9 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         providers = [p.strip() for p in params["provider"].split(",")]
         filter_chain = filter_chain.provider(*providers)
 
-    # Apply --no-provider (comma-separated)
-    if params.get("no_provider"):
-        excluded = [p.strip() for p in params["no_provider"].split(",")]
+    # Apply --exclude-provider (comma-separated)
+    if params.get("exclude_provider"):
+        excluded = [p.strip() for p in params["exclude_provider"].split(",")]
         filter_chain = filter_chain.no_provider(*excluded)
 
     # Apply --tag (comma-separated)
@@ -90,9 +82,9 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         tags = [t.strip() for t in params["tag"].split(",")]
         filter_chain = filter_chain.tag(*tags)
 
-    # Apply --no-tag (comma-separated)
-    if params.get("no_tag"):
-        excluded = [t.strip() for t in params["no_tag"].split(",")]
+    # Apply --exclude-tag (comma-separated)
+    if params.get("exclude_tag"):
+        excluded = [t.strip() for t in params["exclude_tag"].split(",")]
         filter_chain = filter_chain.no_tag(*excluded)
 
     # Apply --title

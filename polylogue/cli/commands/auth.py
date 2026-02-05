@@ -10,11 +10,11 @@ from polylogue.cli.types import AppEnv
 
 
 @click.command("auth")
-@click.option("--provider", "-p", default="drive", help="Auth provider (default: drive)")
+@click.option("--service", default="drive", help="Auth service (default: drive)")
 @click.option("--refresh", is_flag=True, help="Force token refresh")
 @click.option("--revoke", is_flag=True, help="Revoke existing credentials")
 @click.pass_obj
-def auth_command(env: AppEnv, provider: str, refresh: bool, revoke: bool) -> None:
+def auth_command(env: AppEnv, service: str, refresh: bool, revoke: bool) -> None:
     """Authenticate with external services (Google Drive for Gemini).
 
     \b
@@ -25,9 +25,9 @@ def auth_command(env: AppEnv, provider: str, refresh: bool, revoke: bool) -> Non
     """
     ui = env.ui
 
-    if provider != "drive":
-        ui.console.print(f"[red]Unknown auth provider: {provider}[/red]")
-        ui.console.print("Available providers: drive")
+    if service != "drive":
+        ui.console.print(f"[red]Unknown auth service: {service}[/red]")
+        ui.console.print("Available services: drive")
         raise SystemExit(1)
 
     if revoke:
@@ -45,7 +45,7 @@ def auth_command(env: AppEnv, provider: str, refresh: bool, revoke: bool) -> Non
 def _get_drive_paths(env: AppEnv) -> tuple[Path, Path]:
     """Get credentials and token paths from config or defaults."""
     from polylogue.cli.helpers import load_effective_config
-    from polylogue.ingestion.drive_client import default_credentials_path, default_token_path
+    from polylogue.sources.drive_client import default_credentials_path, default_token_path
 
     try:
         config = load_effective_config(env)
@@ -75,7 +75,7 @@ def _drive_oauth_flow(env: AppEnv, retry_on_failure: bool = True) -> None:
         env.ui.console.print("A browser window will open for authentication.")
 
     try:
-        from polylogue.ingestion.drive_client import DriveClient
+        from polylogue.sources.drive_client import DriveClient
 
         client = DriveClient(
             credentials_path=credentials_path,

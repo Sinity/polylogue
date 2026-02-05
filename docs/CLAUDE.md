@@ -45,10 +45,10 @@ with Polylogue() as archive:
 
 | Aspect | Implementation | Behavior |
 |--------|----------------|----------|
-| **Storage** | `StorageBackend` protocol | SQLiteBackend default, thread-local connections |
+| **Storage** | `SQLiteBackend` (only backend) | Thread-local connections, no protocol abstraction |
 | **Search** | `SearchProvider` protocol | FTS5 (local), Qdrant (vector), LRU cache |
-| **Rendering** | `OutputRenderer` protocol | Markdown/HTML via `--format` flag |
-| **Services** | DI via `dependency-injector` | IngestionService, IndexService, RenderService |
+| **Rendering** | Markdown/HTML renderers | Via `--format` flag |
+| **Services** | `polylogue.services` module | Singleton factories for backend + repository |
 | **Thread safety** | `_WRITE_LOCK` + thread-local | Lock in `store.py`, max 16 parallel ingests, 4 render workers |
 | **Deduplication** | SHA-256 + NFC normalization | Same content → same hash → skip |
 
@@ -80,9 +80,9 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 | `lib/models.py` | Message/Conversation with `is_thinking`, `is_tool_use`, `is_substantive` |
 | `lib/projections.py` | Fluent API: `conv.project().substantive().min_words(50).execute()` |
 | `lib/filters.py` | Conversation filter chain: `p.filter().provider("claude").list()` |
-| `lib/repository.py` | ConversationRepository (query interface) |
-| `protocols.py` | StorageBackend, SearchProvider, OutputRenderer, VectorProvider |
-| `container.py` | ApplicationContainer (DI) |
+| `facade.py` | `Polylogue` — top-level library API |
+| `services.py` | Singleton factories: `get_backend()`, `get_repository()` |
+| `protocols.py` | SearchProvider, VectorProvider (storage protocol deleted) |
 | `types.py` | NewType IDs: ConversationId, MessageId, AttachmentId |
 
 ### Storage
@@ -95,14 +95,14 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 | `storage/search_providers/qdrant.py` | Qdrant vector search (Voyage embeddings) |
 | `storage/db.py` | Thread-local connections, `connection_context()` |
 
-### Ingestion
+### Sources (ingestion + parsing)
 | File | Purpose |
 |------|---------|
-| `ingestion/source.py` | `detect_provider()`, encoding fallback, ZIP bomb protection |
-| `importers/chatgpt.py` | UUID graph traversal, content_blocks from `content.parts` |
-| `importers/claude.py` | JSONL (Claude AI) + structured blocks (Claude Code) |
-| `importers/codex.py` | Session exports |
-| `ingestion/drive.py` | Gemini via Google Drive API |
+| `sources/source.py` | `detect_provider()`, encoding fallback, ZIP bomb protection |
+| `sources/parsers/chatgpt.py` | UUID graph traversal, content_blocks from `content.parts` |
+| `sources/parsers/claude.py` | JSONL (Claude AI) + structured blocks (Claude Code) |
+| `sources/parsers/codex.py` | Session exports |
+| `sources/drive.py` | Gemini via Google Drive API |
 
 ### Pipeline
 | File | Purpose |
@@ -182,7 +182,7 @@ for msg in conv.project().contains("error").iter():  # lazy
 ✅ Bounded: ingestion futures — max 16 in-flight, FIRST_COMPLETED wait
 ✅ Pattern: with _WRITE_LOCK: save() — atomic writes
 
-❌ NEVER: Direct sqlite3 ops — always use StorageRepository
+❌ NEVER: Direct sqlite3 ops — always use ConversationRepository
 ❌ NEVER: Hold _WRITE_LOCK during I/O — only during commit
 ❌ NEVER: Mutate shared state without locks
 ```
@@ -192,7 +192,7 @@ for msg in conv.project().contains("error").iter():  # lazy
 ## Content Hashing
 
 ```python
-# core/hashing.py - NFC normalization prevents duplicates from equivalent Unicode
+# lib/hashing.py - NFC normalization prevents duplicates from equivalent Unicode
 normalized = unicodedata.normalize("NFC", text)
 hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 ```
@@ -236,15 +236,15 @@ Powers `is_thinking`, `is_tool_use`, `is_substantive` properties. Extracted at i
 
 ## Provider Quirks
 
-| Provider | Format | Structure | Content Blocks | Importer |
-|----------|--------|-----------|----------------|----------|
-| **ChatGPT** | conversations.json | UUID graph (`mapping`) | From `content.parts` + `content_type` | `importers/chatgpt.py` |
-| **Claude AI** | JSONL | Flat `chat_messages` | None (simple text) | `importers/claude.py` |
-| **Claude Code** | JSON array | `parentUuid`/`sessionId` | Structured `content` array | `importers/claude.py` |
-| **Gemini** | Drive API | `chunkedPrompt.chunks` | From chunks | `ingestion/drive.py` |
-| **Codex** | Session export | Session-based | N/A | `importers/codex.py` |
+| Provider | Format | Structure | Content Blocks | Parser |
+|----------|--------|-----------|----------------|--------|
+| **ChatGPT** | conversations.json | UUID graph (`mapping`) | From `content.parts` + `content_type` | `sources/parsers/chatgpt.py` |
+| **Claude AI** | JSONL | Flat `chat_messages` | None (simple text) | `sources/parsers/claude.py` |
+| **Claude Code** | JSON array | `parentUuid`/`sessionId` | Structured `content` array | `sources/parsers/claude.py` |
+| **Gemini** | Drive API | `chunkedPrompt.chunks` | From chunks | `sources/drive.py` |
+| **Codex** | Session export | Session-based | N/A | `sources/parsers/codex.py` |
 
-**Detection**: `ingestion/source.py:detect_provider()` via `looks_like()` functions
+**Detection**: `sources/source.py:detect_provider()` via `looks_like()` functions
 
 ---
 
@@ -304,27 +304,22 @@ polylogue://conversations?provider=claude&tag=important&limit=50
 | Protection | Location | Behavior |
 |------------|----------|----------|
 | **FTS5 injection** | `escape_fts5_query()` in `storage/search.py` | Quotes special chars, handles operators |
-| **Encoding fallback** | `ingestion/source.py` | UTF-8 → UTF-8-sig → UTF-16 → UTF-32 → ignore |
-| **ZIP bomb** | `ingestion/source.py` | Max 100:1 ratio, 500MB limit |
+| **Encoding fallback** | `sources/source.py` | UTF-8 → UTF-8-sig → UTF-16 → UTF-32 → ignore |
+| **ZIP bomb** | `sources/source.py` | Max 100:1 ratio, 500MB limit |
 
 ---
 
-## Extension Pattern
+## Extension Points
 
-All major components use protocols for extensibility:
+Search and vector storage use protocol-based extensibility:
 
 ```python
-# 1. Implement protocol from protocols.py
-class NewBackend:
-    def save_conversation(self, conversation, messages, attachments) -> dict[str, int]: ...
-    def get_conversation(self, conversation_id) -> ConversationRecord | None: ...
-    # ... other protocol methods
-
-# 2. Pass to repository/service
-repo = StorageRepository(backend=NewBackend())
+# SearchProvider protocol (2 implementations: FTS5, Hybrid)
+# VectorProvider protocol (Qdrant implementation)
+# See protocols.py for interfaces
 ```
 
-Same pattern for `SearchProvider`, `OutputRenderer`, `VectorProvider`.
+Storage uses `SQLiteBackend` directly (single backend, no protocol abstraction).
 
 ---
 
@@ -332,14 +327,14 @@ Same pattern for `SearchProvider`, `OutputRenderer`, `VectorProvider`.
 
 | ❌ Don't | ✅ Do Instead |
 |----------|---------------|
-| Direct sqlite3 ops | Use `StorageRepository` |
+| Direct sqlite3 ops | Use `ConversationRepository` |
 | Skip content_blocks extraction | Extract at import time |
 | Hardcode paths | Use `config.archive_root` |
 | Manual commits | Let `connection_context()` handle |
 | Modify hash logic | Maintain compatibility (breaks idempotency) |
 | String matching for thinking/tools | Use `message.is_tool_use`, `is_thinking` |
 | Mutate shared state in parallel | Use locks or keep pure |
-| Create StorageRepository without backend | Pass `backend=create_default_backend()` |
+| Create repository without backend | Use `polylogue.services.get_repository()` |
 
 ---
 
@@ -349,9 +344,9 @@ Same pattern for `SearchProvider`, `OutputRenderer`, `VectorProvider`.
 |-------|------------|
 | "Database locked" | Writes bypassing `_WRITE_LOCK` in `store.py` |
 | "ref_count=0 but referenced" | `_prune_attachment_refs()` not called |
-| "Content hash mismatch" | NFC normalization changed — check `core/hashing.py` |
+| "Content hash mismatch" | NFC normalization changed — check `lib/hashing.py` |
 | "FTS syntax error" | Unescaped query — use `escape_fts5_query()` |
-| "Thinking not detected" | Missing content_blocks — check importer |
+| "Thinking not detected" | Missing content_blocks — check parser in `sources/parsers/` |
 | "Config not reflected" | Env vars override — `polylogue config show` |
 
 ---

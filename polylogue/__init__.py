@@ -45,26 +45,10 @@ def __getattr__(name: str) -> object:
 
 
 __all__ = [
-    # Main facade
     "Polylogue",
     "AsyncPolylogue",
-    "ArchiveStats",
-    # Configuration
-    "Source",
-    # Data access
-    "ConversationFilter",
-    "ConversationRepository",
     "Conversation",
     "Message",
-    # Search
+    "ConversationFilter",
     "SearchResult",
-    "SearchHit",
 ]
-
-# Note: The following modules remain available as submodules:
-# - polylogue.paths (XDG paths and configuration)
-# - polylogue.storage (database and storage)
-# - polylogue.pipeline.runner (pipeline runner)
-# - polylogue.render (rendering)
-# - polylogue.storage.search (search)
-# - polylogue.types (type definitions)

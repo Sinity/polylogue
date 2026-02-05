@@ -118,12 +118,12 @@ class TestRunCommand:
 class TestAuthCommand:
     """Tests for the auth command."""
 
-    def test_auth_unknown_provider_fails(self, tmp_path):
-        """auth --provider unknown fails with error."""
+    def test_auth_unknown_service_fails(self, tmp_path):
+        """auth --service unknown fails with error."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
 
-        result = run_cli(["auth", "--provider", "unknown"], env=env)
+        result = run_cli(["auth", "--service", "unknown"], env=env)
         assert result.exit_code != 0
         assert "unknown" in result.output.lower() or "provider" in result.output.lower()
 
@@ -221,18 +221,18 @@ class TestResetCommandSubprocess:
         assert "specify" in output_lower or "target" in output_lower or "--database" in output_lower
 
     def test_reset_database_requires_force(self, tmp_path):
-        """reset --database without --force prompts (plain mode fails)."""
+        """reset --database without --yes prompts (plain mode fails)."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
 
         result = run_cli(["--plain", "reset", "--database"], env=env)
-        # In plain mode without --force, should exit without deleting
-        # (may succeed if no db exists, or show "use --force" message)
+        # In plain mode without --yes, should exit without deleting
+        # (may succeed if no db exists, or show "use --yes" message)
         output_lower = result.output.lower()
         assert result.exit_code == 0 or "force" in output_lower or "nothing" in output_lower
 
     def test_reset_force_database(self, tmp_path):
-        """reset --database --force deletes database."""
+        """reset --database --yes deletes database."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
         inbox = workspace["paths"]["inbox"]
@@ -244,7 +244,7 @@ class TestResetCommandSubprocess:
         run_cli(["--plain", "run", "--stage", "parse"], env=env)
 
         # Now reset
-        result = run_cli(["--plain", "reset", "--database", "--force"], env=env)
+        result = run_cli(["--plain", "reset", "--database", "--yes"], env=env)
         # Should succeed (either deleted or nothing existed)
         assert result.exit_code == 0
 
@@ -253,8 +253,8 @@ class TestResetCommandSubprocess:
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
 
-        # With --force in plain mode
-        result = run_cli(["--plain", "reset", "--all", "--force"], env=env)
+        # With --yes in plain mode
+        result = run_cli(["--plain", "reset", "--all", "--yes"], env=env)
         # Should succeed (nothing to delete in fresh workspace)
         assert result.exit_code == 0
 
@@ -524,7 +524,7 @@ class TestResetCommandValidation:
              patch("polylogue.cli.commands.reset.CACHE_HOME", tmp_path / "cache"), \
              patch("polylogue.cli.commands.reset.DRIVE_TOKEN_PATH", tmp_path / "token.json"):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--all", "--force"])
+            result = runner.invoke(cli, ["reset", "--all", "--yes"])
 
             # Should not error even if files don't exist
             assert result.exit_code == 0
@@ -544,7 +544,7 @@ class TestResetCommandDeletion:
         with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
              patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database", "--force"])
+            result = runner.invoke(cli, ["reset", "--database", "--yes"])
 
             assert result.exit_code == 0
             assert not db_path.exists()
@@ -562,7 +562,7 @@ class TestResetCommandDeletion:
         with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
              patch("polylogue.cli.commands.reset.DATA_HOME", data_home):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--assets", "--force"])
+            result = runner.invoke(cli, ["reset", "--assets", "--yes"])
 
             assert result.exit_code == 0
             assert not assets_dir.exists()
@@ -580,7 +580,7 @@ class TestResetCommandDeletion:
              patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path), \
              patch("polylogue.cli.commands.reset.RENDER_ROOT", render_dir):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--render", "--force"])
+            result = runner.invoke(cli, ["reset", "--render", "--yes"])
 
             assert result.exit_code == 0
             assert not render_dir.exists()
@@ -599,7 +599,7 @@ class TestResetCommandDeletion:
              patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "nonexistent"), \
              patch("polylogue.cli.commands.reset.CACHE_HOME", cache_dir):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--cache", "--force"])
+            result = runner.invoke(cli, ["reset", "--cache", "--yes"])
 
             assert result.exit_code == 0
             assert not cache_dir.exists()
@@ -618,7 +618,7 @@ class TestResetCommandDeletion:
              patch("polylogue.cli.commands.reset.CACHE_HOME", tmp_path / "nonexistent"), \
              patch("polylogue.cli.commands.reset.DRIVE_TOKEN_PATH", token_path):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--auth", "--force"])
+            result = runner.invoke(cli, ["reset", "--auth", "--yes"])
 
             assert result.exit_code == 0
             assert not token_path.exists()
@@ -643,7 +643,7 @@ class TestResetCommandDeletion:
              patch("polylogue.cli.commands.reset.DATA_HOME", data_home), \
              patch("polylogue.cli.commands.reset.RENDER_ROOT", render_dir):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database", "--render", "--force"])
+            result = runner.invoke(cli, ["reset", "--database", "--render", "--yes"])
 
             assert result.exit_code == 0
             assert not db_path.exists()
@@ -656,7 +656,7 @@ class TestResetConfirmation:
     """Tests for reset confirmation flow."""
 
     def test_without_force_in_plain_mode_skips(self, tmp_path, monkeypatch):
-        """Without --force in plain mode, shows message and skips."""
+        """Without --yes in plain mode, shows message and skips."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
         db_path = tmp_path / "polylogue.db"
@@ -667,13 +667,13 @@ class TestResetConfirmation:
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database"])
 
-            # In plain mode without --force, should not delete
+            # In plain mode without --yes, should not delete
             assert result.exit_code == 0
             assert db_path.exists()
             assert "force" in result.output.lower()
 
     def test_force_bypasses_confirmation(self, tmp_path, monkeypatch):
-        """--force bypasses confirmation prompt."""
+        """--yes bypasses confirmation prompt."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
         db_path = tmp_path / "polylogue.db"
@@ -682,7 +682,7 @@ class TestResetConfirmation:
         with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
              patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database", "--force"])
+            result = runner.invoke(cli, ["reset", "--database", "--yes"])
 
             assert result.exit_code == 0
             assert not db_path.exists()
@@ -701,7 +701,7 @@ class TestResetEmptyTargets:
              patch("polylogue.cli.commands.reset.CACHE_HOME", tmp_path / "nonexistent"), \
              patch("polylogue.cli.commands.reset.DRIVE_TOKEN_PATH", tmp_path / "nonexistent.json"):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--all", "--force"])
+            result = runner.invoke(cli, ["reset", "--all", "--yes"])
 
             assert result.exit_code == 0
             assert "nothing to reset" in result.output.lower()
@@ -716,7 +716,7 @@ class TestResetEmptyTargets:
         with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
              patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path / "nonexistent"):
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database", "--assets", "--force"])
+            result = runner.invoke(cli, ["reset", "--database", "--assets", "--yes"])
 
             assert result.exit_code == 0
             assert not db_path.exists()
@@ -739,7 +739,7 @@ class TestResetErrorHandling:
             mock_unlink.side_effect = OSError("Permission denied")
 
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database", "--force"])
+            result = runner.invoke(cli, ["reset", "--database", "--yes"])
 
             # Should report failure but not crash
             assert "failed" in result.output.lower() or result.exit_code == 0

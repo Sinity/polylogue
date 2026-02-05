@@ -8,7 +8,7 @@ import click
 
 from polylogue.cli.helpers import fail
 from polylogue.cli.types import AppEnv
-from polylogue.paths import CACHE_HOME, DB_PATH, RENDER_ROOT, DRIVE_TOKEN_PATH, DATA_HOME
+from polylogue.paths import CACHE_HOME, DATA_HOME, DB_PATH, DRIVE_TOKEN_PATH, RENDER_ROOT
 
 
 @click.command("reset")
@@ -18,7 +18,7 @@ from polylogue.paths import CACHE_HOME, DB_PATH, RENDER_ROOT, DRIVE_TOKEN_PATH, 
 @click.option("--cache", is_flag=True, help="Delete search indexes and cache")
 @click.option("--auth", is_flag=True, help="Delete Google Drive OAuth tokens")
 @click.option("--all", "reset_all", is_flag=True, help="Reset everything")
-@click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
 @click.pass_obj
 def reset_command(
     env: AppEnv,
@@ -28,7 +28,7 @@ def reset_command(
     cache: bool,
     auth: bool,
     reset_all: bool,
-    force: bool,
+    yes: bool,
 ) -> None:
     """Reset database, assets, rendered outputs, or auth state.
 
@@ -66,10 +66,10 @@ def reset_command(
     lines = [f"  {name}: {path}" for name, path in targets]
     env.ui.summary("Will delete", lines)
 
-    # Confirm unless --force
-    if not force:
+    # Confirm unless --yes
+    if not yes:
         if env.ui.plain:
-            env.ui.console.print("Use --force to confirm deletion.")
+            env.ui.console.print("Use --yes to confirm deletion.")
             return
         if not env.ui.confirm("Delete these files/directories?", default=False):
             env.ui.console.print("Reset cancelled.")
