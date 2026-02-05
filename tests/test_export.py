@@ -9,48 +9,27 @@ import pytest
 
 from polylogue.export import export_jsonl
 from polylogue.storage.backends.sqlite import SQLiteBackend
-from tests.factories import DbFactory
+from tests.helpers import ConversationBuilder
 
 
 @pytest.fixture
-def populated_db(db_path: Path) -> DbFactory:
+def populated_db(db_path: Path) -> Path:
     """Provide a database populated with test data."""
-    factory = DbFactory(db_path)
+    (ConversationBuilder(db_path, "conv-1")
+     .provider("chatgpt")
+     .title("First Conversation")
+     .add_message("msg-1-1", role="user", text="Hello")
+     .add_message("msg-1-2", role="assistant", text="Hi there")
+     .save())
 
-    # Conversation 1: Basic
-    factory.create_conversation(
-        id="conv-1",
-        provider="chatgpt",
-        title="First Conversation",
-        messages=[
-            {"id": "msg-1-1", "role": "user", "text": "Hello"},
-            {"id": "msg-1-2", "role": "assistant", "text": "Hi there"},
-        ],
-    )
+    (ConversationBuilder(db_path, "conv-2")
+     .provider("claude")
+     .title("With Attachments")
+     .add_message("msg-2-1", role="user", text="Here is an image")
+     .add_attachment("att-1", message_id="msg-2-1", mime_type="image/png", size_bytes=1024)
+     .save())
 
-    # Conversation 2: With Attachments
-    factory.create_conversation(
-        id="conv-2",
-        provider="claude",
-        title="With Attachments",
-        messages=[
-            {"id": "msg-2-1", "role": "user", "text": "Here is an image"},
-        ],
-    )
-
-    # Add attachment manually since factory doesn't support it easily yet
-    backend = SQLiteBackend(db_path)
-    backend.begin()
-    from tests.helpers import make_attachment
-
-    att = make_attachment(
-        attachment_id="att-1", conversation_id="conv-2", message_id="msg-2-1", mime_type="image/png", size_bytes=1024
-    )
-    backend.save_attachments([att])
-    backend.commit()
-    backend.close()
-
-    return factory
+    return db_path
 
 
 def test_export_jsonl_creates_file(populated_db, tmp_path):
@@ -69,7 +48,7 @@ def test_export_jsonl_creates_file(populated_db, tmp_path):
 
     from unittest.mock import patch
 
-    db_path = populated_db.db_path
+    db_path = populated_db
 
     # We need to mock open_connection to return a connection to our test db
     with patch("polylogue.export.open_connection") as mock_conn:
@@ -94,7 +73,7 @@ def test_export_content_correctness(populated_db, tmp_path):
 
     from polylogue.storage.backends.sqlite import connection_context
 
-    db_path = populated_db.db_path
+    db_path = populated_db
 
     with patch("polylogue.export.open_connection", side_effect=lambda _: connection_context(db_path)):
         output_file = tmp_path / "out.jsonl"
@@ -129,8 +108,11 @@ def test_export_handles_empty_db(db_path, tmp_path):
 
     from polylogue.storage.backends.sqlite import connection_context
 
-    # Ensure tables exist (DbFactory does this but we just need empty init)
-    DbFactory(db_path)
+    # Ensure tables exist by opening a connection (which auto-creates schema)
+    from polylogue.storage.backends.sqlite import open_connection
+
+    with open_connection(db_path):
+        pass
 
     with patch("polylogue.export.open_connection", side_effect=lambda _: connection_context(db_path)):
         output_file = tmp_path / "empty.jsonl"

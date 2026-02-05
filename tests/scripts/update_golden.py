@@ -28,7 +28,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from polylogue.rendering.core import ConversationFormatter
-from tests.factories import DbFactory
+from tests.helpers import DbFactory
 
 
 def create_golden_chatgpt_simple(golden_dir: Path, db_path: Path):

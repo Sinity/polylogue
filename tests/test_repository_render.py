@@ -16,7 +16,7 @@ from polylogue.rendering.renderers import HTMLRenderer
 from polylogue.sources import IngestBundle, ingest_bundle
 from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
 from polylogue.storage.repository import ConversationRepository
-from tests.factories import DbFactory
+from tests.helpers import DbFactory
 from tests.helpers import make_attachment, make_conversation, make_message
 
 # test_db fixture is in conftest.py

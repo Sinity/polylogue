@@ -133,6 +133,10 @@ class ConversationBuilder:
         self.conv = self.conv.model_copy(update={"updated_at": updated_at})
         return self
 
+    def metadata(self, metadata: dict[str, Any] | None) -> ConversationBuilder:
+        self.conv = self.conv.model_copy(update={"metadata": metadata})
+        return self
+
     def parent_conversation(self, parent_id: str) -> ConversationBuilder:
         """Set parent conversation for continuations/sidechains."""
         self.conv = self.conv.model_copy(update={"parent_conversation_id": parent_id})
@@ -398,6 +402,87 @@ def make_chatgpt_node(
     if metadata:
         node["message"]["metadata"] = metadata
     return node
+
+
+# =============================================================================
+# LEGACY FACTORY (dict-based API, simpler for quick seeding)
+# =============================================================================
+
+
+class DbFactory:
+    """Helper to seed the database with consistent records via dict-based API.
+
+    For new tests, prefer ConversationBuilder (fluent API).
+    """
+
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def create_conversation(
+        self,
+        id: str | None = None,
+        provider: str = "test",
+        title: str = "Test Conversation",
+        messages: list[dict[str, Any]] | None = None,
+        created_at: datetime | None = None,
+        updated_at: datetime | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Create a conversation with messages in the DB."""
+        cid = id or str(uuid4())
+        created_iso = (created_at or datetime.now(timezone.utc)).isoformat()
+        updated_iso = (updated_at or datetime.now(timezone.utc)).isoformat()
+
+        conv_rec = ConversationRecord(
+            conversation_id=cid,
+            provider_name=provider,
+            provider_conversation_id=f"ext-{cid}",
+            title=title,
+            created_at=created_iso,
+            updated_at=updated_iso,
+            content_hash=uuid4().hex,
+            metadata=metadata,
+        )
+
+        msg_recs = []
+        att_recs = []
+
+        if messages:
+            for msg in messages:
+                mid = msg.get("id") or str(uuid4())
+                m_rec = MessageRecord(
+                    message_id=mid,
+                    conversation_id=cid,
+                    role=msg.get("role", "user"),
+                    text=msg.get("text", "hello"),
+                    timestamp=msg.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                    content_hash=uuid4().hex,
+                )
+                msg_recs.append(m_rec)
+
+                if "attachments" in msg:
+                    for att in msg["attachments"]:
+                        aid = att.get("id") or str(uuid4())
+                        att_recs.append(
+                            AttachmentRecord(
+                                attachment_id=aid,
+                                conversation_id=cid,
+                                message_id=mid,
+                                mime_type=att.get("mime_type", "application/octet-stream"),
+                                size_bytes=att.get("size_bytes", 1024),
+                                provider_meta=att.get("meta"),
+                            )
+                        )
+
+        with open_connection(self.db_path) as conn:
+            store_records(
+                conversation=conv_rec,
+                messages=msg_recs,
+                attachments=att_recs,
+                conn=conn,
+            )
+        return cid
 
 
 def make_claude_chat_message(
