@@ -9,17 +9,6 @@ Covers retry scenarios for:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
-import pytest
-
-from polylogue.ingestion.drive_client import (
-    DriveError,
-    DriveAuthError,
-    DriveNotFoundError,
-)
-
-
 # =============================================================================
 # QdrantError Tests
 # =============================================================================
@@ -123,6 +112,7 @@ class TestRetryConfigurations:
     def test_embedding_retry_count_is_5(self):
         """Embedding generation retries 5 times (documented in source)."""
         import inspect
+
         from polylogue.storage.search_providers import qdrant
 
         source = inspect.getsource(qdrant.QdrantProvider._get_embeddings)
@@ -132,6 +122,7 @@ class TestRetryConfigurations:
     def test_upsert_retry_count_is_3(self):
         """Upsert batch retries 3 times (documented in source)."""
         import inspect
+
         from polylogue.storage.search_providers import qdrant
 
         source = inspect.getsource(qdrant.QdrantProvider.upsert)
@@ -141,6 +132,7 @@ class TestRetryConfigurations:
     def test_collection_check_retry_count_is_3(self):
         """Collection check retries 3 times (documented in source)."""
         import inspect
+
         from polylogue.storage.search_providers import qdrant
 
         source = inspect.getsource(qdrant.QdrantProvider._ensure_collection)
@@ -159,6 +151,7 @@ class TestBatchConfiguration:
     def test_batch_size_is_64(self):
         """Upsert batches messages in groups of 64."""
         import inspect
+
         from polylogue.storage.search_providers import qdrant
 
         source = inspect.getsource(qdrant.QdrantProvider.upsert)
@@ -178,18 +171,19 @@ class TestQdrantProviderInterface:
         from polylogue.storage.search_providers.qdrant import QdrantProvider
 
         assert hasattr(QdrantProvider, "upsert")
-        assert callable(getattr(QdrantProvider, "upsert"))
+        assert callable(QdrantProvider.upsert)
 
     def test_has_query_method(self):
         """Provider has query method for search."""
         from polylogue.storage.search_providers.qdrant import QdrantProvider
 
         assert hasattr(QdrantProvider, "query")
-        assert callable(getattr(QdrantProvider, "query"))
+        assert callable(QdrantProvider.query)
 
     def test_query_accepts_text_and_limit(self):
         """Query method accepts text and limit parameters."""
         import inspect
+
         from polylogue.storage.search_providers.qdrant import QdrantProvider
 
         sig = inspect.signature(QdrantProvider.query)

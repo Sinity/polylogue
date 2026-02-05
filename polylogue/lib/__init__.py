@@ -37,7 +37,6 @@ Example usage:
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message, Role
-from polylogue.lib.projections import ConversationProjection
 
 
 def __getattr__(name: str) -> object:
@@ -45,6 +44,10 @@ def __getattr__(name: str) -> object:
         from polylogue.storage.repository import ConversationRepository
 
         return ConversationRepository
+    if name == "ConversationProjection":
+        from polylogue.lib.projections import ConversationProjection
+
+        return ConversationProjection
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

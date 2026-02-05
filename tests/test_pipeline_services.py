@@ -10,20 +10,18 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.importers.base import RawConversationData
 from polylogue.pipeline.services import IndexService, RenderService
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.ingestion import IngestionService, IngestResult
+from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends.sqlite import SQLiteBackend
-from polylogue.storage.repository import StorageRepository
-
+from polylogue.storage.repository import ConversationRepository
 
 # ============================================================================
 # RenderService Tests
@@ -63,7 +61,7 @@ class TestRenderService:
         """RenderService should track failures when rendering fails."""
         from polylogue.rendering.renderers import MarkdownRenderer
 
-        archive_root = tmp_path / "archive"
+        tmp_path / "archive"
         mock_renderer = MagicMock(spec=MarkdownRenderer)
 
         def render_side_effect(conversation_id, output_path):
@@ -892,7 +890,7 @@ class TestIngestionServiceIntegration:
 
         # Create repository with real backend (using explicit db_path)
         backend = SQLiteBackend(db_path=cli_workspace["db_path"])
-        repository = StorageRepository(backend=backend)
+        repository = ConversationRepository(backend=backend)
 
         # Create config
         config = Config(
@@ -946,7 +944,7 @@ class TestIngestionServiceIntegration:
 
         # Single backend instance - same connection management throughout
         backend = SQLiteBackend(db_path=cli_workspace["db_path"])
-        repository = StorageRepository(backend=backend)
+        repository = ConversationRepository(backend=backend)
 
         config = Config(
             archive_root=cli_workspace["archive_root"],

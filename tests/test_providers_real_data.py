@@ -17,8 +17,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
-from polylogue.ingestion import drive
-from polylogue.ingestion.source import detect_provider, iter_source_conversations
+from polylogue.sources.source import detect_provider, iter_source_conversations
 
 # Test data paths (real raw exports)
 RAW_DATA_DIR = Path("/realm/data/exports/chatlog/raw")
@@ -239,7 +238,7 @@ class TestEdgeCases:
         source = Source(name="unicode-test", path=CLAUDE_ZIP)
         cursor_state = {}
 
-        conversations = list(iter_source_conversations(source, cursor_state=cursor_state))
+        list(iter_source_conversations(source, cursor_state=cursor_state))
 
         # Should handle Unicode without decode errors
         assert cursor_state.get("failed_count", 0) == 0, "Should handle encodings without failures"

@@ -28,12 +28,11 @@ Example:
 
 # High-level API
 # Core types for library users
-from polylogue.config import Source
 from polylogue.async_facade import AsyncPolylogue
-from polylogue.facade import ArchiveStats, Polylogue
+from polylogue.facade import Polylogue
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, Message
-from polylogue.storage.search import SearchHit, SearchResult
+from polylogue.storage.search import SearchResult
 
 
 def __getattr__(name: str) -> object:
@@ -45,10 +44,10 @@ def __getattr__(name: str) -> object:
 
 
 __all__ = [
-    "Polylogue",
     "AsyncPolylogue",
     "Conversation",
-    "Message",
     "ConversationFilter",
+    "Message",
+    "Polylogue",
     "SearchResult",
 ]

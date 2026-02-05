@@ -10,6 +10,7 @@ This module handles the execution of query-mode operations including:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -44,10 +45,8 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     # Get vector provider (may be None if not configured)
     vector_provider = None
-    try:
+    with contextlib.suppress(ValueError, ImportError):
         vector_provider = create_vector_provider(config)
-    except (ValueError, ImportError):
-        pass
 
     # Create filter chain with vector provider
     from polylogue.lib.filters import ConversationFilter
@@ -855,10 +854,9 @@ def _open_in_browser(
 
     # Ensure HTML format for browser
     if output_format != "html":
-        if conv:
+        if conv:  # noqa: SIM108
             content = _conv_to_html(conv)
         else:
-            # Wrap plain content in HTML
             content = f"<html><body><pre>{content}</pre></body></html>"
 
     # Write to temp file and open

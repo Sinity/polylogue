@@ -12,13 +12,11 @@ import asyncio
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from polylogue.core.async_facade import AsyncPolylogue
+from polylogue.async_facade import AsyncPolylogue
 from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
-
 
 # =============================================================================
 # Basic Operations
@@ -330,7 +328,7 @@ async def test_batch_message_insertion():
     from datetime import datetime, timezone
     from uuid import uuid4
 
-    from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
+    from polylogue.storage.store import ConversationRecord, MessageRecord
 
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test_batch.db"
@@ -477,10 +475,8 @@ async def test_empty_message_list_no_error():
 # =============================================================================
 
 from polylogue.lib.models import Conversation, Message
-from polylogue.storage.async_repository import AsyncStorageRepository
+from polylogue.storage.async_repository import AsyncConversationRepository
 from polylogue.storage.store import AttachmentRecord, MessageRecord
-from polylogue.types import ContentHash
-
 
 # =============================================================================
 # Context Manager Tests
@@ -493,7 +489,7 @@ async def test_context_manager_basic():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        async with AsyncStorageRepository(db_path=db_path) as repo:
+        async with AsyncConversationRepository(db_path=db_path) as repo:
             assert repo is not None
             # Should be able to perform operations
             result = await repo.get_conversation("nonexistent")
@@ -506,7 +502,7 @@ async def test_context_manager_cleanup():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        async with AsyncStorageRepository(db_path=db_path) as repo:
+        async with AsyncConversationRepository(db_path=db_path) as repo:
             # Perform some operation to initialize
             await repo.get_conversation("test")
 
@@ -521,7 +517,7 @@ async def test_manual_close():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        repo = AsyncStorageRepository(db_path=db_path)
+        repo = AsyncConversationRepository(db_path=db_path)
         try:
             await repo.get_conversation("test")
         finally:
@@ -542,7 +538,7 @@ async def test_save_conversation_returns_counts():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        async with AsyncStorageRepository(db_path=db_path) as repo:
+        async with AsyncConversationRepository(db_path=db_path) as repo:
             # Create a conversation
             conv = Conversation(
                 id="test:conv1",
@@ -588,7 +584,7 @@ async def test_save_conversation_with_attachments():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        async with AsyncStorageRepository(db_path=db_path) as repo:
+        async with AsyncConversationRepository(db_path=db_path) as repo:
             conv = Conversation(
                 id="test:conv2",
                 provider="test",
@@ -635,7 +631,7 @@ async def test_get_conversation_found():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        async with AsyncStorageRepository(db_path=db_path) as repo:
+        async with AsyncConversationRepository(db_path=db_path) as repo:
             # Save first
             conv = Conversation(
                 id="test:findme",
@@ -672,7 +668,7 @@ async def test_get_conversation_not_found():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        async with AsyncStorageRepository(db_path=db_path) as repo:
+        async with AsyncConversationRepository(db_path=db_path) as repo:
             result = await repo.get_conversation("nonexistent:id")
             assert result is None
 
@@ -688,7 +684,7 @@ async def test_conversation_exists_by_hash():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        async with AsyncStorageRepository(db_path=db_path) as repo:
+        async with AsyncConversationRepository(db_path=db_path) as repo:
             # Save a conversation with known hash
             conv = Conversation(
                 id="test:hashed",
@@ -732,7 +728,7 @@ async def test_get_source_conversations():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        async with AsyncStorageRepository(db_path=db_path) as repo:
+        async with AsyncConversationRepository(db_path=db_path) as repo:
             # Save conversations from different providers
             providers = ["chatgpt", "claude", "chatgpt"]
             for i, provider in enumerate(providers):
@@ -778,7 +774,7 @@ async def test_concurrent_reads():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        async with AsyncStorageRepository(db_path=db_path) as repo:
+        async with AsyncConversationRepository(db_path=db_path) as repo:
             # Launch multiple concurrent reads
             tasks = [
                 repo.get_conversation(f"test:{i}")
@@ -797,7 +793,7 @@ async def test_concurrent_existence_checks():
     with tempfile.TemporaryDirectory() as tmpdir:
         db_path = Path(tmpdir) / "test.db"
 
-        async with AsyncStorageRepository(db_path=db_path) as repo:
+        async with AsyncConversationRepository(db_path=db_path) as repo:
             # Launch multiple concurrent existence checks
             tasks = [
                 repo.conversation_exists(f"hash_{i}")

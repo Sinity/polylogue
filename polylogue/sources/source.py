@@ -12,6 +12,8 @@ from pydantic import BaseModel
 
 from polylogue.config import Source
 from polylogue.lib.json import dumps as json_dumps
+
+from ..storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 from .parsers import chatgpt, claude, codex, drive
 from .parsers.base import (
     ParsedAttachment,
@@ -25,7 +27,6 @@ from .parsers.claude import (
     enrich_conversation_from_index,
     parse_sessions_index,
 )
-from ..storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 if TYPE_CHECKING:
     from ..storage.repository import ConversationRepository
@@ -144,21 +145,18 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str) -> list[P
     if provider == "codex":
         if isinstance(payload, list):
             return [codex.parse(payload, fallback_id)]
-        if isinstance(payload, dict):
-            # If it's a single dict that looks like a codex item, wrap it
-            if "prompt" in payload or "completion" in payload:
+        if isinstance(payload, dict) and ("prompt" in payload or "completion" in payload):
                 return [codex.parse([payload], fallback_id)]
-    if provider == "gemini" or provider == "drive":
-        if isinstance(payload, list):
-            # Check if items are conversation dicts (have 'chunks' key) or raw chunks
-            if payload and isinstance(payload[0], dict) and "chunks" in payload[0]:
-                # List of conversation dicts from grouped JSONL - parse each one
-                results = []
-                for i, item in enumerate(payload):
-                    results.extend(_parse_json_payload(provider, item, f"{fallback_id}-{i}"))
-                return results
-            # Treat list as chunks for a single conversation
-            return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
+    if (provider == "gemini" or provider == "drive") and isinstance(payload, list):
+        # Check if items are conversation dicts (have 'chunks' key) or raw chunks
+        if payload and isinstance(payload[0], dict) and "chunks" in payload[0]:
+            # List of conversation dicts from grouped JSONL - parse each one
+            results = []
+            for i, item in enumerate(payload):
+                results.extend(_parse_json_payload(provider, item, f"{fallback_id}-{i}"))
+            return results
+        # Treat list as chunks for a single conversation
+        return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
 
     # Fallback / Generic
     if isinstance(payload, dict):
@@ -412,18 +410,18 @@ def iter_source_conversations(
                 dir_index = session_indices.get(path.parent, {})
 
                 with path.open("rb") as handle:
-                    if path.suffix.lower() in (".jsonl", ".ndjson") or path.name.lower().endswith(".jsonl.txt"):
-                        if should_group:
-                            # Group all lines into one conversation
-                            payloads = list(_iter_json_stream(handle, path.name))
-                            if payloads:
-                                for conv in _parse_json_payload(provider_hint, payloads, path.stem):
-                                    # Enrich claude-code with session index metadata
-                                    if provider_hint == "claude-code" and conv.provider_conversation_id in dir_index:
-                                        conv = enrich_conversation_from_index(
-                                            conv, dir_index[conv.provider_conversation_id]
-                                        )
-                                    yield conv
+                    is_jsonl = path.suffix.lower() in (".jsonl", ".ndjson") or path.name.lower().endswith(".jsonl.txt")
+                    if is_jsonl and should_group:
+                        # Group all lines into one conversation
+                        payloads = list(_iter_json_stream(handle, path.name))
+                        if payloads:
+                            for conv in _parse_json_payload(provider_hint, payloads, path.stem):
+                                # Enrich claude-code with session index metadata
+                                if provider_hint == "claude-code" and conv.provider_conversation_id in dir_index:
+                                    conv = enrich_conversation_from_index(
+                                        conv, dir_index[conv.provider_conversation_id]
+                                    )
+                                yield conv
                             continue
 
                     unpack = not (path.suffix.lower() == ".json" and should_group)
@@ -688,20 +686,20 @@ def iter_source_conversations_with_raw(
                 else:
                     # Non-grouped providers or no raw capture
                     with path.open("rb") as handle:
-                        if path.suffix.lower() in (".jsonl", ".ndjson") or path.name.lower().endswith(".jsonl.txt"):
-                            if should_group:
-                                payloads = list(_iter_json_stream(handle, path.name))
-                                if payloads:
-                                    for conv in _parse_json_payload(provider_hint, payloads, path.stem):
-                                        if (
-                                            provider_hint == "claude-code"
-                                            and conv.provider_conversation_id in dir_index
-                                        ):
-                                            conv = enrich_conversation_from_index(
-                                                conv, dir_index[conv.provider_conversation_id]
-                                            )
-                                        yield (None, conv)
-                                continue
+                        is_jsonl = path.suffix.lower() in (".jsonl", ".ndjson") or path.name.lower().endswith(".jsonl.txt")
+                        if is_jsonl and should_group:
+                            payloads = list(_iter_json_stream(handle, path.name))
+                            if payloads:
+                                for conv in _parse_json_payload(provider_hint, payloads, path.stem):
+                                    if (
+                                        provider_hint == "claude-code"
+                                        and conv.provider_conversation_id in dir_index
+                                    ):
+                                        conv = enrich_conversation_from_index(
+                                            conv, dir_index[conv.provider_conversation_id]
+                                        )
+                                    yield (None, conv)
+                            continue
 
                         unpack = not (path.suffix.lower() == ".json" and should_group)
                         source_index = 0

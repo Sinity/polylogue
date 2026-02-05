@@ -3,9 +3,9 @@
 import time
 import unicodedata
 
-from polylogue.core.hashing import hash_text
-from polylogue.importers.base import ParsedConversation, ParsedMessage
+from polylogue.lib.hashing import hash_text
 from polylogue.pipeline.ids import conversation_content_hash
+from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 
 
 def benchmark_hash_text():

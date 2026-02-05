@@ -27,13 +27,13 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 try:
-    from glom import Coalesce, glom
+    from glom import glom
 
     GLOM_AVAILABLE = True
 except ImportError:
     GLOM_AVAILABLE = False
 
-    def glom(target: Any, spec: Any) -> Any: ...  # noqa: E704
+    def glom(target: Any, spec: Any) -> Any: ...  # type: ignore[no-redef]
 
 
 from polylogue.lib.roles import normalize_role

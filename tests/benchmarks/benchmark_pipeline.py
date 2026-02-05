@@ -6,10 +6,10 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from polylogue.importers.base import ParsedConversation, ParsedMessage
 from polylogue.pipeline.ingest import prepare_ingest
+from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 from polylogue.storage.db import open_connection
-from polylogue.storage.repository import StorageRepository
+from polylogue.storage.repository import ConversationRepository
 
 
 def create_synthetic_conversation(conv_id: str, message_count: int = 50) -> ParsedConversation:
@@ -60,7 +60,7 @@ def benchmark_prepare_ingest():
     # Create temp archive
     archive_root = Path(tempfile.mkdtemp())
 
-    repository = StorageRepository()
+    repository = ConversationRepository()
     conversation = create_synthetic_conversation("test_conv", message_count=50)
 
     results = {}
@@ -105,7 +105,7 @@ def benchmark_parallel_ingestion():
     # Create temp archive
     archive_root = Path(tempfile.mkdtemp())
 
-    repository = StorageRepository()
+    repository = ConversationRepository()
 
     # Create multiple conversations
     conversations = [create_synthetic_conversation(f"conv_{i}", message_count=30) for i in range(20)]
@@ -167,11 +167,11 @@ def benchmark_bounded_submission():
     tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
     db_path = Path(tmpfile.name)
 
-    with open_connection(db_path) as conn:
+    with open_connection(db_path):
         pass
 
     archive_root = Path(tempfile.mkdtemp())
-    repository = StorageRepository()
+    repository = ConversationRepository()
 
     conversations = [create_synthetic_conversation(f"conv_{i}", message_count=20) for i in range(50)]
 
@@ -200,14 +200,14 @@ def benchmark_bounded_submission():
     db_path.unlink()
     tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
     db_path = Path(tmpfile.name)
-    with open_connection(db_path) as conn:
+    with open_connection(db_path):
         pass
 
     # Bounded submission (max 16 in-flight, like production)
     start = time.perf_counter()
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {}
-        conv_iter = iter(conversations)
+        iter(conversations)
 
         # Initial batch
         for conv in conversations[:16]:

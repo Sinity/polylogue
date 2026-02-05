@@ -5,6 +5,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 
 from polylogue.lib.hashing import hash_text
+from polylogue.lib.roles import normalize_role
 
 
 class ParsedMessage(BaseModel):
@@ -144,13 +145,6 @@ class RawConversationData(BaseModel):
     source_index: int | None = None
     file_mtime: str | None = None
     provider_hint: str | None = None  # Provider detected from path/content
-
-
-# hash_text is now imported from core.hashing
-
-
-# Re-export from canonical location
-from polylogue.lib.roles import normalize_role
 
 
 def _make_attachment_id(seed: str) -> str:

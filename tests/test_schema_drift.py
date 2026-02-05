@@ -13,9 +13,8 @@ import json
 
 import pytest
 
-from polylogue.validation import SchemaValidator, ValidationResult, validate_provider_export
+from polylogue.schemas import SchemaValidator, ValidationResult, validate_provider_export
 from polylogue.storage.store import RawConversationRecord
-
 
 # =============================================================================
 # Schema Availability Tests

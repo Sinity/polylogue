@@ -11,17 +11,15 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from polylogue.importers.claude import (
+from polylogue.sources.parsers.claude import (
     detect_context_compaction,
     extract_file_changes,
-    extract_git_operations,
     extract_subagent_spawns,
     extract_thinking_traces,
     extract_tool_invocations,
     parse_code,
     parse_git_operation,
 )
-
 
 # =============================================================================
 # Thinking Trace Extraction Tests
@@ -108,7 +106,7 @@ class TestToolInvocations:
         for tool in file_tools:
             blocks = [{"type": "tool_use", "name": tool, "id": "t1", "input": {}}]
             invocations = extract_tool_invocations(blocks)
-            assert invocations[0]["is_file_operation"] == True, f"{tool} should be file operation"
+            assert invocations[0]["is_file_operation"], f"{tool} should be file operation"
 
     def test_detects_search_operations(self):
         """Search operations are correctly flagged."""
@@ -117,7 +115,7 @@ class TestToolInvocations:
         for tool in search_tools:
             blocks = [{"type": "tool_use", "name": tool, "id": "t1", "input": {}}]
             invocations = extract_tool_invocations(blocks)
-            assert invocations[0]["is_search_operation"] == True, f"{tool} should be search operation"
+            assert invocations[0]["is_search_operation"], f"{tool} should be search operation"
 
     def test_detects_git_operations(self):
         """Git commands in Bash are flagged."""
@@ -131,7 +129,7 @@ class TestToolInvocations:
         ]
 
         invocations = extract_tool_invocations(blocks)
-        assert invocations[0]["is_git_operation"] == True
+        assert invocations[0]["is_git_operation"]
 
     def test_non_git_bash_not_flagged(self):
         """Non-git Bash commands are not flagged as git operations."""
@@ -145,7 +143,7 @@ class TestToolInvocations:
         ]
 
         invocations = extract_tool_invocations(blocks)
-        assert invocations[0].get("is_git_operation") != True
+        assert not invocations[0].get("is_git_operation")
 
     def test_detects_subagent_spawns(self):
         """Task tool is flagged as subagent."""
@@ -159,7 +157,7 @@ class TestToolInvocations:
         ]
 
         invocations = extract_tool_invocations(blocks)
-        assert invocations[0]["is_subagent"] == True
+        assert invocations[0]["is_subagent"]
 
 
 # =============================================================================
@@ -356,7 +354,7 @@ class TestSubagentSpawns:
 
         spawns = extract_subagent_spawns(invocations)
 
-        assert spawns[0]["run_in_background"] == True
+        assert spawns[0]["run_in_background"]
 
     def test_ignores_non_task_tools(self):
         """Non-Task tools are ignored."""

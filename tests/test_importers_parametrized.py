@@ -14,11 +14,10 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.importers.chatgpt import looks_like as chatgpt_looks_like, parse as chatgpt_parse
-from polylogue.importers.claude import looks_like_ai, looks_like_code, parse_ai, parse_code
-from polylogue.importers.codex import looks_like as codex_looks_like, parse as codex_parse
-from polylogue.importers.drive import parse_chunked_prompt
-
+from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
+from polylogue.sources.parsers.claude import looks_like_ai, looks_like_code, parse_ai, parse_code
+from polylogue.sources.parsers.codex import parse as codex_parse
+from polylogue.sources.parsers.drive import parse_chunked_prompt
 
 # =============================================================================
 # REAL EXPORT FILE DISCOVERY
@@ -363,7 +362,7 @@ def test_consolidation_statistics():
     )
 
     print(f"\n{'='*60}")
-    print(f"CONSOLIDATION IMPACT")
+    print("CONSOLIDATION IMPACT")
     print(f"{'='*60}")
     print(f"Real export files discovered: {num_real_exports}")
     print(f"Tests generated from parametrization: {parametrized_tests}")

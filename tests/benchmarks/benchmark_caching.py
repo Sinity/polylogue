@@ -1,5 +1,6 @@
 """Benchmark search result caching improvements."""
 
+import contextlib
 import sqlite3
 import tempfile
 import time
@@ -144,10 +145,8 @@ def benchmark_cache_memory_overhead():
 
     # Test LRU eviction (first query should be evicted)
     start = time.perf_counter()
-    try:
+    with contextlib.suppress(Exception):
         search_messages("query_0", archive_root=archive_root, limit=20)
-    except Exception:
-        pass
     elapsed = time.perf_counter() - start
 
     results["lru_evicted_query_ms"] = elapsed * 1000

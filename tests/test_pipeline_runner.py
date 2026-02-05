@@ -8,7 +8,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from polylogue.config import Config, Source
-from polylogue.storage.store import PlanResult
 from polylogue.pipeline.runner import (
     _all_conversation_ids,
     _iter_source_conversations_safe,
@@ -19,7 +18,7 @@ from polylogue.pipeline.runner import (
     run_sources,
 )
 from polylogue.storage.backends.sqlite import open_connection
-from polylogue.storage.store import store_records
+from polylogue.storage.store import PlanResult, store_records
 from tests.helpers import make_conversation
 
 
@@ -32,8 +31,8 @@ class TestRenderFailureTracking:
         This test SHOULD FAIL until failure tracking is implemented.
         """
         from polylogue.config import Config
-        from polylogue.storage.store import RunResult
         from polylogue.pipeline.runner import run_sources
+        from polylogue.storage.store import RunResult
 
         # Create a minimal config
         config = Config(
@@ -105,7 +104,7 @@ class TestRenderFailureTracking:
             with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids:
                 mock_ids.return_value = ["test:first", "test:second", "test:third"]
 
-                result = run_sources(
+                run_sources(
                     config=config,
                     stage="render",
                 )
@@ -261,7 +260,7 @@ class TestIterSourceConversationsSafe:
 
     def test_drive_auth_error_logged_and_skipped(self, tmp_path: Path):
         """DriveAuthError from Drive source is logged and source is skipped."""
-        from polylogue.ingestion import DriveAuthError
+        from polylogue.sources import DriveAuthError
 
         # Source with only folder (Drive source)
         source = Source(name="drive-source", folder="folder-id-123")
@@ -286,7 +285,7 @@ class TestIterSourceConversationsSafe:
 
     def test_cursor_state_updated_on_error(self, tmp_path: Path):
         """cursor_state tracks error information when Drive fails."""
-        from polylogue.ingestion import DriveAuthError
+        from polylogue.sources import DriveAuthError
 
         # Source with only folder (Drive source)
         source = Source(name="my-drive", folder="folder-id")

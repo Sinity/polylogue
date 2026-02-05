@@ -8,8 +8,6 @@ import stat
 import time
 from pathlib import Path
 
-import pytest
-
 
 class TestHealthCacheErrorHandling:
     """Tests for health check cache error handling."""
@@ -106,8 +104,10 @@ class TestHealthCacheErrorHandling:
             # Should have logged something about the error (structlog outputs to stdout)
             captured = capsys.readouterr()
             assert (
-                "permission" in captured.out.lower() or "cache" in captured.out.lower()
-                or "permission" in captured.err.lower() or "cache" in captured.err.lower()
+                "permission" in captured.out.lower()
+                or "cache" in captured.out.lower()
+                or "permission" in captured.err.lower()
+                or "cache" in captured.err.lower()
             ), f"Expected warning about permission/cache, got stdout: {captured.out}, stderr: {captured.err}"
         finally:
             os.chmod(cache_file, stat.S_IRUSR | stat.S_IWUSR)
@@ -148,8 +148,10 @@ class TestHealthCacheErrorHandling:
         # Should have logged a warning (structlog outputs to stdout)
         captured = capsys.readouterr()
         assert (
-            "failed" in captured.out.lower() or "cache" in captured.out.lower()
-            or "failed" in captured.err.lower() or "cache" in captured.err.lower()
+            "failed" in captured.out.lower()
+            or "cache" in captured.out.lower()
+            or "failed" in captured.err.lower()
+            or "cache" in captured.err.lower()
         ), f"Expected warning about write failure, got stdout: {captured.out}, stderr: {captured.err}"
 
     def test_cache_with_valid_json_returns_dict(self, tmp_path: Path):
@@ -182,8 +184,10 @@ class TestHealthCacheErrorHandling:
         # Should have logged a warning (structlog outputs to stdout)
         captured = capsys.readouterr()
         assert (
-            "cache" in captured.out.lower() or "error" in captured.out.lower()
-            or "cache" in captured.err.lower() or "error" in captured.err.lower()
+            "cache" in captured.out.lower()
+            or "error" in captured.out.lower()
+            or "cache" in captured.err.lower()
+            or "error" in captured.err.lower()
         ), f"Expected warning about cache/error, got stdout: {captured.out}, stderr: {captured.err}"
 
 
@@ -221,10 +225,10 @@ class TestRunHealth:
 
     def test_run_health_with_valid_config(self, cli_workspace):
         """run_health should return checks for valid configuration."""
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import run_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
         result = run_health(config)
 
         assert result.timestamp > 0
@@ -233,10 +237,10 @@ class TestRunHealth:
 
     def test_run_health_includes_config_check(self, cli_workspace):
         """run_health should include a config check."""
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import VerifyStatus, run_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
         result = run_health(config)
 
         checks = result.checks
@@ -246,10 +250,10 @@ class TestRunHealth:
 
     def test_run_health_includes_archive_root_check(self, cli_workspace):
         """run_health should include archive_root check (ok when exists)."""
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import VerifyStatus, run_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
         result = run_health(config)
 
         checks = result.checks
@@ -277,10 +281,10 @@ class TestRunHealth:
 
     def test_run_health_includes_render_root_check(self, cli_workspace):
         """run_health should include render_root check."""
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import run_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
         result = run_health(config)
 
         checks = result.checks
@@ -310,10 +314,10 @@ class TestRunHealth:
 
     def test_run_health_includes_database_check(self, cli_workspace):
         """run_health should include database check."""
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import VerifyStatus, run_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
         result = run_health(config)
 
         checks = result.checks
@@ -323,10 +327,10 @@ class TestRunHealth:
 
     def test_run_health_includes_index_check(self, cli_workspace):
         """run_health should include index check."""
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import run_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
         result = run_health(config)
 
         checks = result.checks
@@ -335,10 +339,10 @@ class TestRunHealth:
 
     def test_run_health_includes_source_checks(self, cli_workspace):
         """run_health should include checks for each source."""
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import run_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
         result = run_health(config)
 
         checks = result.checks
@@ -347,10 +351,10 @@ class TestRunHealth:
 
     def test_run_health_caches_result(self, cli_workspace):
         """run_health should write cache to health.json."""
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import _cache_path, run_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
         result = run_health(config)
 
         cache_file = _cache_path(config.archive_root)
@@ -366,10 +370,10 @@ class TestGetHealth:
 
     def test_get_health_returns_fresh_on_cache_miss(self, cli_workspace):
         """get_health should run fresh checks when cache doesn't exist."""
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import get_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
         result = get_health(config)
 
         assert result.timestamp > 0
@@ -379,10 +383,10 @@ class TestGetHealth:
 
     def test_get_health_returns_cached_when_valid(self, cli_workspace):
         """get_health should return cached result when valid."""
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import get_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
 
         # First call populates cache
         result1 = get_health(config)
@@ -401,13 +405,13 @@ class TestGetHealth:
         """get_health should refresh when cache is too old."""
         import time
 
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import HEALTH_TTL_SECONDS, get_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
 
         # First call populates cache
-        result1 = get_health(config)
+        get_health(config)
 
         # Manually set cache timestamp to old
         from polylogue.health import _cache_path, _load_cached
@@ -425,10 +429,10 @@ class TestGetHealth:
 
     def test_get_health_includes_cache_metadata(self, cli_workspace):
         """get_health should include cached and age_seconds fields."""
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import get_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
         result = get_health(config)
 
         assert isinstance(result.cached, bool)
@@ -447,10 +451,10 @@ class TestCachedHealthSummary:
 
     def test_cached_health_summary_with_valid_cache(self, cli_workspace):
         """Should return summary string from valid cache."""
-        from polylogue.config import load_config
+        from polylogue.config import get_config
         from polylogue.health import cached_health_summary, run_health
 
-        config = load_config(cli_workspace["config_path"])
+        config = get_config()
         run_health(config)  # Populate cache
 
         result = cached_health_summary(config.archive_root)

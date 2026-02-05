@@ -71,14 +71,14 @@ class TestTimestampParsing:
 
     def test_parse_timestamp_none(self):
         """Test parse_timestamp with None."""
-        from polylogue.core.timestamps import parse_timestamp
+        from polylogue.lib.timestamps import parse_timestamp
 
         result = parse_timestamp(None)
         assert result is None
 
     def test_parse_timestamp_numeric(self):
         """Test parse_timestamp with numeric timestamp."""
-        from polylogue.core.timestamps import parse_timestamp
+        from polylogue.lib.timestamps import parse_timestamp
 
         # Valid numeric timestamp
         result = parse_timestamp(1704067200.0)
@@ -90,14 +90,14 @@ class TestJsonUtils:
 
     def test_loads_valid_json(self):
         """Test loads with valid JSON."""
-        from polylogue.core.json import loads
+        from polylogue.lib.json import loads
 
         data = loads('{"key": "value"}')
         assert data == {"key": "value"}
 
     def test_loads_invalid_json(self):
         """Test loads with invalid JSON raises."""
-        from polylogue.core.json import loads
+        from polylogue.lib.json import loads
 
         with pytest.raises((ValueError, json.JSONDecodeError)):
             loads("{invalid}")

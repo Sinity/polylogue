@@ -2,50 +2,14 @@
 
 from __future__ import annotations
 
-# Backend abstraction - new storage backend interface
-from .backends import (
-    SQLiteBackend,
-    create_backend,
-)
-
-# Database module
-from .backends.sqlite import (
-    DatabaseError,
-    connection_context,
-    default_db_path,
-    open_connection,
-)
-
-# Index module - FTS5 indexing
-from .index import (
-    ensure_index,
-    index_status,
-    rebuild_index,
-    update_index_for_conversations,
-)
-
-# Repository module - encapsulated storage operations
+from .backends import SQLiteBackend
 from .repository import ConversationRepository
-
-# Search module - FTS5 search
-from .search import (
-    SearchHit,
-    SearchResult,
-    escape_fts5_query,
-    search_messages,
-)
-
-# Store module - records and operations
+from .search import SearchResult
 from .store import (
     AttachmentRecord,
     ConversationRecord,
     MessageRecord,
     RunRecord,
-    record_run,
-    store_records,
-    upsert_attachment,
-    upsert_conversation,
-    upsert_message,
 )
 
 
@@ -60,11 +24,11 @@ def __getattr__(name: str) -> object:
 
 
 __all__ = [
-    "ConversationRepository",
-    "SQLiteBackend",
-    "SearchResult",
     "AttachmentRecord",
     "ConversationRecord",
+    "ConversationRepository",
     "MessageRecord",
     "RunRecord",
+    "SQLiteBackend",
+    "SearchResult",
 ]

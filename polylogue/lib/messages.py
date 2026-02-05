@@ -12,14 +12,15 @@ critical for conversations with thousands of messages.
 from __future__ import annotations
 
 from collections.abc import Iterator, Sized
-from typing import TYPE_CHECKING, Annotated, Any, Protocol, overload
+from typing import TYPE_CHECKING, Any, Protocol, overload
 
-from pydantic import GetJsonSchemaHandler, GetCoreSchemaHandler
+from pydantic import GetCoreSchemaHandler, GetJsonSchemaHandler
 from pydantic_core import core_schema
 
 if TYPE_CHECKING:
-    from polylogue.lib.models import Message
     from pydantic.json_schema import JsonSchemaValue
+
+    from polylogue.lib.models import Message
 
 
 class MessageSource(Protocol):

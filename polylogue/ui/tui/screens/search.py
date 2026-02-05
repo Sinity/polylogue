@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from rich.markdown import Markdown
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import DataTable, Input, Markdown as MarkdownWidget
+from textual.widgets import DataTable, Input
+from textual.widgets import Markdown as MarkdownWidget
 
 from polylogue.config import Config
 from polylogue.services import get_repository

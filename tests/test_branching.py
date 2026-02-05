@@ -8,7 +8,6 @@ These tests verify the unified branching model that works across all providers:
 
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
 
 from tests.helpers import ConversationBuilder, db_setup

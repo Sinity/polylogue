@@ -46,7 +46,6 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
-
 # =============================================================================
 # Enums for harmonized classification
 # =============================================================================

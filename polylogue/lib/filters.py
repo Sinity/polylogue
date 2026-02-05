@@ -634,10 +634,7 @@ class ConversationFilter:
             return True
 
         # Sort by messages/words/longest/tokens needs message data
-        if self._sort_field in ("messages", "words", "longest", "tokens"):
-            return True
-
-        return False
+        return self._sort_field in ("messages", "words", "longest", "tokens")
 
     def _fetch_summary_candidates(self) -> list[ConversationSummary]:
         """Fetch candidate conversation summaries (lightweight, no messages).

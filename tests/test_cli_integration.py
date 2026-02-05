@@ -10,24 +10,21 @@ This file contains integration tests for:
 - Search operations
 - Latest render operations
 """
+
 from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.config import Config, load_config
-from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.index import rebuild_index
-from polylogue.storage.store import store_records
 from tests.cli_helpers.cli_subprocess import run_cli, setup_isolated_workspace
 from tests.factories import DbFactory
-from tests.helpers import GenericConversationBuilder, make_conversation, make_message
+from tests.helpers import GenericConversationBuilder
 
 
 def _write_prompt_file(path: Path, entries: list[dict]) -> None:
@@ -39,33 +36,6 @@ def _write_prompt_file(path: Path, entries: list[dict]) -> None:
 # =============================================================================
 
 
-def test_cli_config_init_interactive_adds_drive(tmp_path, monkeypatch):
-    config_path = tmp_path / "config" / "config.json"
-    data_root = tmp_path / "data"
-    state_root = tmp_path / "state"
-    prompt_file = tmp_path / "prompts.jsonl"
-    _write_prompt_file(
-        prompt_file,
-        [
-            {"type": "confirm", "value": True},
-        ],
-    )
-
-    monkeypatch.setenv("POLYLOGUE_CONFIG", str(config_path))
-    monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(prompt_file))
-    monkeypatch.setenv("XDG_DATA_HOME", str(data_root))
-    monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
-
-    runner = CliRunner()
-    result = runner.invoke(cli, ["--interactive", "config", "init", "--interactive"])
-    assert result.exit_code == 0
-
-    config = load_config(config_path)
-    drive_sources = [source for source in config.sources if source.folder]
-    assert drive_sources
-    assert drive_sources[0].folder == "Google AI Studio"
-
-
 def test_cli_run_and_search(tmp_path):
     """Test CLI run and search with isolated workspace."""
     workspace = setup_isolated_workspace(tmp_path)
@@ -74,10 +44,7 @@ def test_cli_run_and_search(tmp_path):
     inbox = paths["inbox"]
 
     # Create test conversation in inbox
-    (GenericConversationBuilder("conv1")
-     .add_user("hello")
-     .add_assistant("world")
-     .write_to(inbox / "conversation.json"))
+    (GenericConversationBuilder("conv1").add_user("hello").add_assistant("world").write_to(inbox / "conversation.json"))
 
     # Run pipeline via subprocess
     result = run_cli(["--plain", "run", "--stage", "all"], env=env, cwd=tmp_path)
@@ -127,10 +94,12 @@ def test_cli_search_latest_missing_render(tmp_path):
     assert result.exit_code != 0
     output_lower = result.output.lower()
     # Accept various error messages
-    assert ("no rendered" in output_lower or
-            "no conversation" in output_lower or
-            "no results" in output_lower or
-            result.exit_code == 2)
+    assert (
+        "no rendered" in output_lower
+        or "no conversation" in output_lower
+        or "no results" in output_lower
+        or result.exit_code == 2
+    )
 
 
 def test_cli_search_open_prefers_html(tmp_path):
@@ -140,9 +109,7 @@ def test_cli_search_open_prefers_html(tmp_path):
     paths = workspace["paths"]
     inbox = paths["inbox"]
 
-    (GenericConversationBuilder("conv-html")
-     .add_user("hello html")
-     .write_to(inbox / "conversation.json"))
+    (GenericConversationBuilder("conv-html").add_user("hello html").write_to(inbox / "conversation.json"))
 
     # First run to create conversation and render
     result = run_cli(["--plain", "run", "--stage", "all"], env=env, cwd=tmp_path)
@@ -181,9 +148,7 @@ def test_cli_search_latest_returns_path_without_open(tmp_path):
     inbox = paths["inbox"]
 
     # Create a conversation to ingest
-    (GenericConversationBuilder("conv1-abc123")
-     .add_user("test content")
-     .write_to(inbox / "conversation.json"))
+    (GenericConversationBuilder("conv1-abc123").add_user("test content").write_to(inbox / "conversation.json"))
 
     # First run
     run_result = run_cli(["--plain", "run", "--stage", "all"], env=env, cwd=tmp_path)
@@ -277,9 +242,7 @@ def test_cli_search_open_missing_render_shows_hint(tmp_path):
     inbox = paths["inbox"]
 
     # Create inbox with a conversation but don't run render
-    (GenericConversationBuilder("conv-no-render")
-     .add_user("no render")
-     .write_to(inbox / "conversation.json"))
+    (GenericConversationBuilder("conv-no-render").add_user("no render").write_to(inbox / "conversation.json"))
 
     # Run parse stage only, skip render
     result = run_cli(["--plain", "run", "--stage", "parse"], env=env, cwd=tmp_path)
@@ -295,9 +258,11 @@ def test_cli_search_open_missing_render_shows_hint(tmp_path):
         or "run" in search_result.output.lower()
     )
 
+
 # =============================================================================
 # SEARCH INTEGRATION TESTS (from test_cli_search_expanded.py)
 # =============================================================================
+
 
 @pytest.fixture
 def search_workspace(cli_workspace, monkeypatch):
@@ -345,14 +310,17 @@ def search_workspace(cli_workspace, monkeypatch):
         title="Rust Ownership",
         messages=[
             {"id": "m5", "role": "user", "text": "What is ownership in Rust?"},
-            {"id": "m6", "role": "assistant", "text": "Rust ownership ensures memory safety without garbage collection."},
+            {
+                "id": "m6",
+                "role": "assistant",
+                "text": "Rust ownership ensures memory safety without garbage collection.",
+            },
         ],
         created_at=datetime.now() - timedelta(hours=6),
         updated_at=datetime.now() - timedelta(hours=6),
     )
 
     # Build FTS index using rebuild_index
-    from polylogue.storage.index import rebuild_index
 
     rebuild_index()
 

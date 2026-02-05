@@ -15,13 +15,12 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from polylogue.core.hashing import (
+from polylogue.lib.hashing import (
     hash_file,
     hash_payload,
     hash_text,
     hash_text_short,
 )
-
 
 # =============================================================================
 # HASH_TEXT - PARAMETRIZED (1 test replacing 6)
@@ -106,10 +105,7 @@ def test_hash_text_short_comprehensive(text, length, expected, desc):
 
     Replaces 5 individual tests from TestHashTextShort.
     """
-    if length is not None:
-        result = hash_text_short(text, length=length)
-    else:
-        result = hash_text_short(text)
+    result = hash_text_short(text, length=length) if length is not None else hash_text_short(text)
 
     if isinstance(expected, int):
         # Length assertion

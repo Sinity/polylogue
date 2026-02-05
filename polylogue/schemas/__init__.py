@@ -22,16 +22,12 @@ Additionally:
 """
 
 # Re-export main types for convenience
-from polylogue.schemas.unified import (
-    HarmonizedMessage,
-    extract_from_provider_meta,
-    extract_harmonized_message,
-    is_message_record,
-)
+from polylogue.schemas.unified import HarmonizedMessage
 from polylogue.schemas.validator import SchemaValidator, ValidationResult, validate_provider_export
 
 __all__ = [
     "HarmonizedMessage",
     "SchemaValidator",
+    "ValidationResult",
     "validate_provider_export",
 ]

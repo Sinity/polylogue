@@ -28,7 +28,7 @@ import pytest
 
 def fuzz_chatgpt_importer(data: bytes) -> None:
     """Fuzz the ChatGPT importer with arbitrary JSON-like data."""
-    from polylogue.importers import chatgpt
+    from polylogue.sources.parsers import chatgpt
 
     try:
         text = data.decode("utf-8", errors="replace")
@@ -56,7 +56,7 @@ def fuzz_chatgpt_importer(data: bytes) -> None:
         assert hasattr(result, "provider_name"), "Missing provider_name attribute"
         assert result.provider_name == "chatgpt", f"Wrong provider: {result.provider_name}"
 
-    except (ValueError, TypeError, KeyError, AttributeError) as e:
+    except (ValueError, TypeError, KeyError, AttributeError):
         # These are acceptable handling of malformed input
         pass
     except RecursionError:
@@ -71,7 +71,7 @@ def fuzz_chatgpt_importer(data: bytes) -> None:
 
 def fuzz_codex_importer(data: bytes) -> None:
     """Fuzz the Codex importer with arbitrary JSONL-like data."""
-    from polylogue.importers import codex
+    from polylogue.sources.parsers import codex
 
     try:
         text = data.decode("utf-8", errors="replace")
@@ -120,7 +120,7 @@ def fuzz_codex_importer(data: bytes) -> None:
 
 def fuzz_claude_code_importer(data: bytes) -> None:
     """Fuzz the Claude Code importer with arbitrary JSONL-like data."""
-    from polylogue.importers import claude
+    from polylogue.sources.parsers import claude
 
     try:
         text = data.decode("utf-8", errors="replace")
@@ -168,7 +168,7 @@ def fuzz_claude_code_importer(data: bytes) -> None:
 
 def fuzz_claude_ai_importer(data: bytes) -> None:
     """Fuzz the Claude AI importer with arbitrary JSON data."""
-    from polylogue.importers import claude
+    from polylogue.sources.parsers import claude
 
     try:
         text = data.decode("utf-8", errors="replace")
@@ -366,7 +366,7 @@ def main():
     print(f"Running atheris fuzzer for {iterations} iterations...")
 
     atheris.Setup(
-        sys.argv + [f"-max_total_time=300", f"-runs={iterations}"],
+        sys.argv + ["-max_total_time=300", f"-runs={iterations}"],
         fuzz_all_importers,
     )
     atheris.Fuzz()

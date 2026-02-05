@@ -11,11 +11,10 @@ Tests cover:
 
 import pytest
 
-from polylogue.lib.repository import ConversationRepository
 from polylogue.storage.backends.sqlite import SQLiteBackend
-from polylogue.storage.store import ConversationRecord, MessageRecord
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.store import ConversationRecord
 from tests.helpers import make_conversation, make_message
-
 
 # =============================================================================
 # SQL INJECTION TESTS (8 tests)
@@ -70,7 +69,6 @@ def test_conversation_id_sql_injection_union(temp_repo):
 
 def test_message_id_sql_injection(temp_repo):
     """Message ID queries use parameterized statements."""
-    malicious_msg_id = "' OR '1'='1"
 
     # Try to query with malicious ID
     # Should not return messages - just list without searching
@@ -82,7 +80,6 @@ def test_message_id_sql_injection(temp_repo):
 
 def test_provider_name_sql_injection(temp_repo):
     """Provider name filter uses parameterized queries."""
-    malicious_provider = "chatgpt' OR '1'='1--"
 
     # Try to filter by malicious provider - but it won't match the pattern validation
     # So it would be rejected before reaching SQL
@@ -95,7 +92,6 @@ def test_provider_name_sql_injection(temp_repo):
 
 def test_conversation_title_sql_injection(temp_repo):
     """Search in titles is parameterized."""
-    malicious_title = "Test'; DELETE FROM conversations--"
 
     # Simple list without search index won't find anything
     results = temp_repo.list()
@@ -382,13 +378,14 @@ def test_provider_name_empty_rejected():
 # =============================================================================
 
 
-from hypothesis import given, settings, HealthCheck
-from tests.strategies.adversarial import (
-    sql_injection_strategy,
-    fts5_operator_strategy,
-    control_char_strategy,
-)
+from hypothesis import HealthCheck, given, settings
+
 from polylogue.storage.search import escape_fts5_query
+from tests.strategies.adversarial import (
+    control_char_strategy,
+    fts5_operator_strategy,
+    sql_injection_strategy,
+)
 
 
 @given(sql_injection_strategy())
@@ -434,8 +431,7 @@ def test_control_chars_in_queries_handled(text_with_control: str):
         escaped = escape_fts5_query(text_with_control)
         assert isinstance(escaped, str)
     except Exception as e:
-        # Should not crash - any exception is a bug
-        assert False, f"Control char caused crash: {repr(text_with_control)} -> {e}"
+        raise AssertionError(f"Control char caused crash: {repr(text_with_control)} -> {e}") from e
 
 
 @given(sql_injection_strategy())

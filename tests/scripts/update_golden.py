@@ -28,7 +28,6 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from polylogue.rendering.core import ConversationFormatter
-from polylogue.storage.backends.sqlite import default_db_path
 from tests.factories import DbFactory
 
 

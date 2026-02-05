@@ -17,13 +17,13 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
 
 
-class AsyncStorageRepository:
+class AsyncConversationRepository:
     """Async repository for conversation storage operations.
 
     Wraps AsyncSQLiteBackend to provide high-level async storage interface.
 
     Example:
-        async with AsyncStorageRepository() as repo:
+        async with AsyncConversationRepository() as repo:
             counts = await repo.save_conversation(conversation, messages, attachments)
             conv_record = await repo.get_conversation("claude:abc123")
     """
@@ -36,7 +36,7 @@ class AsyncStorageRepository:
         """
         self._backend = AsyncSQLiteBackend(db_path=db_path)
 
-    async def __aenter__(self) -> AsyncStorageRepository:
+    async def __aenter__(self) -> AsyncConversationRepository:
         """Enter async context manager."""
         return self
 
@@ -71,6 +71,7 @@ class AsyncStorageRepository:
         """
         # Convert Conversation model to ConversationRecord
         from typing import cast
+
         from polylogue.types import ContentHash, ConversationId
 
         created_at_str = conversation.created_at.isoformat() if conversation.created_at else None

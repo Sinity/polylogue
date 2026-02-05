@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -26,10 +27,8 @@ def _clear_polylogue_env(monkeypatch):
         if state is not None:
             conn = state.get("conn")
             if conn is not None:
-                try:
+                with contextlib.suppress(Exception):
                     conn.close()
-                except Exception:
-                    pass
             state["conn"] = None
             state["path"] = None
             state["depth"] = 0
@@ -358,7 +357,6 @@ def mock_media_downloader(monkeypatch):
     from tests.mocks.drive_mocks import MockMediaIoBaseDownload
 
     # Patch the _import_module function to return mock for MediaIoBaseDownload
-    original_import_module = None
 
     def mock_import_module(name: str):
         if name == "googleapiclient.http":
@@ -372,9 +370,8 @@ def mock_media_downloader(monkeypatch):
 
         return importlib.import_module(name)
 
-    import polylogue.ingestion.drive_client as drive_client
+    import polylogue.sources.drive_client as drive_client
 
-    original_import_module = drive_client._import_module
 
     monkeypatch.setattr(drive_client, "_import_module", mock_import_module)
 
@@ -529,8 +526,8 @@ def seeded_db(tmp_path_factory):
     from pathlib import Path
 
     from polylogue.config import Source
-    from polylogue.ingestion import iter_source_conversations
     from polylogue.pipeline.ingest import prepare_ingest
+    from polylogue.sources import iter_source_conversations
     from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
     from polylogue.storage.repository import ConversationRepository
 
@@ -580,7 +577,7 @@ def seeded_db(tmp_path_factory):
                     # Log but don't fail - some fixtures may have format issues
                     import warnings
 
-                    warnings.warn(f"Failed to ingest {fixture_path}: {e}")
+                    warnings.warn(f"Failed to ingest {fixture_path}: {e}", stacklevel=2)
 
     return db_path
 

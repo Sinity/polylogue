@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from click.testing import CliRunner
 
 from polylogue.cli.click_app import cli
-from polylogue.ingestion import DriveError
+from polylogue.sources import DriveError
 from polylogue.storage.store import PlanResult, RunResult
 
 
@@ -49,8 +49,8 @@ class TestRunCommandPreviewMode:
 
     def test_run_preview_calls_plan_sources(self, runner, cli_workspace, mock_plan_result):
         """Preview mode calls plan_sources()."""
-        from polylogue.services import get_service_config
         from unittest.mock import patch
+
 
         mock_config = MagicMock(sources=[])
         with patch("polylogue.config.get_config", return_value=mock_config):

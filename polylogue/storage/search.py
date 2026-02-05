@@ -178,12 +178,12 @@ def _search_messages_impl(
             SELECT
                 messages_fts.message_id,
                 messages_fts.conversation_id,
-                messages_fts.provider_name,
+                conversations.provider_name,
                 conversations.provider_meta,
                 conversations.source_name,
                 conversations.title,
                 messages.timestamp,
-                snippet(messages_fts, 3, '[', ']', '…', 12) AS snippet
+                snippet(messages_fts, 2, '[', ']', '…', 12) AS snippet
             FROM messages_fts
             JOIN conversations ON conversations.conversation_id = messages_fts.conversation_id
             JOIN messages ON messages.message_id = messages_fts.message_id
@@ -194,7 +194,7 @@ def _search_messages_impl(
         if source:
             # Case-insensitive comparison for provider_name or source_name
             sql += (
-                " AND (messages_fts.provider_name = ? COLLATE NOCASE OR conversations.source_name = ? COLLATE NOCASE)"
+                " AND (conversations.provider_name = ? COLLATE NOCASE OR conversations.source_name = ? COLLATE NOCASE)"
             )
             params.extend([source, source])
 
@@ -220,7 +220,7 @@ def _search_messages_impl(
         params.append(sql_limit)
 
         try:
-            rows = conn.execute(sql, params).fetchall()
+            rows = conn.execute(sql, tuple(params)).fetchall()
         except sqlite3.Error as exc:
             raise DatabaseError(f"Invalid search query: {exc}") from exc
 
@@ -241,7 +241,7 @@ def _search_messages_impl(
             cid,
         )
         # Use computed source_name column directly instead of parsing JSON
-        source_name = row["source_name"] if "source_name" in row.keys() else None
+        source_name = row.get("source_name", None)
         hits.append(
             SearchHit(
                 conversation_id=cid,

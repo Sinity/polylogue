@@ -11,6 +11,7 @@ This file contains tests for:
 - Schema management and migrations
 - Attachment ref counting
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -41,7 +42,6 @@ from polylogue.storage.store import (
     upsert_message,
 )
 from tests.helpers import make_attachment, make_conversation, make_message
-
 
 # test_db and test_conn fixtures are in conftest.py
 
@@ -158,7 +158,7 @@ def test_prune_attachment_refs_removes_old_refs(test_conn):
 
     # Get ref IDs
     ref_id1 = _make_ref_id("att1", "conv1", "msg1")
-    ref_id2 = _make_ref_id("att2", "conv1", "msg2")
+    # ref_id2 = _make_ref_id("att2", "conv1", "msg2")
 
     # Verify both exist
     count_before = test_conn.execute(
@@ -176,9 +176,7 @@ def test_prune_attachment_refs_removes_old_refs(test_conn):
     assert count_after == 1
 
     # Verify correct ref was kept
-    remaining = test_conn.execute(
-        "SELECT ref_id FROM attachment_refs WHERE conversation_id = ?", ("conv1",)
-    ).fetchone()
+    remaining = test_conn.execute("SELECT ref_id FROM attachment_refs WHERE conversation_id = ?", ("conv1",)).fetchone()
     assert remaining["ref_id"] == ref_id1
 
 
@@ -257,7 +255,9 @@ def test_upsert_message_missing_optional_fields(test_conn):
     conv = make_conversation("conv1")
     upsert_conversation(test_conn, conv)
 
-    msg = make_message("msg1", "conv1", role=None, text=None, timestamp=None, provider_message_id=None, provider_meta=None)
+    msg = make_message(
+        "msg1", "conv1", role=None, text=None, timestamp=None, provider_message_id=None, provider_meta=None
+    )
 
     updated = upsert_message(test_conn, msg)
     assert updated
@@ -323,10 +323,7 @@ def test_write_lock_prevents_concurrent_writes(test_db):
     def write_conversation(conv_id: int):
         try:
             conv = make_conversation(f"conv{conv_id}", title=f"Conversation {conv_id}")
-            messages = [
-                make_message(f"msg{conv_id}-{i}", f"conv{conv_id}", text=f"Message {i}")
-                for i in range(3)
-            ]
+            messages = [make_message(f"msg{conv_id}-{i}", f"conv{conv_id}", text=f"Message {i}") for i in range(3)]
 
             with open_connection(test_db) as conn:
                 counts = store_records(conversation=conv, messages=messages, attachments=[], conn=conn)
@@ -375,7 +372,6 @@ def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeyp
     importlib.reload(polylogue.storage.backends.sqlite)
 
     # Now import default_db_path AFTER reload
-    from polylogue.storage.backends.sqlite import default_db_path
 
     default_path = default_db_path()
     default_path.parent.mkdir(parents=True, exist_ok=True)
@@ -440,16 +436,10 @@ def test_prune_attachment_refs_transactional_rollback(test_conn):
     # Verify initial state: 2 attachments, ref_count = 1 each
     count_before = test_conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0]
     assert count_before == 2
-    ref_count_before = test_conn.execute(
-        "SELECT SUM(ref_count) FROM attachments"
-    ).fetchone()[0]
+    ref_count_before = test_conn.execute("SELECT SUM(ref_count) FROM attachments").fetchone()[0]
     assert ref_count_before == 2
 
     # Save snapshot to verify rollback
-    refs_before = test_conn.execute(
-        "SELECT ref_id, attachment_id FROM attachment_refs ORDER BY ref_id"
-    ).fetchall()
-    refs_before_ids = [(r["ref_id"], r["attachment_id"]) for r in refs_before]
 
     # Try to prune with an invalid keep_ref_ids that will cause the function
     # to execute but then we'll verify the SAVEPOINT mechanism works
@@ -485,10 +475,19 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
     SHARED_ATTACHMENT_ID = "shared-attachment-race-test"
 
     def create_conversation(i: int):
-        conv = make_conversation(f"race-conv-{i}", title=f"Race Test {i}", created_at=None, updated_at=None, content_hash=f"hash-{i}")
+        conv = make_conversation(
+            f"race-conv-{i}", title=f"Race Test {i}", created_at=None, updated_at=None, content_hash=f"hash-{i}"
+        )
         msg = make_message(f"race-msg-{i}", f"race-conv-{i}", text="test", timestamp=None, provider_meta=None)
         # Each conversation references the SAME attachment_id
-        attachment = make_attachment(SHARED_ATTACHMENT_ID, f"race-conv-{i}", f"race-msg-{i}", mime_type="text/plain", size_bytes=100, provider_meta=None)
+        attachment = make_attachment(
+            SHARED_ATTACHMENT_ID,
+            f"race-conv-{i}",
+            f"race-msg-{i}",
+            mime_type="text/plain",
+            size_bytes=100,
+            provider_meta=None,
+        )
         with open_connection(test_db) as conn:
             store_records(conversation=conv, messages=[msg], attachments=[attachment], conn=conn)
 
@@ -731,6 +730,7 @@ class TestProviderNameValidation:
                 title="Test",
                 content_hash="hash123",
             )
+
 
 # =============================================================================
 # DATABASE/CONNECTION MANAGEMENT (from test_db.py)
@@ -1296,7 +1296,7 @@ class TestMigrations:
         def failing_migration(conn):
             raise RuntimeError("Simulated migration failure")
 
-        original = _MIGRATIONS[3]
+        _MIGRATIONS[3]
         monkeypatch.setitem(_MIGRATIONS, 3, failing_migration)
 
         # Migration should raise RuntimeError
@@ -1336,6 +1336,7 @@ class TestMigrations:
             row = cursor.fetchone()
             assert row is None, "Insert should have been rolled back"
 
+
 # =============================================================================
 # DB+STORE INTEGRATION (from test_db_store.py)
 # =============================================================================
@@ -1343,6 +1344,7 @@ class TestMigrations:
 
 class TestConnectionContextReuse:
     """Test connection reuse within same thread."""
+
 
 class TestConnectionCommitAndRollback:
     """Test transaction commit/rollback behavior."""
@@ -1433,7 +1435,12 @@ class TestThreadSafety:
             try:
                 conv = make_conversation(f"c{conv_id}", title=f"Conversation {conv_id}")
                 messages = [
-                    make_message(f"m{conv_id}-{i}", f"c{conv_id}", role="user" if i % 2 == 0 else "assistant", text=f"Message {i}")
+                    make_message(
+                        f"m{conv_id}-{i}",
+                        f"c{conv_id}",
+                        role="user" if i % 2 == 0 else "assistant",
+                        text=f"Message {i}",
+                    )
                     for i in range(3)
                 ]
 
@@ -1474,9 +1481,7 @@ class TestSchemaAndMigration:
             assert version_row[0] == SCHEMA_VERSION
 
             # Verify tables exist
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-            )
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
             tables = [row[0] for row in cursor.fetchall()]
 
             expected_tables = [
@@ -1603,7 +1608,14 @@ class TestComplexScenarios:
         db_path = tmp_path / "test.db"
 
         # Step 1: Create conversation with one attachment
-        conv_v1 = make_conversation("c1", provider_name="claude", title="Analysis Project", created_at="2024-01-01T10:00:00Z", updated_at="2024-01-01T10:00:00Z", content_hash="hash-v1")
+        conv_v1 = make_conversation(
+            "c1",
+            provider_name="claude",
+            title="Analysis Project",
+            created_at="2024-01-01T10:00:00Z",
+            updated_at="2024-01-01T10:00:00Z",
+            content_hash="hash-v1",
+        )
         msg1 = make_message("m1", "c1", text="Please analyze this image", timestamp="2024-01-01T10:00:00Z")
         att1 = make_attachment("att-image", "c1", "m1", mime_type="image/png", size_bytes=51200)
 
@@ -1613,7 +1625,14 @@ class TestComplexScenarios:
         # Step 2: Add more messages and attachments
         msg2 = make_message("m2", "c1", role="assistant", text="The image shows...", timestamp="2024-01-01T10:01:00Z")
         att2 = make_attachment("att-export", "c1", "m2", mime_type="application/json", size_bytes=2048)
-        conv_v2 = make_conversation("c1", provider_name="claude", title="Analysis Project", created_at="2024-01-01T10:00:00Z", updated_at="2024-01-01T10:02:00Z", content_hash="hash-v2")
+        conv_v2 = make_conversation(
+            "c1",
+            provider_name="claude",
+            title="Analysis Project",
+            created_at="2024-01-01T10:00:00Z",
+            updated_at="2024-01-01T10:02:00Z",
+            content_hash="hash-v2",
+        )
 
         with open_connection(db_path) as conn:
             store_records(
@@ -1629,7 +1648,14 @@ class TestComplexScenarios:
             assert count == 2
 
         # Step 3: Final update removes one attachment
-        conv_v3 = make_conversation("c1", provider_name="claude", title="Analysis Project - Final", created_at="2024-01-01T10:00:00Z", updated_at="2024-01-01T10:03:00Z", content_hash="hash-v3")
+        conv_v3 = make_conversation(
+            "c1",
+            provider_name="claude",
+            title="Analysis Project - Final",
+            created_at="2024-01-01T10:00:00Z",
+            updated_at="2024-01-01T10:03:00Z",
+            content_hash="hash-v3",
+        )
 
         with open_connection(db_path) as conn:
             store_records(
@@ -1651,8 +1677,12 @@ class TestComplexScenarios:
         """Conversations from different providers don't interfere."""
         db_path = tmp_path / "test.db"
 
-        conv_gpt = make_conversation("c-gpt", provider_name="chatgpt", title="ChatGPT Conversation", content_hash="hash-gpt")
-        conv_claude = make_conversation("c-claude", provider_name="claude", title="Claude Conversation", content_hash="hash-claude")
+        conv_gpt = make_conversation(
+            "c-gpt", provider_name="chatgpt", title="ChatGPT Conversation", content_hash="hash-gpt"
+        )
+        conv_claude = make_conversation(
+            "c-claude", provider_name="claude", title="Claude Conversation", content_hash="hash-claude"
+        )
 
         with open_connection(db_path) as conn:
             store_records(conversation=conv_gpt, messages=[], attachments=[], conn=conn)
@@ -1660,12 +1690,8 @@ class TestComplexScenarios:
 
         # Verify both stored correctly
         with open_connection(db_path) as conn:
-            gpt_row = conn.execute(
-                "SELECT * FROM conversations WHERE provider_name = ?", ("chatgpt",)
-            ).fetchone()
-            claude_row = conn.execute(
-                "SELECT * FROM conversations WHERE provider_name = ?", ("claude",)
-            ).fetchone()
+            gpt_row = conn.execute("SELECT * FROM conversations WHERE provider_name = ?", ("chatgpt",)).fetchone()
+            claude_row = conn.execute("SELECT * FROM conversations WHERE provider_name = ?", ("claude",)).fetchone()
 
             assert gpt_row is not None
             assert gpt_row["title"] == "ChatGPT Conversation"

@@ -13,17 +13,14 @@ Key properties tested:
 
 from __future__ import annotations
 
-from datetime import datetime
-
-from hypothesis import given, settings, assume
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from polylogue.importers import chatgpt, claude, codex
-from polylogue.importers.base import (
+from polylogue.sources.parsers import chatgpt, claude, codex
+from polylogue.sources.parsers.base import (
     ParsedConversation,
-    ParsedMessage,
-    normalize_role,
     extract_messages_from_list,
+    normalize_role,
 )
 from tests.strategies import (
     chatgpt_export_strategy,
@@ -37,7 +34,6 @@ from tests.strategies.providers import (
     claude_code_session_strategy,
     codex_session_strategy,
 )
-
 
 # =============================================================================
 # Role Normalization Properties
@@ -384,7 +380,7 @@ def test_timestamp_normalization_handles_milliseconds(epoch_ms: int):
 }))
 def test_attachment_extraction_preserves_metadata(attachment_meta: dict):
     """Attachment metadata is preserved during extraction (for valid inputs)."""
-    from polylogue.importers.base import attachment_from_meta
+    from polylogue.sources.parsers.base import attachment_from_meta
 
     result = attachment_from_meta(attachment_meta, "msg-1", 1)
 
@@ -412,25 +408,25 @@ def test_attachment_extraction_preserves_metadata(attachment_meta: dict):
 @settings(max_examples=20)
 def test_chatgpt_looks_like_detection(export: dict):
     """ChatGPT exports are correctly detected."""
-    assert chatgpt.looks_like(export) == True
+    assert chatgpt.looks_like(export)
 
 
 @given(claude_ai_export_strategy())
 @settings(max_examples=20)
 def test_claude_ai_looks_like_detection(export: dict):
     """Claude AI exports are correctly detected."""
-    assert claude.looks_like_ai(export) == True
+    assert claude.looks_like_ai(export)
 
 
 @given(claude_code_session_strategy(min_messages=1))
 @settings(max_examples=20)
 def test_claude_code_looks_like_detection(session: list[dict]):
     """Claude Code sessions are correctly detected."""
-    assert claude.looks_like_code(session) == True
+    assert claude.looks_like_code(session)
 
 
 @given(codex_session_strategy(min_messages=1))
 @settings(max_examples=20)
 def test_codex_looks_like_detection(session: list[dict]):
     """Codex sessions are correctly detected."""
-    assert codex.looks_like(session) == True
+    assert codex.looks_like(session)

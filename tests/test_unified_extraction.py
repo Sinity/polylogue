@@ -4,21 +4,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from pathlib import Path
 
 import pytest
 
-from polylogue.lib.viewports import ToolCategory, ContentType
+from polylogue.lib.viewports import ContentType, ToolCategory
 from polylogue.schemas.unified import (
     HarmonizedMessage,
-    extract_harmonized_message,
     extract_from_provider_meta,
+    extract_harmonized_message,
     is_message_record,
     normalize_role,
-    extract_tool_calls,
-    extract_reasoning_traces,
 )
-
 
 # =============================================================================
 # Transform Function Tests

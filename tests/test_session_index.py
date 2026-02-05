@@ -9,18 +9,16 @@ Coverage targets:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
-from polylogue.importers.claude import (
+from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
+from polylogue.sources.parsers.claude import (
     SessionIndexEntry,
     enrich_conversation_from_index,
     find_sessions_index,
-    parse_code,
     parse_sessions_index,
 )
-from polylogue.importers.base import ParsedConversation, ParsedMessage
 
 
 @pytest.fixture
@@ -223,7 +221,7 @@ class TestEnrichConversationFromIndex:
         entries = parse_sessions_index(sample_sessions_index)
         entry = entries["ghi789-jkl012"]
 
-        enriched = enrich_conversation_from_index(sample_conversation, entry)
+        enrich_conversation_from_index(sample_conversation, entry)
 
         # "User Exits CLI Session" is filtered out, falls back to firstPrompt
         # But "No prompt" is also filtered, so keeps original title

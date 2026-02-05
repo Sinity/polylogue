@@ -22,7 +22,6 @@ from tests.helpers import (
     make_message,
 )
 
-
 # =============================================================================
 # EXAMPLE 1: Building Conversations for Database Tests
 # =============================================================================
@@ -121,7 +120,7 @@ CHATGPT_EXTRACTION_CASES = [
 @pytest.mark.parametrize("node,expected_count,desc", CHATGPT_EXTRACTION_CASES)
 def test_chatgpt_extraction_example(node, expected_count, desc):
     """Example: Using make_chatgpt_node for importer tests."""
-    from polylogue.importers.chatgpt import extract_messages_from_mapping
+    from polylogue.sources.parsers.chatgpt import extract_messages_from_mapping
 
     mapping = {"node1": node}
     messages, attachments = extract_messages_from_mapping(mapping)
@@ -146,7 +145,7 @@ CLAUDE_EXTRACTION_CASES = [
 @pytest.mark.parametrize("msg_data,expected_role,desc", CLAUDE_EXTRACTION_CASES)
 def test_claude_extraction_example(msg_data, expected_role, desc):
     """Example: Using make_claude_chat_message for importer tests."""
-    from polylogue.importers.claude import extract_messages_from_chat_messages
+    from polylogue.sources.parsers.claude import extract_messages_from_chat_messages
 
     messages, attachments = extract_messages_from_chat_messages([msg_data])
 
@@ -163,7 +162,7 @@ def test_assertion_helpers_example(workspace_env):
     """Example: Using assertion helpers for cleaner tests."""
     db_path = db_setup(workspace_env)
 
-    conv = (
+    (
         ConversationBuilder(db_path, "assert-example")
         .add_message("m1", role="user", text="Question")
         .add_message("m2", role="assistant", text="Answer")

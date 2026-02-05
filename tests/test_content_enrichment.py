@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.core.content_enrichment import (
+from polylogue.pipeline.enrichment import (
     enrich_content_blocks,
     enrich_message_metadata,
 )
-
 
 # =============================================================================
 # enrich_content_blocks Tests
@@ -192,7 +191,7 @@ class TestEnrichMessageMetadata:
         }
         original_blocks = meta["content_blocks"]
 
-        result = enrich_message_metadata(meta)
+        enrich_message_metadata(meta)
 
         # Original should be unchanged
         assert meta["content_blocks"] is original_blocks

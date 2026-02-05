@@ -11,22 +11,19 @@ Covers retry scenarios for:
 
 from __future__ import annotations
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
-import time
+from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.ingestion.drive_client import (
+from polylogue.sources.drive_client import (
+    DriveAuthError,
     DriveClient,
     DriveError,
-    DriveAuthError,
     DriveNotFoundError,
     _is_retryable_error,
     _resolve_retries,
     _resolve_retry_base,
 )
-
 
 # =============================================================================
 # Retryable Error Classification Tests

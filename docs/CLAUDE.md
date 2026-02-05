@@ -19,7 +19,7 @@ uv run polylogue                              # Stats
 uv run polylogue "search terms"               # Query
 uv run polylogue -p claude --since "last week"
 uv run polylogue --similar "error handling"   # Semantic search
-uv run polylogue sync --preview               # Dry-run sync
+uv run polylogue run --preview                # Dry-run sync
 uv run polylogue check --repair               # Integrity check
 uv run polylogue mcp                          # MCP server (stdio)
 ```
@@ -117,7 +117,7 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 |------|---------|
 | `cli/click_app.py` | QueryFirstGroup (positional args → query mode) |
 | `cli/query.py` | Filter chain, output formatting, modifiers |
-| `cli/commands/sync.py` | Ingest → render → index |
+| `cli/commands/run.py` | Ingest → render → index |
 | `cli/commands/check.py` | Integrity checks, `--repair`, `--vacuum` |
 
 ---

@@ -14,8 +14,7 @@ import json
 
 import pytest
 
-from polylogue.importers import chatgpt, claude, codex
-from polylogue.importers import drive
+from polylogue.sources.parsers import chatgpt, claude, codex, drive
 from polylogue.storage.store import RawConversationRecord
 
 

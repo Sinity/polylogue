@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 
-from polylogue.config import Source, default_config, write_config
+from polylogue.config import Source, get_config
 from polylogue.pipeline.runner import plan_sources, run_sources
 from polylogue.storage.backends.sqlite import open_connection
 from tests.helpers import (
@@ -15,15 +15,16 @@ from tests.helpers import (
 
 def test_plan_and_run_sources(workspace_env, tmp_path):
     inbox = tmp_path / "inbox"
-    source_file = (GenericConversationBuilder("conv1")
-                   .title("Test")
-                   .add_user("hello")
-                   .add_assistant("world")
-                   .write_to(inbox / "conversation.json"))
+    source_file = (
+        GenericConversationBuilder("conv1")
+        .title("Test")
+        .add_user("hello")
+        .add_assistant("world")
+        .write_to(inbox / "conversation.json")
+    )
 
-    config = default_config()
+    config = get_config()
     config.sources = [Source(name="codex", path=source_file)]
-    write_config(config)
 
     plan = plan_sources(config)
     assert plan.counts["conversations"] == 1
@@ -35,17 +36,18 @@ def test_plan_and_run_sources(workspace_env, tmp_path):
 
 
 def test_run_sources_filtered(workspace_env, tmp_path):
-    inbox = (InboxBuilder(tmp_path / "inbox")
-             .add_codex_conversation("conv-a", messages=[("user", "hello")], filename="a.json")
-             .add_codex_conversation("conv-b", messages=[("user", "world")], filename="b.json")
-             .build())
+    inbox = (
+        InboxBuilder(tmp_path / "inbox")
+        .add_codex_conversation("conv-a", messages=[("user", "hello")], filename="a.json")
+        .add_codex_conversation("conv-b", messages=[("user", "world")], filename="b.json")
+        .build()
+    )
 
-    config = default_config()
+    config = get_config()
     config.sources = [
         Source(name="source-a", path=inbox / "a.json"),
         Source(name="source-b", path=inbox / "b.json"),
     ]
-    write_config(config)
 
     result = run_sources(config=config, stage="ingest", source_names=["source-a"])
     assert result.counts["conversations"] == 1
@@ -53,13 +55,10 @@ def test_run_sources_filtered(workspace_env, tmp_path):
 
 def test_render_filtered_by_source_meta(workspace_env, tmp_path):
     inbox = tmp_path / "inbox"
-    source_file = (ChatGPTExportBuilder("conv-chatgpt")
-                   .add_node("user", "hello")
-                   .write_to(inbox / "conversation.json"))
+    source_file = ChatGPTExportBuilder("conv-chatgpt").add_node("user", "hello").write_to(inbox / "conversation.json")
 
-    config = default_config()
+    config = get_config()
     config.sources = [Source(name="inbox", path=source_file)]
-    write_config(config)
 
     run_sources(config=config, stage="ingest", source_names=["inbox"])
     result = run_sources(config=config, stage="render", source_names=["inbox"])
@@ -69,14 +68,15 @@ def test_render_filtered_by_source_meta(workspace_env, tmp_path):
 
 def test_run_all_skips_render_when_unchanged(workspace_env, tmp_path):
     inbox = tmp_path / "inbox"
-    source_file = (GenericConversationBuilder("conv1")
-                   .add_user("hello")
-                   .add_assistant("world")
-                   .write_to(inbox / "conversation.json"))
+    source_file = (
+        GenericConversationBuilder("conv1")
+        .add_user("hello")
+        .add_assistant("world")
+        .write_to(inbox / "conversation.json")
+    )
 
-    config = default_config()
+    config = get_config()
     config.sources = [Source(name="inbox", path=source_file)]
-    write_config(config)
 
     run_sources(config=config, stage="all")
 
@@ -93,13 +93,10 @@ def test_run_rerenders_when_content_changes(workspace_env, tmp_path):
     source_file = inbox / "conversation.json"
 
     # Initial content
-    (GenericConversationBuilder("conv1")
-     .add_user("hello")
-     .write_to(source_file))
+    (GenericConversationBuilder("conv1").add_user("hello").write_to(source_file))
 
-    config = default_config()
+    config = get_config()
     config.sources = [Source(name="inbox", path=source_file)]
-    write_config(config)
 
     run_sources(config=config, stage="all")
 
@@ -107,9 +104,7 @@ def test_run_rerenders_when_content_changes(workspace_env, tmp_path):
     first_mtime = convo_path.stat().st_mtime
 
     # Modify content - content hash difference triggers re-render
-    (GenericConversationBuilder("conv1")
-     .add_user("hello world")
-     .write_to(source_file))
+    (GenericConversationBuilder("conv1").add_user("hello world").write_to(source_file))
     run_sources(config=config, stage="all")
 
     second_mtime = convo_path.stat().st_mtime
@@ -121,24 +116,17 @@ def test_run_rerenders_when_title_changes(workspace_env, tmp_path):
     source_file = inbox / "conversation.json"
 
     # Initial content with old title
-    (GenericConversationBuilder("conv-title")
-     .title("Old title")
-     .add_user("hello")
-     .write_to(source_file))
+    (GenericConversationBuilder("conv-title").title("Old title").add_user("hello").write_to(source_file))
 
-    config = default_config()
+    config = get_config()
     config.sources = [Source(name="inbox", path=source_file)]
-    write_config(config)
 
     run_sources(config=config, stage="all")
     convo_path = next(config.render_root.rglob("conversation.md"))
     original = convo_path.read_text(encoding="utf-8")
 
     # Update title
-    (GenericConversationBuilder("conv-title")
-     .title("New title")
-     .add_user("hello")
-     .write_to(source_file))
+    (GenericConversationBuilder("conv-title").title("New title").add_user("hello").write_to(source_file))
     run_sources(config=config, stage="all")
 
     updated = convo_path.read_text(encoding="utf-8")
@@ -147,17 +135,18 @@ def test_run_rerenders_when_title_changes(workspace_env, tmp_path):
 
 
 def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch):
-    inbox = (InboxBuilder(tmp_path / "inbox")
-             .add_json_file("a.json", {"id": "conv-a", "messages": [{"id": "m1", "role": "user", "text": "alpha"}]})
-             .add_json_file("b.json", {"id": "conv-b", "messages": [{"id": "m1", "role": "user", "text": "beta"}]})
-             .build())
+    inbox = (
+        InboxBuilder(tmp_path / "inbox")
+        .add_json_file("a.json", {"id": "conv-a", "messages": [{"id": "m1", "role": "user", "text": "alpha"}]})
+        .add_json_file("b.json", {"id": "conv-b", "messages": [{"id": "m1", "role": "user", "text": "beta"}]})
+        .build()
+    )
 
-    config = default_config()
+    config = get_config()
     config.sources = [
         Source(name="source-a", path=inbox / "a.json"),
         Source(name="source-b", path=inbox / "b.json"),
     ]
-    write_config(config)
 
     run_sources(config=config, stage="ingest")
 
@@ -173,10 +162,11 @@ def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch
     update_calls = []
     from polylogue.pipeline.services.indexing import IndexService
 
-    original_update = IndexService.update_index
+
     def fake_update_method(self, ids):
         update_calls.append(list(ids))
         return True
+
     monkeypatch.setattr(IndexService, "update_index", fake_update_method)
 
     run_sources(config=config, stage="index", source_names=["source-b"])
@@ -185,21 +175,21 @@ def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch
 
 
 def test_incremental_index_updates(workspace_env, tmp_path, monkeypatch):
-    inbox = (InboxBuilder(tmp_path / "inbox")
-             .add_codex_conversation("conv-a", messages=[("user", "alpha")], filename="a.json")
-             .add_codex_conversation("conv-b", messages=[("user", "beta")], filename="b.json")
-             .build())
+    inbox = (
+        InboxBuilder(tmp_path / "inbox")
+        .add_codex_conversation("conv-a", messages=[("user", "alpha")], filename="a.json")
+        .add_codex_conversation("conv-b", messages=[("user", "beta")], filename="b.json")
+        .build()
+    )
 
-    config = default_config()
+    config = get_config()
     config.sources = [Source(name="inbox", path=inbox)]
-    write_config(config)
 
     run_sources(config=config, stage="all")
 
 
 def test_index_failure_is_nonfatal(workspace_env, monkeypatch):
-    config = default_config()
-    write_config(config)
+    config = get_config()
 
     from polylogue.pipeline.services.indexing import IndexService
 
@@ -215,13 +205,10 @@ def test_index_failure_is_nonfatal(workspace_env, monkeypatch):
 
 def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypatch):
     inbox = tmp_path / "inbox"
-    source_file = (GenericConversationBuilder("conv1")
-                   .add_user("hello")
-                   .write_to(inbox / "conversation.json"))
+    source_file = GenericConversationBuilder("conv1").add_user("hello").write_to(inbox / "conversation.json")
 
-    config = default_config()
+    config = get_config()
     config.sources = [Source(name="inbox", path=source_file)]
-    write_config(config)
 
     import polylogue.pipeline.runner as runner_mod
 
@@ -245,13 +232,10 @@ def test_latest_run_parses_json_columns(workspace_env, tmp_path):
     from polylogue.pipeline.runner import latest_run
 
     inbox = tmp_path / "inbox"
-    (GenericConversationBuilder("conv-latest-run")
-     .add_user("test")
-     .write_to(inbox / "conversation.json"))
+    (GenericConversationBuilder("conv-latest-run").add_user("test").write_to(inbox / "conversation.json"))
 
-    config = default_config()
+    config = get_config()
     config.sources = [Source(name="inbox", path=inbox)]
-    write_config(config)
 
     run_sources(config=config, stage="all")
 

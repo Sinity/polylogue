@@ -14,11 +14,11 @@ import concurrent.futures
 import json
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 from polylogue.lib.log import get_logger
-from polylogue.sources.source import _parse_json_payload
 from polylogue.pipeline.ingest import prepare_ingest
+from polylogue.sources.source import _parse_json_payload
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import RawConversationRecord
 
@@ -28,6 +28,8 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
+
+_ProcessResult: TypeAlias = tuple[str, dict[str, int], bool]
 
 
 class IngestResult:
@@ -216,16 +218,14 @@ class IngestionService:
         # Process parsed conversations
         # Use backend's thread-local connection management (not connection_context)
         # to avoid connection conflicts
-        ProcessResult = tuple[str, dict[str, int], bool]
-
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            futures: dict[concurrent.futures.Future[ProcessResult], str] = {}
+            futures: dict[concurrent.futures.Future[_ProcessResult], str] = {}
 
             def _process_one(
                 convo_item: ParsedConversation,
                 source_name_item: str,
                 raw_id: str,
-            ) -> ProcessResult:
+            ) -> _ProcessResult:
                 """Process a single conversation with raw_id link."""
                 # Use backend's thread-local connection (each thread gets its own)
                 thread_conn = backend._get_connection()
@@ -241,7 +241,7 @@ class IngestionService:
 
                 return (convo_id, counts, changed)
 
-            def _handle_future(fut: concurrent.futures.Future[ProcessResult]) -> None:
+            def _handle_future(fut: concurrent.futures.Future[_ProcessResult]) -> None:
                 convo_id, result_counts, content_changed = fut.result()
                 result.merge_result(convo_id, result_counts, content_changed)
                 if progress_callback:

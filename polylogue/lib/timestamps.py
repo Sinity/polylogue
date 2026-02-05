@@ -64,10 +64,7 @@ def format_timestamp(ts: int | float | datetime) -> str:
     """
     if isinstance(ts, datetime):
         # If aware, convert to UTC; if naive, assume UTC
-        if ts.tzinfo is not None:
-            ts = ts.astimezone(timezone.utc)
-        else:
-            ts = ts.replace(tzinfo=timezone.utc)
+        ts = ts.astimezone(timezone.utc) if ts.tzinfo is not None else ts.replace(tzinfo=timezone.utc)
         return ts.isoformat(timespec="seconds")
     # Convert epoch to UTC datetime
     return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(timespec="seconds")

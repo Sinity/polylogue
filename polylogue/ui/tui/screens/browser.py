@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
-
-from rich.markdown import Markdown
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, VerticalScroll
-from textual.widgets import Markdown as MarkdownWidget, Tree
-from textual.widgets.tree import TreeNode
+from textual.widgets import Markdown as MarkdownWidget
+from textual.widgets import Tree
 
 from polylogue.config import Config
-from polylogue.lib.models import Conversation
 from polylogue.services import get_repository
 
 

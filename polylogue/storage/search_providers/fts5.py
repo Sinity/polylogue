@@ -44,7 +44,6 @@ class FTS5Provider:
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
                 message_id UNINDEXED,
                 conversation_id UNINDEXED,
-                provider_name UNINDEXED,
                 content
             );
             """
@@ -83,27 +82,15 @@ class FTS5Provider:
 
             if messages_to_index:
                 # Build lookup map of conversation_id -> provider_name
-                conv_id_placeholders = ",".join("?" * len(conversation_ids))
-                rows = conn.execute(
-                    f"SELECT conversation_id, provider_name FROM conversations WHERE conversation_id IN ({conv_id_placeholders})",
-                    conversation_ids,
-                ).fetchall()
-
-                provider_map = {row["conversation_id"]: row["provider_name"] for row in rows}
-
                 # Prepare batch insert data
-                insert_data = [
-                    (msg.message_id, msg.conversation_id, provider_map.get(msg.conversation_id), msg.text)
-                    for msg in messages_to_index
-                    if msg.conversation_id in provider_map
-                ]
+                insert_data = [(msg.message_id, msg.conversation_id, msg.text) for msg in messages_to_index]
 
                 # Batch insert using executemany
                 if insert_data:
                     conn.executemany(
                         """
-                        INSERT INTO messages_fts (message_id, conversation_id, provider_name, content)
-                        VALUES (?, ?, ?, ?)
+                        INSERT INTO messages_fts (message_id, conversation_id, content)
+                        VALUES (?, ?, ?)
                         """,
                         insert_data,
                     )

@@ -11,9 +11,8 @@ Samples are anonymized by removing PII while preserving structure.
 """
 
 import json
-import sys
 from pathlib import Path
-from typing import Any
+
 
 def extract_chatgpt_samples(conversations_file: Path, output_dir: Path):
     """Extract ChatGPT sample conversations."""
@@ -92,8 +91,8 @@ def extract_claude_samples(export_file: Path, output_dir: Path):
     print(f"Loading Claude conversations from {export_file}...")
 
     # Extract zip
-    import zipfile
     import tempfile
+    import zipfile
 
     with zipfile.ZipFile(export_file) as zf:
         # Find conversations.json or chats.json

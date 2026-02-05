@@ -31,7 +31,7 @@ MAX_PARSE_TIME = 1.0
 
 def fuzz_parse_timestamp(data: bytes) -> None:
     """Fuzz the parse_timestamp function with arbitrary inputs."""
-    from polylogue.core.timestamps import parse_timestamp
+    from polylogue.lib.timestamps import parse_timestamp
 
     try:
         text = data.decode("utf-8", errors="replace")
@@ -65,7 +65,7 @@ def fuzz_parse_timestamp(data: bytes) -> None:
 
 def fuzz_normalize_timestamp(data: bytes) -> None:
     """Fuzz the normalize_timestamp function from claude importer."""
-    from polylogue.importers.claude import normalize_timestamp
+    from polylogue.sources.parsers.claude import normalize_timestamp
 
     try:
         text = data.decode("utf-8", errors="replace")
@@ -98,7 +98,7 @@ def fuzz_normalize_timestamp(data: bytes) -> None:
 
 def fuzz_format_timestamp(data: bytes) -> None:
     """Fuzz the format_timestamp function."""
-    from polylogue.core.timestamps import format_timestamp
+    from polylogue.lib.timestamps import format_timestamp
 
     try:
         text = data.decode("utf-8", errors="replace")
@@ -280,7 +280,7 @@ def main():
     print(f"Running atheris fuzzer for {iterations} iterations...")
 
     atheris.Setup(
-        sys.argv + [f"-max_total_time=300", f"-runs={iterations}"],
+        sys.argv + ["-max_total_time=300", f"-runs={iterations}"],
         fuzz_all_timestamps,
     )
     atheris.Fuzz()

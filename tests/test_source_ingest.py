@@ -3,13 +3,10 @@ from __future__ import annotations
 import json
 import zipfile
 
-import pytest
-
 from polylogue.config import Source
-from polylogue.ingestion import iter_source_conversations, parse_drive_payload
+from polylogue.sources import iter_source_conversations, parse_drive_payload
 from tests.helpers import (
     ChatGPTExportBuilder,
-    ClaudeExportBuilder,
     GenericConversationBuilder,
     InboxBuilder,
 )
@@ -189,7 +186,7 @@ def test_parse_json_payload_invalid_conversation_items(tmp_path):
 
 def test_decode_json_bytes_utf8_with_bom(tmp_path):
     """_decode_json_bytes() handles UTF-8 with BOM."""
-    from polylogue.ingestion.source import _decode_json_bytes
+    from polylogue.sources.source import _decode_json_bytes
 
     payload = {"id": "test", "messages": [{"id": "m1", "role": "user", "text": "Hello"}]}
     json_str = json.dumps(payload)
@@ -208,7 +205,7 @@ def test_decode_json_bytes_utf8_with_bom(tmp_path):
 
 def test_decode_json_bytes_utf16_le(tmp_path):
     """_decode_json_bytes() handles UTF-16 LE encoding."""
-    from polylogue.ingestion.source import _decode_json_bytes
+    from polylogue.sources.source import _decode_json_bytes
 
     payload = {"id": "utf16test", "messages": []}
     json_str = json.dumps(payload)
@@ -224,7 +221,7 @@ def test_decode_json_bytes_utf16_le(tmp_path):
 
 def test_decode_json_bytes_utf16_be(tmp_path):
     """_decode_json_bytes() handles UTF-16 BE encoding."""
-    from polylogue.ingestion.source import _decode_json_bytes
+    from polylogue.sources.source import _decode_json_bytes
 
     payload = {"id": "utf16be", "messages": []}
     json_str = json.dumps(payload)
@@ -240,7 +237,7 @@ def test_decode_json_bytes_utf16_be(tmp_path):
 
 def test_decode_json_bytes_invalid_utf8_fallback(tmp_path):
     """_decode_json_bytes() handles bytes gracefully without crashing."""
-    from polylogue.ingestion.source import _decode_json_bytes
+    from polylogue.sources.source import _decode_json_bytes
 
     # Test with genuinely problematic bytes that require fallback
     test_cases = [
@@ -257,7 +254,7 @@ def test_decode_json_bytes_invalid_utf8_fallback(tmp_path):
 
 def test_decode_json_bytes_strips_null_bytes(tmp_path):
     """_decode_json_bytes() removes null bytes from decoded string."""
-    from polylogue.ingestion.source import _decode_json_bytes
+    from polylogue.sources.source import _decode_json_bytes
 
     payload = b'{"id": "test\x00null", "messages": []}'
 
@@ -270,7 +267,7 @@ def test_decode_json_bytes_strips_null_bytes(tmp_path):
 
 def test_decode_json_bytes_returns_none_on_all_nulls(tmp_path):
     """_decode_json_bytes() returns None if only null bytes remain."""
-    from polylogue.ingestion.source import _decode_json_bytes
+    from polylogue.sources.source import _decode_json_bytes
 
     all_nulls = b"\x00\x00\x00\x00"
 
@@ -280,7 +277,7 @@ def test_decode_json_bytes_returns_none_on_all_nulls(tmp_path):
 
 def test_decode_json_bytes_handles_utf32(tmp_path):
     """_decode_json_bytes() handles UTF-32 encoding."""
-    from polylogue.ingestion.source import _decode_json_bytes
+    from polylogue.sources.source import _decode_json_bytes
 
     payload = {"id": "utf32", "messages": []}
     json_str = json.dumps(payload)
@@ -329,7 +326,7 @@ def test_iter_source_conversations_handles_malformed_encoding_gracefully(tmp_pat
 
 def test_decode_json_bytes_empty_after_cleaning(tmp_path):
     """_decode_json_bytes() returns None if string is empty after cleaning."""
-    from polylogue.ingestion.source import _decode_json_bytes
+    from polylogue.sources.source import _decode_json_bytes
 
     only_nulls = b"\x00\x00\x00"
 
@@ -475,7 +472,7 @@ class TestTOCTOUHandling:
 
         monkeypatch.setattr("io.open", tracking_open)
 
-        convs = list(iter_source_conversations(source, cursor_state=cursor_state))
+        list(iter_source_conversations(source, cursor_state=cursor_state))
 
         assert cursor_state.get("failed_count", 0) >= 1, \
             "Deleted file should be tracked as failed"
@@ -534,7 +531,7 @@ class TestTOCTOUHandling:
 
         monkeypatch.setattr("io.open", failing_open)
 
-        convs = list(iter_source_conversations(source, cursor_state=cursor_state))
+        list(iter_source_conversations(source, cursor_state=cursor_state))
 
         assert cursor_state.get("failed_count", 0) >= 1, \
             "FileNotFoundError should increment failed_count"

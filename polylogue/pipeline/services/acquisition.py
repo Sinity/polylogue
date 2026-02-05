@@ -14,8 +14,8 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
-from polylogue.importers.base import RawConversationData
-from polylogue.ingestion.source import iter_source_conversations_with_raw
+from polylogue.sources.parsers.base import RawConversationData
+from polylogue.sources.source import iter_source_conversations_with_raw
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:

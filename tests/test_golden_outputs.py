@@ -11,11 +11,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from polylogue.rendering.core import ConversationFormatter
 from polylogue.rendering.renderers.markdown import MarkdownRenderer
-from polylogue.storage.backends.sqlite import open_connection
 from tests.factories import DbFactory
 
 # Golden files directory
@@ -272,7 +269,7 @@ class TestGoldenMarkdownRendering:
         assert "- Attachment:" in formatted.markdown_text
         # Should contain either the name or the attachment ID
         has_name_or_id = "screenshot.png" in formatted.markdown_text or "att1" in formatted.markdown_text
-        assert has_name_or_id, f"Attachment reference not found in output"
+        assert has_name_or_id, "Attachment reference not found in output"
 
     def test_message_ordering_by_timestamp(self, tmp_path, workspace_env, db_path):
         """Messages should be ordered by timestamp."""
