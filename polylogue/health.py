@@ -9,7 +9,7 @@ from typing import Any, cast
 
 from .config import Config
 from .lib.log import get_logger
-from .ingestion.drive_client import default_credentials_path, default_token_path
+from .sources.drive_client import default_credentials_path, default_token_path
 from .storage.backends.sqlite import connection_context, open_connection
 from .storage.index import index_status
 

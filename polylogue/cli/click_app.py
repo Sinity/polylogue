@@ -9,7 +9,6 @@ The CLI uses a hybrid structure:
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any
 
 import click
@@ -19,8 +18,8 @@ from polylogue.cli.commands.check import check_command
 from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.reset import reset_command
-from polylogue.cli.commands.serve import serve_command
 from polylogue.cli.commands.run import run_command, sources_command
+from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.formatting import announce_plain_mode, should_use_plain
 from polylogue.cli.types import AppEnv
 from polylogue.ui import create_ui
@@ -64,19 +63,30 @@ class QueryFirstGroup(click.Group):
                 new_args.append(arg)
                 # Check if this option takes a value
                 if arg in (
-                    "-c", "--contains", "-C", "--no-contains",
-                    "--regex", "--no-regex",
-                    "-p", "--provider", "-P", "--no-provider",
-                    "-t", "--tag", "-T", "--no-tag",
-                    "--title", "--has", "--no-has",
-                    "--since", "--until",
-                    "-i", "--id", "-n", "--limit",
-                    "--sort", "--sample", "--similar",
-                    "-o", "--output", "-f", "--format",
-                    "--fields", "--set", "--unset",
-                    "--add-tag", "--rm-tag", "--annotate",
+                    "-p",
+                    "--provider",
+                    "-P",
+                    "--no-provider",
+                    "-t",
+                    "--tag",
+                    "-T",
+                    "--no-tag",
+                    "--title",
+                    "--has",
+                    "--since",
+                    "--until",
+                    "-n",
+                    "--limit",
+                    "--sort",
+                    "--sample",
+                    "-o",
+                    "--output",
+                    "-f",
+                    "--format",
+                    "--fields",
+                    "--set",
+                    "--add-tag",
                     "--transform",
-                    "-m", "--message-limit",  # Streaming options
                 ):
                     if i + 1 < len(args) and not args[i + 1].startswith("-"):
                         i += 1
@@ -122,20 +132,15 @@ def _handle_query_mode(ctx: click.Context) -> None:
         for k in (
             "contains",
             "no_contains",
-            "regex",
-            "no_regex",
             "provider",
             "no_provider",
             "tag",
             "no_tag",
             "has_type",
-            "no_has",
             "since",
             "until",
             "title",
-            "id_prefix",
             "latest",
-            "similar",
         )
     )
 
@@ -146,9 +151,6 @@ def _handle_query_mode(ctx: click.Context) -> None:
             "list_mode",
             "limit",
             "stats_only",
-            "by_month",
-            "by_provider",
-            "by_tag",
             "stream",
             "dialogue_only",
         )
@@ -184,20 +186,14 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 # --- Filter options ---
 @click.option("--contains", "-c", multiple=True, help="FTS term (repeatable = AND)")
 @click.option("--no-contains", "-C", multiple=True, help="Exclude FTS term")
-@click.option("--regex", multiple=True, help="Regex pattern")
-@click.option("--no-regex", multiple=True, help="Exclude regex pattern")
 @click.option("--provider", "-p", help="Include providers (comma = OR)")
 @click.option("--no-provider", "-P", help="Exclude providers")
 @click.option("--tag", "-t", help="Include tags (comma = OR, supports key:value)")
 @click.option("--no-tag", "-T", help="Exclude tags")
 @click.option("--title", help="Title contains")
-@click.option(
-    "--has", "has_type", multiple=True, help="Has: thinking, tools, summary, attachments"
-)
-@click.option("--no-has", multiple=True, help="Missing types")
+@click.option("--has", "has_type", multiple=True, help="Has: thinking, tools, summary, attachments")
 @click.option("--since", help="After date (ISO, 'yesterday', 'last week')")
 @click.option("--until", help="Before date")
-@click.option("--id", "-i", "id_prefix", help="ID prefix match")
 @click.option("--limit", "-n", type=int, help="Max results")
 @click.option("--latest", is_flag=True, help="Most recent (= --sort date --limit 1)")
 @click.option(
@@ -207,7 +203,6 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 )
 @click.option("--reverse", is_flag=True, help="Reverse sort order")
 @click.option("--sample", type=int, help="Random sample of N conversations")
-@click.option("--similar", help="Rank by embedding similarity")
 # --- Output options ---
 @click.option(
     "--output",
@@ -218,18 +213,13 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     "--format",
     "-f",
     "output_format",
-    type=click.Choice(["markdown", "json", "html", "obsidian", "org", "yaml", "plaintext"]),
+    type=click.Choice(["markdown", "json", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
     help="Output format",
 )
 @click.option("--fields", help="Select fields for list/json output (comma-separated)")
 @click.option("--list", "list_mode", is_flag=True, help="Force list format")
 @click.option("--stats", "stats_only", is_flag=True, help="Only statistics, no content")
-@click.option("--pick", is_flag=True, help="Interactive picker (uses fzf if available)")
-@click.option("--by-month", is_flag=True, help="Aggregate by month")
-@click.option("--by-provider", is_flag=True, help="Aggregate by provider")
-@click.option("--by-tag", is_flag=True, help="Aggregate by tag")
 @click.option("--open", "open_result", is_flag=True, help="Open result in browser/editor")
-@click.option("--csv", "csv_path", type=click.Path(path_type=Path), help="Write CSV to file")
 @click.option(
     "--transform",
     type=click.Choice(["strip-tools", "strip-thinking", "strip-all"]),
@@ -238,19 +228,14 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 # --- Streaming options (memory-efficient for large conversations) ---
 @click.option("--stream", is_flag=True, help="Stream output (low memory, no buffering)")
 @click.option("--dialogue-only", "-d", is_flag=True, help="Show only user/assistant messages")
-@click.option("--message-limit", "-m", type=int, help="Limit number of messages (not conversations)")
 # --- Modifier options (write operations) ---
 @click.option("--set", "set_meta", nargs=2, multiple=True, help="Set metadata key value")
-@click.option("--unset", multiple=True, help="Remove metadata key")
 @click.option("--add-tag", multiple=True, help="Add tags (comma-separated)")
-@click.option("--rm-tag", multiple=True, help="Remove tags (comma-separated)")
-@click.option("--annotate", help="LLM annotation prompt")
 @click.option("--delete", "delete_matched", is_flag=True, help="Delete matched (requires filter)")
 @click.option("--dry-run", is_flag=True, help="Preview changes without executing")
 @click.option("--force", is_flag=True, help="Skip confirmation for bulk operations")
 # --- Global options ---
 @click.option("--plain", is_flag=True, help="Force non-interactive plain output")
-@click.option("--interactive", is_flag=True, help="Force interactive output")
 @click.option("-v", "--verbose", is_flag=True, help="Verbose output")
 @click.version_option(version=POLYLOGUE_VERSION, prog_name="polylogue")
 @click.pass_context
@@ -261,53 +246,38 @@ def cli(
     # Filters
     contains: tuple[str, ...],
     no_contains: tuple[str, ...],
-    regex: tuple[str, ...],
-    no_regex: tuple[str, ...],
     provider: str | None,
     no_provider: str | None,
     tag: str | None,
     no_tag: str | None,
     title: str | None,
     has_type: tuple[str, ...],
-    no_has: tuple[str, ...],
     since: str | None,
     until: str | None,
-    id_prefix: str | None,
     limit: int | None,
     latest: bool,
     sort: str | None,
     reverse: bool,
     sample: int | None,
-    similar: str | None,
     # Output
     output: str | None,
     output_format: str | None,
     fields: str | None,
     list_mode: bool,
     stats_only: bool,
-    pick: bool,
-    by_month: bool,
-    by_provider: bool,
-    by_tag: bool,
     open_result: bool,
-    csv_path: Path | None,
     transform: str | None,
     # Streaming
     stream: bool,
     dialogue_only: bool,
-    message_limit: int | None,
     # Modifiers
     set_meta: tuple[tuple[str, str], ...],
-    unset: tuple[str, ...],
     add_tag: tuple[str, ...],
-    rm_tag: tuple[str, ...],
-    annotate: str | None,
     delete_matched: bool,
     dry_run: bool,
     force: bool,
     # Global
     plain: bool,
-    interactive: bool,
     verbose: bool,
 ) -> None:
     """Polylogue - AI conversation archive.
@@ -329,14 +299,14 @@ def cli(
     Run `polylogue <command> --help` for subcommand details.
     """
     # Set up environment
-    use_plain = should_use_plain(plain=plain, interactive=interactive)
+    use_plain = should_use_plain(plain=plain)
     env = AppEnv(ui=create_ui(use_plain))
     ctx.obj = env
 
     # Announce plain mode if auto-detected (not explicitly requested)
     env_force = os.environ.get("POLYLOGUE_FORCE_PLAIN")
     forced_plain = bool(env_force and env_force.lower() not in {"0", "false", "no"})
-    if use_plain and not plain and not interactive and not forced_plain:
+    if use_plain and not plain and not forced_plain:
         announce_plain_mode()
 
 
@@ -348,7 +318,7 @@ cli.add_command(reset_command)
 cli.add_command(mcp_command)
 cli.add_command(auth_command)
 cli.add_command(completions_command)
-cli.add_command(serve_command)
+cli.add_command(dashboard_command)
 
 
 def main() -> None:
