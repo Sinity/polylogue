@@ -43,6 +43,13 @@
           pyproject = true;
           src = ./.;
 
+          postPatch = ''
+            cat > polylogue/_build_info.py << BUILDEOF
+            BUILD_COMMIT = "${self.rev or self.dirtyRev or "unknown"}"
+            BUILD_DIRTY = ${if self ? dirtyRev then "True" else "False"}
+            BUILDEOF
+          '';
+
           build-system = with pkgs.python313Packages; [
             setuptools
             wheel
@@ -59,7 +66,7 @@
             markdown-it-py
             pygments
             ijson
-            qdrant-client
+            sqlite-vec
             questionary
             click
             tenacity
@@ -138,7 +145,7 @@
               ${pkgs.uv}/bin/uv venv
               source .venv/bin/activate
               ${pkgs.uv}/bin/uv pip install -e ".[dev]"
-              pytest -q --ignore=tests/test_qdrant.py
+              pytest -q
               touch $out
             '';
       }

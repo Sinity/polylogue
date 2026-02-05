@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import dateparser
+import dateparser  # type: ignore[import-untyped]
 
 
 def parse_date(date_str: str) -> datetime | None:

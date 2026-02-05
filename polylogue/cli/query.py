@@ -10,10 +10,18 @@ This module handles the execution of query-mode operations including:
 
 from __future__ import annotations
 
+import contextlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+import click
+
+from polylogue.lib.log import get_logger
+
+LOGGER = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -47,12 +55,18 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     try:
         vector_provider = create_vector_provider(config)
     except (ValueError, ImportError):
-        pass
+        pass  # Vector search not available
+    except Exception as exc:
+        LOGGER.warning("Vector search setup failed: %s", exc)
 
     # Create filter chain with vector provider
     from polylogue.lib.filters import ConversationFilter
 
     filter_chain = ConversationFilter(conv_repo, vector_provider=vector_provider)
+
+    # Apply --id (exact conversation ID or prefix match)
+    if params.get("conv_id"):
+        filter_chain = filter_chain.id(params["conv_id"])
 
     # Apply query terms (positional args)
     query_terms = params.get("query", ())
@@ -63,16 +77,8 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     for term in params.get("contains", ()):
         filter_chain = filter_chain.contains(term)
 
-    # Apply --no-contains
-    for term in params.get("no_contains", ()):
-        filter_chain = filter_chain.no_contains(term)
-
-    # Apply --contains (already applied via query_terms above but keeping for explicit contains if needed)
-    for term in params.get("contains", ()):
-        filter_chain = filter_chain.contains(term)
-
-    # Apply --no-contains
-    for term in params.get("no_contains", ()):
+    # Apply --exclude-text
+    for term in params.get("exclude_text", ()):
         filter_chain = filter_chain.no_contains(term)
 
     # Apply --provider (comma-separated)
@@ -80,9 +86,9 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         providers = [p.strip() for p in params["provider"].split(",")]
         filter_chain = filter_chain.provider(*providers)
 
-    # Apply --no-provider (comma-separated)
-    if params.get("no_provider"):
-        excluded = [p.strip() for p in params["no_provider"].split(",")]
+    # Apply --exclude-provider (comma-separated)
+    if params.get("exclude_provider"):
+        excluded = [p.strip() for p in params["exclude_provider"].split(",")]
         filter_chain = filter_chain.no_provider(*excluded)
 
     # Apply --tag (comma-separated)
@@ -90,9 +96,9 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         tags = [t.strip() for t in params["tag"].split(",")]
         filter_chain = filter_chain.tag(*tags)
 
-    # Apply --no-tag (comma-separated)
-    if params.get("no_tag"):
-        excluded = [t.strip() for t in params["no_tag"].split(",")]
+    # Apply --exclude-tag (comma-separated)
+    if params.get("exclude_tag"):
+        excluded = [t.strip() for t in params["exclude_tag"].split(",")]
         filter_chain = filter_chain.no_tag(*excluded)
 
     # Apply --title
@@ -105,11 +111,19 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     # Apply --since
     if params.get("since"):
-        filter_chain = filter_chain.since(params["since"])
+        try:
+            filter_chain = filter_chain.since(params["since"])
+        except ValueError as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1) from exc
 
     # Apply --until
     if params.get("until"):
-        filter_chain = filter_chain.until(params["until"])
+        try:
+            filter_chain = filter_chain.until(params["until"])
+        except ValueError as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1) from exc
 
     # Apply --latest (= --sort date --limit 1)
     if params.get("latest"):
@@ -150,7 +164,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         if not summary_results:
             env.ui.console.print("No conversations matched.")
             raise SystemExit(2)
-        _output_summary_list(env, summary_results, params)
+        _output_summary_list(env, summary_results, params, conv_repo)
         return
 
     # Streaming path
@@ -164,14 +178,13 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         else:
             # Try to resolve first query term as ID
             if query_terms:
-                full_id = conv_repo.resolve_id(query_terms[0])
-                if not full_id:
-                    env.ui.console.print(f"[red]No conversation found matching: {query_terms[0]}[/red]")
+                resolved = conv_repo.resolve_id(query_terms[0])
+                if not resolved:
+                    click.echo(f"No conversation found matching: {query_terms[0]}", err=True)
                     raise SystemExit(2)
+                full_id = str(resolved)
             else:
-                env.ui.console.print(
-                    "[yellow]--stream requires a specific conversation. Use --latest or specify an ID.[/yellow]"
-                )
+                click.echo("--stream requires a specific conversation. Use --latest or specify an ID.", err=True)
                 raise SystemExit(1)
 
         output_format = params.get("output_format") or "plaintext"
@@ -211,6 +224,9 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         results = [conv.dialogue_only() for conv in results]
 
     # Handle stats-only output
+    if params.get("stats_by"):
+        _output_stats_by(env, results, params["stats_by"])
+        return
     if params.get("stats_only"):
         _output_stats(env, results)
         return
@@ -255,8 +271,8 @@ def _apply_modifiers(
 
     # Dry-run mode: show preview and exit
     if dry_run:
-        env.ui.console.print(f"[yellow]DRY-RUN: Would modify {count} conversation(s)[/yellow]")
-        env.ui.console.print(f"Operations: {op_desc}")
+        click.echo(f"DRY-RUN: Would modify {count} conversation(s)")
+        click.echo(f"Operations: {op_desc}")
         env.ui.console.print("\nSample of affected conversations:")
         for conv in results[:5]:
             title = conv.display_title[:40] if conv.display_title else conv.id[:20]
@@ -265,9 +281,9 @@ def _apply_modifiers(
 
     # Confirmation for bulk operations (>10 items)
     if count > 10 and not force:
-        env.ui.console.print(f"[yellow]About to modify {count} conversations[/yellow]")
-        env.ui.console.print(f"Operations: {op_desc}")
-        env.ui.console.print("\nUse --force to skip this prompt, or --dry-run to preview.")
+        click.echo(f"About to modify {count} conversations")
+        click.echo(f"Operations: {op_desc}")
+        click.echo("\nUse --force to skip this prompt, or --dry-run to preview.")
         raise SystemExit(1)
 
     # Load repository
@@ -298,7 +314,7 @@ def _apply_modifiers(
         reports.append(f"Set {meta_set} metadata field(s)")
 
     for report in reports:
-        env.ui.console.print(f"[green]{report}[/green]")
+        click.echo(report)
 
 
 def _delete_conversations(
@@ -307,6 +323,8 @@ def _delete_conversations(
     params: dict[str, Any],
 ) -> None:
     """Delete matched conversations."""
+    from collections import Counter
+
     from polylogue.services import get_repository
 
     if not results:
@@ -317,25 +335,53 @@ def _delete_conversations(
     force = params.get("force", False)
     count = len(results)
 
-    # Dry-run mode: show preview and exit
-    if dry_run:
-        env.ui.console.print(f"[yellow]DRY-RUN: Would delete {count} conversation(s)[/yellow]")
-        env.ui.console.print("\nSample of conversations to be deleted:")
+    # Build breakdown summary for preview/confirmation
+    provider_counts = Counter(conv.provider for conv in results)
+    dates = [conv.created_at for conv in results if conv.created_at is not None]
+    date_min = min(dates) if dates else None
+    date_max = max(dates) if dates else None
+
+    def _print_breakdown() -> None:
+        """Print provider and date breakdown."""
+        # Provider breakdown
+        click.echo("  Providers:")
+        for provider, pcount in provider_counts.most_common():
+            click.echo(f"    {provider}: {pcount}")
+        # Date range
+        if date_min and date_max:
+            fmt = "%Y-%m-%d"
+            if date_min.date() == date_max.date():
+                click.echo(f"  Date: {date_min.strftime(fmt)}")
+            else:
+                click.echo(f"  Date range: {date_min.strftime(fmt)} → {date_max.strftime(fmt)}")
+        # Sample
+        click.echo("  Sample:")
         for conv in results[:5]:
             title = conv.display_title[:40] if conv.display_title else conv.id[:20]
-            env.ui.console.print(f"  - {conv.id[:24]} [{conv.provider}] {title}")
+            click.echo(f"    {conv.id[:24]} [{conv.provider}] {title}")
+        if count > 5:
+            click.echo(f"    ... and {count - 5} more")
+
+    # Dry-run mode: show preview and exit
+    if dry_run:
+        click.echo(f"DRY-RUN: Would delete {count} conversation(s)")
+        _print_breakdown()
         return
 
     # Confirmation for bulk operations (>10 items)
     if count > 10 and not force:
-        env.ui.console.print(f"[red]About to DELETE {count} conversations[/red]")
-        env.ui.console.print("\nUse --force to skip this prompt, or --dry-run to preview.")
+        click.echo(f"About to DELETE {count} conversations:", err=True)
+        _print_breakdown()
+        click.echo("\nUse --force to skip this prompt, or --dry-run to preview.", err=True)
         raise SystemExit(1)
 
     # Individual confirmation if not bulk but not forced
-    if not force and not env.ui.confirm("Are you sure you want to delete these conversations?", default=False):
-        env.ui.console.print("Aborted.")
-        return
+    if not force:
+        click.echo(f"About to delete {count} conversation(s):")
+        _print_breakdown()
+        if not env.ui.confirm("Proceed?", default=False):
+            env.ui.console.print("Aborted.")
+            return
 
     # Load repository
     repo = get_repository()
@@ -345,7 +391,7 @@ def _delete_conversations(
         if repo.delete_conversation(str(conv.id)):
             deleted_count += 1
 
-    env.ui.console.print(f"[green]Deleted {deleted_count} conversation(s)[/green]")
+    click.echo(f"Deleted {deleted_count} conversation(s)")
 
 
 def _apply_transform(results: list[Conversation], transform: str) -> list[Conversation]:
@@ -403,6 +449,58 @@ def _output_stats(env: AppEnv, results: list[Conversation]) -> None:
     env.ui.console.print(f"Attachments: {attachments}")
     if date_range:
         env.ui.console.print(f"Date range: {date_range}")
+
+
+def _output_stats_by(env: AppEnv, results: list[Conversation], dimension: str) -> None:
+    """Output statistics grouped by a dimension."""
+    from collections import defaultdict
+
+    if not results:
+        env.ui.console.print("No conversations matched.")
+        return
+
+    groups: dict[str, list[Conversation]] = defaultdict(list)
+    for conv in results:
+        if dimension == "provider":
+            key = conv.provider or "unknown"
+        elif dimension == "month":
+            key = conv.updated_at.strftime("%Y-%m") if conv.updated_at else "unknown"
+        elif dimension == "year":
+            key = conv.updated_at.strftime("%Y") if conv.updated_at else "unknown"
+        elif dimension == "day":
+            key = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else "unknown"
+        else:
+            key = "all"
+        groups[key].append(conv)
+
+    # Sort groups: by date desc for temporal, alphabetically for provider
+    if dimension in {"month", "year", "day"}:
+        sorted_keys = sorted(groups.keys(), reverse=True)
+    else:
+        sorted_keys = sorted(groups.keys())
+
+    env.ui.console.print(f"\nMatched: {len(results)} conversations (by {dimension})\n")
+
+    # Header
+    click.echo(f"{'':2s}{'Group':<16s} {'Convs':>6s} {'Messages':>9s} {'Words':>10s}")
+    click.echo(f"{'':2s}{'-' * 16} {'-' * 6} {'-' * 9} {'-' * 10}")
+
+    total_convs = 0
+    total_msgs = 0
+    total_words = 0
+
+    for key in sorted_keys:
+        convs = groups[key]
+        n_convs = len(convs)
+        n_msgs = sum(len(c.messages) for c in convs)
+        n_words = sum(sum(m.word_count for m in c.messages) for c in convs)
+        click.echo(f"  {key:<16s} {n_convs:>6,d} {n_msgs:>9,d} {n_words:>10,d}")
+        total_convs += n_convs
+        total_msgs += n_msgs
+        total_words += n_words
+
+    click.echo(f"{'':2s}{'-' * 16} {'-' * 6} {'-' * 9} {'-' * 10}")
+    click.echo(f"  {'TOTAL':<16s} {total_convs:>6,d} {total_msgs:>9,d} {total_words:>10,d}")
 
 
 def _output_results(
@@ -466,9 +564,9 @@ def _format_list(
     if output_format == "json":
         return json.dumps([_conv_to_dict(c, fields) for c in results], indent=2)
     elif output_format == "yaml":
-        import yaml
+        import yaml  # type: ignore[import-untyped]
 
-        return yaml.dump([_conv_to_dict(c, fields) for c in results], default_flow_style=False, allow_unicode=True)
+        return str(yaml.dump([_conv_to_dict(c, fields) for c in results], default_flow_style=False, allow_unicode=True))
     elif output_format == "csv":
         return _conv_to_csv(results)
     else:
@@ -485,13 +583,20 @@ def _output_summary_list(
     env: AppEnv,
     summaries: list[ConversationSummary],
     params: dict[str, Any],
+    repo: ConversationRepository | None = None,
 ) -> None:
     """Output a list of conversation summaries (memory-efficient).
 
     This is the fast path for --list mode that doesn't load messages.
+    When a repo is provided, batch-fetches message counts for display.
     """
-
     output_format = params.get("output_format", "text")
+
+    # Batch-fetch message counts if repo available (single SQL query)
+    msg_counts: dict[str, int] = {}
+    if repo:
+        ids = [str(s.id) for s in summaries]
+        msg_counts = repo.backend.get_message_counts_batch(ids)
 
     if output_format == "json":
         data = [
@@ -502,6 +607,7 @@ def _output_summary_list(
                 "date": s.updated_at.isoformat() if s.updated_at else None,
                 "tags": s.tags,
                 "summary": s.summary,
+                "messages": msg_counts.get(str(s.id), 0),
             }
             for s in summaries
         ]
@@ -516,18 +622,19 @@ def _output_summary_list(
                 "title": s.display_title,
                 "date": s.updated_at.isoformat() if s.updated_at else None,
                 "tags": s.tags,
+                "messages": msg_counts.get(str(s.id), 0),
             }
             for s in summaries
         ]
         env.ui.console.print(yaml.dump(data, default_flow_style=False, allow_unicode=True))
     else:
-        # Plain text format (default)
+        # Plain text format (default) — now with message counts
         lines = []
         for s in summaries:
             date = s.updated_at.strftime("%Y-%m-%d") if s.updated_at else "unknown"
             title = s.display_title[:50] if s.display_title else str(s.id)[:20]
-            # Note: message count not available in summary - show "?" or skip
-            lines.append(f"{str(s.id)[:24]:24s}  {date:10s}  [{s.provider:12s}]  {title}")
+            count = msg_counts.get(str(s.id), 0)
+            lines.append(f"{str(s.id)[:24]:24s}  {date:10s}  [{s.provider:12s}]  {title} ({count} msgs)")
         env.ui.console.print("\n".join(lines))
 
 
@@ -594,42 +701,75 @@ def _conv_to_markdown(conv: Conversation) -> str:
 
 
 def _conv_to_html(conv: Conversation) -> str:
-    """Convert conversation to HTML."""
-    # Simple HTML template
+    """Convert conversation to HTML with Pygments syntax highlighting.
+
+    Uses the rendering subsystem's MarkdownRenderer for proper code highlighting
+    and the HTMLRenderer's styled template for polished output.
+    """
+    from html import escape as html_escape
+
+    from polylogue.rendering.renderers.html import MarkdownRenderer as HtmlMarkdownRenderer
+    from polylogue.rendering.renderers.html import PygmentsHighlighter
+
+    highlighter = PygmentsHighlighter(style="monokai")
+    md_renderer = HtmlMarkdownRenderer(highlighter)
+
     title = conv.display_title or conv.id
+    title_safe = html_escape(title)
     messages_html = []
     for msg in conv.messages:
-        role_class = f"message-{msg.role}"
-        text = (msg.text or "").replace("<", "&lt;").replace(">", "&gt;")
-        messages_html.append(f'<div class="{role_class}"><strong>{msg.role}:</strong><p>{text}</p></div>')
+        role = msg.role or "message"
+        role_safe = html_escape(role, quote=True)
+        # CSS class names: only allow lowercase alphanumeric and hyphens
+        role_class = "message-" + re.sub(r"[^a-z0-9-]", "-", role.lower())
+        html_content = md_renderer.render(msg.text or "")
+        messages_html.append(
+            f'<div class="{role_class}"><strong>{role_safe}:</strong>{html_content}</div>'
+        )
 
+    highlight_css = highlighter.get_css()
     return f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
-    <title>{title}</title>
+    <title>{title_safe} | Polylogue</title>
     <style>
-        body {{ font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }}
-        .message-user {{ background: #e3f2fd; padding: 10px; margin: 10px 0; border-radius: 8px; }}
-        .message-assistant {{ background: #f5f5f5; padding: 10px; margin: 10px 0; border-radius: 8px; }}
-        .message-system {{ background: #fff3e0; padding: 10px; margin: 10px 0; border-radius: 8px; }}
+        body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #0a0a0c; color: #f8f9fa; }}
+        h1 {{ border-bottom: 1px solid #2d2d35; padding-bottom: 12px; }}
+        .message-user {{ background: rgba(99, 102, 241, 0.1); border-left: 3px solid rgba(99, 102, 241, 0.5); padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}
+        .message-assistant {{ background: rgba(16, 185, 129, 0.1); border-left: 3px solid rgba(16, 185, 129, 0.5); padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}
+        .message-system {{ background: rgba(245, 158, 11, 0.1); border-left: 3px solid rgba(245, 158, 11, 0.5); padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}
+        .message-tool {{ background: rgba(139, 92, 246, 0.1); border-left: 3px solid rgba(139, 92, 246, 0.5); padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}
+        pre {{ background: #282c34; padding: 12px; border-radius: 6px; overflow-x: auto; }}
+        code {{ font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }}
+        strong {{ color: #94a3b8; text-transform: capitalize; }}
+        {highlight_css}
     </style>
 </head>
 <body>
-    <h1>{title}</h1>
+    <h1>{title_safe}</h1>
     {"".join(messages_html)}
 </body>
 </html>"""
 
 
+def _yaml_safe(value: str) -> str:
+    """Quote a YAML value if it contains special characters."""
+    if any(c in value for c in ":#{}[]|>&*!?@`'\",\n"):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
 def _conv_to_obsidian(conv: Conversation) -> str:
     """Convert conversation to Obsidian-compatible markdown with YAML frontmatter."""
+    tags_formatted = ", ".join(_yaml_safe(t) for t in conv.tags) if conv.tags else ""
     frontmatter = [
         "---",
-        f"id: {conv.id}",
-        f"provider: {conv.provider}",
+        f"id: {_yaml_safe(str(conv.id))}",
+        f"provider: {_yaml_safe(conv.provider)}",
         f"date: {conv.updated_at.isoformat() if conv.updated_at else 'unknown'}",
-        f"tags: [{', '.join(conv.tags)}]" if conv.tags else "tags: []",
+        f"tags: [{tags_formatted}]",
         "---",
         "",
     ]
@@ -681,7 +821,7 @@ def _conv_to_yaml(conv: Conversation, fields: str | None) -> str:
             for msg in conv.messages
         ]
 
-    return yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return str(yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False))
 
 
 def _conv_to_plaintext(conv: Conversation) -> str:
@@ -741,7 +881,7 @@ def stream_conversation(
     # Get conversation metadata for header
     conv_record = repo.backend.get_conversation(conversation_id)
     if not conv_record:
-        env.ui.console.print(f"[red]Conversation not found: {conversation_id}[/red]")
+        click.echo(f"Conversation not found: {conversation_id}", err=True)
         raise SystemExit(1)
 
     # Get stats for progress indication
@@ -800,8 +940,8 @@ def _write_message_streaming(msg: Message, output_format: str) -> None:
         output_format: Format - "plaintext", "markdown", or "json-lines"
     """
     if output_format == "plaintext":
-        # Simple format: [role] text
-        role_label = msg.role.upper() if msg.role else "UNKNOWN"
+        # Simple format: [ROLE] text
+        role_label = (msg.role or "unknown").upper().replace("[", "").replace("]", "")
         if msg.text:
             sys.stdout.write(f"[{role_label}]\n{msg.text}\n\n")
         sys.stdout.flush()
@@ -863,11 +1003,12 @@ def _open_in_browser(
 
     # Ensure HTML format for browser
     if output_format != "html":
-        if conv:
+        if conv:  # noqa: SIM108
             content = _conv_to_html(conv)
         else:
-            # Wrap plain content in HTML
-            content = f"<html><body><pre>{content}</pre></body></html>"
+            from html import escape as _html_escape
+
+            content = f"<html><body><pre>{_html_escape(content)}</pre></body></html>"
 
     # Write to temp file and open
     with tempfile.NamedTemporaryFile(
@@ -908,7 +1049,7 @@ def _copy_to_clipboard(env: AppEnv, content: str) -> None:
         except (subprocess.CalledProcessError, FileNotFoundError):
             continue
 
-    env.ui.console.print("[yellow]Could not copy to clipboard (no clipboard tool found).[/yellow]")
+    click.echo("Could not copy to clipboard (no clipboard tool found).", err=True)
 
 
 def _open_result(
@@ -929,7 +1070,8 @@ def _open_result(
 
     try:
         config = load_effective_config(env)
-    except Exception:
+    except Exception as exc:
+        LOGGER.debug("Config load failed, falling back to defaults: %s", exc)
         config = None
 
     render_root = None
@@ -944,8 +1086,8 @@ def _open_result(
             render_root = Path(render_root_env)
 
     if not render_root or not render_root.exists():
-        env.ui.console.print("[red]No rendered outputs found.[/red]")
-        env.ui.console.print("Run 'polylogue sync' first to render conversations.")
+        click.echo("No rendered outputs found.", err=True)
+        click.echo("Run 'polylogue sync' first to render conversations.", err=True)
         raise SystemExit(1)
 
     # Search for rendered file matching this conversation ID
@@ -966,8 +1108,8 @@ def _open_result(
         render_file = latest_render_path(render_root)
 
     if not render_file:
-        env.ui.console.print("[red]No rendered output found for this conversation.[/red]")
-        env.ui.console.print("Run 'polylogue sync' to render conversations.")
+        click.echo("No rendered output found for this conversation.", err=True)
+        click.echo("Run 'polylogue sync' to render conversations.", err=True)
         raise SystemExit(1)
 
     # Open in browser

@@ -20,6 +20,7 @@ from .store import (
 
 if TYPE_CHECKING:
     from polylogue.lib import filters
+    from polylogue.lib.stats import ArchiveStats
     from polylogue.protocols import VectorProvider
 
 logger = get_logger(__name__)
@@ -76,10 +77,7 @@ class ConversationRepository:
 
     def view(self, conversation_id: str) -> Conversation | None:
         """Get a conversation with ID resolution support."""
-        full_id = self.resolve_id(conversation_id)
-        if not full_id:
-            # Try as full ID if resolution fails
-            full_id = conversation_id
+        full_id = self.resolve_id(conversation_id) or conversation_id
         return self.get(full_id)
 
     def get_eager(self, conversation_id: str) -> Conversation | None:
@@ -93,19 +91,34 @@ class ConversationRepository:
 
         return Conversation.from_records(conv_record, msg_records, att_records)
 
+    def get_summary(self, conversation_id: str) -> ConversationSummary | None:
+        """Get a single conversation summary without loading messages."""
+        conv_record = self._backend.get_conversation(conversation_id)
+        if not conv_record:
+            return None
+        return ConversationSummary.from_record(conv_record)
+
     def list_summaries(
         self,
         limit: int = 50,
         offset: int = 0,
         provider: str | None = None,
+        providers: builtins.list[str] | None = None,
         source: str | None = None,
-    ) -> list[ConversationSummary]:
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+    ) -> builtins.list[ConversationSummary]:
         """List conversation summaries without loading messages."""
         conv_records = self._backend.list_conversations(
             source=source,
             provider=provider,
+            providers=providers,
             limit=limit,
             offset=offset,
+            since=since,
+            until=until,
+            title_contains=title_contains,
         )
         return [ConversationSummary.from_record(rec) for rec in conv_records]
 
@@ -114,15 +127,40 @@ class ConversationRepository:
         limit: int = 50,
         offset: int = 0,
         provider: str | None = None,
-    ) -> list[Conversation]:
+        providers: builtins.list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+    ) -> builtins.list[Conversation]:
         """List conversations with lazy message loading."""
         conv_records = self._backend.list_conversations(
             provider=provider,
+            providers=providers,
             limit=limit,
             offset=offset,
+            since=since,
+            until=until,
+            title_contains=title_contains,
         )
         source = RepositoryMessageSource(self._backend)
         return [Conversation.from_lazy(rec, source) for rec in conv_records]
+
+    def count(
+        self,
+        provider: str | None = None,
+        providers: builtins.list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+    ) -> int:
+        """Count conversations matching filters without loading data."""
+        return self._backend.count_conversations(
+            provider=provider,
+            providers=providers,
+            since=since,
+            until=until,
+            title_contains=title_contains,
+        )
 
     def get_parent(self, conversation_id: str) -> Conversation | None:
         """Get the parent conversation if it exists."""
@@ -131,7 +169,7 @@ class ConversationRepository:
             return self.get(str(conv.parent_id))
         return None
 
-    def get_children(self, conversation_id: str) -> list[Conversation]:
+    def get_children(self, conversation_id: str) -> builtins.list[Conversation]:
         """Get all direct children of this conversation."""
         child_records = self._backend.list_conversations(parent_id=conversation_id)
         source = RepositoryMessageSource(self._backend)
@@ -150,7 +188,7 @@ class ConversationRepository:
             current = parent
         return current
 
-    def get_session_tree(self, conversation_id: str) -> list[Conversation]:
+    def get_session_tree(self, conversation_id: str) -> builtins.list[Conversation]:
         """Get all conversations in the session tree."""
         root = self.get_root(conversation_id)
 
@@ -165,9 +203,11 @@ class ConversationRepository:
 
         return tree
 
-    def search_summaries(self, query: str, limit: int = 20) -> list[ConversationSummary]:
+    def search_summaries(
+        self, query: str, limit: int = 20, providers: builtins.list[str] | None = None
+    ) -> builtins.list[ConversationSummary]:
         """Search conversations and return summaries."""
-        ids = self._backend.search_conversations(query, limit=limit)
+        ids = self._backend.search_conversations(query, limit=limit, providers=providers)
         summaries = []
         for cid in ids:
             record = self._backend.get_conversation(cid)
@@ -175,21 +215,20 @@ class ConversationRepository:
                 summaries.append(ConversationSummary.from_record(record))
         return summaries
 
-    def search(self, query: str, limit: int = 20) -> builtins.list[Conversation]:
+    def search(
+        self, query: str, limit: int = 20, providers: builtins.list[str] | None = None
+    ) -> builtins.list[Conversation]:
         """Search conversations using full-text search."""
-        ids = self._backend.search_conversations(query, limit=limit)
+        ids = self._backend.search_conversations(query, limit=limit, providers=providers)
         return self._get_many(ids)
 
-    def _get_many(self, conversation_ids: list[str]) -> list[Conversation]:
-        """Bulk fetch lazy conversation objects."""
+    def _get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:
+        """Bulk fetch lazy conversation objects in a single SQL query."""
         if not conversation_ids:
             return []
-        results = []
-        for cid in conversation_ids:
-            conv = self.get(cid)
-            if conv is not None:
-                results.append(conv)
-        return results
+        records = self._backend.get_conversations_batch(conversation_ids)
+        source = RepositoryMessageSource(self._backend)
+        return [Conversation.from_lazy(rec, source) for rec in records]
 
     def get_conversation_stats(self, conversation_id: str) -> dict[str, int] | None:
         """Get message counts without loading messages."""
@@ -245,10 +284,12 @@ class ConversationRepository:
         return self._get_many(ranked_ids)
 
     def _get_message_conversation_mapping(self, message_ids: builtins.list[str]) -> dict[str, str]:
-        conn = self._backend._get_connection()
-        placeholders = ",".join("?" * len(message_ids))
-        query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
-        rows = conn.execute(query, message_ids).fetchall()
+        from polylogue.storage.backends.sqlite import open_connection
+
+        with open_connection(None) as conn:
+            placeholders = ",".join("?" * len(message_ids))
+            query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
+            rows = conn.execute(query, message_ids).fetchall()
         return {row["message_id"]: row["conversation_id"] for row in rows}
 
     def filter(self) -> filters.ConversationFilter:
@@ -263,8 +304,8 @@ class ConversationRepository:
         self,
         *,
         conversation: ConversationRecord,
-        messages: list[MessageRecord],
-        attachments: list[AttachmentRecord],
+        messages: builtins.list[MessageRecord],
+        attachments: builtins.list[AttachmentRecord],
     ) -> dict[str, int]:
         """Save a conversation with its messages and attachments atomically."""
         return self._save_via_backend(conversation, messages, attachments)
@@ -272,8 +313,8 @@ class ConversationRepository:
     def _save_via_backend(
         self,
         conversation: ConversationRecord,
-        messages: list[MessageRecord],
-        attachments: list[AttachmentRecord],
+        messages: builtins.list[MessageRecord],
+        attachments: builtins.list[AttachmentRecord],
     ) -> dict[str, int]:
         counts: dict[str, int] = {
             "conversations": 0,
@@ -364,6 +405,133 @@ class ConversationRepository:
     def delete_conversation(self, conversation_id: str) -> bool:
         with self._write_lock:
             return self._backend.delete_conversation(conversation_id)
+
+    # --- Vector Search Methods ---
+
+    def embed_conversation(
+        self,
+        conversation_id: str,
+        vector_provider: VectorProvider | None = None,
+    ) -> int:
+        """Generate and store embeddings for a conversation.
+
+        Args:
+            conversation_id: Conversation to embed
+            vector_provider: Optional vector provider (creates default if None)
+
+        Returns:
+            Number of messages embedded
+
+        Raises:
+            ValueError: If no vector provider available
+        """
+        if vector_provider is None:
+            from polylogue.storage.search_providers import create_vector_provider
+            vector_provider = create_vector_provider()
+
+        if vector_provider is None:
+            raise ValueError("No vector provider available. Set VOYAGE_API_KEY.")
+
+        messages = self._backend.get_messages(conversation_id)
+        if not messages:
+            return 0
+
+        vector_provider.upsert(conversation_id, messages)
+        return len(messages)
+
+    def similarity_search(
+        self,
+        query: str,
+        limit: int = 10,
+        vector_provider: VectorProvider | None = None,
+    ) -> builtins.list[tuple[str, str, float]]:
+        """Search conversations by semantic similarity.
+
+        Args:
+            query: Search query text
+            limit: Maximum results
+            vector_provider: Optional vector provider
+
+        Returns:
+            List of (conversation_id, message_id, distance) tuples
+        """
+        if vector_provider is None:
+            from polylogue.storage.search_providers import create_vector_provider
+            vector_provider = create_vector_provider()
+
+        if vector_provider is None:
+            raise ValueError("No vector provider configured")
+
+        results = vector_provider.query(query, limit=limit)
+        if not results:
+            return []
+
+        # Batch lookup conversation IDs (single query instead of N+1)
+        message_ids = [msg_id for msg_id, _ in results]
+        msg_to_conv = self._get_message_conversation_mapping(message_ids)
+
+        return [
+            (msg_to_conv[msg_id], msg_id, distance)
+            for msg_id, distance in results
+            if msg_id in msg_to_conv
+        ]
+
+    def get_archive_stats(self) -> ArchiveStats:
+        """Get comprehensive archive statistics.
+
+        Returns:
+            ArchiveStats with all metrics
+        """
+        from polylogue.lib.stats import ArchiveStats
+
+        conn = self._backend._get_connection()
+
+        conv_count = conn.execute(
+            "SELECT COUNT(*) FROM conversations"
+        ).fetchone()[0]
+
+        msg_count = conn.execute(
+            "SELECT COUNT(*) FROM messages"
+        ).fetchone()[0]
+
+        provider_rows = conn.execute(
+            """
+            SELECT provider_name, COUNT(*) as count
+            FROM conversations
+            GROUP BY provider_name
+            """
+        ).fetchall()
+        providers = {row["provider_name"]: row["count"] for row in provider_rows}
+
+        # Check embedding status if table exists
+        embedded_convs = 0
+        embedded_msgs = 0
+        try:
+            embedded_convs = conn.execute(
+                "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0"
+            ).fetchone()[0]
+            embedded_msgs = conn.execute(
+                "SELECT COUNT(*) FROM message_embeddings"
+            ).fetchone()[0]
+        except Exception as exc:
+            logger.debug("Embedding stats query failed: %s", exc)
+
+        # Get database size
+        db_size = 0
+        try:
+            import os
+            db_size = os.path.getsize(self._db_path) if self._db_path else 0
+        except Exception as exc:
+            logger.debug("DB size check failed: %s", exc)
+
+        return ArchiveStats(
+            total_conversations=conv_count,
+            total_messages=msg_count,
+            providers=providers,
+            embedded_conversations=embedded_convs,
+            embedded_messages=embedded_msgs,
+            db_size_bytes=db_size,
+        )
 
 
 def _records_to_conversation(

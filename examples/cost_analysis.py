@@ -100,7 +100,7 @@ def print_report(analysis: dict):
         # Top 5 most expensive conversations for this provider
         top_convs = sorted(convs, key=lambda x: x['cost'], reverse=True)[:5]
         if top_convs:
-            print(f"\n  Top 5 most expensive:")
+            print("\n  Top 5 most expensive:")
             for i, c in enumerate(top_convs, 1):
                 title = (c['title'][:40] + '...') if len(c['title']) > 40 else c['title']
                 cost_per_msg = c['cost'] / c['message_count'] if c['message_count'] > 0 else 0

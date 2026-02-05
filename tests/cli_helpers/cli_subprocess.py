@@ -11,7 +11,6 @@ ensuring complete isolation of module state.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from dataclasses import dataclass
@@ -59,9 +58,8 @@ def run_cli(
         "LC_ALL": "C.UTF-8",
         # Required for uv to work
         "UV_SYSTEM_PYTHON": "1",
-        # Disable Qdrant in tests
-        "QDRANT_URL": "",
-        "QDRANT_API_KEY": "",
+        # Disable vector search in tests (no Voyage API key)
+        "VOYAGE_API_KEY": "",
         # Use test-provided HOME if set via env, otherwise use system HOME
         "HOME": os.environ.get("HOME", "/tmp"),
     }
@@ -131,9 +129,8 @@ def setup_isolated_workspace(tmp_path: Path) -> dict[str, Any]:
         "XDG_STATE_HOME": str(state_dir),
         "XDG_CONFIG_HOME": str(config_dir),
         "XDG_CACHE_HOME": str(fake_home / ".cache"),
-        # Disable Qdrant for tests
-        "QDRANT_URL": "",
-        "QDRANT_API_KEY": "",
+        # Disable vector search in tests (no Voyage API key)
+        "VOYAGE_API_KEY": "",
     }
 
     paths = {

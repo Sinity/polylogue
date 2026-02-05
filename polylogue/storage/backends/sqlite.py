@@ -37,8 +37,10 @@ def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -
 
     Yields:
         An open sqlite3.Connection with Row factory and WAL mode enabled.
+        sqlite-vec extension is loaded if available.
     """
     if isinstance(db_path, sqlite3.Connection):
+        _load_sqlite_vec(db_path)
         yield db_path
         return
 
@@ -51,6 +53,8 @@ def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout = 30000")  # 30 seconds for lock contention
+        # Load sqlite-vec extension if available (optional for vector search)
+        _load_sqlite_vec(conn)
         # Ensure schema exists and is at current version
         _ensure_schema(conn)
         yield conn
@@ -63,7 +67,32 @@ open_connection = connection_context
 
 
 LOGGER = get_logger(__name__)
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
+
+
+def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
+    """Attempt to load sqlite-vec extension.
+
+    Returns True if loaded successfully, False otherwise.
+    The extension is optional - vector search is simply unavailable without it.
+    Silent on failure since this is called on every connection.
+
+    Note: enable_load_extension(True) is required before loading native SQLite
+    extensions. We re-disable it after loading for security (prevents untrusted
+    SQL from loading arbitrary extensions).
+    """
+    try:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        try:
+            sqlite_vec.load(conn)
+            return True
+        finally:
+            conn.enable_load_extension(False)
+    except ImportError:
+        return False
+    except Exception:
+        return False
 
 
 def create_default_backend() -> SQLiteBackend:
@@ -225,8 +254,64 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             INSERT OR IGNORE INTO messages_fts(rowid, message_id, conversation_id, content)
             VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
         END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF text ON messages
+        BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+            INSERT INTO messages_fts(rowid, message_id, conversation_id, content)
+            VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages
+        BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+        END;
+
+        -- v10: Embedding metadata table (always created)
+        CREATE TABLE IF NOT EXISTS embeddings_meta (
+            target_id TEXT PRIMARY KEY,
+            target_type TEXT NOT NULL CHECK (target_type IN ('message', 'conversation')),
+            model TEXT NOT NULL,
+            dimension INTEGER NOT NULL,
+            embedded_at TEXT NOT NULL,
+            content_hash TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_embeddings_meta_type
+        ON embeddings_meta(target_type);
+
+        -- v10: Embedding status tracking per conversation
+        CREATE TABLE IF NOT EXISTS embedding_status (
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_count_embedded INTEGER DEFAULT 0,
+            last_embedded_at TEXT,
+            needs_reindex INTEGER DEFAULT 1,
+            error_message TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_embedding_status_needs
+        ON embedding_status(needs_reindex) WHERE needs_reindex = 1;
         """
     )
+
+    # v10: Create vec0 table if sqlite-vec is available
+    vec_available = False
+    try:
+        conn.execute("SELECT vec_version()")
+        vec_available = True
+    except sqlite3.OperationalError:
+        pass
+
+    if vec_available:
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
+                message_id TEXT PRIMARY KEY,
+                embedding float[1024],
+                +provider_name TEXT,
+                +conversation_id TEXT
+            )
+        """)
+
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
 
@@ -508,6 +593,95 @@ def _migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE raw_conversations ADD COLUMN source_name TEXT")
 
 
+def _migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
+    """Migrate from v9 to v10: add sqlite-vec vector storage tables.
+
+    Creates:
+    - embeddings_meta: Tracks embedding provenance (model, dimension, timestamps)
+    - message_embeddings: vec0 virtual table for message-level embeddings (if sqlite-vec available)
+
+    The vec0 tables are only created if sqlite-vec extension is loaded.
+    Without the extension, the metadata table is still created but vector
+    search will be unavailable.
+    """
+    # Metadata table for embedding provenance (always created)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS embeddings_meta (
+            target_id TEXT PRIMARY KEY,
+            target_type TEXT NOT NULL CHECK (target_type IN ('message', 'conversation')),
+            model TEXT NOT NULL,
+            dimension INTEGER NOT NULL,
+            embedded_at TEXT NOT NULL,
+            content_hash TEXT
+        )
+    """)
+
+    # Check if sqlite-vec is available by trying to create a vec0 table
+    vec_available = False
+    try:
+        # Test if vec0 module is available
+        conn.execute("SELECT vec_version()")
+        vec_available = True
+    except sqlite3.OperationalError:
+        LOGGER.info("sqlite-vec not available, skipping vec0 table creation")
+
+    if vec_available:
+        # vec0 virtual table for message embeddings
+        # Using 1024 dimensions as default for voyage-4
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
+                message_id TEXT PRIMARY KEY,
+                embedding float[1024],
+                +provider_name TEXT,
+                +conversation_id TEXT
+            )
+        """)
+
+        # Index on conversation_id for filtering
+        # Note: vec0 tables handle their own indexing, but we add metadata for filtering
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_embeddings_meta_type
+            ON embeddings_meta(target_type)
+        """)
+
+    # Embedding status tracking per conversation
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS embedding_status (
+            conversation_id TEXT PRIMARY KEY REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+            message_count_embedded INTEGER DEFAULT 0,
+            last_embedded_at TEXT,
+            needs_reindex INTEGER DEFAULT 1,
+            error_message TEXT
+        )
+    """)
+
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_embedding_status_needs
+        ON embedding_status(needs_reindex) WHERE needs_reindex = 1
+    """)
+
+
+def _migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
+    """Migrate from v10 to v11: add FTS UPDATE/DELETE triggers.
+
+    Previously only INSERT trigger existed, so edited or deleted messages
+    remained searchable as ghost results.
+    """
+    conn.executescript("""
+        CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF text ON messages
+        BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+            INSERT INTO messages_fts(rowid, message_id, conversation_id, content)
+            VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages
+        BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+        END;
+    """)
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
@@ -518,6 +692,8 @@ _MIGRATIONS = {
     6: _migrate_v6_to_v7,
     7: _migrate_v7_to_v8,
     8: _migrate_v8_to_v9,
+    9: _migrate_v9_to_v10,
+    10: _migrate_v10_to_v11,
 }
 
 
@@ -598,6 +774,39 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     if current_version != SCHEMA_VERSION:
         raise DatabaseError(f"Unsupported DB schema version {current_version} (expected {SCHEMA_VERSION})")
 
+    # Ensure vec0 table exists if sqlite-vec is now available.
+    # This handles databases created when sqlite-vec couldn't load (e.g., before
+    # the enable_load_extension fix). The v10 migration would have skipped vec0
+    # creation, so we create it retroactively.
+    _ensure_vec0_table(conn)
+
+
+def _ensure_vec0_table(conn: sqlite3.Connection) -> None:
+    """Create vec0 table if sqlite-vec is available but table is missing.
+
+    This is idempotent and handles the case where the v10 migration ran
+    without sqlite-vec available (e.g., due to missing enable_load_extension).
+    """
+    try:
+        conn.execute("SELECT vec_version()")
+    except sqlite3.OperationalError:
+        return  # sqlite-vec not available, nothing to do
+
+    exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
+    ).fetchone()
+    if not exists:
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
+                message_id TEXT PRIMARY KEY,
+                embedding float[1024],
+                +provider_name TEXT,
+                +conversation_id TEXT
+            )
+        """)
+        conn.commit()
+        LOGGER.info("Created missing message_embeddings vec0 table")
+
 
 class SQLiteBackend:
     """SQLite storage backend implementation.
@@ -639,6 +848,7 @@ class SQLiteBackend:
         """Get or create thread-local database connection.
 
         Each thread gets its own connection for thread safety.
+        sqlite-vec extension is loaded if available.
         """
         # Check if this thread has a connection
         if not hasattr(self._local, "conn") or self._local.conn is None:
@@ -647,6 +857,8 @@ class SQLiteBackend:
             self._local.conn.execute("PRAGMA foreign_keys = ON")
             self._local.conn.execute("PRAGMA journal_mode=WAL;")
             self._local.conn.execute("PRAGMA busy_timeout = 30000")
+            # Load sqlite-vec extension if available (optional for vector search)
+            _load_sqlite_vec(self._local.conn)
             _ensure_schema(self._local.conn)
             self._local.transaction_depth = 0
         conn: sqlite3.Connection = self._local.conn
@@ -747,15 +959,75 @@ class SQLiteBackend:
             raw_id=row["raw_id"],
         )
 
+    def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]:
+        """Retrieve multiple conversations in a single query.
+
+        Preserves the order of input IDs.  Missing IDs are silently skipped.
+
+        Args:
+            ids: List of conversation IDs to fetch
+
+        Returns:
+            List of ConversationRecord objects in the order of input IDs
+        """
+        if not ids:
+            return []
+
+        import json
+
+        conn = self._get_connection()
+        placeholders = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            f"SELECT * FROM conversations WHERE conversation_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+
+        # Build lookup for order preservation
+        by_id = {}
+        for row in rows:
+            by_id[row["conversation_id"]] = ConversationRecord(
+                conversation_id=row["conversation_id"],
+                provider_name=row["provider_name"],
+                provider_conversation_id=row["provider_conversation_id"],
+                title=row["title"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                content_hash=row["content_hash"],
+                provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+                version=row["version"],
+                parent_conversation_id=row["parent_conversation_id"],
+                branch_type=row["branch_type"],
+                raw_id=row["raw_id"],
+            )
+
+        return [by_id[cid] for cid in ids if cid in by_id]
+
     def list_conversations(
         self,
         source: str | None = None,
         provider: str | None = None,
+        providers: list[str] | None = None,
         parent_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list[ConversationRecord]:
-        """List all conversations with optional filtering and pagination."""
+        """List conversations with optional filtering and pagination.
+
+        Args:
+            source: Filter by source name
+            provider: Filter by single provider name (for backwards compat)
+            providers: Filter by multiple provider names (OR match, also matches source_name)
+            parent_id: Filter by parent conversation ID
+            since: Filter to conversations updated on/after this ISO date string
+            until: Filter to conversations updated on/before this ISO date string
+            title_contains: Filter to conversations whose title contains this text (case-insensitive)
+            limit: Maximum number of records to return
+            offset: Number of records to skip
+        """
         conn = self._get_connection()
 
         # Build query with filters
@@ -770,9 +1042,29 @@ class SQLiteBackend:
             where_clauses.append("provider_name = ?")
             params.append(provider)
 
+        if providers:
+            placeholders = ",".join("?" for _ in providers)
+            where_clauses.append(
+                f"(provider_name IN ({placeholders}) OR source_name IN ({placeholders}))"
+            )
+            params.extend(providers)
+            params.extend(providers)
+
         if parent_id is not None:
             where_clauses.append("parent_conversation_id = ?")
             params.append(parent_id)
+
+        if since is not None:
+            where_clauses.append("updated_at >= ?")
+            params.append(since)
+
+        if until is not None:
+            where_clauses.append("updated_at <= ?")
+            params.append(until)
+
+        if title_contains is not None:
+            where_clauses.append("title LIKE ?")
+            params.append(f"%{title_contains}%")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
@@ -816,6 +1108,54 @@ class SQLiteBackend:
             )
             for row in rows
         ]
+
+    def count_conversations(
+        self,
+        source: str | None = None,
+        provider: str | None = None,
+        providers: list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+    ) -> int:
+        """Count conversations matching filters without loading records.
+
+        Accepts the same filter params as list_conversations but returns
+        just the count via COUNT(*) for maximum efficiency.
+        """
+        conn = self._get_connection()
+        where_clauses = []
+        params: list[str | int] = []
+
+        if source is not None:
+            where_clauses.append("source_name = ?")
+            params.append(source)
+        if provider is not None:
+            where_clauses.append("provider_name = ?")
+            params.append(provider)
+        if providers:
+            placeholders = ",".join("?" for _ in providers)
+            where_clauses.append(
+                f"(provider_name IN ({placeholders}) OR source_name IN ({placeholders}))"
+            )
+            params.extend(providers)
+            params.extend(providers)
+        if since is not None:
+            where_clauses.append("updated_at >= ?")
+            params.append(since)
+        if until is not None:
+            where_clauses.append("updated_at <= ?")
+            params.append(until)
+        if title_contains is not None:
+            where_clauses.append("title LIKE ?")
+            params.append(f"%{title_contains}%")
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        row = conn.execute(
+            f"SELECT COUNT(*) as cnt FROM conversations {where_sql}",
+            tuple(params),
+        ).fetchone()
+        return int(row["cnt"])
 
     def save_conversation(self, record: ConversationRecord) -> None:
         """Persist a conversation record with upsert semantics.
@@ -1165,16 +1505,25 @@ class SQLiteBackend:
 
         return None  # No match or ambiguous
 
-    def search_conversations(self, query: str, limit: int = 100) -> list[str]:
-        """Search conversations using full-text search.
+    def search_conversations(
+        self, query: str, limit: int = 100, providers: list[str] | None = None
+    ) -> list[str]:
+        """Search conversations using full-text search with BM25 ranking.
+
+        Escapes user input for safe FTS5 MATCH, then ranks results using
+        BM25 (via FTS5's built-in rank function). Results are grouped by
+        conversation with the best matching message determining position.
 
         Args:
-            query: Search query string (FTS5 syntax)
+            query: Raw search query string (will be escaped for FTS5)
             limit: Maximum number of conversation IDs to return
+            providers: Optional list of provider names to filter by
 
         Returns:
             List of conversation IDs matching the query, ordered by relevance
         """
+        from polylogue.storage.search import escape_fts5_query
+
         conn = self._get_connection()
 
         # Check if FTS table exists before querying
@@ -1183,15 +1532,34 @@ class SQLiteBackend:
         if not exists:
             raise DatabaseError("Search index not built. Run indexing first or use a different backend.")
 
-        rows = conn.execute(
-            """
-            SELECT DISTINCT conversation_id
-            FROM messages_fts
-            WHERE messages_fts MATCH ?
-            LIMIT ?
-            """,
-            (query, limit),
-        ).fetchall()
+        fts_query = escape_fts5_query(query)
+        if not fts_query:
+            return []
+
+        if providers:
+            placeholders = ",".join("?" for _ in providers)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT messages_fts.conversation_id
+                FROM messages_fts
+                JOIN conversations ON conversations.conversation_id = messages_fts.conversation_id
+                WHERE messages_fts MATCH ?
+                  AND (conversations.provider_name IN ({placeholders})
+                       OR conversations.source_name IN ({placeholders}))
+                LIMIT ?
+                """,
+                (fts_query, *providers, *providers, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT conversation_id
+                FROM messages_fts
+                WHERE messages_fts MATCH ?
+                LIMIT ?
+                """,
+                (fts_query, limit),
+            ).fetchall()
 
         return [str(row["conversation_id"]) for row in rows]
 
@@ -1306,26 +1674,22 @@ class SQLiteBackend:
         if not exists:
             return False
 
-        # Clean up FTS index entries (if FTS table exists)
-        fts_exists = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-        ).fetchone()
-        if fts_exists:
+        # FTS cleanup is handled automatically by the messages_fts_delete trigger
+        # (added in schema v11) when CASCADE deletes the messages.
+        try:
+            # Delete conversation (CASCADE handles messages + FTS automatically)
             conn.execute(
-                "DELETE FROM messages_fts WHERE conversation_id = ?",
+                "DELETE FROM conversations WHERE conversation_id = ?",
                 (conversation_id,),
             )
 
-        # Delete conversation (CASCADE handles messages automatically)
-        conn.execute(
-            "DELETE FROM conversations WHERE conversation_id = ?",
-            (conversation_id,),
-        )
+            # Clean up orphaned attachments (ref_count <= 0)
+            conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
 
-        # Clean up orphaned attachments (ref_count <= 0)
-        conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
-
-        conn.commit()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         return True
 
     def iter_messages(
@@ -1620,7 +1984,7 @@ class SQLiteBackend:
         else:
             row = conn.execute("SELECT COUNT(*) as cnt FROM raw_conversations").fetchone()
 
-        return row["cnt"]
+        return int(row["cnt"])
 
 
 __all__ = ["SQLiteBackend", "DatabaseError", "default_db_path"]

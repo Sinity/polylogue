@@ -14,17 +14,15 @@ import json
 import os
 import sqlite3
 from collections import Counter
-from pathlib import Path
 
 import pytest
 
+from polylogue.lib.viewports import ToolCategory
 from polylogue.schemas.unified import (
     HarmonizedMessage,
     extract_from_provider_meta,
     is_message_record,
 )
-from polylogue.lib.viewports import ToolCategory
-
 
 # Default to sparse testing; 0 means exhaustive
 DEFAULT_SAMPLES = 100
@@ -115,7 +113,7 @@ class TestExtractionValidation:
             conn.close()
             pytest.skip(f"No {provider} messages in seeded database")
 
-        total = get_provider_message_count(conn, provider)
+        get_provider_message_count(conn, provider)
         conn.close()
 
         extracted = 0
@@ -161,7 +159,7 @@ class TestViewportValidation:
         category_counts = Counter()
         invalid_tools = []
 
-        for msg_id, pm in messages:
+        for _msg_id, pm in messages:
             raw = pm.get("raw", pm)
             if not is_message_record("claude-code", raw):
                 continue
@@ -187,7 +185,7 @@ class TestViewportValidation:
             trace_count = 0
             empty_traces = 0
 
-            for msg_id, pm in messages:
+            for _msg_id, pm in messages:
                 raw = pm.get("raw", pm)
                 if not is_message_record(provider, raw):
                     continue
@@ -241,7 +239,7 @@ class TestDataIntegrity:
         # This is informational - seeded data may have missing raw
         if issues:
             import warnings
-            warnings.warn(f"Data integrity notes: {issues}")
+            warnings.warn(f"Data integrity notes: {issues}", stacklevel=2)
 
     def test_provider_coverage(self, seeded_db):
         """Report provider coverage in database."""
@@ -281,7 +279,7 @@ class TestRegeneration:
         for provider in ["claude-code", "chatgpt", "codex"]:
             messages = iter_provider_messages(conn, provider, limit=10)
 
-            for msg_id, pm in messages:
+            for _msg_id, pm in messages:
                 raw = pm.get("raw")
                 if not raw:
                     continue
@@ -355,9 +353,9 @@ class TestRawConversationParsing:
         2. Testing ALL stored conversations (not cherry-picked examples)
         3. Ensuring parsers work on edge cases naturally in the data
         """
-        from polylogue.importers.chatgpt import parse as chatgpt_parse
-        from polylogue.importers.claude import parse_code as claude_code_parse
-        from polylogue.importers.codex import parse as codex_parse
+        from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
+        from polylogue.sources.parsers.claude import parse_code as claude_code_parse
+        from polylogue.sources.parsers.codex import parse as codex_parse
 
         conn = sqlite3.connect(seeded_db)
         limit = get_sample_limit()
@@ -373,7 +371,7 @@ class TestRawConversationParsing:
         parsed_count = 0
         errors = []
 
-        for raw_id, raw_content, source_path in raw_convos:
+        for raw_id, raw_content, _source_path in raw_convos:
             try:
                 data = json.loads(raw_content)
 
@@ -419,9 +417,9 @@ class TestRawConversationParsing:
         This validates that parsers produce well-formed ParsedMessage objects,
         not just that they don't crash.
         """
-        from polylogue.importers.chatgpt import parse as chatgpt_parse
-        from polylogue.importers.claude import parse_code as claude_code_parse
-        from polylogue.importers.codex import parse as codex_parse
+        from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
+        from polylogue.sources.parsers.claude import parse_code as claude_code_parse
+        from polylogue.sources.parsers.codex import parse as codex_parse
 
         conn = sqlite3.connect(seeded_db)
         limit = get_sample_limit()
@@ -519,4 +517,4 @@ class TestRawConversationCoverage:
 
         if link_pct < 50:
             import warnings
-            warnings.warn(f"Only {link_pct:.1f}% of conversations have raw_id links")
+            warnings.warn(f"Only {link_pct:.1f}% of conversations have raw_id links", stacklevel=2)

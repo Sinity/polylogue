@@ -28,12 +28,11 @@ Example:
 
 # High-level API
 # Core types for library users
-from polylogue.config import Source
 from polylogue.async_facade import AsyncPolylogue
-from polylogue.facade import ArchiveStats, Polylogue
+from polylogue.facade import Polylogue
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, Message
-from polylogue.storage.search import SearchHit, SearchResult
+from polylogue.storage.search import SearchResult
 
 
 def __getattr__(name: str) -> object:
@@ -45,26 +44,10 @@ def __getattr__(name: str) -> object:
 
 
 __all__ = [
-    # Main facade
-    "Polylogue",
     "AsyncPolylogue",
-    "ArchiveStats",
-    # Configuration
-    "Source",
-    # Data access
-    "ConversationFilter",
-    "ConversationRepository",
     "Conversation",
+    "ConversationFilter",
     "Message",
-    # Search
+    "Polylogue",
     "SearchResult",
-    "SearchHit",
 ]
-
-# Note: The following modules remain available as submodules:
-# - polylogue.paths (XDG paths and configuration)
-# - polylogue.storage (database and storage)
-# - polylogue.pipeline.runner (pipeline runner)
-# - polylogue.render (rendering)
-# - polylogue.storage.search (search)
-# - polylogue.types (type definitions)

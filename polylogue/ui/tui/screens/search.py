@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from rich.markdown import Markdown
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import DataTable, Input, Markdown as MarkdownWidget
+from textual.widgets import DataTable, Input
+from textual.widgets import Markdown as MarkdownWidget
 
 from polylogue.config import Config
 from polylogue.services import get_repository
@@ -38,10 +38,14 @@ class Search(Container):
         repo = get_repository()
 
         # Perform search
-        summaries = repo.search_summaries(query, limit=50)
-
         table = self.query_one("#search-results", DataTable)
         table.clear()
+
+        try:
+            summaries = repo.search_summaries(query, limit=50)
+        except Exception:
+            table.add_row("—", "—", "Search index not built. Run: polylogue run", "")
+            return
 
         for s in summaries:
             table.add_row(
@@ -57,7 +61,7 @@ class Search(Container):
         if not message.row_key:
             return
 
-        conv_id = message.row_key.value
+        conv_id = str(message.row_key.value)
         self.load_conversation(conv_id)
 
     def load_conversation(self, conversation_id: str) -> None:
@@ -69,7 +73,7 @@ class Search(Container):
             self.query_one("#search-viewer", MarkdownWidget).update(f"Error: Could not load {conversation_id}")
             return
 
-        md_lines = [f"# {conv.title or 'Untitled'}", f"*{conv.timestamp}*", ""]
+        md_lines = [f"# {conv.title or 'Untitled'}", f"*{conv.created_at}*", ""]
 
         for msg in conv.messages:
             role_icon = "👤" if msg.role == "user" else "🤖"

@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-from typing import Any
-
-from rich.markdown import Markdown
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, VerticalScroll
-from textual.widgets import Markdown as MarkdownWidget, Tree
-from textual.widgets.tree import TreeNode
+from textual.widgets import Markdown as MarkdownWidget
+from textual.widgets import Tree
 
 from polylogue.config import Config
-from polylogue.lib.models import Conversation
 from polylogue.services import get_repository
 
 
@@ -27,7 +23,7 @@ class Browser(Container):
                 yield MarkdownWidget(id="markdown-viewer")
 
     def on_mount(self) -> None:
-        self.run_worker(self.load_tree())
+        self.run_worker(self.load_tree(), thread=True)
 
     async def load_tree(self) -> None:
         """Load sources and conversations into the tree."""
@@ -36,18 +32,17 @@ class Browser(Container):
 
         repo = get_repository()
 
-        # Group by Source (e.g. "chatgpt", "claude")
-        # In Polylogue v2, sources are defined in config.
-        # We can iterate configured sources and fetch conversations for each.
+        # Query distinct providers from the database
+        from polylogue.storage.backends.sqlite import connection_context
 
-        # Note: We might want to list *all* providers found in DB too,
-        # but starting with config sources is safer.
+        with connection_context(None) as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT provider_name FROM conversations ORDER BY provider_name"
+            ).fetchall()
+        providers = [row["provider_name"] for row in rows if row["provider_name"]]
 
-        # Identify distinct providers from DB would be better but let's stick to
-        # listing "Recent" or grouping by Provider for now.
-
-        # Let's try listing by Provider since that's a primary concept.
-        providers = ["chatgpt", "claude", "gemini", "codex", "test", "other"]
+        if not providers:
+            providers = ["chatgpt", "claude"]  # Fallback for empty DB
 
         for provider in providers:
             provider_node = tree.root.add(provider.capitalize(), expand=False)
@@ -59,10 +54,10 @@ class Browser(Container):
                 # Store ID in data for retrieval
                 provider_node.add_leaf(label, data=summary.id)
 
-    async def on_tree_node_selected(self, message: Tree.NodeSelected) -> None:
+    async def on_tree_node_selected(self, message: Tree.NodeSelected[str]) -> None:
         """Handle tree node selection."""
         if not message.node.allow_expand and message.node.data:
-            conv_id = message.node.data
+            conv_id = str(message.node.data)
             self.load_conversation(conv_id)
 
     def load_conversation(self, conversation_id: str) -> None:
@@ -78,7 +73,7 @@ class Browser(Container):
         # We can use our existing render logic or just simple dump for now.
         # A simple formatting:
 
-        md_lines = [f"# {conv.title or 'Untitled'}", f"*{conv.timestamp}*", ""]
+        md_lines = [f"# {conv.title or 'Untitled'}", f"*{conv.created_at}*", ""]
 
         for msg in conv.messages:
             role_icon = "👤" if msg.role == "user" else "🤖"
