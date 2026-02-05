@@ -38,14 +38,20 @@ from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message, Role
 from polylogue.lib.projections import ConversationProjection
-from polylogue.lib.repository import ConversationRepository
+
+
+def __getattr__(name: str) -> object:
+    if name == "ConversationRepository":
+        from polylogue.storage.repository import ConversationRepository
+
+        return ConversationRepository
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "Attachment",
     "Conversation",
     "ConversationFilter",
-    "ConversationProjection",
-    "ConversationRepository",
     "DialoguePair",
     "Message",
     "MessageCollection",
