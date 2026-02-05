@@ -347,7 +347,7 @@ Storage uses `SQLiteBackend` directly (single backend, no protocol abstraction).
 | "Content hash mismatch" | NFC normalization changed — check `lib/hashing.py` |
 | "FTS syntax error" | Unescaped query — use `escape_fts5_query()` |
 | "Thinking not detected" | Missing content_blocks — check parser in `sources/parsers/` |
-| "Config not reflected" | Env vars override — `polylogue config show` |
+| "Config not reflected" | Env vars override — check `polylogue run --preview` |
 
 ---
 
