@@ -2,7 +2,7 @@
 
 Only protocols with 2+ implementations earn their existence here:
 - SearchProvider: FTS5, Hybrid
-- VectorProvider: Qdrant (genuinely optional)
+- VectorProvider: sqlite-vec (optional, requires VOYAGE_API_KEY)
 - OutputRenderer: Markdown, HTML
 """
 
@@ -29,7 +29,8 @@ class SearchProvider(Protocol):
 class VectorProvider(Protocol):
     """Vector search provider for semantic similarity.
 
-    Implementations: Qdrant + Voyage AI (polylogue.storage.index_qdrant)
+    Implementations: SqliteVecProvider (polylogue.storage.search_providers.sqlite_vec)
+    Uses Voyage AI embeddings stored in sqlite-vec.
     """
 
     def upsert(self, conversation_id: str, messages: list[MessageRecord]) -> None: ...

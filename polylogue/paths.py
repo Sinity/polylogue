@@ -89,20 +89,24 @@ class IndexConfig:
     """Search and vector indexing configuration (from env vars)."""
 
     fts_enabled: bool = True
-    qdrant_url: str | None = None
-    qdrant_api_key: str | None = None
     voyage_api_key: str | None = None
+    voyage_model: str = "voyage-4"
+    voyage_dimension: int | None = None  # None = use model default (1024 for voyage-4)
+    auto_embed: bool = False
 
     @classmethod
     def from_env(cls) -> IndexConfig:
         """Load IndexConfig from environment variables."""
+        dimension_str = os.environ.get("POLYLOGUE_VOYAGE_DIMENSION")
+        dimension = int(dimension_str) if dimension_str else None
+
         return cls(
             fts_enabled=True,
-            qdrant_url=os.environ.get("POLYLOGUE_QDRANT_URL") or os.environ.get("QDRANT_URL"),
-            qdrant_api_key=os.environ.get("POLYLOGUE_QDRANT_API_KEY")
-            or os.environ.get("QDRANT_API_KEY"),
             voyage_api_key=os.environ.get("POLYLOGUE_VOYAGE_API_KEY")
             or os.environ.get("VOYAGE_API_KEY"),
+            voyage_model=os.environ.get("POLYLOGUE_VOYAGE_MODEL", "voyage-4"),
+            voyage_dimension=dimension,
+            auto_embed=os.environ.get("POLYLOGUE_AUTO_EMBED", "").lower() in ("1", "true"),
         )
 
 

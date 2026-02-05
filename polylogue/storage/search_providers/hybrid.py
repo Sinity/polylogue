@@ -1,7 +1,7 @@
 """Hybrid search provider combining FTS5 and vector search with RRF fusion.
 
 This module provides a SearchProvider implementation that combines full-text
-search (FTS5) with semantic vector search (Qdrant) using Reciprocal Rank Fusion.
+search (FTS5) with semantic vector search (sqlite-vec) using Reciprocal Rank Fusion.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ class HybridSearchProvider:
     """SearchProvider combining FTS5 and vector search with RRF fusion.
 
     This provider executes both full-text search (FTS5) and semantic vector
-    search (Qdrant) in parallel, then combines results using Reciprocal Rank
+    search (sqlite-vec) in parallel, then combines results using Reciprocal Rank
     Fusion to produce a unified ranking.
 
     Hybrid search leverages the complementary strengths of both approaches:
@@ -70,7 +70,7 @@ class HybridSearchProvider:
 
     Attributes:
         fts_provider: FTS5 provider for full-text search
-        vector_provider: Qdrant provider for semantic search
+        vector_provider: Vector provider for semantic search (SqliteVecProvider)
         rrf_k: RRF constant (default: 60)
     """
 
@@ -85,7 +85,7 @@ class HybridSearchProvider:
 
         Args:
             fts_provider: FTS5 provider for full-text search
-            vector_provider: Qdrant provider for semantic search
+            vector_provider: Vector provider for semantic search
             rrf_k: RRF fusion constant (default: 60)
         """
         self.fts_provider = fts_provider

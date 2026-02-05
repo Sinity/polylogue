@@ -49,10 +49,15 @@ def __getattr__(name: str) -> object:
         from polylogue.lib.projections import ConversationProjection
 
         return ConversationProjection
+    if name == "ArchiveStats":
+        from polylogue.lib.stats import ArchiveStats
+
+        return ArchiveStats
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
+    "ArchiveStats",
     "Attachment",
     "Conversation",
     "ConversationFilter",

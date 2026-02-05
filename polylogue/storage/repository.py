@@ -20,6 +20,7 @@ from .store import (
 
 if TYPE_CHECKING:
     from polylogue.lib import filters
+    from polylogue.lib.stats import ArchiveStats
     from polylogue.protocols import VectorProvider
 
 logger = get_logger(__name__)
@@ -361,6 +362,135 @@ class ConversationRepository:
     def delete_conversation(self, conversation_id: str) -> bool:
         with self._write_lock:
             return self._backend.delete_conversation(conversation_id)
+
+    # --- Vector Search Methods ---
+
+    def embed_conversation(
+        self,
+        conversation_id: str,
+        vector_provider: VectorProvider | None = None,
+    ) -> int:
+        """Generate and store embeddings for a conversation.
+
+        Args:
+            conversation_id: Conversation to embed
+            vector_provider: Optional vector provider (creates default if None)
+
+        Returns:
+            Number of messages embedded
+
+        Raises:
+            ValueError: If no vector provider available
+        """
+        if vector_provider is None:
+            from polylogue.storage.search_providers import create_vector_provider
+            vector_provider = create_vector_provider()
+
+        if vector_provider is None:
+            raise ValueError("No vector provider available. Set VOYAGE_API_KEY.")
+
+        messages = self._backend.get_messages(conversation_id)
+        if not messages:
+            return 0
+
+        vector_provider.upsert(conversation_id, messages)
+        return len(messages)
+
+    def similarity_search(
+        self,
+        query: str,
+        limit: int = 10,
+        vector_provider: VectorProvider | None = None,
+    ) -> builtins.list[tuple[str, str, float]]:
+        """Search conversations by semantic similarity.
+
+        Args:
+            query: Search query text
+            limit: Maximum results
+            vector_provider: Optional vector provider
+
+        Returns:
+            List of (conversation_id, message_id, distance) tuples
+        """
+        if vector_provider is None:
+            from polylogue.storage.search_providers import create_vector_provider
+            vector_provider = create_vector_provider()
+
+        if vector_provider is None:
+            raise ValueError("No vector provider configured")
+
+        results = vector_provider.query(query, limit=limit)
+
+        # Enrich with conversation IDs
+        enriched: builtins.list[tuple[str, str, float]] = []
+        for message_id, distance in results:
+            # Look up conversation ID
+            conn = self._backend._get_connection()
+            row = conn.execute(
+                "SELECT conversation_id FROM messages WHERE message_id = ?",
+                (message_id,),
+            ).fetchone()
+            if row:
+                enriched.append((row["conversation_id"], message_id, distance))
+
+        return enriched
+
+    def get_archive_stats(self) -> "ArchiveStats":
+        """Get comprehensive archive statistics.
+
+        Returns:
+            ArchiveStats with all metrics
+        """
+        from polylogue.lib.stats import ArchiveStats
+
+        conn = self._backend._get_connection()
+
+        conv_count = conn.execute(
+            "SELECT COUNT(*) FROM conversations"
+        ).fetchone()[0]
+
+        msg_count = conn.execute(
+            "SELECT COUNT(*) FROM messages"
+        ).fetchone()[0]
+
+        provider_rows = conn.execute(
+            """
+            SELECT provider_name, COUNT(*) as count
+            FROM conversations
+            GROUP BY provider_name
+            """
+        ).fetchall()
+        providers = {row["provider_name"]: row["count"] for row in provider_rows}
+
+        # Check embedding status if table exists
+        embedded_convs = 0
+        embedded_msgs = 0
+        try:
+            embedded_convs = conn.execute(
+                "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0"
+            ).fetchone()[0]
+            embedded_msgs = conn.execute(
+                "SELECT COUNT(*) FROM message_embeddings"
+            ).fetchone()[0]
+        except Exception:
+            pass
+
+        # Get database size
+        db_size = 0
+        try:
+            import os
+            db_size = os.path.getsize(self._db_path) if self._db_path else 0
+        except Exception:
+            pass
+
+        return ArchiveStats(
+            total_conversations=conv_count,
+            total_messages=msg_count,
+            providers=providers,
+            embedded_conversations=embedded_convs,
+            embedded_messages=embedded_msgs,
+            db_size_bytes=db_size,
+        )
 
 
 def _records_to_conversation(

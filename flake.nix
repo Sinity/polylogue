@@ -59,7 +59,7 @@
             markdown-it-py
             pygments
             ijson
-            qdrant-client
+            sqlite-vec
             questionary
             click
             tenacity
@@ -138,7 +138,7 @@
               ${pkgs.uv}/bin/uv venv
               source .venv/bin/activate
               ${pkgs.uv}/bin/uv pip install -e ".[dev]"
-              pytest -q --ignore=tests/test_qdrant.py
+              pytest -q
               touch $out
             '';
       }

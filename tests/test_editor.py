@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -15,7 +14,6 @@ from polylogue.cli.editor import (
     open_in_editor,
     validate_command,
 )
-
 
 # --- validate_command ---
 

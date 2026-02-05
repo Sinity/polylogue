@@ -13,16 +13,6 @@ from .store import (
 )
 
 
-# Qdrant vector index module - lazy import to avoid loading heavy dependencies
-def __getattr__(name: str) -> object:
-    """Lazy import for Qdrant-related exports to avoid loading heavy dependencies."""
-    if name in ("QdrantError", "VectorStore", "get_embeddings", "update_qdrant_for_conversations"):
-        from . import index_qdrant
-
-        return getattr(index_qdrant, name)
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 __all__ = [
     "AttachmentRecord",
     "ConversationRecord",
