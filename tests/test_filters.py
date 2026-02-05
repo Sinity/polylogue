@@ -5,54 +5,40 @@ from __future__ import annotations
 import pytest
 
 from polylogue.lib.filters import ConversationFilter
-from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.repository import ConversationRepository
-from tests.factories import DbFactory
+from tests.helpers import ConversationBuilder
 
 
 @pytest.fixture
 def filter_db(tmp_path):
     """Create database with test conversations for filter tests."""
     db_path = tmp_path / "filter_test.db"
-    factory = DbFactory(db_path)
 
-    # Create conversations with different providers, tags, dates
-    factory.create_conversation(
-        id="claude-1",
-        provider="claude",
-        title="Python Error Handling",
-        messages=[
-            {"id": "m1", "role": "user", "text": "How do I handle errors in Python?"},
-            {"id": "m2", "role": "assistant", "text": "You can use try-except blocks."},
-        ],
-        metadata={"tags": ["python", "errors"]},
-    )
+    (ConversationBuilder(db_path, "claude-1")
+     .provider("claude")
+     .title("Python Error Handling")
+     .add_message("m1", role="user", text="How do I handle errors in Python?")
+     .add_message("m2", role="assistant", text="You can use try-except blocks.")
+     .metadata({"tags": ["python", "errors"]})
+     .save())
 
-    factory.create_conversation(
-        id="chatgpt-1",
-        provider="chatgpt",
-        title="JavaScript Async",
-        messages=[
-            {"id": "m3", "role": "user", "text": "How do async functions work?"},
-            {"id": "m4", "role": "assistant", "text": "Async functions return promises."},
-        ],
-        metadata={"tags": ["javascript"]},
-    )
+    (ConversationBuilder(db_path, "chatgpt-1")
+     .provider("chatgpt")
+     .title("JavaScript Async")
+     .add_message("m3", role="user", text="How do async functions work?")
+     .add_message("m4", role="assistant", text="Async functions return promises.")
+     .metadata({"tags": ["javascript"]})
+     .save())
 
-    factory.create_conversation(
-        id="claude-2",
-        provider="claude",
-        title="Database Design",
-        messages=[
-            {"id": "m5", "role": "user", "text": "How to design a database schema?"},
-            {"id": "m6", "role": "assistant", "text": "Start with identifying entities."},
-        ],
-        metadata={"tags": ["database", "design"]},
-    )
-
-    # Build FTS index
-    from polylogue.storage.backends.sqlite import open_connection
+    (ConversationBuilder(db_path, "claude-2")
+     .provider("claude")
+     .title("Database Design")
+     .add_message("m5", role="user", text="How to design a database schema?")
+     .add_message("m6", role="assistant", text="Start with identifying entities.")
+     .metadata({"tags": ["database", "design"]})
+     .save())
 
     with open_connection(db_path) as conn:
         rebuild_index(conn)
