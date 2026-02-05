@@ -8,8 +8,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from polylogue.core.json import dumps as json_dumps
-from polylogue.core.log import get_logger
+from polylogue.lib.json import dumps as json_dumps
+from polylogue.lib.log import get_logger
 from polylogue.paths import DATA_HOME
 from polylogue.storage.store import (
     AttachmentRecord,
@@ -213,6 +213,18 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_conversations_raw_id
         ON conversations(raw_id) WHERE raw_id IS NOT NULL;
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+            message_id UNINDEXED,
+            conversation_id UNINDEXED,
+            content
+        );
+
+        CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages
+        BEGIN
+            INSERT OR IGNORE INTO messages_fts(rowid, message_id, conversation_id, content)
+            VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
+        END;
         """
     )
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -477,9 +489,7 @@ def _migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
     )
 
     # Add raw_id to conversations (FK to raw_conversations)
-    conn.execute(
-        "ALTER TABLE conversations ADD COLUMN raw_id TEXT REFERENCES raw_conversations(raw_id)"
-    )
+    conn.execute("ALTER TABLE conversations ADD COLUMN raw_id TEXT REFERENCES raw_conversations(raw_id)")
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_conversations_raw_id ON conversations(raw_id) WHERE raw_id IS NOT NULL"
     )
@@ -495,9 +505,7 @@ def _migrate_v8_to_v9(conn: sqlite3.Connection) -> None:
     cursor = conn.execute("PRAGMA table_info(raw_conversations)")
     columns = {row[1] for row in cursor.fetchall()}
     if "source_name" not in columns:
-        conn.execute(
-            "ALTER TABLE raw_conversations ADD COLUMN source_name TEXT"
-        )
+        conn.execute("ALTER TABLE raw_conversations ADD COLUMN source_name TEXT")
 
 
 # Migration registry: maps source version to migration function
@@ -743,6 +751,7 @@ class SQLiteBackend:
         self,
         source: str | None = None,
         provider: str | None = None,
+        parent_id: str | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list[ConversationRecord]:
@@ -760,6 +769,10 @@ class SQLiteBackend:
         if provider is not None:
             where_clauses.append("provider_name = ?")
             params.append(provider)
+
+        if parent_id is not None:
+            where_clauses.append("parent_conversation_id = ?")
+            params.append(parent_id)
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
