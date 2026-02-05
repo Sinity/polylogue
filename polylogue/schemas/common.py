@@ -8,8 +8,7 @@ Types:
     - CommonMessage: Basic message structure with role, text, timestamp
     - CommonToolCall: Tool invocation with name, input, output
 
-For extraction logic, see polylogue.schemas.extractors (glom-based declarative)
-or polylogue.schemas.unified (HarmonizedMessage with viewports).
+For extraction logic, see polylogue.schemas.unified (HarmonizedMessage with viewports).
 """
 
 from __future__ import annotations
@@ -18,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 # Re-export Role from the canonical location
-from polylogue.core.roles import Role
+from polylogue.lib.roles import Role
 
 
 @dataclass

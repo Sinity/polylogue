@@ -13,7 +13,7 @@ import hashlib
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from polylogue.core.log import get_logger
+from polylogue.lib.log import get_logger
 from polylogue.importers.base import RawConversationData
 from polylogue.ingestion.source import iter_source_conversations_with_raw
 from polylogue.storage.store import RawConversationRecord
