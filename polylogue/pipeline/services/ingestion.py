@@ -17,14 +17,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
-from polylogue.ingestion.source import _parse_json_payload
+from polylogue.sources.source import _parse_json_payload
 from polylogue.pipeline.ingest import prepare_ingest
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import RawConversationRecord
 
 if TYPE_CHECKING:
     from polylogue.config import Config, Source
-    from polylogue.importers.base import ParsedConversation
+    from polylogue.sources.parsers.base import ParsedConversation
     from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)

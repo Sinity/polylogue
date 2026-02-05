@@ -15,10 +15,6 @@ from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
     MessageMeta,
-    ReasoningTrace,
-    ToolCall,
-    ToolCategory,
-    classify_tool,
 )
 
 

@@ -12,8 +12,8 @@ from uuid import uuid4
 from polylogue.config import Config, Source
 from polylogue.lib.json import dumps, loads
 from polylogue.lib.log import get_logger
-from polylogue.ingestion import DriveAuthError, iter_drive_conversations, iter_source_conversations
-from polylogue.ingestion.source import ParsedConversation
+from polylogue.sources import DriveAuthError, iter_drive_conversations, iter_source_conversations
+from polylogue.sources.source import ParsedConversation
 from polylogue.storage.backends.sqlite import connection_context
 from polylogue.storage.store import PlanResult, RunRecord, RunResult
 

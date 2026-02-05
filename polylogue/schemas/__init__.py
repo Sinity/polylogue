@@ -24,14 +24,18 @@ Additionally:
 # Re-export main types for convenience
 from polylogue.schemas.unified import (
     HarmonizedMessage,
-    extract_harmonized_message,
     extract_from_provider_meta,
+    extract_harmonized_message,
     is_message_record,
 )
+from polylogue.schemas.validator import SchemaValidator, ValidationResult, validate_provider_export
 
 __all__ = [
     "HarmonizedMessage",
     "extract_harmonized_message",
     "extract_from_provider_meta",
     "is_message_record",
+    "SchemaValidator",
+    "ValidationResult",
+    "validate_provider_export",
 ]

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.pipeline.enrichment import enrich_message_metadata
-from polylogue.ingestion import IngestBundle, ParsedConversation, ingest_bundle
+from polylogue.sources import IngestBundle, ParsedConversation, ingest_bundle
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
