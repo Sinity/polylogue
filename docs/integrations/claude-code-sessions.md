@@ -95,7 +95,7 @@ Current limitations (from `docs/providers/claude-code.md`):
 
 ### Recommended Configuration
 
-Add to polylogue config:
+Add to `$XDG_CONFIG_HOME/polylogue/config.toml` (or set via `POLYLOGUE_*` env vars):
 
 ```toml
 [sources.claude-code]
