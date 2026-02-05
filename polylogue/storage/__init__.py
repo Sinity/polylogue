@@ -25,7 +25,7 @@ from .index import (
 )
 
 # Repository module - encapsulated storage operations
-from .repository import StorageRepository
+from .repository import ConversationRepository
 
 # Search module - FTS5 search
 from .search import (
@@ -60,39 +60,11 @@ def __getattr__(name: str) -> object:
 
 
 __all__ = [
-    # Database
-    "DatabaseError",
-    "connection_context",
-    "default_db_path",
-    "open_connection",
-    # Store
+    "ConversationRepository",
+    "SQLiteBackend",
+    "SearchResult",
     "AttachmentRecord",
     "ConversationRecord",
     "MessageRecord",
     "RunRecord",
-    "record_run",
-    "store_records",
-    "upsert_attachment",
-    "upsert_conversation",
-    "upsert_message",
-    # Repository
-    "StorageRepository",
-    # Backends
-    "SQLiteBackend",
-    "create_backend",
-    # Index
-    "ensure_index",
-    "index_status",
-    "rebuild_index",
-    "update_index_for_conversations",
-    # Search
-    "SearchHit",
-    "SearchResult",
-    "escape_fts5_query",
-    "search_messages",
-    # Qdrant
-    "QdrantError",
-    "VectorStore",
-    "get_embeddings",
-    "update_qdrant_for_conversations",
 ]
