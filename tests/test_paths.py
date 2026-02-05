@@ -11,7 +11,6 @@ Covers:
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
@@ -23,7 +22,6 @@ from polylogue.paths import (
     is_within_root,
     safe_path_component,
 )
-
 
 # =============================================================================
 # safe_path_component() Tests
@@ -286,7 +284,7 @@ class TestXDGPaths:
 
         importlib.reload(polylogue.paths)
 
-        assert polylogue.paths.DATA_ROOT == Path("/custom/data")
+        assert Path("/custom/data") == polylogue.paths.DATA_ROOT
 
         # Clean up — reload with original env
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)

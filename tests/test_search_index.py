@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.config import Config, get_config, IndexConfig
+from polylogue.config import Config, IndexConfig, get_config
 from polylogue.health import get_health
 from polylogue.sources import IngestBundle, ingest_bundle
 from polylogue.storage.backends.sqlite import open_connection

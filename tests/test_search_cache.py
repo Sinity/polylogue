@@ -10,7 +10,8 @@ Covers:
 from __future__ import annotations
 
 import threading
-from pathlib import Path
+
+import pytest
 
 from polylogue.storage.search_cache import (
     SearchCacheKey,
@@ -56,11 +57,8 @@ class TestSearchCacheKey:
         """Cache key is immutable (frozen dataclass)."""
         key = SearchCacheKey.create(query="test", archive_root=tmp_path)
         # Frozen dataclass should raise on attribute assignment
-        try:
+        with pytest.raises(AttributeError):
             key.query = "changed"
-            assert False, "Should have raised"
-        except AttributeError:
-            pass
 
     def test_same_params_same_key(self, tmp_path):
         """Same parameters produce equal keys (same cache version)."""
