@@ -2,7 +2,7 @@
 
 import pytest
 
-from polylogue.ingestion import IngestBundle, ingest_bundle
+from polylogue.sources import IngestBundle, ingest_bundle
 from polylogue.storage.backends.sqlite import open_connection
 from tests.helpers import make_attachment, make_conversation, make_message
 

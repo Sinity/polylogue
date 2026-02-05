@@ -5,9 +5,9 @@ from __future__ import annotations
 import pytest
 
 from polylogue.lib.filters import ConversationFilter
-from polylogue.lib.repository import ConversationRepository
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.index import rebuild_index
+from polylogue.storage.repository import ConversationRepository
 from tests.factories import DbFactory
 
 

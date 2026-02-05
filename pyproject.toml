@@ -132,5 +132,17 @@ ignore = [
     "B008",  # function calls in argument defaults
 ]
 
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "E402",   # consolidated mega-files have mid-file section imports
+    "N803",   # test parameter naming follows test conventions
+    "N806",   # type alias naming in test helpers
+    "SIM105", # try-except-pass in test error handling is intentional
+    "SIM115", # NamedTemporaryFile(delete=False) pattern in benchmarks
+    "SIM117", # nested with-statements with comments between context managers
+]
+"polylogue/sources/providers/**" = ["N815"]  # Pydantic alias fields match provider JSON schemas
+"tests/scripts/**" = ["E402"]  # scripts manipulate sys.path before imports
+
 [tool.ruff.lint.isort]
 known-first-party = ["polylogue"]

@@ -94,7 +94,7 @@ class IndexConfig:
     voyage_api_key: str | None = None
 
     @classmethod
-    def from_env(cls) -> "IndexConfig":
+    def from_env(cls) -> IndexConfig:
         """Load IndexConfig from environment variables."""
         return cls(
             fts_enabled=True,

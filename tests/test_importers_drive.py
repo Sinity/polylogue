@@ -17,11 +17,10 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.importers.drive import (
+from polylogue.sources.parsers.drive import (
     extract_text_from_chunk,
     parse_chunked_prompt,
 )
-
 
 # =============================================================================
 # FIXTURES
@@ -237,7 +236,7 @@ def test_parse_preserves_token_count(metadata_rich_prompt):
 
     # Messages should have token counts in their provider_meta
     # Check that at least one message has tokenCount preserved
-    messages_with_tokens = [
+    [
         m for m in result.messages
         if m.provider_meta and m.provider_meta.get("tokenCount") is not None
     ]
