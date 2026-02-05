@@ -13,7 +13,7 @@ from pathlib import Path
 
 from polylogue.rendering.core import ConversationFormatter
 from polylogue.rendering.renderers.markdown import MarkdownRenderer
-from tests.factories import DbFactory
+from tests.helpers import DbFactory
 
 # Golden files directory
 GOLDEN_DIR = Path(__file__).parent / "golden"
