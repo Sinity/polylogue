@@ -9,7 +9,7 @@ from click.testing import CliRunner
 
 from polylogue.cli import cli
 from polylogue.storage.backends.sqlite import open_connection
-from tests.factories import DbFactory
+from tests.helpers import DbFactory
 
 
 @pytest.fixture
