@@ -16,10 +16,10 @@ import click
 from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
 from polylogue.cli.commands.completions import completions_command
+from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
-from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.formatting import announce_plain_mode, should_use_plain
 from polylogue.cli.types import AppEnv
 from polylogue.ui import create_ui

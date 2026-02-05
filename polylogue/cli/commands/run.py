@@ -20,8 +20,8 @@ from polylogue.cli.helpers import (
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
-from polylogue.ingestion import DriveError
 from polylogue.pipeline.runner import plan_sources, run_sources
+from polylogue.sources import DriveError
 from polylogue.storage.store import PlanResult, RunResult
 
 
@@ -248,10 +248,9 @@ def run_command(
             return
 
     # Interactive confirmation (non-preview, non-watch)
-    if not watch and not plan_snapshot and not env.ui.plain:
-        if not env.ui.confirm("Proceed?", default=True):
-            env.ui.console.print("Cancelled.")
-            return
+    if not watch and not plan_snapshot and not env.ui.plain and not env.ui.confirm("Proceed?", default=True):
+        env.ui.console.print("Cancelled.")
+        return
 
     # Watch mode
     if watch:

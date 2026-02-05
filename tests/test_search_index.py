@@ -3,21 +3,21 @@
 Tests cover FTS5 index creation, incremental updates, search functionality,
 ranking, special characters, and edge cases.
 """
+
 from __future__ import annotations
 
-from contextlib import contextmanager
 import sqlite3
+from contextlib import contextmanager
 
 import pytest
 
-from polylogue.config import default_config, load_config, write_config
+from polylogue.config import get_config
 from polylogue.health import get_health
-from polylogue.ingestion import IngestBundle, ingest_bundle
+from polylogue.sources import IngestBundle, ingest_bundle
 from polylogue.storage.index import ensure_index, rebuild_index, update_index_for_conversations
 from polylogue.storage.search import search_messages
 from polylogue.storage.store import store_records
 from tests.helpers import make_conversation, make_message
-
 
 # test_db and test_conn fixtures are in conftest.py
 
@@ -38,19 +38,16 @@ def archive_root(tmp_path):
 
 def test_rebuild_index_creates_fts_table(test_conn):
     """rebuild_index() creates messages_fts table if it doesn't exist."""
-    # Verify table doesn't exist yet
-    result = test_conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-    ).fetchone()
+    # Verify table doesn't exist yet (drop it first as fixture might create it)
+    test_conn.execute("DROP TABLE IF EXISTS messages_fts")
+    result = test_conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
     assert result is None or result[0] != "messages_fts"
 
     # Call rebuild_index
     rebuild_index(test_conn)
 
     # Verify table exists
-    result = test_conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-    ).fetchone()
+    result = test_conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
     assert result is not None
     assert result[0] == "messages_fts"
 
@@ -74,13 +71,13 @@ def test_rebuild_index_populates_fts_from_messages(test_conn):
 
     # Verify content is indexed
     hello_hits = test_conn.execute(
-        'SELECT message_id FROM messages_fts WHERE messages_fts MATCH ?', ("hello",)
+        "SELECT message_id FROM messages_fts WHERE messages_fts MATCH ?", ("hello",)
     ).fetchall()
     assert len(hello_hits) == 1
     assert hello_hits[0]["message_id"] == "msg1"
 
     goodbye_hits = test_conn.execute(
-        'SELECT message_id FROM messages_fts WHERE messages_fts MATCH ?', ("goodbye",)
+        "SELECT message_id FROM messages_fts WHERE messages_fts MATCH ?", ("goodbye",)
     ).fetchall()
     assert len(goodbye_hits) == 1
     assert goodbye_hits[0]["message_id"] == "msg2"
@@ -109,14 +106,14 @@ def test_rebuild_index_clears_previous_index(test_conn):
     rebuild_index(test_conn)
 
     # Old message should not be searchable
-    old_hits = test_conn.execute(
-        'SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?', ("first",)
-    ).fetchone()[0]
+    old_hits = test_conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?", ("first",)).fetchone()[
+        0
+    ]
     assert old_hits == 0
 
     # New message should be searchable
     new_hits = test_conn.execute(
-        'SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?', ("second",)
+        "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?", ("second",)
     ).fetchone()[0]
     assert new_hits == 1
 
@@ -137,8 +134,8 @@ def test_rebuild_index_skips_null_text(test_conn):
     assert count == 1
 
 
-def test_rebuild_index_preserves_conversation_metadata(test_conn):
-    """rebuild_index() includes provider_name and conversation_id in FTS."""
+def test_rebuild_index_includes_keys(test_conn):
+    """rebuild_index() includes keys in FTS."""
     conv = make_conversation("conv1", provider_name="claude")
     msg = make_message("msg1", "conv1", text="hello")
 
@@ -146,12 +143,10 @@ def test_rebuild_index_preserves_conversation_metadata(test_conn):
     rebuild_index(test_conn)
 
     # Check FTS columns
-    row = test_conn.execute(
-        "SELECT message_id, conversation_id, provider_name FROM messages_fts LIMIT 1"
-    ).fetchone()
+    row = test_conn.execute("SELECT message_id, conversation_id FROM messages_fts LIMIT 1").fetchone()
     assert row["message_id"] == "msg1"
     assert row["conversation_id"] == "conv1"
-    assert row["provider_name"] == "claude"
+    # provider_name is no longer in FTS table
 
 
 # ============================================================================
@@ -282,7 +277,7 @@ def test_update_index_handles_large_batch(test_conn):
 
 def test_search_finds_matching_text(workspace_env, storage_repository):
     """search_messages() finds conversations with matching text."""
-    from polylogue.ingestion import IngestBundle, ingest_bundle
+    from polylogue.sources import IngestBundle, ingest_bundle
 
     conv = make_conversation("conv1", title="Test Conv")
     msg = make_message("msg1", "conv1", text="python programming language")
@@ -299,7 +294,7 @@ def test_search_finds_matching_text(workspace_env, storage_repository):
 
 def test_search_returns_multiple_matches(workspace_env, storage_repository):
     """search_messages() returns multiple matching conversations."""
-    from polylogue.ingestion import IngestBundle, ingest_bundle
+    from polylogue.sources import IngestBundle, ingest_bundle
 
     for i in range(3):
         conv = make_conversation(f"conv{i}", title=f"Conv {i}")
@@ -317,7 +312,7 @@ def test_search_returns_multiple_matches(workspace_env, storage_repository):
 
 def test_search_no_results_returns_empty(workspace_env, storage_repository):
     """search_messages() returns empty list when no matches found."""
-    from polylogue.ingestion import IngestBundle, ingest_bundle
+    from polylogue.sources import IngestBundle, ingest_bundle
 
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="hello world")
@@ -332,7 +327,7 @@ def test_search_no_results_returns_empty(workspace_env, storage_repository):
 
 def test_search_respects_limit(workspace_env, storage_repository):
     """search_messages() respects limit parameter."""
-    from polylogue.ingestion import IngestBundle, ingest_bundle
+    from polylogue.sources import IngestBundle, ingest_bundle
 
     for i in range(10):
         conv = make_conversation(f"conv{i}", title=f"Conv {i}")
@@ -347,7 +342,7 @@ def test_search_respects_limit(workspace_env, storage_repository):
 
 def test_search_includes_snippet(workspace_env, storage_repository):
     """search_messages() includes text snippet in results."""
-    from polylogue.ingestion import IngestBundle, ingest_bundle
+    from polylogue.sources import IngestBundle, ingest_bundle
 
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="The quick brown fox jumps over the lazy dog")
@@ -365,9 +360,11 @@ def test_search_includes_snippet(workspace_env, storage_repository):
 
 def test_search_includes_conversation_metadata(workspace_env, storage_repository):
     """search_messages() includes conversation metadata in results."""
-    from polylogue.ingestion import IngestBundle, ingest_bundle
+    from polylogue.sources import IngestBundle, ingest_bundle
 
-    conv = make_conversation("conv1", provider_name="claude", title="My Conversation", provider_meta={"source": "my-source"})
+    conv = make_conversation(
+        "conv1", provider_name="claude", title="My Conversation", provider_meta={"source": "my-source"}
+    )
     msg = make_message("msg1", "conv1", text="search query", timestamp="2024-01-01T10:30:00Z")
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
@@ -392,7 +389,7 @@ def test_search_includes_conversation_metadata(workspace_env, storage_repository
 
 def test_search_with_special_characters(workspace_env, storage_repository):
     """search_messages() handles special characters in text."""
-    from polylogue.ingestion import IngestBundle, ingest_bundle
+    from polylogue.sources import IngestBundle, ingest_bundle
 
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="C++ programming with @mentions and #hashtags")
@@ -407,7 +404,7 @@ def test_search_with_special_characters(workspace_env, storage_repository):
 
 def test_search_with_quotes_in_text(workspace_env, storage_repository):
     """search_messages() handles quoted text correctly."""
-    from polylogue.ingestion import IngestBundle, ingest_bundle
+    from polylogue.sources import IngestBundle, ingest_bundle
 
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text='She said "hello world" to me')
@@ -421,7 +418,7 @@ def test_search_with_quotes_in_text(workspace_env, storage_repository):
 
 def test_search_with_unicode_text(workspace_env, storage_repository):
     """search_messages() handles unicode characters."""
-    from polylogue.ingestion import IngestBundle, ingest_bundle
+    from polylogue.sources import IngestBundle, ingest_bundle
 
     conv = make_conversation("conv1", title="Unicode Test")
     msg = make_message("msg1", "conv1", text="Hello 世界 مرحبا мир café")
@@ -435,7 +432,7 @@ def test_search_with_unicode_text(workspace_env, storage_repository):
 
 def test_search_with_hyphenated_words(workspace_env, storage_repository):
     """search_messages() handles words in hyphenated phrases."""
-    from polylogue.ingestion import IngestBundle, ingest_bundle
+    from polylogue.sources import IngestBundle, ingest_bundle
 
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="The state-of-the-art algorithm")
@@ -461,9 +458,7 @@ def test_ensure_index_idempotent(test_conn):
     ensure_index(test_conn)
 
     # Verify table exists
-    result = test_conn.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-    ).fetchone()
+    result = test_conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
     assert result is not None
 
 
@@ -477,7 +472,7 @@ def test_rebuild_index_with_empty_database(test_conn):
 
 def test_search_returns_searchresult_object(workspace_env, storage_repository):
     """search_messages() returns SearchResult with hits list."""
-    from polylogue.ingestion import IngestBundle, ingest_bundle
+    from polylogue.sources import IngestBundle, ingest_bundle
 
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="search result")
@@ -518,9 +513,7 @@ def test_rebuild_index_with_multiple_messages_per_conversation(test_conn):
     store_records(conversation=conv, messages=messages, attachments=[], conn=test_conn)
     rebuild_index(test_conn)
 
-    count = test_conn.execute(
-        "SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)
-    ).fetchone()[0]
+    count = test_conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
     assert count == 10
 
 
@@ -550,14 +543,12 @@ def test_update_index_deletes_old_entries_from_conversation(test_conn):
 
     # Old message should not be in index
     old_hits = test_conn.execute(
-        'SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?', ("original",)
+        "SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?", ("original",)
     ).fetchone()[0]
     assert old_hits == 0
 
     # New message should be indexed
-    new_hits = test_conn.execute(
-        'SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?', ("new",)
-    ).fetchone()[0]
+    new_hits = test_conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH ?", ("new",)).fetchone()[0]
     assert new_hits == 1
 
 
@@ -610,8 +601,10 @@ def test_batch_index_10k_messages(test_conn):
     assert elapsed < 5.0, f"Batch indexing 10k messages took too long: {elapsed:.2f}s"
 
 
-def test_batch_index_correct_provider_mapping(test_conn):
-    """Verify batch indexing includes correct provider_name for all messages."""
+def test_batch_index_search_returns_correct_provider(workspace_env, storage_repository):
+    """Verify batch indexing allows retrieving correct provider_name via search."""
+    from polylogue.sources import IngestBundle, ingest_bundle
+
     # Create conversations with different providers
     conv1 = make_conversation("conv1", provider_name="claude", title="Claude Conv")
     conv2 = make_conversation("conv2", provider_name="chatgpt", title="ChatGPT Conv")
@@ -619,28 +612,23 @@ def test_batch_index_correct_provider_mapping(test_conn):
     messages1 = [make_message(f"msg1-{i}", "conv1", text=f"claude text {i}") for i in range(5)]
     messages2 = [make_message(f"msg2-{i}", "conv2", text=f"chatgpt text {i}") for i in range(5)]
 
-    store_records(conversation=conv1, messages=messages1, attachments=[], conn=test_conn)
-    store_records(conversation=conv2, messages=messages2, attachments=[], conn=test_conn)
+    ingest_bundle(IngestBundle(conversation=conv1, messages=messages1, attachments=[]), repository=storage_repository)
+    ingest_bundle(IngestBundle(conversation=conv2, messages=messages2, attachments=[]), repository=storage_repository)
 
-    # Run batch indexing for both
-    update_index_for_conversations(["conv1", "conv2"], test_conn)
+    rebuild_index()
 
-    # Verify provider names are correct
-    claude_rows = test_conn.execute(
-        "SELECT provider_name FROM messages_fts WHERE conversation_id = ?", ("conv1",)
-    ).fetchall()
-    assert all(row["provider_name"] == "claude" for row in claude_rows)
-    assert len(claude_rows) == 5
+    # Verify provider names via search
+    results1 = search_messages("claude", archive_root=workspace_env["archive_root"], limit=10)
+    assert all(hit.provider_name == "claude" for hit in results1.hits)
+    assert len(results1.hits) == 1
 
-    chatgpt_rows = test_conn.execute(
-        "SELECT provider_name FROM messages_fts WHERE conversation_id = ?", ("conv2",)
-    ).fetchall()
-    assert all(row["provider_name"] == "chatgpt" for row in chatgpt_rows)
-    assert len(chatgpt_rows) == 5
+    results2 = search_messages("chatgpt", archive_root=workspace_env["archive_root"], limit=10)
+    assert all(hit.provider_name == "chatgpt" for hit in results2.hits)
+    assert len(results2.hits) == 1
 
 
 __all__ = [
-    "test_rebuild_index_creates_fts_table",
+    "test_rebuild_index_includes_keys",
     "test_rebuild_index_populates_fts_from_messages",
     "test_rebuild_index_clears_previous_index",
     "test_rebuild_index_skips_null_text",
@@ -654,13 +642,12 @@ __all__ = [
     "test_search_with_quotes_in_text",
     "test_search_with_unicode_text",
     "test_batch_index_10k_messages",
-    "test_batch_index_correct_provider_mapping",
+    "test_batch_index_search_returns_correct_provider",
 ]
 
 # =============================================================================
 # SEARCH HEALTH TESTS (merged from test_search_health.py)
 # =============================================================================
-
 
 
 def _seed_conversation(storage_repository):
@@ -683,11 +670,9 @@ def test_search_after_index(workspace_env, storage_repository):
 
 
 def test_health_cached(workspace_env):
-    config = default_config()
-    write_config(config)
-    loaded = load_config()
-    get_health(loaded)
-    second = get_health(loaded)
+    config = get_config()
+    get_health(config)
+    second = get_health(config)
     assert second.cached is True
     assert second.age_seconds is not None
 
@@ -751,6 +736,7 @@ def test_search_prefers_legacy_render_when_present(workspace_env, storage_reposi
 
 
 # --since timestamp filtering tests
+
 
 def test_search_since_filters_by_iso_date(workspace_env, storage_repository):
     """--since with ISO date filters messages correctly."""
@@ -817,7 +803,9 @@ def test_search_since_handles_mixed_timestamp_formats(workspace_env, storage_rep
     # Create conversation with ISO timestamp (after cutoff)
     bundle_iso = IngestBundle(
         conversation=make_conversation("conv:iso-new", title="ISO Test"),
-        messages=[make_message("msg:iso-new", "conv:iso-new", text="mixedformat gamma", timestamp="2024-01-25T12:00:00")],
+        messages=[
+            make_message("msg:iso-new", "conv:iso-new", text="mixedformat gamma", timestamp="2024-01-25T12:00:00")
+        ],
         attachments=[],
     )
 
@@ -885,8 +873,12 @@ def test_search_since_boundary_condition(workspace_env, storage_repository):
     bundle = IngestBundle(
         conversation=make_conversation("conv:boundary", title="Boundary Test"),
         messages=[
-            make_message("msg:after-cutoff", "conv:boundary", text="boundary after message", timestamp="2024-01-20T12:00:00"),
-            make_message("msg:before-cutoff", "conv:boundary", text="boundary before message", timestamp="2024-01-10T12:00:00"),
+            make_message(
+                "msg:after-cutoff", "conv:boundary", text="boundary after message", timestamp="2024-01-20T12:00:00"
+            ),
+            make_message(
+                "msg:before-cutoff", "conv:boundary", text="boundary before message", timestamp="2024-01-10T12:00:00"
+            ),
         ],
         attachments=[],
     )

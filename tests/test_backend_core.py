@@ -512,16 +512,16 @@ class TestDeleteOperations:
 # =============================================================================
 
 
-from polylogue.importers.base import normalize_role as old_normalize_role
-from polylogue.importers.claude import (
-    extract_text_from_segments as old_extract_segments,
-)
 from polylogue.schemas.unified import (
     extract_harmonized_message,
     is_message_record,
 )
 from polylogue.schemas.unified import (
     normalize_role as new_normalize_role,
+)
+from polylogue.sources.parsers.base import normalize_role as old_normalize_role
+from polylogue.sources.parsers.claude import (
+    extract_text_from_segments as old_extract_segments,
 )
 
 
@@ -693,8 +693,8 @@ class TestAPICompatibility:
 
     def test_parsed_message_equivalent_fields(self):
         """HarmonizedMessage has equivalent fields to ParsedMessage."""
-        from polylogue.importers.base import ParsedMessage
         from polylogue.schemas.unified import HarmonizedMessage
+        from polylogue.sources.parsers.base import ParsedMessage
 
         field_mapping = {
             "provider_message_id": "id",
@@ -714,7 +714,7 @@ class TestAPICompatibility:
 
     def test_can_convert_harmonized_to_parsed(self):
         """Demonstrate conversion from HarmonizedMessage to ParsedMessage."""
-        from polylogue.importers.base import ParsedMessage
+        from polylogue.sources.parsers.base import ParsedMessage
 
         raw = {
             "type": "assistant",

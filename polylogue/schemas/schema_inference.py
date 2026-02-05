@@ -15,8 +15,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +27,8 @@ except ImportError:
 
 
 # Default database path - use same location as main storage backend
+import contextlib
+
 from polylogue.storage.backends.sqlite import default_db_path
 
 DEFAULT_DB_PATH = default_db_path()
@@ -106,9 +107,7 @@ def is_dynamic_key(key: str) -> bool:
         return True
     if re.match(r"^[0-9a-f]{24,}$", key, re.IGNORECASE):
         return True
-    if re.match(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", key, re.IGNORECASE):
-        return True
-    return False
+    return bool(re.match(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", key, re.IGNORECASE))
 
 
 def collapse_dynamic_keys(schema: dict[str, Any]) -> dict[str, Any]:
@@ -257,10 +256,8 @@ def load_samples_from_sessions(
             with open(path, encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
-                        try:
+                        with contextlib.suppress(json.JSONDecodeError):
                             samples.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            pass
         except OSError:
             pass
 

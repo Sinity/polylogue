@@ -275,7 +275,7 @@ def main():
     print(f"Running atheris fuzzer for {iterations} iterations...")
 
     atheris.Setup(
-        sys.argv + [f"-max_total_time=300", f"-runs={iterations}"],
+        sys.argv + ["-max_total_time=300", f"-runs={iterations}"],
         fuzz_fts5_escape,
     )
     atheris.Fuzz()
