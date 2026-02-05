@@ -10,17 +10,17 @@ from typing import IO, TYPE_CHECKING, Any, BinaryIO
 import ijson
 from pydantic import BaseModel
 
-from ..config import Source
-from ..lib.json import dumps as json_dumps
-from ..importers import chatgpt, claude, codex, drive
-from ..importers.base import (
+from polylogue.config import Source
+from polylogue.lib.json import dumps as json_dumps
+from .parsers import chatgpt, claude, codex, drive
+from .parsers.base import (
     ParsedAttachment,
     ParsedConversation,
     ParsedMessage,
     RawConversationData,
     extract_messages_from_list,
 )
-from ..importers.claude import (
+from .parsers.claude import (
     SessionIndexEntry,
     enrich_conversation_from_index,
     parse_sessions_index,
