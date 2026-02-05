@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import re
 import subprocess
 from dataclasses import dataclass
@@ -66,10 +67,8 @@ def _resolve_version() -> VersionInfo:
     commit: str | None = None
     dirty = False
 
-    try:
+    with contextlib.suppress(PackageNotFoundError):
         version = metadata_version("polylogue")
-    except PackageNotFoundError:
-        pass
 
     repo_root = Path(__file__).resolve().parent.parent
     pyproject_path = repo_root / "pyproject.toml"

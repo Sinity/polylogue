@@ -19,10 +19,12 @@ from pathlib import Path
 import pytest
 
 # ChatGPT imports
-from polylogue.importers.chatgpt import _coerce_float, extract_messages_from_mapping, looks_like as chatgpt_looks_like, parse as chatgpt_parse
+from polylogue.sources.parsers.chatgpt import _coerce_float, extract_messages_from_mapping
+from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
+from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 
 # Claude imports
-from polylogue.importers.claude import (
+from polylogue.sources.parsers.claude import (
     extract_messages_from_chat_messages,
     extract_text_from_segments,
     looks_like_ai,
@@ -32,11 +34,11 @@ from polylogue.importers.claude import (
 )
 
 # Codex imports
-from polylogue.importers.codex import looks_like as codex_looks_like, parse as codex_parse
+from polylogue.sources.parsers.codex import looks_like as codex_looks_like
+from polylogue.sources.parsers.codex import parse as codex_parse
 
 # Test helpers
 from tests.helpers import make_chatgpt_node, make_claude_chat_message
-
 
 # =============================================================================
 # CHATGPT IMPORTER TESTS
@@ -257,7 +259,7 @@ def test_chatgpt_extract_parent_and_branch_index(mapping, expected_parents, expe
     assert len(messages) == len(expected_parents), \
         f"Failed {desc}: expected {len(expected_parents)} messages, got {len(messages)}"
 
-    for msg, expected_parent, expected_index in zip(messages, expected_parents, expected_indexes):
+    for msg, expected_parent, expected_index in zip(messages, expected_parents, expected_indexes, strict=False):
         assert msg.parent_message_provider_id == expected_parent, \
             f"Failed {desc}: message {msg.provider_message_id} expected parent {expected_parent}, " \
             f"got {msg.parent_message_provider_id}"
@@ -557,14 +559,13 @@ def test_claude_extract_chat_messages_comprehensive(chat_messages, expected, des
 
     if isinstance(expected, int):
         assert len(messages) == expected, f"Failed {desc}"
-    elif isinstance(expected, str):
-        if messages:
-            # ID field tests check provider_message_id, role tests check role
-            if "field" in desc and desc not in ["attachments field", "files field", "timestamp field"]:
-                assert messages[0].provider_message_id == expected, f"Failed {desc}"
-            else:
-                # Expected role
-                assert messages[0].role == expected, f"Failed {desc}"
+    elif isinstance(expected, str) and messages:
+        # ID field tests check provider_message_id, role tests check role
+        if "field" in desc and desc not in ["attachments field", "files field", "timestamp field"]:
+            assert messages[0].provider_message_id == expected, f"Failed {desc}"
+        else:
+            # Expected role
+            assert messages[0].role == expected, f"Failed {desc}"
 
 
 # -----------------------------------------------------------------------------
@@ -822,13 +823,12 @@ def test_codex_parse_intermediate_format():
 # IMPORTERS.BASE MODULE TESTS (merged from test_importers_base.py)
 # =============================================================================
 
-from polylogue.importers.base import (
+from polylogue.lib.models import DialoguePair, Message
+from polylogue.sources.parsers.base import (
     ParsedAttachment,
     attachment_from_meta,
     normalize_role,
 )
-from polylogue.lib.models import DialoguePair, Message
-
 
 # -----------------------------------------------------------------------------
 # NORMALIZE_ROLE - PARAMETRIZED

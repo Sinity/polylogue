@@ -12,10 +12,7 @@ This file contains tests for:
 """
 from __future__ import annotations
 
-import sqlite3
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
-from uuid import uuid4
 
 import pytest
 
@@ -26,9 +23,8 @@ from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
 from polylogue.storage.search_providers.qdrant import QdrantProvider
-from tests.helpers import ConversationBuilder, make_conversation, make_message
 from tests.factories import DbFactory
-
+from tests.helpers import ConversationBuilder, make_conversation, make_message
 
 # =============================================================================
 # FTS5 SEARCH TESTS (from test_search.py)
@@ -131,7 +127,7 @@ def test_search_messages_escaping_integration(query, should_find, tmp_path):
 
     # Setup database with test data
     db_path = tmp_path / "test.db"
-    db = DbFactory(db_path)
+    DbFactory(db_path)
 
     # Insert test conversation using builder
     (ConversationBuilder(db_path, "test1")
@@ -221,7 +217,7 @@ def test_search_messages_returns_valid_structure(tmp_path):
     from pathlib import Path
 
     db_path = tmp_path / "test.db"
-    db = DbFactory(db_path)
+    DbFactory(db_path)
 
     # Insert test conversation using builder
     (ConversationBuilder(db_path, "test1")

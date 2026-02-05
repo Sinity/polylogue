@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.pipeline.enrichment import enrich_message_metadata
-from polylogue.sources import IngestBundle, ParsedConversation, ingest_bundle
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
@@ -19,6 +18,7 @@ from polylogue.pipeline.ids import (
 from polylogue.pipeline.ids import (
     message_id as make_message_id,
 )
+from polylogue.sources import IngestBundle, ParsedConversation, ingest_bundle
 from polylogue.storage.backends.sqlite import connection_context
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, ExistingConversation, MessageRecord
 from polylogue.types import AttachmentId, ConversationId, MessageId

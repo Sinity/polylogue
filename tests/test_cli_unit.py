@@ -955,7 +955,7 @@ class TestDriveOAuthFlow:
 
     def test_refresh_error_retries_auth(self, auth_workspace):
         """Token refresh failure triggers re-auth."""
-        token_path = auth_workspace["token_path"]
+        auth_workspace["token_path"]
         call_count = [0]
 
         def side_effect(*args, **kwargs):

@@ -11,7 +11,6 @@ ensuring complete isolation of module state.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 from dataclasses import dataclass
