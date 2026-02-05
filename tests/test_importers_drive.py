@@ -40,8 +40,8 @@ def minimal_chunked_prompt():
     return {
         "chunkedPrompt": {
             "chunks": [
-                {"text": "Hello, how are you?"},
-                {"text": "I'm doing well, thanks!"},
+                {"role": "user", "text": "Hello, how are you?"},
+                {"role": "model", "text": "I'm doing well, thanks!"},
             ]
         },
         "displayName": "Test Conversation",
@@ -55,10 +55,10 @@ def thinking_blocks_prompt():
     return {
         "chunkedPrompt": {
             "chunks": [
-                {"text": "User question here"},
-                {"text": "Let me think about this...", "isThought": True},
-                {"text": "The answer is X"},
-                {"text": "Also considering Y...", "isThought": True},
+                {"role": "user", "text": "User question here"},
+                {"role": "model", "text": "Let me think about this...", "isThought": True},
+                {"role": "model", "text": "The answer is X"},
+                {"role": "model", "text": "Also considering Y...", "isThought": True},
             ]
         },
         "displayName": "Thinking Example",
@@ -72,6 +72,7 @@ def drive_attachments_prompt():
         "chunkedPrompt": {
             "chunks": [
                 {
+                    "role": "user",
                     "text": "Here's a document: Report.pdf",
                     "driveDocument": {
                         "id": "drive-doc-123",
@@ -92,8 +93,8 @@ def metadata_rich_prompt():
     return {
         "chunkedPrompt": {
             "chunks": [
-                {"text": "Question"},
-                {"text": "Answer with details"},
+                {"role": "user", "text": "Question"},
+                {"role": "model", "text": "Answer with details"},
             ]
         },
         "displayName": "Metadata Test",
@@ -265,13 +266,13 @@ def test_parse_handles_missing_display_name():
     """Missing displayName uses fallback."""
     prompt = {
         "chunkedPrompt": {
-            "chunks": [{"text": "Hello"}]
+            "chunks": [{"role": "user", "text": "Hello"}]
         }
     }
     result = parse_chunked_prompt("gemini", prompt, "test-id")
 
-    # Should have some default title or empty
-    assert result.title is not None or result.title == ""
+    # Should use fallback_id as title
+    assert result.title == "test-id"
 
 
 def test_parse_empty_chunks_list():
@@ -285,25 +286,24 @@ def test_parse_empty_chunks_list():
     assert len(result.messages) == 0
 
 
-def test_parse_alternating_user_assistant():
-    """Chunks without role info become 'message' role."""
+def test_parse_skips_chunks_without_role():
+    """Chunks without role are skipped (strict parsing)."""
     prompt = {
         "chunkedPrompt": {
             "chunks": [
-                {"text": "First message"},
-                {"text": "Second message"},
-                {"text": "Third message"},
-                {"text": "Fourth message"},
+                {"text": "No role - skipped"},
+                {"role": "user", "text": "Has role - kept"},
+                {"text": "Also no role - skipped"},
+                {"role": "model", "text": "Also has role - kept"},
             ]
         }
     }
     result = parse_chunked_prompt("gemini", prompt, "test-id")
 
-    # Without explicit role, chunks become 'message' role
-    roles = [m.role for m in result.messages]
-    assert len(roles) == 4
-    # All should be 'message' since no roles specified
-    assert all(r == "message" for r in roles)
+    # Only chunks with roles are kept
+    assert len(result.messages) == 2
+    assert result.messages[0].role == "user"
+    assert result.messages[1].role == "assistant"
 
 
 def test_parse_skips_chunks_without_text():
@@ -311,16 +311,16 @@ def test_parse_skips_chunks_without_text():
     prompt = {
         "chunkedPrompt": {
             "chunks": [
-                {"text": "Valid text"},
-                {},  # Empty chunk
-                {"someOtherField": "value"},  # No text field
-                {"text": "Another valid"},
+                {"role": "user", "text": "Valid text"},
+                {"role": "user"},  # No text
+                {"role": "user", "someOtherField": "value"},  # No text field
+                {"role": "model", "text": "Another valid"},
             ]
         }
     }
     result = parse_chunked_prompt("gemini", prompt, "test-id")
 
-    # Should only have 2 messages
+    # Should only have 2 messages (those with text)
     assert len(result.messages) == 2
 
 
@@ -384,18 +384,26 @@ def test_real_sample_has_thinking_blocks(gemini_sample_file):
     reason="Real Gemini sample not available"
 )
 def test_real_sample_has_tool_references(gemini_sample_file):
-    """Real sample parsing doesn't error even with non-Gemini format."""
+    """Real Gemini sample with tool references parses successfully."""
     with open(gemini_sample_file) as f:
         data = json.loads(f.readline())
 
-    # Should not raise an error even if format doesn't match
     result = parse_chunked_prompt("gemini", data, "test-id")
 
-    # Verify it's a valid ParsedConversation
+    # Verify it's a valid ParsedConversation with messages
     assert result.provider_name == "gemini"
     assert isinstance(result.messages, list)
-    # Non-Gemini format means no messages extracted
-    assert len(result.messages) == 0
+    assert len(result.messages) > 0, "Expected messages in valid Gemini fixture"
+
+    # Check that messages have tool-related metadata (grounding, code execution, etc.)
+    has_tool_features = any(
+        msg.provider_meta.get("raw", {}).get("grounding")
+        or msg.provider_meta.get("raw", {}).get("executableCode")
+        or msg.provider_meta.get("raw", {}).get("codeExecutionResult")
+        for msg in result.messages
+        if msg.provider_meta
+    )
+    assert has_tool_features, "Expected tool-related features in Gemini fixture"
 
 
 @pytest.mark.skipif(
@@ -447,9 +455,9 @@ def test_content_blocks_created_for_thinking():
     prompt = {
         "chunkedPrompt": {
             "chunks": [
-                {"text": "User question"},
-                {"text": "Thinking...", "isThought": True},
-                {"text": "Final answer"},
+                {"role": "user", "text": "User question"},
+                {"role": "model", "text": "Thinking...", "isThought": True},
+                {"role": "model", "text": "Final answer"},
             ]
         }
     }

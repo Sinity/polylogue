@@ -20,7 +20,7 @@ from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.serve import serve_command
-from polylogue.cli.commands.sync import sources_command, sync_command
+from polylogue.cli.commands.run import run_command, sources_command
 from polylogue.cli.formatting import announce_plain_mode, should_use_plain
 from polylogue.cli.types import AppEnv
 from polylogue.ui import create_ui
@@ -76,6 +76,7 @@ class QueryFirstGroup(click.Group):
                     "--fields", "--set", "--unset",
                     "--add-tag", "--rm-tag", "--annotate",
                     "--transform",
+                    "-m", "--message-limit",  # Streaming options
                 ):
                     if i + 1 < len(args) and not args[i + 1].startswith("-"):
                         i += 1
@@ -138,8 +139,23 @@ def _handle_query_mode(ctx: click.Context) -> None:
         )
     )
 
-    # Stats mode: no query terms and no filters
-    if not query_terms and not has_filters:
+    # Output mode flags that should trigger query execution
+    has_output_mode = any(
+        params.get(k)
+        for k in (
+            "list_mode",
+            "limit",
+            "stats_only",
+            "by_month",
+            "by_provider",
+            "by_tag",
+            "stream",
+            "dialogue_only",
+        )
+    )
+
+    # Stats mode: no query terms, no filters, and no explicit output mode
+    if not query_terms and not has_filters and not has_output_mode:
         _show_stats(env, verbose=params.get("verbose", False))
         return
 
@@ -219,6 +235,10 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     type=click.Choice(["strip-tools", "strip-thinking", "strip-all"]),
     help="Transform output: strip-tools, strip-thinking, or strip-all",
 )
+# --- Streaming options (memory-efficient for large conversations) ---
+@click.option("--stream", is_flag=True, help="Stream output (low memory, no buffering)")
+@click.option("--dialogue-only", "-d", is_flag=True, help="Show only user/assistant messages")
+@click.option("--message-limit", "-m", type=int, help="Limit number of messages (not conversations)")
 # --- Modifier options (write operations) ---
 @click.option("--set", "set_meta", nargs=2, multiple=True, help="Set metadata key value")
 @click.option("--unset", multiple=True, help="Remove metadata key")
@@ -272,6 +292,10 @@ def cli(
     open_result: bool,
     csv_path: Path | None,
     transform: str | None,
+    # Streaming
+    stream: bool,
+    dialogue_only: bool,
+    message_limit: int | None,
     # Modifiers
     set_meta: tuple[tuple[str, str], ...],
     unset: tuple[str, ...],
@@ -296,7 +320,7 @@ def cli(
 
     \b
     Subcommands:
-        polylogue sync    Sync sources to database
+        polylogue run     Run pipeline stages (acquire, parse, render, index)
         polylogue check   Health check and repair
         polylogue mcp     Start MCP server
         polylogue reset   Reset database
@@ -317,7 +341,7 @@ def cli(
 
 
 # Register subcommands
-cli.add_command(sync_command)
+cli.add_command(run_command)
 cli.add_command(sources_command)
 cli.add_command(check_command)
 cli.add_command(reset_command)

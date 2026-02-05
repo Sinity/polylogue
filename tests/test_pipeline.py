@@ -1,252 +1,136 @@
-"""Tests for pipeline modules: ids, ingest, and runner orchestration."""
+"""Tests for pipeline modules: ids, ingest, and runner orchestration.
+
+Note: Most hashing property tests have been moved to test_properties.py, which
+provides systematic coverage via Hypothesis. This file retains edge case tests,
+validation tests, and integration tests for prepare_ingest.
+
+Consolidated from:
+- test_pipeline.py (original)
+- test_pipeline_ids.py (merged)
+"""
 
 from __future__ import annotations
 
 import pytest
 
+from polylogue.assets import asset_path
 from polylogue.importers.base import ParsedAttachment, ParsedConversation, ParsedMessage
 from polylogue.pipeline.ids import (
+    attachment_content_id,
     conversation_content_hash,
     conversation_id,
     message_content_hash,
     message_id,
+    move_attachment_to_archive,
 )
 from polylogue.pipeline.ingest import prepare_ingest
 from polylogue.storage.backends.sqlite import open_connection
 
 # ============================================================================
-# Test conversation_content_hash
+# Attachment file handling tests (from test_pipeline_ids.py)
 # ============================================================================
 
 
-def test_conversation_content_hash_deterministic():
-    """conversation_content_hash() returns the same hash for identical content."""
-    convo = ParsedConversation(
-        provider_name="test",
-        provider_conversation_id="conv-1",
-        title="Test Conversation",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role="user",
-                text="Hello, world!",
-                timestamp="2024-01-01T00:00:00Z",
-            ),
-            ParsedMessage(
-                provider_message_id="msg-2",
-                role="assistant",
-                text="Hi there!",
-                timestamp="2024-01-01T00:00:01Z",
-            ),
-        ],
-        attachments=[],
+def test_attachment_content_id_moves_file_into_assets(tmp_path):
+    """attachment_content_id moves file to archive and returns digest."""
+    archive_root = tmp_path / "archive"
+    uploads = tmp_path / "uploads"
+    archive_root.mkdir()
+    uploads.mkdir()
+    source_file = uploads / "note.txt"
+    source_file.write_text("hello world", encoding="utf-8")
+
+    attachment = ParsedAttachment(
+        provider_attachment_id="file-1",
+        message_provider_id="msg-1",
+        name="note.txt",
+        mime_type="text/plain",
+        size_bytes=11,
+        path=str(source_file),  # Must set path for file to be moved
+        provider_meta={},
     )
 
-    hash1 = conversation_content_hash(convo)
-    hash2 = conversation_content_hash(convo)
+    # attachment_content_id returns (digest, updated_meta, updated_path) without mutation
+    digest, updated_meta, updated_path = attachment_content_id("chatgpt", attachment, archive_root=archive_root)
+    target = asset_path(archive_root, digest)
 
-    assert hash1 == hash2
-    assert isinstance(hash1, str)
-    assert len(hash1) == 64  # SHA-256 hex digest
-
-
-def test_conversation_content_hash_changes_on_title_edit():
-    """Changing conversation title changes the hash."""
-    base_convo = ParsedConversation(
-        provider_name="test",
-        provider_conversation_id="conv-1",
-        title="Original Title",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role="user",
-                text="Hello",
-                timestamp="2024-01-01T00:00:00Z",
-            ),
-        ],
-        attachments=[],
-    )
-
-    hash_original = conversation_content_hash(base_convo)
-
-    # Create same conversation with different title
-    modified_convo = ParsedConversation(
-        provider_name="test",
-        provider_conversation_id="conv-1",
-        title="Modified Title",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role="user",
-                text="Hello",
-                timestamp="2024-01-01T00:00:00Z",
-            ),
-        ],
-        attachments=[],
-    )
-
-    hash_modified = conversation_content_hash(modified_convo)
-
-    assert hash_original != hash_modified
+    assert digest
+    assert updated_path == str(target)  # returned path, not mutated attachment.path
+    assert updated_meta is not None and "sha256" in updated_meta
+    assert not source_file.exists()
+    assert target.exists()
 
 
-def test_conversation_content_hash_changes_on_message_text_edit():
-    """Changing message text changes the hash."""
-    convo1 = ParsedConversation(
-        provider_name="test",
-        provider_conversation_id="conv-1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role="user",
-                text="Original text",
-                timestamp="2024-01-01T00:00:00Z",
-            ),
-        ],
-        attachments=[],
-    )
+class TestAttachmentPathMove:
+    """Tests for move_attachment_to_archive error handling."""
 
-    hash1 = conversation_content_hash(convo1)
+    def test_move_attachment_raises_on_missing_source(self, tmp_path):
+        """Moving non-existent attachment should raise FileNotFoundError."""
+        missing_source = tmp_path / "nonexistent.txt"
+        dest = tmp_path / "archive" / "dest.txt"
 
-    convo2 = ParsedConversation(
-        provider_name="test",
-        provider_conversation_id="conv-1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role="user",
-                text="Modified text",
-                timestamp="2024-01-01T00:00:00Z",
-            ),
-        ],
-        attachments=[],
-    )
+        with pytest.raises(FileNotFoundError):
+            move_attachment_to_archive(missing_source, dest)
 
-    hash2 = conversation_content_hash(convo2)
+    def test_move_attachment_raises_on_permission_error(self, tmp_path, monkeypatch):
+        """Move failure due to permissions should raise PermissionError."""
+        import shutil
 
-    assert hash1 != hash2
+        source = tmp_path / "source.txt"
+        source.write_text("content")
+        dest = tmp_path / "archive" / "dest.txt"
+
+        def failing_move(*args, **kwargs):
+            raise PermissionError("Access denied")
+
+        monkeypatch.setattr(shutil, "move", failing_move)
+
+        with pytest.raises(PermissionError):
+            move_attachment_to_archive(source, dest)
+
+    def test_move_attachment_creates_parent_dirs(self, tmp_path):
+        """Move should create parent directories if needed."""
+        source = tmp_path / "source.txt"
+        source.write_text("content")
+        dest = tmp_path / "deep" / "nested" / "archive" / "dest.txt"
+
+        move_attachment_to_archive(source, dest)
+
+        assert dest.exists()
+        assert dest.read_text() == "content"
+        assert not source.exists()  # Original should be gone
 
 
-def test_conversation_content_hash_changes_on_message_reorder():
-    """Reordering messages changes the hash."""
-    convo1 = ParsedConversation(
-        provider_name="test",
-        provider_conversation_id="conv-1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role="user",
-                text="First",
-                timestamp="2024-01-01T00:00:00Z",
-            ),
-            ParsedMessage(
-                provider_message_id="msg-2",
-                role="assistant",
-                text="Second",
-                timestamp="2024-01-01T00:00:01Z",
-            ),
-        ],
-        attachments=[],
-    )
-
-    hash1 = conversation_content_hash(convo1)
-
-    convo2 = ParsedConversation(
-        provider_name="test",
-        provider_conversation_id="conv-1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-2",
-                role="assistant",
-                text="Second",
-                timestamp="2024-01-01T00:00:01Z",
-            ),
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role="user",
-                text="First",
-                timestamp="2024-01-01T00:00:00Z",
-            ),
-        ],
-        attachments=[],
-    )
-
-    hash2 = conversation_content_hash(convo2)
-
-    assert hash1 != hash2
+# ============================================================================
+# conversation_id validation tests (from test_pipeline_ids.py)
+# ============================================================================
 
 
-def test_conversation_content_hash_includes_attachments():
-    """Changing attachments changes the hash."""
-    convo1 = ParsedConversation(
-        provider_name="test",
-        provider_conversation_id="conv-1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role="user",
-                text="Hello",
-                timestamp="2024-01-01T00:00:00Z",
-            ),
-        ],
-        attachments=[],
-    )
+class TestConversationIdValidation:
+    """Tests for conversation_id input validation."""
 
-    hash1 = conversation_content_hash(convo1)
+    def test_rejects_empty_provider(self):
+        """Empty provider_name MUST be rejected."""
+        with pytest.raises(ValueError, match="provider"):
+            conversation_id("", "conv-123")
 
-    convo2 = ParsedConversation(
-        provider_name="test",
-        provider_conversation_id="conv-1",
-        title="Test",
-        created_at="2024-01-01T00:00:00Z",
-        updated_at="2024-01-01T00:00:00Z",
-        messages=[
-            ParsedMessage(
-                provider_message_id="msg-1",
-                role="user",
-                text="Hello",
-                timestamp="2024-01-01T00:00:00Z",
-            ),
-        ],
-        attachments=[
-            ParsedAttachment(
-                provider_attachment_id="att-1",
-                message_provider_id="msg-1",
-                name="document.pdf",
-                mime_type="application/pdf",
-                size_bytes=1024,
-            ),
-        ],
-    )
+    def test_rejects_empty_provider_conversation_id(self):
+        """Empty provider_conversation_id MUST be rejected."""
+        with pytest.raises(ValueError, match="conversation"):
+            conversation_id("chatgpt", "")
 
-    hash2 = conversation_content_hash(convo2)
 
-    assert hash1 != hash2
+# ============================================================================
+# Hash edge case tests (from test_pipeline_ids.py)
+# ============================================================================
 
 
 def test_conversation_content_hash_with_missing_message_ids():
-    """Hash handles messages without provider_message_id (uses fallback idx)."""
+    """Hash handles messages without provider_message_id (uses fallback idx).
+
+    This edge case tests the fallback behavior when provider_message_id is empty,
+    which cannot be easily generated via Hypothesis strategies.
+    """
     convo1 = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -269,113 +153,100 @@ def test_conversation_content_hash_with_missing_message_ids():
     assert len(hash1) == 64
 
 
-# ============================================================================
-# Test message_content_hash
-# ============================================================================
+def test_message_hash_none_vs_empty_timestamp_distinguishable():
+    """None vs empty timestamp MUST produce different hashes.
+
+    This test verifies hash collision prevention for edge cases.
+    """
+    msg_with_none = ParsedMessage(
+        provider_message_id="msg-1",
+        role="user",
+        text="hello",
+        timestamp=None,
+    )
+    msg_with_empty = ParsedMessage(
+        provider_message_id="msg-1",
+        role="user",
+        text="hello",
+        timestamp="",
+    )
+
+    hash_with_none = message_content_hash(msg_with_none, "msg-1")
+    hash_with_empty = message_content_hash(msg_with_empty, "msg-1")
+
+    assert hash_with_none != hash_with_empty, "Hash collision: None and empty string produce same hash!"
 
 
-def test_message_content_hash_deterministic():
-    """message_content_hash() is deterministic."""
+def test_message_hash_empty_text_is_deterministic():
+    """Empty text should still produce valid, deterministic hash."""
     msg = ParsedMessage(
         provider_message_id="msg-1",
         role="user",
-        text="Hello, world!",
-        timestamp="2024-01-01T00:00:00Z",
+        text="",
+        timestamp="2024-01-01",
     )
-
     hash1 = message_content_hash(msg, "msg-1")
     hash2 = message_content_hash(msg, "msg-1")
-
     assert hash1 == hash2
-    assert isinstance(hash1, str)
-    assert len(hash1) == 64
+    assert len(hash1) == 64  # SHA-256 hex
 
 
-def test_message_content_hash_different_messages():
-    """Different messages produce different hashes."""
-    msg1 = ParsedMessage(
+def test_message_hash_different_provider_id_produces_different_hash():
+    """Different fallback_id should produce different hash."""
+    msg = ParsedMessage(
         provider_message_id="msg-1",
         role="user",
-        text="Hello",
-        timestamp="2024-01-01T00:00:00Z",
+        text="hello",
+        timestamp="2024-01-01",
     )
-
-    msg2 = ParsedMessage(
-        provider_message_id="msg-2",
-        role="assistant",
-        text="Hi there",
-        timestamp="2024-01-01T00:00:01Z",
-    )
-
-    hash1 = message_content_hash(msg1, "msg-1")
-    hash2 = message_content_hash(msg2, "msg-2")
-
+    hash1 = message_content_hash(msg, "msg-1")
+    hash2 = message_content_hash(msg, "msg-2")
     assert hash1 != hash2
 
 
-def test_message_content_hash_changes_on_text_edit():
-    """Changing message text changes hash."""
-    msg1 = ParsedMessage(
-        provider_message_id="msg-1",
+def test_conversation_hash_empty_messages_is_valid():
+    """Conversation with no messages should still produce valid hash."""
+    convo = ParsedConversation(
+        provider_name="test",
+        provider_conversation_id="conv-1",
+        title="Empty Conv",
+        created_at=None,
+        updated_at=None,
+        messages=[],
+    )
+    hash_result = conversation_content_hash(convo)
+    assert len(hash_result) == 64
+
+
+def test_conversation_hash_timestamps_affect_hash():
+    """Different created_at/updated_at should produce different hashes."""
+    msg = ParsedMessage(
+        provider_message_id="m1",
         role="user",
-        text="Original",
-        timestamp="2024-01-01T00:00:00Z",
+        text="hi",
+        timestamp=None,
+    )
+    convo1 = ParsedConversation(
+        provider_name="test",
+        provider_conversation_id="conv-1",
+        title="Test",
+        created_at="2024-01-01",
+        updated_at=None,
+        messages=[msg],
+    )
+    convo2 = ParsedConversation(
+        provider_name="test",
+        provider_conversation_id="conv-1",
+        title="Test",
+        created_at="2024-01-02",
+        updated_at=None,
+        messages=[msg],
     )
 
-    msg2 = ParsedMessage(
-        provider_message_id="msg-1",
-        role="user",
-        text="Modified",
-        timestamp="2024-01-01T00:00:00Z",
-    )
-
-    hash1 = message_content_hash(msg1, "msg-1")
-    hash2 = message_content_hash(msg2, "msg-1")
+    hash1 = conversation_content_hash(convo1)
+    hash2 = conversation_content_hash(convo2)
 
     assert hash1 != hash2
-
-
-def test_message_content_hash_changes_on_role_edit():
-    """Changing message role changes hash."""
-    msg1 = ParsedMessage(
-        provider_message_id="msg-1",
-        role="user",
-        text="Hello",
-        timestamp="2024-01-01T00:00:00Z",
-    )
-
-    msg2 = ParsedMessage(
-        provider_message_id="msg-1",
-        role="assistant",
-        text="Hello",
-        timestamp="2024-01-01T00:00:00Z",
-    )
-
-    hash1 = message_content_hash(msg1, "msg-1")
-    hash2 = message_content_hash(msg2, "msg-1")
-
-    assert hash1 != hash2
-
-
-# ============================================================================
-# Test ID generation functions
-# ============================================================================
-
-
-def test_conversation_id_format():
-    """conversation_id() formats correctly."""
-    cid = conversation_id("chatgpt", "ext-conv-123")
-
-    assert cid == "chatgpt:ext-conv-123"
-    assert ":" in cid
-
-
-def test_message_id_format():
-    """message_id() formats correctly."""
-    mid = message_id("chatgpt:ext-conv-123", "ext-msg-456")
-
-    assert mid == "chatgpt:ext-conv-123:ext-msg-456"
-    assert mid.count(":") == 2
 
 
 # ============================================================================
