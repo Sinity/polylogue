@@ -137,8 +137,8 @@ class ConversationFormatter:
             metadata={
                 "message_count": len(messages),
                 "attachment_count": len(attachments),
-                "created_at": convo.get("created_at", None),
-                "updated_at": convo.get("updated_at", None),
+                "created_at": convo["created_at"],
+                "updated_at": convo["updated_at"],
             },
         )
 
