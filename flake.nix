@@ -72,6 +72,7 @@
             pydantic-settings
             dependency-injector
             aiosqlite
+            glom
           ];
 
           # Skip tests in build (run in checks instead)
