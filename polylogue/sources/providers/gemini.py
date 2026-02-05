@@ -141,7 +141,7 @@ class GeminiMessage(BaseModel):
             tokens = TokenUsage(output_tokens=self.tokenCount)
 
         return MessageMeta(
-            role=self.role_normalized,  # type: ignore
+            role=self.role_normalized,
             tokens=tokens,
             provider="gemini",
         )
@@ -151,7 +151,7 @@ class GeminiMessage(BaseModel):
         traces = []
         if self.isThought:
             # Normalize signatures (can be strings, dicts, or models)
-            sigs = []
+            sigs: list[str | dict[str, Any]] = []
             for s in self.thoughtSignatures:
                 if isinstance(s, str):
                     sigs.append(s)

@@ -76,10 +76,7 @@ class ConversationRepository:
 
     def view(self, conversation_id: str) -> Conversation | None:
         """Get a conversation with ID resolution support."""
-        full_id = self.resolve_id(conversation_id)
-        if not full_id:
-            # Try as full ID if resolution fails
-            full_id = conversation_id
+        full_id = self.resolve_id(conversation_id) or conversation_id
         return self.get(full_id)
 
     def get_eager(self, conversation_id: str) -> Conversation | None:
@@ -99,7 +96,7 @@ class ConversationRepository:
         offset: int = 0,
         provider: str | None = None,
         source: str | None = None,
-    ) -> list[ConversationSummary]:
+    ) -> builtins.list[ConversationSummary]:
         """List conversation summaries without loading messages."""
         conv_records = self._backend.list_conversations(
             source=source,
@@ -114,7 +111,7 @@ class ConversationRepository:
         limit: int = 50,
         offset: int = 0,
         provider: str | None = None,
-    ) -> list[Conversation]:
+    ) -> builtins.list[Conversation]:
         """List conversations with lazy message loading."""
         conv_records = self._backend.list_conversations(
             provider=provider,
@@ -131,7 +128,7 @@ class ConversationRepository:
             return self.get(str(conv.parent_id))
         return None
 
-    def get_children(self, conversation_id: str) -> list[Conversation]:
+    def get_children(self, conversation_id: str) -> builtins.list[Conversation]:
         """Get all direct children of this conversation."""
         child_records = self._backend.list_conversations(parent_id=conversation_id)
         source = RepositoryMessageSource(self._backend)
@@ -150,7 +147,7 @@ class ConversationRepository:
             current = parent
         return current
 
-    def get_session_tree(self, conversation_id: str) -> list[Conversation]:
+    def get_session_tree(self, conversation_id: str) -> builtins.list[Conversation]:
         """Get all conversations in the session tree."""
         root = self.get_root(conversation_id)
 
@@ -165,7 +162,7 @@ class ConversationRepository:
 
         return tree
 
-    def search_summaries(self, query: str, limit: int = 20) -> list[ConversationSummary]:
+    def search_summaries(self, query: str, limit: int = 20) -> builtins.list[ConversationSummary]:
         """Search conversations and return summaries."""
         ids = self._backend.search_conversations(query, limit=limit)
         summaries = []
@@ -180,7 +177,7 @@ class ConversationRepository:
         ids = self._backend.search_conversations(query, limit=limit)
         return self._get_many(ids)
 
-    def _get_many(self, conversation_ids: list[str]) -> list[Conversation]:
+    def _get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:
         """Bulk fetch lazy conversation objects."""
         if not conversation_ids:
             return []
@@ -263,8 +260,8 @@ class ConversationRepository:
         self,
         *,
         conversation: ConversationRecord,
-        messages: list[MessageRecord],
-        attachments: list[AttachmentRecord],
+        messages: builtins.list[MessageRecord],
+        attachments: builtins.list[AttachmentRecord],
     ) -> dict[str, int]:
         """Save a conversation with its messages and attachments atomically."""
         return self._save_via_backend(conversation, messages, attachments)
@@ -272,8 +269,8 @@ class ConversationRepository:
     def _save_via_backend(
         self,
         conversation: ConversationRecord,
-        messages: list[MessageRecord],
-        attachments: list[AttachmentRecord],
+        messages: builtins.list[MessageRecord],
+        attachments: builtins.list[AttachmentRecord],
     ) -> dict[str, int]:
         counts: dict[str, int] = {
             "conversations": 0,

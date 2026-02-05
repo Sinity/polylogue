@@ -310,7 +310,7 @@ class MessageCollection(Sized):
         from polylogue.lib.models import Message
 
         # Return schema for list of messages
-        return {"type": "array", "items": handler.resolve_ref_schema(handler.generate(Message))}
+        return {"type": "array", "items": handler.resolve_ref_schema(handler.generate(Message))}  # type: ignore[attr-defined]
 
 
 __all__ = ["MessageCollection", "MessageSource"]

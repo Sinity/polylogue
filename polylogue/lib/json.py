@@ -38,12 +38,12 @@ def dumps(obj: Any, *, default: Callable[[Any], Any] | None = None, option: int 
     if option is not None:
         kwargs["option"] = option
     try:
-        return orjson.dumps(obj, **kwargs).decode("utf-8")
+        return str(orjson.dumps(obj, **kwargs).decode("utf-8"))
     except TypeError:
         pass
     import json
 
-    return json.dumps(obj, default=encoder)
+    return str(json.dumps(obj, default=encoder))
 
 
 def loads(obj: str | bytes) -> Any:
