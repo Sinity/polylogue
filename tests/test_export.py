@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from polylogue.export import export_jsonl
-from polylogue.storage.backends.sqlite import SQLiteBackend
 from tests.helpers import ConversationBuilder
 
 
@@ -106,10 +105,8 @@ def test_export_handles_empty_db(db_path, tmp_path):
     """Exporting empty DB produces empty file."""
     from unittest.mock import patch
 
-    from polylogue.storage.backends.sqlite import connection_context
-
     # Ensure tables exist by opening a connection (which auto-creates schema)
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.sqlite import connection_context, open_connection
 
     with open_connection(db_path):
         pass
