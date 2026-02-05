@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 from pydantic import BaseModel, Field, field_validator
 
-from polylogue.core.hashing import hash_text
+from polylogue.lib.hashing import hash_text
 
 
 class ParsedMessage(BaseModel):
@@ -12,6 +13,8 @@ class ParsedMessage(BaseModel):
     text: str | None = None
     timestamp: str | None = None
     provider_meta: dict[str, object] | None = None
+    parent_message_provider_id: str | None = None
+    branch_index: int = 0
 
 
 class ParsedAttachment(BaseModel):
@@ -59,7 +62,7 @@ class ParsedAttachment(BaseModel):
 
         # If traversal or symlinks were detected, hash to prevent re-assembly
         if has_traversal or has_symlink:
-            from polylogue.core.hashing import hash_text
+            from polylogue.lib.hashing import hash_text
             # Hash the original to prevent reconstruction
             original_hash = hash_text(original_v)[:12]
             v = f"_blocked_{original_hash}"
@@ -126,24 +129,28 @@ class ParsedConversation(BaseModel):
     messages: list[ParsedMessage]
     attachments: list[ParsedAttachment] = Field(default_factory=list)
     provider_meta: dict[str, object] | None = None
+    parent_conversation_provider_id: str | None = None
+    branch_type: str | None = None
+
+
+class RawConversationData(BaseModel):
+    """Container for raw conversation bytes with metadata.
+
+    Used to pass raw data through the ingestion pipeline alongside
+    the parsed conversation, enabling honest database-driven testing.
+    """
+    raw_bytes: bytes
+    source_path: str
+    source_index: int | None = None
+    file_mtime: str | None = None
+    provider_hint: str | None = None  # Provider detected from path/content
 
 
 # hash_text is now imported from core.hashing
 
 
-def normalize_role(role: str | None) -> str:
-    if not role:
-        return "message"
-    lowered = str(role).strip().lower()
-    if not lowered:  # Handle whitespace-only strings
-        return "message"
-    if lowered in {"assistant", "model"}:
-        return "assistant"
-    if lowered in {"user", "human"}:
-        return "user"
-    if lowered in {"system"}:
-        return "system"
-    return lowered
+# Re-export from canonical location
+from polylogue.lib.roles import normalize_role
 
 
 def _make_attachment_id(seed: str) -> str:
