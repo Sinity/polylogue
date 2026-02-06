@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import click
+
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary, Message
@@ -157,13 +159,11 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             if query_terms:
                 resolved = conv_repo.resolve_id(query_terms[0])
                 if not resolved:
-                    env.ui.console.print(f"[red]No conversation found matching: {query_terms[0]}[/red]")
+                    click.echo(f"No conversation found matching: {query_terms[0]}", err=True)
                     raise SystemExit(2)
                 full_id = str(resolved)
             else:
-                env.ui.console.print(
-                    "[yellow]--stream requires a specific conversation. Use --latest or specify an ID.[/yellow]"
-                )
+                click.echo("--stream requires a specific conversation. Use --latest or specify an ID.", err=True)
                 raise SystemExit(1)
 
         output_format = params.get("output_format") or "plaintext"
@@ -247,8 +247,8 @@ def _apply_modifiers(
 
     # Dry-run mode: show preview and exit
     if dry_run:
-        env.ui.console.print(f"[yellow]DRY-RUN: Would modify {count} conversation(s)[/yellow]")
-        env.ui.console.print(f"Operations: {op_desc}")
+        click.echo(f"DRY-RUN: Would modify {count} conversation(s)")
+        click.echo(f"Operations: {op_desc}")
         env.ui.console.print("\nSample of affected conversations:")
         for conv in results[:5]:
             title = conv.display_title[:40] if conv.display_title else conv.id[:20]
@@ -257,9 +257,9 @@ def _apply_modifiers(
 
     # Confirmation for bulk operations (>10 items)
     if count > 10 and not force:
-        env.ui.console.print(f"[yellow]About to modify {count} conversations[/yellow]")
-        env.ui.console.print(f"Operations: {op_desc}")
-        env.ui.console.print("\nUse --force to skip this prompt, or --dry-run to preview.")
+        click.echo(f"About to modify {count} conversations")
+        click.echo(f"Operations: {op_desc}")
+        click.echo("\nUse --force to skip this prompt, or --dry-run to preview.")
         raise SystemExit(1)
 
     # Load repository
@@ -290,7 +290,7 @@ def _apply_modifiers(
         reports.append(f"Set {meta_set} metadata field(s)")
 
     for report in reports:
-        env.ui.console.print(f"[green]{report}[/green]")
+        click.echo(report)
 
 
 def _delete_conversations(
@@ -311,8 +311,8 @@ def _delete_conversations(
 
     # Dry-run mode: show preview and exit
     if dry_run:
-        env.ui.console.print(f"[yellow]DRY-RUN: Would delete {count} conversation(s)[/yellow]")
-        env.ui.console.print("\nSample of conversations to be deleted:")
+        click.echo(f"DRY-RUN: Would delete {count} conversation(s)")
+        click.echo("\nSample of conversations to be deleted:")
         for conv in results[:5]:
             title = conv.display_title[:40] if conv.display_title else conv.id[:20]
             env.ui.console.print(f"  - {conv.id[:24]} [{conv.provider}] {title}")
@@ -320,8 +320,8 @@ def _delete_conversations(
 
     # Confirmation for bulk operations (>10 items)
     if count > 10 and not force:
-        env.ui.console.print(f"[red]About to DELETE {count} conversations[/red]")
-        env.ui.console.print("\nUse --force to skip this prompt, or --dry-run to preview.")
+        click.echo(f"About to DELETE {count} conversations", err=True)
+        click.echo("\nUse --force to skip this prompt, or --dry-run to preview.", err=True)
         raise SystemExit(1)
 
     # Individual confirmation if not bulk but not forced
@@ -337,7 +337,7 @@ def _delete_conversations(
         if repo.delete_conversation(str(conv.id)):
             deleted_count += 1
 
-    env.ui.console.print(f"[green]Deleted {deleted_count} conversation(s)[/green]")
+    click.echo(f"Deleted {deleted_count} conversation(s)")
 
 
 def _apply_transform(results: list[Conversation], transform: str) -> list[Conversation]:
@@ -733,7 +733,7 @@ def stream_conversation(
     # Get conversation metadata for header
     conv_record = repo.backend.get_conversation(conversation_id)
     if not conv_record:
-        env.ui.console.print(f"[red]Conversation not found: {conversation_id}[/red]")
+        click.echo(f"Conversation not found: {conversation_id}", err=True)
         raise SystemExit(1)
 
     # Get stats for progress indication
@@ -899,7 +899,7 @@ def _copy_to_clipboard(env: AppEnv, content: str) -> None:
         except (subprocess.CalledProcessError, FileNotFoundError):
             continue
 
-    env.ui.console.print("[yellow]Could not copy to clipboard (no clipboard tool found).[/yellow]")
+    click.echo("Could not copy to clipboard (no clipboard tool found).", err=True)
 
 
 def _open_result(
@@ -935,8 +935,8 @@ def _open_result(
             render_root = Path(render_root_env)
 
     if not render_root or not render_root.exists():
-        env.ui.console.print("[red]No rendered outputs found.[/red]")
-        env.ui.console.print("Run 'polylogue sync' first to render conversations.")
+        click.echo("No rendered outputs found.", err=True)
+        click.echo("Run 'polylogue sync' first to render conversations.", err=True)
         raise SystemExit(1)
 
     # Search for rendered file matching this conversation ID
@@ -957,8 +957,8 @@ def _open_result(
         render_file = latest_render_path(render_root)
 
     if not render_file:
-        env.ui.console.print("[red]No rendered output found for this conversation.[/red]")
-        env.ui.console.print("Run 'polylogue sync' to render conversations.")
+        click.echo("No rendered output found for this conversation.", err=True)
+        click.echo("Run 'polylogue sync' to render conversations.", err=True)
         raise SystemExit(1)
 
     # Open in browser

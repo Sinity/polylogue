@@ -124,12 +124,8 @@ def _display_result(
     if result.index_error:
         error_line = f"Index error: {result.index_error}"
         hint_line = "Hint: run `polylogue run --stage index` to rebuild the index."
-        if env.ui.plain:
-            env.ui.console.print(error_line)
-            env.ui.console.print(hint_line)
-        else:
-            env.ui.console.print(f"[yellow]{error_line}[/yellow]")
-            env.ui.console.print(f"[yellow]{hint_line}[/yellow]")
+        click.echo(error_line, err=True)
+        click.echo(hint_line, err=True)
 
 
 def _notify_new_conversations(count: int) -> None:
@@ -273,9 +269,9 @@ def run_command(
                         if webhook:
                             _webhook_on_new(webhook, new_count)
                     else:
-                        env.ui.console.print(f"[dim]No new conversations at {time.strftime('%H:%M:%S')}[/dim]")
+                        click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
                 except DriveError as exc:
-                    env.ui.console.print(f"[red]Sync error: {exc}[/red]")
+                    click.echo(f"Sync error: {exc}", err=True)
                 time.sleep(poll_interval)
         except KeyboardInterrupt:
             env.ui.console.print("\nWatch mode stopped.")

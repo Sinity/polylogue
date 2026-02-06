@@ -384,16 +384,15 @@ class TestCopyToClipboard:
             output = " ".join(str(c) for c in calls)
             assert "clipboard" in output.lower()
 
-    def test_shows_failure_message(self, mock_env):
+    def test_shows_failure_message(self, mock_env, capsys):
         """Shows failure message when no clipboard tool found."""
         with patch("subprocess.run") as mock_run:
             mock_run.side_effect = FileNotFoundError()
 
             query._copy_to_clipboard(mock_env, "test content")
 
-            calls = mock_env.ui.console.print.call_args_list
-            output = " ".join(str(c) for c in calls)
-            assert "could not" in output.lower() or "clipboard" in output.lower()
+            captured = capsys.readouterr()
+            assert "could not" in captured.err.lower() or "clipboard" in captured.err.lower()
 
 
 class TestSendOutput:
@@ -430,7 +429,7 @@ class TestSendOutput:
 class TestDryRunMode:
     """Tests for --dry-run functionality in modifiers and delete."""
 
-    def test_dry_run_modifiers_shows_preview(self, mock_env, sample_conversations):
+    def test_dry_run_modifiers_shows_preview(self, mock_env, sample_conversations, capsys):
         """Dry-run mode shows preview without modifying."""
         params = {
             "add_tag": ("test-tag",),
@@ -439,11 +438,10 @@ class TestDryRunMode:
 
         query._apply_modifiers(mock_env, sample_conversations, params)
 
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "DRY-RUN" in output
-        assert "3" in output  # Count of conversations
-        assert "add tags" in output.lower()
+        captured = capsys.readouterr()
+        assert "DRY-RUN" in captured.out
+        assert "3" in captured.out  # Count of conversations
+        assert "add tags" in captured.out.lower()
 
     def test_dry_run_modifiers_shows_sample(self, mock_env, sample_conversations):
         """Dry-run shows sample of affected conversations."""
@@ -458,23 +456,22 @@ class TestDryRunMode:
         output = " ".join(str(c) for c in calls)
         assert "conv1" in output or "chatgpt" in output
 
-    def test_dry_run_delete_shows_preview(self, mock_env, sample_conversations):
+    def test_dry_run_delete_shows_preview(self, mock_env, sample_conversations, capsys):
         """Dry-run delete shows preview without deleting."""
         params = {"dry_run": True}
 
         query._delete_conversations(mock_env, sample_conversations, params)
 
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "DRY-RUN" in output
-        assert "delete" in output.lower()
-        assert "3" in output
+        captured = capsys.readouterr()
+        assert "DRY-RUN" in captured.out
+        assert "delete" in captured.out.lower()
+        assert "3" in captured.out
 
 
 class TestBulkOperationConfirmation:
     """Tests for bulk operation confirmation (>10 items requires --force)."""
 
-    def test_modifiers_require_force_for_bulk(self, mock_env):
+    def test_modifiers_require_force_for_bulk(self, mock_env, capsys):
         """Modifiers require --force for >10 items."""
         # Create 15 mock conversations
         convs = [MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test") for i in range(15)]
@@ -484,10 +481,9 @@ class TestBulkOperationConfirmation:
             query._apply_modifiers(mock_env, convs, params)
 
         assert exc_info.value.code == 1
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "15" in output
-        assert "--force" in output
+        captured = capsys.readouterr()
+        assert "15" in captured.out
+        assert "--force" in captured.out
 
     def test_modifiers_proceed_with_force(self, mock_env):
         """Modifiers proceed with --force for bulk operations."""
@@ -505,7 +501,7 @@ class TestBulkOperationConfirmation:
             # Should have called add_tag 15 times
             assert mock_backend.add_tag.call_count == 15
 
-    def test_delete_requires_force_for_bulk(self, mock_env):
+    def test_delete_requires_force_for_bulk(self, mock_env, capsys):
         """Delete requires --force for >10 items."""
         convs = [
             MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test", updated_at=None) for i in range(15)
@@ -516,10 +512,9 @@ class TestBulkOperationConfirmation:
             query._delete_conversations(mock_env, convs, params)
 
         assert exc_info.value.code == 1
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "DELETE" in output
-        assert "--force" in output
+        captured = capsys.readouterr()
+        assert "DELETE" in captured.err
+        assert "--force" in captured.err
 
     def test_delete_proceeds_with_force(self, mock_env):
         """Delete proceeds with --force for bulk operations."""
@@ -556,7 +551,7 @@ class TestBulkOperationConfirmation:
 class TestOperationReporting:
     """Tests for operation result reporting."""
 
-    def test_add_tag_reports_count(self, mock_env, sample_conversations):
+    def test_add_tag_reports_count(self, mock_env, sample_conversations, capsys):
         """Add tag reports count of affected conversations."""
         params = {"add_tag": ("new-tag",)}
 
@@ -567,12 +562,11 @@ class TestOperationReporting:
         ):
             query._apply_modifiers(mock_env, sample_conversations, params)
 
-            calls = mock_env.ui.console.print.call_args_list
-            output = " ".join(str(c) for c in calls)
-            assert "Added tags" in output
-            assert "3" in output  # Number of conversations
+            captured = capsys.readouterr()
+            assert "Added tags" in captured.out
+            assert "3" in captured.out  # Number of conversations
 
-    def test_delete_reports_count(self, mock_env, sample_conversations):
+    def test_delete_reports_count(self, mock_env, sample_conversations, capsys):
         """Delete reports count of deleted conversations."""
         params = {}
 
@@ -584,7 +578,6 @@ class TestOperationReporting:
         ):
             query._delete_conversations(mock_env, sample_conversations, params)
 
-            calls = mock_env.ui.console.print.call_args_list
-            output = " ".join(str(c) for c in calls)
-            assert "Deleted" in output
-            assert "3" in output
+            captured = capsys.readouterr()
+            assert "Deleted" in captured.out
+            assert "3" in captured.out

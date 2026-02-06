@@ -66,8 +66,8 @@ def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, v
         if error_count == 0 and warning_count == 0:
             env.ui.console.print("No issues to repair.")
         else:
-            env.ui.console.print("")
-            env.ui.console.print("[bold]Running repairs...[/bold]" if not env.ui.plain else "Running repairs...")
+            click.echo("")
+            click.echo("Running repairs...")
 
             # Run all repair functions
             results = run_all_repairs(config)
@@ -82,9 +82,9 @@ def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, v
                     total_repaired += result.repaired_count
 
             if total_repaired > 0:
-                env.ui.console.print(f"\n[green]Repaired {total_repaired} issue(s)[/green]" if not env.ui.plain else f"\nRepaired {total_repaired} issue(s)")
+                click.echo(f"\nRepaired {total_repaired} issue(s)")
             else:
-                env.ui.console.print("  No issues found that could be automatically repaired.")
+                click.echo("  No issues found that could be automatically repaired.")
 
         # Vacuum if requested (always run when --vacuum is specified)
         if vacuum:
