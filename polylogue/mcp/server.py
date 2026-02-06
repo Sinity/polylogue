@@ -239,7 +239,7 @@ def _conversation_to_full_dict(conv: Any) -> dict[str, Any]:
         {
             "id": str(msg.id),
             "role": msg.role.value if hasattr(msg.role, "value") else str(msg.role),
-            "text": msg.text[:1000] + "..." if len(msg.text) > 1000 else msg.text,
+            "text": ((msg.text or "")[:1000] + "...") if len(msg.text or "") > 1000 else (msg.text or ""),
             "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
         }
         for msg in conv.messages
@@ -322,16 +322,12 @@ def _write_error(code: int, message: str) -> None:
 
 def _handle_stats_resource(request_id: Any, repo: ConversationRepository) -> dict[str, Any]:
     """Handle polylogue://stats resource."""
-    convs = repo.list(limit=10000)
-
-    providers_count: dict[str, int] = {}
-    for conv in convs:
-        providers_count[conv.provider] = providers_count.get(conv.provider, 0) + 1
+    archive_stats = repo.get_archive_stats()
 
     stats = {
-        "total_conversations": len(convs),
-        "total_messages": sum(len(c.messages) for c in convs),
-        "providers": providers_count,
+        "total_conversations": archive_stats.total_conversations,
+        "total_messages": archive_stats.total_messages,
+        "providers": archive_stats.providers,
     }
 
     return _success(
