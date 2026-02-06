@@ -80,30 +80,30 @@ def site_command(
 
     builder = SiteBuilder(output_dir=output_path, config=config)
 
-    env.ui.console.print(f"[dim]Building site to {output_path}...[/dim]")
+    click.echo(f"Building site to {output_path}...")
 
     try:
         result = builder.build()
-        env.ui.console.print(
-            f"[green]✓[/green] Site generated: "
+        click.echo(
+            f"Site generated: "
             f"{result['conversations']} conversations, "
             f"{result['index_pages']} index pages"
         )
-        env.ui.console.print(f"[dim]Output: {output_path}[/dim]")
+        click.echo(f"Output: {output_path}")
 
         if search and search_provider == "pagefind":
-            env.ui.console.print(
-                f"\n[dim]To enable search, run:[/dim]\n"
+            click.echo(
+                f"\nTo enable search, run:\n"
                 f"  npx pagefind --site {output_path}"
             )
 
-        env.ui.console.print(
-            f"\n[dim]To preview locally:[/dim]\n"
+        click.echo(
+            f"\nTo preview locally:\n"
             f"  python -m http.server -d {output_path}"
         )
 
     except Exception as exc:
-        env.ui.console.print(f"[red]Error building site: {exc}[/red]")
+        click.echo(f"Error building site: {exc}", err=True)
         raise click.Abort() from exc
 
 
