@@ -25,6 +25,7 @@ __pycache__
 .hypothesis/
 .coverage
 coverage.json
+coverage_report*.txt
 htmlcov/
 .mypy_cache/
 .ruff_cache/
