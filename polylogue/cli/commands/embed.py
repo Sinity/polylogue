@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import click
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
+    from polylogue.storage.repository import ConversationRepository
 
 
 @click.command("embed")
@@ -66,7 +66,7 @@ def embed_command(
     """
     import os
 
-    from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
+    from polylogue.storage.backends.sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search_providers import create_vector_provider
 
@@ -141,12 +141,12 @@ def _show_embedding_stats(env: AppEnv) -> None:
 
     coverage = (embedded_convs / total_convs * 100) if total_convs > 0 else 0
 
-    env.ui.console.print("\n[bold]Embedding Statistics[/bold]")
-    env.ui.console.print(f"  Total conversations:    {total_convs}")
-    env.ui.console.print(f"  Embedded conversations: {embedded_convs}")
-    env.ui.console.print(f"  Embedded messages:      {embedded_msgs}")
-    env.ui.console.print(f"  Coverage:               {coverage:.1f}%")
-    env.ui.console.print(f"  Pending:                {pending}")
+    click.echo("\nEmbedding Statistics")
+    click.echo(f"  Total conversations:    {total_convs}")
+    click.echo(f"  Embedded conversations: {embedded_convs}")
+    click.echo(f"  Embedded messages:      {embedded_msgs}")
+    click.echo(f"  Coverage:               {coverage:.1f}%")
+    click.echo(f"  Pending:                {pending}")
 
 
 def _embed_single(
@@ -178,13 +178,12 @@ def _embed_single(
 
         messages = []
         for row in rows:
+            import contextlib
             import json
             provider_meta = None
             if row["provider_meta"]:
-                try:
+                with contextlib.suppress(Exception):
                     provider_meta = json.loads(row["provider_meta"])
-                except Exception:
-                    pass
 
             messages.append(MessageRecord(
                 message_id=row["message_id"],
@@ -219,7 +218,7 @@ def _embed_batch(
     limit: int | None = None,
 ) -> None:
     """Embed multiple conversations."""
-    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
     from polylogue.storage.backends.sqlite import open_connection
     from polylogue.storage.store import MessageRecord
@@ -282,13 +281,12 @@ def _embed_batch(
 
                 messages = []
                 for row in rows:
+                    import contextlib
                     import json
                     provider_meta = None
                     if row["provider_meta"]:
-                        try:
+                        with contextlib.suppress(Exception):
                             provider_meta = json.loads(row["provider_meta"])
-                        except Exception:
-                            pass
 
                     messages.append(MessageRecord(
                         message_id=row["message_id"],

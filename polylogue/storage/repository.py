@@ -435,7 +435,7 @@ class ConversationRepository:
 
         return enriched
 
-    def get_archive_stats(self) -> "ArchiveStats":
+    def get_archive_stats(self) -> ArchiveStats:
         """Get comprehensive archive statistics.
 
         Returns:
