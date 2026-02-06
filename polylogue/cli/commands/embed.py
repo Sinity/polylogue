@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import click
+import click  # noqa: F401
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -73,8 +73,8 @@ def embed_command(
     # Check for API key
     voyage_key = os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY")
     if not voyage_key and not stats:
-        env.ui.console.print("[red]Error: VOYAGE_API_KEY environment variable not set[/red]")
-        env.ui.console.print("[dim]Set it with: export VOYAGE_API_KEY=your-api-key[/dim]")
+        click.echo("Error: VOYAGE_API_KEY environment variable not set", err=True)
+        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key", err=True)
         raise click.Abort()
 
     # Stats only mode
@@ -85,8 +85,8 @@ def embed_command(
     # Create vector provider
     vec_provider = create_vector_provider(voyage_api_key=voyage_key)
     if vec_provider is None:
-        env.ui.console.print("[red]Error: sqlite-vec not available[/red]")
-        env.ui.console.print("[dim]Install with: pip install sqlite-vec[/dim]")
+        click.echo("Error: sqlite-vec not available", err=True)
+        click.echo("Install with: pip install sqlite-vec", err=True)
         raise click.Abort()
 
     # Set model if different from default
@@ -162,7 +162,7 @@ def _embed_single(
     # Get conversation
     conv = repo.get(conversation_id)
     if conv is None:
-        env.ui.console.print(f"[red]Error: Conversation {conversation_id} not found[/red]")
+        click.echo(f"Error: Conversation {conversation_id} not found", err=True)
         raise click.Abort()
 
     # Get messages
@@ -196,16 +196,16 @@ def _embed_single(
             ))
 
     if not messages:
-        env.ui.console.print(f"[yellow]No messages to embed in {conversation_id}[/yellow]")
+        click.echo(f"No messages to embed in {conversation_id}")
         return
 
-    env.ui.console.print(f"[dim]Embedding {len(messages)} messages from {conv.title or conversation_id[:12]}...[/dim]")
+    click.echo(f"Embedding {len(messages)} messages from {conv.title or conversation_id[:12]}...")
 
     try:
         vec_provider.upsert(conversation_id, messages)  # type: ignore
-        env.ui.console.print(f"[green]✓[/green] Embedded {conversation_id[:12]}")
+        click.echo(f"✓ Embedded {conversation_id[:12]}")
     except Exception as exc:
-        env.ui.console.print(f"[red]Error embedding {conversation_id}: {exc}[/red]")
+        click.echo(f"Error embedding {conversation_id}: {exc}", err=True)
         raise click.Abort() from exc
 
 
@@ -248,10 +248,10 @@ def _embed_batch(
         conv_ids = conv_ids[:limit]
 
     if not conv_ids:
-        env.ui.console.print("[green]All conversations are already embedded.[/green]")
+        click.echo("All conversations are already embedded.")
         return
 
-    env.ui.console.print(f"[dim]Embedding {len(conv_ids)} conversations...[/dim]")
+    click.echo(f"Embedding {len(conv_ids)} conversations...")
 
     embedded_count = 0
     error_count = 0
@@ -305,12 +305,12 @@ def _embed_batch(
                 except Exception as exc:
                     error_count += 1
                     # Log error but continue
-                    progress.console.print(f"[yellow]Warning: {conv_id[:12]}: {exc}[/yellow]")
+                    progress.console.print(f"Warning: {conv_id[:12]}: {exc}")
 
             progress.update(task, advance=1)
 
-    env.ui.console.print(
-        f"\n[green]✓[/green] Embedded {embedded_count} conversations"
+    click.echo(
+        f"\n✓ Embedded {embedded_count} conversations"
         + (f" ({error_count} errors)" if error_count else "")
     )
 

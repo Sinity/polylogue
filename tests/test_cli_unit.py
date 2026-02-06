@@ -1160,10 +1160,13 @@ class TestCheckCommand:
             result = runner.invoke(check_command, ["--repair"], obj=mock_env)
 
             assert result.exit_code == 0
+            # "Running repairs..." and "Repaired N" go to click.echo → result.output
+            # Individual repair lines go to env.ui.console.print
+            combined = result.output
             calls = mock_env.ui.console.print.call_args_list
-            output = " ".join(str(c) for c in calls)
-            assert "repair" in output.lower()
-            assert "7" in output  # 5 + 2 total repaired
+            combined += " ".join(str(c) for c in calls)
+            assert "repair" in combined.lower()
+            assert "7" in combined  # 5 + 2 total repaired
 
     def test_check_repair_with_vacuum(self, runner, mock_env, sample_health_report):
         """Repair with --vacuum runs VACUUM after repairs."""
