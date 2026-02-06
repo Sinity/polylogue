@@ -565,7 +565,7 @@ class SiteBuilder:
                 id=str(conv.id),
                 title=conv.title or str(conv.id)[:12],
                 provider=provider,
-                source=conv.source,
+                source=None,
                 created_at=created_at_str,
                 updated_at=updated_at_str,
                 message_count=conv.message_count,
