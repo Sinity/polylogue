@@ -263,3 +263,94 @@ class TestConversationFilterCustom:
             .list()
         )
         assert all(len(c.messages) >= 2 for c in result)
+
+
+class TestDateParsing:
+    """Tests for date parsing in ConversationFilter.since() and until()."""
+
+    def test_since_invalid_date_raises_value_error(self, filter_repo):
+        """Calling .since() with invalid date raises ValueError."""
+        f = ConversationFilter(filter_repo)
+        with pytest.raises(ValueError, match="Cannot parse date"):
+            f.since("invalid-date")
+
+    def test_until_invalid_date_raises_value_error(self, filter_repo):
+        """Calling .until() with invalid date raises ValueError."""
+        f = ConversationFilter(filter_repo)
+        with pytest.raises(ValueError, match="Cannot parse date"):
+            f.until("invalid-date")
+
+    def test_since_natural_language_accepted(self, filter_repo):
+        """Calling .since('yesterday') should NOT raise and set _since_date."""
+        f = ConversationFilter(filter_repo)
+        # Should not raise
+        result = f.since("yesterday")
+        # Should return self for chaining
+        assert result is f
+        # Should set _since_date to a non-None datetime
+        assert f._since_date is not None
+        # Should be a datetime
+        from datetime import datetime
+        assert isinstance(f._since_date, datetime)
+
+    def test_since_iso_date_accepted(self, filter_repo):
+        """Calling .since('2025-01-15') should NOT raise and set _since_date."""
+        f = ConversationFilter(filter_repo)
+        # Should not raise
+        result = f.since("2025-01-15")
+        # Should return self for chaining
+        assert result is f
+        # Should set _since_date to a non-None datetime
+        assert f._since_date is not None
+        # Should be a datetime
+        from datetime import datetime
+        assert isinstance(f._since_date, datetime)
+
+    def test_since_relative_date_accepted(self, filter_repo):
+        """Calling .since('last week') should NOT raise."""
+        f = ConversationFilter(filter_repo)
+        # Should not raise
+        result = f.since("last week")
+        # Should return self for chaining
+        assert result is f
+        # Should set _since_date to a non-None datetime
+        assert f._since_date is not None
+        # Should be a datetime
+        from datetime import datetime
+        assert isinstance(f._since_date, datetime)
+
+    def test_until_natural_language_accepted(self, filter_repo):
+        """Calling .until('today') should NOT raise."""
+        f = ConversationFilter(filter_repo)
+        # Should not raise
+        result = f.until("today")
+        # Should return self for chaining
+        assert result is f
+        # Should set _until_date to a non-None datetime
+        assert f._until_date is not None
+        # Should be a datetime
+        from datetime import datetime
+        assert isinstance(f._until_date, datetime)
+
+
+class TestFtsWithProviderFilter:
+    """Tests for combined FTS search + provider filter."""
+
+    def test_fts_with_provider_returns_results(self, filter_repo):
+        """FTS search combined with provider filter should return matching results."""
+        # Search for "error" within claude provider
+        result = ConversationFilter(filter_repo).contains("errors").provider("claude").list()
+        assert len(result) > 0, "Should find 'errors' in claude conversations"
+        assert all(c.provider == "claude" for c in result)
+
+    def test_fts_with_provider_excludes_other_providers(self, filter_repo):
+        """FTS + provider filter should not return conversations from other providers."""
+        result = ConversationFilter(filter_repo).contains("async").provider("chatgpt").list()
+        assert len(result) > 0, "Should find 'async' in chatgpt conversations"
+        assert all(c.provider == "chatgpt" for c in result)
+
+    def test_fts_with_nonmatching_provider_returns_empty(self, filter_repo):
+        """FTS results filtered by non-matching provider should be empty."""
+        # 'errors' only appears in claude conversations in our test data
+        result = ConversationFilter(filter_repo).contains("schema").provider("chatgpt").list()
+        assert len(result) == 0, "Should not find 'schema' in chatgpt conversations"

@@ -98,11 +98,19 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     # Apply --since
     if params.get("since"):
-        filter_chain = filter_chain.since(params["since"])
+        try:
+            filter_chain = filter_chain.since(params["since"])
+        except ValueError as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1) from exc
 
     # Apply --until
     if params.get("until"):
-        filter_chain = filter_chain.until(params["until"])
+        try:
+            filter_chain = filter_chain.until(params["until"])
+        except ValueError as exc:
+            click.echo(f"Error: {exc}", err=True)
+            raise SystemExit(1) from exc
 
     # Apply --latest (= --sort date --limit 1)
     if params.get("latest"):

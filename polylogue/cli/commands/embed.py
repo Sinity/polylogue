@@ -218,6 +218,7 @@ def _embed_batch(
     limit: int | None = None,
 ) -> None:
     """Embed multiple conversations."""
+    from rich.console import Console as RichConsole
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
     from polylogue.storage.backends.sqlite import open_connection
@@ -256,58 +257,78 @@ def _embed_batch(
     embedded_count = 0
     error_count = 0
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
-        console=env.ui.console,
-    ) as progress:
-        task = progress.add_task("Embedding", total=len(conv_ids))
+    def _embed_one(conv_id: str, title: str | None) -> bool:
+        """Embed a single conversation. Returns True on success."""
+        import contextlib
+        import json
 
-        for conv_id, title in conv_ids:
-            progress.update(task, description=f"Embedding {title or conv_id[:12]}...")
+        with open_connection(None) as conn:
+            rows = conn.execute(
+                """
+                SELECT message_id, conversation_id, role, text, content_hash, provider_meta, version
+                FROM messages
+                WHERE conversation_id = ?
+                """,
+                (conv_id,),
+            ).fetchall()
 
-            # Get messages for this conversation
-            with open_connection(None) as conn:
-                rows = conn.execute(
-                    """
-                    SELECT message_id, conversation_id, role, text, content_hash, provider_meta, version
-                    FROM messages
-                    WHERE conversation_id = ?
-                    """,
-                    (conv_id,),
-                ).fetchall()
+            messages = []
+            for row in rows:
+                provider_meta = None
+                if row["provider_meta"]:
+                    with contextlib.suppress(Exception):
+                        provider_meta = json.loads(row["provider_meta"])
 
-                messages = []
-                for row in rows:
-                    import contextlib
-                    import json
-                    provider_meta = None
-                    if row["provider_meta"]:
-                        with contextlib.suppress(Exception):
-                            provider_meta = json.loads(row["provider_meta"])
+                messages.append(MessageRecord(
+                    message_id=row["message_id"],
+                    conversation_id=row["conversation_id"],
+                    role=row["role"],
+                    text=row["text"],
+                    content_hash=row["content_hash"],
+                    provider_meta=provider_meta,
+                    version=row["version"],
+                ))
 
-                    messages.append(MessageRecord(
-                        message_id=row["message_id"],
-                        conversation_id=row["conversation_id"],
-                        role=row["role"],
-                        text=row["text"],
-                        content_hash=row["content_hash"],
-                        provider_meta=provider_meta,
-                        version=row["version"],
-                    ))
+        if messages:
+            vec_provider.upsert(conv_id, messages)  # type: ignore
+            return True
+        return False
 
-            if messages:
+    # Use Rich progress bar only when console supports it
+    use_rich = isinstance(env.ui.console, RichConsole)
+
+    if use_rich:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            console=env.ui.console,
+        ) as progress:
+            task = progress.add_task("Embedding", total=len(conv_ids))
+
+            for conv_id, title in conv_ids:
+                progress.update(task, description=f"Embedding {title or conv_id[:12]}...")
                 try:
-                    vec_provider.upsert(conv_id, messages)  # type: ignore
-                    embedded_count += 1
+                    if _embed_one(conv_id, title):
+                        embedded_count += 1
                 except Exception as exc:
                     error_count += 1
-                    # Log error but continue
                     progress.console.print(f"Warning: {conv_id[:12]}: {exc}")
-
-            progress.update(task, advance=1)
+                progress.update(task, advance=1)
+    else:
+        for i, (conv_id, title) in enumerate(conv_ids, 1):
+            label = title or conv_id[:12]
+            click.echo(f"  [{i}/{len(conv_ids)}] {label}...", nl=False)
+            try:
+                if _embed_one(conv_id, title):
+                    embedded_count += 1
+                    click.echo(" ok")
+                else:
+                    click.echo(" (no messages)")
+            except Exception as exc:
+                error_count += 1
+                click.echo(f" error: {exc}")
 
     click.echo(
         f"\n✓ Embedded {embedded_count} conversations"

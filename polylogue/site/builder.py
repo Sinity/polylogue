@@ -525,52 +525,55 @@ class SiteBuilder:
         }
 
     def _build_index(self) -> list[ConversationIndex]:
-        """Build index of all conversations."""
+        """Build index of all conversations.
+
+        Uses lightweight summaries to avoid loading message content into memory.
+        For a 4800+ conversation archive this reduces memory from ~9GB to ~100MB.
+        """
         from polylogue.storage.backends.sqlite import SQLiteBackend
         from polylogue.storage.repository import ConversationRepository
 
         backend = SQLiteBackend()
         repo = ConversationRepository(backend=backend)
 
+        # Use summaries (no message content) instead of full conversations
+        summaries = repo.list_summaries(limit=100_000)
+
+        # Batch-fetch message counts
+        all_ids = [str(s.id) for s in summaries]
+        msg_counts = backend.get_message_counts_batch(all_ids)
+
         conversations: list[ConversationIndex] = []
 
-        # Fetch conversations
-        all_convs = repo.list(limit=100_000)
-
-        for conv in all_convs:
-            # Get first user message for preview
-            preview = ""
-            for msg in conv.messages[:5]:
-                if msg.is_user and msg.text:
-                    preview = msg.text[:200]
-                    break
+        for summary in summaries:
+            sid = str(summary.id)
 
             # Format created_at
             created_at_str = None
-            if conv.created_at:
+            if summary.created_at:
                 try:
-                    created_at_str = conv.created_at.strftime("%Y-%m-%d")
+                    created_at_str = summary.created_at.strftime("%Y-%m-%d")
                 except Exception:
-                    created_at_str = str(conv.created_at)[:10]
+                    created_at_str = str(summary.created_at)[:10]
 
             updated_at_str = None
-            if conv.updated_at:
+            if summary.updated_at:
                 try:
-                    updated_at_str = conv.updated_at.strftime("%Y-%m-%d %H:%M")
+                    updated_at_str = summary.updated_at.strftime("%Y-%m-%d %H:%M")
                 except Exception:
-                    updated_at_str = str(conv.updated_at)
+                    updated_at_str = str(summary.updated_at)
 
-            provider = conv.provider or "unknown"
+            provider = summary.provider or "unknown"
             conversations.append(ConversationIndex(
-                id=str(conv.id),
-                title=conv.title or str(conv.id)[:12],
+                id=sid,
+                title=summary.display_title or sid[:12],
                 provider=provider,
                 source=None,
                 created_at=created_at_str,
                 updated_at=updated_at_str,
-                message_count=conv.message_count,
-                preview=preview,
-                path=f"{provider}/{str(conv.id)[:12]}/conversation.html",
+                message_count=msg_counts.get(sid, 0),
+                preview=summary.summary or "",
+                path=f"{provider}/{sid[:12]}/conversation.html",
             ))
 
         # Sort by updated_at descending

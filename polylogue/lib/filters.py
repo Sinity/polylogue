@@ -29,7 +29,7 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from polylogue.lib.timestamps import parse_timestamp
+from polylogue.lib.dates import parse_date
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
@@ -171,13 +171,21 @@ class ConversationFilter:
         """Filter to conversations after date.
 
         Args:
-            date: Date string (e.g., "2024-01-01") or datetime object
+            date: Date string (e.g., "2024-01-01", "yesterday", "last week")
+                  or datetime object
 
         Returns:
             self for chaining
+
+        Raises:
+            ValueError: If date string cannot be parsed
         """
         if isinstance(date, str):
-            self._since_date = parse_timestamp(date)
+            parsed = parse_date(date)
+            if parsed is None:
+                msg = f"Cannot parse date: {date!r}"
+                raise ValueError(msg)
+            self._since_date = parsed
         else:
             self._since_date = date
         return self
@@ -186,13 +194,21 @@ class ConversationFilter:
         """Filter to conversations before date.
 
         Args:
-            date: Date string (e.g., "2024-12-31") or datetime object
+            date: Date string (e.g., "2024-12-31", "today", "last month")
+                  or datetime object
 
         Returns:
             self for chaining
+
+        Raises:
+            ValueError: If date string cannot be parsed
         """
         if isinstance(date, str):
-            self._until_date = parse_timestamp(date)
+            parsed = parse_date(date)
+            if parsed is None:
+                msg = f"Cannot parse date: {date!r}"
+                raise ValueError(msg)
+            self._until_date = parsed
         else:
             self._until_date = date
         return self
@@ -482,7 +498,21 @@ class ConversationFilter:
             # Combine search terms
             query = " ".join(self._fts_terms)
             try:
-                return self._repo.search(query)
+                # When other filters will narrow results, fetch more candidates
+                # so post-filtering has enough to work with
+                has_post_filters = bool(
+                    self._providers
+                    or self._excluded_providers
+                    or self._since_date
+                    or self._until_date
+                    or self._tags
+                    or self._excluded_tags
+                    or self._title_pattern
+                    or self._has_types
+                    or self._predicates
+                )
+                search_limit = 500 if has_post_filters else 20
+                return self._repo.search(query, limit=search_limit)
             except Exception:
                 # Fall back to list if search not available
                 pass

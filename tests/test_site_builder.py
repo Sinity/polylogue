@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from polylogue.lib.models import Conversation, Message
+from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.messages import MessageCollection
 
 
@@ -106,6 +106,42 @@ def mock_conversation_gemini():
     )
 
 
+@pytest.fixture
+def mock_summary():
+    """Create a mock conversation summary for testing."""
+    return ConversationSummary(
+        id="test-conv-001",
+        provider="claude",
+        title="Test Conversation",
+        created_at=datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2024, 1, 15, 10, 31, 0, tzinfo=timezone.utc),
+    )
+
+
+@pytest.fixture
+def mock_summary_no_title():
+    """Create a summary without title (tests fallback to ID)."""
+    return ConversationSummary(
+        id="no-title-conv-xyz",
+        provider="chatgpt",
+        title=None,
+        created_at=datetime(2024, 1, 15, 11, 0, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2024, 1, 15, 11, 0, 0, tzinfo=timezone.utc),
+    )
+
+
+@pytest.fixture
+def mock_summary_gemini():
+    """Create a summary from Gemini provider."""
+    return ConversationSummary(
+        id="gemini-conv-001",
+        provider="gemini",
+        title="Gemini Conversation",
+        created_at=datetime(2024, 1, 20, 12, 0, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2024, 1, 20, 12, 0, 30, tzinfo=timezone.utc),
+    )
+
+
 # =============================================================================
 # SiteBuilder.build() Tests - P0 Regression Test
 # =============================================================================
@@ -114,7 +150,7 @@ def mock_conversation_gemini():
 class TestSiteBuilderBuild:
     """Tests for SiteBuilder.build() method."""
 
-    def test_build_succeeds_with_conversations(self, tmp_path, mock_conversation):
+    def test_build_succeeds_with_conversations(self, tmp_path, mock_summary):
         """SiteBuilder.build() succeeds with conversations in database (P0 regression test)."""
         from polylogue.site.builder import SiteBuilder, SiteConfig
 
@@ -128,10 +164,11 @@ class TestSiteBuilderBuild:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [mock_conversation]
+            mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(
                 title="Test Archive",
@@ -149,7 +186,7 @@ class TestSiteBuilderBuild:
             assert result["index_pages"] >= 1  # root + provider indexes
             assert (output_dir / "index.html").exists()
 
-    def test_build_creates_output_directory(self, tmp_path, mock_conversation):
+    def test_build_creates_output_directory(self, tmp_path, mock_summary):
         """SiteBuilder.build() creates output directory if it doesn't exist."""
         from polylogue.site.builder import SiteBuilder, SiteConfig
 
@@ -163,10 +200,11 @@ class TestSiteBuilderBuild:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [mock_conversation]
+            mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(title="Test Archive")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -187,10 +225,11 @@ class TestSiteBuilderBuild:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = []
+            mock_repo.list_summaries.return_value = []
 
             config = SiteConfig(title="Empty Archive")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -200,7 +239,7 @@ class TestSiteBuilderBuild:
             assert (output_dir / "index.html").exists()
 
     def test_build_multiple_providers(
-        self, tmp_path, mock_conversation, mock_conversation_gemini
+        self, tmp_path, mock_summary, mock_summary_gemini
     ):
         """SiteBuilder.build() groups conversations by provider."""
         from polylogue.site.builder import SiteBuilder, SiteConfig
@@ -214,10 +253,14 @@ class TestSiteBuilderBuild:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {
+                "test-conv-001": 3,
+                "gemini-conv-001": 2,
+            }
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [mock_conversation, mock_conversation_gemini]
+            mock_repo.list_summaries.return_value = [mock_summary, mock_summary_gemini]
 
             config = SiteConfig(title="Multi-Provider Archive")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -230,7 +273,7 @@ class TestSiteBuilderBuild:
             assert (output_dir / "claude").exists()
             assert (output_dir / "gemini").exists()
 
-    def test_build_without_dashboard(self, tmp_path, mock_conversation):
+    def test_build_without_dashboard(self, tmp_path, mock_summary):
         """SiteBuilder.build() respects include_dashboard config."""
         from polylogue.site.builder import SiteBuilder, SiteConfig
 
@@ -243,10 +286,11 @@ class TestSiteBuilderBuild:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [mock_conversation]
+            mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(title="No Dashboard", include_dashboard=False)
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -256,7 +300,7 @@ class TestSiteBuilderBuild:
             assert result["index_pages"] == 2
             assert not (output_dir / "dashboard.html").exists()
 
-    def test_build_with_dashboard(self, tmp_path, mock_conversation):
+    def test_build_with_dashboard(self, tmp_path, mock_summary):
         """SiteBuilder.build() includes dashboard when enabled."""
         from polylogue.site.builder import SiteBuilder, SiteConfig
 
@@ -269,10 +313,11 @@ class TestSiteBuilderBuild:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [mock_conversation]
+            mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(title="With Dashboard", include_dashboard=True)
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -292,7 +337,7 @@ class TestConversationIndex:
     """Tests for ConversationIndex dataclass."""
 
     def test_conversation_index_no_source_attribute_reference(
-        self, tmp_path, mock_conversation
+        self, tmp_path, mock_summary
     ):
         """ConversationIndex doesn't try to access conv.source attribute.
 
@@ -311,10 +356,11 @@ class TestConversationIndex:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [mock_conversation]
+            mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -334,7 +380,7 @@ class TestConversationIndex:
             assert index.source is None
             assert index.message_count == 3
 
-    def test_conversation_index_title_fallback(self, tmp_path, mock_conversation_no_title):
+    def test_conversation_index_title_fallback(self, tmp_path, mock_summary_no_title):
         """ConversationIndex falls back to ID when conversation has no title."""
         from polylogue.site.builder import SiteBuilder, SiteConfig
 
@@ -347,10 +393,11 @@ class TestConversationIndex:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"no-title-conv-xyz": 1}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [mock_conversation_no_title]
+            mock_repo.list_summaries.return_value = [mock_summary_no_title]
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -361,7 +408,7 @@ class TestConversationIndex:
             # Should use truncated ID when no title
             assert index.title.startswith("no-title")
 
-    def test_conversation_index_message_count(self, tmp_path, mock_conversation):
+    def test_conversation_index_message_count(self, tmp_path, mock_summary):
         """ConversationIndex correctly counts messages."""
         from polylogue.site.builder import SiteBuilder, SiteConfig
 
@@ -374,10 +421,11 @@ class TestConversationIndex:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [mock_conversation]
+            mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -386,11 +434,21 @@ class TestConversationIndex:
             index = conversations[0]
             assert index.message_count == 3
 
-    def test_conversation_index_preview_extraction(self, tmp_path, mock_conversation):
-        """ConversationIndex extracts preview from first user message."""
+    def test_conversation_index_preview_extraction(self, tmp_path, mock_summary):
+        """ConversationIndex extracts preview from summary metadata."""
         from polylogue.site.builder import SiteBuilder, SiteConfig
 
         output_dir = tmp_path / "site"
+
+        # Create a summary with metadata containing a summary text
+        summary_with_content = ConversationSummary(
+            id="test-conv-001",
+            provider="claude",
+            title="Test Conversation",
+            created_at=datetime(2024, 1, 15, 10, 30, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2024, 1, 15, 10, 31, 0, tzinfo=timezone.utc),
+            metadata={"summary": "Hello, how are you?"},
+        )
 
         with patch(
             "polylogue.storage.backends.sqlite.SQLiteBackend"
@@ -399,10 +457,11 @@ class TestConversationIndex:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [mock_conversation]
+            mock_repo.list_summaries.return_value = [summary_with_content]
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -411,7 +470,7 @@ class TestConversationIndex:
             index = conversations[0]
             assert index.preview == "Hello, how are you?"
 
-    def test_conversation_index_timestamp_formatting(self, tmp_path, mock_conversation):
+    def test_conversation_index_timestamp_formatting(self, tmp_path, mock_summary):
         """ConversationIndex formats timestamps correctly."""
         from polylogue.site.builder import SiteBuilder, SiteConfig
 
@@ -424,10 +483,11 @@ class TestConversationIndex:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"test-conv-001": 3}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [mock_conversation]
+            mock_repo.list_summaries.return_value = [mock_summary]
 
             config = SiteConfig(title="Test")
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -461,10 +521,11 @@ class TestSiteCommand:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = []
+            mock_repo.list_summaries.return_value = []
 
             # Create a mock AppEnv object
             from polylogue.ui import UI
@@ -500,10 +561,11 @@ class TestSiteCommand:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = []
+            mock_repo.list_summaries.return_value = []
 
             from polylogue.ui import UI
             from polylogue.cli.types import AppEnv
@@ -551,10 +613,11 @@ class TestSiteCommand:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = []
+            mock_repo.list_summaries.return_value = []
 
             from polylogue.ui import UI
             from polylogue.cli.types import AppEnv
@@ -585,10 +648,11 @@ class TestSiteCommand:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = []
+            mock_repo.list_summaries.return_value = []
 
             from polylogue.ui import UI
             from polylogue.cli.types import AppEnv
@@ -636,27 +700,15 @@ class TestSiteCommand:
     def test_site_command_generates_html_files(self, workspace_env):
         """site command generates HTML files in output directory."""
         from polylogue.cli.commands.site import site_command
-        from polylogue.lib.models import Message
-        from polylogue.lib.messages import MessageCollection
 
         runner = CliRunner()
         output_dir = workspace_env["archive_root"] / "site"
 
-        # Create a real test conversation
-        test_conv = Conversation(
+        # Create a test summary
+        test_summary = ConversationSummary(
             id="test-conv-123",
             provider="test",
             title="Test Conv",
-            messages=MessageCollection(
-                messages=[
-                    Message(
-                        id="m1",
-                        role="user",
-                        text="Hello",
-                        timestamp=datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
-                    ),
-                ]
-            ),
             created_at=datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
         )
 
@@ -667,10 +719,11 @@ class TestSiteCommand:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"test-conv-123": 1}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [test_conv]
+            mock_repo.list_summaries.return_value = [test_summary]
 
             from polylogue.ui import UI
             from polylogue.cli.types import AppEnv
@@ -704,19 +757,11 @@ class TestSiteBuilderIntegration:
 
         output_dir = tmp_path / "site"
 
-        messages = [
-            Message(
-                id="m1",
-                role="user",
-                text="Test question",
-                timestamp=datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
-            ),
-        ]
-        conv = Conversation(
+        summary = ConversationSummary(
             id="conv-123",
             provider="test",
             title="Test",
-            messages=MessageCollection(messages=messages),
+            created_at=datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
         )
 
         with patch(
@@ -726,10 +771,11 @@ class TestSiteBuilderIntegration:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"conv-123": 1}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [conv]
+            mock_repo.list_summaries.return_value = [summary]
 
             config = SiteConfig(title="Test Archive", include_dashboard=True)
             builder = SiteBuilder(output_dir=output_dir, config=config)
@@ -752,19 +798,11 @@ class TestSiteBuilderIntegration:
 
         output_dir = tmp_path / "site"
 
-        messages = [
-            Message(
-                id="m1",
-                role="user",
-                text="Test question",
-                timestamp=datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
-            ),
-        ]
-        conv = Conversation(
+        summary = ConversationSummary(
             id="conv-123",
             provider="test",
             title="Test",
-            messages=MessageCollection(messages=messages),
+            created_at=datetime(2024, 1, 15, 10, 0, 0, tzinfo=timezone.utc),
         )
 
         with patch(
@@ -774,10 +812,11 @@ class TestSiteBuilderIntegration:
         ) as mock_repo_class:
             mock_backend = MagicMock()
             mock_backend_class.return_value = mock_backend
+            mock_backend.get_message_counts_batch.return_value = {"conv-123": 1}
 
             mock_repo = MagicMock()
             mock_repo_class.return_value = mock_repo
-            mock_repo.list.return_value = [conv]
+            mock_repo.list_summaries.return_value = [summary]
 
             config = SiteConfig(
                 title="Test",
