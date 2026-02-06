@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from jinja2 import DictLoader, Environment, FileSystemLoader, PackageLoader, select_autoescape
+from jinja2 import DictLoader, Environment, FileSystemLoader, select_autoescape
 from markdown_it import MarkdownIt
 from pygments import highlight
 from pygments.formatters import HtmlFormatter
@@ -55,10 +55,7 @@ class PygmentsHighlighter:
             HTML with syntax highlighting
         """
         try:
-            if language:
-                lexer = get_lexer_by_name(language, stripall=True)
-            else:
-                lexer = guess_lexer(code)
+            lexer = get_lexer_by_name(language, stripall=True) if language else guess_lexer(code)
         except ClassNotFound:
             # Fall back to plain text
             escaped = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
