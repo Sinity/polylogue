@@ -76,11 +76,19 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
     Returns True if loaded successfully, False otherwise.
     The extension is optional - vector search is simply unavailable without it.
     Silent on failure since this is called on every connection.
+
+    Note: enable_load_extension(True) is required before loading native SQLite
+    extensions. We re-disable it after loading for security (prevents untrusted
+    SQL from loading arbitrary extensions).
     """
     try:
         import sqlite_vec
-        sqlite_vec.load(conn)
-        return True
+        conn.enable_load_extension(True)
+        try:
+            sqlite_vec.load(conn)
+            return True
+        finally:
+            conn.enable_load_extension(False)
     except ImportError:
         return False
     except Exception:
@@ -731,6 +739,39 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
     if current_version != SCHEMA_VERSION:
         raise DatabaseError(f"Unsupported DB schema version {current_version} (expected {SCHEMA_VERSION})")
+
+    # Ensure vec0 table exists if sqlite-vec is now available.
+    # This handles databases created when sqlite-vec couldn't load (e.g., before
+    # the enable_load_extension fix). The v10 migration would have skipped vec0
+    # creation, so we create it retroactively.
+    _ensure_vec0_table(conn)
+
+
+def _ensure_vec0_table(conn: sqlite3.Connection) -> None:
+    """Create vec0 table if sqlite-vec is available but table is missing.
+
+    This is idempotent and handles the case where the v10 migration ran
+    without sqlite-vec available (e.g., due to missing enable_load_extension).
+    """
+    try:
+        conn.execute("SELECT vec_version()")
+    except sqlite3.OperationalError:
+        return  # sqlite-vec not available, nothing to do
+
+    exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
+    ).fetchone()
+    if not exists:
+        conn.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
+                message_id TEXT PRIMARY KEY,
+                embedding float[1024],
+                +provider_name TEXT,
+                +conversation_id TEXT
+            )
+        """)
+        conn.commit()
+        LOGGER.info("Created missing message_embeddings vec0 table")
 
 
 class SQLiteBackend:
