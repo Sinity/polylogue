@@ -1322,15 +1322,17 @@ class TestRepairFunctions:
             patch("polylogue.health.repair_empty_conversations") as mock_empty,
             patch("polylogue.health.repair_dangling_fts") as mock_fts,
             patch("polylogue.health.repair_orphaned_attachments") as mock_att,
+            patch("polylogue.health.repair_wal_checkpoint") as mock_wal,
         ):
             mock_orphan.return_value = RepairResult("orphaned_messages", 0, True, "OK")
             mock_empty.return_value = RepairResult("empty_conversations", 0, True, "OK")
             mock_fts.return_value = RepairResult("dangling_fts", 0, True, "OK")
             mock_att.return_value = RepairResult("orphaned_attachments", 0, True, "OK")
+            mock_wal.return_value = RepairResult("wal_checkpoint", 0, True, "OK")
 
             results = run_all_repairs(config)
 
-            assert len(results) == 4
+            assert len(results) == 5
             assert all(r.success for r in results)
 
 

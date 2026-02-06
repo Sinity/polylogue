@@ -493,6 +493,36 @@ def repair_orphaned_attachments(config: Config) -> RepairResult:
         )
 
 
+def repair_wal_checkpoint(config: Config) -> RepairResult:
+    """Force WAL checkpoint to resolve busy pages and reclaim WAL space."""
+    try:
+        with connection_context(None) as conn:
+            result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            row = result.fetchone()
+            # wal_checkpoint returns (busy, log, checkpointed)
+            busy, log, checkpointed = row[0], row[1], row[2]
+            if busy:
+                return RepairResult(
+                    name="wal_checkpoint",
+                    repaired_count=0,
+                    success=False,
+                    detail=f"WAL checkpoint had busy pages: {busy} busy, {log} log, {checkpointed} checkpointed",
+                )
+            return RepairResult(
+                name="wal_checkpoint",
+                repaired_count=checkpointed if checkpointed > 0 else 0,
+                success=True,
+                detail=f"WAL checkpoint complete: {checkpointed} pages checkpointed",
+            )
+    except Exception as exc:
+        return RepairResult(
+            name="wal_checkpoint",
+            repaired_count=0,
+            success=False,
+            detail=f"WAL checkpoint failed: {exc}",
+        )
+
+
 def run_all_repairs(config: Config) -> list[RepairResult]:
     """Run all repair operations and return results."""
     return [
@@ -500,6 +530,7 @@ def run_all_repairs(config: Config) -> list[RepairResult]:
         repair_empty_conversations(config),
         repair_dangling_fts(config),
         repair_orphaned_attachments(config),
+        repair_wal_checkpoint(config),
     ]
 
 
@@ -515,5 +546,6 @@ __all__ = [
     "repair_empty_conversations",
     "repair_dangling_fts",
     "repair_orphaned_attachments",
+    "repair_wal_checkpoint",
     "run_all_repairs",
 ]
