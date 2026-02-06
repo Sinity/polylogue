@@ -420,8 +420,8 @@ def repair_dangling_fts(config: Config) -> RepairResult:
             # Insert missing entries into FTS
             inserted = conn.execute(
                 """
-                INSERT INTO messages_fts (rowid, text)
-                SELECT rowid, text FROM messages m
+                INSERT INTO messages_fts (rowid, message_id, conversation_id, content)
+                SELECT m.rowid, m.message_id, m.conversation_id, m.text FROM messages m
                 WHERE m.rowid NOT IN (SELECT rowid FROM messages_fts)
                 """
             ).rowcount

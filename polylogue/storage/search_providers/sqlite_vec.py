@@ -8,6 +8,7 @@ No external server required - vectors stored directly in SQLite.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import struct
 from pathlib import Path
@@ -419,19 +420,15 @@ class SqliteVecProvider:
             msg_count = 0
             pending = 0
 
-            try:
+            with contextlib.suppress(Exception):
                 msg_count = conn.execute(
                     "SELECT COUNT(*) FROM message_embeddings"
                 ).fetchone()[0]
-            except Exception:
-                pass
 
-            try:
+            with contextlib.suppress(Exception):
                 pending = conn.execute(
                     "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1"
                 ).fetchone()[0]
-            except Exception:
-                pass
 
             return {
                 "embedded_messages": msg_count,

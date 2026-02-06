@@ -7,16 +7,11 @@ and client-side search support.
 from __future__ import annotations
 
 import json
-import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from jinja2 import DictLoader, Environment, select_autoescape
-
-if TYPE_CHECKING:
-    from polylogue.storage.repository import ConversationRepository
 
 # Default index page template
 INDEX_TEMPLATE = """<!DOCTYPE html>
@@ -540,7 +535,7 @@ class SiteBuilder:
         conversations: list[ConversationIndex] = []
 
         # Fetch conversations
-        all_convs = repo.list_all()
+        all_convs = repo.list(limit=100_000)
 
         for conv in all_convs:
             # Get first user message for preview

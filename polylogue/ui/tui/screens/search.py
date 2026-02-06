@@ -38,10 +38,14 @@ class Search(Container):
         repo = get_repository()
 
         # Perform search
-        summaries = repo.search_summaries(query, limit=50)
-
         table = self.query_one("#search-results", DataTable)
         table.clear()
+
+        try:
+            summaries = repo.search_summaries(query, limit=50)
+        except Exception:
+            table.add_row("—", "—", "Search index not built. Run: polylogue run", "")
+            return
 
         for s in summaries:
             table.add_row(

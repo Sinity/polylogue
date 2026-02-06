@@ -403,7 +403,13 @@ class TestStatsResource:
 
     def test_stats_returns_archive_statistics(self, handle_request, mock_repo, sample_conversation):
         """Stats resource returns conversation and message counts."""
-        mock_repo.list.return_value = [sample_conversation, sample_conversation]
+        from polylogue.lib.stats import ArchiveStats
+
+        mock_repo.get_archive_stats.return_value = ArchiveStats(
+            total_conversations=2,
+            total_messages=4,
+            providers={"chatgpt": 2},
+        )
 
         request = {
             "method": "resources/read",
@@ -419,7 +425,7 @@ class TestStatsResource:
 
         stats = json.loads(contents[0]["text"])
         assert stats["total_conversations"] == 2
-        assert stats["total_messages"] == 4  # 2 conversations * 2 messages each
+        assert stats["total_messages"] == 4
 
 
 class TestConversationsResource:

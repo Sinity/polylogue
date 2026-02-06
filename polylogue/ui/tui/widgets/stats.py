@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import contextlib
+
 from textual.app import ComposeResult
+from textual.reactive import reactive
 from textual.widgets import Static
 
 
@@ -16,7 +19,7 @@ class StatCard(Static):
         margin: 1;
         background: $surface;
     }
-    
+
     StatCard > .label {
         color: $text-muted;
         text-align: center;
@@ -32,6 +35,8 @@ class StatCard(Static):
     }
     """
 
+    value: reactive[str] = reactive("", layout=True)
+
     def __init__(self, label: str, value: str | int, id: str | None = None) -> None:
         super().__init__(id=id)
         self.label = label
@@ -39,4 +44,9 @@ class StatCard(Static):
 
     def compose(self) -> ComposeResult:
         yield Static(self.label, classes="label")
-        yield Static(self.value, classes="value")
+        yield Static(self.value, classes="value", id="stat-value")
+
+    def watch_value(self, new_value: str) -> None:
+        """Update the child Static when value changes."""
+        with contextlib.suppress(Exception):
+            self.query_one("#stat-value", Static).update(new_value)

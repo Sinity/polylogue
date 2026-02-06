@@ -40,6 +40,7 @@ def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -
         sqlite-vec extension is loaded if available.
     """
     if isinstance(db_path, sqlite3.Connection):
+        _load_sqlite_vec(db_path)
         yield db_path
         return
 

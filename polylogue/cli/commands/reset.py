@@ -8,7 +8,7 @@ import click
 
 from polylogue.cli.helpers import fail
 from polylogue.cli.types import AppEnv
-from polylogue.paths import CACHE_HOME, DATA_HOME, DB_PATH, DRIVE_TOKEN_PATH, RENDER_ROOT
+from polylogue.paths import CACHE_HOME, DATA_HOME, DB_PATH, DRIVE_TOKEN_PATH, RENDER_ROOT, STATE_HOME
 
 
 @click.command("reset")
@@ -47,6 +47,14 @@ def reset_command(
     targets = []
     if database and DB_PATH.exists():
         targets.append(("database", DB_PATH))
+        # Also clean up WAL/SHM files and health cache alongside the database
+        for suffix in (".db-wal", ".db-shm"):
+            wal_path = DB_PATH.with_suffix(suffix)
+            if wal_path.exists():
+                targets.append((f"database {suffix}", wal_path))
+        health_path = DATA_HOME / "health.json"
+        if health_path.exists():
+            targets.append(("health cache", health_path))
     if assets:
         assets_dir = DATA_HOME / "assets"
         if assets_dir.exists():
@@ -57,6 +65,14 @@ def reset_command(
         targets.append(("cache/indexes", CACHE_HOME))
     if auth and DRIVE_TOKEN_PATH.exists():
         targets.append(("OAuth token", DRIVE_TOKEN_PATH))
+    if reset_all:
+        # Clean up run history and last-source state
+        runs_dir = DATA_HOME / "runs"
+        if runs_dir.exists():
+            targets.append(("run history", runs_dir))
+        last_source = STATE_HOME / "last-source.json"
+        if last_source.exists():
+            targets.append(("last-source state", last_source))
 
     if not targets:
         env.ui.console.print("Nothing to reset (no files exist for selected targets).")

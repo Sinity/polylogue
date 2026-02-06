@@ -234,7 +234,6 @@ class DriveClient:
         return retryer(func, *args, **kwargs)
 
     def _load_credentials(self) -> Any:
-        request_cls = _import_module("google.auth.transport.requests").Request
         credentials_cls = _import_module("google.oauth2.credentials").Credentials
         installed_app_flow_cls = _import_module("google_auth_oauthlib.flow").InstalledAppFlow
 
@@ -248,7 +247,10 @@ class DriveClient:
                 creds = None
         if creds and creds.expired and creds.refresh_token:
             try:
-                creds.refresh(request_cls())
+                import google.auth.transport.requests as _gtr
+                transport = _gtr.Request()
+                transport.session.timeout = 30
+                creds.refresh(transport)
             except Exception as exc:
                 # Token refresh failed - expose the error to the user instead of silently
                 # falling back to re-authentication, so they know what went wrong
@@ -323,6 +325,14 @@ class DriveClient:
 
     def _service_handle(self) -> Any:
         if self._service is not None:
+            # Check if credentials have expired (long-running --watch sessions)
+            creds = getattr(self._service, "_http", None)
+            if creds is not None:
+                http_creds = getattr(creds, "credentials", None)
+                if http_creds is not None and getattr(http_creds, "expired", False):
+                    logger.info("Cached service credentials expired, re-authenticating")
+                    self._service = None
+                    return self._service_handle()
             return self._service
         build = _import_module("googleapiclient.discovery").build
 
@@ -397,8 +407,13 @@ class DriveClient:
             buffer = io.BytesIO()
             downloader = media_io_base_download_cls(buffer, request)
             done = False
+            max_chunks = 10_000  # Safety limit to prevent infinite hangs
+            chunks = 0
             while not done:
                 _, done = downloader.next_chunk()
+                chunks += 1
+                if chunks >= max_chunks:
+                    raise DriveError(f"Download exceeded {max_chunks} chunks for file {file_id}")
             return buffer.getvalue()
 
         return self._call_with_retry(_download)
@@ -449,14 +464,19 @@ class DriveClient:
                         tmp_path = Path(handle.name)
                         downloader = media_io_base_download_cls(handle, request)
                         done = False
+                        max_chunks = 10_000
+                        chunks = 0
                         while not done:
                             _, done = downloader.next_chunk()
+                            chunks += 1
+                            if chunks >= max_chunks:
+                                raise DriveError(f"Download exceeded {max_chunks} chunks for file {file_id}")
                     tmp_path.replace(dest)
-                except Exception as e:
+                except Exception:
                     if tmp_path is not None:
                         with contextlib.suppress(OSError):
                             tmp_path.unlink()
-                    raise e from None
+                    raise
 
             self._call_with_retry(_download_once)
         modified_timestamp = _parse_modified_time(meta.modified_time)

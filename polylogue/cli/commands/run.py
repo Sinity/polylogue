@@ -158,6 +158,9 @@ def _exec_on_new(exec_cmd: str, count: int) -> None:
 
 def _webhook_on_new(webhook_url: str, count: int) -> None:
     """Call webhook URL when new conversations are synced."""
+    import logging
+
+    _logger = logging.getLogger(__name__)
     try:
         import json as json_lib
         import urllib.request
@@ -170,8 +173,8 @@ def _webhook_on_new(webhook_url: str, count: int) -> None:
             method="POST",
         )
         urllib.request.urlopen(req, timeout=10)
-    except Exception:
-        pass  # Silently fail on webhook errors
+    except Exception as exc:
+        _logger.warning("Webhook failed for %s: %s", webhook_url, exc)
 
 
 @click.command("run")

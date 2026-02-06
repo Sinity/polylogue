@@ -85,6 +85,14 @@ def _resolve_version() -> VersionInfo:
     # Check for git info in source checkout
     if (repo_root / ".git").exists():
         commit, dirty = _get_git_info(repo_root)
+    else:
+        # Nix build or installed package — try build-time info
+        try:
+            from polylogue._build_info import BUILD_COMMIT, BUILD_DIRTY
+            commit = BUILD_COMMIT if BUILD_COMMIT != "unknown" else None
+            dirty = BUILD_DIRTY
+        except ImportError:
+            pass
 
     return VersionInfo(version=version, commit=commit, dirty=dirty)
 
