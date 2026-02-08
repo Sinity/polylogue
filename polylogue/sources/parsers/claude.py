@@ -679,8 +679,20 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         conv_meta["context_compactions"] = context_compactions
 
     # Aggregate statistics from messages
+    def _safe_float(val: object) -> float:
+        try:
+            return float(str(val))
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _safe_int(val: object) -> int:
+        try:
+            return int(float(str(val)))
+        except (ValueError, TypeError):
+            return 0
+
     total_cost = sum(
-        float(str(m.provider_meta.get("costUSD", 0)))
+        _safe_float(m.provider_meta.get("costUSD", 0))
         for m in messages
         if m.provider_meta and m.provider_meta.get("costUSD")
     )
@@ -688,7 +700,7 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         conv_meta["total_cost_usd"] = total_cost
 
     total_duration = sum(
-        int(str(m.provider_meta.get("durationMs", 0)))
+        _safe_int(m.provider_meta.get("durationMs", 0))
         for m in messages
         if m.provider_meta and m.provider_meta.get("durationMs")
     )
