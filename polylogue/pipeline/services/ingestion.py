@@ -307,6 +307,8 @@ class IngestionService:
                             conv_id = futures.get(fut, "?")
                             logger.error("Error processing conversation %s: %s", conv_id, exc)
                             result.parse_failures += 1
+                            if progress_callback:
+                                progress_callback(1, desc="Parsing")
                         finally:
                             del futures[fut]
 
@@ -320,6 +322,8 @@ class IngestionService:
                     conv_id = futures.get(fut, "?")
                     logger.error("Error processing conversation %s: %s", conv_id, exc)
                     result.parse_failures += 1
+                    if progress_callback:
+                        progress_callback(1, desc="Parsing")
 
     def _parse_raw_record(self, raw_record: RawConversationRecord) -> list[ParsedConversation]:
         """Parse a raw conversation record into ParsedConversation(s).

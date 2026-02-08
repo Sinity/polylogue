@@ -554,13 +554,22 @@ class HTMLRenderer:
                 SELECT message_id, role, text, timestamp
                 FROM messages
                 WHERE conversation_id = ?
-                ORDER BY timestamp
+                ORDER BY
+                    (timestamp IS NULL),
+                    CASE
+                        WHEN timestamp IS NULL THEN NULL
+                        WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS INTEGER)
+                        ELSE CAST(timestamp AS REAL)
+                    END,
+                    message_id
                 """,
                 (conversation_id,),
             ).fetchall()
 
             for row in rows:
                 text = row["text"] or ""
+                if not text:
+                    continue
                 html_content = self.md_renderer.render(text)
                 messages.append({
                     "id": row["message_id"],
