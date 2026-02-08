@@ -766,11 +766,12 @@ def _conv_to_markdown(conv: Conversation) -> str:
     lines.append("")
 
     for msg in conv.messages:
+        if not msg.text:
+            continue
         role_label = (msg.role or "unknown").capitalize()
         lines.append(f"## {role_label}")
         lines.append("")
-        if msg.text:
-            lines.append(msg.text)
+        lines.append(msg.text)
         lines.append("")
 
     return "\n".join(lines)
@@ -794,11 +795,13 @@ def _conv_to_html(conv: Conversation) -> str:
     title_safe = html_escape(title)
     messages_html = []
     for msg in conv.messages:
+        if not msg.text:
+            continue
         role = msg.role or "message"
         role_safe = html_escape(role, quote=True)
         # CSS class names: only allow lowercase alphanumeric and hyphens
         role_class = "message-" + re.sub(r"[^a-z0-9-]", "-", role.lower())
-        html_content = md_renderer.render(msg.text or "")
+        html_content = md_renderer.render(msg.text)
         messages_html.append(
             f'<div class="{role_class}"><strong>{role_safe}:</strong>{html_content}</div>'
         )
@@ -863,10 +866,11 @@ def _conv_to_org(conv: Conversation) -> str:
     ]
 
     for msg in conv.messages:
+        if not msg.text:
+            continue
         role_label = (msg.role or "unknown").upper()
         lines.append(f"* {role_label}")
-        if msg.text:
-            lines.append(msg.text)
+        lines.append(msg.text)
         lines.append("")
 
     return "\n".join(lines)
