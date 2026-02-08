@@ -244,8 +244,6 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         if stream_format not in ("plaintext", "markdown", "json-lines"):
             stream_format = "plaintext"
 
-        from polylogue.cli.query import stream_conversation
-
         stream_conversation(
             env,
             conv_repo,
@@ -335,8 +333,9 @@ def _apply_modifiers(
     if count > 10 and not force:
         click.echo(f"About to modify {count} conversations")
         click.echo(f"Operations: {op_desc}")
-        click.echo("\nUse --force to skip this prompt, or --dry-run to preview.")
-        raise SystemExit(1)
+        if not env.ui.confirm("Proceed?", default=False):
+            env.ui.console.print("Aborted.")
+            return
 
     # Load repository
     repo = get_repository()
@@ -424,8 +423,9 @@ def _delete_conversations(
     if count > 10 and not force:
         click.echo(f"About to DELETE {count} conversations:", err=True)
         _print_breakdown()
-        click.echo("\nUse --force to skip this prompt, or --dry-run to preview.", err=True)
-        raise SystemExit(1)
+        if not env.ui.confirm("Proceed?", default=False):
+            env.ui.console.print("Aborted.")
+            return
 
     # Individual confirmation if not bulk but not forced
     if not force:
@@ -663,7 +663,7 @@ def _output_summary_list(
             }
             for s in summaries
         ]
-        env.ui.console.print(json.dumps(data, indent=2))
+        click.echo(json.dumps(data, indent=2))
     elif output_format == "yaml":
         import yaml
 
@@ -678,7 +678,7 @@ def _output_summary_list(
             }
             for s in summaries
         ]
-        env.ui.console.print(yaml.dump(data, default_flow_style=False, allow_unicode=True))
+        click.echo(yaml.dump(data, default_flow_style=False, allow_unicode=True))
     elif output_format == "csv":
         import csv
         import io
@@ -698,7 +698,7 @@ def _output_summary_list(
                 tags_str,
                 s.summary or "",
             ])
-        env.ui.console.print(buf.getvalue().rstrip())
+        click.echo(buf.getvalue().rstrip())
     else:
         # Plain text format (default) — now with message counts
         lines = []
@@ -834,8 +834,8 @@ def _conv_to_html(conv: Conversation) -> str:
 
 def _yaml_safe(value: str) -> str:
     """Quote a YAML value if it contains special characters."""
-    if any(c in value for c in ":#{}[]|>&*!?@`'\",\n"):
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    if any(c in value for c in ":#{}[]|>&*!?@`'\",\n\t"):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\t", "\\t")
         return f'"{escaped}"'
     return value
 
@@ -1057,7 +1057,7 @@ def _send_output(
     """Send output to specified destinations."""
     for dest in destinations:
         if dest == "stdout":
-            env.ui.console.print(content)
+            click.echo(content)
         elif dest == "browser":
             _open_in_browser(env, content, output_format, conv)
         elif dest == "clipboard":
