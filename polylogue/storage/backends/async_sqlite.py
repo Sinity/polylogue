@@ -140,6 +140,8 @@ class AsyncSQLiteBackend:
                 content_hash TEXT NOT NULL,
                 provider_meta TEXT,
                 version INTEGER NOT NULL,
+                parent_message_id TEXT,
+                branch_index INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (conversation_id)
                     REFERENCES conversations(conversation_id) ON DELETE CASCADE
             );
@@ -256,11 +258,15 @@ class AsyncSQLiteBackend:
                     MessageRecord(
                         message_id=row["message_id"],
                         conversation_id=row["conversation_id"],
+                        provider_message_id=row["provider_message_id"],
                         role=row["role"],
                         text=row["text"],
                         timestamp=row["timestamp"],
                         content_hash=row["content_hash"],
                         provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                        version=row["version"],
+                        parent_message_id=row["parent_message_id"] if "parent_message_id" in row.keys() else None,
+                        branch_index=(row["branch_index"] or 0) if "branch_index" in row.keys() else 0,
                     )
                 )
 

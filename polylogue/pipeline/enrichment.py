@@ -98,6 +98,10 @@ def enrich_message_metadata(provider_meta: dict[str, Any] | None) -> dict[str, A
     if not provider_meta or "content_blocks" not in provider_meta:
         return provider_meta
 
-    enriched_blocks = enrich_content_blocks(provider_meta["content_blocks"])
+    blocks = provider_meta["content_blocks"]
+    if blocks is None:
+        return provider_meta
+
+    enriched_blocks = enrich_content_blocks(blocks)
 
     return {**provider_meta, "content_blocks": enriched_blocks}
