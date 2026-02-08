@@ -786,8 +786,8 @@ class TestDeleteConversationPreview:
         captured = capsys.readouterr()
         assert "Date range: 2023-06-01 → 2024-02-15" in captured.out
 
-    def test_delete_bulk_shows_breakdown_before_exit(self, capsys):
-        """Bulk deletion (>10 items) without force shows breakdown and exits."""
+    def test_delete_bulk_shows_breakdown_and_prompts(self, capsys):
+        """Bulk deletion (>10 items) without force shows breakdown and prompts."""
         from unittest.mock import MagicMock
         from datetime import datetime
 
@@ -815,12 +815,9 @@ class TestDeleteConversationPreview:
         env.ui.console.print = MagicMock()
         env.ui.confirm = MagicMock(return_value=False)
 
-        # Should raise SystemExit for bulk without force
-        try:
-            _delete_conversations(env, convs, {"force": False})
-            assert False, "Expected SystemExit"
-        except SystemExit as e:
-            assert e.code == 1
+        # Should prompt for confirmation and abort when declined
+        _delete_conversations(env, convs, {"force": False})
+        env.ui.confirm.assert_called_once()
 
         captured = capsys.readouterr()
         assert "About to DELETE 15 conversations" in captured.err
