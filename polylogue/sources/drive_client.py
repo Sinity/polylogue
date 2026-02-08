@@ -322,6 +322,7 @@ class DriveClient:
     def _persist_token(self, creds: Any, token_path: Path) -> None:
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json(), encoding="utf-8")
+        token_path.chmod(0o600)
 
     def _service_handle(self) -> Any:
         if self._service is not None:
