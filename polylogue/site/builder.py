@@ -764,6 +764,7 @@ class SiteBuilder:
         template = self.env.get_template("conversation.html")
         generated = 0
 
+        skipped = 0
         for conv_idx in conversations:
             # Build output path matching the link in index pages
             page_path = self.output_dir / conv_idx.path
@@ -774,30 +775,39 @@ class SiteBuilder:
                 generated += 1
                 continue
 
-            # Stream messages without loading full conversation
-            messages = []
-            for msg in repo.iter_messages(conv_idx.id, limit=500):
-                if not msg.text:
-                    continue
-                text = msg.text
-                # Truncate very long messages for the static site
-                if len(text) > 5000:
-                    text = text[:5000] + "\n\n[... truncated ...]"
-                messages.append({
-                    "role": msg.role or "unknown",
-                    "text": text,
-                })
+            try:
+                # Stream messages without loading full conversation
+                messages = []
+                for msg in repo.iter_messages(conv_idx.id, limit=500):
+                    if not msg.text:
+                        continue
+                    text = msg.text
+                    # Truncate very long messages for the static site
+                    if len(text) > 5000:
+                        text = text[:5000] + "\n\n[... truncated ...]"
+                    messages.append({
+                        "role": msg.role or "unknown",
+                        "text": text,
+                    })
 
-            html = template.render(
-                title=conv_idx.title,
-                provider=conv_idx.provider,
-                message_count=conv_idx.message_count,
-                updated_at=conv_idx.updated_at,
-                messages=messages,
-            )
+                html = template.render(
+                    title=conv_idx.title,
+                    provider=conv_idx.provider,
+                    message_count=conv_idx.message_count,
+                    updated_at=conv_idx.updated_at,
+                    messages=messages,
+                )
 
-            page_path.write_text(html, encoding="utf-8")
-            generated += 1
+                page_path.write_text(html, encoding="utf-8")
+                generated += 1
+            except Exception as exc:
+                logger.warning(
+                    "Skipping conversation page %s: %s", conv_idx.id, exc
+                )
+                skipped += 1
+
+        if skipped:
+            logger.warning("Skipped %d conversation pages due to errors", skipped)
 
         return generated
 
