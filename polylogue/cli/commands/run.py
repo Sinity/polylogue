@@ -319,7 +319,7 @@ def sources_command(env: AppEnv, json_output: bool) -> None:
             }
             for source in cfg.sources
         ]
-        env.ui.console.print(json.dumps(payload, indent=2))
+        click.echo(json.dumps(payload, indent=2))
         return
     lines = []
     for source in cfg.sources:

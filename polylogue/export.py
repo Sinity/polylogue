@@ -6,6 +6,21 @@ from pathlib import Path
 
 from .storage.backends.sqlite import open_connection
 
+# Columns stored as JSON TEXT that need parsing to avoid double-encoding
+_JSON_COLUMNS = frozenset({"provider_meta", "metadata", "ref_meta"})
+
+
+def _row_to_dict(row: object) -> dict[str, object]:
+    """Convert a sqlite3.Row to a dict, parsing JSON TEXT columns."""
+    d = dict(row)  # type: ignore[arg-type]
+    for col in _JSON_COLUMNS:
+        if col in d and isinstance(d[col], str):
+            try:
+                d[col] = json.loads(d[col])
+            except (json.JSONDecodeError, ValueError):
+                pass  # Keep as string if not valid JSON
+    return d
+
 
 def export_jsonl(*, archive_root: Path, output_path: Path | None = None) -> Path:
     target = output_path or (archive_root / "exports" / "conversations.jsonl")
@@ -43,16 +58,16 @@ def export_jsonl(*, archive_root: Path, output_path: Path | None = None) -> Path
             ORDER BY attachment_refs.conversation_id, attachment_refs.ref_id
             """
         ).fetchall()
-        messages_by_convo = defaultdict(list)
+        messages_by_convo: defaultdict[str, list[dict[str, object]]] = defaultdict(list)
         for msg in messages:
-            messages_by_convo[msg["conversation_id"]].append(dict(msg))
-        attachments_by_convo = defaultdict(list)
+            messages_by_convo[msg["conversation_id"]].append(_row_to_dict(msg))
+        attachments_by_convo: defaultdict[str, list[dict[str, object]]] = defaultdict(list)
         for att in attachments:
-            attachments_by_convo[att["conversation_id"]].append(dict(att))
+            attachments_by_convo[att["conversation_id"]].append(_row_to_dict(att))
         for convo in conversations:
             convo_id = convo["conversation_id"]
             payload = {
-                "conversation": dict(convo),
+                "conversation": _row_to_dict(convo),
                 "messages": messages_by_convo.get(convo_id, []),
                 "attachments": attachments_by_convo.get(convo_id, []),
             }

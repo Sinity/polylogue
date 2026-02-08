@@ -398,12 +398,12 @@ class TestCopyToClipboard:
 class TestSendOutput:
     """Tests for _send_output helper."""
 
-    def test_stdout_prints(self, mock_env, sample_conversations):
-        """stdout destination prints content."""
+    def test_stdout_prints(self, mock_env, sample_conversations, capsys):
+        """stdout destination prints content via click.echo."""
         query._send_output(mock_env, "test content", ["stdout"], "markdown", None)
 
-        calls = mock_env.ui.console.print.call_args_list
-        assert any("test content" in str(c) for c in calls)
+        captured = capsys.readouterr()
+        assert "test content" in captured.out
 
     def test_file_writes(self, mock_env, sample_conversations, tmp_path):
         """file destination writes content."""
@@ -414,7 +414,7 @@ class TestSendOutput:
         assert output_file.exists()
         assert output_file.read_text() == "test content"
 
-    def test_multiple_destinations(self, mock_env, sample_conversations, tmp_path):
+    def test_multiple_destinations(self, mock_env, sample_conversations, tmp_path, capsys):
         """Multiple destinations all receive content."""
         output_file = tmp_path / "output.md"
 
@@ -422,8 +422,8 @@ class TestSendOutput:
 
         # Both stdout and file should be used
         assert output_file.exists()
-        calls = mock_env.ui.console.print.call_args_list
-        assert any("test content" in str(c) for c in calls)
+        captured = capsys.readouterr()
+        assert "test content" in captured.out
 
 
 class TestDryRunMode:
@@ -471,19 +471,19 @@ class TestDryRunMode:
 class TestBulkOperationConfirmation:
     """Tests for bulk operation confirmation (>10 items requires --force)."""
 
-    def test_modifiers_require_force_for_bulk(self, mock_env, capsys):
-        """Modifiers require --force for >10 items."""
+    def test_modifiers_require_confirmation_for_bulk(self, mock_env, capsys):
+        """Modifiers prompt for confirmation for >10 items."""
         # Create 15 mock conversations
         convs = [MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test") for i in range(15)]
         params = {"add_tag": ("bulk-tag",), "force": False}
 
-        with pytest.raises(SystemExit) as exc_info:
-            query._apply_modifiers(mock_env, convs, params)
+        # Decline confirmation
+        mock_env.ui.confirm.return_value = False
+        query._apply_modifiers(mock_env, convs, params)
 
-        assert exc_info.value.code == 1
+        mock_env.ui.confirm.assert_called_once()
         captured = capsys.readouterr()
         assert "15" in captured.out
-        assert "--force" in captured.out
 
     def test_modifiers_proceed_with_force(self, mock_env):
         """Modifiers proceed with --force for bulk operations."""
@@ -501,20 +501,20 @@ class TestBulkOperationConfirmation:
             # Should have called add_tag 15 times
             assert mock_backend.add_tag.call_count == 15
 
-    def test_delete_requires_force_for_bulk(self, mock_env, capsys):
-        """Delete requires --force for >10 items."""
+    def test_delete_requires_confirmation_for_bulk(self, mock_env, capsys):
+        """Delete prompts for confirmation for >10 items."""
         convs = [
             MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test", created_at=None, updated_at=None) for i in range(15)
         ]
         params = {"force": False}
 
-        with pytest.raises(SystemExit) as exc_info:
-            query._delete_conversations(mock_env, convs, params)
+        # Decline confirmation
+        mock_env.ui.confirm.return_value = False
+        query._delete_conversations(mock_env, convs, params)
 
-        assert exc_info.value.code == 1
+        mock_env.ui.confirm.assert_called_once()
         captured = capsys.readouterr()
         assert "DELETE" in captured.err
-        assert "--force" in captured.err
 
     def test_delete_proceeds_with_force(self, mock_env):
         """Delete proceeds with --force for bulk operations."""
