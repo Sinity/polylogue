@@ -131,7 +131,8 @@ class GeminiMessage(BaseModel):
             if isinstance(part, GeminiPart) and part.text:
                 texts.append(part.text)
             elif isinstance(part, dict) and part.get("text"):
-                texts.append(part["text"])
+                val = part["text"]
+                texts.append(val if isinstance(val, str) else str(val))
         return "\n".join(texts)
 
     def to_meta(self) -> MessageMeta:
@@ -149,7 +150,7 @@ class GeminiMessage(BaseModel):
     def extract_reasoning_traces(self) -> list[ReasoningTrace]:
         """Extract thinking/reasoning traces."""
         traces = []
-        if self.isThought:
+        if self.isThought and self.text:
             # Normalize signatures (can be strings, dicts, or models)
             sigs: list[str | dict[str, Any]] = []
             for s in self.thoughtSignatures:
