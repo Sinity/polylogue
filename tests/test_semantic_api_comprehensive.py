@@ -215,6 +215,76 @@ def test_dialogue_pair_with_thinking_messages():
     assert pair.assistant.extract_thinking() == "Complex reasoning"
 
 
+def test_extract_thinking_from_content_blocks_only():
+    """extract_thinking returns text from content_blocks when no XML tags in text."""
+    msg = Message(
+        id="a1",
+        role="assistant",
+        text="The answer is 42.",
+        provider_meta={
+            "content_blocks": [
+                {"type": "thinking", "text": "Let me reason through this step by step."},
+                {"type": "text", "text": "The answer is 42."},
+            ]
+        },
+    )
+    assert msg.is_thinking
+    assert msg.extract_thinking() == "Let me reason through this step by step."
+
+
+def test_extract_thinking_multiple_content_blocks():
+    """extract_thinking joins multiple thinking blocks."""
+    msg = Message(
+        id="a1",
+        role="assistant",
+        text="Done.",
+        provider_meta={
+            "content_blocks": [
+                {"type": "thinking", "text": "First thought."},
+                {"type": "text", "text": "Done."},
+                {"type": "thinking", "text": "Second thought."},
+            ]
+        },
+    )
+    assert msg.extract_thinking() == "First thought.\n\nSecond thought."
+
+
+def test_extract_thinking_gemini_is_thought():
+    """extract_thinking returns full text for Gemini isThought messages."""
+    msg = Message(
+        id="g1",
+        role="model",
+        text="Considering the implications of quantum entanglement...",
+        provider_meta={"isThought": True},
+    )
+    assert msg.is_thinking
+    assert msg.extract_thinking() == "Considering the implications of quantum entanglement..."
+
+
+def test_extract_thinking_chatgpt_thoughts():
+    """extract_thinking returns full text for ChatGPT thinking messages."""
+    msg = Message(
+        id="c1",
+        role="tool",
+        text="The user is asking about error handling patterns.",
+        provider_meta={
+            "raw": {
+                "content": {"content_type": "thoughts"},
+                "metadata": {},
+            }
+        },
+    )
+    assert msg.is_thinking
+    assert msg.extract_thinking() == "The user is asking about error handling patterns."
+
+
+def test_extract_thinking_none_when_not_thinking():
+    """extract_thinking returns None for non-thinking messages."""
+    msg = Message(id="m1", role="assistant", text="Hello!")
+    assert not msg.is_thinking
+    assert msg.extract_thinking() is None
+
+
 def test_dialogue_pair_with_tool_use():
     """DialoguePair assistant message can contain tool use."""
     user_msg = Message(id="u1", role="user", text="Search for X")
