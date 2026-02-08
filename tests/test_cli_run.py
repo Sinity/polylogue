@@ -944,3 +944,256 @@ class TestTagsCommand:
         assert result.exit_code == 0
         assert "No tags found for provider 'chatgpt'" in result.output
         assert "--add-tag" in result.output
+
+
+class TestEmbedCommand:
+    """Tests for the polylogue embed subcommand."""
+
+    def test_embed_no_api_key(self, runner, cli_workspace):
+        """Embed without VOYAGE_API_KEY should print error and abort."""
+        from unittest.mock import patch
+
+        # Ensure both env vars are unset
+        with patch.dict(
+            "os.environ",
+            {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
+            clear=False,
+        ):
+            result = runner.invoke(cli, ["embed"])
+
+        assert result.exit_code != 0
+        assert "VOYAGE_API_KEY" in result.output or "not set" in result.output.lower()
+
+    def test_embed_stats_no_api_key(self, runner, cli_workspace):
+        """--stats flag should work WITHOUT an API key."""
+        from unittest.mock import patch, MagicMock
+
+        # Mock open_connection to return mock database with stats
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=None)
+
+        # Mock execute results for three COUNT queries
+        # Total conversations
+        mock_result_1 = MagicMock()
+        mock_result_1.fetchone.return_value = (5,)
+
+        # Embedded conversations
+        mock_result_2 = MagicMock()
+        mock_result_2.fetchone.return_value = (3,)
+
+        # Embedded messages
+        mock_result_3 = MagicMock()
+        mock_result_3.fetchone.return_value = (45,)
+
+        # Pending conversations
+        mock_result_4 = MagicMock()
+        mock_result_4.fetchone.return_value = (2,)
+
+        # Mock execute to return results in sequence
+        mock_conn.execute.side_effect = [
+            mock_result_1,
+            mock_result_2,
+            mock_result_3,
+            mock_result_4,
+        ]
+
+        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
+            mock_open.return_value = mock_conn
+            # Ensure API key is not set
+            with patch.dict(
+                "os.environ",
+                {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
+                clear=False,
+            ):
+                result = runner.invoke(cli, ["embed", "--stats"])
+
+        assert result.exit_code == 0
+        assert "Embedding Statistics" in result.output
+
+    def test_embed_stats_output(self, runner, cli_workspace):
+        """Verify --stats output includes correct labels and values."""
+        from unittest.mock import patch, MagicMock
+
+        mock_conn = MagicMock()
+        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
+        mock_conn.__exit__ = MagicMock(return_value=None)
+
+        # Setup mock results for stats
+        results = [
+            MagicMock(fetchone=MagicMock(return_value=(10,))),  # Total conversations
+            MagicMock(fetchone=MagicMock(return_value=(7,))),   # Embedded conversations
+            MagicMock(fetchone=MagicMock(return_value=(100,))), # Embedded messages
+            MagicMock(fetchone=MagicMock(return_value=(3,))),   # Pending conversations
+        ]
+        mock_conn.execute.side_effect = results
+
+        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
+            mock_open.return_value = mock_conn
+            with patch.dict(
+                "os.environ",
+                {"VOYAGE_API_KEY": "", "POLYLOGUE_VOYAGE_API_KEY": ""},
+                clear=False,
+            ):
+                result = runner.invoke(cli, ["embed", "--stats"])
+
+        assert result.exit_code == 0
+        assert "Embedding Statistics" in result.output
+        assert "Total conversations" in result.output
+        assert "10" in result.output
+        assert "Embedded conversations" in result.output
+        assert "7" in result.output
+        assert "Coverage" in result.output
+        assert "Embedded messages" in result.output
+        assert "100" in result.output
+        assert "Pending" in result.output
+        assert "3" in result.output
+
+    def test_embed_no_sqlite_vec(self, runner, cli_workspace):
+        """With API key set but no sqlite-vec, should print error."""
+        from unittest.mock import patch
+
+        with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
+            mock_create.return_value = None
+
+            result = runner.invoke(
+                cli, ["embed"], env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"}
+            )
+
+        assert result.exit_code != 0
+        assert "sqlite-vec" in result.output.lower()
+        assert "not available" in result.output.lower()
+
+    def test_embed_single_not_found(self, runner, cli_workspace):
+        """--conversation with nonexistent ID should print error."""
+        from unittest.mock import patch
+
+        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
+                with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
+                    mock_backend = MagicMock()
+                    mock_backend_class.return_value = mock_backend
+                    mock_repo = MagicMock()
+                    mock_repo_class.return_value = mock_repo
+                    mock_repo.get.return_value = None
+                    mock_provider = MagicMock()
+                    mock_create.return_value = mock_provider
+
+                    result = runner.invoke(
+                        cli,
+                        ["embed", "--conversation", "nonexistent-id"],
+                        env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
+                    )
+
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+        assert "nonexistent-id" in result.output
+
+    def test_embed_rebuild_flag(self, runner, cli_workspace):
+        """--rebuild flag is passed to _embed_batch."""
+        from unittest.mock import patch
+
+        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
+                with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
+                    with patch("polylogue.cli.commands.embed._embed_batch") as mock_batch:
+                        mock_backend = MagicMock()
+                        mock_backend_class.return_value = mock_backend
+                        mock_repo = MagicMock()
+                        mock_repo_class.return_value = mock_repo
+                        mock_provider = MagicMock()
+                        mock_create.return_value = mock_provider
+
+                        result = runner.invoke(
+                            cli,
+                            ["embed", "--rebuild"],
+                            env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
+                        )
+
+        assert result.exit_code == 0
+        mock_batch.assert_called_once()
+        # Verify rebuild=True was passed
+        call_kwargs = mock_batch.call_args[1]
+        assert call_kwargs["rebuild"] is True
+
+    def test_embed_limit_flag(self, runner, cli_workspace):
+        """--limit flag is passed to _embed_batch."""
+        from unittest.mock import patch
+
+        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
+                with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
+                    with patch("polylogue.cli.commands.embed._embed_batch") as mock_batch:
+                        mock_backend = MagicMock()
+                        mock_backend_class.return_value = mock_backend
+                        mock_repo = MagicMock()
+                        mock_repo_class.return_value = mock_repo
+                        mock_provider = MagicMock()
+                        mock_create.return_value = mock_provider
+
+                        result = runner.invoke(
+                            cli,
+                            ["embed", "--limit", "50"],
+                            env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
+                        )
+
+        assert result.exit_code == 0
+        mock_batch.assert_called_once()
+        # Verify limit was passed
+        call_kwargs = mock_batch.call_args[1]
+        assert call_kwargs["limit"] == 50
+
+    def test_embed_model_choice(self, runner, cli_workspace):
+        """--model flag selects embedding model."""
+        from unittest.mock import patch
+
+        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
+                with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
+                    with patch("polylogue.cli.commands.embed._embed_batch") as mock_batch:
+                        mock_backend = MagicMock()
+                        mock_backend_class.return_value = mock_backend
+                        mock_repo = MagicMock()
+                        mock_repo_class.return_value = mock_repo
+                        mock_provider = MagicMock()
+                        mock_create.return_value = mock_provider
+
+                        result = runner.invoke(
+                            cli,
+                            ["embed", "--model", "voyage-4-large"],
+                            env={"VOYAGE_API_KEY": "test-key", "POLYLOGUE_FORCE_PLAIN": "1"},
+                        )
+
+        assert result.exit_code == 0
+        # Verify model was set on provider
+        assert mock_provider.model == "voyage-4-large"
+
+    def test_embed_voyage_api_key_alt_env(self, runner, cli_workspace):
+        """POLYLOGUE_VOYAGE_API_KEY env var is accepted as fallback."""
+        from unittest.mock import patch
+
+        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
+                with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
+                    with patch("polylogue.cli.commands.embed._embed_batch") as mock_batch:
+                        mock_backend = MagicMock()
+                        mock_backend_class.return_value = mock_backend
+                        mock_repo = MagicMock()
+                        mock_repo_class.return_value = mock_repo
+                        mock_provider = MagicMock()
+                        mock_create.return_value = mock_provider
+
+                        result = runner.invoke(
+                            cli,
+                            ["embed"],
+                            env={
+                                "POLYLOGUE_VOYAGE_API_KEY": "alt-test-key",
+                                "POLYLOGUE_FORCE_PLAIN": "1",
+                            },
+                        )
+
+        assert result.exit_code == 0
+        # Verify create_vector_provider was called with the key
+        mock_create.assert_called_once()
+        call_kwargs = mock_create.call_args[1]
+        assert call_kwargs["voyage_api_key"] == "alt-test-key"
