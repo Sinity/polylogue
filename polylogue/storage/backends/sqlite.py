@@ -959,15 +959,75 @@ class SQLiteBackend:
             raw_id=row["raw_id"],
         )
 
+    def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]:
+        """Retrieve multiple conversations in a single query.
+
+        Preserves the order of input IDs.  Missing IDs are silently skipped.
+
+        Args:
+            ids: List of conversation IDs to fetch
+
+        Returns:
+            List of ConversationRecord objects in the order of input IDs
+        """
+        if not ids:
+            return []
+
+        import json
+
+        conn = self._get_connection()
+        placeholders = ",".join("?" for _ in ids)
+        rows = conn.execute(
+            f"SELECT * FROM conversations WHERE conversation_id IN ({placeholders})",
+            ids,
+        ).fetchall()
+
+        # Build lookup for order preservation
+        by_id = {}
+        for row in rows:
+            by_id[row["conversation_id"]] = ConversationRecord(
+                conversation_id=row["conversation_id"],
+                provider_name=row["provider_name"],
+                provider_conversation_id=row["provider_conversation_id"],
+                title=row["title"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                content_hash=row["content_hash"],
+                provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+                version=row["version"],
+                parent_conversation_id=row["parent_conversation_id"],
+                branch_type=row["branch_type"],
+                raw_id=row["raw_id"],
+            )
+
+        return [by_id[cid] for cid in ids if cid in by_id]
+
     def list_conversations(
         self,
         source: str | None = None,
         provider: str | None = None,
+        providers: list[str] | None = None,
         parent_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
         limit: int | None = None,
         offset: int = 0,
     ) -> list[ConversationRecord]:
-        """List all conversations with optional filtering and pagination."""
+        """List conversations with optional filtering and pagination.
+
+        Args:
+            source: Filter by source name
+            provider: Filter by single provider name (for backwards compat)
+            providers: Filter by multiple provider names (OR match, also matches source_name)
+            parent_id: Filter by parent conversation ID
+            since: Filter to conversations updated on/after this ISO date string
+            until: Filter to conversations updated on/before this ISO date string
+            title_contains: Filter to conversations whose title contains this text (case-insensitive)
+            limit: Maximum number of records to return
+            offset: Number of records to skip
+        """
         conn = self._get_connection()
 
         # Build query with filters
@@ -982,9 +1042,29 @@ class SQLiteBackend:
             where_clauses.append("provider_name = ?")
             params.append(provider)
 
+        if providers:
+            placeholders = ",".join("?" for _ in providers)
+            where_clauses.append(
+                f"(provider_name IN ({placeholders}) OR source_name IN ({placeholders}))"
+            )
+            params.extend(providers)
+            params.extend(providers)
+
         if parent_id is not None:
             where_clauses.append("parent_conversation_id = ?")
             params.append(parent_id)
+
+        if since is not None:
+            where_clauses.append("updated_at >= ?")
+            params.append(since)
+
+        if until is not None:
+            where_clauses.append("updated_at <= ?")
+            params.append(until)
+
+        if title_contains is not None:
+            where_clauses.append("title LIKE ?")
+            params.append(f"%{title_contains}%")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
@@ -1028,6 +1108,54 @@ class SQLiteBackend:
             )
             for row in rows
         ]
+
+    def count_conversations(
+        self,
+        source: str | None = None,
+        provider: str | None = None,
+        providers: list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+    ) -> int:
+        """Count conversations matching filters without loading records.
+
+        Accepts the same filter params as list_conversations but returns
+        just the count via COUNT(*) for maximum efficiency.
+        """
+        conn = self._get_connection()
+        where_clauses = []
+        params: list[str | int] = []
+
+        if source is not None:
+            where_clauses.append("source_name = ?")
+            params.append(source)
+        if provider is not None:
+            where_clauses.append("provider_name = ?")
+            params.append(provider)
+        if providers:
+            placeholders = ",".join("?" for _ in providers)
+            where_clauses.append(
+                f"(provider_name IN ({placeholders}) OR source_name IN ({placeholders}))"
+            )
+            params.extend(providers)
+            params.extend(providers)
+        if since is not None:
+            where_clauses.append("updated_at >= ?")
+            params.append(since)
+        if until is not None:
+            where_clauses.append("updated_at <= ?")
+            params.append(until)
+        if title_contains is not None:
+            where_clauses.append("title LIKE ?")
+            params.append(f"%{title_contains}%")
+
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        row = conn.execute(
+            f"SELECT COUNT(*) as cnt FROM conversations {where_sql}",
+            tuple(params),
+        ).fetchone()
+        return int(row["cnt"])
 
     def save_conversation(self, record: ConversationRecord) -> None:
         """Persist a conversation record with upsert semantics.
@@ -1380,16 +1508,22 @@ class SQLiteBackend:
     def search_conversations(
         self, query: str, limit: int = 100, providers: list[str] | None = None
     ) -> list[str]:
-        """Search conversations using full-text search.
+        """Search conversations using full-text search with BM25 ranking.
+
+        Escapes user input for safe FTS5 MATCH, then ranks results using
+        BM25 (via FTS5's built-in rank function). Results are grouped by
+        conversation with the best matching message determining position.
 
         Args:
-            query: Search query string (FTS5 syntax)
+            query: Raw search query string (will be escaped for FTS5)
             limit: Maximum number of conversation IDs to return
             providers: Optional list of provider names to filter by
 
         Returns:
             List of conversation IDs matching the query, ordered by relevance
         """
+        from polylogue.storage.search import escape_fts5_query
+
         conn = self._get_connection()
 
         # Check if FTS table exists before querying
@@ -1397,6 +1531,10 @@ class SQLiteBackend:
 
         if not exists:
             raise DatabaseError("Search index not built. Run indexing first or use a different backend.")
+
+        fts_query = escape_fts5_query(query)
+        if not fts_query:
+            return []
 
         if providers:
             placeholders = ",".join("?" for _ in providers)
@@ -1410,7 +1548,7 @@ class SQLiteBackend:
                        OR conversations.source_name IN ({placeholders}))
                 LIMIT ?
                 """,
-                (query, *providers, *providers, limit),
+                (fts_query, *providers, *providers, limit),
             ).fetchall()
         else:
             rows = conn.execute(
@@ -1420,7 +1558,7 @@ class SQLiteBackend:
                 WHERE messages_fts MATCH ?
                 LIMIT ?
                 """,
-                (query, limit),
+                (fts_query, limit),
             ).fetchall()
 
         return [str(row["conversation_id"]) for row in rows]
@@ -1536,17 +1674,10 @@ class SQLiteBackend:
         if not exists:
             return False
 
-        # Clean up FTS index entries (if FTS table exists)
-        fts_exists = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'"
-        ).fetchone()
-        if fts_exists:
-            conn.execute(
-                "DELETE FROM messages_fts WHERE conversation_id = ?",
-                (conversation_id,),
-            )
+        # FTS cleanup is handled automatically by the messages_fts_delete trigger
+        # (added in schema v11) when CASCADE deletes the messages.
 
-        # Delete conversation (CASCADE handles messages automatically)
+        # Delete conversation (CASCADE handles messages + FTS automatically)
         conn.execute(
             "DELETE FROM conversations WHERE conversation_id = ?",
             (conversation_id,),
