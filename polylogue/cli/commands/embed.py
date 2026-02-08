@@ -178,12 +178,13 @@ def _embed_single(
 
         messages = []
         for row in rows:
-            import contextlib
             import json
             provider_meta = None
             if row["provider_meta"]:
-                with contextlib.suppress(Exception):
+                try:
                     provider_meta = json.loads(row["provider_meta"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
 
             messages.append(MessageRecord(
                 message_id=row["message_id"],
@@ -259,7 +260,6 @@ def _embed_batch(
 
     def _embed_one(conv_id: str, title: str | None) -> bool:
         """Embed a single conversation. Returns True on success."""
-        import contextlib
         import json
 
         with open_connection(None) as conn:
@@ -276,8 +276,10 @@ def _embed_batch(
             for row in rows:
                 provider_meta = None
                 if row["provider_meta"]:
-                    with contextlib.suppress(Exception):
+                    try:
                         provider_meta = json.loads(row["provider_meta"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
 
                 messages.append(MessageRecord(
                     message_id=row["message_id"],
