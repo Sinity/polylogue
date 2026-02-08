@@ -81,7 +81,7 @@ def _load_cached(archive_root: Path) -> dict[str, Any] | None:
         if isinstance(payload, dict):
             return payload
     except Exception as exc:
-        LOGGER.warning("Failed to load health cache: %s", exc)
+        LOGGER.debug("Failed to load health cache: %s", exc)
     return None
 
 
@@ -354,7 +354,7 @@ def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairRes
                 count = conn.execute(
                     """
                     SELECT COUNT(*) FROM messages
-                    WHERE conversation_id NOT IN (SELECT conversation_id FROM conversations)
+                    WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = messages.conversation_id)
                     """
                 ).fetchone()[0]
                 return RepairResult(
@@ -367,7 +367,7 @@ def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairRes
                 result = conn.execute(
                     """
                     DELETE FROM messages
-                    WHERE conversation_id NOT IN (SELECT conversation_id FROM conversations)
+                    WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = messages.conversation_id)
                     """
                 )
                 conn.commit()
@@ -395,8 +395,8 @@ def repair_empty_conversations(config: Config, dry_run: bool = False) -> RepairR
                 # Count only, don't modify
                 count = conn.execute(
                     """
-                    SELECT COUNT(*) FROM conversations
-                    WHERE conversation_id NOT IN (SELECT DISTINCT conversation_id FROM messages)
+                    SELECT COUNT(*) FROM conversations c
+                    WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)
                     """
                 ).fetchone()[0]
                 return RepairResult(
@@ -409,7 +409,7 @@ def repair_empty_conversations(config: Config, dry_run: bool = False) -> RepairR
                 result = conn.execute(
                     """
                     DELETE FROM conversations
-                    WHERE conversation_id NOT IN (SELECT DISTINCT conversation_id FROM messages)
+                    WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = conversations.conversation_id)
                     """
                 )
                 conn.commit()
@@ -514,16 +514,16 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
                 # Count distinct orphaned refs (a single ref can be orphaned on both axes)
                 orphaned_refs = conn.execute(
                     """
-                    SELECT COUNT(*) FROM attachment_refs
-                    WHERE (message_id IS NOT NULL AND message_id NOT IN (SELECT message_id FROM messages))
-                       OR conversation_id NOT IN (SELECT conversation_id FROM conversations)
+                    SELECT COUNT(*) FROM attachment_refs ar
+                    WHERE (ar.message_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = ar.message_id))
+                       OR NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = ar.conversation_id)
                     """
                 ).fetchone()[0]
 
                 atts_deleted = conn.execute(
                     """
-                    SELECT COUNT(*) FROM attachments
-                    WHERE attachment_id NOT IN (SELECT attachment_id FROM attachment_refs)
+                    SELECT COUNT(*) FROM attachments a
+                    WHERE NOT EXISTS (SELECT 1 FROM attachment_refs ar WHERE ar.attachment_id = a.attachment_id)
                     """
                 ).fetchone()[0]
 
@@ -539,7 +539,7 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
                 ref_result = conn.execute(
                     """
                     DELETE FROM attachment_refs
-                    WHERE message_id IS NOT NULL AND message_id NOT IN (SELECT message_id FROM messages)
+                    WHERE message_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = attachment_refs.message_id)
                     """
                 )
                 refs_deleted = ref_result.rowcount
@@ -548,7 +548,7 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
                 conv_ref_result = conn.execute(
                     """
                     DELETE FROM attachment_refs
-                    WHERE conversation_id NOT IN (SELECT conversation_id FROM conversations)
+                    WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = attachment_refs.conversation_id)
                     """
                 )
                 conv_refs_deleted = conv_ref_result.rowcount
@@ -557,7 +557,7 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
                 att_result = conn.execute(
                     """
                     DELETE FROM attachments
-                    WHERE attachment_id NOT IN (SELECT attachment_id FROM attachment_refs)
+                    WHERE NOT EXISTS (SELECT 1 FROM attachment_refs ar WHERE ar.attachment_id = attachments.attachment_id)
                     """
                 )
                 atts_deleted = att_result.rowcount
