@@ -155,7 +155,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         if not summary_results:
             env.ui.console.print("No conversations matched.")
             raise SystemExit(2)
-        _output_summary_list(env, summary_results, params)
+        _output_summary_list(env, summary_results, params, conv_repo)
         return
 
     # Streaming path
@@ -544,13 +544,20 @@ def _output_summary_list(
     env: AppEnv,
     summaries: list[ConversationSummary],
     params: dict[str, Any],
+    repo: ConversationRepository | None = None,
 ) -> None:
     """Output a list of conversation summaries (memory-efficient).
 
     This is the fast path for --list mode that doesn't load messages.
+    When a repo is provided, batch-fetches message counts for display.
     """
-
     output_format = params.get("output_format", "text")
+
+    # Batch-fetch message counts if repo available (single SQL query)
+    msg_counts: dict[str, int] = {}
+    if repo:
+        ids = [str(s.id) for s in summaries]
+        msg_counts = repo.backend.get_message_counts_batch(ids)
 
     if output_format == "json":
         data = [
@@ -561,6 +568,7 @@ def _output_summary_list(
                 "date": s.updated_at.isoformat() if s.updated_at else None,
                 "tags": s.tags,
                 "summary": s.summary,
+                "messages": msg_counts.get(str(s.id), 0),
             }
             for s in summaries
         ]
@@ -575,18 +583,19 @@ def _output_summary_list(
                 "title": s.display_title,
                 "date": s.updated_at.isoformat() if s.updated_at else None,
                 "tags": s.tags,
+                "messages": msg_counts.get(str(s.id), 0),
             }
             for s in summaries
         ]
         env.ui.console.print(yaml.dump(data, default_flow_style=False, allow_unicode=True))
     else:
-        # Plain text format (default)
+        # Plain text format (default) — now with message counts
         lines = []
         for s in summaries:
             date = s.updated_at.strftime("%Y-%m-%d") if s.updated_at else "unknown"
             title = s.display_title[:50] if s.display_title else str(s.id)[:20]
-            # Note: message count not available in summary - show "?" or skip
-            lines.append(f"{str(s.id)[:24]:24s}  {date:10s}  [{s.provider:12s}]  {title}")
+            count = msg_counts.get(str(s.id), 0)
+            lines.append(f"{str(s.id)[:24]:24s}  {date:10s}  [{s.provider:12s}]  {title} ({count} msgs)")
         env.ui.console.print("\n".join(lines))
 
 

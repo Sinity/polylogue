@@ -103,14 +103,22 @@ class ConversationRepository:
         limit: int = 50,
         offset: int = 0,
         provider: str | None = None,
+        providers: builtins.list[str] | None = None,
         source: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
     ) -> builtins.list[ConversationSummary]:
         """List conversation summaries without loading messages."""
         conv_records = self._backend.list_conversations(
             source=source,
             provider=provider,
+            providers=providers,
             limit=limit,
             offset=offset,
+            since=since,
+            until=until,
+            title_contains=title_contains,
         )
         return [ConversationSummary.from_record(rec) for rec in conv_records]
 
@@ -119,15 +127,40 @@ class ConversationRepository:
         limit: int = 50,
         offset: int = 0,
         provider: str | None = None,
+        providers: builtins.list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
     ) -> builtins.list[Conversation]:
         """List conversations with lazy message loading."""
         conv_records = self._backend.list_conversations(
             provider=provider,
+            providers=providers,
             limit=limit,
             offset=offset,
+            since=since,
+            until=until,
+            title_contains=title_contains,
         )
         source = RepositoryMessageSource(self._backend)
         return [Conversation.from_lazy(rec, source) for rec in conv_records]
+
+    def count(
+        self,
+        provider: str | None = None,
+        providers: builtins.list[str] | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        title_contains: str | None = None,
+    ) -> int:
+        """Count conversations matching filters without loading data."""
+        return self._backend.count_conversations(
+            provider=provider,
+            providers=providers,
+            since=since,
+            until=until,
+            title_contains=title_contains,
+        )
 
     def get_parent(self, conversation_id: str) -> Conversation | None:
         """Get the parent conversation if it exists."""
@@ -190,15 +223,12 @@ class ConversationRepository:
         return self._get_many(ids)
 
     def _get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:
-        """Bulk fetch lazy conversation objects."""
+        """Bulk fetch lazy conversation objects in a single SQL query."""
         if not conversation_ids:
             return []
-        results = []
-        for cid in conversation_ids:
-            conv = self.get(cid)
-            if conv is not None:
-                results.append(conv)
-        return results
+        records = self._backend.get_conversations_batch(conversation_ids)
+        source = RepositoryMessageSource(self._backend)
+        return [Conversation.from_lazy(rec, source) for rec in records]
 
     def get_conversation_stats(self, conversation_id: str) -> dict[str, int] | None:
         """Get message counts without loading messages."""
@@ -431,20 +461,18 @@ class ConversationRepository:
             raise ValueError("No vector provider configured")
 
         results = vector_provider.query(query, limit=limit)
+        if not results:
+            return []
 
-        # Enrich with conversation IDs
-        enriched: builtins.list[tuple[str, str, float]] = []
-        for message_id, distance in results:
-            # Look up conversation ID
-            conn = self._backend._get_connection()
-            row = conn.execute(
-                "SELECT conversation_id FROM messages WHERE message_id = ?",
-                (message_id,),
-            ).fetchone()
-            if row:
-                enriched.append((row["conversation_id"], message_id, distance))
+        # Batch lookup conversation IDs (single query instead of N+1)
+        message_ids = [msg_id for msg_id, _ in results]
+        msg_to_conv = self._get_message_conversation_mapping(message_ids)
 
-        return enriched
+        return [
+            (msg_to_conv[msg_id], msg_id, distance)
+            for msg_id, distance in results
+            if msg_id in msg_to_conv
+        ]
 
     def get_archive_stats(self) -> ArchiveStats:
         """Get comprehensive archive statistics.

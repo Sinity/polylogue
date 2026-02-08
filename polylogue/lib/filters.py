@@ -380,39 +380,48 @@ class ConversationFilter:
 
     # --- Terminal methods (execute query) ---
 
-    def _apply_filters(self, conversations: builtins.list[Conversation]) -> builtins.list[Conversation]:
+    def _apply_filters(
+        self,
+        conversations: builtins.list[Conversation],
+        *,
+        sql_pushed: bool = False,
+    ) -> builtins.list[Conversation]:
         """Apply in-memory filters to conversation list.
 
         Args:
             conversations: List of conversations to filter
+            sql_pushed: If True, provider/date/title filters were already
+                       applied in SQL and are skipped here to avoid double-filtering.
 
         Returns:
             Filtered list
         """
         results = list(conversations)
 
-        # Provider filters
-        if self._providers:
-            results = [c for c in results if c.provider in self._providers]
+        # Provider filters (skip if already pushed to SQL)
+        if not sql_pushed:
+            if self._providers:
+                results = [c for c in results if c.provider in self._providers]
+            if self._since_date:
+                results = [c for c in results if c.updated_at and c.updated_at >= self._since_date]
+            if self._until_date:
+                results = [c for c in results if c.updated_at and c.updated_at <= self._until_date]
+            if self._title_pattern:
+                pattern_lower = self._title_pattern.lower()
+                results = [c for c in results if c.display_title and pattern_lower in c.display_title.lower()]
+
+        # These filters are never pushed to SQL
         if self._excluded_providers:
-            results = [c for c in results if c.provider not in self._excluded_providers]
+            excluded_set = set(self._excluded_providers)
+            results = [c for c in results if c.provider not in excluded_set]
 
-        # Tag filters
+        # Tag filters (use sets for O(1) lookup)
         if self._tags:
-            results = [c for c in results if any(t in c.tags for t in self._tags)]
+            tag_set = set(self._tags)
+            results = [c for c in results if tag_set.intersection(c.tags)]
         if self._excluded_tags:
-            results = [c for c in results if not any(t in c.tags for t in self._excluded_tags)]
-
-        # Date filters
-        if self._since_date:
-            results = [c for c in results if c.updated_at and c.updated_at >= self._since_date]
-        if self._until_date:
-            results = [c for c in results if c.updated_at and c.updated_at <= self._until_date]
-
-        # Title filter
-        if self._title_pattern:
-            pattern_lower = self._title_pattern.lower()
-            results = [c for c in results if c.display_title and pattern_lower in c.display_title.lower()]
+            excluded_tag_set = set(self._excluded_tags)
+            results = [c for c in results if not excluded_tag_set.intersection(c.tags)]
 
         # ID prefix filter
         if self._id_prefix:
@@ -430,11 +439,21 @@ class ConversationFilter:
                 elif content_type == "summary":
                     results = [c for c in results if c.summary]
 
-        # Negative FTS (exclude conversations containing text)
+        # Negative FTS — single pass combining all terms
         if self._negative_fts_terms:
-            for term in self._negative_fts_terms:
-                term_lower = term.lower()
-                results = [c for c in results if not any(term_lower in m.text.lower() for m in c.messages if m.text)]
+            neg_terms = [t.lower() for t in self._negative_fts_terms]
+
+            def _has_neg_term(c: Conversation) -> bool:
+                for m in c.messages:
+                    if not m.text:
+                        continue
+                    text_lower = m.text.lower()
+                    for term in neg_terms:
+                        if term in text_lower:
+                            return True
+                return False
+
+            results = [c for c in results if not _has_neg_term(c)]
 
         # Custom predicates
         for predicate in self._predicates:
@@ -481,14 +500,31 @@ class ConversationFilter:
             reverse=not self._sort_reverse,  # Default is descending
         )
 
+    def _sql_pushdown_params(self) -> dict[str, object]:
+        """Build kwargs for repository list/list_summaries that push filters to SQL.
+
+        Returns dict with keys matching the repository's list() parameters.
+        Only includes non-None values for filters that can be pushed down.
+        """
+        params: dict[str, object] = {}
+        if self._providers:
+            if len(self._providers) == 1:
+                params["provider"] = self._providers[0]
+            else:
+                params["providers"] = self._providers
+        if self._since_date:
+            params["since"] = self._since_date.isoformat()
+        if self._until_date:
+            params["until"] = self._until_date.isoformat()
+        if self._title_pattern:
+            params["title_contains"] = self._title_pattern
+        return params
+
     def _fetch_candidates(self) -> builtins.list[Conversation]:
         """Fetch candidate conversations from repository.
 
         Uses FTS search if terms specified, otherwise lists all.
-        Returns lazy Conversation objects for memory efficiency.
-
-        Note: If content-dependent filters are applied, conversations will
-        be materialized on demand when iterating their messages.
+        Pushes provider, date, and title filters into SQL when possible.
 
         Returns:
             List of lazy Conversation objects
@@ -503,18 +539,13 @@ class ConversationFilter:
 
         # If we have FTS terms, use search
         if self._fts_terms:
-            # Combine search terms
             query = " ".join(self._fts_terms)
             try:
                 # When other filters will narrow results, fetch more candidates
-                # so post-filtering has enough to work with
                 has_post_filters = bool(
                     self._excluded_providers
-                    or self._since_date
-                    or self._until_date
                     or self._tags
                     or self._excluded_tags
-                    or self._title_pattern
                     or self._has_types
                     or self._predicates
                 )
@@ -527,12 +558,9 @@ class ConversationFilter:
                 # Fall back to list if search not available
                 pass
 
-        # If we have a provider filter and no FTS, use filtered list
-        if self._providers and len(self._providers) == 1:
-            return self._repo.list(limit=1000, provider=self._providers[0])
-
-        # Default: list all (with reasonable limit)
-        return self._repo.list(limit=1000)
+        # Push all SQL-eligible filters to backend
+        sql_params = self._sql_pushdown_params()
+        return self._repo.list(limit=1000, **sql_params)
 
     def list(self) -> builtins.list[Conversation]:
         """Execute query and return matching conversations.
@@ -551,11 +579,13 @@ class ConversationFilter:
             filtered = self._apply_filters(candidates)
             return filtered
 
-        # Fetch candidates
+        # Fetch candidates (with SQL pushdown for non-FTS path)
         candidates = self._fetch_candidates()
 
-        # Apply in-memory filters
-        filtered = self._apply_filters(candidates)
+        # FTS path doesn't push date/title, so those still need in-memory filtering.
+        # Non-FTS path pushes provider/date/title to SQL.
+        sql_pushed = not self._fts_terms and not self._id_prefix
+        filtered = self._apply_filters(candidates, sql_pushed=sql_pushed)
 
         # Apply sorting
         sorted_results = self._apply_sort(filtered)
@@ -582,10 +612,35 @@ class ConversationFilter:
     def count(self) -> int:
         """Execute query and return count of matching conversations.
 
+        When possible, uses SQL COUNT(*) directly for O(1) performance.
+        Falls back to loading and counting for complex filter combinations.
+
         Returns:
             Number of matching conversations
         """
-        # Fetch and filter without limit
+        # Fast path: pure SQL count for simple filter combos (no FTS, no content filters)
+        if (
+            not self._fts_terms
+            and not self._id_prefix
+            and not self._similar_text
+            and not self._predicates
+            and not self._has_types
+            and not self._negative_fts_terms
+            and not self._excluded_providers
+            and not self._tags
+            and not self._excluded_tags
+        ):
+            return self._repo.count(**self._sql_pushdown_params())
+
+        # Medium path: use summaries (lightweight) if possible
+        if self.can_use_summaries():
+            saved_limit = self._limit_count
+            self._limit_count = None
+            results = self.list_summaries()
+            self._limit_count = saved_limit
+            return len(results)
+
+        # Slow path: must load full conversations
         saved_limit = self._limit_count
         self._limit_count = None
         results = self.list()
@@ -681,6 +736,7 @@ class ConversationFilter:
         """Fetch candidate conversation summaries (lightweight, no messages).
 
         Uses FTS search if terms specified, otherwise lists all summaries.
+        Pushes provider, date, and title filters into SQL when possible.
 
         Returns:
             List of ConversationSummary objects
@@ -700,11 +756,8 @@ class ConversationFilter:
             try:
                 has_post_filters = bool(
                     self._excluded_providers
-                    or self._since_date
-                    or self._until_date
                     or self._tags
                     or self._excluded_tags
-                    or self._title_pattern
                     or self._has_types
                     or self._predicates
                 )
@@ -716,18 +769,22 @@ class ConversationFilter:
             except Exception:
                 pass
 
-        # If we have a provider filter, use filtered list
-        if self._providers and len(self._providers) == 1:
-            return self._repo.list_summaries(limit=1000, provider=self._providers[0])
+        # Push all SQL-eligible filters to backend
+        sql_params = self._sql_pushdown_params()
+        return self._repo.list_summaries(limit=1000, **sql_params)
 
-        # Default: list all summaries
-        return self._repo.list_summaries(limit=1000)
-
-    def _apply_summary_filters(self, summaries: builtins.list[ConversationSummary]) -> builtins.list[ConversationSummary]:
+    def _apply_summary_filters(
+        self,
+        summaries: builtins.list[ConversationSummary],
+        *,
+        sql_pushed: bool = False,
+    ) -> builtins.list[ConversationSummary]:
         """Apply filters that work on summaries (no message access needed).
 
         Args:
             summaries: List of ConversationSummary objects
+            sql_pushed: If True, provider/date/title filters were already
+                       applied in SQL and are skipped here.
 
         Returns:
             Filtered list of summaries
@@ -735,28 +792,30 @@ class ConversationFilter:
 
         results: builtins.list[ConversationSummary] = list(summaries)
 
-        # Provider filters
-        if self._providers:
-            results = [s for s in results if s.provider in self._providers]
+        # Skip filters already pushed to SQL
+        if not sql_pushed:
+            if self._providers:
+                results = [s for s in results if s.provider in self._providers]
+            if self._since_date:
+                results = [s for s in results if s.updated_at and s.updated_at >= self._since_date]
+            if self._until_date:
+                results = [s for s in results if s.updated_at and s.updated_at <= self._until_date]
+            if self._title_pattern:
+                pattern_lower = self._title_pattern.lower()
+                results = [s for s in results if s.display_title and pattern_lower in s.display_title.lower()]
+
+        # These filters are never pushed to SQL
         if self._excluded_providers:
-            results = [s for s in results if s.provider not in self._excluded_providers]
+            excluded_set = set(self._excluded_providers)
+            results = [s for s in results if s.provider not in excluded_set]
 
-        # Tag filters
+        # Tag filters (use sets for O(1) lookup)
         if self._tags:
-            results = [s for s in results if any(t in s.tags for t in self._tags)]
+            tag_set = set(self._tags)
+            results = [s for s in results if tag_set.intersection(s.tags)]
         if self._excluded_tags:
-            results = [s for s in results if not any(t in s.tags for t in self._excluded_tags)]
-
-        # Date filters
-        if self._since_date:
-            results = [s for s in results if s.updated_at and s.updated_at >= self._since_date]
-        if self._until_date:
-            results = [s for s in results if s.updated_at and s.updated_at <= self._until_date]
-
-        # Title filter
-        if self._title_pattern:
-            pattern_lower = self._title_pattern.lower()
-            results = [s for s in results if s.display_title and pattern_lower in s.display_title.lower()]
+            excluded_tag_set = set(self._excluded_tags)
+            results = [s for s in results if not excluded_tag_set.intersection(s.tags)]
 
         # ID prefix filter
         if self._id_prefix:
@@ -817,11 +876,12 @@ class ConversationFilter:
                 "(regex, has:thinking, has:tools, etc.). Use list() instead."
             )
 
-        # Fetch lightweight candidates
+        # Fetch lightweight candidates (with SQL pushdown for non-FTS path)
         candidates = self._fetch_summary_candidates()
 
-        # Apply summary-compatible filters
-        filtered = self._apply_summary_filters(candidates)
+        # Non-FTS path pushes provider/date/title to SQL
+        sql_pushed = not self._fts_terms and not self._id_prefix
+        filtered = self._apply_summary_filters(candidates, sql_pushed=sql_pushed)
 
         # Apply sorting
         sorted_results = self._apply_summary_sort(filtered)
