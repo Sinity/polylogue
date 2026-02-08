@@ -77,7 +77,7 @@ class Browser(Container):
 
         for msg in conv.messages:
             role_icon = "👤" if msg.role == "user" else "🤖"
-            md_lines.append(f"### {role_icon} {msg.role.upper()}")
+            md_lines.append(f"### {role_icon} {(msg.role or 'unknown').upper()}")
             md_lines.append(msg.text or "*[No content]*")
             md_lines.append("")
 

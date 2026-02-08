@@ -457,7 +457,7 @@ DEFAULT_HTML_TEMPLATE = """<!DOCTYPE html>
 
         <div class="messages">
             {% for msg in messages %}
-            <article class="message message-{{ msg.role }}" id="msg-{{ loop.index }}">
+            <article class="message message-{{ msg.role or 'unknown' }}" id="msg-{{ loop.index }}">
                 <div class="message-avatar">
                     <span class="avatar-icon">{{ (msg.role or 'msg')[:2] | upper }}</span>
                 </div>
@@ -483,7 +483,7 @@ DEFAULT_HTML_TEMPLATE = """<!DOCTYPE html>
             {% for msg in messages %}
             <li>
                 <a href="#msg-{{ loop.index }}">
-                    {{ msg.role }}: {{ (msg.text or "")[:30] }}{% if msg.text|length > 30 %}...{% endif %}
+                    {{ msg.role or 'unknown' }}: {{ (msg.text or "")[:30] }}{% if msg.text|length > 30 %}...{% endif %}
                 </a>
             </li>
             {% endfor %}
