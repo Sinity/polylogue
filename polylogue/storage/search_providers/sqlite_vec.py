@@ -101,11 +101,15 @@ class SqliteVecProvider:
         conn = sqlite3.connect(self.db_path, timeout=30)
         conn.row_factory = sqlite3.Row
 
-        # Try to load sqlite-vec
+        # Try to load sqlite-vec (requires enable_load_extension authorization)
         if self._vec_available is None:
             try:
                 import sqlite_vec
-                sqlite_vec.load(conn)
+                conn.enable_load_extension(True)
+                try:
+                    sqlite_vec.load(conn)
+                finally:
+                    conn.enable_load_extension(False)
                 self._vec_available = True
             except ImportError:
                 logger.warning("sqlite-vec not installed")
@@ -116,7 +120,11 @@ class SqliteVecProvider:
         elif self._vec_available:
             try:
                 import sqlite_vec
-                sqlite_vec.load(conn)
+                conn.enable_load_extension(True)
+                try:
+                    sqlite_vec.load(conn)
+                finally:
+                    conn.enable_load_extension(False)
             except Exception:
                 pass
 

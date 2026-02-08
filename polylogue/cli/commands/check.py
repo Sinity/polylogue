@@ -25,8 +25,22 @@ def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, v
     config = load_effective_config(env)
     report = get_health(config)
 
+    # Run repairs before output so JSON mode includes repair results
+    repair_results: list | None = None
+    if repair:
+        summary = report.summary
+        error_count = summary.get("error", 0)
+        warning_count = summary.get("warning", 0)
+        if error_count > 0 or warning_count > 0:
+            repair_results = run_all_repairs(config)
+
     if json_output:
-        env.ui.console.print(json.dumps(report.to_dict(), indent=2))
+        out = report.to_dict()
+        if repair_results is not None:
+            out["repairs"] = [r.to_dict() for r in repair_results]
+        click.echo(json.dumps(out, indent=2))
+        if repair and vacuum:
+            _run_vacuum(env)
         return
 
     lines = []
@@ -59,43 +73,40 @@ def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, v
 
     env.ui.summary("Health Check", lines)
 
-    # Repair mode
-    if repair:
-        error_count = summary.get("error", 0)
-        warning_count = summary.get("warning", 0)
-        if error_count == 0 and warning_count == 0:
-            env.ui.console.print("No issues to repair.")
+    # Show repair results in plain text mode
+    if repair_results is not None:
+        click.echo("")
+        click.echo("Running repairs...")
+        total_repaired = 0
+        for result in repair_results:
+            if result.repaired_count > 0 or not result.success:
+                status = "[green]✓[/green]" if result.success else "[red]✗[/red]"
+                if env.ui.plain:
+                    status = "OK" if result.success else "FAIL"
+                env.ui.console.print(f"  {status} {result.name}: {result.detail}")
+                total_repaired += result.repaired_count
+
+        if total_repaired > 0:
+            click.echo(f"\nRepaired {total_repaired} issue(s)")
         else:
-            click.echo("")
-            click.echo("Running repairs...")
+            click.echo("  No issues found that could be automatically repaired.")
+    elif repair:
+        env.ui.console.print("No issues to repair.")
 
-            # Run all repair functions
-            results = run_all_repairs(config)
+    if repair and vacuum:
+        _run_vacuum(env)
 
-            total_repaired = 0
-            for result in results:
-                if result.repaired_count > 0 or not result.success:
-                    status = "[green]✓[/green]" if result.success else "[red]✗[/red]"
-                    if env.ui.plain:
-                        status = "OK" if result.success else "FAIL"
-                    env.ui.console.print(f"  {status} {result.name}: {result.detail}")
-                    total_repaired += result.repaired_count
 
-            if total_repaired > 0:
-                click.echo(f"\nRepaired {total_repaired} issue(s)")
-            else:
-                click.echo("  No issues found that could be automatically repaired.")
+def _run_vacuum(env: AppEnv) -> None:
+    """Run VACUUM to reclaim unused space."""
+    env.ui.console.print("")
+    env.ui.console.print("Running VACUUM to reclaim space...")
+    try:
+        from polylogue.storage.backends.sqlite import default_db_path, open_connection
 
-        # Vacuum if requested (always run when --vacuum is specified)
-        if vacuum:
-            env.ui.console.print("")
-            env.ui.console.print("Running VACUUM to reclaim space...")
-            try:
-                from polylogue.storage.backends.sqlite import default_db_path, open_connection
-
-                db_path = default_db_path()
-                with open_connection(db_path) as conn:
-                    conn.execute("VACUUM")
-                env.ui.console.print("  VACUUM complete.")
-            except Exception as exc:
-                env.ui.console.print(f"  VACUUM failed: {exc}")
+        db_path = default_db_path()
+        with open_connection(db_path) as conn:
+            conn.execute("VACUUM")
+        env.ui.console.print("  VACUUM complete.")
+    except Exception as exc:
+        env.ui.console.print(f"  VACUUM failed: {exc}")

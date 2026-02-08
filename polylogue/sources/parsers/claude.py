@@ -554,8 +554,8 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
             # Skip invalid records
             continue
 
-        # Skip init messages
-        if record.type == "init":
+        # Skip non-message record types (init, metadata snapshots, ops)
+        if record.type in {"init", "file-history-snapshot", "queue-operation"}:
             continue
 
         # Extract session ID for conversation grouping

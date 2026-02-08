@@ -501,8 +501,7 @@ class ConversationFilter:
                 # When other filters will narrow results, fetch more candidates
                 # so post-filtering has enough to work with
                 has_post_filters = bool(
-                    self._providers
-                    or self._excluded_providers
+                    self._excluded_providers
                     or self._since_date
                     or self._until_date
                     or self._tags
@@ -511,8 +510,11 @@ class ConversationFilter:
                     or self._has_types
                     or self._predicates
                 )
-                search_limit = 500 if has_post_filters else 20
-                return self._repo.search(query, limit=search_limit)
+                search_limit = 500 if has_post_filters else 100
+                # Push provider filter into SQL for efficiency
+                return self._repo.search(
+                    query, limit=search_limit, providers=self._providers or None
+                )
             except Exception:
                 # Fall back to list if search not available
                 pass
@@ -680,7 +682,21 @@ class ConversationFilter:
         if self._fts_terms:
             query = " ".join(self._fts_terms)
             try:
-                return self._repo.search_summaries(query)
+                has_post_filters = bool(
+                    self._excluded_providers
+                    or self._since_date
+                    or self._until_date
+                    or self._tags
+                    or self._excluded_tags
+                    or self._title_pattern
+                    or self._has_types
+                    or self._predicates
+                )
+                search_limit = 500 if has_post_filters else 100
+                # Push provider filter into SQL for efficiency
+                return self._repo.search_summaries(
+                    query, limit=search_limit, providers=self._providers or None
+                )
             except Exception:
                 pass
 
