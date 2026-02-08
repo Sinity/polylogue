@@ -50,6 +50,7 @@ class IngestResult:
             "attachments": 0,
         }
         self.processed_ids: set[str] = set()
+        self.parse_failures: int = 0
         self._lock = threading.Lock()
 
     def merge_result(
@@ -265,6 +266,7 @@ class IngestionService:
                     provider=raw_record.provider_name,
                     error=str(exc),
                 )
+                result.parse_failures += 1
 
         # Free raw records from memory before processing
         del raw_records

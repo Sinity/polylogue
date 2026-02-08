@@ -113,7 +113,7 @@ class MarkdownRenderer:
             language = match.group(1)
             code = match.group(2)
             # Unescape HTML entities
-            code = code.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+            code = code.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
             return self.highlighter.highlight_code(code, language)
 
         html = re.sub(pattern, replace_code, html, flags=re.DOTALL)
@@ -123,7 +123,7 @@ class MarkdownRenderer:
 
         def replace_plain_code(match: re.Match[str]) -> str:
             code = match.group(1)
-            code = code.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+            code = code.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
             # Try to guess the language
             return self.highlighter.highlight_code(code, None)
 
