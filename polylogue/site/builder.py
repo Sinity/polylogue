@@ -734,7 +734,7 @@ class SiteBuilder:
                 updated_at=updated_at_str,
                 message_count=msg_counts.get(sid, 0),
                 preview=summary.summary or "",
-                path=f"{provider}/{sid[:12]}/conversation.html",
+                path=f"{safe_path_component(provider, fallback='provider')}/{sid[:12]}/conversation.html",
             ))
 
         # Sort by updated_at descending
