@@ -121,6 +121,22 @@ def _display_result(
         if latest:
             env.ui.console.print(f"Latest render: {latest}")
 
+    # Surface render failures so users know which conversations couldn't be rendered
+    if result.render_failures:
+        n = len(result.render_failures)
+        click.echo(f"\nRender failures ({n}):", err=True)
+        show_limit = 10
+        for failure in result.render_failures[:show_limit]:
+            conv_id = failure.get("conversation_id", "?")
+            error = failure.get("error", "unknown error")
+            click.echo(f"  {conv_id}: {error}", err=True)
+        if n > show_limit:
+            click.echo(f"  ... and {n - show_limit} more", err=True)
+        click.echo(
+            "Hint: re-run with `polylogue run --stage render` to retry rendering.",
+            err=True,
+        )
+
     if result.index_error:
         error_line = f"Index error: {result.index_error}"
         hint_line = "Hint: run `polylogue run --stage index` to rebuild the index."
