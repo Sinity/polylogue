@@ -30,7 +30,7 @@ Example:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -481,8 +481,8 @@ class Polylogue:
             total_words += sum(m.word_count for m in conv.messages)
 
         # Get recent conversations (top 5 by date)
-        # Use datetime.min as fallback to avoid mixed datetime/str TypeError
-        _epoch = datetime.min
+        # Use UTC-aware datetime.min as fallback — parse_timestamp() returns aware datetimes
+        _epoch = datetime.min.replace(tzinfo=timezone.utc)
         recent = sorted(
             conversations,
             key=lambda c: c.updated_at or c.created_at or _epoch,
