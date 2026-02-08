@@ -311,9 +311,7 @@ class SqliteVecProvider:
                     ),
                 )
 
-            conn.commit()
-
-            # Update embedding status
+            # Update embedding status (single atomic commit with the inserts above)
             conn.execute(
                 """
                 INSERT INTO embedding_status (
