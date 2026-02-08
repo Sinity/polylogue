@@ -1082,6 +1082,9 @@ class SQLiteBackend:
         if limit is not None:
             query += " LIMIT ?"
             params.append(limit)
+        elif offset > 0:
+            # SQLite requires LIMIT before OFFSET; use -1 for unlimited
+            query += " LIMIT -1"
 
         if offset > 0:
             query += " OFFSET ?"
