@@ -143,7 +143,7 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     ui.summary("Polylogue", lines)
 
     # Show analytics visualization (compatible with plain mode too)
-    if True:
+    if ui:
         try:
             from polylogue.cli.analytics import compute_provider_comparison
 
