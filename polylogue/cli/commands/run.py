@@ -286,6 +286,8 @@ def run_command(
                         click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
                 except DriveError as exc:
                     click.echo(f"Sync error: {exc}", err=True)
+                except Exception as exc:
+                    click.echo(f"Unexpected error during sync: {exc}", err=True)
                 time.sleep(poll_interval)
         except KeyboardInterrupt:
             env.ui.console.print("\nWatch mode stopped.")
