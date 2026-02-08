@@ -34,7 +34,8 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
             continue
         text = "\n".join(str(part) for part in parts if part)
         # Role is required - skip messages without one
-        raw_role = (msg.get("author") or {}).get("role")
+        author = msg.get("author")
+        raw_role = author.get("role") if isinstance(author, dict) else None
         if not raw_role:
             continue
         role = normalize_role(raw_role)
