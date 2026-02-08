@@ -411,12 +411,35 @@ class Message(BaseModel):
         return int(duration) if isinstance(duration, (int, float)) else None
 
     def extract_thinking(self) -> str | None:
-        """Extract thinking content if present."""
-        if not self.text:
-            return None
-        match = re.search(r"<(?:antml:)?thinking>(.*?)</(?:antml:)?thinking>", self.text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
+        """Extract thinking content if present.
+
+        Checks (in order):
+        1. Structured content_blocks with type "thinking" (Claude API format)
+        2. XML <thinking> tags in message text (legacy/antml format)
+        3. Full message text for Gemini isThought or ChatGPT thinking messages
+        """
+        # 1. Structured content_blocks (Claude API format)
+        if self.provider_meta:
+            blocks = self.provider_meta.get("content_blocks", [])
+            if isinstance(blocks, list):
+                thinking_texts = [
+                    b["text"]
+                    for b in blocks
+                    if isinstance(b, dict) and b.get("type") == "thinking" and isinstance(b.get("text"), str)
+                ]
+                if thinking_texts:
+                    return "\n\n".join(thinking_texts).strip() or None
+
+        # 2. XML tags in text (legacy/antml format)
+        if self.text:
+            match = re.search(r"<(?:antml:)?thinking>(.*?)</(?:antml:)?thinking>", self.text, re.DOTALL)
+            if match:
+                return match.group(1).strip()
+
+        # 3. Gemini/ChatGPT thinking: the message text IS the thinking content
+        if self.text and (self._is_chatgpt_thinking() or (self.provider_meta and self.provider_meta.get("isThought"))):
+            return self.text.strip() or None
+
         return None
 
 
