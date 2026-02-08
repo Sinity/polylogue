@@ -7,11 +7,16 @@ and client-side search support.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from jinja2 import DictLoader, Environment, select_autoescape
+
+from polylogue.paths import safe_path_component
+
+logger = logging.getLogger(__name__)
 
 # Default index page template
 INDEX_TEMPLATE = """<!DOCTYPE html>
@@ -707,14 +712,16 @@ class SiteBuilder:
             if summary.created_at:
                 try:
                     created_at_str = summary.created_at.strftime("%Y-%m-%d")
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Timestamp format error for %s: %s", sid, exc)
                     created_at_str = str(summary.created_at)[:10]
 
             updated_at_str = None
             if summary.updated_at:
                 try:
                     updated_at_str = summary.updated_at.strftime("%Y-%m-%d %H:%M")
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Timestamp format error for %s: %s", sid, exc)
                     updated_at_str = str(summary.updated_at)
 
             provider = summary.provider or "unknown"
@@ -829,7 +836,8 @@ class SiteBuilder:
         template = self.env.get_template("index.html")
 
         for provider, convs in by_provider.items():
-            provider_dir = self.output_dir / provider
+            safe_provider = safe_path_component(provider, fallback="provider")
+            provider_dir = self.output_dir / safe_provider
             provider_dir.mkdir(parents=True, exist_ok=True)
 
             total_messages = sum(c.message_count for c in convs)
