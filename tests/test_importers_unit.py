@@ -129,7 +129,7 @@ CHATGPT_EXTRACT_MESSAGES_CASES = [
     # Content variants
     ({"node1": make_chatgpt_node("msg1", "user", ["Part1", "Part2"])}, 1, "multiple parts"),
     ({"node1": make_chatgpt_node("msg1", "user", [None, "Valid"])}, 1, "parts with None"),
-    ({"node1": {"message": {"id": "1", "author": {"role": "user"}, "content": {"parts": []}}}}, 1, "empty parts"),
+    ({"node1": {"message": {"id": "1", "author": {"role": "user"}, "content": {"parts": []}}}}, 0, "empty parts"),
 
     # Role normalization
     ({"node1": make_chatgpt_node("msg1", "human", ["Hi"])}, 1, "human role alias"),

@@ -105,7 +105,7 @@ class ChatGPTMessage(BaseModel):
             for part in self.content.parts:
                 if isinstance(part, str):
                     texts.append(part)
-                elif isinstance(part, dict) and "text" in part:
+                elif isinstance(part, dict) and part.get("text"):
                     texts.append(part["text"])
             return "\n".join(texts)
 

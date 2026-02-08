@@ -130,7 +130,7 @@ class GeminiMessage(BaseModel):
         for part in self.parts:
             if isinstance(part, GeminiPart) and part.text:
                 texts.append(part.text)
-            elif isinstance(part, dict) and "text" in part:
+            elif isinstance(part, dict) and part.get("text"):
                 texts.append(part["text"])
         return "\n".join(texts)
 
@@ -199,7 +199,7 @@ class GeminiMessage(BaseModel):
                         raw=part.model_dump(),
                     ))
             elif isinstance(part, dict):
-                if "text" in part:
+                if part.get("text"):
                     blocks.append(ContentBlock(
                         type=ContentType.TEXT,
                         text=part["text"],
