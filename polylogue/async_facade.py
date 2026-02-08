@@ -177,7 +177,7 @@ class AsyncPolylogue:
         """
         conv_records = await self._backend.list_conversations(
             provider=provider,
-            limit=limit or 50,
+            limit=limit,
         )
 
         # Fetch messages for each conversation in parallel
