@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
+from polylogue.lib.log import get_logger
 from polylogue.sources.providers.codex import CodexRecord
+
+logger = get_logger(__name__)
 
 from .base import ParsedConversation, ParsedMessage, normalize_role
 
@@ -70,8 +73,8 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
 
         try:
             record = CodexRecord.model_validate(item)
-        except ValidationError:
-            # Skip invalid records
+        except ValidationError as exc:
+            logger.debug("Skipping invalid record at index %d: %s", idx, exc)
             continue
 
         # Handle session metadata (envelope format)
@@ -105,7 +108,8 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             if inner_payload.get("type") == "message":
                 try:
                     record = CodexRecord.model_validate(inner_payload)
-                except ValidationError:
+                except ValidationError as exc:
+                    logger.debug("Skipping invalid envelope payload at index %d: %s", idx, exc)
                     continue
 
         # Parse message records using typed properties
