@@ -634,10 +634,11 @@ def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult
 
 
 def repair_unknown_roles(config: Config, dry_run: bool = False) -> RepairResult:
-    """Reclassify 'unknown' role messages to 'tool' for claude-code conversations.
+    """Reclassify 'unknown' role messages for claude-code conversations.
 
-    Claude-code sessions had record types (tool invocations, file operations) that
-    were stored as role='unknown' before the parser was fixed.
+    Claude-code sessions had record types (progress, file-history-snapshot, etc.)
+    stored as role='unknown' before the parser was fixed. Uses json_extract on
+    provider_meta to map: progress/result → 'tool', system/summary/snapshot → 'system'.
     """
     try:
         with connection_context(None) as conn:
@@ -660,11 +661,17 @@ def repair_unknown_roles(config: Config, dry_run: bool = False) -> RepairResult:
                     name="unknown_roles",
                     repaired_count=count,
                     success=True,
-                    detail=f"Would: Reclassify {count:,} unknown → tool in claude-code conversations",
+                    detail=f"Would: Reclassify {count:,} unknown → tool/system in claude-code conversations",
                 )
 
+            # Use json_extract to map record type → correct role
             result = conn.execute(
-                """UPDATE messages SET role = 'tool'
+                """UPDATE messages SET role = CASE
+                       WHEN json_extract(provider_meta, '$.raw.type')
+                           IN ('summary', 'system', 'file-history-snapshot', 'queue-operation')
+                           THEN 'system'
+                       ELSE 'tool'
+                   END
                    WHERE role = 'unknown'
                    AND conversation_id IN (
                        SELECT conversation_id FROM conversations WHERE provider_name = 'claude-code'
@@ -675,7 +682,7 @@ def repair_unknown_roles(config: Config, dry_run: bool = False) -> RepairResult:
                 name="unknown_roles",
                 repaired_count=result.rowcount,
                 success=True,
-                detail=f"Reclassified {result.rowcount:,} unknown → tool in claude-code conversations",
+                detail=f"Reclassified {result.rowcount:,} unknown → tool/system in claude-code conversations",
             )
     except Exception as exc:
         return RepairResult(
