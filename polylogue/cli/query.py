@@ -591,11 +591,13 @@ def _format_conversation(
 ) -> str:
     """Format a single conversation for output."""
     if output_format == "json":
-        return json.dumps(_conv_to_dict(conv, fields), indent=2)
+        return _conv_to_json(conv, fields)
     elif output_format == "yaml":
         return _conv_to_yaml(conv, fields)
     elif output_format == "html":
         return _conv_to_html(conv)
+    elif output_format == "csv":
+        return _conv_to_csv_messages(conv)
     elif output_format == "obsidian":
         return _conv_to_obsidian(conv)
     elif output_format == "org":
@@ -740,7 +742,11 @@ def _conv_to_csv(results: list[Conversation]) -> str:
 
 
 def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, Any]:
-    """Convert conversation to dict, optionally selecting fields."""
+    """Convert conversation to summary dict (message count, not content).
+
+    Used for list-mode output where loading all message text is unnecessary.
+    For full-content output, use _conv_to_json() instead.
+    """
     full = {
         "id": str(conv.id),
         "provider": conv.provider,
@@ -755,6 +761,44 @@ def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, Any]:
         return full
     selected = [f.strip() for f in fields.split(",")]
     return {k: v for k, v in full.items() if k in selected}
+
+
+def _conv_to_json(conv: Conversation, fields: str | None) -> str:
+    """Convert a single conversation to full JSON with message content."""
+    data = _conv_to_dict(conv, fields)
+    # Override message count with full message content
+    if fields is None or "messages" in (fields or "").split(","):
+        data["messages"] = [
+            {
+                "id": str(msg.id),
+                "role": msg.role,
+                "text": msg.text,
+                "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
+            }
+            for msg in conv.messages
+        ]
+    return json.dumps(data, indent=2)
+
+
+def _conv_to_csv_messages(conv: Conversation) -> str:
+    """Convert a single conversation's messages to CSV rows."""
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["conversation_id", "message_id", "role", "timestamp", "text"])
+    for msg in conv.messages:
+        if not msg.text:
+            continue
+        writer.writerow([
+            str(conv.id),
+            str(msg.id),
+            msg.role or "",
+            msg.timestamp.isoformat() if msg.timestamp else "",
+            msg.text,
+        ])
+    return buf.getvalue().rstrip()
 
 
 def _conv_to_markdown(conv: Conversation) -> str:

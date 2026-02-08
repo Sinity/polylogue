@@ -17,8 +17,9 @@ from polylogue.health import VerifyStatus, get_health, run_all_repairs
 @click.option("--repair", is_flag=True, help="Attempt to repair detected issues")
 @click.option("--preview", is_flag=True, help="Show what would be repaired without making changes")
 @click.option("--vacuum", is_flag=True, help="Reclaim unused space after repair")
+@click.option("--deep", is_flag=True, help="Run SQLite integrity check (slow on large databases)")
 @click.pass_obj
-def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, preview: bool, vacuum: bool) -> None:
+def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, preview: bool, vacuum: bool, deep: bool) -> None:
     """Health check with optional repair."""
     if vacuum and not repair:
         fail("check", "--vacuum requires --repair")
@@ -26,7 +27,7 @@ def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, p
         fail("check", "--preview requires --repair")
 
     config = load_effective_config(env)
-    report = get_health(config)
+    report = get_health(config, deep=deep)
 
     # Run repairs before output so JSON mode includes repair results
     repair_results: list | None = None

@@ -294,12 +294,11 @@ class TestCheckCommand:
         result = cli_runner.invoke(cli, ["check"])
         assert result.exit_code == 0
 
-        # Should show healthy status checks
+        # Should show healthy status checks (no integrity_check without --deep)
         assert "OK database" in result.output
-        assert "OK sqlite_integrity" in result.output
 
     def test_check_sqlite_integrity_check(self, db_path, cli_runner):
-        """Check includes SQLite integrity check in results."""
+        """Check includes SQLite integrity check when --deep is passed."""
         factory = DbFactory(db_path)
 
         factory.create_conversation(
@@ -308,7 +307,7 @@ class TestCheckCommand:
             messages=[{"id": "m1", "role": "user", "text": "test"}],
         )
 
-        result = cli_runner.invoke(cli, ["--plain", "check", "--json"])
+        result = cli_runner.invoke(cli, ["--plain", "check", "--deep", "--json"])
         assert result.exit_code == 0
 
         data = _extract_json(result.output)
