@@ -160,6 +160,53 @@ def test_plain_progress_tracker():
     tracker.__exit__(None, None, None)
 
 
+class TestPlainConsoleMarkupStripping:
+    """Regression tests: PlainConsole must strip Rich markup for CI/plain output."""
+
+    def test_strips_bold_markup(self, capsys):
+        from polylogue.ui.facade import PlainConsole
+
+        console = PlainConsole()
+        console.print("[bold]Archive:[/bold] 1,234 conversations")
+        captured = capsys.readouterr()
+        assert "[bold]" not in captured.out
+        assert "Archive: 1,234 conversations" in captured.out
+
+    def test_strips_color_markup(self, capsys):
+        from polylogue.ui.facade import PlainConsole
+
+        console = PlainConsole()
+        console.print("[green]✓[/green] All ok")
+        captured = capsys.readouterr()
+        assert "[green]" not in captured.out
+        assert "✓ All ok" in captured.out
+
+    def test_strips_hex_color_markup(self, capsys):
+        from polylogue.ui.facade import PlainConsole
+
+        console = PlainConsole()
+        console.print("[#d97757]████████[/#d97757]")
+        captured = capsys.readouterr()
+        assert "#d97757" not in captured.out
+        assert "████████" in captured.out
+
+    def test_preserves_plain_text(self, capsys):
+        from polylogue.ui.facade import PlainConsole
+
+        console = PlainConsole()
+        console.print("No markup at all")
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "No markup at all"
+
+    def test_handles_empty_string(self, capsys):
+        from polylogue.ui.facade import PlainConsole
+
+        console = PlainConsole()
+        console.print("")
+        captured = capsys.readouterr()
+        assert captured.out.strip() == ""
+
+
 def test_rich_progress_tracker():
     progress_mock = MagicMock()
     task_id = "task1"
