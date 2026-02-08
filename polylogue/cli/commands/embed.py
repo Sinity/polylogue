@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import click  # noqa: F401
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
@@ -120,7 +123,8 @@ def _show_embedding_stats(env: AppEnv) -> None:
             embedded_convs = conn.execute(
                 "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0"
             ).fetchone()[0]
-        except Exception:
+        except Exception as exc:
+            logger.debug("embedding_status query failed (table may not exist): %s", exc)
             embedded_convs = 0
 
         # Total embedded messages
@@ -128,7 +132,8 @@ def _show_embedding_stats(env: AppEnv) -> None:
             embedded_msgs = conn.execute(
                 "SELECT COUNT(*) FROM message_embeddings"
             ).fetchone()[0]
-        except Exception:
+        except Exception as exc:
+            logger.debug("message_embeddings query failed (table may not exist): %s", exc)
             embedded_msgs = 0
 
         # Pending conversations
@@ -136,7 +141,8 @@ def _show_embedding_stats(env: AppEnv) -> None:
             pending = conn.execute(
                 "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1"
             ).fetchone()[0]
-        except Exception:
+        except Exception as exc:
+            logger.debug("pending embeddings query failed: %s", exc)
             pending = total_convs - embedded_convs
 
     coverage = (embedded_convs / total_convs * 100) if total_convs > 0 else 0

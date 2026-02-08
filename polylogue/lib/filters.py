@@ -24,12 +24,15 @@ Example:
 from __future__ import annotations
 
 import builtins
+import logging
 import random
 from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from polylogue.lib.dates import parse_date
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
@@ -581,9 +584,8 @@ class ConversationFilter:
                 return self._repo.search(
                     query, limit=search_limit, providers=self._providers or None
                 )
-            except Exception:
-                # Fall back to list if search not available
-                pass
+            except Exception as exc:
+                logger.debug("FTS search failed, falling back to list: %s", exc)
 
         # Push all SQL-eligible filters to backend
         sql_params = self._sql_pushdown_params()
@@ -788,8 +790,8 @@ class ConversationFilter:
                 return self._repo.search_summaries(
                     query, limit=search_limit, providers=self._providers or None
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("FTS summary search failed, falling back to list: %s", exc)
 
         # Push all SQL-eligible filters to backend
         sql_params = self._sql_pushdown_params()

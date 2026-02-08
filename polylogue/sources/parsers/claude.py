@@ -240,10 +240,19 @@ def looks_like_ai(payload: object) -> bool:
 def looks_like_code(payload: list[object]) -> bool:
     if not isinstance(payload, list):
         return False
+    # Known Claude Code record types that don't carry chat-structural keys
+    _code_only_types = {
+        "file-history-snapshot", "queue-operation", "custom-title",
+        "user", "assistant", "summary", "progress", "result",
+    }
     for item in payload:
         if not isinstance(item, dict):
             continue
         if any(key in item for key in ("parentUuid", "leafUuid", "sessionId", "session_id")):
+            return True
+        # Recognize metadata-only sessions by their unique type values
+        item_type = item.get("type")
+        if isinstance(item_type, str) and item_type in _code_only_types:
             return True
     return False
 

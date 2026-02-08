@@ -615,3 +615,215 @@ class TestRunCommandCombinations:
         assert result.exit_code == 0
         call_kwargs = mock_run.call_args[1]
         assert call_kwargs["stage"] == "render"
+
+
+class TestRunCommandRenderFailures:
+    """Tests for render failure handling in run output."""
+
+    def test_run_displays_render_failures(self, runner, cli_workspace):
+        """Run displays render failures with conversation IDs and error details."""
+        from unittest.mock import patch
+
+        result_with_failures = RunResult(
+            run_id="run-fail",
+            counts={"conversations": 1},
+            drift={},
+            indexed=True,
+            index_error=None,
+            duration_ms=1500,
+            render_failures=[
+                {"conversation_id": "conv-1", "error": "Template error"},
+            ],
+        )
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
+            with patch("polylogue.cli.commands.run.run_sources") as mock_run:
+                with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
+                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
+                        with patch("polylogue.cli.commands.run.format_counts", return_value="1 conversation"):
+                            mock_run.return_value = result_with_failures
+
+                            result = runner.invoke(cli, ["run"])
+
+        assert result.exit_code == 0
+        assert "Render failures (1)" in result.output
+        assert "conv-1: Template error" in result.output
+
+    def test_run_displays_render_failures_truncated(self, runner, cli_workspace):
+        """Run truncates render failures at 10 and shows 'and N more' message."""
+        from unittest.mock import patch
+
+        failures = [
+            {"conversation_id": f"conv-{i}", "error": f"Error {i}"}
+            for i in range(1, 16)
+        ]
+        result_with_failures = RunResult(
+            run_id="run-many-fail",
+            counts={"conversations": 15},
+            drift={},
+            indexed=True,
+            index_error=None,
+            duration_ms=2000,
+            render_failures=failures,
+        )
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
+            with patch("polylogue.cli.commands.run.run_sources") as mock_run:
+                with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
+                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
+                        with patch("polylogue.cli.commands.run.format_counts", return_value="15 conversations"):
+                            mock_run.return_value = result_with_failures
+
+                            result = runner.invoke(cli, ["run"])
+
+        assert result.exit_code == 0
+        assert "Render failures (15)" in result.output
+        # Should show first 10 failures
+        assert "conv-1: Error 1" in result.output
+        assert "conv-10: Error 10" in result.output
+        # Should NOT show 11th failure
+        assert "conv-11:" not in result.output
+        # Should show "and N more" message
+        assert "... and 5 more" in result.output
+
+    def test_run_no_render_failures_section_when_empty(self, runner, cli_workspace):
+        """Run does not display render failures section when empty."""
+        from unittest.mock import patch
+
+        result_no_failures = RunResult(
+            run_id="run-ok",
+            counts={"conversations": 3},
+            drift={},
+            indexed=True,
+            index_error=None,
+            duration_ms=1200,
+            render_failures=[],
+        )
+
+        mock_config = MagicMock(sources=[])
+        with patch("polylogue.config.get_config", return_value=mock_config):
+            with patch("polylogue.cli.commands.run.run_sources") as mock_run:
+                with patch("polylogue.cli.commands.run.resolve_sources", return_value=None):
+                    with patch("polylogue.cli.commands.run.maybe_prompt_sources", return_value=None):
+                        with patch("polylogue.cli.commands.run.format_counts", return_value="3 conversations"):
+                            mock_run.return_value = result_no_failures
+
+                            result = runner.invoke(cli, ["run"])
+
+        assert result.exit_code == 0
+        assert "Render failures" not in result.output
+
+
+class TestDeleteConversationPreview:
+    """Tests for enhanced deletion preview in query mode."""
+
+    def test_delete_dry_run_shows_provider_breakdown(self, capsys):
+        """Dry-run deletion shows provider breakdown."""
+        from unittest.mock import MagicMock, patch
+        from datetime import datetime
+
+        from polylogue.cli.query import _delete_conversations
+
+        # Create mock conversations with different providers
+        convs = []
+        for i in range(3):
+            conv = MagicMock()
+            conv.provider = "claude"
+            conv.created_at = datetime(2024, 1, 15)
+            conv.display_title = f"Conversation {i}"
+            conv.id = f"conv-{i}"
+            convs.append(conv)
+
+        for i in range(2):
+            conv = MagicMock()
+            conv.provider = "chatgpt"
+            conv.created_at = datetime(2024, 1, 16)
+            conv.display_title = f"ChatGPT Conversation {i}"
+            conv.id = f"gpt-{i}"
+            convs.append(conv)
+
+        env = MagicMock()
+        env.ui.console.print = MagicMock()
+
+        _delete_conversations(env, convs, {"dry_run": True})
+
+        captured = capsys.readouterr()
+        assert "DRY-RUN: Would delete 5 conversation(s)" in captured.out
+        assert "Providers:" in captured.out
+        assert "claude: 3" in captured.out
+        assert "chatgpt: 2" in captured.out
+
+    def test_delete_dry_run_shows_date_range(self, capsys):
+        """Dry-run deletion shows date range."""
+        from unittest.mock import MagicMock
+        from datetime import datetime
+
+        from polylogue.cli.query import _delete_conversations
+
+        # Create mock conversations with different dates
+        convs = []
+        conv1 = MagicMock()
+        conv1.provider = "claude"
+        conv1.created_at = datetime(2023, 6, 1)
+        conv1.display_title = "Old conversation"
+        conv1.id = "old-1"
+        convs.append(conv1)
+
+        conv2 = MagicMock()
+        conv2.provider = "claude"
+        conv2.created_at = datetime(2024, 2, 15)
+        conv2.display_title = "Recent conversation"
+        conv2.id = "new-1"
+        convs.append(conv2)
+
+        env = MagicMock()
+        env.ui.console.print = MagicMock()
+
+        _delete_conversations(env, convs, {"dry_run": True})
+
+        captured = capsys.readouterr()
+        assert "Date range: 2023-06-01 → 2024-02-15" in captured.out
+
+    def test_delete_bulk_shows_breakdown_before_exit(self, capsys):
+        """Bulk deletion (>10 items) without force shows breakdown and exits."""
+        from unittest.mock import MagicMock
+        from datetime import datetime
+
+        from polylogue.cli.query import _delete_conversations
+
+        # Create 15 mock conversations
+        convs = []
+        for i in range(10):
+            conv = MagicMock()
+            conv.provider = "claude"
+            conv.created_at = datetime(2024, 1, 15)
+            conv.display_title = f"Conv {i}"
+            conv.id = f"conv-{i}"
+            convs.append(conv)
+
+        for i in range(5):
+            conv = MagicMock()
+            conv.provider = "chatgpt"
+            conv.created_at = datetime(2024, 1, 16)
+            conv.display_title = f"ChatGPT {i}"
+            conv.id = f"gpt-{i}"
+            convs.append(conv)
+
+        env = MagicMock()
+        env.ui.console.print = MagicMock()
+        env.ui.confirm = MagicMock(return_value=False)
+
+        # Should raise SystemExit for bulk without force
+        try:
+            _delete_conversations(env, convs, {"force": False})
+            assert False, "Expected SystemExit"
+        except SystemExit as e:
+            assert e.code == 1
+
+        captured = capsys.readouterr()
+        assert "About to DELETE 15 conversations" in captured.err
+        assert "Providers:" in captured.out
+        assert "claude: 10" in captured.out
+        assert "chatgpt: 5" in captured.out

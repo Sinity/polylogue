@@ -323,6 +323,8 @@ def _delete_conversations(
     params: dict[str, Any],
 ) -> None:
     """Delete matched conversations."""
+    from collections import Counter
+
     from polylogue.services import get_repository
 
     if not results:
@@ -333,25 +335,53 @@ def _delete_conversations(
     force = params.get("force", False)
     count = len(results)
 
+    # Build breakdown summary for preview/confirmation
+    provider_counts = Counter(conv.provider for conv in results)
+    dates = [conv.created_at for conv in results if conv.created_at is not None]
+    date_min = min(dates) if dates else None
+    date_max = max(dates) if dates else None
+
+    def _print_breakdown() -> None:
+        """Print provider and date breakdown."""
+        # Provider breakdown
+        click.echo("  Providers:")
+        for provider, pcount in provider_counts.most_common():
+            click.echo(f"    {provider}: {pcount}")
+        # Date range
+        if date_min and date_max:
+            fmt = "%Y-%m-%d"
+            if date_min.date() == date_max.date():
+                click.echo(f"  Date: {date_min.strftime(fmt)}")
+            else:
+                click.echo(f"  Date range: {date_min.strftime(fmt)} → {date_max.strftime(fmt)}")
+        # Sample
+        click.echo("  Sample:")
+        for conv in results[:5]:
+            title = conv.display_title[:40] if conv.display_title else conv.id[:20]
+            click.echo(f"    {conv.id[:24]} [{conv.provider}] {title}")
+        if count > 5:
+            click.echo(f"    ... and {count - 5} more")
+
     # Dry-run mode: show preview and exit
     if dry_run:
         click.echo(f"DRY-RUN: Would delete {count} conversation(s)")
-        click.echo("\nSample of conversations to be deleted:")
-        for conv in results[:5]:
-            title = conv.display_title[:40] if conv.display_title else conv.id[:20]
-            env.ui.console.print(f"  - {conv.id[:24]} [{conv.provider}] {title}")
+        _print_breakdown()
         return
 
     # Confirmation for bulk operations (>10 items)
     if count > 10 and not force:
-        click.echo(f"About to DELETE {count} conversations", err=True)
+        click.echo(f"About to DELETE {count} conversations:", err=True)
+        _print_breakdown()
         click.echo("\nUse --force to skip this prompt, or --dry-run to preview.", err=True)
         raise SystemExit(1)
 
     # Individual confirmation if not bulk but not forced
-    if not force and not env.ui.confirm("Are you sure you want to delete these conversations?", default=False):
-        env.ui.console.print("Aborted.")
-        return
+    if not force:
+        click.echo(f"About to delete {count} conversation(s):")
+        _print_breakdown()
+        if not env.ui.confirm("Proceed?", default=False):
+            env.ui.console.print("Aborted.")
+            return
 
     # Load repository
     repo = get_repository()
@@ -1040,7 +1070,8 @@ def _open_result(
 
     try:
         config = load_effective_config(env)
-    except Exception:
+    except Exception as exc:
+        LOGGER.debug("Config load failed, falling back to defaults: %s", exc)
         config = None
 
     render_root = None

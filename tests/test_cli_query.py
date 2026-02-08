@@ -504,7 +504,7 @@ class TestBulkOperationConfirmation:
     def test_delete_requires_force_for_bulk(self, mock_env, capsys):
         """Delete requires --force for >10 items."""
         convs = [
-            MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test", updated_at=None) for i in range(15)
+            MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test", created_at=None, updated_at=None) for i in range(15)
         ]
         params = {"force": False}
 
@@ -518,7 +518,7 @@ class TestBulkOperationConfirmation:
 
     def test_delete_proceeds_with_force(self, mock_env):
         """Delete proceeds with --force for bulk operations."""
-        convs = [MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test") for i in range(15)]
+        convs = [MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test", created_at=None) for i in range(15)]
         params = {"force": True}
 
         mock_backend = MagicMock()

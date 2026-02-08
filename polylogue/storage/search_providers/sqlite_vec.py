@@ -125,8 +125,8 @@ class SqliteVecProvider:
                     sqlite_vec.load(conn)
                 finally:
                     conn.enable_load_extension(False)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("sqlite-vec extension load failed on connection: %s", exc)
 
         return conn
 
