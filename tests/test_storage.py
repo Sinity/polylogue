@@ -2133,6 +2133,89 @@ class TestMetadataOperations:
         assert "work" not in tags
         backend.close()
 
+    def test_list_tags_empty(self, tmp_path: Path) -> None:
+        """list_tags returns empty dict when no tags exist."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        conv = make_conversation("conv-1")
+        backend.save_conversation(conv)
+
+        tags = backend.list_tags()
+        assert tags == {}
+        backend.close()
+
+    def test_list_tags_counts(self, tmp_path: Path) -> None:
+        """list_tags returns correct tag counts across conversations."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        # Create 3 conversations with different tags
+        conv1 = make_conversation("conv-1")
+        conv2 = make_conversation("conv-2")
+        conv3 = make_conversation("conv-3")
+
+        backend.save_conversation(conv1)
+        backend.save_conversation(conv2)
+        backend.save_conversation(conv3)
+
+        # Tag conv-1 with "important" and "work"
+        backend.add_tag("conv-1", "important")
+        backend.add_tag("conv-1", "work")
+
+        # Tag conv-2 with "important"
+        backend.add_tag("conv-2", "important")
+
+        # conv-3 has no tags
+
+        tags = backend.list_tags()
+        assert tags == {"important": 2, "work": 1}
+        backend.close()
+
+    def test_list_tags_provider_filter(self, tmp_path: Path) -> None:
+        """list_tags with provider filter only counts tags from that provider."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        # Create conversations with different providers
+        conv_claude = make_conversation("conv-claude", provider_name="claude")
+        conv_chatgpt = make_conversation("conv-chatgpt", provider_name="chatgpt")
+
+        backend.save_conversation(conv_claude)
+        backend.save_conversation(conv_chatgpt)
+
+        # Tag both
+        backend.add_tag("conv-claude", "important")
+        backend.add_tag("conv-chatgpt", "important")
+        backend.add_tag("conv-chatgpt", "review")
+
+        # Filter by claude provider
+        tags_claude = backend.list_tags(provider="claude")
+        assert tags_claude == {"important": 1}
+
+        # Filter by chatgpt provider
+        tags_chatgpt = backend.list_tags(provider="chatgpt")
+        assert tags_chatgpt == {"important": 1, "review": 1}
+
+        # All tags
+        tags_all = backend.list_tags()
+        assert tags_all == {"important": 2, "review": 1}
+
+        backend.close()
+
+    def test_list_tags_dedup(self, tmp_path: Path) -> None:
+        """list_tags doesn't double-count duplicate tags on same conversation."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        conv = make_conversation("conv-1")
+        backend.save_conversation(conv)
+
+        # Add the same tag twice
+        backend.add_tag("conv-1", "important")
+        backend.add_tag("conv-1", "important")
+
+        tags = backend.list_tags()
+        # Should count as 1, not 2
+        assert tags == {"important": 1}
+        backend.close()
+
 
 class TestSearchOperations:
     """Test search and resolve operations."""

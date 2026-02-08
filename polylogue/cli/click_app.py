@@ -22,6 +22,7 @@ from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
 from polylogue.cli.commands.site import site_command
+from polylogue.cli.commands.tags import tags_command
 from polylogue.cli.formatting import announce_plain_mode, should_use_plain
 from polylogue.cli.types import AppEnv
 from polylogue.ui import create_ui
@@ -299,6 +300,7 @@ def cli(
         polylogue run       Ingest/render/index pipeline
         polylogue check     Health check and repair
         polylogue embed     Generate vector embeddings
+        polylogue tags      List tags with counts
         polylogue site      Build static HTML archive
         polylogue sources   List configured sources
         polylogue mcp       Start MCP server
@@ -328,6 +330,7 @@ cli.add_command(completions_command)
 cli.add_command(dashboard_command)
 cli.add_command(embed_command)
 cli.add_command(site_command)
+cli.add_command(tags_command)
 
 
 def main() -> None:

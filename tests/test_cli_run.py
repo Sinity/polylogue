@@ -827,3 +827,120 @@ class TestDeleteConversationPreview:
         assert "Providers:" in captured.out
         assert "claude: 10" in captured.out
         assert "chatgpt: 5" in captured.out
+
+
+class TestTagsCommand:
+    """Tests for the polylogue tags subcommand."""
+
+    def test_tags_list_all(self, runner, cli_workspace):
+        """Tags command displays all tags with counts."""
+        from unittest.mock import patch
+
+        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
+                mock_backend = MagicMock()
+                mock_backend_class.return_value = mock_backend
+                mock_repo = MagicMock()
+                mock_repo_class.return_value = mock_repo
+                mock_repo.list_tags.return_value = {"important": 5, "review": 3, "draft": 1}
+
+                result = runner.invoke(cli, ["tags"])
+
+        assert result.exit_code == 0
+        assert "important" in result.output
+        assert "5" in result.output
+        assert "review" in result.output
+        assert "3" in result.output
+        assert "3 total" in result.output
+
+    def test_tags_json_output(self, runner, cli_workspace):
+        """Tags --json outputs valid JSON dict."""
+        from unittest.mock import patch
+        import json
+
+        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
+                mock_backend = MagicMock()
+                mock_backend_class.return_value = mock_backend
+                mock_repo = MagicMock()
+                mock_repo_class.return_value = mock_repo
+                mock_repo.list_tags.return_value = {"tag1": 10, "tag2": 2}
+
+                result = runner.invoke(cli, ["tags", "--json"])
+
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data == {"tag1": 10, "tag2": 2}
+
+    def test_tags_provider_filter(self, runner, cli_workspace):
+        """Tags -p passes provider to list_tags."""
+        from unittest.mock import patch
+
+        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
+                mock_backend = MagicMock()
+                mock_backend_class.return_value = mock_backend
+                mock_repo = MagicMock()
+                mock_repo_class.return_value = mock_repo
+                mock_repo.list_tags.return_value = {"claude-tag": 3}
+
+                result = runner.invoke(cli, ["tags", "-p", "claude"])
+
+        assert result.exit_code == 0
+        mock_repo.list_tags.assert_called_once_with(provider="claude")
+        assert "claude-tag" in result.output
+
+    def test_tags_count_limit(self, runner, cli_workspace):
+        """Tags -n truncates to top N."""
+        from unittest.mock import patch
+
+        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
+                mock_backend = MagicMock()
+                mock_backend_class.return_value = mock_backend
+                mock_repo = MagicMock()
+                mock_repo_class.return_value = mock_repo
+                mock_repo.list_tags.return_value = {"a": 10, "b": 5, "c": 1}
+
+                result = runner.invoke(cli, ["tags", "-n", "2"])
+
+        assert result.exit_code == 0
+        assert "a" in result.output
+        assert "b" in result.output
+        assert "c" not in result.output
+
+    def test_tags_empty(self, runner, cli_workspace):
+        """Tags with no tags shows hint."""
+        from unittest.mock import patch
+
+        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
+                mock_backend = MagicMock()
+                mock_backend_class.return_value = mock_backend
+                mock_repo = MagicMock()
+                mock_repo_class.return_value = mock_repo
+                mock_repo.list_tags.return_value = {}
+
+                result = runner.invoke(cli, ["tags"])
+
+        assert result.exit_code == 0
+        assert "No tags found" in result.output
+        assert "--add-tag" in result.output
+
+    def test_tags_empty_with_provider_filter(self, runner, cli_workspace):
+        """Tags with provider filter and no tags shows provider-specific hint."""
+        from unittest.mock import patch
+
+        with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
+            with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
+                mock_backend = MagicMock()
+                mock_backend_class.return_value = mock_backend
+                mock_repo = MagicMock()
+                mock_repo_class.return_value = mock_repo
+                mock_repo.list_tags.return_value = {}
+
+                result = runner.invoke(cli, ["tags", "-p", "chatgpt"])
+
+        assert result.exit_code == 0
+        assert "No tags found for provider 'chatgpt'" in result.output
+        assert "--add-tag" in result.output
