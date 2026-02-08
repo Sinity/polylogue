@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import time
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -350,18 +349,24 @@ def latest_run() -> RunRecord | None:
 
     raw_plan = row["plan_snapshot"]
     if isinstance(raw_plan, str) and raw_plan:
-        with contextlib.suppress(ValueError, TypeError):
+        try:
             plan_snapshot = loads(raw_plan)
+        except (ValueError, TypeError) as exc:
+            logger.debug("Corrupt plan_snapshot JSON in run %s: %s", row["run_id"], exc)
 
     raw_counts = row["counts_json"]
     if isinstance(raw_counts, str) and raw_counts:
-        with contextlib.suppress(ValueError, TypeError):
+        try:
             counts = loads(raw_counts)
+        except (ValueError, TypeError) as exc:
+            logger.debug("Corrupt counts_json in run %s: %s", row["run_id"], exc)
 
     raw_drift = row["drift_json"]
     if isinstance(raw_drift, str) and raw_drift:
-        with contextlib.suppress(ValueError, TypeError):
+        try:
             drift = loads(raw_drift)
+        except (ValueError, TypeError) as exc:
+            logger.debug("Corrupt drift_json in run %s: %s", row["run_id"], exc)
 
     return RunRecord(
         run_id=row["run_id"],

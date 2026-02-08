@@ -766,7 +766,7 @@ def _conv_to_markdown(conv: Conversation) -> str:
     lines.append("")
 
     for msg in conv.messages:
-        role_label = msg.role.capitalize()
+        role_label = (msg.role or "unknown").capitalize()
         lines.append(f"## {role_label}")
         lines.append("")
         if msg.text:
@@ -863,7 +863,7 @@ def _conv_to_org(conv: Conversation) -> str:
     ]
 
     for msg in conv.messages:
-        role_label = msg.role.upper()
+        role_label = (msg.role or "unknown").upper()
         lines.append(f"* {role_label}")
         if msg.text:
             lines.append(msg.text)

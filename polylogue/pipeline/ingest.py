@@ -19,25 +19,11 @@ from polylogue.pipeline.ids import (
     message_id as make_message_id,
 )
 from polylogue.sources import IngestBundle, ParsedConversation, ingest_bundle
-from polylogue.storage.backends.sqlite import connection_context
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, ExistingConversation, MessageRecord
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
 if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
-
-
-def _existing_message_map(conversation_id: str) -> dict[str, str]:
-    with connection_context(None) as conn:
-        rows = conn.execute(
-            """
-            SELECT provider_message_id, message_id
-            FROM messages
-            WHERE conversation_id = ? AND provider_message_id IS NOT NULL
-            """,
-            (conversation_id,),
-        ).fetchall()
-    return {str(row["provider_message_id"]): row["message_id"] for row in rows if row["provider_message_id"]}
 
 
 def prepare_ingest(
