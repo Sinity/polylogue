@@ -175,19 +175,29 @@ def extract_text_from_segments(segments: list[object]) -> str | None:
 
 
 def normalize_timestamp(ts: int | float | str | None) -> str | None:
+    """Normalize a timestamp to epoch seconds string.
+
+    Handles numeric epochs (int/float/str), millisecond epochs, and ISO 8601 strings.
+    """
     if ts is None:
         return None
+    # Try numeric first
     try:
         val = float(ts)
         # If timestamp is > 1e11 (year 5138), assume milliseconds and convert to seconds
-        # 1e11 seconds is roughly year 5138.
-        # 1700000000000 (current ms) is 1.7e12.
         if val > 1e11:
             val = val / 1000.0
         return str(val)
     except (ValueError, TypeError):
-        logger.debug("Non-numeric timestamp value: %r", ts)
-        return None
+        pass
+    # Try ISO 8601 string
+    if isinstance(ts, str):
+        from polylogue.lib.timestamps import parse_timestamp
+
+        dt = parse_timestamp(ts)
+        if dt is not None:
+            return str(dt.timestamp())
+    return None
 
 
 def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
