@@ -411,8 +411,8 @@ CONVERSATION_TEMPLATE = """<!DOCTYPE html>
         </div>
 
         {% for msg in messages %}
-        <div class="message message-{{ msg.role }}">
-            <div class="message-role">{{ msg.role }}</div>
+        <div class="message message-{{ msg.role or 'unknown' }}">
+            <div class="message-role">{{ msg.role or 'unknown' }}</div>
             <div class="message-text">{{ msg.text }}</div>
         </div>
         {% endfor %}
@@ -777,7 +777,9 @@ class SiteBuilder:
             # Stream messages without loading full conversation
             messages = []
             for msg in repo.iter_messages(conv_idx.id, limit=500):
-                text = msg.text or ""
+                if not msg.text:
+                    continue
+                text = msg.text
                 # Truncate very long messages for the static site
                 if len(text) > 5000:
                     text = text[:5000] + "\n\n[... truncated ...]"
