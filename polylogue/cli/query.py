@@ -679,6 +679,26 @@ def _output_summary_list(
             for s in summaries
         ]
         env.ui.console.print(yaml.dump(data, default_flow_style=False, allow_unicode=True))
+    elif output_format == "csv":
+        import csv
+        import io
+
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(["id", "date", "provider", "title", "messages", "tags", "summary"])
+        for s in summaries:
+            date = s.updated_at.strftime("%Y-%m-%d") if s.updated_at else ""
+            tags_str = ",".join(s.tags) if s.tags else ""
+            writer.writerow([
+                str(s.id),
+                date,
+                s.provider,
+                s.display_title or "",
+                msg_counts.get(str(s.id), 0),
+                tags_str,
+                s.summary or "",
+            ])
+        env.ui.console.print(buf.getvalue().rstrip())
     else:
         # Plain text format (default) — now with message counts
         lines = []
@@ -698,10 +718,11 @@ def _conv_to_csv(results: list[Conversation]) -> str:
 
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["id", "date", "provider", "title", "messages", "words"])
+    writer.writerow(["id", "date", "provider", "title", "messages", "words", "tags", "summary"])
 
     for conv in results:
         date = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else ""
+        tags_str = ",".join(conv.tags) if conv.tags else ""
         writer.writerow(
             [
                 str(conv.id),
@@ -710,6 +731,8 @@ def _conv_to_csv(results: list[Conversation]) -> str:
                 conv.display_title or "",
                 len(conv.messages),
                 sum(m.word_count for m in conv.messages),
+                tags_str,
+                conv.summary or "",
             ]
         )
 
