@@ -30,6 +30,7 @@ Example:
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -336,10 +337,12 @@ class Polylogue:
             for conv in convs:
                 print(f"{conv.id}: {conv.title}")
         """
-        # Use repository's list method with filters
+        # When source filter is active, we need all candidates (source is in
+        # provider_meta, not a SQL-pushable column).  Otherwise respect limit.
+        fetch_limit = limit if not source else None
         all_conversations = self._repository.list(
             provider=provider,
-            limit=limit or 50,
+            limit=fetch_limit,
             offset=0,
         )
 
@@ -478,9 +481,11 @@ class Polylogue:
             total_words += sum(m.word_count for m in conv.messages)
 
         # Get recent conversations (top 5 by date)
+        # Use datetime.min as fallback to avoid mixed datetime/str TypeError
+        _epoch = datetime.min
         recent = sorted(
             conversations,
-            key=lambda c: c.updated_at or c.created_at or c.id,
+            key=lambda c: c.updated_at or c.created_at or _epoch,
             reverse=True,
         )[:5]
 
