@@ -131,7 +131,13 @@ def detect_provider(payload: Any, path: Path) -> str | None:
     return None
 
 
-def _parse_json_payload(provider: str, payload: Any, fallback_id: str) -> list[ParsedConversation]:
+_MAX_PARSE_DEPTH = 10
+
+
+def _parse_json_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
+    if _depth > _MAX_PARSE_DEPTH:
+        LOGGER.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
+        return []
     if provider == "chatgpt":
         return [chatgpt.parse(payload, fallback_id)]
     if provider == "claude":
@@ -153,7 +159,7 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str) -> list[P
             # List of conversation dicts from grouped JSONL - parse each one
             results = []
             for i, item in enumerate(payload):
-                results.extend(_parse_json_payload(provider, item, f"{fallback_id}-{i}"))
+                results.extend(_parse_json_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
             return results
         # Treat list as chunks for a single conversation
         return [drive.parse_chunked_prompt(provider, {"chunks": payload}, fallback_id)]
@@ -163,7 +169,7 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str) -> list[P
         if "conversations" in payload and isinstance(payload["conversations"], list):
             results = []
             for i, item in enumerate(payload["conversations"]):
-                parsed = _parse_json_payload(provider, item, f"{fallback_id}-{i}")
+                parsed = _parse_json_payload(provider, item, f"{fallback_id}-{i}", _depth + 1)
                 results.extend(parsed)
             return results
 
@@ -191,7 +197,10 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str) -> list[P
     return []
 
 
-def parse_drive_payload(provider: str, payload: Any, fallback_id: str) -> list[ParsedConversation]:
+def parse_drive_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
+    if _depth > _MAX_PARSE_DEPTH:
+        LOGGER.warning("Recursion depth exceeded parsing drive payload %s", fallback_id)
+        return []
     if isinstance(payload, list):
         # Check if it looks like a list of conversations or a list of messages
         # For drive/gemini, if it's a list, it's often a list of chunks
@@ -200,7 +209,7 @@ def parse_drive_payload(provider: str, payload: Any, fallback_id: str) -> list[P
 
         results = []
         for i, item in enumerate(payload):
-            results.extend(parse_drive_payload(provider, item, f"{fallback_id}-{i}"))
+            results.extend(parse_drive_payload(provider, item, f"{fallback_id}-{i}", _depth + 1))
         return results
     if isinstance(payload, dict):
         if "chunkedPrompt" in payload or "chunks" in payload:

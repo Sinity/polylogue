@@ -98,7 +98,16 @@ class IndexConfig:
     def from_env(cls) -> IndexConfig:
         """Load IndexConfig from environment variables."""
         dimension_str = os.environ.get("POLYLOGUE_VOYAGE_DIMENSION")
-        dimension = int(dimension_str) if dimension_str else None
+        dimension: int | None = None
+        if dimension_str:
+            try:
+                dimension = int(dimension_str)
+            except ValueError:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "Invalid POLYLOGUE_VOYAGE_DIMENSION=%r, using model default", dimension_str
+                )
 
         return cls(
             fts_enabled=True,

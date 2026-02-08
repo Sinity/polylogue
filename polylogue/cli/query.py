@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -689,7 +690,8 @@ def _conv_to_html(conv: Conversation) -> str:
     for msg in conv.messages:
         role = msg.role or "message"
         role_safe = html_escape(role, quote=True)
-        role_class = f"message-{role_safe}"
+        # CSS class names: only allow lowercase alphanumeric and hyphens
+        role_class = "message-" + re.sub(r"[^a-z0-9-]", "-", role.lower())
         html_content = md_renderer.render(msg.text or "")
         messages_html.append(
             f'<div class="{role_class}"><strong>{role_safe}:</strong>{html_content}</div>'
@@ -721,14 +723,23 @@ def _conv_to_html(conv: Conversation) -> str:
 </html>"""
 
 
+def _yaml_safe(value: str) -> str:
+    """Quote a YAML value if it contains special characters."""
+    if any(c in value for c in ":#{}[]|>&*!?@`'\",\n"):
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
 def _conv_to_obsidian(conv: Conversation) -> str:
     """Convert conversation to Obsidian-compatible markdown with YAML frontmatter."""
+    tags_formatted = ", ".join(_yaml_safe(t) for t in conv.tags) if conv.tags else ""
     frontmatter = [
         "---",
-        f"id: {conv.id}",
-        f"provider: {conv.provider}",
+        f"id: {_yaml_safe(str(conv.id))}",
+        f"provider: {_yaml_safe(conv.provider)}",
         f"date: {conv.updated_at.isoformat() if conv.updated_at else 'unknown'}",
-        f"tags: [{', '.join(conv.tags)}]" if conv.tags else "tags: []",
+        f"tags: [{tags_formatted}]",
         "---",
         "",
     ]
@@ -899,8 +910,8 @@ def _write_message_streaming(msg: Message, output_format: str) -> None:
         output_format: Format - "plaintext", "markdown", or "json-lines"
     """
     if output_format == "plaintext":
-        # Simple format: [role] text
-        role_label = msg.role.upper() if msg.role else "UNKNOWN"
+        # Simple format: [ROLE] text
+        role_label = (msg.role or "unknown").upper().replace("[", "").replace("]", "")
         if msg.text:
             sys.stdout.write(f"[{role_label}]\n{msg.text}\n\n")
         sys.stdout.flush()
@@ -965,7 +976,9 @@ def _open_in_browser(
         if conv:  # noqa: SIM108
             content = _conv_to_html(conv)
         else:
-            content = f"<html><body><pre>{content}</pre></body></html>"
+            from html import escape as _html_escape
+
+            content = f"<html><body><pre>{_html_escape(content)}</pre></body></html>"
 
     # Write to temp file and open
     with tempfile.NamedTemporaryFile(
