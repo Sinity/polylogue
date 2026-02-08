@@ -100,7 +100,7 @@ class ConversationRepository:
 
     def list_summaries(
         self,
-        limit: int = 50,
+        limit: int | None = 50,
         offset: int = 0,
         provider: str | None = None,
         providers: builtins.list[str] | None = None,
@@ -124,7 +124,7 @@ class ConversationRepository:
 
     def list(
         self,
-        limit: int = 50,
+        limit: int | None = 50,
         offset: int = 0,
         provider: str | None = None,
         providers: builtins.list[str] | None = None,
@@ -286,7 +286,7 @@ class ConversationRepository:
     def _get_message_conversation_mapping(self, message_ids: builtins.list[str]) -> dict[str, str]:
         from polylogue.storage.backends.sqlite import open_connection
 
-        with open_connection(None) as conn:
+        with open_connection(self._db_path) as conn:
             placeholders = ",".join("?" * len(message_ids))
             query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
             rows = conn.execute(query, message_ids).fetchall()
@@ -397,6 +397,10 @@ class ConversationRepository:
     def remove_tag(self, conversation_id: str, tag: str) -> None:
         with self._write_lock:
             self._backend.remove_tag(conversation_id, tag)
+
+    def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
+        """List all tags with counts. Read-only, no write lock needed."""
+        return self._backend.list_tags(provider=provider)
 
     def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
         with self._write_lock:

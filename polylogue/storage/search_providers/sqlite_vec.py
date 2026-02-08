@@ -8,7 +8,6 @@ No external server required - vectors stored directly in SQLite.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import struct
 from pathlib import Path
@@ -126,7 +125,10 @@ class SqliteVecProvider:
                 finally:
                     conn.enable_load_extension(False)
             except Exception as exc:
-                logger.warning("sqlite-vec extension load failed on connection: %s", exc)
+                conn.close()
+                raise SqliteVecError(
+                    f"sqlite-vec extension failed to load on connection: {exc}"
+                ) from exc
 
         return conn
 
@@ -202,7 +204,10 @@ class SqliteVecProvider:
                     time.sleep(0.1)
 
             except httpx.HTTPError as exc:
-                raise SqliteVecError(f"Embedding generation failed: {exc}") from exc
+                # Sanitize: don't leak API keys or full URLs in error messages
+                status = getattr(exc.response, "status_code", None) if hasattr(exc, "response") else None
+                detail = f"HTTP {status}" if status else type(exc).__name__
+                raise SqliteVecError(f"Embedding generation failed: {detail}") from exc
 
         return all_embeddings
 
@@ -309,9 +314,7 @@ class SqliteVecProvider:
                     ),
                 )
 
-            conn.commit()
-
-            # Update embedding status
+            # Update embedding status (single atomic commit with the inserts above)
             conn.execute(
                 """
                 INSERT INTO embedding_status (
@@ -428,15 +431,19 @@ class SqliteVecProvider:
             msg_count = 0
             pending = 0
 
-            with contextlib.suppress(Exception):
+            try:
                 msg_count = conn.execute(
                     "SELECT COUNT(*) FROM message_embeddings"
                 ).fetchone()[0]
+            except Exception as exc:
+                logger.debug("message_embeddings count failed (table may not exist): %s", exc)
 
-            with contextlib.suppress(Exception):
+            try:
                 pending = conn.execute(
                     "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 1"
                 ).fetchone()[0]
+            except Exception as exc:
+                logger.debug("embedding_status count failed (table may not exist): %s", exc)
 
             return {
                 "embedded_messages": msg_count,
