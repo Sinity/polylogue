@@ -257,7 +257,7 @@ def _conversation_to_full_dict(conv: Any) -> dict[str, Any]:
     result["messages"] = [
         {
             "id": str(msg.id),
-            "role": msg.role.value if hasattr(msg.role, "value") else str(msg.role),
+            "role": (msg.role.value if hasattr(msg.role, "value") else str(msg.role)) if msg.role else "unknown",
             "text": ((msg.text or "")[:1000] + "...") if len(msg.text or "") > 1000 else (msg.text or ""),
             "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
         }
@@ -448,7 +448,10 @@ def _handle_conversations_resource(
     if provider:
         filter_chain = filter_chain.provider(provider)
     if since:
-        filter_chain = filter_chain.since(since)
+        try:
+            filter_chain = filter_chain.since(since)
+        except ValueError as exc:
+            return _error(request_id, -32602, f"Invalid date: {exc}")
     if tag:
         filter_chain = filter_chain.tag(tag)
 
@@ -509,7 +512,10 @@ def _handle_analyze_errors_prompt(
     if provider:
         filter_chain = filter_chain.provider(provider)
     if since:
-        filter_chain = filter_chain.since(since)
+        try:
+            filter_chain = filter_chain.since(since)
+        except ValueError as exc:
+            return _error(request_id, -32602, f"Invalid date: {exc}")
 
     convs = filter_chain.limit(50).list()
 
@@ -564,9 +570,9 @@ def _handle_summarize_week_prompt(
 ) -> dict[str, Any]:
     """Generate a prompt for summarizing the past week."""
     # Get conversations from the past 7 days
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
-    week_ago = (datetime.now() - timedelta(days=7)).isoformat()
+    week_ago = (datetime.now(tz=timezone.utc) - timedelta(days=7)).isoformat()
 
     from polylogue.lib.filters import ConversationFilter
 
