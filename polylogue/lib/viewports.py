@@ -46,7 +46,6 @@ from typing import Any, Literal, Protocol, runtime_checkable
 
 from pydantic import BaseModel, Field
 
-
 # =============================================================================
 # Enums for harmonized classification
 # =============================================================================
@@ -114,7 +113,11 @@ class ReasoningTrace(BaseModel):
 
 
 class ToolCall(BaseModel):
-    """Harmonized tool invocation across providers.
+    """Cross-provider harmonized tool invocation for rendering.
+
+    This is a viewport type for uniform display across providers.
+    For Claude Code-specific semantic analysis (is_file_operation,
+    affected_paths, etc.), use lib.models.ToolInvocation instead.
 
     Maps to:
     - Claude Code: tool_use blocks (Bash, Read, Write, Edit, etc.)

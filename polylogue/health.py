@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any, cast
 
 from .config import Config
-from .core.log import get_logger
-from .ingestion.drive_client import default_credentials_path, default_token_path
+from .lib.log import get_logger
+from .sources.drive_client import default_credentials_path, default_token_path
 from .storage.backends.sqlite import connection_context, open_connection
 from .storage.index import index_status
 
@@ -81,7 +81,7 @@ def _load_cached(archive_root: Path) -> dict[str, Any] | None:
         if isinstance(payload, dict):
             return payload
     except Exception as exc:
-        LOGGER.warning("Failed to load health cache: %s", exc)
+        LOGGER.debug("Failed to load health cache: %s", exc)
     return None
 
 
@@ -95,8 +95,14 @@ def _write_cache(archive_root: Path, report: HealthReport | dict[str, Any]) -> N
         LOGGER.warning("Failed to write health cache: %s", exc)
 
 
-def run_health(config: Config) -> HealthReport:
-    """Run comprehensive system health and data verification checks."""
+def run_health(config: Config, *, deep: bool = False) -> HealthReport:
+    """Run comprehensive system health and data verification checks.
+
+    Args:
+        config: Application configuration
+        deep: If True, run PRAGMA integrity_check (slow on large databases).
+              Skipped by default since it reads every page in the DB file.
+    """
     checks: list[HealthCheck] = []
 
     # 1. Environment & Paths
@@ -109,18 +115,19 @@ def run_health(config: Config) -> HealthReport:
         else:
             checks.append(HealthCheck(path_name, VerifyStatus.WARNING, detail=f"Missing {path}"))
 
-    # 2. Database Reachability & Integrity
+    # 2. Database Reachability (& optional Integrity)
     try:
         with open_connection(None) as conn:
             checks.append(HealthCheck("database", VerifyStatus.OK, detail="DB reachable"))
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-            checks.append(
-                HealthCheck(
-                    "sqlite_integrity",
-                    VerifyStatus.OK if integrity == "ok" else VerifyStatus.ERROR,
-                    detail=integrity,
+            if deep:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                checks.append(
+                    HealthCheck(
+                        "sqlite_integrity",
+                        VerifyStatus.OK if integrity == "ok" else VerifyStatus.ERROR,
+                        detail=integrity,
+                    )
                 )
-            )
     except Exception as exc:
         checks.append(HealthCheck("database", VerifyStatus.ERROR, detail=f"DB error: {exc}"))
 
@@ -275,32 +282,43 @@ def run_health(config: Config) -> HealthReport:
     return report
 
 
-def get_health(config: Config) -> HealthReport:
-    """Get health report, using cache if valid."""
-    cached_data = _load_cached(config.archive_root)
-    now = int(time.time())
-    if cached_data:
-        ts = cached_data.get("timestamp", 0)
-        if (now - ts) < HEALTH_TTL_SECONDS:
-            checks = [
-                HealthCheck(
-                    name=c["name"],
-                    status=VerifyStatus(c["status"]),
-                    count=c.get("count", 0),
-                    detail=c.get("detail", ""),
-                    breakdown=c.get("breakdown", {}),
-                )
-                for c in cached_data.get("checks", [])
-            ]
-            return HealthReport(
-                checks=checks,
-                summary=cached_data.get("summary", {}),
-                timestamp=ts,
-                cached=True,
-                age_seconds=now - ts,
-            )
+def get_health(config: Config, *, deep: bool = False) -> HealthReport:
+    """Get health report, using cache if valid.
 
-    report = run_health(config)
+    Args:
+        config: Application configuration
+        deep: If True, skip cache and run PRAGMA integrity_check (slow).
+    """
+    if not deep:
+        cached_data = _load_cached(config.archive_root)
+        now = int(time.time())
+        if cached_data:
+            ts = cached_data.get("timestamp", 0)
+            if (now - ts) < HEALTH_TTL_SECONDS:
+                try:
+                    checks = [
+                        HealthCheck(
+                            name=c["name"],
+                            status=VerifyStatus(c["status"]),
+                            count=c.get("count", 0),
+                            detail=c.get("detail", ""),
+                            breakdown=c.get("breakdown", {}),
+                        )
+                        for c in cached_data.get("checks", [])
+                    ]
+                except (KeyError, ValueError):
+                    # Corrupted cache — fall through to fresh health check
+                    pass
+                else:
+                    return HealthReport(
+                        checks=checks,
+                        summary=cached_data.get("summary", {}),
+                        timestamp=ts,
+                        cached=True,
+                        age_seconds=now - ts,
+                    )
+
+    report = run_health(config, deep=deep)
     report.cached = False
     report.age_seconds = 0
     return report
@@ -336,25 +354,48 @@ class RepairResult:
     success: bool
     detail: str = ""
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "repaired_count": self.repaired_count,
+            "success": self.success,
+            "detail": self.detail,
+        }
 
-def repair_orphaned_messages(config: Config) -> RepairResult:
+
+def repair_orphaned_messages(config: Config, dry_run: bool = False) -> RepairResult:
     """Delete messages that reference non-existent conversations."""
     try:
         with connection_context(None) as conn:
-            result = conn.execute(
-                """
-                DELETE FROM messages
-                WHERE conversation_id NOT IN (SELECT conversation_id FROM conversations)
-                """
-            )
-            conn.commit()
-            count = result.rowcount
-            return RepairResult(
-                name="orphaned_messages",
-                repaired_count=count,
-                success=True,
-                detail=f"Deleted {count} orphaned messages" if count else "No orphaned messages found",
-            )
+            if dry_run:
+                # Count only, don't modify
+                count = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM messages
+                    WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = messages.conversation_id)
+                    """
+                ).fetchone()[0]
+                return RepairResult(
+                    name="orphaned_messages",
+                    repaired_count=count,
+                    success=True,
+                    detail=f"Would: Delete {count} orphaned messages" if count else "Would: No orphaned messages found",
+                )
+            else:
+                result = conn.execute(
+                    """
+                    DELETE FROM messages
+                    WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = messages.conversation_id)
+                    """
+                )
+                conn.commit()
+                count = result.rowcount
+                return RepairResult(
+                    name="orphaned_messages",
+                    repaired_count=count,
+                    success=True,
+                    detail=f"Deleted {count} orphaned messages" if count else "No orphaned messages found",
+                )
     except Exception as exc:
         return RepairResult(
             name="orphaned_messages",
@@ -364,24 +405,39 @@ def repair_orphaned_messages(config: Config) -> RepairResult:
         )
 
 
-def repair_empty_conversations(config: Config) -> RepairResult:
+def repair_empty_conversations(config: Config, dry_run: bool = False) -> RepairResult:
     """Delete conversations that have no messages."""
     try:
         with connection_context(None) as conn:
-            result = conn.execute(
-                """
-                DELETE FROM conversations
-                WHERE conversation_id NOT IN (SELECT DISTINCT conversation_id FROM messages)
-                """
-            )
-            conn.commit()
-            count = result.rowcount
-            return RepairResult(
-                name="empty_conversations",
-                repaired_count=count,
-                success=True,
-                detail=f"Deleted {count} empty conversations" if count else "No empty conversations found",
-            )
+            if dry_run:
+                # Count only, don't modify
+                count = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM conversations c
+                    WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.conversation_id)
+                    """
+                ).fetchone()[0]
+                return RepairResult(
+                    name="empty_conversations",
+                    repaired_count=count,
+                    success=True,
+                    detail=f"Would: Delete {count} empty conversations" if count else "Would: No empty conversations found",
+                )
+            else:
+                result = conn.execute(
+                    """
+                    DELETE FROM conversations
+                    WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = conversations.conversation_id)
+                    """
+                )
+                conn.commit()
+                count = result.rowcount
+                return RepairResult(
+                    name="empty_conversations",
+                    repaired_count=count,
+                    success=True,
+                    detail=f"Deleted {count} empty conversations" if count else "No empty conversations found",
+                )
     except Exception as exc:
         return RepairResult(
             name="empty_conversations",
@@ -391,7 +447,7 @@ def repair_empty_conversations(config: Config) -> RepairResult:
         )
 
 
-def repair_dangling_fts(config: Config) -> RepairResult:
+def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
     """Rebuild FTS index entries that are out of sync with messages table."""
     try:
         with connection_context(None) as conn:
@@ -408,33 +464,57 @@ def repair_dangling_fts(config: Config) -> RepairResult:
                     detail="FTS table does not exist, skipping",
                 )
 
-            # Delete FTS entries that don't have corresponding messages
-            result = conn.execute(
-                """
-                DELETE FROM messages_fts
-                WHERE rowid NOT IN (SELECT rowid FROM messages)
-                """
-            )
-            deleted = result.rowcount
+            if dry_run:
+                # Fast estimate: compare row counts (O(1) for both tables)
+                msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+                diff = abs(msg_count - fts_count)
 
-            # Insert missing entries into FTS
-            inserted = conn.execute(
-                """
-                INSERT INTO messages_fts (rowid, text)
-                SELECT rowid, text FROM messages m
-                WHERE m.rowid NOT IN (SELECT rowid FROM messages_fts)
-                """
-            ).rowcount
+                if diff == 0:
+                    return RepairResult(
+                        name="dangling_fts",
+                        repaired_count=0,
+                        success=True,
+                        detail="FTS index in sync",
+                    )
 
-            conn.commit()
+                return RepairResult(
+                    name="dangling_fts",
+                    repaired_count=diff,
+                    success=True,
+                    detail=f"Would: FTS sync: {msg_count:,} messages vs {fts_count:,} indexed ({diff:,} difference)",
+                )
+            else:
+                # Delete FTS entries that don't have corresponding messages
+                result = conn.execute(
+                    """
+                    DELETE FROM messages_fts
+                    WHERE rowid IN (
+                        SELECT f.rowid FROM messages_fts f
+                        WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.rowid = f.rowid)
+                    )
+                    """
+                )
+                deleted = result.rowcount
 
-            total = deleted + inserted
-            return RepairResult(
-                name="dangling_fts",
-                repaired_count=total,
-                success=True,
-                detail=f"FTS sync: deleted {deleted} orphaned, added {inserted} missing entries",
-            )
+                # Insert missing entries into FTS
+                inserted = conn.execute(
+                    """
+                    INSERT INTO messages_fts (rowid, message_id, conversation_id, content)
+                    SELECT m.rowid, m.message_id, m.conversation_id, m.text FROM messages m
+                    WHERE NOT EXISTS (SELECT 1 FROM messages_fts f WHERE f.rowid = m.rowid)
+                    """
+                ).rowcount
+
+                conn.commit()
+
+                total = deleted + inserted
+                return RepairResult(
+                    name="dangling_fts",
+                    repaired_count=total,
+                    success=True,
+                    detail=f"FTS sync: deleted {deleted} orphaned, added {inserted} missing entries",
+                )
     except Exception as exc:
         return RepairResult(
             name="dangling_fts",
@@ -444,46 +524,71 @@ def repair_dangling_fts(config: Config) -> RepairResult:
         )
 
 
-def repair_orphaned_attachments(config: Config) -> RepairResult:
+def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> RepairResult:
     """Delete attachments that are not referenced by any message or have orphaned refs."""
     try:
         with connection_context(None) as conn:
-            # First, delete attachment_refs that point to non-existent messages
-            ref_result = conn.execute(
-                """
-                DELETE FROM attachment_refs
-                WHERE message_id IS NOT NULL AND message_id NOT IN (SELECT message_id FROM messages)
-                """
-            )
-            refs_deleted = ref_result.rowcount
+            if dry_run:
+                # Count distinct orphaned refs (a single ref can be orphaned on both axes)
+                orphaned_refs = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM attachment_refs ar
+                    WHERE (ar.message_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = ar.message_id))
+                       OR NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = ar.conversation_id)
+                    """
+                ).fetchone()[0]
 
-            # Delete attachment_refs that point to non-existent conversations
-            conv_ref_result = conn.execute(
-                """
-                DELETE FROM attachment_refs
-                WHERE conversation_id NOT IN (SELECT conversation_id FROM conversations)
-                """
-            )
-            conv_refs_deleted = conv_ref_result.rowcount
+                atts_deleted = conn.execute(
+                    """
+                    SELECT COUNT(*) FROM attachments a
+                    WHERE NOT EXISTS (SELECT 1 FROM attachment_refs ar WHERE ar.attachment_id = a.attachment_id)
+                    """
+                ).fetchone()[0]
 
-            # Delete attachments that have no remaining refs
-            att_result = conn.execute(
-                """
-                DELETE FROM attachments
-                WHERE attachment_id NOT IN (SELECT attachment_id FROM attachment_refs)
-                """
-            )
-            atts_deleted = att_result.rowcount
+                total = orphaned_refs + atts_deleted
+                return RepairResult(
+                    name="orphaned_attachments",
+                    repaired_count=total,
+                    success=True,
+                    detail=f"Would: Clean {orphaned_refs} orphaned refs, {atts_deleted} unreferenced attachments",
+                )
+            else:
+                # First, delete attachment_refs that point to non-existent messages
+                ref_result = conn.execute(
+                    """
+                    DELETE FROM attachment_refs
+                    WHERE message_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.message_id = attachment_refs.message_id)
+                    """
+                )
+                refs_deleted = ref_result.rowcount
 
-            conn.commit()
+                # Delete attachment_refs that point to non-existent conversations
+                conv_ref_result = conn.execute(
+                    """
+                    DELETE FROM attachment_refs
+                    WHERE NOT EXISTS (SELECT 1 FROM conversations c WHERE c.conversation_id = attachment_refs.conversation_id)
+                    """
+                )
+                conv_refs_deleted = conv_ref_result.rowcount
 
-            total = refs_deleted + conv_refs_deleted + atts_deleted
-            return RepairResult(
-                name="orphaned_attachments",
-                repaired_count=total,
-                success=True,
-                detail=f"Cleaned {refs_deleted} orphaned refs, {conv_refs_deleted} conv refs, {atts_deleted} attachments",
-            )
+                # Delete attachments that have no remaining refs
+                att_result = conn.execute(
+                    """
+                    DELETE FROM attachments
+                    WHERE NOT EXISTS (SELECT 1 FROM attachment_refs ar WHERE ar.attachment_id = attachments.attachment_id)
+                    """
+                )
+                atts_deleted = att_result.rowcount
+
+                conn.commit()
+
+                total = refs_deleted + conv_refs_deleted + atts_deleted
+                return RepairResult(
+                    name="orphaned_attachments",
+                    repaired_count=total,
+                    success=True,
+                    detail=f"Cleaned {refs_deleted} orphaned refs, {conv_refs_deleted} conv refs, {atts_deleted} attachments",
+                )
     except Exception as exc:
         return RepairResult(
             name="orphaned_attachments",
@@ -493,13 +598,133 @@ def repair_orphaned_attachments(config: Config) -> RepairResult:
         )
 
 
-def run_all_repairs(config: Config) -> list[RepairResult]:
-    """Run all repair operations and return results."""
+def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult:
+    """Force WAL checkpoint to resolve busy pages and reclaim WAL space."""
+    try:
+        if dry_run:
+            # All PRAGMA wal_checkpoint modes actually perform a checkpoint.
+            # For true dry-run, inspect the WAL file on disk instead.
+            from polylogue.storage.backends.sqlite import default_db_path
+
+            db_path = default_db_path()
+            wal_path = Path(str(db_path) + "-wal")
+            if wal_path.exists():
+                wal_size = wal_path.stat().st_size
+                pages_estimate = wal_size // 4096
+                return RepairResult(
+                    name="wal_checkpoint",
+                    repaired_count=pages_estimate,
+                    success=True,
+                    detail=f"Would: WAL checkpoint (~{pages_estimate} pages, {wal_size:,} bytes)",
+                )
+            return RepairResult(
+                name="wal_checkpoint",
+                repaired_count=0,
+                success=True,
+                detail="Would: No WAL file present, nothing to checkpoint",
+            )
+        else:
+            with connection_context(None) as conn:
+                result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                row = result.fetchone()
+                # wal_checkpoint returns (busy, log, checkpointed)
+                busy, log, checkpointed = row[0], row[1], row[2]
+                if busy:
+                    return RepairResult(
+                        name="wal_checkpoint",
+                        repaired_count=0,
+                        success=False,
+                        detail=f"WAL checkpoint had busy pages: {busy} busy, {log} log, {checkpointed} checkpointed",
+                    )
+                return RepairResult(
+                    name="wal_checkpoint",
+                    repaired_count=checkpointed if checkpointed > 0 else 0,
+                    success=True,
+                    detail=f"WAL checkpoint complete: {checkpointed} pages checkpointed",
+                )
+    except Exception as exc:
+        return RepairResult(
+            name="wal_checkpoint",
+            repaired_count=0,
+            success=False,
+            detail=f"WAL checkpoint failed: {exc}",
+        )
+
+
+def repair_unknown_roles(config: Config, dry_run: bool = False) -> RepairResult:
+    """Reclassify 'unknown' role messages for claude-code conversations.
+
+    Claude-code sessions had record types (progress, file-history-snapshot, etc.)
+    stored as role='unknown' before the parser was fixed. Uses json_extract on
+    provider_meta to map: progress/result → 'tool', system/summary/snapshot → 'system'.
+    """
+    try:
+        with connection_context(None) as conn:
+            count = conn.execute(
+                """SELECT COUNT(*) FROM messages m
+                   JOIN conversations c ON c.conversation_id = m.conversation_id
+                   WHERE m.role = 'unknown' AND c.provider_name = 'claude-code'"""
+            ).fetchone()[0]
+
+            if count == 0:
+                return RepairResult(
+                    name="unknown_roles",
+                    repaired_count=0,
+                    success=True,
+                    detail="No unknown-role messages found in claude-code conversations",
+                )
+
+            if dry_run:
+                return RepairResult(
+                    name="unknown_roles",
+                    repaired_count=count,
+                    success=True,
+                    detail=f"Would: Reclassify {count:,} unknown → tool/system in claude-code conversations",
+                )
+
+            # Use json_extract to map record type → correct role
+            result = conn.execute(
+                """UPDATE messages SET role = CASE
+                       WHEN json_extract(provider_meta, '$.raw.type')
+                           IN ('summary', 'system', 'file-history-snapshot', 'queue-operation')
+                           THEN 'system'
+                       ELSE 'tool'
+                   END
+                   WHERE role = 'unknown'
+                   AND conversation_id IN (
+                       SELECT conversation_id FROM conversations WHERE provider_name = 'claude-code'
+                   )"""
+            )
+            conn.commit()
+            return RepairResult(
+                name="unknown_roles",
+                repaired_count=result.rowcount,
+                success=True,
+                detail=f"Reclassified {result.rowcount:,} unknown → tool/system in claude-code conversations",
+            )
+    except Exception as exc:
+        return RepairResult(
+            name="unknown_roles",
+            repaired_count=0,
+            success=False,
+            detail=f"Failed to repair unknown roles: {exc}",
+        )
+
+
+def run_all_repairs(config: Config, dry_run: bool = False) -> list[RepairResult]:
+    """Run all repair operations and return results.
+
+    Args:
+        config: Configuration object
+        dry_run: If True, show what would be repaired without making changes
+    """
     return [
-        repair_orphaned_messages(config),
-        repair_empty_conversations(config),
-        repair_dangling_fts(config),
-        repair_orphaned_attachments(config),
+        repair_orphaned_messages(config, dry_run=dry_run),
+        repair_empty_conversations(config, dry_run=dry_run),
+        repair_dangling_fts(config, dry_run=dry_run),
+        repair_orphaned_attachments(config, dry_run=dry_run),
+        repair_unknown_roles(config, dry_run=dry_run),
+        repair_wal_checkpoint(config, dry_run=dry_run),
     ]
 
 
@@ -515,5 +740,6 @@ __all__ = [
     "repair_empty_conversations",
     "repair_dangling_fts",
     "repair_orphaned_attachments",
+    "repair_wal_checkpoint",
     "run_all_repairs",
 ]

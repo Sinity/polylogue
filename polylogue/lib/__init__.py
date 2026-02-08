@@ -35,17 +35,34 @@ Example usage:
 """
 
 from polylogue.lib.filters import ConversationFilter
-from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message, Role
-from polylogue.lib.projections import ConversationProjection
-from polylogue.lib.repository import ConversationRepository
+from polylogue.lib.messages import MessageCollection
+from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
+from polylogue.lib.roles import Role
+
+
+def __getattr__(name: str) -> object:
+    if name == "ConversationRepository":
+        from polylogue.storage.repository import ConversationRepository
+
+        return ConversationRepository
+    if name == "ConversationProjection":
+        from polylogue.lib.projections import ConversationProjection
+
+        return ConversationProjection
+    if name == "ArchiveStats":
+        from polylogue.lib.stats import ArchiveStats
+
+        return ArchiveStats
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
+    "ArchiveStats",
     "Attachment",
     "Conversation",
     "ConversationFilter",
-    "ConversationProjection",
-    "ConversationRepository",
     "DialoguePair",
     "Message",
+    "MessageCollection",
     "Role",
 ]

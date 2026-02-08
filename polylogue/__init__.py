@@ -28,35 +28,26 @@ Example:
 
 # High-level API
 # Core types for library users
-from polylogue.config import Source
-from polylogue.core.async_facade import AsyncPolylogue
-from polylogue.core.facade import ArchiveStats, Polylogue
+from polylogue.async_facade import AsyncPolylogue
+from polylogue.facade import Polylogue
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, Message
-from polylogue.lib.repository import ConversationRepository
-from polylogue.storage.search import SearchHit, SearchResult
+from polylogue.storage.search import SearchResult
+
+
+def __getattr__(name: str) -> object:
+    if name == "ConversationRepository":
+        from polylogue.storage.repository import ConversationRepository
+
+        return ConversationRepository
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
-    # Main facade
-    "Polylogue",
     "AsyncPolylogue",
-    "ArchiveStats",
-    # Configuration
-    "Source",
-    # Data access
-    "ConversationFilter",
-    "ConversationRepository",
     "Conversation",
+    "ConversationFilter",
     "Message",
-    # Search
+    "Polylogue",
     "SearchResult",
-    "SearchHit",
 ]
-
-# Note: The following modules remain available as submodules:
-# - polylogue.paths (XDG paths and configuration)
-# - polylogue.storage (database and storage)
-# - polylogue.pipeline.runner (pipeline runner)
-# - polylogue.render (rendering)
-# - polylogue.storage.search (search)
-# - polylogue.types (type definitions)

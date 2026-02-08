@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from typing import TYPE_CHECKING
 
-from polylogue.core.log import get_logger
+from polylogue.lib.log import get_logger
 from polylogue.storage.index import ensure_index, index_status, rebuild_index, update_index_for_conversations
 
 if TYPE_CHECKING:
@@ -86,7 +86,7 @@ class IndexService:
             Dictionary with 'exists' (bool) and 'count' (int) keys
         """
         try:
-            return index_status()
+            return index_status(self.conn)
         except Exception as exc:
             logger.error("Failed to get index status", error=str(exc))
             return {"exists": False, "count": 0}

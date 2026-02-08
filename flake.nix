@@ -43,6 +43,13 @@
           pyproject = true;
           src = ./.;
 
+          postPatch = ''
+            cat > polylogue/_build_info.py << BUILDEOF
+            BUILD_COMMIT = "${self.rev or self.dirtyRev or "unknown"}"
+            BUILD_DIRTY = ${if self ? dirtyRev then "True" else "False"}
+            BUILDEOF
+          '';
+
           build-system = with pkgs.python313Packages; [
             setuptools
             wheel
@@ -59,7 +66,7 @@
             markdown-it-py
             pygments
             ijson
-            qdrant-client
+            sqlite-vec
             questionary
             click
             tenacity
@@ -72,6 +79,7 @@
             pydantic-settings
             dependency-injector
             aiosqlite
+            glom
           ];
 
           # Skip tests in build (run in checks instead)
@@ -102,7 +110,7 @@
 
             # Create venv if it doesn't exist
             if [ ! -d .venv ]; then
-              echo "Creating virtual environment..."
+              echo "Creating virtual environment..." >&2
               uv venv
             fi
 
@@ -111,13 +119,13 @@
 
             # Install dependencies if needed
             if [ ! -f .venv/.synced ]; then
-              echo "Installing dependencies..."
+              echo "Installing dependencies..." >&2
               uv pip install -e ".[dev]"
               touch .venv/.synced
             fi
 
-            echo "Polylogue development environment ready"
-            echo "Run: polylogue --help"
+            echo "Polylogue development environment ready" >&2
+            echo "Run: polylogue --help" >&2
           '';
         };
 
@@ -137,7 +145,7 @@
               ${pkgs.uv}/bin/uv venv
               source .venv/bin/activate
               ${pkgs.uv}/bin/uv pip install -e ".[dev]"
-              pytest -q --ignore=tests/test_qdrant.py
+              pytest -q
               touch $out
             '';
       }

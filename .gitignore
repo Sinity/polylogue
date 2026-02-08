@@ -25,6 +25,7 @@ __pycache__
 .hypothesis/
 .coverage
 coverage.json
+coverage_report*.txt
 htmlcov/
 .mypy_cache/
 .ruff_cache/
@@ -55,3 +56,4 @@ tests/test-datasets/*.json
 tests/test-datasets/*.jsonl
 tests/test-datasets/*.md
 tests/test-datasets/*.txt
+mutants/

@@ -6,12 +6,11 @@ Original: Individual test per filter method, transform, terminal operation
 New: Parametrized tests covering all operations
 """
 
-from datetime import datetime
 
 import pytest
 
-from polylogue.lib.models import Attachment, Conversation, Message
-
+from polylogue.lib.messages import MessageCollection
+from polylogue.lib.models import Conversation, Message
 
 # sample_conversation fixture is in conftest.py
 
@@ -72,10 +71,7 @@ def test_projection_filter_chaining(sample_conversation, methods, expected_count
     projection = sample_conversation.project()
 
     for method in methods:
-        if method == "substantive":
-            projection = projection.substantive()
-        else:
-            projection = getattr(projection, method)()
+        projection = projection.substantive() if method == "substantive" else getattr(projection, method)()
 
     result = projection.to_list()
     assert len(result) == expected_count, f"Failed {desc}"
@@ -171,10 +167,7 @@ def test_projection_transforms(sample_conversation, method_name, arg, expected_p
     """
     projection = sample_conversation.project()
 
-    if arg:
-        transformed = getattr(projection, method_name)(arg)
-    else:
-        transformed = getattr(projection, method_name)()
+    transformed = getattr(projection, method_name)(arg) if arg else getattr(projection, method_name)()
 
     result = transformed.to_list()
 
@@ -234,7 +227,7 @@ def test_projection_strip_methods(method_name, attr_name, desc):
         _make_thinking_message("m3", "Thinking..."),
         Message(id="m4", role="assistant", text="Normal response"),
     ]
-    conv = Conversation(id="test", provider="test", messages=messages)
+    conv = Conversation(id="test", provider="test", messages=MessageCollection(messages=messages))
 
     projection = conv.project()
     filtered = getattr(projection, method_name)()
@@ -252,7 +245,7 @@ def test_projection_strip_all():
         _make_thinking_message("m3", "Thinking..."),
         Message(id="m4", role="assistant", text="Normal response"),
     ]
-    conv = Conversation(id="test", provider="test", messages=messages)
+    conv = Conversation(id="test", provider="test", messages=MessageCollection(messages=messages))
 
     result = conv.project().strip_all().to_list()
 
@@ -280,7 +273,7 @@ def test_projection_edge_cases(messages, expected_count, desc):
 
     Replaces 9 edge case tests.
     """
-    conv = Conversation(id="test", provider="test", messages=messages)
+    conv = Conversation(id="test", provider="test", messages=MessageCollection(messages=messages))
     result = conv.project().to_list()
 
     # Should handle gracefully

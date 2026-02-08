@@ -12,7 +12,8 @@ from datetime import datetime
 
 import pytest
 
-from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message, Role
+from polylogue.lib.messages import MessageCollection
+from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
 from tests.helpers import assert_contains_all, assert_not_contains_any
 
 # =============================================================================
@@ -109,11 +110,11 @@ def complex_conversation(messages_with_metadata, messages_with_thinking, message
         id="complex-conv",
         provider="claude",
         title="Complex Conversation",
-        messages=[
+        messages=MessageCollection(messages=[
             *messages_with_metadata,
             *messages_with_thinking,
             *messages_with_tool_use,
-        ],
+        ]),
         created_at=datetime(2024, 1, 15, 10, 0),
         metadata={"tags": ["test", "comprehensive"], "summary": "A test conversation"},
     )
@@ -125,7 +126,7 @@ def empty_conversation():
     return Conversation(
         id="empty",
         provider="test",
-        messages=[],
+        messages=MessageCollection(messages=[]),
     )
 
 
@@ -212,6 +213,76 @@ def test_dialogue_pair_with_thinking_messages():
     pair = DialoguePair(user=user_msg, assistant=assistant_msg)
     assert pair.assistant.is_thinking
     assert pair.assistant.extract_thinking() == "Complex reasoning"
+
+
+def test_extract_thinking_from_content_blocks_only():
+    """extract_thinking returns text from content_blocks when no XML tags in text."""
+    msg = Message(
+        id="a1",
+        role="assistant",
+        text="The answer is 42.",
+        provider_meta={
+            "content_blocks": [
+                {"type": "thinking", "text": "Let me reason through this step by step."},
+                {"type": "text", "text": "The answer is 42."},
+            ]
+        },
+    )
+    assert msg.is_thinking
+    assert msg.extract_thinking() == "Let me reason through this step by step."
+
+
+def test_extract_thinking_multiple_content_blocks():
+    """extract_thinking joins multiple thinking blocks."""
+    msg = Message(
+        id="a1",
+        role="assistant",
+        text="Done.",
+        provider_meta={
+            "content_blocks": [
+                {"type": "thinking", "text": "First thought."},
+                {"type": "text", "text": "Done."},
+                {"type": "thinking", "text": "Second thought."},
+            ]
+        },
+    )
+    assert msg.extract_thinking() == "First thought.\n\nSecond thought."
+
+
+def test_extract_thinking_gemini_is_thought():
+    """extract_thinking returns full text for Gemini isThought messages."""
+    msg = Message(
+        id="g1",
+        role="model",
+        text="Considering the implications of quantum entanglement...",
+        provider_meta={"isThought": True},
+    )
+    assert msg.is_thinking
+    assert msg.extract_thinking() == "Considering the implications of quantum entanglement..."
+
+
+def test_extract_thinking_chatgpt_thoughts():
+    """extract_thinking returns full text for ChatGPT thinking messages."""
+    msg = Message(
+        id="c1",
+        role="tool",
+        text="The user is asking about error handling patterns.",
+        provider_meta={
+            "raw": {
+                "content": {"content_type": "thoughts"},
+                "metadata": {},
+            }
+        },
+    )
+    assert msg.is_thinking
+    assert msg.extract_thinking() == "The user is asking about error handling patterns."
+
+
+def test_extract_thinking_none_when_not_thinking():
+    """extract_thinking returns None for non-thinking messages."""
+    msg = Message(id="m1", role="assistant", text="Hello!")
+    assert not msg.is_thinking
+    assert msg.extract_thinking() is None
 
 
 def test_dialogue_pair_with_tool_use():
@@ -335,7 +406,7 @@ def test_conversation_user_title_override():
         id="c1",
         provider="test",
         title="Stored Title",
-        messages=[],
+        messages=MessageCollection(messages=[]),
         metadata={"title": "User Override"},
     )
     assert conv.user_title == "User Override"
@@ -348,7 +419,7 @@ def test_conversation_display_title_precedence():
         id="abc123def456",
         provider="test",
         title="Stored Title",
-        messages=[],
+        messages=MessageCollection(messages=[]),
         metadata={"title": "User Title"},
     )
     assert conv1.display_title == "User Title"
@@ -358,7 +429,7 @@ def test_conversation_display_title_precedence():
         id="abc123def456",
         provider="test",
         title="Stored Title",
-        messages=[],
+        messages=MessageCollection(messages=[]),
     )
     assert conv2.display_title == "Stored Title"
 
@@ -366,7 +437,7 @@ def test_conversation_display_title_precedence():
     conv3 = Conversation(
         id="abc123def456",
         provider="test",
-        messages=[],
+        messages=MessageCollection(messages=[]),
     )
     assert conv3.display_title == "abc123de"
 
@@ -376,7 +447,7 @@ def test_conversation_summary_property():
     conv = Conversation(
         id="c1",
         provider="test",
-        messages=[],
+        messages=MessageCollection(messages=[]),
         metadata={"summary": "This conversation discusses AI basics."},
     )
     assert conv.summary == "This conversation discusses AI basics."
@@ -387,7 +458,7 @@ def test_conversation_tags_parsing_from_metadata():
     conv = Conversation(
         id="c1",
         provider="test",
-        messages=[],
+        messages=MessageCollection(messages=[]),
         metadata={"tags": ["python", "debugging", "urgent"]},
     )
     assert conv.tags == ["python", "debugging", "urgent"]
@@ -395,7 +466,7 @@ def test_conversation_tags_parsing_from_metadata():
 
 def test_conversation_tags_empty_default():
     """Conversation.tags returns empty list when absent."""
-    conv = Conversation(id="c1", provider="test", messages=[])
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=[]))
     assert conv.tags == []
 
 
@@ -428,7 +499,7 @@ def test_conversation_metadata_immutability():
     conv = Conversation(
         id="c1",
         provider="test",
-        messages=[],
+        messages=MessageCollection(messages=[]),
         metadata={"key1": "value1"},
     )
     assert conv.metadata["key1"] == "value1"
@@ -440,7 +511,7 @@ def test_conversation_provider_specific_metadata():
     conv = Conversation(
         id="c1",
         provider="chatgpt",
-        messages=[],
+        messages=MessageCollection(messages=[]),
         provider_meta=provider_meta,
     )
     assert conv.provider_meta["model"] == "gpt-4"
@@ -464,8 +535,8 @@ def test_conversation_with_multiple_branches():
 def test_conversation_equality():
     """Conversation instances with same data are equal."""
     messages = [Message(id="1", role="user", text="Hi")]
-    conv1 = Conversation(id="c1", provider="test", messages=messages)
-    conv2 = Conversation(id="c1", provider="test", messages=messages)
+    conv1 = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
+    conv2 = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     assert conv1 == conv2
 
 
@@ -518,7 +589,7 @@ def test_iter_pairs_with_orphaned_assistant_message():
 
 def test_iter_pairs_empty_conversation():
     """iter_pairs returns empty iterator for empty conversation."""
-    conv = Conversation(id="c1", provider="test", messages=[])
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=[]))
     pairs = list(conv.iter_pairs())
     assert pairs == []
 
@@ -529,7 +600,7 @@ def test_iter_thinking_extraction():
         Message(id="a1", role="assistant", text="<thinking>Step 1</thinking>\nAnswer"),
         Message(id="a2", role="assistant", text="<thinking>Step 2\nStep 3</thinking>\nMore"),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     conv.messages[0].provider_meta = {"content_blocks": [{"type": "thinking"}]}
     conv.messages[1].provider_meta = {"content_blocks": [{"type": "thinking"}]}
     thinking = list(conv.iter_thinking())
@@ -543,7 +614,7 @@ def test_iter_thinking_empty_when_none():
     messages = [
         Message(id="a1", role="assistant", text="Just an answer"),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     thinking = list(conv.iter_thinking())
     assert thinking == []
 
@@ -591,7 +662,7 @@ def test_iter_substantive_excludes_thinking_tool():
         ),
         Message(id="u1", role="user", text="Real question here with enough words"),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     substantive = list(conv.iter_substantive())
     assert len(substantive) == 1
     assert substantive[0].id == "u1"
@@ -605,7 +676,7 @@ def test_iter_dialogue_filters_user_assistant_only():
         Message(id="s1", role="system", text="System"),
         Message(id="t1", role="tool", text="Tool"),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     dialogue = list(conv.iter_dialogue())
     assert len(dialogue) == 2
     assert dialogue[0].id == "u1"
@@ -620,7 +691,7 @@ def test_iter_dialogue_preserves_order():
         Message(id="u2", role="user", text="Q2"),
         Message(id="a2", role="assistant", text="A2"),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     dialogue = list(conv.iter_dialogue())
     ids = [m.id for m in dialogue]
     assert ids == ["u1", "a1", "u2", "a2"]
@@ -633,7 +704,7 @@ def test_iter_with_filtered_messages():
         Message(id="a1", role="assistant", text="A1"),
         Message(id="s1", role="system", text="Sys"),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     filtered = conv.dialogue_only()
     dialogue = list(filtered.iter_dialogue())
     assert len(dialogue) == 2
@@ -645,7 +716,7 @@ def test_iter_with_projected_fields():
         Message(id="u1", role="user", text="Q" * 100),
         Message(id="a1", role="assistant", text="A"),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     substantive = list(conv.iter_substantive())
     assert len(substantive) >= 1
 
@@ -656,7 +727,7 @@ def test_iter_performance_large_conversation():
         Message(id=f"m{i}", role="user" if i % 2 == 0 else "assistant", text=f"Message {i}")
         for i in range(1000)
     ]
-    conv = Conversation(id="large", provider="test", messages=messages)
+    conv = Conversation(id="large", provider="test", messages=MessageCollection(messages=messages))
     # Just ensure it doesn't crash
     count = sum(1 for _ in conv.iter_dialogue())
     assert count == 1000
@@ -665,7 +736,7 @@ def test_iter_performance_large_conversation():
 def test_iter_generators_memory_efficient():
     """Iterators are generators (lazy evaluation)."""
     messages = [Message(id=f"m{i}", role="user", text=f"Q{i}") for i in range(100)]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     gen = conv.iter_dialogue()
     # Should have generator protocol
     assert hasattr(gen, "__iter__")
@@ -683,7 +754,7 @@ def test_to_text_default_format():
         Message(id="u1", role="user", text="Hello"),
         Message(id="a1", role="assistant", text="Hi there"),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     text = conv.to_text()
     assert "user: Hello" in text
     assert "assistant: Hi there" in text
@@ -696,7 +767,7 @@ def test_to_text_custom_role_prefixes():
         Message(id="u1", role="user", text="Q"),
         Message(id="a1", role="assistant", text="A"),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     text = conv.to_text(include_role=False)
     assert_not_contains_any(text, "user:", "assistant:")
     assert_contains_all(text, "Q", "A")
@@ -712,7 +783,7 @@ def test_to_text_with_thinking_blocks():
             provider_meta={"content_blocks": [{"type": "thinking"}]},
         ),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     text = conv.to_text()
     assert "Reasoning" in text
     assert "Answer" in text
@@ -725,7 +796,7 @@ def test_to_clean_text_substantive_only():
         Message(id="a1", role="assistant", text="Real answer with enough substance here"),
         Message(id="t1", role="tool", text="Tool output"),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     clean = conv.to_clean_text()
     assert "Real question" in clean
     assert "Real answer" in clean
@@ -739,7 +810,7 @@ def test_to_clean_text_filters_noise():
         Message(id="s1", role="system", text="System instructions"),
         Message(id="a1", role="assistant", text="Important answer with detail"),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     clean = conv.to_clean_text()
     assert "Important question" in clean
     assert "Important answer" in clean
@@ -748,7 +819,7 @@ def test_to_clean_text_filters_noise():
 
 def test_empty_conversation_rendering():
     """Empty conversation renders as empty string."""
-    conv = Conversation(id="empty", provider="test", messages=[])
+    conv = Conversation(id="empty", provider="test", messages=MessageCollection(messages=[]))
     text = conv.to_text()
     clean = conv.to_clean_text()
     assert text == ""
@@ -761,7 +832,7 @@ def test_unicode_special_characters():
         Message(id="u1", role="user", text="What's the meaning of 🎯?"),
         Message(id="a1", role="assistant", text="It means目的 (mokutek) in Japanese."),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     text = conv.to_text()
     assert "🎯" in text
     assert "目的" in text
@@ -774,7 +845,7 @@ def test_rendering_with_attachments():
         Message(id="u1", role="user", text="Here's the document", attachments=[attach]),
         Message(id="a1", role="assistant", text="I'll review it"),
     ]
-    conv = Conversation(id="c1", provider="test", messages=messages)
+    conv = Conversation(id="c1", provider="test", messages=MessageCollection(messages=messages))
     text = conv.to_text()
     assert "Here's the document" in text
     assert "I'll review it" in text

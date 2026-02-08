@@ -8,7 +8,7 @@ import click
 
 from polylogue.cli.helpers import fail
 from polylogue.cli.types import AppEnv
-from polylogue.paths import CACHE_HOME, DB_PATH, RENDER_ROOT, DRIVE_TOKEN_PATH, DATA_HOME
+from polylogue.paths import CACHE_HOME, DATA_HOME, DB_PATH, DRIVE_TOKEN_PATH, RENDER_ROOT, STATE_HOME
 
 
 @click.command("reset")
@@ -18,7 +18,7 @@ from polylogue.paths import CACHE_HOME, DB_PATH, RENDER_ROOT, DRIVE_TOKEN_PATH, 
 @click.option("--cache", is_flag=True, help="Delete search indexes and cache")
 @click.option("--auth", is_flag=True, help="Delete Google Drive OAuth tokens")
 @click.option("--all", "reset_all", is_flag=True, help="Reset everything")
-@click.option("--force", "-f", is_flag=True, help="Skip confirmation prompt")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
 @click.pass_obj
 def reset_command(
     env: AppEnv,
@@ -28,7 +28,7 @@ def reset_command(
     cache: bool,
     auth: bool,
     reset_all: bool,
-    force: bool,
+    yes: bool,
 ) -> None:
     """Reset database, assets, rendered outputs, or auth state.
 
@@ -47,6 +47,14 @@ def reset_command(
     targets = []
     if database and DB_PATH.exists():
         targets.append(("database", DB_PATH))
+        # Also clean up WAL/SHM files and health cache alongside the database
+        for suffix in (".db-wal", ".db-shm"):
+            wal_path = DB_PATH.with_suffix(suffix)
+            if wal_path.exists():
+                targets.append((f"database {suffix}", wal_path))
+        health_path = DATA_HOME / "health.json"
+        if health_path.exists():
+            targets.append(("health cache", health_path))
     if assets:
         assets_dir = DATA_HOME / "assets"
         if assets_dir.exists():
@@ -57,6 +65,14 @@ def reset_command(
         targets.append(("cache/indexes", CACHE_HOME))
     if auth and DRIVE_TOKEN_PATH.exists():
         targets.append(("OAuth token", DRIVE_TOKEN_PATH))
+    if reset_all:
+        # Clean up run history and last-source state
+        runs_dir = DATA_HOME / "runs"
+        if runs_dir.exists():
+            targets.append(("run history", runs_dir))
+        last_source = STATE_HOME / "last-source.json"
+        if last_source.exists():
+            targets.append(("last-source state", last_source))
 
     if not targets:
         env.ui.console.print("Nothing to reset (no files exist for selected targets).")
@@ -66,10 +82,10 @@ def reset_command(
     lines = [f"  {name}: {path}" for name, path in targets]
     env.ui.summary("Will delete", lines)
 
-    # Confirm unless --force
-    if not force:
+    # Confirm unless --yes
+    if not yes:
         if env.ui.plain:
-            env.ui.console.print("Use --force to confirm deletion.")
+            env.ui.console.print("Use --yes to confirm deletion.")
             return
         if not env.ui.confirm("Delete these files/directories?", default=False):
             env.ui.console.print("Reset cancelled.")
@@ -91,3 +107,6 @@ def reset_command(
             env.ui.console.print(f"  Failed to delete {name}: {exc}")
 
     env.ui.console.print(f"\nReset complete: {deleted} item(s) deleted.")
+
+
+__all__ = ["reset_command"]

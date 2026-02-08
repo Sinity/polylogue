@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import re
 import subprocess
 from dataclasses import dataclass
@@ -66,10 +67,8 @@ def _resolve_version() -> VersionInfo:
     commit: str | None = None
     dirty = False
 
-    try:
+    with contextlib.suppress(PackageNotFoundError):
         version = metadata_version("polylogue")
-    except PackageNotFoundError:
-        pass
 
     repo_root = Path(__file__).resolve().parent.parent
     pyproject_path = repo_root / "pyproject.toml"
@@ -86,6 +85,14 @@ def _resolve_version() -> VersionInfo:
     # Check for git info in source checkout
     if (repo_root / ".git").exists():
         commit, dirty = _get_git_info(repo_root)
+    else:
+        # Nix build or installed package — try build-time info
+        try:
+            from polylogue._build_info import BUILD_COMMIT, BUILD_DIRTY
+            commit = BUILD_COMMIT if BUILD_COMMIT != "unknown" else None
+            dirty = BUILD_DIRTY
+        except ImportError:
+            pass
 
     return VersionInfo(version=version, commit=commit, dirty=dirty)
 

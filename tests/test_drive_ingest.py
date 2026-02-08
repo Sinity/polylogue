@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from polylogue.config import Source
-from polylogue.ingestion import DriveFile, iter_drive_conversations
+from polylogue.sources import DriveFile, iter_drive_conversations
 
 
 @dataclass
@@ -74,8 +74,8 @@ class TestDriveDownloadFailureTracking:
 
         This test SHOULD FAIL until failure tracking is implemented.
         """
-        from polylogue.ingestion import download_drive_files
-        from polylogue.ingestion.drive_client import DriveFile
+        from polylogue.sources import download_drive_files
+        from polylogue.sources.drive_client import DriveFile
 
         # Mock the drive client to fail on specific files
         mock_client = MagicMock()
@@ -101,8 +101,8 @@ class TestDriveDownloadFailureTracking:
 
     def test_download_continues_after_single_failure(self):
         """Download should continue processing other files after one fails."""
-        from polylogue.ingestion import download_drive_files
-        from polylogue.ingestion.drive_client import DriveFile
+        from polylogue.sources import download_drive_files
+        from polylogue.sources.drive_client import DriveFile
 
         mock_client = MagicMock()
         mock_client.iter_json_files.return_value = [
@@ -121,7 +121,7 @@ class TestDriveDownloadFailureTracking:
 
         mock_client.download_to_path.side_effect = mock_download
 
-        result = download_drive_files(mock_client, "folder", Path("/tmp/test"))
+        download_drive_files(mock_client, "folder", Path("/tmp/test"))
 
         # Should have attempted all 3, succeeded on 2
         assert download_count[0] == 2

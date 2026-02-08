@@ -7,6 +7,7 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 - Provide an OAuth client JSON at `~/.config/polylogue/credentials.json` or set `POLYLOGUE_CREDENTIAL_PATH`.
 - Tokens are stored at `~/.config/polylogue/token.json` (or `POLYLOGUE_TOKEN_PATH`).
 - Drive auth requires `--interactive` for the browser authorization code.
+- Run `polylogue auth` to initiate the OAuth flow.
 
 ## Source scoping
 
@@ -26,20 +27,17 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 - Use `--open` to open the newest render without searching.
 - Use `--verbose` to include snippets in list output.
 
-## Config editing
-
-- Use `polylogue config edit` (interactive) to add or change sources.
-- `config set` supports `archive_root` and `render_root`.
-
 ## Index rebuild
 
 - Search automatically rebuilds the index if it is missing.
 
-## Exports
-
-- `polylogue export --out /path/to/export.jsonl` writes a machine-readable snapshot of conversations, messages, and attachments.
-
 ## Path debugging
 
-- `polylogue config show` prints a summary; `polylogue config show --json` shows raw values and env overrides.
+- Use `polylogue run --preview` to confirm resolved sources and output paths.
 - Use `POLYLOGUE_RENDER_ROOT` to override render output without editing config.
+
+## Health checks
+
+- `polylogue check` verifies database integrity, FTS index, and render files.
+- `polylogue check --repair` fixes issues that can be auto-fixed.
+- `polylogue check --vacuum` compacts the database and reclaims space.

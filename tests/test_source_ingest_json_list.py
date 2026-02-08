@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from polylogue.config import Source
-from polylogue.ingestion import iter_source_conversations
+from polylogue.sources import iter_source_conversations
 
 
 def test_iter_source_conversations_handles_codex_json_list(tmp_path: Path):

@@ -45,7 +45,12 @@ class PlainConsole:
         pass
 
     def print(self, *objects: object, **_: object) -> None:
-        text = " ".join(str(obj) for obj in objects)
+        raw = " ".join(str(obj) for obj in objects)
+        # Strip Rich markup (e.g. [bold], [green], [/#d97757]) for plain output
+        try:
+            text = Text.from_markup(raw).plain
+        except Exception:
+            text = raw
         print(text)
 
 

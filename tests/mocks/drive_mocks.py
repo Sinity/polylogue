@@ -243,10 +243,7 @@ class MockFilesResource:
 
         # Pagination simulation
         page_size = pageSize or 100
-        if pageToken:
-            start_idx = int(pageToken)
-        else:
-            start_idx = 0
+        start_idx = int(pageToken) if pageToken else 0
 
         page_files = matching_files[start_idx : start_idx + page_size]
         next_token = None

@@ -140,6 +140,8 @@ class AsyncSQLiteBackend:
                 content_hash TEXT NOT NULL,
                 provider_meta TEXT,
                 version INTEGER NOT NULL,
+                parent_message_id TEXT,
+                branch_index INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY (conversation_id)
                     REFERENCES conversations(conversation_id) ON DELETE CASCADE
             );
@@ -256,11 +258,15 @@ class AsyncSQLiteBackend:
                     MessageRecord(
                         message_id=row["message_id"],
                         conversation_id=row["conversation_id"],
+                        provider_message_id=row["provider_message_id"],
                         role=row["role"],
                         text=row["text"],
                         timestamp=row["timestamp"],
                         content_hash=row["content_hash"],
                         provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                        version=row["version"],
+                        parent_message_id=row["parent_message_id"] if "parent_message_id" in row.keys() else None,
+                        branch_index=(row["branch_index"] or 0) if "branch_index" in row.keys() else 0,
                     )
                 )
 
@@ -367,120 +373,119 @@ class AsyncSQLiteBackend:
             "attachment_refs_created": 0,
         }
 
-        async with self.transaction():
-            async with self._get_connection() as conn:
-                import json
+        async with self.transaction(), self._get_connection() as conn:
+            import json
 
-                # 1. Save Conversation
-                # Check if exists to determine created vs updated
-                cursor = await conn.execute(
-                    "SELECT 1 FROM conversations WHERE conversation_id = ?",
-                    (conversation.conversation_id,),
-                )
-                exists = (await cursor.fetchone()) is not None
-                if exists:
-                    counts["conversations_updated"] = 1
-                else:
-                    counts["conversations_created"] = 1
+            # 1. Save Conversation
+            # Check if exists to determine created vs updated
+            cursor = await conn.execute(
+                "SELECT 1 FROM conversations WHERE conversation_id = ?",
+                (conversation.conversation_id,),
+            )
+            exists = (await cursor.fetchone()) is not None
+            if exists:
+                counts["conversations_updated"] = 1
+            else:
+                counts["conversations_created"] = 1
 
-                await conn.execute(
-                    """
+            await conn.execute(
+                """
                     INSERT OR REPLACE INTO conversations (
                         conversation_id, provider_name, provider_conversation_id,
                         title, created_at, updated_at, content_hash,
                         provider_meta, metadata, version
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        conversation.conversation_id,
-                        conversation.provider_name,
-                        conversation.provider_conversation_id,
-                        conversation.title,
-                        conversation.created_at,
-                        conversation.updated_at,
-                        conversation.content_hash,
-                        json.dumps(conversation.provider_meta) if conversation.provider_meta else None,
-                        json.dumps(conversation.metadata) if conversation.metadata else None,
-                        conversation.version,
-                    ),
-                )
+                (
+                    conversation.conversation_id,
+                    conversation.provider_name,
+                    conversation.provider_conversation_id,
+                    conversation.title,
+                    conversation.created_at,
+                    conversation.updated_at,
+                    conversation.content_hash,
+                    json.dumps(conversation.provider_meta) if conversation.provider_meta else None,
+                    json.dumps(conversation.metadata) if conversation.metadata else None,
+                    conversation.version,
+                ),
+            )
 
-                # 2. Save Messages (batched with executemany for performance)
-                if messages:
-                    message_data = [
-                        (
-                            msg.message_id,
-                            msg.conversation_id,
-                            msg.provider_message_id,
-                            msg.role,
-                            msg.text,
-                            msg.timestamp,
-                            msg.content_hash,
-                            json.dumps(msg.provider_meta) if msg.provider_meta else None,
-                            msg.version or 1,
-                        )
-                        for msg in messages
-                    ]
-                    await conn.executemany(
-                        """
+            # 2. Save Messages (batched with executemany for performance)
+            if messages:
+                message_data = [
+                    (
+                        msg.message_id,
+                        msg.conversation_id,
+                        msg.provider_message_id,
+                        msg.role,
+                        msg.text,
+                        msg.timestamp,
+                        msg.content_hash,
+                        json.dumps(msg.provider_meta) if msg.provider_meta else None,
+                        msg.version or 1,
+                    )
+                    for msg in messages
+                ]
+                await conn.executemany(
+                    """
                         INSERT OR REPLACE INTO messages (
                             message_id, conversation_id, provider_message_id,
                             role, text, timestamp, content_hash,
                             provider_meta, version
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        message_data,
-                    )
-                counts["messages_created"] = len(messages)
+                    message_data,
+                )
+            counts["messages_created"] = len(messages)
 
-                # 3. Save Attachments (batched)
-                if attachments:
-                    attachment_data = [
-                        (
-                            att.attachment_id,
-                            att.mime_type,
-                            att.size_bytes,
-                            str(att.path) if att.path else None,
-                            json.dumps(att.provider_meta) if att.provider_meta else None,
-                        )
-                        for att in attachments
-                    ]
-                    await conn.executemany(
-                        """
+            # 3. Save Attachments (batched)
+            if attachments:
+                attachment_data = [
+                    (
+                        att.attachment_id,
+                        att.mime_type,
+                        att.size_bytes,
+                        str(att.path) if att.path else None,
+                        json.dumps(att.provider_meta) if att.provider_meta else None,
+                    )
+                    for att in attachments
+                ]
+                await conn.executemany(
+                    """
                         INSERT OR IGNORE INTO attachments (
                             attachment_id, mime_type, size_bytes,
                             path, ref_count, provider_meta
                         ) VALUES (?, ?, ?, ?, 0, ?)
                         """,
-                        attachment_data,
+                    attachment_data,
+                )
+            counts["attachments_created"] = len(attachments)
+
+            # 4. Save Attachment Refs (batched)
+            from polylogue.storage.backends.sqlite import _make_ref_id
+
+            if attachments:
+                ref_data = [
+                    (
+                        _make_ref_id(att.attachment_id, att.conversation_id, att.message_id),
+                        att.attachment_id,
+                        att.conversation_id,
+                        att.message_id,
+                        json.dumps(att.provider_meta) if att.provider_meta else None,
                     )
-                counts["attachments_created"] = len(attachments)
-
-                # 4. Save Attachment Refs (batched)
-                from polylogue.storage.backends.sqlite import _make_ref_id
-
-                if attachments:
-                    ref_data = [
-                        (
-                            _make_ref_id(att.attachment_id, att.conversation_id, att.message_id),
-                            att.attachment_id,
-                            att.conversation_id,
-                            att.message_id,
-                            json.dumps(att.provider_meta) if att.provider_meta else None,
-                        )
-                        for att in attachments
-                    ]
-                    await conn.executemany(
-                        """
+                    for att in attachments
+                ]
+                await conn.executemany(
+                    """
                         INSERT OR IGNORE INTO attachment_refs (
                             ref_id, attachment_id, conversation_id, message_id, provider_meta
                         ) VALUES (?, ?, ?, ?, ?)
                         """,
-                        ref_data,
-                    )
-                counts["attachment_refs_created"] = len(attachments)
+                    ref_data,
+                )
+            counts["attachment_refs_created"] = len(attachments)
 
-                await conn.commit()
+            await conn.commit()
 
         return counts
 

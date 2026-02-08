@@ -27,12 +27,17 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 try:
-    from glom import glom, Coalesce
+    from glom import glom
+
     GLOM_AVAILABLE = True
 except ImportError:
     GLOM_AVAILABLE = False
-    def glom(target: Any, spec: Any) -> Any: ...  # noqa: E704
 
+    def glom(target: Any, spec: Any) -> Any: ...
+
+
+from polylogue.lib.roles import normalize_role
+from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
@@ -40,9 +45,13 @@ from polylogue.lib.viewports import (
     ReasoningTrace,
     TokenUsage,
     ToolCall,
-    ToolCategory,
     classify_tool,
 )
+
+
+def _missing_role() -> str:
+    """Called when role is missing - raises error to surface data quality issues."""
+    raise ValueError("Message has no role. Data should be validated at import time.")
 
 
 # =============================================================================
@@ -99,49 +108,9 @@ class HarmonizedMessage(BaseModel):
         return [t for t in self.tool_calls if t.is_git_operation]
 
 
-# =============================================================================
-# Transform Functions
-# =============================================================================
-
-
-def parse_iso_timestamp(ts: str | None) -> datetime | None:
-    """Parse ISO 8601 timestamp with Z suffix handling."""
-    if not ts:
-        return None
-    try:
-        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
-
-
-def parse_unix_timestamp(ts: float | int | None) -> datetime | None:
-    """Parse Unix timestamp (seconds since epoch)."""
-    if ts is None:
-        return None
-    try:
-        from datetime import timezone
-        return datetime.fromtimestamp(ts, tz=timezone.utc)
-    except (ValueError, TypeError, OSError):
-        return None
-
-
-ROLE_MAP = {
-    "user": "user",
-    "human": "user",
-    "assistant": "assistant",
-    "model": "assistant",
-    "ai": "assistant",
-    "system": "system",
-    "tool": "tool",
-    "function": "tool",
-}
-
-
-def normalize_role(raw: str | None) -> str:
-    """Normalize provider role string to canonical role."""
-    if not raw:
-        return "user"
-    return ROLE_MAP.get(raw.lower(), raw.lower())
+# Transform functions now imported from core modules:
+# - parse_timestamp from polylogue.lib.timestamps
+# - normalize_role, ROLE_MAP from polylogue.lib.roles
 
 
 # =============================================================================
@@ -149,7 +118,7 @@ def normalize_role(raw: str | None) -> str:
 # =============================================================================
 
 
-def extract_reasoning_traces(content: list[dict] | None, provider: str) -> list[ReasoningTrace]:
+def extract_reasoning_traces(content: list[dict[str, Any]] | None, provider: str) -> list[ReasoningTrace]:
     """Extract reasoning traces from content blocks."""
     if not content:
         return []
@@ -168,16 +137,18 @@ def extract_reasoning_traces(content: list[dict] | None, provider: str) -> list[
             text = block.get("text")
 
         if text:
-            traces.append(ReasoningTrace(
-                text=text,
-                provider=provider,
-                raw=block,
-            ))
+            traces.append(
+                ReasoningTrace(
+                    text=text,
+                    provider=provider,
+                    raw=block,
+                )
+            )
 
     return traces
 
 
-def extract_tool_calls(content: list[dict] | None, provider: str) -> list[ToolCall]:
+def extract_tool_calls(content: list[dict[str, Any]] | None, provider: str) -> list[ToolCall]:
     """Extract tool calls from content blocks."""
     if not content:
         return []
@@ -193,19 +164,21 @@ def extract_tool_calls(content: list[dict] | None, provider: str) -> list[ToolCa
         name = block.get("name", "")
         input_data = block.get("input", {})
 
-        calls.append(ToolCall(
-            name=name,
-            id=block.get("id"),
-            input=input_data if isinstance(input_data, dict) else {},
-            category=classify_tool(name, input_data if isinstance(input_data, dict) else {}),
-            provider=provider,
-            raw=block,
-        ))
+        calls.append(
+            ToolCall(
+                name=name,
+                id=block.get("id"),
+                input=input_data if isinstance(input_data, dict) else {},
+                category=classify_tool(name, input_data if isinstance(input_data, dict) else {}),
+                provider=provider,
+                raw=block,
+            )
+        )
 
     return calls
 
 
-def extract_content_blocks(content: list[dict] | None) -> list[ContentBlock]:
+def extract_content_blocks(content: list[dict[str, Any]] | None) -> list[ContentBlock]:
     """Extract content blocks with type classification."""
     if not content:
         return []
@@ -218,48 +191,58 @@ def extract_content_blocks(content: list[dict] | None) -> list[ContentBlock]:
         block_type = block.get("type", "text")
 
         if block_type == "text":
-            blocks.append(ContentBlock(
-                type=ContentType.TEXT,
-                text=block.get("text"),
-                raw=block,
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.TEXT,
+                    text=block.get("text"),
+                    raw=block,
+                )
+            )
         elif block_type == "thinking":
-            blocks.append(ContentBlock(
-                type=ContentType.THINKING,
-                text=block.get("thinking") or block.get("text"),
-                raw=block,
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.THINKING,
+                    text=block.get("thinking") or block.get("text"),
+                    raw=block,
+                )
+            )
         elif block_type == "tool_use":
             name = block.get("name", "")
             input_data = block.get("input", {})
-            blocks.append(ContentBlock(
-                type=ContentType.TOOL_USE,
-                tool_call=ToolCall(
-                    name=name,
-                    id=block.get("id"),
-                    input=input_data if isinstance(input_data, dict) else {},
-                    category=classify_tool(name, input_data if isinstance(input_data, dict) else {}),
-                ),
-                raw=block,
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.TOOL_USE,
+                    tool_call=ToolCall(
+                        name=name,
+                        id=block.get("id"),
+                        input=input_data if isinstance(input_data, dict) else {},
+                        category=classify_tool(name, input_data if isinstance(input_data, dict) else {}),
+                    ),
+                    raw=block,
+                )
+            )
         elif block_type == "tool_result":
-            blocks.append(ContentBlock(
-                type=ContentType.TOOL_RESULT,
-                text=str(block.get("content", "")),
-                raw=block,
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.TOOL_RESULT,
+                    text=str(block.get("content", "")),
+                    raw=block,
+                )
+            )
         elif block_type == "code":
-            blocks.append(ContentBlock(
-                type=ContentType.CODE,
-                text=block.get("text") or block.get("code"),
-                language=block.get("language"),
-                raw=block,
-            ))
+            blocks.append(
+                ContentBlock(
+                    type=ContentType.CODE,
+                    text=block.get("text") or block.get("code"),
+                    language=block.get("language"),
+                    raw=block,
+                )
+            )
 
     return blocks
 
 
-def extract_token_usage(usage: dict | None) -> TokenUsage | None:
+def extract_token_usage(usage: dict[str, Any] | None) -> TokenUsage | None:
     """Extract token usage from usage dict."""
     if not usage:
         return None
@@ -274,33 +257,64 @@ def extract_token_usage(usage: dict | None) -> TokenUsage | None:
 
 
 # =============================================================================
-# Provider Extraction
+# Text Extraction Helpers
 # =============================================================================
 
 
-def _extract_claude_code_text(content: list[dict] | None) -> str:
-    """Extract text from Claude Code content blocks."""
+def extract_claude_code_text(content: list[dict[str, Any]] | None) -> str:
+    """Extract text from Claude Code content blocks.
+
+    Handles: text blocks, thinking blocks (concatenated).
+    """
     if not content:
         return ""
+
     parts = []
     for block in content:
-        if isinstance(block, dict):
-            if block.get("type") == "text":
-                parts.append(block.get("text", ""))
-            elif block.get("type") == "thinking":
-                parts.append(block.get("thinking", ""))
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            parts.append(block.get("text", ""))
+        elif block_type == "thinking":
+            parts.append(block.get("thinking", ""))
+
     return "\n".join(filter(None, parts))
 
 
-def _extract_chatgpt_text(content: dict | None) -> str:
+def extract_chatgpt_text(content: dict[str, Any] | None) -> str:
     """Extract text from ChatGPT content structure."""
     if not content:
         return ""
     parts = content.get("parts", [])
+    if not isinstance(parts, list):
+        return str(parts) if parts else ""
     return "\n".join(str(p) for p in parts if isinstance(p, str))
 
 
-def extract_harmonized_message(provider: str, raw: dict) -> HarmonizedMessage:
+def extract_codex_text(content: list[dict[str, Any]] | None) -> str:
+    """Extract text from Codex content blocks."""
+    if not content or not isinstance(content, list):
+        return ""
+
+    parts = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        # Codex has multiple text field names
+        text = block.get("text", "") or block.get("input_text", "") or block.get("output_text", "")
+        if text:
+            parts.append(text)
+
+    return "\n".join(parts)
+
+
+# =============================================================================
+# Provider Extraction
+# =============================================================================
+
+
+def extract_harmonized_message(provider: str, raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract HarmonizedMessage from raw provider data.
 
     Args:
@@ -324,16 +338,16 @@ def extract_harmonized_message(provider: str, raw: dict) -> HarmonizedMessage:
         raise ValueError(f"Unknown provider: {provider}")
 
 
-def _extract_claude_code(raw: dict) -> HarmonizedMessage:
+def _extract_claude_code(raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract from Claude Code format."""
     msg = raw.get("message", {})
     content = msg.get("content", []) if isinstance(msg, dict) else []
 
     return HarmonizedMessage(
         id=raw.get("uuid"),
-        role=normalize_role(msg.get("role") if isinstance(msg, dict) else raw.get("type")),
-        text=_extract_claude_code_text(content),
-        timestamp=parse_iso_timestamp(raw.get("timestamp")),
+        role=normalize_role((msg.get("role") if isinstance(msg, dict) else raw.get("type")) or _missing_role()),
+        text=extract_claude_code_text(content),
+        timestamp=parse_timestamp(raw.get("timestamp")),
         reasoning_traces=extract_reasoning_traces(content, "claude-code"),
         tool_calls=extract_tool_calls(content, "claude-code"),
         content_blocks=extract_content_blocks(content),
@@ -346,19 +360,19 @@ def _extract_claude_code(raw: dict) -> HarmonizedMessage:
     )
 
 
-def _extract_claude_ai(raw: dict) -> HarmonizedMessage:
+def _extract_claude_ai(raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract from Claude AI (web) format."""
     return HarmonizedMessage(
         id=raw.get("uuid"),
-        role=normalize_role(raw.get("sender")),
+        role=normalize_role(raw.get("sender") or _missing_role()),
         text=raw.get("text", ""),
-        timestamp=parse_iso_timestamp(raw.get("created_at")),
+        timestamp=parse_timestamp(raw.get("created_at")),
         provider="claude-ai",
         raw=raw,
     )
 
 
-def _extract_chatgpt(raw: dict) -> HarmonizedMessage:
+def _extract_chatgpt(raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract from ChatGPT format."""
     author = raw.get("author", {})
     content = raw.get("content", {})
@@ -366,37 +380,41 @@ def _extract_chatgpt(raw: dict) -> HarmonizedMessage:
 
     return HarmonizedMessage(
         id=raw.get("id"),
-        role=normalize_role(author.get("role") if isinstance(author, dict) else None),
-        text=_extract_chatgpt_text(content) if isinstance(content, dict) else "",
-        timestamp=parse_unix_timestamp(raw.get("create_time")),
+        role=normalize_role((author.get("role") if isinstance(author, dict) else None) or _missing_role()),
+        text=extract_chatgpt_text(content) if isinstance(content, dict) else "",
+        timestamp=parse_timestamp(raw.get("create_time")),
         model=metadata.get("model_slug") if isinstance(metadata, dict) else None,
         provider="chatgpt",
         raw=raw,
     )
 
 
-def _extract_gemini(raw: dict) -> HarmonizedMessage:
+def _extract_gemini(raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract from Gemini format."""
     is_thinking = raw.get("isThought", False)
 
     return HarmonizedMessage(
         id=None,  # Gemini doesn't have message IDs in export
-        role=normalize_role(raw.get("role")),
+        role=normalize_role(raw.get("role") or _missing_role()),
         text=raw.get("text", ""),
         timestamp=None,  # Gemini doesn't have timestamps in export
-        reasoning_traces=[ReasoningTrace(
-            text=raw.get("text", ""),
-            token_count=raw.get("thinkingBudget"),
-            provider="gemini",
-            raw=raw,
-        )] if is_thinking else [],
+        reasoning_traces=[
+            ReasoningTrace(
+                text=raw.get("text", ""),
+                token_count=raw.get("thinkingBudget"),
+                provider="gemini",
+                raw=raw,
+            )
+        ]
+        if is_thinking
+        else [],
         tokens=TokenUsage(output_tokens=raw.get("tokenCount")) if raw.get("tokenCount") else None,
         provider="gemini",
         raw=raw,
     )
 
 
-def _extract_codex(raw: dict) -> HarmonizedMessage:
+def _extract_codex(raw: dict[str, Any]) -> HarmonizedMessage:
     """Extract from Codex format."""
     # Handle envelope vs direct format
     if "payload" in raw:
@@ -419,7 +437,7 @@ def _extract_codex(raw: dict) -> HarmonizedMessage:
         id=raw.get("id"),
         role=normalize_role(role),
         text="\n".join(text_parts),
-        timestamp=parse_iso_timestamp(raw.get("timestamp")),
+        timestamp=parse_timestamp(raw.get("timestamp")),
         provider="codex",
         raw=raw,
     )
@@ -430,7 +448,7 @@ def _extract_codex(raw: dict) -> HarmonizedMessage:
 # =============================================================================
 
 
-def extract_from_provider_meta(provider: str, provider_meta: dict) -> HarmonizedMessage:
+def extract_from_provider_meta(provider: str, provider_meta: dict[str, Any]) -> HarmonizedMessage:
     """Extract HarmonizedMessage from polylogue database format.
 
     The database stores pre-processed data with original format in 'raw' key.
@@ -446,7 +464,7 @@ def extract_from_provider_meta(provider: str, provider_meta: dict) -> Harmonized
     return extract_harmonized_message(provider, raw)
 
 
-def is_message_record(provider: str, raw: dict) -> bool:
+def is_message_record(provider: str, raw: dict[str, Any]) -> bool:
     """Check if a record is an actual message (vs metadata).
 
     Some providers (like Claude Code) include metadata records
@@ -493,7 +511,7 @@ def harmonize_parsed_message(
 
 def bulk_harmonize(
     provider: str,
-    parsed_messages: list,
+    parsed_messages: list[Any],
 ) -> list[HarmonizedMessage]:
     """Bulk convert ParsedMessages to HarmonizedMessages.
 
