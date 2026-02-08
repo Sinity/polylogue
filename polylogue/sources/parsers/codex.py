@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from polylogue.sources.providers.codex import CodexRecord
 
-from .base import ParsedConversation, ParsedMessage
+from .base import ParsedConversation, ParsedMessage, normalize_role
 
 
 def looks_like(payload: list[object]) -> bool:
@@ -110,11 +110,12 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
 
         # Parse message records using typed properties
         if record.is_message:
-            role = record.effective_role
+            raw_role = record.effective_role
             text = record.text_content
 
-            if not role or role == "unknown" or not text:
+            if not raw_role or raw_role == "unknown" or not text:
                 continue
+            role = normalize_role(raw_role)
 
             # Get message ID from the record
             msg_id = record.id or f"msg-{idx}"
