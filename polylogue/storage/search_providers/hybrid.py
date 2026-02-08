@@ -127,7 +127,7 @@ class HybridSearchProvider:
 
         return fused[:limit]
 
-    def search_conversations(self, query: str, limit: int = 20) -> list[str]:
+    def search_conversations(self, query: str, limit: int = 20, providers: list[str] | None = None) -> list[str]:
         """Search and return unique conversation IDs.
 
         Executes hybrid search, then deduplicates by conversation.
@@ -160,6 +160,19 @@ class HybridSearchProvider:
 
         msg_to_conv = {row["message_id"]: row["conversation_id"] for row in rows}
 
+        # If provider filter specified, look up which conversations match
+        allowed_convs: set[str] | None = None
+        if providers:
+            with open_connection(self.fts_provider.db_path) as conn:
+                p_placeholders = ",".join("?" for _ in providers)
+                p_rows = conn.execute(
+                    f"""SELECT conversation_id FROM conversations
+                        WHERE provider_name IN ({p_placeholders})
+                           OR source_name IN ({p_placeholders})""",
+                    (*providers, *providers),
+                ).fetchall()
+                allowed_convs = {row["conversation_id"] for row in p_rows}
+
         # Deduplicate while preserving order (first occurrence wins)
         seen_convs: set[str] = set()
         result_convs: list[str] = []
@@ -167,6 +180,8 @@ class HybridSearchProvider:
         for msg_id, _score in message_results:
             conv_id = msg_to_conv.get(msg_id)
             if conv_id and conv_id not in seen_convs:
+                if allowed_convs is not None and conv_id not in allowed_convs:
+                    continue
                 seen_convs.add(conv_id)
                 result_convs.append(conv_id)
                 if len(result_convs) >= limit:

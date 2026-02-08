@@ -1343,12 +1343,15 @@ class SQLiteBackend:
 
         return None  # No match or ambiguous
 
-    def search_conversations(self, query: str, limit: int = 100) -> list[str]:
+    def search_conversations(
+        self, query: str, limit: int = 100, providers: list[str] | None = None
+    ) -> list[str]:
         """Search conversations using full-text search.
 
         Args:
             query: Search query string (FTS5 syntax)
             limit: Maximum number of conversation IDs to return
+            providers: Optional list of provider names to filter by
 
         Returns:
             List of conversation IDs matching the query, ordered by relevance
@@ -1361,15 +1364,30 @@ class SQLiteBackend:
         if not exists:
             raise DatabaseError("Search index not built. Run indexing first or use a different backend.")
 
-        rows = conn.execute(
-            """
-            SELECT DISTINCT conversation_id
-            FROM messages_fts
-            WHERE messages_fts MATCH ?
-            LIMIT ?
-            """,
-            (query, limit),
-        ).fetchall()
+        if providers:
+            placeholders = ",".join("?" for _ in providers)
+            rows = conn.execute(
+                f"""
+                SELECT DISTINCT messages_fts.conversation_id
+                FROM messages_fts
+                JOIN conversations ON conversations.conversation_id = messages_fts.conversation_id
+                WHERE messages_fts MATCH ?
+                  AND (conversations.provider_name IN ({placeholders})
+                       OR conversations.source_name IN ({placeholders}))
+                LIMIT ?
+                """,
+                (query, *providers, *providers, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT conversation_id
+                FROM messages_fts
+                WHERE messages_fts MATCH ?
+                LIMIT ?
+                """,
+                (query, limit),
+            ).fetchall()
 
         return [str(row["conversation_id"]) for row in rows]
 

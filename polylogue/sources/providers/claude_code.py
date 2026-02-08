@@ -226,15 +226,14 @@ class ClaudeCodeRecord(BaseModel):
         Claude Code JSONL record types map to roles:
         - user → user
         - assistant → assistant
-        - summary → system (context compaction)
-        - progress → tool (tool execution progress)
-        - result → tool (tool execution result)
+        - summary, system, file-history-snapshot, queue-operation → system
+        - progress, result → tool
         """
         if self.type == "user":
             return "user"
         if self.type == "assistant":
             return "assistant"
-        if self.type == "summary":
+        if self.type in {"summary", "system", "file-history-snapshot", "queue-operation"}:
             return "system"
         if self.type in {"progress", "result"}:
             return "tool"

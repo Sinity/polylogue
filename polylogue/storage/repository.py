@@ -163,9 +163,11 @@ class ConversationRepository:
 
         return tree
 
-    def search_summaries(self, query: str, limit: int = 20) -> builtins.list[ConversationSummary]:
+    def search_summaries(
+        self, query: str, limit: int = 20, providers: builtins.list[str] | None = None
+    ) -> builtins.list[ConversationSummary]:
         """Search conversations and return summaries."""
-        ids = self._backend.search_conversations(query, limit=limit)
+        ids = self._backend.search_conversations(query, limit=limit, providers=providers)
         summaries = []
         for cid in ids:
             record = self._backend.get_conversation(cid)
@@ -173,9 +175,11 @@ class ConversationRepository:
                 summaries.append(ConversationSummary.from_record(record))
         return summaries
 
-    def search(self, query: str, limit: int = 20) -> builtins.list[Conversation]:
+    def search(
+        self, query: str, limit: int = 20, providers: builtins.list[str] | None = None
+    ) -> builtins.list[Conversation]:
         """Search conversations using full-text search."""
-        ids = self._backend.search_conversations(query, limit=limit)
+        ids = self._backend.search_conversations(query, limit=limit, providers=providers)
         return self._get_many(ids)
 
     def _get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:

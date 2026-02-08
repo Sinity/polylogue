@@ -1119,9 +1119,8 @@ class TestCheckCommand:
             result = runner.invoke(check_command, ["--json"], obj=mock_env)
 
             assert result.exit_code == 0
-            # JSON output should be printed
-            calls = mock_env.ui.console.print.call_args_list
-            assert any("ok" in str(c).lower() for c in calls)
+            # JSON output goes to click.echo (stdout), not console.print
+            assert "ok" in result.output.lower()
 
     def test_check_vacuum_requires_repair(self, runner, mock_env):
         """--vacuum requires --repair flag."""

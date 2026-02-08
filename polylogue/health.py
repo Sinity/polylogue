@@ -336,6 +336,14 @@ class RepairResult:
     success: bool
     detail: str = ""
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "repaired_count": self.repaired_count,
+            "success": self.success,
+            "detail": self.detail,
+        }
+
 
 def repair_orphaned_messages(config: Config) -> RepairResult:
     """Delete messages that reference non-existent conversations."""
