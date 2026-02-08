@@ -201,7 +201,10 @@ class SqliteVecProvider:
                     time.sleep(0.1)
 
             except httpx.HTTPError as exc:
-                raise SqliteVecError(f"Embedding generation failed: {exc}") from exc
+                # Sanitize: don't leak API keys or full URLs in error messages
+                status = getattr(exc.response, "status_code", None) if hasattr(exc, "response") else None
+                detail = f"HTTP {status}" if status else type(exc).__name__
+                raise SqliteVecError(f"Embedding generation failed: {detail}") from exc
 
         return all_embeddings
 
