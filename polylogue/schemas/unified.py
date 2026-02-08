@@ -287,6 +287,8 @@ def extract_chatgpt_text(content: dict[str, Any] | None) -> str:
     if not content:
         return ""
     parts = content.get("parts", [])
+    if not isinstance(parts, list):
+        return str(parts) if parts else ""
     return "\n".join(str(p) for p in parts if isinstance(p, str))
 
 
