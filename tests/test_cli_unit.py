@@ -1331,7 +1331,7 @@ class TestRepairFunctions:
 
             results = run_all_repairs(config)
 
-            assert len(results) == 5
+            assert len(results) == 6  # 5 original + unknown_roles
             assert all(r.success for r in results)
 
 
