@@ -324,6 +324,8 @@ class IngestionService:
                     result.parse_failures += 1
                     if progress_callback:
                         progress_callback(1, desc="Parsing")
+                finally:
+                    del futures[fut]
 
     def _parse_raw_record(self, raw_record: RawConversationRecord) -> list[ParsedConversation]:
         """Parse a raw conversation record into ParsedConversation(s).
