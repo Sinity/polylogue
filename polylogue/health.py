@@ -511,18 +511,12 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
     try:
         with connection_context(None) as conn:
             if dry_run:
-                # Count only, don't modify
-                refs_deleted = conn.execute(
+                # Count distinct orphaned refs (a single ref can be orphaned on both axes)
+                orphaned_refs = conn.execute(
                     """
                     SELECT COUNT(*) FROM attachment_refs
-                    WHERE message_id IS NOT NULL AND message_id NOT IN (SELECT message_id FROM messages)
-                    """
-                ).fetchone()[0]
-
-                conv_refs_deleted = conn.execute(
-                    """
-                    SELECT COUNT(*) FROM attachment_refs
-                    WHERE conversation_id NOT IN (SELECT conversation_id FROM conversations)
+                    WHERE (message_id IS NOT NULL AND message_id NOT IN (SELECT message_id FROM messages))
+                       OR conversation_id NOT IN (SELECT conversation_id FROM conversations)
                     """
                 ).fetchone()[0]
 
@@ -533,12 +527,12 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
                     """
                 ).fetchone()[0]
 
-                total = refs_deleted + conv_refs_deleted + atts_deleted
+                total = orphaned_refs + atts_deleted
                 return RepairResult(
                     name="orphaned_attachments",
                     repaired_count=total,
                     success=True,
-                    detail=f"Would: Clean {refs_deleted} orphaned refs, {conv_refs_deleted} conv refs, {atts_deleted} attachments",
+                    detail=f"Would: Clean {orphaned_refs} orphaned refs, {atts_deleted} unreferenced attachments",
                 )
             else:
                 # First, delete attachment_refs that point to non-existent messages
@@ -589,27 +583,30 @@ def repair_orphaned_attachments(config: Config, dry_run: bool = False) -> Repair
 def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult:
     """Force WAL checkpoint to resolve busy pages and reclaim WAL space."""
     try:
-        with connection_context(None) as conn:
-            if dry_run:
-                # Query checkpoint info without actually performing the checkpoint
-                result = conn.execute("PRAGMA wal_checkpoint(RESTART)")
-                row = result.fetchone()
-                # wal_checkpoint returns (busy, log, checkpointed)
-                busy, log, checkpointed = row[0], row[1], row[2]
-                if busy:
-                    return RepairResult(
-                        name="wal_checkpoint",
-                        repaired_count=0,
-                        success=False,
-                        detail=f"Would: WAL checkpoint had busy pages: {busy} busy, {log} log, {checkpointed} checkpointed",
-                    )
+        if dry_run:
+            # All PRAGMA wal_checkpoint modes actually perform a checkpoint.
+            # For true dry-run, inspect the WAL file on disk instead.
+            from polylogue.storage.backends.sqlite import default_db_path
+
+            db_path = default_db_path()
+            wal_path = Path(str(db_path) + "-wal")
+            if wal_path.exists():
+                wal_size = wal_path.stat().st_size
+                pages_estimate = wal_size // 4096
                 return RepairResult(
                     name="wal_checkpoint",
-                    repaired_count=checkpointed if checkpointed > 0 else 0,
+                    repaired_count=pages_estimate,
                     success=True,
-                    detail=f"Would: WAL checkpoint: {checkpointed} pages would be checkpointed",
+                    detail=f"Would: WAL checkpoint (~{pages_estimate} pages, {wal_size:,} bytes)",
                 )
-            else:
+            return RepairResult(
+                name="wal_checkpoint",
+                repaired_count=0,
+                success=True,
+                detail="Would: No WAL file present, nothing to checkpoint",
+            )
+        else:
+            with connection_context(None) as conn:
                 result = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 row = result.fetchone()
                 # wal_checkpoint returns (busy, log, checkpointed)
