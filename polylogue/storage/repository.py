@@ -513,16 +513,16 @@ class ConversationRepository:
             embedded_msgs = conn.execute(
                 "SELECT COUNT(*) FROM message_embeddings"
             ).fetchone()[0]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Embedding stats query failed: %s", exc)
 
         # Get database size
         db_size = 0
         try:
             import os
             db_size = os.path.getsize(self._db_path) if self._db_path else 0
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("DB size check failed: %s", exc)
 
         return ArchiveStats(
             total_conversations=conv_count,
