@@ -226,6 +226,12 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
                 env.ui.console.print("No conversations in archive.")
                 raise SystemExit(2)
             full_id = str(summaries[0].id)
+        elif params.get("conv_id"):
+            resolved = conv_repo.resolve_id(params["conv_id"])
+            if not resolved:
+                click.echo(f"No conversation found matching: {params['conv_id']}", err=True)
+                raise SystemExit(2)
+            full_id = str(resolved)
         else:
             # Try to resolve first query term as ID
             if query_terms:
