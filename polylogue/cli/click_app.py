@@ -203,7 +203,7 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     type=click.Choice(["markdown", "json", "html", "obsidian", "org", "yaml", "plaintext", "csv"]),
     help="Output format",
 )
-@click.option("--fields", help="Select fields for list/json output (comma-separated)")
+@click.option("--fields", help="Fields for list/json: id, title, provider, date, messages, words, tags, summary")
 @click.option("--list", "list_mode", is_flag=True, help="Force list format")
 @click.option("--stats", "stats_only", is_flag=True, help="Only statistics, no content")
 @click.option(
@@ -219,7 +219,7 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
     help="Transform output: strip-tools, strip-thinking, or strip-all",
 )
 # --- Streaming options (memory-efficient for large conversations) ---
-@click.option("--stream", is_flag=True, help="Stream output (low memory, no buffering)")
+@click.option("--stream", is_flag=True, help="Stream output (low memory). Requires --latest or -i ID")
 @click.option("--dialogue-only", "-d", is_flag=True, help="Show only user/assistant messages")
 # --- Modifier options (write operations) ---
 @click.option("--set", "set_meta", nargs=2, multiple=True, help="Set metadata key value")
@@ -284,12 +284,24 @@ def cli(
         polylogue --latest --output browser
 
     \b
+    Combined filters:
+        polylogue "error" -p claude --since 2025-01 --list
+        polylogue --has thinking --sort tokens --limit 10
+        polylogue -t important --stats-by provider
+
+    \b
+    Modifiers (write operations):
+        polylogue "urgent" --add-tag review --dry-run
+        polylogue -p old --delete --dry-run
+
+    \b
     Subcommands:
-        polylogue run     Run pipeline stages (acquire, parse, render, index)
-        polylogue check   Health check and repair
-        polylogue mcp     Start MCP server
-        polylogue reset   Reset database
-        polylogue auth    Google Drive OAuth
+        polylogue run       Ingest/render/index pipeline
+        polylogue check     Health check and repair
+        polylogue embed     Generate vector embeddings
+        polylogue site      Build static HTML archive
+        polylogue sources   List configured sources
+        polylogue mcp       Start MCP server
 
     Run `polylogue <command> --help` for subcommand details.
     """
