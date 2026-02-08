@@ -447,34 +447,34 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                 )
 
             if dry_run:
-                # Count only, don't modify
-                deleted = conn.execute(
-                    """
-                    SELECT COUNT(*) FROM messages_fts
-                    WHERE rowid NOT IN (SELECT rowid FROM messages)
-                    """
-                ).fetchone()[0]
+                # Fast estimate: compare row counts (O(1) for both tables)
+                msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+                fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+                diff = abs(msg_count - fts_count)
 
-                inserted = conn.execute(
-                    """
-                    SELECT COUNT(*) FROM messages m
-                    WHERE m.rowid NOT IN (SELECT rowid FROM messages_fts)
-                    """
-                ).fetchone()[0]
+                if diff == 0:
+                    return RepairResult(
+                        name="dangling_fts",
+                        repaired_count=0,
+                        success=True,
+                        detail="FTS index in sync",
+                    )
 
-                total = deleted + inserted
                 return RepairResult(
                     name="dangling_fts",
-                    repaired_count=total,
+                    repaired_count=diff,
                     success=True,
-                    detail=f"Would: FTS sync: delete {deleted} orphaned, add {inserted} missing entries",
+                    detail=f"Would: FTS sync: {msg_count:,} messages vs {fts_count:,} indexed ({diff:,} difference)",
                 )
             else:
                 # Delete FTS entries that don't have corresponding messages
                 result = conn.execute(
                     """
                     DELETE FROM messages_fts
-                    WHERE rowid NOT IN (SELECT rowid FROM messages)
+                    WHERE rowid IN (
+                        SELECT f.rowid FROM messages_fts f
+                        WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.rowid = f.rowid)
+                    )
                     """
                 )
                 deleted = result.rowcount
@@ -484,7 +484,7 @@ def repair_dangling_fts(config: Config, dry_run: bool = False) -> RepairResult:
                     """
                     INSERT INTO messages_fts (rowid, message_id, conversation_id, content)
                     SELECT m.rowid, m.message_id, m.conversation_id, m.text FROM messages m
-                    WHERE m.rowid NOT IN (SELECT rowid FROM messages_fts)
+                    WHERE NOT EXISTS (SELECT 1 FROM messages_fts f WHERE f.rowid = m.rowid)
                     """
                 ).rowcount
 
