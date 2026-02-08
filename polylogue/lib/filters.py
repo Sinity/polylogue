@@ -520,11 +520,44 @@ class ConversationFilter:
             params["title_contains"] = self._title_pattern
         return params
 
+    def _has_post_filters(self) -> bool:
+        """Check if any filters require in-memory post-processing."""
+        return bool(
+            self._excluded_providers
+            or self._tags
+            or self._excluded_tags
+            or self._has_types
+            or self._predicates
+            or self._negative_fts_terms
+        )
+
+    def _effective_fetch_limit(self) -> int:
+        """Calculate how many candidates to fetch from the backend.
+
+        Uses the user's desired limit + a safety margin to compensate for
+        post-filter shrinkage. Returns a higher limit when post-filters
+        or non-default sorting could reduce results.
+        """
+        if self._limit_count is None:
+            return 1000  # No limit requested — fetch a reasonable max
+
+        if self._has_post_filters():
+            # Post-filters may reject many candidates; over-fetch aggressively
+            return max(self._limit_count * 10, 500)
+
+        if self._sample_count is not None:
+            # Sampling needs a full pool to draw from
+            return max(self._sample_count * 3, 200)
+
+        # Simple case: limit is the only constraint, with small safety margin
+        return max(self._limit_count * 2, 50)
+
     def _fetch_candidates(self) -> builtins.list[Conversation]:
         """Fetch candidate conversations from repository.
 
         Uses FTS search if terms specified, otherwise lists all.
         Pushes provider, date, and title filters into SQL when possible.
+        Adapts fetch size to user's limit and filter complexity.
 
         Returns:
             List of lazy Conversation objects
@@ -537,19 +570,13 @@ class ConversationFilter:
                 return [conv] if conv else []
             # Ambiguous prefix — fall through to list + post-filter
 
+        fetch_limit = self._effective_fetch_limit()
+
         # If we have FTS terms, use search
         if self._fts_terms:
             query = " ".join(self._fts_terms)
             try:
-                # When other filters will narrow results, fetch more candidates
-                has_post_filters = bool(
-                    self._excluded_providers
-                    or self._tags
-                    or self._excluded_tags
-                    or self._has_types
-                    or self._predicates
-                )
-                search_limit = 500 if has_post_filters else 100
+                search_limit = max(fetch_limit, 100)
                 # Push provider filter into SQL for efficiency
                 return self._repo.search(
                     query, limit=search_limit, providers=self._providers or None
@@ -560,7 +587,7 @@ class ConversationFilter:
 
         # Push all SQL-eligible filters to backend
         sql_params = self._sql_pushdown_params()
-        return self._repo.list(limit=1000, **sql_params)
+        return self._repo.list(limit=fetch_limit, **sql_params)
 
     def list(self) -> builtins.list[Conversation]:
         """Execute query and return matching conversations.
@@ -750,18 +777,13 @@ class ConversationFilter:
                 return [summary] if summary else []
             # Ambiguous prefix — fall through to list + post-filter
 
+        fetch_limit = self._effective_fetch_limit()
+
         # If we have FTS terms, use search
         if self._fts_terms:
             query = " ".join(self._fts_terms)
             try:
-                has_post_filters = bool(
-                    self._excluded_providers
-                    or self._tags
-                    or self._excluded_tags
-                    or self._has_types
-                    or self._predicates
-                )
-                search_limit = 500 if has_post_filters else 100
+                search_limit = max(fetch_limit, 100)
                 # Push provider filter into SQL for efficiency
                 return self._repo.search_summaries(
                     query, limit=search_limit, providers=self._providers or None
@@ -771,7 +793,7 @@ class ConversationFilter:
 
         # Push all SQL-eligible filters to backend
         sql_params = self._sql_pushdown_params()
-        return self._repo.list_summaries(limit=1000, **sql_params)
+        return self._repo.list_summaries(limit=fetch_limit, **sql_params)
 
     def _apply_summary_filters(
         self,
