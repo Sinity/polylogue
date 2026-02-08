@@ -29,10 +29,13 @@ Example:
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import Config, Source, get_config
+
+logger = logging.getLogger(__name__)
 from polylogue.lib.filters import ConversationFilter
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -490,8 +493,8 @@ class Polylogue:
                 row = conn.execute("SELECT MAX(ended_at) as last FROM runs").fetchone()
                 if row and row[0]:
                     last_sync = row[0]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Last sync lookup failed: %s", exc)
 
         return ArchiveStats(
             conversation_count=len(conversations),
