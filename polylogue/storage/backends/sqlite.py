@@ -67,7 +67,7 @@ open_connection = connection_context
 
 
 LOGGER = get_logger(__name__)
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
@@ -253,6 +253,18 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         BEGIN
             INSERT OR IGNORE INTO messages_fts(rowid, message_id, conversation_id, content)
             VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF text ON messages
+        BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+            INSERT INTO messages_fts(rowid, message_id, conversation_id, content)
+            VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages
+        BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
         END;
 
         -- v10: Embedding metadata table (always created)
@@ -649,6 +661,27 @@ def _migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
+    """Migrate from v10 to v11: add FTS UPDATE/DELETE triggers.
+
+    Previously only INSERT trigger existed, so edited or deleted messages
+    remained searchable as ghost results.
+    """
+    conn.executescript("""
+        CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF text ON messages
+        BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+            INSERT INTO messages_fts(rowid, message_id, conversation_id, content)
+            VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages
+        BEGIN
+            DELETE FROM messages_fts WHERE rowid = old.rowid;
+        END;
+    """)
+
+
 # Migration registry: maps source version to migration function
 _MIGRATIONS = {
     1: _migrate_v1_to_v2,
@@ -660,6 +693,7 @@ _MIGRATIONS = {
     7: _migrate_v7_to_v8,
     8: _migrate_v8_to_v9,
     9: _migrate_v9_to_v10,
+    10: _migrate_v10_to_v11,
 }
 
 

@@ -493,6 +493,14 @@ class ConversationFilter:
         Returns:
             List of lazy Conversation objects
         """
+        # Fast path: resolve by ID prefix directly (avoids loading all conversations)
+        if self._id_prefix and not self._fts_terms:
+            resolved_id = self._repo.resolve_id(self._id_prefix)
+            if resolved_id:
+                conv = self._repo.get(str(resolved_id))
+                return [conv] if conv else []
+            # Ambiguous prefix — fall through to list + post-filter
+
         # If we have FTS terms, use search
         if self._fts_terms:
             # Combine search terms
@@ -677,6 +685,14 @@ class ConversationFilter:
         Returns:
             List of ConversationSummary objects
         """
+
+        # Fast path: resolve by ID prefix directly
+        if self._id_prefix and not self._fts_terms:
+            resolved_id = self._repo.resolve_id(self._id_prefix)
+            if resolved_id:
+                summary = self._repo.get_summary(str(resolved_id))
+                return [summary] if summary else []
+            # Ambiguous prefix — fall through to list + post-filter
 
         # If we have FTS terms, use search
         if self._fts_terms:

@@ -170,6 +170,7 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 # Query terms captured via --query-term (injected by parse_args override)
 @click.option("--query-term", multiple=True, hidden=True, help="Query term (internal)")
 # --- Filter options ---
+@click.option("--id", "-i", "conv_id", help="Conversation ID (exact or prefix match)")
 @click.option("--contains", "-c", multiple=True, help="FTS term (repeatable = AND)")
 @click.option("--exclude-text", multiple=True, help="Exclude FTS term")
 @click.option("--provider", "-p", help="Include providers (comma = OR)")
@@ -205,6 +206,12 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option("--fields", help="Select fields for list/json output (comma-separated)")
 @click.option("--list", "list_mode", is_flag=True, help="Force list format")
 @click.option("--stats", "stats_only", is_flag=True, help="Only statistics, no content")
+@click.option(
+    "--stats-by",
+    "stats_by",
+    type=click.Choice(["provider", "month", "year", "day"]),
+    help="Aggregate statistics by dimension",
+)
 @click.option("--open", "open_result", is_flag=True, help="Open result in browser/editor")
 @click.option(
     "--transform",
@@ -230,6 +237,7 @@ def cli(
     # Query terms (hidden, injected by parse_args override)
     query_term: tuple[str, ...],
     # Filters
+    conv_id: str | None,
     contains: tuple[str, ...],
     exclude_text: tuple[str, ...],
     provider: str | None,
@@ -251,6 +259,7 @@ def cli(
     fields: str | None,
     list_mode: bool,
     stats_only: bool,
+    stats_by: str | None,
     open_result: bool,
     transform: str | None,
     # Streaming

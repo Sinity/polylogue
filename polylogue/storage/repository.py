@@ -91,6 +91,13 @@ class ConversationRepository:
 
         return Conversation.from_records(conv_record, msg_records, att_records)
 
+    def get_summary(self, conversation_id: str) -> ConversationSummary | None:
+        """Get a single conversation summary without loading messages."""
+        conv_record = self._backend.get_conversation(conversation_id)
+        if not conv_record:
+            return None
+        return ConversationSummary.from_record(conv_record)
+
     def list_summaries(
         self,
         limit: int = 50,
