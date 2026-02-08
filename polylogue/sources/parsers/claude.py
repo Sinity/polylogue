@@ -13,6 +13,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from polylogue.lib.log import get_logger
+
+logger = get_logger(__name__)
+
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 
 from .base import ParsedAttachment, ParsedConversation, ParsedMessage, attachment_from_meta, normalize_role
@@ -182,7 +186,8 @@ def normalize_timestamp(ts: int | float | str | None) -> str | None:
             val = val / 1000.0
         return str(val)
     except (ValueError, TypeError):
-        return str(ts)
+        logger.debug("Non-numeric timestamp value: %r", ts)
+        return None
 
 
 def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
@@ -559,8 +564,8 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         # Parse using typed model
         try:
             record = ClaudeCodeRecord.model_validate(item)
-        except ValidationError:
-            # Skip invalid records
+        except ValidationError as exc:
+            logger.debug("Skipping invalid record at index %d: %s", idx, exc)
             continue
 
         # Skip non-message record types (init, metadata snapshots, ops)
