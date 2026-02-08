@@ -117,6 +117,7 @@ def _handle_query_mode(ctx: click.Context) -> None:
     has_filters = any(
         params.get(k)
         for k in (
+            "conv_id",
             "contains",
             "exclude_text",
             "provider",
@@ -144,8 +145,18 @@ def _handle_query_mode(ctx: click.Context) -> None:
         )
     )
 
-    # Stats mode: no query terms, no filters, and no explicit output mode
-    if not query_terms and not has_filters and not has_output_mode:
+    # Modifier flags that require query execution
+    has_modifiers = any(
+        params.get(k)
+        for k in (
+            "add_tag",
+            "set_meta",
+            "delete_matched",
+        )
+    )
+
+    # Stats mode: no query terms, no filters, no output mode, and no modifiers
+    if not query_terms and not has_filters and not has_output_mode and not has_modifiers:
         _show_stats(env, verbose=params.get("verbose", False))
         return
 

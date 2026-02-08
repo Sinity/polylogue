@@ -100,7 +100,7 @@ class ConversationRepository:
 
     def list_summaries(
         self,
-        limit: int = 50,
+        limit: int | None = 50,
         offset: int = 0,
         provider: str | None = None,
         providers: builtins.list[str] | None = None,
@@ -124,7 +124,7 @@ class ConversationRepository:
 
     def list(
         self,
-        limit: int = 50,
+        limit: int | None = 50,
         offset: int = 0,
         provider: str | None = None,
         providers: builtins.list[str] | None = None,
