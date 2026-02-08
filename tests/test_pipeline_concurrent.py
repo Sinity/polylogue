@@ -171,3 +171,32 @@ def test_set_add_is_thread_safe():
 
     expected_count = iterations * workers
     assert len(processed_ids) == expected_count
+
+
+def test_failing_future_does_not_abort_remaining():
+    """A single failing future must not prevent remaining futures from being processed.
+
+    Regression test: before the fix, an exception in _handle_future() would break
+    the as_completed loop, silently abandoning all remaining unprocessed futures.
+    """
+    results_processed = []
+
+    def _work(idx: int) -> int:
+        if idx == 2:
+            raise ValueError(f"Deliberate failure on item {idx}")
+        return idx
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {executor.submit(_work, i): f"item-{i}" for i in range(5)}
+        errors = 0
+
+        for fut in concurrent.futures.as_completed(futures):
+            try:
+                results_processed.append(fut.result())
+            except Exception:
+                errors += 1
+
+    # All 5 futures must have been visited (4 succeed, 1 fails)
+    assert len(results_processed) == 4, f"Expected 4 successes, got {len(results_processed)}"
+    assert errors == 1
+    assert set(results_processed) == {0, 1, 3, 4}
