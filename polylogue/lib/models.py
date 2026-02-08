@@ -362,7 +362,7 @@ class Message(BaseModel):
         """Message is primarily context/file content, not dialogue."""
         if not self.text:
             return False
-        if len(self.attachments) > 0 and (not self.text or len(self.text) < 100):
+        if len(self.attachments) > 0 and len(self.text) < 100:
             return True
         # System prompt content
         if "<system>" in self.text and "</system>" in self.text:
@@ -437,7 +437,7 @@ class DialoguePair(BaseModel):
     @property
     def exchange(self) -> str:
         """Render as text exchange."""
-        return f"User: {self.user.text}\n\nAssistant: {self.assistant.text}"
+        return f"User: {self.user.text or ''}\n\nAssistant: {self.assistant.text or ''}"
 
 
 class ConversationSummary(BaseModel):
