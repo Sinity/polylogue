@@ -216,7 +216,6 @@ def _webhook_on_new(webhook_url: str, count: int) -> None:
 @click.option("--notify", is_flag=True, help="Desktop notification on new conversations (requires --watch)")
 @click.option("--exec", "exec_cmd", help="Execute command on new conversations (requires --watch)")
 @click.option("--webhook", help="Call webhook URL on new conversations (requires --watch)")
-@click.option("-p", "--provider", help="Limit to specific provider")
 @click.pass_obj
 def run_command(
     env: AppEnv,
@@ -228,7 +227,6 @@ def run_command(
     notify: bool,
     exec_cmd: str | None,
     webhook: str | None,
-    provider: str | None,
 ) -> None:
     """Run pipeline stages on configured sources."""
     # Validate watch-related flags
