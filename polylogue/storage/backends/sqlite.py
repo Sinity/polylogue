@@ -91,7 +91,8 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
             conn.enable_load_extension(False)
     except ImportError:
         return False
-    except Exception:
+    except Exception as exc:
+        LOGGER.warning("sqlite-vec extension load failed: %s", exc)
         return False
 
 
@@ -1640,6 +1641,44 @@ class SQLiteBackend:
             )
             conn.commit()
 
+    def list_tags(self, *, provider: str | None = None) -> dict[str, int]:
+        """List all tags with counts, using json_each for efficiency.
+
+        Args:
+            provider: Optional provider filter.
+
+        Returns:
+            Dict of tag → count, sorted by count descending.
+        """
+        conn = self._get_connection()
+        if provider:
+            rows = conn.execute(
+                """
+                SELECT tag.value AS tag_name, COUNT(*) AS cnt
+                FROM conversations,
+                     json_each(json_extract(metadata, '$.tags')) AS tag
+                WHERE metadata IS NOT NULL
+                  AND json_extract(metadata, '$.tags') IS NOT NULL
+                  AND provider_name = ?
+                GROUP BY tag.value
+                ORDER BY cnt DESC
+                """,
+                (provider,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT tag.value AS tag_name, COUNT(*) AS cnt
+                FROM conversations,
+                     json_each(json_extract(metadata, '$.tags')) AS tag
+                WHERE metadata IS NOT NULL
+                  AND json_extract(metadata, '$.tags') IS NOT NULL
+                GROUP BY tag.value
+                ORDER BY cnt DESC
+                """,
+            ).fetchall()
+        return {row["tag_name"]: row["cnt"] for row in rows}
+
     def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
         """Replace entire metadata dict."""
         import json
@@ -1741,7 +1780,8 @@ class SQLiteBackend:
                     break
                 fetch_limit = min(chunk_size, remaining)
 
-            query += f" LIMIT {fetch_limit} OFFSET {offset}"
+            query += " LIMIT ? OFFSET ?"
+            params.extend([fetch_limit, offset])
 
             rows = conn.execute(query, tuple(params)).fetchall()
             if not rows:
