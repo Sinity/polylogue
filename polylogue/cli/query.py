@@ -114,7 +114,8 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         try:
             filter_chain = filter_chain.since(params["since"])
         except ValueError as exc:
-            click.echo(f"Error: {exc}", err=True)
+            click.echo(f"Error: Cannot parse date: '{params['since']}'", err=True)
+            click.echo("Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)", err=True)
             raise SystemExit(1) from exc
 
     # Apply --until
@@ -122,7 +123,8 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         try:
             filter_chain = filter_chain.until(params["until"])
         except ValueError as exc:
-            click.echo(f"Error: {exc}", err=True)
+            click.echo(f"Error: Cannot parse date: '{params['until']}'", err=True)
+            click.echo("Hint: use ISO format (2025-01-15), relative ('yesterday', 'last week'), or month (2025-01)", err=True)
             raise SystemExit(1) from exc
 
     # Apply --latest (= --sort date --limit 1)
@@ -181,6 +183,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
                 resolved = conv_repo.resolve_id(query_terms[0])
                 if not resolved:
                     click.echo(f"No conversation found matching: {query_terms[0]}", err=True)
+                    click.echo("Hint: use --list to browse conversations, or --latest for most recent", err=True)
                     raise SystemExit(2)
                 full_id = str(resolved)
             else:
