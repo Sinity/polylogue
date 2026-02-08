@@ -428,7 +428,7 @@ def _delete_conversations(
             return
 
     # Individual confirmation if not bulk but not forced
-    if not force:
+    elif not force:
         click.echo(f"About to delete {count} conversation(s):")
         _print_breakdown()
         if not env.ui.confirm("Proceed?", default=False):
