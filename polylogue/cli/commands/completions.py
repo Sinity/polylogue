@@ -27,3 +27,6 @@ def completions_command(ctx: click.Context, shell: str) -> None:
 
     comp = comp_cls(root_cmd, {}, prog_name, "_POLYLOGUE_COMPLETE")
     click.echo(comp.source())
+
+
+__all__ = ["completions_command"]

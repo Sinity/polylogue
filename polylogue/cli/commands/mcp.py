@@ -29,3 +29,6 @@ def mcp_command(env: AppEnv, transport: str) -> None:
         raise SystemExit(1) from None
 
     serve_stdio()
+
+
+__all__ = ["mcp_command"]

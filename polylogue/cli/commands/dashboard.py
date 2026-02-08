@@ -15,3 +15,6 @@ def dashboard_command(env: AppEnv) -> None:
     config = get_config()
     app = PolylogueApp(config=config)
     app.run()
+
+
+__all__ = ["dashboard_command"]

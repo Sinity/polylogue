@@ -107,3 +107,6 @@ def reset_command(
             env.ui.console.print(f"  Failed to delete {name}: {exc}")
 
     env.ui.console.print(f"\nReset complete: {deleted} item(s) deleted.")
+
+
+__all__ = ["reset_command"]

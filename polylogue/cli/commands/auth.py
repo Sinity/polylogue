@@ -129,3 +129,6 @@ def _revoke_drive_credentials(env: AppEnv) -> None:
 
     click.echo("Credentials revoked.")
     click.echo("Run `polylogue auth` to re-authenticate.")
+
+
+__all__ = ["auth_command"]

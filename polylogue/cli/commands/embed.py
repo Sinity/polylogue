@@ -162,45 +162,13 @@ def _embed_single(
     conversation_id: str,
 ) -> None:
     """Embed a single conversation."""
-    from polylogue.storage.backends.sqlite import open_connection
-    from polylogue.storage.store import MessageRecord
-
     # Get conversation
     conv = repo.get(conversation_id)
     if conv is None:
         click.echo(f"Error: Conversation {conversation_id} not found", err=True)
         raise click.Abort()
 
-    # Get messages
-    with open_connection(None) as conn:
-        rows = conn.execute(
-            """
-            SELECT message_id, conversation_id, role, text, content_hash, provider_meta, version
-            FROM messages
-            WHERE conversation_id = ?
-            """,
-            (conversation_id,),
-        ).fetchall()
-
-        messages = []
-        for row in rows:
-            import json
-            provider_meta = None
-            if row["provider_meta"]:
-                try:
-                    provider_meta = json.loads(row["provider_meta"])
-                except (json.JSONDecodeError, TypeError):
-                    pass
-
-            messages.append(MessageRecord(
-                message_id=row["message_id"],
-                conversation_id=row["conversation_id"],
-                role=row["role"],
-                text=row["text"],
-                content_hash=row["content_hash"],
-                provider_meta=provider_meta,
-                version=row["version"],
-            ))
+    messages = repo.backend.get_messages(conversation_id)
 
     if not messages:
         click.echo(f"No messages to embed in {conversation_id}")
@@ -229,7 +197,8 @@ def _embed_batch(
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
     from polylogue.storage.backends.sqlite import open_connection
-    from polylogue.storage.store import MessageRecord
+
+    backend = repo.backend
 
     # Get conversations to embed
     with open_connection(None) as conn:
@@ -266,36 +235,7 @@ def _embed_batch(
 
     def _embed_one(conv_id: str, title: str | None) -> bool:
         """Embed a single conversation. Returns True on success."""
-        import json
-
-        with open_connection(None) as conn:
-            rows = conn.execute(
-                """
-                SELECT message_id, conversation_id, role, text, content_hash, provider_meta, version
-                FROM messages
-                WHERE conversation_id = ?
-                """,
-                (conv_id,),
-            ).fetchall()
-
-            messages = []
-            for row in rows:
-                provider_meta = None
-                if row["provider_meta"]:
-                    try:
-                        provider_meta = json.loads(row["provider_meta"])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-                messages.append(MessageRecord(
-                    message_id=row["message_id"],
-                    conversation_id=row["conversation_id"],
-                    role=row["role"],
-                    text=row["text"],
-                    content_hash=row["content_hash"],
-                    provider_meta=provider_meta,
-                    version=row["version"],
-                ))
+        messages = backend.get_messages(conv_id)
 
         if messages:
             vec_provider.upsert(conv_id, messages)  # type: ignore
