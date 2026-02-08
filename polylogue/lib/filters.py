@@ -534,14 +534,18 @@ class ConversationFilter:
             or self._negative_fts_terms
         )
 
-    def _effective_fetch_limit(self) -> int:
+    def _effective_fetch_limit(self) -> int | None:
         """Calculate how many candidates to fetch from the backend.
 
         Uses the user's desired limit + a safety margin to compensate for
-        post-filter shrinkage. Returns a higher limit when post-filters
-        or non-default sorting could reduce results.
+        post-filter shrinkage. Returns None when post-filters need
+        the full dataset, a higher limit when sorting could reduce results.
         """
         if self._limit_count is None:
+            if self._has_post_filters():
+                # Post-filters (tags, excludes) can match anywhere in the archive,
+                # so we must scan the full dataset to avoid missing results.
+                return None
             return 1000  # No limit requested — fetch a reasonable max
 
         if self._has_post_filters():
@@ -579,7 +583,7 @@ class ConversationFilter:
         if self._fts_terms:
             query = " ".join(self._fts_terms)
             try:
-                search_limit = max(fetch_limit, 100)
+                search_limit = max(fetch_limit, 100) if fetch_limit is not None else 10000
                 # Push provider filter into SQL for efficiency
                 return self._repo.search(
                     query, limit=search_limit, providers=self._providers or None
@@ -785,7 +789,7 @@ class ConversationFilter:
         if self._fts_terms:
             query = " ".join(self._fts_terms)
             try:
-                search_limit = max(fetch_limit, 100)
+                search_limit = max(fetch_limit, 100) if fetch_limit is not None else 10000
                 # Push provider filter into SQL for efficiency
                 return self._repo.search_summaries(
                     query, limit=search_limit, providers=self._providers or None

@@ -13,6 +13,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from polylogue.lib.log import get_logger
+
+logger = get_logger(__name__)
+
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 
 from .base import ParsedAttachment, ParsedConversation, ParsedMessage, attachment_from_meta, normalize_role
@@ -171,18 +175,29 @@ def extract_text_from_segments(segments: list[object]) -> str | None:
 
 
 def normalize_timestamp(ts: int | float | str | None) -> str | None:
+    """Normalize a timestamp to epoch seconds string.
+
+    Handles numeric epochs (int/float/str), millisecond epochs, and ISO 8601 strings.
+    """
     if ts is None:
         return None
+    # Try numeric first
     try:
         val = float(ts)
         # If timestamp is > 1e11 (year 5138), assume milliseconds and convert to seconds
-        # 1e11 seconds is roughly year 5138.
-        # 1700000000000 (current ms) is 1.7e12.
         if val > 1e11:
             val = val / 1000.0
         return str(val)
     except (ValueError, TypeError):
-        return str(ts)
+        pass
+    # Try ISO 8601 string
+    if isinstance(ts, str):
+        from polylogue.lib.timestamps import parse_timestamp
+
+        dt = parse_timestamp(ts)
+        if dt is not None:
+            return str(dt.timestamp())
+    return None
 
 
 def extract_messages_from_chat_messages(chat_messages: list[object]) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
@@ -559,8 +574,8 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         # Parse using typed model
         try:
             record = ClaudeCodeRecord.model_validate(item)
-        except ValidationError:
-            # Skip invalid records
+        except ValidationError as exc:
+            logger.debug("Skipping invalid record at index %d: %s", idx, exc)
             continue
 
         # Skip non-message record types (init, metadata snapshots, ops)
