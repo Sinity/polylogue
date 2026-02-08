@@ -1023,12 +1023,11 @@ def _write_message_streaming(msg: Message, output_format: str) -> None:
         sys.stdout.flush()
 
     elif output_format == "markdown":
-        # Markdown format with headers
-        role_label = msg.role.capitalize() if msg.role else "Unknown"
-        sys.stdout.write(f"## {role_label}\n\n")
+        # Markdown format with headers — skip empty-text messages (tool progress, etc.)
         if msg.text:
-            sys.stdout.write(f"{msg.text}\n\n")
-        sys.stdout.flush()
+            role_label = msg.role.capitalize() if msg.role else "Unknown"
+            sys.stdout.write(f"## {role_label}\n\n{msg.text}\n\n")
+            sys.stdout.flush()
 
     elif output_format == "json-lines":
         # JSONL format - one JSON object per line
