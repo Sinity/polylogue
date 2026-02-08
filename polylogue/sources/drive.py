@@ -8,6 +8,7 @@ from typing import Any
 
 from ..assets import asset_path
 from ..config import Source
+from ..paths import safe_path_component
 from .drive_client import DriveClient, _parse_modified_time
 from .source import ParsedConversation, parse_drive_payload
 
@@ -44,7 +45,7 @@ def download_drive_files(
     for file_info in client.iter_json_files(folder_id):
         file_id = file_info.file_id
         name = file_info.name
-        dest_path = dest_dir / name
+        dest_path = dest_dir / safe_path_component(name, fallback="drive_file")
 
         try:
             client.download_to_path(file_id, dest_path)
