@@ -61,3 +61,6 @@ def tags_command(
     click.echo(f"Tags ({header}, {len(tags)} total):\n")
     for tag, tag_count in tags.items():
         click.echo(f"  {tag:<{max_tag_len}}  {tag_count:>{max_count_len}}")
+
+
+__all__ = ["tags_command"]
