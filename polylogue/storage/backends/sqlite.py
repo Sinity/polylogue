@@ -1676,17 +1676,20 @@ class SQLiteBackend:
 
         # FTS cleanup is handled automatically by the messages_fts_delete trigger
         # (added in schema v11) when CASCADE deletes the messages.
+        try:
+            # Delete conversation (CASCADE handles messages + FTS automatically)
+            conn.execute(
+                "DELETE FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            )
 
-        # Delete conversation (CASCADE handles messages + FTS automatically)
-        conn.execute(
-            "DELETE FROM conversations WHERE conversation_id = ?",
-            (conversation_id,),
-        )
+            # Clean up orphaned attachments (ref_count <= 0)
+            conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
 
-        # Clean up orphaned attachments (ref_count <= 0)
-        conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
-
-        conn.commit()
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         return True
 
     def iter_messages(

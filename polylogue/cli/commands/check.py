@@ -31,11 +31,7 @@ def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, p
     # Run repairs before output so JSON mode includes repair results
     repair_results: list | None = None
     if repair:
-        summary = report.summary
-        error_count = summary.get("error", 0)
-        warning_count = summary.get("warning", 0)
-        if error_count > 0 or warning_count > 0:
-            repair_results = run_all_repairs(config, dry_run=preview)
+        repair_results = run_all_repairs(config, dry_run=preview)
 
     if json_output:
         out = report.to_dict()
