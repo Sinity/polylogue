@@ -284,10 +284,12 @@ class ConversationRepository:
         return self._get_many(ranked_ids)
 
     def _get_message_conversation_mapping(self, message_ids: builtins.list[str]) -> dict[str, str]:
-        conn = self._backend._get_connection()
-        placeholders = ",".join("?" * len(message_ids))
-        query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
-        rows = conn.execute(query, message_ids).fetchall()
+        from polylogue.storage.backends.sqlite import open_connection
+
+        with open_connection(None) as conn:
+            placeholders = ",".join("?" * len(message_ids))
+            query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
+            rows = conn.execute(query, message_ids).fetchall()
         return {row["message_id"]: row["conversation_id"] for row in rows}
 
     def filter(self) -> filters.ConversationFilter:

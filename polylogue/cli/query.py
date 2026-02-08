@@ -18,6 +18,10 @@ from typing import TYPE_CHECKING, Any
 
 import click
 
+from polylogue.lib.log import get_logger
+
+LOGGER = get_logger(__name__)
+
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary, Message
@@ -47,8 +51,12 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     # Get vector provider (may be None if not configured)
     vector_provider = None
-    with contextlib.suppress(ValueError, ImportError):
+    try:
         vector_provider = create_vector_provider(config)
+    except (ValueError, ImportError):
+        pass  # Vector search not available
+    except Exception as exc:
+        LOGGER.warning("Vector search setup failed: %s", exc)
 
     # Create filter chain with vector provider
     from polylogue.lib.filters import ConversationFilter
@@ -667,6 +675,8 @@ def _conv_to_html(conv: Conversation) -> str:
     Uses the rendering subsystem's MarkdownRenderer for proper code highlighting
     and the HTMLRenderer's styled template for polished output.
     """
+    from html import escape as html_escape
+
     from polylogue.rendering.renderers.html import MarkdownRenderer as HtmlMarkdownRenderer
     from polylogue.rendering.renderers.html import PygmentsHighlighter
 
@@ -674,13 +684,15 @@ def _conv_to_html(conv: Conversation) -> str:
     md_renderer = HtmlMarkdownRenderer(highlighter)
 
     title = conv.display_title or conv.id
+    title_safe = html_escape(title)
     messages_html = []
     for msg in conv.messages:
         role = msg.role or "message"
-        role_class = f"message-{role}"
+        role_safe = html_escape(role, quote=True)
+        role_class = f"message-{role_safe}"
         html_content = md_renderer.render(msg.text or "")
         messages_html.append(
-            f'<div class="{role_class}"><strong>{role}:</strong>{html_content}</div>'
+            f'<div class="{role_class}"><strong>{role_safe}:</strong>{html_content}</div>'
         )
 
     highlight_css = highlighter.get_css()
@@ -688,7 +700,7 @@ def _conv_to_html(conv: Conversation) -> str:
 <html>
 <head>
     <meta charset="utf-8">
-    <title>{title} | Polylogue</title>
+    <title>{title_safe} | Polylogue</title>
     <style>
         body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #0a0a0c; color: #f8f9fa; }}
         h1 {{ border-bottom: 1px solid #2d2d35; padding-bottom: 12px; }}
@@ -703,7 +715,7 @@ def _conv_to_html(conv: Conversation) -> str:
     </style>
 </head>
 <body>
-    <h1>{title}</h1>
+    <h1>{title_safe}</h1>
     {"".join(messages_html)}
 </body>
 </html>"""
