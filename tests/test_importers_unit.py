@@ -708,6 +708,151 @@ def test_claude_parse_code_comprehensive(messages, expected, desc):
 
 
 # =============================================================================
+# PARSE_CODE REGRESSION TESTS (text=None guard, tool_result content)
+# =============================================================================
+
+
+def test_parse_code_progress_record_text_never_none():
+    """Progress records must have text='' not None after text guard fix."""
+    items = [
+        {"type": "progress", "uuid": "prog-1", "sessionId": "sess-1", "timestamp": 1704067200},
+    ]
+    result = parse_code(items, "fallback")
+    for msg in result.messages:
+        assert msg.text is not None, f"Message {msg.provider_message_id} has text=None"
+        assert isinstance(msg.text, str)
+
+
+def test_parse_code_result_record_text_never_none():
+    """Result records must have text='' not None after text guard fix."""
+    items = [
+        {"type": "result", "uuid": "res-1", "sessionId": "sess-1", "timestamp": 1704067200},
+    ]
+    result = parse_code(items, "fallback")
+    for msg in result.messages:
+        assert msg.text is not None, f"Message {msg.provider_message_id} has text=None"
+        assert isinstance(msg.text, str)
+
+
+def test_parse_code_assistant_no_text_blocks_text_never_none():
+    """Assistant records with only tool_use blocks must have text='' not None."""
+    items = [
+        {
+            "type": "assistant",
+            "uuid": "ast-1",
+            "sessionId": "sess-1",
+            "timestamp": 1704067200,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "tu-1", "name": "Read", "input": {"path": "/tmp/x"}},
+                ],
+            },
+        },
+    ]
+    result = parse_code(items, "fallback")
+    for msg in result.messages:
+        assert msg.text is not None, f"Message {msg.provider_message_id} has text=None"
+
+
+def test_parse_code_tool_result_content_preserved():
+    """Tool result content blocks must preserve content and is_error fields."""
+    items = [
+        {
+            "type": "assistant",
+            "uuid": "ast-1",
+            "sessionId": "sess-1",
+            "timestamp": 1704067200,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu-1",
+                        "content": "file contents here\nline 2",
+                        "is_error": False,
+                    },
+                ],
+            },
+        },
+    ]
+    result = parse_code(items, "fallback")
+    assert result.messages, "Expected at least one message"
+    meta = result.messages[0].provider_meta
+    blocks = meta.get("content_blocks", [])
+    tool_results = [b for b in blocks if b.get("type") == "tool_result"]
+    assert tool_results, "Expected tool_result in content_blocks"
+    tr = tool_results[0]
+    assert "content" in tr, "tool_result must have content field"
+    assert tr["content"] == "file contents here\nline 2"
+    assert "is_error" in tr, "tool_result must have is_error field"
+    assert tr["is_error"] is False
+
+
+def test_parse_code_tool_result_error_preserved():
+    """Tool result with is_error=True must preserve the flag."""
+    items = [
+        {
+            "type": "assistant",
+            "uuid": "ast-1",
+            "sessionId": "sess-1",
+            "timestamp": 1704067200,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tu-2",
+                        "content": "Error: file not found",
+                        "is_error": True,
+                    },
+                ],
+            },
+        },
+    ]
+    result = parse_code(items, "fallback")
+    meta = result.messages[0].provider_meta
+    blocks = meta.get("content_blocks", [])
+    tool_results = [b for b in blocks if b.get("type") == "tool_result"]
+    assert tool_results[0]["is_error"] is True
+    assert tool_results[0]["content"] == "Error: file not found"
+
+
+def test_parse_code_mixed_content_blocks_all_preserved():
+    """Complex assistant message with thinking + tool_use + tool_result + text all preserved."""
+    items = [
+        {
+            "type": "assistant",
+            "uuid": "ast-1",
+            "sessionId": "sess-1",
+            "timestamp": 1704067200,
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "Let me analyze this..."},
+                    {"type": "text", "text": "I'll read the file."},
+                    {"type": "tool_use", "id": "tu-1", "name": "Read", "input": {"path": "/tmp/x"}},
+                    {"type": "tool_result", "tool_use_id": "tu-1", "content": "file data", "is_error": False},
+                ],
+            },
+        },
+    ]
+    result = parse_code(items, "fallback")
+    meta = result.messages[0].provider_meta
+    blocks = meta.get("content_blocks", [])
+    types = [b["type"] for b in blocks]
+    assert "thinking" in types
+    assert "text" in types
+    assert "tool_use" in types
+    assert "tool_result" in types
+    # Verify tool_result has all fields
+    tr = next(b for b in blocks if b["type"] == "tool_result")
+    assert tr["content"] == "file data"
+    assert tr["is_error"] is False
+    assert tr["tool_use_id"] == "tu-1"
+
+
+# =============================================================================
 # CODEX IMPORTER TESTS
 # =============================================================================
 

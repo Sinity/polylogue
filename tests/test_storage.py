@@ -2540,3 +2540,137 @@ class TestAPICompatibility:
         assert pm.role == "assistant"
         assert pm.text == "Hello!"
         assert pm.provider_message_id == "test-123"
+
+
+# =============================================================================
+# METADATA OPERATIONS (update, delete, add_tag, remove_tag, RMW atomicity)
+# =============================================================================
+
+
+def _seed_conversation(backend):
+    """Helper: insert a conversation so metadata operations have a target."""
+    conn = backend._get_connection()
+    conv = make_conversation("conv1", content_hash="hash1")
+    msg = make_message("m1", "conv1", text="Hello")
+    store_records(conversation=conv, messages=[msg], attachments=[], conn=conn)
+    conn.commit()
+    return "conv1"
+
+
+def test_update_and_get_metadata(sqlite_backend):
+    """update_metadata stores and retrieves values."""
+    conv_id = _seed_conversation(sqlite_backend)
+    sqlite_backend.update_metadata(conv_id, "key1", "value1")
+    meta = sqlite_backend.get_metadata(conv_id)
+    assert meta["key1"] == "value1"
+
+
+def test_update_metadata_overwrites(sqlite_backend):
+    """update_metadata overwrites existing key."""
+    conv_id = _seed_conversation(sqlite_backend)
+    sqlite_backend.update_metadata(conv_id, "key1", "old")
+    sqlite_backend.update_metadata(conv_id, "key1", "new")
+    meta = sqlite_backend.get_metadata(conv_id)
+    assert meta["key1"] == "new"
+
+
+def test_update_metadata_preserves_other_keys(sqlite_backend):
+    """update_metadata doesn't clobber unrelated keys."""
+    conv_id = _seed_conversation(sqlite_backend)
+    sqlite_backend.update_metadata(conv_id, "key1", "val1")
+    sqlite_backend.update_metadata(conv_id, "key2", "val2")
+    meta = sqlite_backend.get_metadata(conv_id)
+    assert meta["key1"] == "val1"
+    assert meta["key2"] == "val2"
+
+
+def test_delete_metadata_removes_key(sqlite_backend):
+    """delete_metadata removes a specific key."""
+    conv_id = _seed_conversation(sqlite_backend)
+    sqlite_backend.update_metadata(conv_id, "key1", "val1")
+    sqlite_backend.update_metadata(conv_id, "key2", "val2")
+    sqlite_backend.delete_metadata(conv_id, "key1")
+    meta = sqlite_backend.get_metadata(conv_id)
+    assert "key1" not in meta
+    assert meta["key2"] == "val2"
+
+
+def test_delete_metadata_nonexistent_key_is_noop(sqlite_backend):
+    """delete_metadata on nonexistent key doesn't raise."""
+    conv_id = _seed_conversation(sqlite_backend)
+    sqlite_backend.delete_metadata(conv_id, "nope")  # Should not raise
+    meta = sqlite_backend.get_metadata(conv_id)
+    assert "nope" not in meta
+
+
+def test_add_tag(sqlite_backend):
+    """add_tag appends to tags list."""
+    conv_id = _seed_conversation(sqlite_backend)
+    sqlite_backend.add_tag(conv_id, "important")
+    meta = sqlite_backend.get_metadata(conv_id)
+    assert "important" in meta["tags"]
+
+
+def test_add_tag_idempotent(sqlite_backend):
+    """add_tag doesn't duplicate existing tags."""
+    conv_id = _seed_conversation(sqlite_backend)
+    sqlite_backend.add_tag(conv_id, "dup")
+    sqlite_backend.add_tag(conv_id, "dup")
+    meta = sqlite_backend.get_metadata(conv_id)
+    assert meta["tags"].count("dup") == 1
+
+
+def test_add_multiple_tags(sqlite_backend):
+    """Multiple tags accumulate correctly."""
+    conv_id = _seed_conversation(sqlite_backend)
+    sqlite_backend.add_tag(conv_id, "tag1")
+    sqlite_backend.add_tag(conv_id, "tag2")
+    sqlite_backend.add_tag(conv_id, "tag3")
+    meta = sqlite_backend.get_metadata(conv_id)
+    assert sorted(meta["tags"]) == ["tag1", "tag2", "tag3"]
+
+
+def test_remove_tag(sqlite_backend):
+    """remove_tag removes a tag from the list."""
+    conv_id = _seed_conversation(sqlite_backend)
+    sqlite_backend.add_tag(conv_id, "keep")
+    sqlite_backend.add_tag(conv_id, "drop")
+    sqlite_backend.remove_tag(conv_id, "drop")
+    meta = sqlite_backend.get_metadata(conv_id)
+    assert "keep" in meta["tags"]
+    assert "drop" not in meta["tags"]
+
+
+def test_remove_tag_nonexistent_is_noop(sqlite_backend):
+    """remove_tag on nonexistent tag doesn't raise."""
+    conv_id = _seed_conversation(sqlite_backend)
+    sqlite_backend.remove_tag(conv_id, "nope")  # Should not raise
+
+
+def test_metadata_rmw_mutator_exception_rolls_back(sqlite_backend):
+    """If the mutator function raises, metadata is not modified."""
+    conv_id = _seed_conversation(sqlite_backend)
+    sqlite_backend.update_metadata(conv_id, "safe", "original")
+
+    def bad_mutator(meta):
+        meta["safe"] = "corrupted"
+        raise ValueError("intentional error")
+
+    with pytest.raises(ValueError, match="intentional error"):
+        sqlite_backend._metadata_read_modify_write(conv_id, bad_mutator)
+
+    # Verify metadata was not corrupted
+    meta = sqlite_backend.get_metadata(conv_id)
+    assert meta["safe"] == "original"
+
+
+def test_metadata_operations_after_store(sqlite_backend):
+    """Metadata operations work correctly immediately after store_records."""
+    # This tests the BEGIN IMMEDIATE / SAVEPOINT nesting since
+    # store_records may leave an implicit transaction open
+    conv_id = _seed_conversation(sqlite_backend)
+    sqlite_backend.add_tag(conv_id, "after-store")
+    sqlite_backend.update_metadata(conv_id, "key", "value")
+    meta = sqlite_backend.get_metadata(conv_id)
+    assert "after-store" in meta.get("tags", [])
+    assert meta["key"] == "value"
