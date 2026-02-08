@@ -29,6 +29,47 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 
+def _describe_filters(params: dict[str, Any]) -> list[str]:
+    """Build a human-readable list of active filters from params."""
+    parts: list[str] = []
+    if params.get("query"):
+        parts.append(f"search: {' '.join(params['query'])}")
+    if params.get("contains"):
+        parts.append(f"contains: {', '.join(params['contains'])}")
+    if params.get("provider"):
+        parts.append(f"provider: {params['provider']}")
+    if params.get("exclude_provider"):
+        parts.append(f"exclude provider: {params['exclude_provider']}")
+    if params.get("tag"):
+        parts.append(f"tag: {params['tag']}")
+    if params.get("exclude_tag"):
+        parts.append(f"exclude tag: {params['exclude_tag']}")
+    if params.get("title"):
+        parts.append(f"title: {params['title']}")
+    if params.get("has_type"):
+        parts.append(f"has: {', '.join(params['has_type'])}")
+    if params.get("since"):
+        parts.append(f"since: {params['since']}")
+    if params.get("until"):
+        parts.append(f"until: {params['until']}")
+    if params.get("conv_id"):
+        parts.append(f"id: {params['conv_id']}")
+    return parts
+
+
+def _no_results(env: AppEnv, params: dict[str, Any], *, exit_code: int = 2) -> None:
+    """Print a helpful no-results message and exit."""
+    filters = _describe_filters(params)
+    if filters:
+        click.echo("No conversations matched filters:", err=True)
+        for f in filters:
+            click.echo(f"  {f}", err=True)
+        click.echo("Hint: try broadening your filters or use --list to browse", err=True)
+    else:
+        click.echo("No conversations matched.", err=True)
+    raise SystemExit(exit_code)
+
+
 def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     """Execute a query-mode command.
 
@@ -147,6 +188,15 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if params.get("sample"):
         filter_chain = filter_chain.sample(params["sample"])
 
+    # Handle --count (lightweight: just count, no loading)
+    if params.get("count_only"):
+        if filter_chain.can_use_summaries():
+            n = len(filter_chain.list_summaries())
+        else:
+            n = len(filter_chain.list())
+        click.echo(n)
+        return
+
     # Execute query
     # Determine if we can use lightweight summaries
     list_mode = params.get("list_mode", False)
@@ -164,8 +214,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     if use_summaries:
         summary_results = filter_chain.list_summaries()
         if not summary_results:
-            env.ui.console.print("No conversations matched.")
-            raise SystemExit(2)
+            _no_results(env, params)
         _output_summary_list(env, summary_results, params, conv_repo)
         return
 
@@ -513,8 +562,7 @@ def _output_results(
 ) -> None:
     """Output query results."""
     if not results:
-        env.ui.console.print("No conversations matched.")
-        raise SystemExit(2)  # Exit code 2 for no results
+        _no_results(env, params)
 
     output_format = params.get("output_format", "markdown")
     output_dest = params.get("output", "stdout")
@@ -576,7 +624,8 @@ def _format_list(
         lines = []
         for conv in results:
             date = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else "unknown"
-            title = conv.display_title[:50] if conv.display_title else conv.id[:20]
+            raw_title = conv.display_title or conv.id[:20]
+            title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
             msg_count = len(conv.messages)
             lines.append(f"{conv.id[:24]:24s}  {date:10s}  [{conv.provider:12s}]  {title} ({msg_count} msgs)")
         return "\n".join(lines)
@@ -635,7 +684,8 @@ def _output_summary_list(
         lines = []
         for s in summaries:
             date = s.updated_at.strftime("%Y-%m-%d") if s.updated_at else "unknown"
-            title = s.display_title[:50] if s.display_title else str(s.id)[:20]
+            raw_title = s.display_title or str(s.id)[:20]
+            title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
             count = msg_counts.get(str(s.id), 0)
             lines.append(f"{str(s.id)[:24]:24s}  {date:10s}  [{s.provider:12s}]  {title} ({count} msgs)")
         env.ui.console.print("\n".join(lines))

@@ -138,6 +138,7 @@ def _handle_query_mode(ctx: click.Context) -> None:
             "list_mode",
             "limit",
             "stats_only",
+            "count_only",
             "stream",
             "dialogue_only",
         )
@@ -207,6 +208,7 @@ def _show_stats(env: AppEnv, *, verbose: bool = False) -> None:
 @click.option("--fields", help="Fields for list/json: id, title, provider, date, messages, words, tags, summary")
 @click.option("--list", "list_mode", is_flag=True, help="Force list format")
 @click.option("--stats", "stats_only", is_flag=True, help="Only statistics, no content")
+@click.option("--count", "count_only", is_flag=True, help="Print matched count and exit")
 @click.option(
     "--stats-by",
     "stats_by",
@@ -260,6 +262,7 @@ def cli(
     fields: str | None,
     list_mode: bool,
     stats_only: bool,
+    count_only: bool,
     stats_by: str | None,
     open_result: bool,
     transform: str | None,
