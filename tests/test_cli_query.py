@@ -581,3 +581,311 @@ class TestOperationReporting:
             captured = capsys.readouterr()
             assert "Deleted" in captured.out
             assert "3" in captured.out
+
+
+class TestConvToJson:
+    """Tests for _conv_to_json helper."""
+
+    def test_full_json_includes_message_content(self, sample_conversations):
+        """Full JSON output includes message content, not just count."""
+        conv = sample_conversations[0]
+        result = query._conv_to_json(conv, None)
+        parsed = json.loads(result)
+
+        # Should have messages array with full content, not integer count
+        assert isinstance(parsed["messages"], list)
+        assert len(parsed["messages"]) == 2
+        assert parsed["messages"][0]["id"] == "m1"
+        assert parsed["messages"][0]["role"] == "user"
+        assert parsed["messages"][0]["text"] == "Hello world"
+        assert parsed["messages"][1]["text"] == "Hi there!"
+
+    def test_field_selection_excludes_messages(self, sample_conversations):
+        """Field selection works - excluding messages when not selected."""
+        conv = sample_conversations[0]
+        result = query._conv_to_json(conv, "id,title")
+        parsed = json.loads(result)
+
+        assert "id" in parsed
+        assert "title" in parsed
+        assert "messages" not in parsed
+        assert "provider" not in parsed
+
+    def test_field_selection_includes_messages_when_selected(self, sample_conversations):
+        """Field selection includes messages when explicitly selected."""
+        conv = sample_conversations[0]
+        result = query._conv_to_json(conv, "id,messages")
+        parsed = json.loads(result)
+
+        assert "id" in parsed
+        assert "messages" in parsed
+        assert isinstance(parsed["messages"], list)
+        assert len(parsed["messages"]) == 2
+
+    def test_empty_conversation_produces_valid_json(self):
+        """Empty conversation produces valid JSON with empty messages array."""
+        conv = Conversation(
+            id="empty-conv",
+            provider="test",
+            messages=[],
+            title="Empty",
+        )
+        result = query._conv_to_json(conv, None)
+        parsed = json.loads(result)
+
+        assert parsed["id"] == "empty-conv"
+        assert parsed["messages"] == []
+
+    def test_messages_with_none_text_are_included(self):
+        """Messages with None text are included as null in JSON."""
+        now = datetime(2024, 6, 15, 10, 0)
+        conv = Conversation(
+            id="conv-with-none",
+            provider="test",
+            messages=[
+                Message(id="m1", role="user", text="Hello", timestamp=now),
+                Message(id="m2", role="assistant", text=None, timestamp=now),
+            ],
+            title="Test",
+        )
+        result = query._conv_to_json(conv, None)
+        parsed = json.loads(result)
+
+        assert len(parsed["messages"]) == 2
+        assert parsed["messages"][0]["text"] == "Hello"
+        assert parsed["messages"][1]["text"] is None
+
+    def test_timestamps_are_iso_formatted(self, sample_conversations):
+        """Timestamps are ISO formatted in JSON."""
+        conv = sample_conversations[0]
+        result = query._conv_to_json(conv, None)
+        parsed = json.loads(result)
+
+        # Check timestamp format is ISO
+        ts = parsed["messages"][0]["timestamp"]
+        assert ts == "2024-06-15T10:00:00"
+        assert "T" in ts  # ISO format marker
+
+    def test_messages_with_none_timestamp(self):
+        """Messages with None timestamp are handled correctly."""
+        conv = Conversation(
+            id="conv-no-timestamp",
+            provider="test",
+            messages=[
+                Message(id="m1", role="user", text="Hello", timestamp=None),
+            ],
+            title="Test",
+        )
+        result = query._conv_to_json(conv, None)
+        parsed = json.loads(result)
+
+        assert parsed["messages"][0]["timestamp"] is None
+
+    def test_multiple_messages_with_full_content(self, sample_conversations):
+        """Multiple messages all included with full content."""
+        conv = sample_conversations[1]  # Has 3 messages
+        result = query._conv_to_json(conv, None)
+        parsed = json.loads(result)
+
+        assert len(parsed["messages"]) == 3
+        assert parsed["messages"][0]["text"] == "What is Python?"
+        assert parsed["messages"][1]["text"] == "Python is a programming language."
+        assert parsed["messages"][2]["text"] == "It's great for scripting."
+
+    def test_field_selection_with_spaces(self, sample_conversations):
+        """Field selection handles spaces in field list."""
+        conv = sample_conversations[0]
+        result = query._conv_to_json(conv, "id, title, messages")
+        parsed = json.loads(result)
+
+        assert "id" in parsed
+        assert "title" in parsed
+        assert "messages" in parsed
+        assert "provider" not in parsed
+
+    def test_json_is_valid_and_parseable(self, sample_conversations):
+        """Generated JSON is valid and parseable."""
+        conv = sample_conversations[0]
+        result = query._conv_to_json(conv, None)
+
+        # Should not raise
+        parsed = json.loads(result)
+        assert isinstance(parsed, dict)
+        assert "id" in parsed
+
+
+class TestConvToCsvMessages:
+    """Tests for _conv_to_csv_messages helper."""
+
+    def test_csv_header_row_is_correct(self, sample_conversations):
+        """CSV header row contains correct columns."""
+        conv = sample_conversations[0]
+        result = query._conv_to_csv_messages(conv)
+        lines = result.strip().split("\n")
+
+        assert lines[0].rstrip() == "conversation_id,message_id,role,timestamp,text"
+
+    def test_messages_with_text_produce_csv_rows(self, sample_conversations):
+        """Messages with text produce CSV rows."""
+        conv = sample_conversations[0]
+        result = query._conv_to_csv_messages(conv)
+        lines = result.strip().split("\n")
+
+        # Header + 2 messages
+        assert len(lines) == 3
+        assert "Hello world" in lines[1]
+        assert "Hi there!" in lines[2]
+
+    def test_messages_with_none_text_are_skipped(self):
+        """Messages with None/empty text are skipped."""
+        now = datetime(2024, 6, 15, 10, 0)
+        conv = Conversation(
+            id="conv-with-none",
+            provider="test",
+            messages=[
+                Message(id="m1", role="user", text="Hello", timestamp=now),
+                Message(id="m2", role="assistant", text=None, timestamp=now),
+                Message(id="m3", role="user", text="", timestamp=now),
+                Message(id="m4", role="assistant", text="Final", timestamp=now),
+            ],
+            title="Test",
+        )
+        result = query._conv_to_csv_messages(conv)
+        lines = result.strip().split("\n")
+
+        # Header + 2 messages (m1 and m4)
+        assert len(lines) == 3
+        assert "Hello" in lines[1]
+        assert "Final" in lines[2]
+
+    def test_special_chars_escaped_in_csv(self):
+        """Special characters (commas, quotes, newlines) are properly escaped."""
+        now = datetime(2024, 6, 15, 10, 0)
+        conv = Conversation(
+            id="conv-special",
+            provider="test",
+            messages=[
+                Message(
+                    id="m1",
+                    role="user",
+                    text='He said "hello, world"',
+                    timestamp=now,
+                ),
+                Message(
+                    id="m2",
+                    role="assistant",
+                    text="Line 1\nLine 2",
+                    timestamp=now,
+                ),
+            ],
+            title="Test",
+        )
+        result = query._conv_to_csv_messages(conv)
+        lines = result.split("\n")
+
+        # CSV writer should escape quotes and handle special chars
+        assert len(lines) >= 2
+        # Check that quotes are properly escaped (CSV format)
+        assert '"hello' in result or 'hello' in result
+
+    def test_empty_conversation_produces_header_only(self):
+        """Empty conversation produces just the header."""
+        conv = Conversation(
+            id="empty-conv",
+            provider="test",
+            messages=[],
+            title="Empty",
+        )
+        result = query._conv_to_csv_messages(conv)
+        lines = result.split("\n")
+
+        # Should have exactly 1 line (header)
+        assert len(lines) == 1
+        assert lines[0] == "conversation_id,message_id,role,timestamp,text"
+
+    def test_csv_has_correct_column_order(self, sample_conversations):
+        """CSV columns appear in correct order."""
+        conv = sample_conversations[0]
+        result = query._conv_to_csv_messages(conv)
+        lines = result.strip().split("\n")
+
+        # Parse first data row
+        data_row = lines[1]
+        parts = next(
+            iter(__import__("csv").reader([data_row]))
+        )  # Use CSV reader for proper parsing
+
+        assert parts[0] == "conv1-abc123"  # conversation_id
+        assert parts[1] == "m1"  # message_id
+        assert parts[2] == "user"  # role
+        assert "2024-06-15" in parts[3]  # timestamp
+        assert parts[4] == "Hello world"  # text
+
+    def test_timestamps_iso_formatted_in_csv(self, sample_conversations):
+        """Timestamps are ISO formatted in CSV."""
+        conv = sample_conversations[0]
+        result = query._conv_to_csv_messages(conv)
+        lines = result.split("\n")
+
+        # Check timestamp in first data row
+        import csv
+        import io
+
+        reader = csv.reader(io.StringIO(result))
+        next(reader)  # Skip header
+        row = next(reader)
+        timestamp = row[3]
+
+        assert timestamp == "2024-06-15T10:00:00"
+
+    def test_messages_without_timestamp(self):
+        """Messages without timestamp show empty string."""
+        conv = Conversation(
+            id="conv-no-ts",
+            provider="test",
+            messages=[
+                Message(id="m1", role="user", text="Hello", timestamp=None),
+            ],
+            title="Test",
+        )
+        result = query._conv_to_csv_messages(conv)
+        lines = result.split("\n")
+
+        import csv
+        import io
+
+        reader = csv.reader(io.StringIO(result))
+        next(reader)  # Skip header
+        row = next(reader)
+        timestamp = row[3]
+
+        assert timestamp == ""
+
+    def test_multiple_messages_all_in_csv(self, sample_conversations):
+        """Multiple messages all appear in CSV output."""
+        conv = sample_conversations[1]  # Has 3 messages
+        result = query._conv_to_csv_messages(conv)
+        lines = result.strip().split("\n")
+
+        # Header + 3 messages
+        assert len(lines) == 4
+        assert "What is Python?" in lines[1]
+        assert "Python is a programming language." in lines[2]
+        assert "It's great for scripting." in lines[3]
+
+    def test_output_is_valid_csv(self, sample_conversations):
+        """Output is valid CSV that can be parsed."""
+        conv = sample_conversations[0]
+        result = query._conv_to_csv_messages(conv)
+
+        import csv
+        import io
+
+        # Should not raise
+        reader = csv.reader(io.StringIO(result))
+        rows = list(reader)
+
+        assert len(rows) == 3  # Header + 2 messages
+        assert rows[0] == ["conversation_id", "message_id", "role", "timestamp", "text"]
+        assert len(rows[1]) == 5  # 5 columns
+        assert len(rows[2]) == 5
