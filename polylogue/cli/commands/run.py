@@ -42,7 +42,7 @@ def _run_sync_once(
         def plain_progress(amount: int, desc: str | None = None) -> None:
             processed[0] += amount
             now = time.time()
-            if now - last_update[0] >= 5:
+            if now - last_update[0] >= 1:
                 print(f"  {desc or 'Processing'}: {processed[0]:,} items...", flush=True)
                 last_update[0] = now
 
