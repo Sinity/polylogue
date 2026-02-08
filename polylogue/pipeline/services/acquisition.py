@@ -98,10 +98,6 @@ class AcquisitionService:
                             result.raw_ids.append(raw_id)
                         else:
                             result.counts["skipped"] += 1
-
-                        if progress_callback:
-                            progress_callback(1, desc="Acquiring")
-
                     except Exception as exc:
                         logger.error(
                             "Failed to store raw conversation",
@@ -110,6 +106,9 @@ class AcquisitionService:
                             error=str(exc),
                         )
                         result.counts["errors"] += 1
+
+                    if progress_callback:
+                        progress_callback(1, desc="Acquiring")
 
             except Exception as exc:
                 logger.error(

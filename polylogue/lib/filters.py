@@ -669,15 +669,19 @@ class ConversationFilter:
         if self.can_use_summaries():
             saved_limit = self._limit_count
             self._limit_count = None
-            results = self.list_summaries()
-            self._limit_count = saved_limit
+            try:
+                results = self.list_summaries()
+            finally:
+                self._limit_count = saved_limit
             return len(results)
 
         # Slow path: must load full conversations
         saved_limit = self._limit_count
         self._limit_count = None
-        results = self.list()
-        self._limit_count = saved_limit
+        try:
+            results = self.list()
+        finally:
+            self._limit_count = saved_limit
         return len(results)
 
     def delete(self) -> int:
