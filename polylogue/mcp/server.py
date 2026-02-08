@@ -77,36 +77,47 @@ def _handle_request(request: dict[str, Any], repo: ConversationRepository) -> di
                 "tools": [
                     {
                         "name": "search",
-                        "description": "Search conversations by text query",
+                        "description": "Search conversations by text query. Returns matching conversations with metadata.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "query": {"type": "string", "description": "Search query"},
-                                "limit": {"type": "integer", "description": "Max results", "default": 10},
+                                "query": {"type": "string", "description": "Full-text search query"},
+                                "limit": {"type": "integer", "description": "Max results (default: 10)", "default": 10},
+                                "provider": {"type": "string", "description": "Filter by provider (claude, chatgpt, claude-code, etc.)"},
+                                "since": {"type": "string", "description": "Only conversations updated after this date (ISO format or natural language like 'last week')"},
                             },
                             "required": ["query"],
                         },
                     },
                     {
                         "name": "list",
-                        "description": "List recent conversations",
+                        "description": "List recent conversations, optionally filtered by provider or date.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "limit": {"type": "integer", "description": "Max results", "default": 10},
-                                "provider": {"type": "string", "description": "Filter by provider"},
+                                "limit": {"type": "integer", "description": "Max results (default: 10)", "default": 10},
+                                "provider": {"type": "string", "description": "Filter by provider (claude, chatgpt, claude-code, etc.)"},
+                                "since": {"type": "string", "description": "Only conversations updated after this date"},
                             },
                         },
                     },
                     {
                         "name": "get",
-                        "description": "Get a conversation by ID",
+                        "description": "Get a conversation by ID (supports prefix matching). Returns full message content.",
                         "inputSchema": {
                             "type": "object",
                             "properties": {
-                                "id": {"type": "string", "description": "Conversation ID"},
+                                "id": {"type": "string", "description": "Conversation ID or unique prefix"},
                             },
                             "required": ["id"],
+                        },
+                    },
+                    {
+                        "name": "stats",
+                        "description": "Get archive statistics: total conversations, messages, provider breakdown, database size.",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {},
                         },
                     },
                 ],
@@ -123,6 +134,8 @@ def _handle_request(request: dict[str, Any], repo: ConversationRepository) -> di
             return _handle_list(request_id, tool_args, repo)
         elif tool_name == "get":
             return _handle_get(request_id, tool_args, repo)
+        elif tool_name == "stats":
+            return _handle_stats_tool(request_id, repo)
         else:
             return _error(request_id, -32601, f"Unknown tool: {tool_name}")
 
@@ -248,14 +261,28 @@ def _conversation_to_full_dict(conv: Any) -> dict[str, Any]:
 
 
 def _handle_search(request_id: Any, args: dict[str, Any], repo: ConversationRepository) -> dict[str, Any]:
-    """Handle search tool call."""
+    """Handle search tool call with optional provider/since filters."""
     query = args.get("query", "")
     limit = args.get("limit", 10)
+    provider = args.get("provider")
+    since = args.get("since")
 
     if not query:
         return _error(request_id, -32602, "Missing required parameter: query")
 
-    results = repo.search(query, limit=limit)
+    # Use filter chain for composable filtering
+    from polylogue.lib.filters import ConversationFilter
+
+    filter_chain = ConversationFilter(repo).contains(query).limit(limit)
+    if provider:
+        filter_chain = filter_chain.provider(provider)
+    if since:
+        try:
+            filter_chain = filter_chain.since(since)
+        except ValueError as exc:
+            return _error(request_id, -32602, f"Invalid date: {exc}")
+
+    results = filter_chain.list()
     return _success(
         request_id,
         {
@@ -267,11 +294,23 @@ def _handle_search(request_id: Any, args: dict[str, Any], repo: ConversationRepo
 
 
 def _handle_list(request_id: Any, args: dict[str, Any], repo: ConversationRepository) -> dict[str, Any]:
-    """Handle list tool call."""
+    """Handle list tool call with optional filters."""
     limit = args.get("limit", 10)
     provider = args.get("provider")
+    since = args.get("since")
 
-    conversations = repo.list(limit=limit, provider=provider)
+    from polylogue.lib.filters import ConversationFilter
+
+    filter_chain = ConversationFilter(repo).limit(limit)
+    if provider:
+        filter_chain = filter_chain.provider(provider)
+    if since:
+        try:
+            filter_chain = filter_chain.since(since)
+        except ValueError as exc:
+            return _error(request_id, -32602, f"Invalid date: {exc}")
+
+    conversations = filter_chain.list()
     return _success(
         request_id,
         {
@@ -283,13 +322,14 @@ def _handle_list(request_id: Any, args: dict[str, Any], repo: ConversationReposi
 
 
 def _handle_get(request_id: Any, args: dict[str, Any], repo: ConversationRepository) -> dict[str, Any]:
-    """Handle get tool call."""
+    """Handle get tool call with ID prefix support."""
     conv_id = args.get("id", "")
 
     if not conv_id:
         return _error(request_id, -32602, "Missing required parameter: id")
 
-    conv = repo.get(conv_id)
+    # Use view() for ID prefix resolution
+    conv = repo.view(conv_id)
     if conv is None:
         return _error(request_id, -32602, f"Conversation not found: {conv_id}")
 
@@ -298,6 +338,27 @@ def _handle_get(request_id: Any, args: dict[str, Any], repo: ConversationReposit
         {
             "content": [
                 {"type": "text", "text": json.dumps(_conversation_to_full_dict(conv), indent=2)},
+            ],
+        },
+    )
+
+
+def _handle_stats_tool(request_id: Any, repo: ConversationRepository) -> dict[str, Any]:
+    """Handle stats tool call."""
+    stats = repo.get_archive_stats()
+    data = {
+        "total_conversations": stats.total_conversations,
+        "total_messages": stats.total_messages,
+        "providers": stats.providers,
+        "embedded_conversations": stats.embedded_conversations,
+        "embedded_messages": stats.embedded_messages,
+        "db_size_mb": round(stats.db_size_bytes / 1_048_576, 1) if stats.db_size_bytes else 0,
+    }
+    return _success(
+        request_id,
+        {
+            "content": [
+                {"type": "text", "text": json.dumps(data, indent=2)},
             ],
         },
     )
