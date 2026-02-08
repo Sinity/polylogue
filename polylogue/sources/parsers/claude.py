@@ -702,10 +702,20 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
     )
     branch_type = "sidechain" if has_sidechain else None
 
+    # Infer title from first user message (fallback to session ID)
+    title = str(conv_id)
+    for m in messages:
+        if m.role == "user" and m.text and len(m.text.strip()) > 3:
+            first_line = m.text.strip().split("\n")[0]
+            title = first_line[:80]
+            if len(first_line) > 80:
+                title += "..."
+            break
+
     return ParsedConversation(
         provider_name="claude-code",
         provider_conversation_id=str(conv_id),
-        title=str(conv_id),  # Claude-code doesn't have titles, use session ID
+        title=title,
         created_at=created_at,
         updated_at=updated_at,
         messages=messages,

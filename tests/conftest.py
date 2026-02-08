@@ -108,8 +108,10 @@ def db_without_fts(tmp_path):
 
     db_path = tmp_path / "no_fts.db"
     with open_connection(db_path) as conn:
-        # Drop the FTS table and triggers to simulate fresh install state
+        # Drop the FTS table and all triggers to simulate fresh install state
         conn.execute("DROP TRIGGER IF EXISTS messages_fts_insert")
+        conn.execute("DROP TRIGGER IF EXISTS messages_fts_update")
+        conn.execute("DROP TRIGGER IF EXISTS messages_fts_delete")
         conn.execute("DROP TABLE IF EXISTS messages_fts")
         conn.commit()
     return db_path

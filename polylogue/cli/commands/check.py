@@ -15,12 +15,15 @@ from polylogue.health import VerifyStatus, get_health, run_all_repairs
 @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
 @click.option("--verbose", "-v", is_flag=True, help="Show breakdown by provider")
 @click.option("--repair", is_flag=True, help="Attempt to repair detected issues")
+@click.option("--preview", is_flag=True, help="Show what would be repaired without making changes")
 @click.option("--vacuum", is_flag=True, help="Reclaim unused space after repair")
 @click.pass_obj
-def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, vacuum: bool) -> None:
+def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, preview: bool, vacuum: bool) -> None:
     """Health check with optional repair."""
     if vacuum and not repair:
         fail("check", "--vacuum requires --repair")
+    if preview and not repair:
+        fail("check", "--preview requires --repair")
 
     config = load_effective_config(env)
     report = get_health(config)
@@ -32,7 +35,7 @@ def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, v
         error_count = summary.get("error", 0)
         warning_count = summary.get("warning", 0)
         if error_count > 0 or warning_count > 0:
-            repair_results = run_all_repairs(config)
+            repair_results = run_all_repairs(config, dry_run=preview)
 
     if json_output:
         out = report.to_dict()
@@ -76,7 +79,8 @@ def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, v
     # Show repair results in plain text mode
     if repair_results is not None:
         click.echo("")
-        click.echo("Running repairs...")
+        mode_label = "Preview of repairs" if preview else "Running repairs"
+        click.echo(f"{mode_label}...")
         total_repaired = 0
         for result in repair_results:
             if result.repaired_count > 0 or not result.success:
@@ -87,7 +91,8 @@ def check_command(env: AppEnv, json_output: bool, verbose: bool, repair: bool, v
                 total_repaired += result.repaired_count
 
         if total_repaired > 0:
-            click.echo(f"\nRepaired {total_repaired} issue(s)")
+            action = "Would repair" if preview else "Repaired"
+            click.echo(f"\n{action} {total_repaired} issue(s)")
         else:
             click.echo("  No issues found that could be automatically repaired.")
     elif repair:
