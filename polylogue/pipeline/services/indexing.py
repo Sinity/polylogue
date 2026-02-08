@@ -86,7 +86,7 @@ class IndexService:
             Dictionary with 'exists' (bool) and 'count' (int) keys
         """
         try:
-            return index_status()
+            return index_status(self.conn)
         except Exception as exc:
             logger.error("Failed to get index status", error=str(exc))
             return {"exists": False, "count": 0}

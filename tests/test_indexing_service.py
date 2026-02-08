@@ -116,3 +116,21 @@ class TestIndexService:
             assert isinstance(status, dict)
             assert "exists" in status
             assert "count" in status
+
+    def test_get_index_status_uses_service_connection(self, workspace_env):
+        """Regression: get_index_status must use the service's connection, not open_connection(None)."""
+        with open_connection(None) as conn:
+            config = Config(
+                archive_root=workspace_env["archive_root"],
+                render_root=workspace_env["archive_root"] / "render",
+                sources=[],
+            )
+            service = IndexService(config, conn)
+
+            # Ensure FTS table exists via this connection
+            service.ensure_index_exists()
+
+            # get_index_status should use the same connection and find the table
+            status = service.get_index_status()
+            assert status["exists"] is True
+            assert isinstance(status["count"], int)

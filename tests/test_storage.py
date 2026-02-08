@@ -1974,6 +1974,44 @@ class TestConversationOperations:
         assert page1_ids.isdisjoint(page2_ids)
         backend.close()
 
+    def test_backend_list_conversations_offset_without_limit(self, tmp_path: Path) -> None:
+        """Regression: OFFSET without LIMIT must not raise SQL syntax error."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        for i in range(5):
+            conv = make_conversation(f"off-{i}", updated_at=f"2024-01-{i+1:02d}T00:00:00Z")
+            backend.save_conversation(conv)
+
+        # This previously generated invalid SQL: ... ORDER BY ... OFFSET ? (no LIMIT)
+        result = backend.list_conversations(offset=2)
+        assert len(result) == 3  # 5 total - 2 skipped = 3
+        backend.close()
+
+
+def test_repository_message_mapping_uses_backend_path(tmp_path: Path) -> None:
+    """Regression: _get_message_conversation_mapping must use backend's db_path."""
+    from polylogue.storage.repository import ConversationRepository
+
+    db_path = tmp_path / "custom.db"
+    backend = SQLiteBackend(db_path=db_path)
+
+    conv = make_conversation("map-conv-1", title="Mapping Test")
+    msg = make_message("map-msg-1", "map-conv-1", text="Hello")
+
+    backend.begin()
+    backend.save_conversation(conv)
+    backend.save_messages([msg])
+    backend.commit()
+
+    repo = ConversationRepository(backend)
+    mapping = repo._get_message_conversation_mapping(["map-msg-1"])
+    assert mapping == {"map-msg-1": "map-conv-1"}
+
+    # Non-existent messages should return empty
+    mapping_empty = repo._get_message_conversation_mapping(["nonexistent"])
+    assert mapping_empty == {}
+    backend.close()
+
 
 class TestMessageOperations:
     """Test message save/retrieve operations."""

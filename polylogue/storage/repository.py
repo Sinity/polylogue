@@ -286,7 +286,7 @@ class ConversationRepository:
     def _get_message_conversation_mapping(self, message_ids: builtins.list[str]) -> dict[str, str]:
         from polylogue.storage.backends.sqlite import open_connection
 
-        with open_connection(None) as conn:
+        with open_connection(self._db_path) as conn:
             placeholders = ",".join("?" * len(message_ids))
             query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
             rows = conn.execute(query, message_ids).fetchall()
