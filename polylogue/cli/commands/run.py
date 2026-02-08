@@ -330,3 +330,6 @@ def sources_command(env: AppEnv, json_output: bool) -> None:
         else:
             lines.append(f"{source.name}: (missing path)")
     env.ui.summary("Sources", lines)
+
+
+__all__ = ["run_command", "sources_command"]

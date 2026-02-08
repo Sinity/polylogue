@@ -111,3 +111,6 @@ def _run_vacuum(env: AppEnv) -> None:
         env.ui.console.print("  VACUUM complete.")
     except Exception as exc:
         env.ui.console.print(f"  VACUUM failed: {exc}")
+
+
+__all__ = ["check_command"]
