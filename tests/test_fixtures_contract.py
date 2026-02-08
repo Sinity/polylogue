@@ -14,8 +14,7 @@ import json
 
 import pytest
 
-from polylogue.importers import chatgpt, claude, codex
-from polylogue.importers import drive
+from polylogue.sources.parsers import chatgpt, claude, codex, drive
 from polylogue.storage.store import RawConversationRecord
 
 
@@ -99,8 +98,11 @@ class TestParserExtractsFromRealData:
                     continue  # Unknown provider
 
                 # Verify extraction produced something
+                # Claude Code sessions may contain only metadata records
+                # (e.g. file-history-snapshot) with no chat messages — that's valid.
                 if not result.messages and result.provider_conversation_id == fallback_id:
-                    failures.append((sample.raw_id[:16], provider, "No messages extracted"))
+                    if provider != "claude-code":
+                        failures.append((sample.raw_id[:16], provider, "No messages extracted"))
 
             except Exception as e:
                 failures.append((sample.raw_id[:16], sample.provider_name, str(e)[:80]))

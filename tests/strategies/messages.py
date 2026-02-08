@@ -156,7 +156,7 @@ def parsed_message_strategy(draw: st.DrawFn) -> dict[str, Any]:
 @st.composite
 def parsed_message_model_strategy(draw: st.DrawFn):
     """Generate a ParsedMessage model instance for property testing."""
-    from polylogue.importers.base import ParsedMessage
+    from polylogue.sources.parsers.base import ParsedMessage
 
     return ParsedMessage(
         provider_message_id=draw(st.uuids()).hex[:12],
@@ -176,7 +176,7 @@ def parsed_message_model_strategy(draw: st.DrawFn):
 @st.composite
 def parsed_attachment_model_strategy(draw: st.DrawFn):
     """Generate a ParsedAttachment model instance for property testing."""
-    from polylogue.importers.base import ParsedAttachment
+    from polylogue.sources.parsers.base import ParsedAttachment
 
     return ParsedAttachment(
         provider_attachment_id=draw(st.uuids()).hex[:12],
@@ -213,7 +213,7 @@ def parsed_conversation_model_strategy(
         max_messages: Maximum number of messages
         with_attachments: Whether to include attachments
     """
-    from polylogue.importers.base import ParsedConversation
+    from polylogue.sources.parsers.base import ParsedConversation
 
     providers = ["chatgpt", "claude", "claude-code", "codex", "gemini"]
 

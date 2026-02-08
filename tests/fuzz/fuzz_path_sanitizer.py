@@ -28,7 +28,7 @@ import pytest
 
 def fuzz_path_sanitizer(data: bytes) -> None:
     """Fuzz the path sanitizer with arbitrary byte sequences."""
-    from polylogue.importers.base import ParsedAttachment
+    from polylogue.sources.parsers.base import ParsedAttachment
 
     try:
         # Try decoding as UTF-8 with errors replaced
@@ -73,7 +73,7 @@ def fuzz_path_sanitizer(data: bytes) -> None:
 
 def fuzz_name_sanitizer(data: bytes) -> None:
     """Fuzz the filename sanitizer with arbitrary byte sequences."""
-    from polylogue.importers.base import ParsedAttachment
+    from polylogue.sources.parsers.base import ParsedAttachment
 
     try:
         name_input = data.decode("utf-8", errors="replace")
@@ -137,7 +137,7 @@ class TestPathSanitizerFuzz:
         b"/tmp/safe/path",
         b"symlink/../../../etc/passwd",
         # Unicode normalization attacks
-        "\u002e\u002e/".encode("utf-8"),
+        b"\u002e\u002e/",
         # Mixed encoding
         b"..%252f",
     ]
@@ -187,7 +187,7 @@ def main():
     print(f"Running atheris fuzzer for {iterations} iterations...")
 
     atheris.Setup(
-        sys.argv + [f"-max_total_time=300", f"-runs={iterations}"],
+        sys.argv + ["-max_total_time=300", f"-runs={iterations}"],
         fuzz_path_sanitizer,
     )
     atheris.Fuzz()

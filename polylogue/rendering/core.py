@@ -137,8 +137,8 @@ class ConversationFormatter:
             metadata={
                 "message_count": len(messages),
                 "attachment_count": len(attachments),
-                "created_at": convo["created_at"] if "created_at" in convo.keys() else None,
-                "updated_at": convo["updated_at"] if "updated_at" in convo.keys() else None,
+                "created_at": convo["created_at"],
+                "updated_at": convo["updated_at"],
             },
         )
 
@@ -182,9 +182,10 @@ class ConversationFormatter:
             if not text:
                 return ""
             # Handle JSON (tool use/result) by wrapping in code blocks
-            if (text.startswith("{") and text.endswith("}")) or (text.startswith("[") and text.endswith("]")):
+            stripped = text.strip()
+            if (stripped.startswith("{") and stripped.endswith("}")) or (stripped.startswith("[") and stripped.endswith("]")):
                 try:
-                    parsed = json.loads(text)
+                    parsed = json.loads(stripped)
                     return f"```json\n{json.dumps(parsed, indent=2)}\n```"
                 except json.JSONDecodeError:
                     pass
@@ -224,7 +225,7 @@ class ConversationFormatter:
         if orphan_keys:
             lines.append("## attachments")
             lines.append("")
-            for key in sorted(orphan_keys, key=lambda item: "" if item is None else str(item)):
+            for key in sorted(orphan_keys, key=lambda item: (item is None, str(item) if item else "")):
                 for att in attachments_by_message.get(key, []):
                     _append_attachment(att, lines)
             lines.append("")

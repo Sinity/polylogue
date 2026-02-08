@@ -15,8 +15,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +27,8 @@ except ImportError:
 
 
 # Default database path - use same location as main storage backend
+import contextlib
+
 from polylogue.storage.backends.sqlite import default_db_path
 
 DEFAULT_DB_PATH = default_db_path()
@@ -106,9 +107,7 @@ def is_dynamic_key(key: str) -> bool:
         return True
     if re.match(r"^[0-9a-f]{24,}$", key, re.IGNORECASE):
         return True
-    if re.match(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", key, re.IGNORECASE):
-        return True
-    return False
+    return bool(re.match(r"^(msg|node|conv|item|att)-[0-9a-f-]+$", key, re.IGNORECASE))
 
 
 def collapse_dynamic_keys(schema: dict[str, Any]) -> dict[str, Any]:
@@ -160,7 +159,7 @@ def _merge_schemas(schemas: list[dict[str, Any]]) -> dict[str, Any]:
     builder = SchemaBuilder()
     for schema in schemas:
         builder.add_schema(schema)
-    return builder.to_schema()
+    return dict(builder.to_schema())
 
 
 # =============================================================================
@@ -172,7 +171,7 @@ def load_samples_from_db(
     provider_name: str,
     db_path: Path = DEFAULT_DB_PATH,
     max_samples: int | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Load raw samples from polylogue database.
 
     Args:
@@ -228,7 +227,7 @@ def load_samples_from_db(
 def load_samples_from_sessions(
     session_dir: Path,
     max_sessions: int | None = None,
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Load samples from JSONL session files.
 
     Args:
@@ -257,10 +256,8 @@ def load_samples_from_sessions(
             with open(path, encoding="utf-8") as f:
                 for line in f:
                     if line.strip():
-                        try:
+                        with contextlib.suppress(json.JSONDecodeError):
                             samples.append(json.loads(line))
-                        except json.JSONDecodeError:
-                            pass
         except OSError:
             pass
 
@@ -293,7 +290,7 @@ def get_sample_count_from_db(
 # =============================================================================
 
 
-def _remove_nested_required(schema: dict, depth: int = 0) -> dict:
+def _remove_nested_required(schema: dict[str, Any], depth: int = 0) -> dict[str, Any]:
     """Remove 'required' arrays from nested objects.
 
     Genson marks fields as required if they appear in all samples, but this
@@ -331,7 +328,7 @@ def _remove_nested_required(schema: dict, depth: int = 0) -> dict:
     return schema
 
 
-def generate_schema_from_samples(samples: list[dict]) -> dict[str, Any]:
+def generate_schema_from_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
     """Generate JSON schema from samples using genson.
 
     Args:
@@ -394,7 +391,7 @@ def generate_provider_schema(
         )
 
     # Load samples
-    samples: list[dict] = []
+    samples: list[dict[str, Any]] = []
 
     if config.db_provider_name:
         samples = load_samples_from_db(

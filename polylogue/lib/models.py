@@ -40,9 +40,9 @@ from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from polylogue.lib.messages import MessageCollection, MessageSource
 from polylogue.lib.roles import Role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.messages import MessageCollection, MessageSource
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 from polylogue.types import ConversationId, MessageId
 
@@ -332,9 +332,8 @@ class Message(BaseModel):
         # Claude-code sidechain/meta markers (from raw data)
         if self.provider_meta:
             raw = self.provider_meta.get("raw", {})
-            if isinstance(raw, dict):
-                if raw.get("isSidechain") or raw.get("isMeta"):
-                    return True
+            if isinstance(raw, dict) and (raw.get("isSidechain") or raw.get("isMeta")):
+                return True
 
         return False
 
@@ -356,10 +355,7 @@ class Message(BaseModel):
                 return True
 
         # ChatGPT content_type check (from raw data)
-        if self._is_chatgpt_thinking():
-            return True
-
-        return False
+        return bool(self._is_chatgpt_thinking())
 
     @property
     def is_context_dump(self) -> bool:

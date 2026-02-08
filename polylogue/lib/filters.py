@@ -23,12 +23,16 @@ Example:
 
 from __future__ import annotations
 
+import builtins
+import logging
 import random
 from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal
 
-from polylogue.lib.timestamps import parse_timestamp
+from polylogue.lib.dates import parse_date
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
@@ -170,13 +174,21 @@ class ConversationFilter:
         """Filter to conversations after date.
 
         Args:
-            date: Date string (e.g., "2024-01-01") or datetime object
+            date: Date string (e.g., "2024-01-01", "yesterday", "last week")
+                  or datetime object
 
         Returns:
             self for chaining
+
+        Raises:
+            ValueError: If date string cannot be parsed
         """
         if isinstance(date, str):
-            self._since_date = parse_timestamp(date)
+            parsed = parse_date(date)
+            if parsed is None:
+                msg = f"Cannot parse date: {date!r}"
+                raise ValueError(msg)
+            self._since_date = parsed
         else:
             self._since_date = date
         return self
@@ -185,13 +197,21 @@ class ConversationFilter:
         """Filter to conversations before date.
 
         Args:
-            date: Date string (e.g., "2024-12-31") or datetime object
+            date: Date string (e.g., "2024-12-31", "today", "last month")
+                  or datetime object
 
         Returns:
             self for chaining
+
+        Raises:
+            ValueError: If date string cannot be parsed
         """
         if isinstance(date, str):
-            self._until_date = parse_timestamp(date)
+            parsed = parse_date(date)
+            if parsed is None:
+                msg = f"Cannot parse date: {date!r}"
+                raise ValueError(msg)
+            self._until_date = parsed
         else:
             self._until_date = date
         return self
@@ -363,39 +383,48 @@ class ConversationFilter:
 
     # --- Terminal methods (execute query) ---
 
-    def _apply_filters(self, conversations: list[Conversation]) -> list[Conversation]:
+    def _apply_filters(
+        self,
+        conversations: builtins.list[Conversation],
+        *,
+        sql_pushed: bool = False,
+    ) -> builtins.list[Conversation]:
         """Apply in-memory filters to conversation list.
 
         Args:
             conversations: List of conversations to filter
+            sql_pushed: If True, provider/date/title filters were already
+                       applied in SQL and are skipped here to avoid double-filtering.
 
         Returns:
             Filtered list
         """
         results = list(conversations)
 
-        # Provider filters
-        if self._providers:
-            results = [c for c in results if c.provider in self._providers]
+        # Provider filters (skip if already pushed to SQL)
+        if not sql_pushed:
+            if self._providers:
+                results = [c for c in results if c.provider in self._providers]
+            if self._since_date:
+                results = [c for c in results if c.updated_at and c.updated_at >= self._since_date]
+            if self._until_date:
+                results = [c for c in results if c.updated_at and c.updated_at <= self._until_date]
+            if self._title_pattern:
+                pattern_lower = self._title_pattern.lower()
+                results = [c for c in results if c.display_title and pattern_lower in c.display_title.lower()]
+
+        # These filters are never pushed to SQL
         if self._excluded_providers:
-            results = [c for c in results if c.provider not in self._excluded_providers]
+            excluded_set = set(self._excluded_providers)
+            results = [c for c in results if c.provider not in excluded_set]
 
-        # Tag filters
+        # Tag filters (use sets for O(1) lookup)
         if self._tags:
-            results = [c for c in results if any(t in c.tags for t in self._tags)]
+            tag_set = set(self._tags)
+            results = [c for c in results if tag_set.intersection(c.tags)]
         if self._excluded_tags:
-            results = [c for c in results if not any(t in c.tags for t in self._excluded_tags)]
-
-        # Date filters
-        if self._since_date:
-            results = [c for c in results if c.updated_at and c.updated_at >= self._since_date]
-        if self._until_date:
-            results = [c for c in results if c.updated_at and c.updated_at <= self._until_date]
-
-        # Title filter
-        if self._title_pattern:
-            pattern_lower = self._title_pattern.lower()
-            results = [c for c in results if c.display_title and pattern_lower in c.display_title.lower()]
+            excluded_tag_set = set(self._excluded_tags)
+            results = [c for c in results if not excluded_tag_set.intersection(c.tags)]
 
         # ID prefix filter
         if self._id_prefix:
@@ -413,11 +442,21 @@ class ConversationFilter:
                 elif content_type == "summary":
                     results = [c for c in results if c.summary]
 
-        # Negative FTS (exclude conversations containing text)
+        # Negative FTS — single pass combining all terms
         if self._negative_fts_terms:
-            for term in self._negative_fts_terms:
-                term_lower = term.lower()
-                results = [c for c in results if not any(term_lower in m.text.lower() for m in c.messages if m.text)]
+            neg_terms = [t.lower() for t in self._negative_fts_terms]
+
+            def _has_neg_term(c: Conversation) -> bool:
+                for m in c.messages:
+                    if not m.text:
+                        continue
+                    text_lower = m.text.lower()
+                    for term in neg_terms:
+                        if term in text_lower:
+                            return True
+                return False
+
+            results = [c for c in results if not _has_neg_term(c)]
 
         # Custom predicates
         for predicate in self._predicates:
@@ -425,7 +464,7 @@ class ConversationFilter:
 
         return results
 
-    def _apply_sort(self, conversations: list[Conversation]) -> list[Conversation]:
+    def _apply_sort(self, conversations: builtins.list[Conversation]) -> builtins.list[Conversation]:
         """Apply sorting to conversation list.
 
         Args:
@@ -464,36 +503,95 @@ class ConversationFilter:
             reverse=not self._sort_reverse,  # Default is descending
         )
 
-    def _fetch_candidates(self) -> list[Conversation]:
+    def _sql_pushdown_params(self) -> dict[str, object]:
+        """Build kwargs for repository list/list_summaries that push filters to SQL.
+
+        Returns dict with keys matching the repository's list() parameters.
+        Only includes non-None values for filters that can be pushed down.
+        """
+        params: dict[str, object] = {}
+        if self._providers:
+            if len(self._providers) == 1:
+                params["provider"] = self._providers[0]
+            else:
+                params["providers"] = self._providers
+        if self._since_date:
+            params["since"] = self._since_date.isoformat()
+        if self._until_date:
+            params["until"] = self._until_date.isoformat()
+        if self._title_pattern:
+            params["title_contains"] = self._title_pattern
+        return params
+
+    def _has_post_filters(self) -> bool:
+        """Check if any filters require in-memory post-processing."""
+        return bool(
+            self._excluded_providers
+            or self._tags
+            or self._excluded_tags
+            or self._has_types
+            or self._predicates
+            or self._negative_fts_terms
+        )
+
+    def _effective_fetch_limit(self) -> int:
+        """Calculate how many candidates to fetch from the backend.
+
+        Uses the user's desired limit + a safety margin to compensate for
+        post-filter shrinkage. Returns a higher limit when post-filters
+        or non-default sorting could reduce results.
+        """
+        if self._limit_count is None:
+            return 1000  # No limit requested — fetch a reasonable max
+
+        if self._has_post_filters():
+            # Post-filters may reject many candidates; over-fetch aggressively
+            return max(self._limit_count * 10, 500)
+
+        if self._sample_count is not None:
+            # Sampling needs a full pool to draw from
+            return max(self._sample_count * 3, 200)
+
+        # Simple case: limit is the only constraint, with small safety margin
+        return max(self._limit_count * 2, 50)
+
+    def _fetch_candidates(self) -> builtins.list[Conversation]:
         """Fetch candidate conversations from repository.
 
         Uses FTS search if terms specified, otherwise lists all.
-        Returns lazy Conversation objects for memory efficiency.
-
-        Note: If content-dependent filters are applied, conversations will
-        be materialized on demand when iterating their messages.
+        Pushes provider, date, and title filters into SQL when possible.
+        Adapts fetch size to user's limit and filter complexity.
 
         Returns:
             List of lazy Conversation objects
         """
+        # Fast path: resolve by ID prefix directly (avoids loading all conversations)
+        if self._id_prefix and not self._fts_terms:
+            resolved_id = self._repo.resolve_id(self._id_prefix)
+            if resolved_id:
+                conv = self._repo.get(str(resolved_id))
+                return [conv] if conv else []
+            # Ambiguous prefix — fall through to list + post-filter
+
+        fetch_limit = self._effective_fetch_limit()
+
         # If we have FTS terms, use search
         if self._fts_terms:
-            # Combine search terms
             query = " ".join(self._fts_terms)
             try:
-                return self._repo.search(query)
-            except Exception:
-                # Fall back to list if search not available
-                pass
+                search_limit = max(fetch_limit, 100)
+                # Push provider filter into SQL for efficiency
+                return self._repo.search(
+                    query, limit=search_limit, providers=self._providers or None
+                )
+            except Exception as exc:
+                logger.debug("FTS search failed, falling back to list: %s", exc)
 
-        # If we have a provider filter and no FTS, use filtered list
-        if self._providers and len(self._providers) == 1:
-            return self._repo.list(limit=1000, provider=self._providers[0])
+        # Push all SQL-eligible filters to backend
+        sql_params = self._sql_pushdown_params()
+        return self._repo.list(limit=fetch_limit, **sql_params)
 
-        # Default: list all (with reasonable limit)
-        return self._repo.list(limit=1000)
-
-    def list(self) -> list[Conversation]:
+    def list(self) -> builtins.list[Conversation]:
         """Execute query and return matching conversations.
 
         Returns:
@@ -510,11 +608,13 @@ class ConversationFilter:
             filtered = self._apply_filters(candidates)
             return filtered
 
-        # Fetch candidates
+        # Fetch candidates (with SQL pushdown for non-FTS path)
         candidates = self._fetch_candidates()
 
-        # Apply in-memory filters
-        filtered = self._apply_filters(candidates)
+        # FTS path doesn't push date/title, so those still need in-memory filtering.
+        # Non-FTS path pushes provider/date/title to SQL.
+        sql_pushed = not self._fts_terms and not self._id_prefix
+        filtered = self._apply_filters(candidates, sql_pushed=sql_pushed)
 
         # Apply sorting
         sorted_results = self._apply_sort(filtered)
@@ -541,10 +641,35 @@ class ConversationFilter:
     def count(self) -> int:
         """Execute query and return count of matching conversations.
 
+        When possible, uses SQL COUNT(*) directly for O(1) performance.
+        Falls back to loading and counting for complex filter combinations.
+
         Returns:
             Number of matching conversations
         """
-        # Fetch and filter without limit
+        # Fast path: pure SQL count for simple filter combos (no FTS, no content filters)
+        if (
+            not self._fts_terms
+            and not self._id_prefix
+            and not self._similar_text
+            and not self._predicates
+            and not self._has_types
+            and not self._negative_fts_terms
+            and not self._excluded_providers
+            and not self._tags
+            and not self._excluded_tags
+        ):
+            return self._repo.count(**self._sql_pushdown_params())
+
+        # Medium path: use summaries (lightweight) if possible
+        if self.can_use_summaries():
+            saved_limit = self._limit_count
+            self._limit_count = None
+            results = self.list_summaries()
+            self._limit_count = saved_limit
+            return len(results)
+
+        # Slow path: must load full conversations
         saved_limit = self._limit_count
         self._limit_count = None
         results = self.list()
@@ -634,69 +759,87 @@ class ConversationFilter:
             return True
 
         # Sort by messages/words/longest/tokens needs message data
-        if self._sort_field in ("messages", "words", "longest", "tokens"):
-            return True
+        return self._sort_field in ("messages", "words", "longest", "tokens")
 
-        return False
-
-    def _fetch_summary_candidates(self) -> list[ConversationSummary]:
+    def _fetch_summary_candidates(self) -> builtins.list[ConversationSummary]:
         """Fetch candidate conversation summaries (lightweight, no messages).
 
         Uses FTS search if terms specified, otherwise lists all summaries.
+        Pushes provider, date, and title filters into SQL when possible.
 
         Returns:
             List of ConversationSummary objects
         """
 
+        # Fast path: resolve by ID prefix directly
+        if self._id_prefix and not self._fts_terms:
+            resolved_id = self._repo.resolve_id(self._id_prefix)
+            if resolved_id:
+                summary = self._repo.get_summary(str(resolved_id))
+                return [summary] if summary else []
+            # Ambiguous prefix — fall through to list + post-filter
+
+        fetch_limit = self._effective_fetch_limit()
+
         # If we have FTS terms, use search
         if self._fts_terms:
             query = " ".join(self._fts_terms)
             try:
-                return self._repo.search_summaries(query)
-            except Exception:
-                pass
+                search_limit = max(fetch_limit, 100)
+                # Push provider filter into SQL for efficiency
+                return self._repo.search_summaries(
+                    query, limit=search_limit, providers=self._providers or None
+                )
+            except Exception as exc:
+                logger.debug("FTS summary search failed, falling back to list: %s", exc)
 
-        # If we have a provider filter, use filtered list
-        if self._providers and len(self._providers) == 1:
-            return self._repo.list_summaries(limit=1000, provider=self._providers[0])
+        # Push all SQL-eligible filters to backend
+        sql_params = self._sql_pushdown_params()
+        return self._repo.list_summaries(limit=fetch_limit, **sql_params)
 
-        # Default: list all summaries
-        return self._repo.list_summaries(limit=1000)
-
-    def _apply_summary_filters(self, summaries: list[ConversationSummary]) -> list[ConversationSummary]:
+    def _apply_summary_filters(
+        self,
+        summaries: builtins.list[ConversationSummary],
+        *,
+        sql_pushed: bool = False,
+    ) -> builtins.list[ConversationSummary]:
         """Apply filters that work on summaries (no message access needed).
 
         Args:
             summaries: List of ConversationSummary objects
+            sql_pushed: If True, provider/date/title filters were already
+                       applied in SQL and are skipped here.
 
         Returns:
             Filtered list of summaries
         """
 
-        results = list(summaries)
+        results: builtins.list[ConversationSummary] = list(summaries)
 
-        # Provider filters
-        if self._providers:
-            results = [s for s in results if s.provider in self._providers]
+        # Skip filters already pushed to SQL
+        if not sql_pushed:
+            if self._providers:
+                results = [s for s in results if s.provider in self._providers]
+            if self._since_date:
+                results = [s for s in results if s.updated_at and s.updated_at >= self._since_date]
+            if self._until_date:
+                results = [s for s in results if s.updated_at and s.updated_at <= self._until_date]
+            if self._title_pattern:
+                pattern_lower = self._title_pattern.lower()
+                results = [s for s in results if s.display_title and pattern_lower in s.display_title.lower()]
+
+        # These filters are never pushed to SQL
         if self._excluded_providers:
-            results = [s for s in results if s.provider not in self._excluded_providers]
+            excluded_set = set(self._excluded_providers)
+            results = [s for s in results if s.provider not in excluded_set]
 
-        # Tag filters
+        # Tag filters (use sets for O(1) lookup)
         if self._tags:
-            results = [s for s in results if any(t in s.tags for t in self._tags)]
+            tag_set = set(self._tags)
+            results = [s for s in results if tag_set.intersection(s.tags)]
         if self._excluded_tags:
-            results = [s for s in results if not any(t in s.tags for t in self._excluded_tags)]
-
-        # Date filters
-        if self._since_date:
-            results = [s for s in results if s.updated_at and s.updated_at >= self._since_date]
-        if self._until_date:
-            results = [s for s in results if s.updated_at and s.updated_at <= self._until_date]
-
-        # Title filter
-        if self._title_pattern:
-            pattern_lower = self._title_pattern.lower()
-            results = [s for s in results if s.display_title and pattern_lower in s.display_title.lower()]
+            excluded_tag_set = set(self._excluded_tags)
+            results = [s for s in results if not excluded_tag_set.intersection(s.tags)]
 
         # ID prefix filter
         if self._id_prefix:
@@ -708,7 +851,7 @@ class ConversationFilter:
 
         return results
 
-    def _apply_summary_sort(self, summaries: list[ConversationSummary]) -> list[ConversationSummary]:
+    def _apply_summary_sort(self, summaries: builtins.list[ConversationSummary]) -> builtins.list[ConversationSummary]:
         """Apply sorting to summary list (limited to summary-compatible sorts).
 
         Args:
@@ -720,7 +863,7 @@ class ConversationFilter:
         from datetime import timezone
 
         if self._sort_field == "random":
-            shuffled = list(summaries)
+            shuffled: builtins.list[ConversationSummary] = list(summaries)
             random.shuffle(shuffled)
             return shuffled
 
@@ -737,7 +880,7 @@ class ConversationFilter:
             reverse=not self._sort_reverse,
         )
 
-    def list_summaries(self) -> list[ConversationSummary]:
+    def list_summaries(self) -> builtins.list[ConversationSummary]:
         """Execute query and return lightweight summaries (no messages loaded).
 
         This is the memory-efficient alternative to list() for cases where
@@ -757,11 +900,12 @@ class ConversationFilter:
                 "(regex, has:thinking, has:tools, etc.). Use list() instead."
             )
 
-        # Fetch lightweight candidates
+        # Fetch lightweight candidates (with SQL pushdown for non-FTS path)
         candidates = self._fetch_summary_candidates()
 
-        # Apply summary-compatible filters
-        filtered = self._apply_summary_filters(candidates)
+        # Non-FTS path pushes provider/date/title to SQL
+        sql_pushed = not self._fts_terms and not self._id_prefix
+        filtered = self._apply_summary_filters(candidates, sql_pushed=sql_pushed)
 
         # Apply sorting
         sorted_results = self._apply_summary_sort(filtered)

@@ -12,8 +12,8 @@ from uuid import uuid4
 from polylogue.config import Config, Source
 from polylogue.lib.json import dumps, loads
 from polylogue.lib.log import get_logger
-from polylogue.ingestion import DriveAuthError, iter_drive_conversations, iter_source_conversations
-from polylogue.ingestion.source import ParsedConversation
+from polylogue.sources import DriveAuthError, iter_drive_conversations, iter_source_conversations
+from polylogue.sources.source import ParsedConversation
 from polylogue.storage.backends.sqlite import connection_context
 from polylogue.storage.store import PlanResult, RunRecord, RunResult
 
@@ -107,7 +107,11 @@ def _all_conversation_ids(source_names: Sequence[str] | None = None) -> list[str
         try:
             payload = loads(meta)
         except (ValueError, TypeError):
-            # Invalid JSON in provider_meta - skip this conversation
+            logger.warning(
+                "Skipping conversation with invalid provider_meta JSON",
+                conversation_id=row["conversation_id"],
+                provider=row["provider_name"],
+            )
             continue
         if isinstance(payload, dict) and payload.get("source") in name_set:
             selected.append(row["conversation_id"])
@@ -211,6 +215,8 @@ def run_sources(
             # Merge results
             for key, value in ingest_result.counts.items():
                 counts[key] = value
+            if ingest_result.parse_failures:
+                counts["parse_failures"] = ingest_result.parse_failures
             changed_counts.update(ingest_result.changed_counts)
             processed_ids = ingest_result.processed_ids
 
@@ -252,10 +258,7 @@ def run_sources(
             if stage == "index":
                 if source_names:
                     ids = _all_conversation_ids(source_names)
-                    if ids:
-                        indexed = index_service.update_index(ids)
-                    else:
-                        indexed = index_service.ensure_index_exists()
+                    indexed = index_service.update_index(ids) if ids else index_service.ensure_index_exists()
                 else:
                     indexed = index_service.rebuild_index()
             elif stage == "all":

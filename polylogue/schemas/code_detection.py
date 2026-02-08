@@ -295,12 +295,9 @@ def extract_code_block(text: str) -> str:
         # Remove trailing empty lines
         while indented_lines and not indented_lines[-1].strip():
             indented_lines.pop()
-        if indented_lines:
-            # Return the indented block if:
-            # 1. It's the first content (pure indented code), OR
-            # 2. There's a blank line before it (markdown indented code block)
-            if first_line_indented or blank_line_before_indent:
-                return "\n".join(indented_lines)
+        # Return indented block: either pure indented code or markdown indented code block
+        if indented_lines and (first_line_indented or blank_line_before_indent):
+            return "\n".join(indented_lines)
 
     # Check if entire text is code (detected language and reasonable length)
     if len(text) >= 10 and detect_language(text):
