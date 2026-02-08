@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.core.code_detection import (
+from polylogue.schemas.code_detection import (
     LANGUAGE_PATTERNS,
     detect_language,
     extract_code_block,
 )
-
 
 # =============================================================================
 # LANGUAGE PATTERNS VALIDATION (2 tests - kept as-is)
@@ -211,7 +210,7 @@ def test_language_alias_mapping(alias, canonical):
     """
     # Implementation depends on how aliases are handled
     # This validates that language detection recognizes aliases
-    from polylogue.core.code_detection import LANGUAGE_PATTERNS
+    from polylogue.schemas.code_detection import LANGUAGE_PATTERNS
 
     # Either alias is in patterns directly, or implementation normalizes it
     assert alias in LANGUAGE_PATTERNS or canonical in LANGUAGE_PATTERNS

@@ -47,8 +47,8 @@ class Role(str, Enum):
         if lowered == "system":
             return cls.SYSTEM
 
-        # Tool/function
-        if lowered in {"tool", "function"}:
+        # Tool/function (includes claude-code progress/result types)
+        if lowered in {"tool", "function", "tool_use", "tool_result", "progress", "result"}:
             return cls.TOOL
 
         return cls.UNKNOWN
@@ -64,6 +64,10 @@ ROLE_MAP = {
     "system": "system",
     "tool": "tool",
     "function": "tool",
+    "tool_use": "tool",
+    "tool_result": "tool",
+    "progress": "tool",
+    "result": "tool",
 }
 
 

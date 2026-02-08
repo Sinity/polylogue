@@ -14,17 +14,15 @@ from __future__ import annotations
 import pytest
 
 from polylogue.assets import asset_path
-from polylogue.importers.base import ParsedAttachment, ParsedConversation, ParsedMessage
 from polylogue.pipeline.ids import (
     attachment_content_id,
     conversation_content_hash,
     conversation_id,
     message_content_hash,
-    message_id,
     move_attachment_to_archive,
 )
 from polylogue.pipeline.ingest import prepare_ingest
-from polylogue.storage.backends.sqlite import open_connection
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
 
 # ============================================================================
 # Attachment file handling tests (from test_pipeline_ids.py)
@@ -261,9 +259,9 @@ def test_conversation_hash_timestamps_affect_hash():
 def test_repository(test_db):
     """Provide a repository pointing to the test database."""
     from polylogue.storage.backends.sqlite import SQLiteBackend
-    from polylogue.storage.repository import StorageRepository
+    from polylogue.storage.repository import ConversationRepository
     backend = SQLiteBackend(db_path=test_db)
-    return StorageRepository(backend=backend)
+    return ConversationRepository(backend=backend)
 
 
 def test_prepare_ingest_new_conversation(test_conn, test_repository, tmp_path):

@@ -12,12 +12,12 @@ from datetime import datetime
 from hypothesis import given
 from hypothesis import strategies as st
 
-from polylogue.core.code_detection import detect_language, extract_code_block
-from polylogue.core.hashing import hash_payload, hash_text, hash_text_short
-from polylogue.core.json import dumps, loads
-from polylogue.core.timestamps import format_timestamp, parse_timestamp
-from polylogue.importers.base import normalize_role
+from polylogue.lib.hashing import hash_payload, hash_text, hash_text_short
+from polylogue.lib.json import dumps, loads
 from polylogue.lib.models import Conversation, Message
+from polylogue.lib.timestamps import format_timestamp, parse_timestamp
+from polylogue.schemas.code_detection import detect_language, extract_code_block
+from polylogue.sources.parsers.base import normalize_role
 
 # =============================================================================
 # Hashing Properties
@@ -560,15 +560,15 @@ def test_hash_payload_never_crashes(d: dict) -> None:
 # test_pipeline_ids.py by testing invariants that hold for ALL inputs.
 
 
+from polylogue.pipeline.ids import (
+    conversation_content_hash,
+    conversation_id,
+    message_content_hash,
+    message_id,
+)
 from tests.strategies import (
     parsed_conversation_model_strategy,
     parsed_message_model_strategy,
-)
-from polylogue.pipeline.ids import (
-    conversation_content_hash,
-    message_content_hash,
-    conversation_id,
-    message_id,
 )
 
 
@@ -619,7 +619,7 @@ def test_conversation_hash_sensitive_to_title(data) -> None:
     title2 = data.draw(st.text(min_size=1, max_size=50).filter(lambda t: t != title1))
 
     # Create modified conversation with different title
-    from polylogue.importers.base import ParsedConversation
+    from polylogue.sources.parsers.base import ParsedConversation
     conv1 = ParsedConversation(
         provider_name=conv.provider_name,
         provider_conversation_id=conv.provider_conversation_id,
@@ -648,7 +648,7 @@ def test_message_hash_sensitive_to_text(data) -> None:
 
     Subsumes: test_message_content_hash_changes_on_text_edit
     """
-    from polylogue.importers.base import ParsedMessage
+    from polylogue.sources.parsers.base import ParsedMessage
 
     text1 = data.draw(st.text(min_size=1, max_size=100))
     text2 = data.draw(st.text(min_size=1, max_size=100).filter(lambda t: t != text1))
@@ -675,7 +675,7 @@ def test_message_hash_sensitive_to_role(data) -> None:
 
     Subsumes: test_message_content_hash_changes_on_role_edit
     """
-    from polylogue.importers.base import ParsedMessage
+    from polylogue.sources.parsers.base import ParsedMessage
 
     role1 = data.draw(st.sampled_from(["user", "assistant", "system"]))
     role2 = data.draw(st.sampled_from(["user", "assistant", "system"]).filter(lambda r: r != role1))
@@ -743,7 +743,7 @@ def test_conversation_hash_sensitive_to_message_order(data) -> None:
 
     Subsumes: test_conversation_content_hash_changes_on_message_reorder
     """
-    from polylogue.importers.base import ParsedConversation, ParsedMessage
+    from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 
     # Create two distinct messages
     msg1 = ParsedMessage(
@@ -785,7 +785,7 @@ def test_conversation_hash_includes_attachments(conv) -> None:
 
     Subsumes: test_conversation_content_hash_includes_attachments
     """
-    from polylogue.importers.base import ParsedConversation, ParsedAttachment
+    from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation
 
     # Create same conversation without attachments
     conv_no_att = ParsedConversation(

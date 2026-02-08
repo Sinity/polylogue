@@ -1,0 +1,96 @@
+Screen {
+    layout: vertical;
+}
+
+#welcome {
+    width: 100%;
+    height: 100%;
+    content-align: center middle;
+    text-align: center;
+}
+
+/* Dashboard Styles */
+#stats-grid {
+    grid-size: 2;
+    grid-gutter: 1;
+    padding: 1;
+    height: auto;
+}
+
+StatCard {
+    width: 1fr;
+    height: auto;
+    border: solid $accent;
+    padding: 1;
+    margin: 1;
+    background: $surface;
+}
+
+StatCard > .label {
+    color: $text-muted;
+    text-align: center;
+}
+
+StatCard > .value {
+    color: $text;
+    text-style: bold;
+    text-align: center;
+    height: auto;
+    padding-top: 1;
+    padding-bottom: 1;
+}
+/* ... previous styles ... */
+
+/* Browser Styles */
+Browser {
+    layout: horizontal;
+    height: 100%;
+}
+
+#browser-tree {
+    width: 30%;
+    height: 100%;
+    border-right: solid $primary;
+    background: $surface;
+}
+
+#browser-viewer {
+    width: 70%;
+    height: 100%;
+    background: $background;
+    padding: 1;
+}
+
+#markdown-viewer {
+    width: 100%;
+}
+/* ... previous styles ... */
+
+/* Search Styles */
+Search {
+    layout: vertical;
+    height: 100%;
+}
+
+#search-input {
+    dock: top;
+    margin: 1;
+}
+
+#search-split {
+    height: 1fr;
+}
+
+#search-results {
+    width: 40%;
+    height: 100%;
+    border-right: solid $primary;
+}
+
+#search-preview {
+    width: 60%;
+    height: 100%;
+    background: $background;
+    padding: 1;
+    overflow-y: scroll;
+}

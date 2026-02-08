@@ -19,7 +19,6 @@ from uuid import uuid4
 from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, store_records
 
-
 # =============================================================================
 # DATABASE SETUP UTILITIES
 # =============================================================================
@@ -134,6 +133,10 @@ class ConversationBuilder:
         self.conv = self.conv.model_copy(update={"updated_at": updated_at})
         return self
 
+    def metadata(self, metadata: dict[str, Any] | None) -> ConversationBuilder:
+        self.conv = self.conv.model_copy(update={"metadata": metadata})
+        return self
+
     def parent_conversation(self, parent_id: str) -> ConversationBuilder:
         """Set parent conversation for continuations/sidechains."""
         self.conv = self.conv.model_copy(update={"parent_conversation_id": parent_id})
@@ -161,16 +164,10 @@ class ConversationBuilder:
             .add_message("m2", timestamp=None)  # Explicitly no timestamp
             .add_message(message_record)
         """
-        if message_id is None:
-            msg_id = f"m{len(self.messages) + 1}"
-        else:
-            msg_id = message_id
+        msg_id = f"m{len(self.messages) + 1}" if message_id is None else message_id
 
         # Handle timestamp: ... = auto-generate, None = keep None, str = use value
-        if timestamp is ...:
-            ts = datetime.now(timezone.utc).isoformat()
-        else:
-            ts = timestamp
+        ts = datetime.now(timezone.utc).isoformat() if timestamp is ... else timestamp
 
         msg = MessageRecord(
             message_id=msg_id,
@@ -198,16 +195,10 @@ class ConversationBuilder:
         Args:
             message_id: ... (default) = attach to last message, None = orphaned attachment
         """
-        if attachment_id is None:
-            att_id = f"att{len(self.attachments) + 1}"
-        else:
-            att_id = attachment_id
+        att_id = f"att{len(self.attachments) + 1}" if attachment_id is None else attachment_id
 
         # Handle message_id: ... = auto-assign to last message, None = orphaned
-        if message_id is ...:
-            msg_id = self.messages[-1].message_id if self.messages else None
-        else:
-            msg_id = message_id
+        msg_id = (self.messages[-1].message_id if self.messages else None) if message_id is ... else message_id
 
         att = AttachmentRecord(
             attachment_id=att_id,
@@ -342,8 +333,8 @@ def assert_messages_ordered(markdown_text: str, *expected_order: str):
         try:
             idx = markdown_text.index(text)
             indices.append((idx, text))
-        except ValueError:
-            raise AssertionError(f"Expected text '{text}' not found in markdown")
+        except ValueError as exc:
+            raise AssertionError(f"Expected text '{text}' not found in markdown") from exc
 
     # Verify order
     for i in range(len(indices) - 1):
@@ -411,6 +402,87 @@ def make_chatgpt_node(
     if metadata:
         node["message"]["metadata"] = metadata
     return node
+
+
+# =============================================================================
+# LEGACY FACTORY (dict-based API, simpler for quick seeding)
+# =============================================================================
+
+
+class DbFactory:
+    """Helper to seed the database with consistent records via dict-based API.
+
+    For new tests, prefer ConversationBuilder (fluent API).
+    """
+
+    def __init__(self, db_path: Path):
+        self.db_path = db_path
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def create_conversation(
+        self,
+        id: str | None = None,
+        provider: str = "test",
+        title: str = "Test Conversation",
+        messages: list[dict[str, Any]] | None = None,
+        created_at: datetime | None = None,
+        updated_at: datetime | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Create a conversation with messages in the DB."""
+        cid = id or str(uuid4())
+        created_iso = (created_at or datetime.now(timezone.utc)).isoformat()
+        updated_iso = (updated_at or datetime.now(timezone.utc)).isoformat()
+
+        conv_rec = ConversationRecord(
+            conversation_id=cid,
+            provider_name=provider,
+            provider_conversation_id=f"ext-{cid}",
+            title=title,
+            created_at=created_iso,
+            updated_at=updated_iso,
+            content_hash=uuid4().hex,
+            metadata=metadata,
+        )
+
+        msg_recs = []
+        att_recs = []
+
+        if messages:
+            for msg in messages:
+                mid = msg.get("id") or str(uuid4())
+                m_rec = MessageRecord(
+                    message_id=mid,
+                    conversation_id=cid,
+                    role=msg.get("role", "user"),
+                    text=msg.get("text", "hello"),
+                    timestamp=msg.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                    content_hash=uuid4().hex,
+                )
+                msg_recs.append(m_rec)
+
+                if "attachments" in msg:
+                    for att in msg["attachments"]:
+                        aid = att.get("id") or str(uuid4())
+                        att_recs.append(
+                            AttachmentRecord(
+                                attachment_id=aid,
+                                conversation_id=cid,
+                                message_id=mid,
+                                mime_type=att.get("mime_type", "application/octet-stream"),
+                                size_bytes=att.get("size_bytes", 1024),
+                                provider_meta=att.get("meta"),
+                            )
+                        )
+
+        with open_connection(self.db_path) as conn:
+            store_records(
+                conversation=conv_rec,
+                messages=msg_recs,
+                attachments=att_recs,
+                conn=conn,
+            )
+        return cid
 
 
 def make_claude_chat_message(
@@ -483,14 +555,14 @@ class InboxBuilder:
         self.base_path.mkdir(parents=True, exist_ok=True)
         self.files: list[tuple[Path, str]] = []
 
-    def add_json_file(self, filename: str, data: Any) -> "InboxBuilder":
+    def add_json_file(self, filename: str, data: Any) -> InboxBuilder:
         """Add a raw JSON file."""
         import json
         path = self.base_path / filename
         self.files.append((path, json.dumps(data, indent=2)))
         return self
 
-    def add_jsonl_file(self, filename: str, entries: list[Any]) -> "InboxBuilder":
+    def add_jsonl_file(self, filename: str, entries: list[Any]) -> InboxBuilder:
         """Add a JSONL file with multiple entries."""
         import json
         path = self.base_path / filename
@@ -504,7 +576,7 @@ class InboxBuilder:
         title: str | None = None,
         messages: list[tuple[str, str]] | None = None,
         filename: str | None = None,
-    ) -> "InboxBuilder":
+    ) -> InboxBuilder:
         """Add a simple Codex/generic format conversation.
 
         Args:
@@ -535,7 +607,7 @@ class InboxBuilder:
         title: str | None = None,
         nodes: list[dict] | None = None,
         filename: str | None = None,
-    ) -> "InboxBuilder":
+    ) -> InboxBuilder:
         """Add a ChatGPT export format conversation.
 
         Args:
@@ -572,7 +644,7 @@ class InboxBuilder:
         chat_messages: list[dict] | None = None,
         filename: str | None = None,
         wrap_in_conversations: bool = True,
-    ) -> "InboxBuilder":
+    ) -> InboxBuilder:
         """Add a Claude AI export format conversation.
 
         Args:
@@ -595,10 +667,7 @@ class InboxBuilder:
         if name:
             conversation["name"] = name
 
-        if wrap_in_conversations:
-            payload = {"conversations": [conversation]}
-        else:
-            payload = conversation
+        payload = {"conversations": [conversation]} if wrap_in_conversations else conversation
 
         fname = filename or f"claude_{conv_id}.json"
         return self.add_json_file(fname, payload)
@@ -608,7 +677,7 @@ class InboxBuilder:
         session_id: str,
         messages: list[dict] | None = None,
         filename: str | None = None,
-    ) -> "InboxBuilder":
+    ) -> InboxBuilder:
         """Add a Claude Code JSONL session file.
 
         Args:
@@ -655,7 +724,7 @@ class ChatGPTExportBuilder:
         self._node_counter = 0
         self._timestamp = 1704067200.0  # Base timestamp
 
-    def title(self, title: str) -> "ChatGPTExportBuilder":
+    def title(self, title: str) -> ChatGPTExportBuilder:
         self._title = title
         return self
 
@@ -666,7 +735,7 @@ class ChatGPTExportBuilder:
         node_id: str | None = None,
         metadata: dict | None = None,
         model_slug: str | None = None,
-    ) -> "ChatGPTExportBuilder":
+    ) -> ChatGPTExportBuilder:
         """Add a message node."""
         self._node_counter += 1
         nid = node_id or f"node-{self._node_counter}"
@@ -686,7 +755,7 @@ class ChatGPTExportBuilder:
         self._timestamp += 1.0
         return self
 
-    def add_system_node(self, content: str, node_id: str | None = None) -> "ChatGPTExportBuilder":
+    def add_system_node(self, content: str, node_id: str | None = None) -> ChatGPTExportBuilder:
         """Add a system message node."""
         return self.add_node("system", content, node_id=node_id)
 
@@ -695,7 +764,7 @@ class ChatGPTExportBuilder:
         tool_name: str,
         result: str,
         node_id: str | None = None,
-    ) -> "ChatGPTExportBuilder":
+    ) -> ChatGPTExportBuilder:
         """Add a tool result node."""
         return self.add_node(
             "tool",
@@ -741,11 +810,11 @@ class ClaudeExportBuilder:
         self._msg_counter = 0
         self._wrap_in_conversations = True
 
-    def name(self, name: str) -> "ClaudeExportBuilder":
+    def name(self, name: str) -> ClaudeExportBuilder:
         self._name = name
         return self
 
-    def unwrapped(self) -> "ClaudeExportBuilder":
+    def unwrapped(self) -> ClaudeExportBuilder:
         """Don't wrap in {"conversations": [...]} structure."""
         self._wrap_in_conversations = False
         return self
@@ -758,7 +827,7 @@ class ClaudeExportBuilder:
         attachments: list[dict] | None = None,
         files: list[dict] | None = None,
         timestamp: str | None = None,
-    ) -> "ClaudeExportBuilder":
+    ) -> ClaudeExportBuilder:
         """Add a chat message."""
         self._msg_counter += 1
         msg_uuid = uuid or f"msg-{self._msg_counter}"
@@ -774,11 +843,11 @@ class ClaudeExportBuilder:
         self._messages.append(msg)
         return self
 
-    def add_human(self, text: str, **kwargs) -> "ClaudeExportBuilder":
+    def add_human(self, text: str, **kwargs) -> ClaudeExportBuilder:
         """Shorthand for add_message with sender='human'."""
         return self.add_message("human", text, **kwargs)
 
-    def add_assistant(self, text: str, **kwargs) -> "ClaudeExportBuilder":
+    def add_assistant(self, text: str, **kwargs) -> ClaudeExportBuilder:
         """Shorthand for add_message with sender='assistant'."""
         return self.add_message("assistant", text, **kwargs)
 
@@ -820,7 +889,7 @@ class GenericConversationBuilder:
         self._messages: list[dict] = []
         self._msg_counter = 0
 
-    def title(self, title: str) -> "GenericConversationBuilder":
+    def title(self, title: str) -> GenericConversationBuilder:
         self._title = title
         return self
 
@@ -830,7 +899,7 @@ class GenericConversationBuilder:
         content: str,
         message_id: str | None = None,
         text: str | None = None,  # Alias for content
-    ) -> "GenericConversationBuilder":
+    ) -> GenericConversationBuilder:
         """Add a message. Uses 'content' key by default, but can use 'text'."""
         self._msg_counter += 1
         msg_id = message_id or f"m{self._msg_counter}"
@@ -848,11 +917,11 @@ class GenericConversationBuilder:
         self._messages.append(msg)
         return self
 
-    def add_user(self, content: str, **kwargs) -> "GenericConversationBuilder":
+    def add_user(self, content: str, **kwargs) -> GenericConversationBuilder:
         """Shorthand for add_message with role='user'."""
         return self.add_message("user", content, **kwargs)
 
-    def add_assistant(self, content: str, **kwargs) -> "GenericConversationBuilder":
+    def add_assistant(self, content: str, **kwargs) -> GenericConversationBuilder:
         """Shorthand for add_message with role='assistant'."""
         return self.add_message("assistant", content, **kwargs)
 

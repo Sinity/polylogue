@@ -7,6 +7,7 @@ factory functions for creating provider instances from configuration.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,11 +18,12 @@ from polylogue.storage.search_providers.hybrid import (
     create_hybrid_provider,
     reciprocal_rank_fusion,
 )
-from polylogue.storage.search_providers.qdrant import QdrantError, QdrantProvider
 
 if TYPE_CHECKING:
     from polylogue.config import Config
     from polylogue.protocols import SearchProvider, VectorProvider
+
+logger = logging.getLogger(__name__)
 
 
 def create_search_provider(
@@ -45,50 +47,26 @@ def create_search_provider(
 def create_vector_provider(
     config: Config | None = None,
     *,
-    qdrant_url: str | None = None,
-    qdrant_api_key: str | None = None,
     voyage_api_key: str | None = None,
+    db_path: Path | None = None,
 ) -> VectorProvider | None:
     """Create a vector provider instance if configured.
 
-    Checks for Qdrant configuration in config, arguments, or environment variables.
-    Priority: explicit arguments > config.index_config > environment variables.
+    Uses sqlite-vec for self-contained vector search with Voyage AI embeddings.
+    Returns None if Voyage API key is not configured or sqlite-vec is unavailable.
 
     Environment variable precedence (checked in order):
-    - POLYLOGUE_QDRANT_URL > QDRANT_URL
-    - POLYLOGUE_QDRANT_API_KEY > QDRANT_API_KEY
     - POLYLOGUE_VOYAGE_API_KEY > VOYAGE_API_KEY
-
-    Returns None if Qdrant is not configured.
 
     Args:
         config: Application configuration with optional index_config
-        qdrant_url: Qdrant server URL (overrides config and env var)
-        qdrant_api_key: Qdrant API key (overrides config and env var)
         voyage_api_key: Voyage AI API key (overrides config and env var)
+        db_path: Optional database path override
 
     Returns:
-        QdrantProvider if configured, None otherwise
-
-    Raises:
-        ValueError: If Qdrant URL is provided but Voyage API key is missing
+        SqliteVecProvider if configured and available, None otherwise
     """
-    # Resolve Qdrant URL with priority: explicit arg > config > env (POLYLOGUE_* > unprefixed)
-    url = qdrant_url
-    if url is None and config and config.index_config:
-        url = config.index_config.qdrant_url
-    if url is None:
-        url = get_env("QDRANT_URL")
-    if not url:
-        return None
-
-    # Resolve API keys with priority: explicit arg > config > env (POLYLOGUE_* > unprefixed)
-    api_key = qdrant_api_key
-    if api_key is None and config and config.index_config:
-        api_key = config.index_config.qdrant_api_key
-    if api_key is None:
-        api_key = get_env("QDRANT_API_KEY")
-
+    # Resolve Voyage key with priority: explicit arg > config > env
     voyage_key = voyage_api_key
     if voyage_key is None and config and config.index_config:
         voyage_key = config.index_config.voyage_api_key
@@ -96,22 +74,33 @@ def create_vector_provider(
         voyage_key = get_env("VOYAGE_API_KEY")
 
     if not voyage_key:
-        raise ValueError(
-            "Qdrant is configured but Voyage API key is not set. "
-            "Set POLYLOGUE_VOYAGE_API_KEY or VOYAGE_API_KEY environment variable."
-        )
+        return None
 
-    return QdrantProvider(
-        qdrant_url=url,
-        api_key=api_key,
-        voyage_key=voyage_key,
+    # Check if sqlite-vec is available
+    try:
+        import sqlite_vec  # noqa: F401
+    except ImportError:
+        logger.warning("sqlite-vec not installed, vector search unavailable")
+        return None
+
+    # Import here to avoid circular imports and loading when not needed
+    from polylogue.storage.search_providers.sqlite_vec import (
+        SqliteVecError,
+        SqliteVecProvider,
     )
+
+    try:
+        return SqliteVecProvider(
+            voyage_key=voyage_key,
+            db_path=db_path,
+        )
+    except SqliteVecError as exc:
+        logger.warning("sqlite-vec initialization failed: %s", exc)
+        return None
 
 
 __all__ = [
     "FTS5Provider",
-    "QdrantProvider",
-    "QdrantError",
     "HybridSearchProvider",
     "reciprocal_rank_fusion",
     "create_search_provider",

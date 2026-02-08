@@ -64,31 +64,6 @@ def get_config() -> Config:
     )
 
 
-# Backward compatibility aliases
-def load_config(path: Path | None = None) -> Config:
-    """Load configuration (ignores path argument - zero-config).
-
-    This function exists for backward compatibility. The path argument is ignored.
-    All configuration comes from hardcoded XDG paths.
-    """
-    return get_config()
-
-
-def default_config() -> Config:
-    """Backward compatibility alias for get_config()."""
-    return get_config()
-
-
-def write_config(config: Config, path: Path | None = None) -> None:
-    """Backward compatibility stub - no-op since zero-config."""
-    pass
-
-
-def update_config(config: Config, **kwargs: object) -> Config:
-    """Backward compatibility stub - returns config unchanged."""
-    return config
-
-
 # Re-export from paths for backward compatibility
 __all__ = [
     "Config",
@@ -97,8 +72,4 @@ __all__ = [
     "IndexConfig",
     "Source",
     "get_config",
-    "load_config",
-    "default_config",
-    "write_config",
-    "update_config",
 ]

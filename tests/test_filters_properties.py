@@ -12,15 +12,12 @@ Key properties tested:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
-from typing import Any
+from datetime import datetime, timedelta, timezone
 
-import pytest
-from hypothesis import given, settings, assume
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from polylogue.storage.search_providers.hybrid import reciprocal_rank_fusion
-
 
 # =============================================================================
 # RRF Score Bound Properties
