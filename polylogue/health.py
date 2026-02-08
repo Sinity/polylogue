@@ -295,23 +295,28 @@ def get_health(config: Config, *, deep: bool = False) -> HealthReport:
         if cached_data:
             ts = cached_data.get("timestamp", 0)
             if (now - ts) < HEALTH_TTL_SECONDS:
-                checks = [
-                    HealthCheck(
-                        name=c["name"],
-                        status=VerifyStatus(c["status"]),
-                        count=c.get("count", 0),
-                        detail=c.get("detail", ""),
-                        breakdown=c.get("breakdown", {}),
+                try:
+                    checks = [
+                        HealthCheck(
+                            name=c["name"],
+                            status=VerifyStatus(c["status"]),
+                            count=c.get("count", 0),
+                            detail=c.get("detail", ""),
+                            breakdown=c.get("breakdown", {}),
+                        )
+                        for c in cached_data.get("checks", [])
+                    ]
+                except (KeyError, ValueError):
+                    # Corrupted cache — fall through to fresh health check
+                    pass
+                else:
+                    return HealthReport(
+                        checks=checks,
+                        summary=cached_data.get("summary", {}),
+                        timestamp=ts,
+                        cached=True,
+                        age_seconds=now - ts,
                     )
-                    for c in cached_data.get("checks", [])
-                ]
-                return HealthReport(
-                    checks=checks,
-                    summary=cached_data.get("summary", {}),
-                    timestamp=ts,
-                    cached=True,
-                    age_seconds=now - ts,
-                )
 
     report = run_health(config, deep=deep)
     report.cached = False

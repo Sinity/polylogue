@@ -134,14 +134,14 @@ class SqliteVecProvider:
 
     def _ensure_vec_available(self) -> None:
         """Ensure sqlite-vec is available, raising error if not."""
-        conn = self._get_connection()
-        try:
-            if not self._vec_available:
-                raise SqliteVecError(
-                    "sqlite-vec extension not available. Install with: pip install sqlite-vec"
-                )
-        finally:
+        if self._vec_available is None:
+            # First call: probe by creating a connection (sets self._vec_available)
+            conn = self._get_connection()
             conn.close()
+        if not self._vec_available:
+            raise SqliteVecError(
+                "sqlite-vec extension not available. Install with: pip install sqlite-vec"
+            )
 
     def _get_embeddings(
         self,
