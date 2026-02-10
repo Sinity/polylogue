@@ -921,3 +921,138 @@ def test_repository_get_attachment_metadata_decoded(test_db):
     assert len(msg.attachments) == 1
     att = msg.attachments[0]
     assert att.provider_meta == meta or att.provider_meta is None
+
+
+# --- Merged from test_simple_coverage.py ---
+
+
+class TestTimestampParsing:
+    """Test core/timestamps.py edge cases."""
+
+    def test_parse_timestamp_none(self):
+        """Test parse_timestamp with None."""
+        from polylogue.lib.timestamps import parse_timestamp
+
+        result = parse_timestamp(None)
+        assert result is None
+
+    def test_parse_timestamp_numeric(self):
+        """Test parse_timestamp with numeric timestamp."""
+        from polylogue.lib.timestamps import parse_timestamp
+
+        # Valid numeric timestamp
+        result = parse_timestamp(1704067200.0)
+        assert result is not None
+
+
+class TestJsonUtils:
+    """Test core/json.py utilities."""
+
+    def test_loads_valid_json(self):
+        """Test loads with valid JSON."""
+        from polylogue.lib.json import loads
+
+        data = loads('{"key": "value"}')
+        assert data == {"key": "value"}
+
+    def test_loads_invalid_json(self):
+        """Test loads with invalid JSON raises."""
+        from polylogue.lib.json import loads
+
+        with pytest.raises((ValueError, json.JSONDecodeError)):
+            loads("{invalid}")
+
+
+# --- Merged from test_supplementary_coverage.py ---
+
+
+class TestVersionEdgeCases:
+    """Tests for version detection edge cases."""
+
+    def test_resolve_version_returns_version_info(self):
+        """_resolve_version should return a VersionInfo object."""
+        from polylogue.version import _resolve_version
+
+        info = _resolve_version()
+        assert info is not None
+        assert hasattr(info, "version")
+
+    def test_version_info_str(self):
+        """VersionInfo __str__ should include version."""
+        from polylogue.version import VersionInfo
+
+        info = VersionInfo(version="1.0.0", commit="abc123", dirty=False)
+        s = str(info)
+        assert "1.0.0" in s
+
+    def test_version_info_dirty(self):
+        """VersionInfo should indicate dirty state."""
+        from polylogue.version import VersionInfo
+
+        info = VersionInfo(version="1.0.0", commit="abc123", dirty=True)
+        s = str(info)
+        assert "dirty" in s.lower() or "+" in s
+
+
+class TestDisplayDate:
+    """Tests for the display_date property on Conversation and ConversationSummary."""
+
+    def test_summary_display_date_prefers_updated(self):
+        from datetime import datetime, timezone
+
+        from polylogue.lib.models import ConversationSummary
+
+        created = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        updated = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        s = ConversationSummary(
+            id="test:1", provider="test", created_at=created, updated_at=updated
+        )
+        assert s.display_date == updated
+
+    def test_summary_display_date_falls_back_to_created(self):
+        from datetime import datetime, timezone
+
+        from polylogue.lib.models import ConversationSummary
+
+        created = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        s = ConversationSummary(
+            id="test:1", provider="test", created_at=created, updated_at=None
+        )
+        assert s.display_date == created
+
+    def test_summary_display_date_none_when_both_missing(self):
+        from polylogue.lib.models import ConversationSummary
+
+        s = ConversationSummary(id="test:1", provider="test")
+        assert s.display_date is None
+
+    def test_conversation_display_date_prefers_updated(self):
+        from datetime import datetime, timezone
+
+        from polylogue.lib.models import Conversation, MessageCollection
+
+        created = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        updated = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        c = Conversation(
+            id="test:1",
+            provider="test",
+            messages=MessageCollection(messages=[]),
+            created_at=created,
+            updated_at=updated,
+        )
+        assert c.display_date == updated
+
+    def test_conversation_display_date_falls_back_to_created(self):
+        from datetime import datetime, timezone
+
+        from polylogue.lib.models import Conversation, MessageCollection
+
+        created = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        c = Conversation(
+            id="test:1",
+            provider="test",
+            messages=MessageCollection(messages=[]),
+            created_at=created,
+            updated_at=None,
+        )
+        assert c.display_date == created
