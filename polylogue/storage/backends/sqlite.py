@@ -336,8 +336,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
 def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
     """Migrate from v1 to v2: add attachment reference counting."""
     conn.execute("ALTER TABLE attachments RENAME TO attachment_refs_old")
-    conn.executescript(
-        """
+    conn.execute("""
         CREATE TABLE attachments (
             attachment_id TEXT PRIMARY KEY,
             mime_type TEXT,
@@ -346,8 +345,9 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
             ref_count INTEGER NOT NULL DEFAULT 0,
             provider_meta TEXT,
             UNIQUE (attachment_id)
-        );
-
+        )
+    """)
+    conn.execute("""
         CREATE TABLE attachment_refs (
             ref_id TEXT PRIMARY KEY,
             attachment_id TEXT NOT NULL,
@@ -360,15 +360,10 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
                 REFERENCES conversations(conversation_id) ON DELETE CASCADE,
             FOREIGN KEY (message_id)
                 REFERENCES messages(message_id) ON DELETE SET NULL
-        );
-
-        CREATE INDEX idx_attachment_refs_conversation
-        ON attachment_refs(conversation_id);
-
-        CREATE INDEX idx_attachment_refs_message
-        ON attachment_refs(message_id);
-        """
-    )
+        )
+    """)
+    conn.execute("CREATE INDEX idx_attachment_refs_conversation ON attachment_refs(conversation_id)")
+    conn.execute("CREATE INDEX idx_attachment_refs_message ON attachment_refs(message_id)")
     rows = conn.execute("SELECT * FROM attachment_refs_old").fetchall()
     for row in rows:
         attachment_id = row["attachment_id"]
@@ -426,8 +421,7 @@ def _migrate_v1_to_v2(conn: sqlite3.Connection) -> None:
 def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
     """Migrate from v2 to v3: update runs table schema."""
     conn.execute("ALTER TABLE runs RENAME TO runs_old")
-    conn.executescript(
-        """
+    conn.execute("""
         CREATE TABLE runs (
             run_id TEXT PRIMARY KEY,
             timestamp TEXT NOT NULL,
@@ -436,9 +430,8 @@ def _migrate_v2_to_v3(conn: sqlite3.Connection) -> None:
             drift_json TEXT,
             indexed INTEGER,
             duration_ms INTEGER
-        );
-        """
-    )
+        )
+    """)
     conn.execute(
         """
         INSERT INTO runs (
@@ -469,8 +462,7 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
     # Drop existing index before renaming table to avoid conflicts
     conn.execute("DROP INDEX IF EXISTS idx_conversations_provider")
     conn.execute("ALTER TABLE conversations RENAME TO conversations_old")
-    conn.executescript(
-        """
+    conn.execute("""
         CREATE TABLE conversations (
             conversation_id TEXT PRIMARY KEY,
             provider_name TEXT NOT NULL,
@@ -482,15 +474,10 @@ def _migrate_v3_to_v4(conn: sqlite3.Connection) -> None:
             provider_meta TEXT,
             source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
             version INTEGER NOT NULL
-        );
-
-        CREATE INDEX idx_conversations_provider
-        ON conversations(provider_name, provider_conversation_id);
-
-        CREATE INDEX idx_conversations_source_name
-        ON conversations(source_name) WHERE source_name IS NOT NULL;
-        """
-    )
+        )
+    """)
+    conn.execute("CREATE INDEX idx_conversations_provider ON conversations(provider_name, provider_conversation_id)")
+    conn.execute("CREATE INDEX idx_conversations_source_name ON conversations(source_name) WHERE source_name IS NOT NULL")
     conn.execute(
         """
         INSERT INTO conversations (
@@ -569,8 +556,7 @@ def _migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
 
     Data flow: raw_conversations → conversations (not the reverse).
     """
-    conn.executescript(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS raw_conversations (
             raw_id TEXT PRIMARY KEY,
             provider_name TEXT NOT NULL,
@@ -580,15 +566,10 @@ def _migrate_v7_to_v8(conn: sqlite3.Connection) -> None:
             raw_content BLOB NOT NULL,
             acquired_at TEXT NOT NULL,
             file_mtime TEXT
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_raw_conv_provider
-        ON raw_conversations(provider_name);
-
-        CREATE INDEX IF NOT EXISTS idx_raw_conv_source
-        ON raw_conversations(source_path);
-        """
-    )
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_conv_provider ON raw_conversations(provider_name)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_raw_conv_source ON raw_conversations(source_path)")
 
     # Add raw_id to conversations (FK to raw_conversations)
     conn.execute("ALTER TABLE conversations ADD COLUMN raw_id TEXT REFERENCES raw_conversations(raw_id)")
@@ -684,18 +665,19 @@ def _migrate_v10_to_v11(conn: sqlite3.Connection) -> None:
     Previously only INSERT trigger existed, so edited or deleted messages
     remained searchable as ghost results.
     """
-    conn.executescript("""
+    conn.execute("""
         CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE OF text ON messages
         BEGIN
             DELETE FROM messages_fts WHERE rowid = old.rowid;
             INSERT INTO messages_fts(rowid, message_id, conversation_id, content)
             VALUES (new.rowid, new.message_id, new.conversation_id, new.text);
-        END;
-
+        END
+    """)
+    conn.execute("""
         CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages
         BEGIN
             DELETE FROM messages_fts WHERE rowid = old.rowid;
-        END;
+        END
     """)
 
 
