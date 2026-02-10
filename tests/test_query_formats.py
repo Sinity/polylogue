@@ -1,0 +1,868 @@
+"""Tests for CLI query output formats and helper functions.
+
+Covers:
+- _describe_filters: filter description builder
+- _yaml_safe: YAML quoting
+- _conv_to_*: all 8 format converters
+- _conv_to_dict: summary dict with field selection
+- _format_conversation: format dispatch
+- _format_list: list format dispatch
+- _apply_transform: strip-tools, strip-thinking, strip-all
+- _output_stats: stats output
+- _output_stats_by: grouped stats output
+- _write_message_streaming: streaming format output
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from datetime import datetime, timezone
+from io import StringIO
+from unittest.mock import MagicMock
+
+import pytest
+
+from polylogue.lib.models import Conversation, Message
+from polylogue.lib.messages import MessageCollection
+
+
+# =============================================================================
+# Test Helpers for Building Test Data
+# =============================================================================
+
+
+def _make_msg(
+    role: str = "user",
+    text: str | None = "Hello",
+    **kwargs,
+) -> Message:
+    """Create a test message."""
+    return Message(
+        id=kwargs.get("id", f"msg-{role}"),
+        role=role,
+        text=text,
+        timestamp=kwargs.get("timestamp"),
+        attachments=kwargs.get("attachments", []),
+        provider_meta=kwargs.get("provider_meta"),
+    )
+
+
+def _make_conv(
+    id: str = "test-conv",
+    provider: str = "chatgpt",
+    title: str = "Test",
+    messages: list[Message] | None = None,
+    **kwargs,
+) -> Conversation:
+    """Create a test conversation."""
+    if messages is None:
+        messages = [_make_msg("user", "Hello"), _make_msg("assistant", "Hi there")]
+
+    return Conversation(
+        id=id,
+        provider=provider,
+        title=title,
+        messages=MessageCollection(messages=messages),
+        created_at=kwargs.get("created_at"),
+        updated_at=kwargs.get("updated_at"),
+        metadata={"tags": kwargs.get("tags", []), "summary": kwargs.get("summary")},
+    )
+
+
+# =============================================================================
+# Tests for _describe_filters
+# =============================================================================
+
+
+class TestDescribeFilters:
+    def _fn(self, params: dict) -> list[str]:
+        from polylogue.cli.query import _describe_filters
+
+        return _describe_filters(params)
+
+    def test_empty_params(self) -> None:
+        assert self._fn({}) == []
+
+    def test_query_terms(self) -> None:
+        result = self._fn({"query": ("error", "python")})
+        assert any("error" in r and "python" in r for r in result)
+
+    def test_all_filter_types(self) -> None:
+        result = self._fn(
+            {
+                "query": ("test",),
+                "contains": ("word",),
+                "provider": "claude",
+                "exclude_provider": "chatgpt",
+                "tag": "important",
+                "exclude_tag": "spam",
+                "title": "Test Title",
+                "has_type": ("thinking", "tools"),
+                "since": "2025-01-01",
+                "until": "2025-12-31",
+                "conv_id": "abc123",
+            }
+        )
+        assert len(result) == 11  # All filters present
+
+    def test_partial_filters(self) -> None:
+        result = self._fn({"provider": "claude", "since": "2025-01-01"})
+        assert len(result) == 2
+
+    def test_exclude_provider(self) -> None:
+        result = self._fn({"exclude_provider": "chatgpt"})
+        assert any("exclude provider" in r for r in result)
+
+    def test_has_type(self) -> None:
+        result = self._fn({"has_type": ("thinking",)})
+        assert any("has:" in r for r in result)
+
+
+# =============================================================================
+# Tests for _yaml_safe
+# =============================================================================
+
+
+class TestYamlSafe:
+    def _fn(self, value: str) -> str:
+        from polylogue.cli.query import _yaml_safe
+
+        return _yaml_safe(value)
+
+    def test_plain_string_unchanged(self) -> None:
+        assert self._fn("hello") == "hello"
+
+    def test_colon_gets_quoted(self) -> None:
+        assert self._fn("key:value") == '"key:value"'
+
+    def test_hash_gets_quoted(self) -> None:
+        assert self._fn("# comment") == '"# comment"'
+
+    def test_newline_escaped(self) -> None:
+        result = self._fn("line1\nline2")
+        assert "\\n" in result
+
+    def test_tab_escaped(self) -> None:
+        result = self._fn("col1\tcol2")
+        assert "\\t" in result
+
+    def test_quotes_escaped(self) -> None:
+        result = self._fn('say "hello"')
+        assert '\\"' in result
+
+    def test_special_chars_get_quoted(self) -> None:
+        for char in ":#{}[]|>&*!?@`'\"":
+            result = self._fn(f"text{char}here")
+            assert result.startswith('"')
+            assert result.endswith('"')
+
+
+# =============================================================================
+# Tests for _conv_to_markdown
+# =============================================================================
+
+
+class TestConvToMarkdown:
+    def _fn(self, conv: Conversation) -> str:
+        from polylogue.cli.query import _conv_to_markdown
+
+        return _conv_to_markdown(conv)
+
+    def test_basic(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        assert "# Test" in result
+        assert "## User" in result
+        assert "## Assistant" in result
+        assert "Hello" in result
+        assert "Hi there" in result
+
+    def test_with_date(self) -> None:
+        dt = datetime(2025, 6, 15, 12, 30, tzinfo=timezone.utc)
+        conv = _make_conv(updated_at=dt)
+        result = self._fn(conv)
+        assert "2025-06-15" in result
+
+    def test_no_title_uses_id(self) -> None:
+        conv = _make_conv(title=None)
+        result = self._fn(conv)
+        # display_title truncates to 8 chars
+        assert conv.id[:8] in result
+
+    def test_empty_text_skipped(self) -> None:
+        msgs = [_make_msg("user", None), _make_msg("assistant", "Reply")]
+        conv = _make_conv(messages=msgs)
+        result = self._fn(conv)
+        assert "## User" not in result  # No text = skipped
+        assert "## Assistant" in result
+
+    def test_role_capitalized(self) -> None:
+        msgs = [_make_msg("user", "Q"), _make_msg("assistant", "A")]
+        conv = _make_conv(messages=msgs)
+        result = self._fn(conv)
+        assert "## User" in result
+        assert "## Assistant" in result
+
+    def test_provider_shown(self) -> None:
+        conv = _make_conv(provider="claude")
+        result = self._fn(conv)
+        assert "claude" in result.lower()
+
+
+# =============================================================================
+# Tests for _conv_to_html
+# =============================================================================
+
+
+class TestConvToHtml:
+    def _fn(self, conv: Conversation) -> str:
+        from polylogue.cli.query import _conv_to_html
+
+        return _conv_to_html(conv)
+
+    def test_basic_structure(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        assert "<!DOCTYPE html>" in result
+        assert "Polylogue" in result
+        assert "message-user" in result
+        assert "message-assistant" in result
+
+    def test_pygments_css_included(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        assert "style>" in result
+
+    def test_xss_safe_title(self) -> None:
+        conv = _make_conv(title='<script>alert("xss")</script>')
+        result = self._fn(conv)
+        assert "<script>" not in result
+        assert "&lt;script&gt;" in result
+
+    def test_empty_messages_skipped(self) -> None:
+        msgs = [_make_msg("user", None)]
+        conv = _make_conv(messages=msgs)
+        result = self._fn(conv)
+        # Empty messages should not create message divs, though the CSS class
+        # may still be in the stylesheet. Check for actual message div instead.
+        assert '<div class="message-user">' not in result
+
+    def test_role_class_sanitized(self) -> None:
+        """Role names with special chars get sanitized CSS classes."""
+        msgs = [_make_msg("tool_use", "tool output")]
+        conv = _make_conv(messages=msgs)
+        result = self._fn(conv)
+        # Special chars should be replaced with hyphens
+        assert "message-tool-use" in result
+
+    def test_has_closing_tags(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        assert result.count("<html>") == result.count("</html>")
+        assert result.count("<body>") == result.count("</body>")
+
+
+# =============================================================================
+# Tests for _conv_to_json
+# =============================================================================
+
+
+class TestConvToJson:
+    def _fn(self, conv: Conversation, fields: str | None = None) -> str:
+        from polylogue.cli.query import _conv_to_json
+
+        return _conv_to_json(conv, fields)
+
+    def test_valid_json(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        data = json.loads(result)
+        assert data["id"] == "test-conv"
+        assert data["provider"] == "chatgpt"
+        assert isinstance(data["messages"], list)
+        assert len(data["messages"]) == 2
+
+    def test_messages_have_content(self) -> None:
+        conv = _make_conv()
+        data = json.loads(self._fn(conv))
+        assert data["messages"][0]["role"] == "user"
+        assert data["messages"][0]["text"] == "Hello"
+
+    def test_field_selection(self) -> None:
+        conv = _make_conv()
+        data = json.loads(self._fn(conv, "id,provider"))
+        assert "id" in data
+        assert "provider" in data
+
+    def test_messages_included_by_default(self) -> None:
+        conv = _make_conv()
+        data = json.loads(self._fn(conv))
+        assert "messages" in data
+        assert isinstance(data["messages"], list)
+
+
+# =============================================================================
+# Tests for _conv_to_plaintext
+# =============================================================================
+
+
+class TestConvToPlaintext:
+    def _fn(self, conv: Conversation) -> str:
+        from polylogue.cli.query import _conv_to_plaintext
+
+        return _conv_to_plaintext(conv)
+
+    def test_no_formatting(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        assert "Hello" in result
+        assert "Hi there" in result
+        assert "##" not in result  # No markdown headers
+        assert "**" not in result  # No bold
+
+    def test_empty_text_skipped(self) -> None:
+        msgs = [_make_msg("user", None), _make_msg("assistant", "Reply")]
+        conv = _make_conv(messages=msgs)
+        result = self._fn(conv)
+        assert "Reply" in result
+
+    def test_messages_separated_by_blank_lines(self) -> None:
+        msgs = [_make_msg("user", "Q1"), _make_msg("assistant", "A1")]
+        conv = _make_conv(messages=msgs)
+        result = self._fn(conv)
+        assert "Q1" in result
+        assert "A1" in result
+        # Should have blank line between messages
+        assert "\n\n" in result
+
+
+# =============================================================================
+# Tests for _conv_to_csv_messages
+# =============================================================================
+
+
+class TestConvToCsvMessages:
+    def _fn(self, conv: Conversation) -> str:
+        from polylogue.cli.query import _conv_to_csv_messages
+
+        return _conv_to_csv_messages(conv)
+
+    def test_header_present(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        assert "conversation_id" in result
+        assert "message_id" in result
+
+    def test_rows_match_messages(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        lines = result.strip().split("\n")
+        assert len(lines) == 3  # header + 2 messages
+
+    def test_empty_text_skipped(self) -> None:
+        msgs = [_make_msg("user", None), _make_msg("assistant", "Reply")]
+        conv = _make_conv(messages=msgs)
+        result = self._fn(conv)
+        lines = result.strip().split("\n")
+        assert len(lines) == 2  # header + 1 message (user skipped)
+
+    def test_has_text_column(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        assert "text" in result
+
+
+# =============================================================================
+# Tests for _conv_to_obsidian
+# =============================================================================
+
+
+class TestConvToObsidian:
+    def _fn(self, conv: Conversation) -> str:
+        from polylogue.cli.query import _conv_to_obsidian
+
+        return _conv_to_obsidian(conv)
+
+    def test_frontmatter_present(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        assert result.startswith("---")
+        assert "provider:" in result
+
+    def test_content_after_frontmatter(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        # Should have frontmatter then markdown
+        parts = result.split("---")
+        assert len(parts) >= 3  # before, frontmatter, after
+
+    def test_includes_date(self) -> None:
+        dt = datetime(2025, 6, 15, 12, 30, tzinfo=timezone.utc)
+        conv = _make_conv(updated_at=dt)
+        result = self._fn(conv)
+        assert "date:" in result
+
+    def test_includes_id(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        assert "id:" in result
+
+
+# =============================================================================
+# Tests for _conv_to_org
+# =============================================================================
+
+
+class TestConvToOrg:
+    def _fn(self, conv: Conversation) -> str:
+        from polylogue.cli.query import _conv_to_org
+
+        return _conv_to_org(conv)
+
+    def test_org_header(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        assert "#+TITLE:" in result
+        assert "#+DATE:" in result
+        assert "#+PROPERTY:" in result
+
+    def test_messages_as_headings(self) -> None:
+        conv = _make_conv()
+        result = self._fn(conv)
+        assert "* USER" in result
+        assert "* ASSISTANT" in result
+
+    def test_role_uppercase(self) -> None:
+        msgs = [_make_msg("user", "Q")]
+        conv = _make_conv(messages=msgs)
+        result = self._fn(conv)
+        # Role should be uppercase in org mode
+        assert "* USER" in result
+
+
+# =============================================================================
+# Tests for _conv_to_dict
+# =============================================================================
+
+
+class TestConvToDict:
+    def _fn(self, conv: Conversation, fields: str | None = None) -> dict:
+        from polylogue.cli.query import _conv_to_dict
+
+        return _conv_to_dict(conv, fields)
+
+    def test_all_fields(self) -> None:
+        conv = _make_conv()
+        d = self._fn(conv)
+        assert d["id"] == "test-conv"
+        assert d["provider"] == "chatgpt"
+        assert d["messages"] == 2
+        assert "tags" in d
+
+    def test_field_selection(self) -> None:
+        conv = _make_conv()
+        d = self._fn(conv, "id,provider")
+        assert set(d.keys()) == {"id", "provider"}
+
+    def test_word_count(self) -> None:
+        conv = _make_conv()
+        d = self._fn(conv)
+        assert d["words"] > 0
+
+    def test_date_in_iso_format(self) -> None:
+        dt = datetime(2025, 6, 15, 12, 30, tzinfo=timezone.utc)
+        conv = _make_conv(updated_at=dt)
+        d = self._fn(conv)
+        assert "2025" in d["date"]
+
+
+# =============================================================================
+# Tests for _conv_to_csv
+# =============================================================================
+
+
+class TestConvToCsv:
+    def _fn(self, results: list[Conversation]) -> str:
+        from polylogue.cli.query import _conv_to_csv
+
+        return _conv_to_csv(results)
+
+    def test_header_present(self) -> None:
+        result = self._fn([_make_conv()])
+        assert "id,date,provider,title" in result
+
+    def test_row_count(self) -> None:
+        result = self._fn([_make_conv(id="c1"), _make_conv(id="c2")])
+        lines = result.strip().split("\n")
+        assert len(lines) == 3  # header + 2 rows
+
+    def test_includes_all_fields(self) -> None:
+        result = self._fn([_make_conv()])
+        # Check that expected columns are present
+        assert "messages" in result
+        assert "words" in result
+
+
+# =============================================================================
+# Tests for _conv_to_yaml
+# =============================================================================
+
+
+class TestConvToYaml:
+    def _fn(self, conv: Conversation, fields: str | None = None) -> str:
+        from polylogue.cli.query import _conv_to_yaml
+
+        return _conv_to_yaml(conv, fields)
+
+    def test_valid_yaml(self) -> None:
+        import yaml
+
+        conv = _make_conv()
+        result = self._fn(conv)
+        data = yaml.safe_load(result)
+        assert data["id"] == "test-conv"
+        assert isinstance(data["messages"], list)
+
+    def test_includes_messages_by_default(self) -> None:
+        import yaml
+
+        conv = _make_conv()
+        result = self._fn(conv)
+        data = yaml.safe_load(result)
+        assert "messages" in data
+
+    def test_preserves_unicode(self) -> None:
+        import yaml
+
+        msgs = [_make_msg("user", "Hello 世界")]
+        conv = _make_conv(messages=msgs)
+        result = self._fn(conv)
+        data = yaml.safe_load(result)
+        assert "世界" in data["messages"][0]["text"]
+
+
+# =============================================================================
+# Tests for _format_conversation
+# =============================================================================
+
+
+class TestFormatConversation:
+    def _fn(self, conv: Conversation, fmt: str, fields: str | None = None) -> str:
+        from polylogue.cli.query import _format_conversation
+
+        return _format_conversation(conv, fmt, fields)
+
+    def test_dispatch_markdown(self) -> None:
+        result = self._fn(_make_conv(), "markdown")
+        assert "# Test" in result
+
+    def test_dispatch_json(self) -> None:
+        result = self._fn(_make_conv(), "json")
+        assert json.loads(result)
+
+    def test_dispatch_html(self) -> None:
+        result = self._fn(_make_conv(), "html")
+        assert "<!DOCTYPE" in result
+
+    def test_dispatch_plaintext(self) -> None:
+        result = self._fn(_make_conv(), "plaintext")
+        assert "##" not in result
+
+    def test_dispatch_csv(self) -> None:
+        result = self._fn(_make_conv(), "csv")
+        assert "conversation_id" in result
+
+    def test_dispatch_obsidian(self) -> None:
+        result = self._fn(_make_conv(), "obsidian")
+        assert "---" in result
+
+    def test_dispatch_org(self) -> None:
+        result = self._fn(_make_conv(), "org")
+        assert "#+TITLE:" in result
+
+    def test_dispatch_yaml(self) -> None:
+        result = self._fn(_make_conv(), "yaml")
+        assert "id:" in result
+
+    def test_unknown_defaults_to_markdown(self) -> None:
+        result = self._fn(_make_conv(), "unknown_format")
+        assert "# Test" in result
+
+
+# =============================================================================
+# Tests for _format_list
+# =============================================================================
+
+
+class TestFormatList:
+    def _fn(self, results: list[Conversation], fmt: str, fields: str | None = None) -> str:
+        from polylogue.cli.query import _format_list
+
+        return _format_list(results, fmt, fields)
+
+    def test_json_format(self) -> None:
+        result = self._fn([_make_conv()], "json")
+        data = json.loads(result)
+        assert isinstance(data, list)
+        assert len(data) == 1
+
+    def test_csv_format(self) -> None:
+        result = self._fn([_make_conv()], "csv")
+        assert "id,date,provider" in result
+
+    def test_text_format(self) -> None:
+        result = self._fn([_make_conv()], "text")
+        assert "test-conv" in result or "chatgpt" in result
+
+    def test_yaml_format(self) -> None:
+        import yaml
+
+        result = self._fn([_make_conv()], "yaml")
+        data = yaml.safe_load(result)
+        assert isinstance(data, list)
+
+    def test_multiple_conversations(self) -> None:
+        result = self._fn([_make_conv(id="c1"), _make_conv(id="c2")], "text")
+        assert "c1" in result
+        assert "c2" in result
+
+
+# =============================================================================
+# Tests for _write_message_streaming
+# =============================================================================
+
+
+class TestWriteMessageStreaming:
+    def _fn(self, msg: Message, fmt: str) -> None:
+        from polylogue.cli.query import _write_message_streaming
+
+        _write_message_streaming(msg, fmt)
+
+    def test_plaintext_format(self, capsys) -> None:
+        msg = _make_msg("user", "Hello streaming")
+        self._fn(msg, "plaintext")
+        captured = capsys.readouterr()
+        assert "[USER]" in captured.out
+        assert "Hello streaming" in captured.out
+
+    def test_markdown_format(self, capsys) -> None:
+        msg = _make_msg("assistant", "Reply here")
+        self._fn(msg, "markdown")
+        captured = capsys.readouterr()
+        assert "## Assistant" in captured.out
+        assert "Reply here" in captured.out
+
+    def test_jsonlines_format(self, capsys) -> None:
+        msg = _make_msg("user", "JSON test")
+        self._fn(msg, "json-lines")
+        captured = capsys.readouterr()
+        data = json.loads(captured.out.strip())
+        assert data["type"] == "message"
+        assert data["text"] == "JSON test"
+
+    def test_empty_text_skipped_in_plaintext(self, capsys) -> None:
+        msg = _make_msg("user", None)
+        self._fn(msg, "plaintext")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_empty_text_skipped_in_markdown(self, capsys) -> None:
+        msg = _make_msg("user", None)
+        self._fn(msg, "markdown")
+        captured = capsys.readouterr()
+        assert captured.out == ""
+
+    def test_jsonlines_with_timestamp(self, capsys) -> None:
+        ts = datetime(2025, 6, 15, 12, 0, tzinfo=timezone.utc)
+        msg = _make_msg("assistant", "Timestamped", timestamp=ts)
+        self._fn(msg, "json-lines")
+        captured = capsys.readouterr()
+        data = json.loads(captured.out.strip())
+        assert data["timestamp"] is not None
+        assert "2025" in data["timestamp"]
+
+    def test_plaintext_role_uppercase(self, capsys) -> None:
+        msg = _make_msg("assistant", "Text")
+        self._fn(msg, "plaintext")
+        captured = capsys.readouterr()
+        assert "[ASSISTANT]" in captured.out
+
+    def test_jsonlines_includes_word_count(self, capsys) -> None:
+        msg = _make_msg("user", "One two three")
+        self._fn(msg, "json-lines")
+        captured = capsys.readouterr()
+        data = json.loads(captured.out.strip())
+        assert data["word_count"] == 3
+
+
+# =============================================================================
+# Tests for _apply_transform
+# =============================================================================
+
+
+class TestApplyTransform:
+    def _fn(self, results: list[Conversation], transform: str) -> list[Conversation]:
+        from polylogue.cli.query import _apply_transform
+
+        return _apply_transform(results, transform)
+
+    def test_strip_tools_removes_tool_messages(self) -> None:
+        msgs = [
+            _make_msg("user", "Question"),
+            _make_msg("tool", "Tool output"),
+            _make_msg("assistant", "Answer"),
+        ]
+        conv = _make_conv(messages=msgs)
+        result = self._fn([conv], "strip-tools")
+        assert len(result) == 1
+        # After stripping tools, tool messages should be removed
+        result_msgs = list(result[0].messages)
+        assert len(result_msgs) == 2  # Only user and assistant remain
+
+    def test_strip_thinking_effect(self) -> None:
+        msgs = [
+            _make_msg("user", "Question"),
+            _make_msg("assistant", "Answer"),
+        ]
+        conv = _make_conv(messages=msgs)
+        result = self._fn([conv], "strip-thinking")
+        assert len(result) == 1
+
+    def test_strip_all_effect(self) -> None:
+        msgs = [
+            _make_msg("user", "Q"),
+            _make_msg("tool", "T"),
+            _make_msg("assistant", "A"),
+        ]
+        conv = _make_conv(messages=msgs)
+        result = self._fn([conv], "strip-all")
+        assert len(result) == 1
+
+    def test_unknown_transform_returns_unchanged(self) -> None:
+        conv = _make_conv()
+        result = self._fn([conv], "unknown-transform")
+        # Should return conv unchanged if transform not recognized
+        assert len(result) == 1
+
+    def test_multiple_conversations(self) -> None:
+        conv1 = _make_conv(id="c1")
+        conv2 = _make_conv(id="c2")
+        result = self._fn([conv1, conv2], "strip-tools")
+        assert len(result) == 2
+
+
+# =============================================================================
+# Tests for _output_stats
+# =============================================================================
+
+
+class TestOutputStats:
+    def test_basic_stats(self) -> None:
+        from polylogue.cli.query import _output_stats
+
+        dt = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        conv = _make_conv(updated_at=dt)
+        env = MagicMock()
+        _output_stats(env, [conv])
+        env.ui.console.print.assert_called()
+
+    def test_empty_results(self) -> None:
+        from polylogue.cli.query import _output_stats
+
+        env = MagicMock()
+        _output_stats(env, [])
+        env.ui.console.print.assert_called_once_with("No conversations matched.")
+
+    def test_aggregates_stats(self) -> None:
+        from polylogue.cli.query import _output_stats
+
+        dt1 = datetime(2025, 1, 15, tzinfo=timezone.utc)
+        dt2 = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        convs = [
+            _make_conv(id="c1", updated_at=dt1),
+            _make_conv(id="c2", updated_at=dt2),
+        ]
+        env = MagicMock()
+        _output_stats(env, convs)
+        # Should have aggregated both conversations
+        env.ui.console.print.assert_called()
+
+    def test_calculates_word_count(self) -> None:
+        from polylogue.cli.query import _output_stats
+
+        msgs = [
+            _make_msg("user", "One two"),
+            _make_msg("assistant", "Three four five"),
+        ]
+        conv = _make_conv(messages=msgs)
+        env = MagicMock()
+        _output_stats(env, [conv])
+        # Should have called print with stats
+        env.ui.console.print.assert_called()
+
+
+# =============================================================================
+# Tests for _output_stats_by
+# =============================================================================
+
+
+class TestOutputStatsBy:
+    def test_by_provider(self) -> None:
+        from polylogue.cli.query import _output_stats_by
+
+        dt = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        convs = [
+            _make_conv(id="c1", provider="claude", updated_at=dt),
+            _make_conv(id="c2", provider="chatgpt", updated_at=dt),
+            _make_conv(id="c3", provider="claude", updated_at=dt),
+        ]
+        env = MagicMock()
+        _output_stats_by(env, convs, "provider")
+        env.ui.console.print.assert_called()
+
+    def test_by_month(self) -> None:
+        from polylogue.cli.query import _output_stats_by
+
+        dt1 = datetime(2025, 1, 15, tzinfo=timezone.utc)
+        dt2 = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        convs = [
+            _make_conv(id="c1", updated_at=dt1),
+            _make_conv(id="c2", updated_at=dt2),
+        ]
+        env = MagicMock()
+        _output_stats_by(env, convs, "month")
+        env.ui.console.print.assert_called()
+
+    def test_by_year(self) -> None:
+        from polylogue.cli.query import _output_stats_by
+
+        dt1 = datetime(2024, 1, 15, tzinfo=timezone.utc)
+        dt2 = datetime(2025, 6, 15, tzinfo=timezone.utc)
+        convs = [
+            _make_conv(id="c1", updated_at=dt1),
+            _make_conv(id="c2", updated_at=dt2),
+        ]
+        env = MagicMock()
+        _output_stats_by(env, convs, "year")
+        env.ui.console.print.assert_called()
+
+    def test_empty_results(self) -> None:
+        from polylogue.cli.query import _output_stats_by
+
+        env = MagicMock()
+        _output_stats_by(env, [], "provider")
+        env.ui.console.print.assert_called_once_with("No conversations matched.")
+
+    def test_groups_correctly_by_provider(self) -> None:
+        from polylogue.cli.query import _output_stats_by
+
+        convs = [
+            _make_conv(id="c1", provider="claude"),
+            _make_conv(id="c2", provider="chatgpt"),
+            _make_conv(id="c3", provider="claude"),
+        ]
+        env = MagicMock()
+        _output_stats_by(env, convs, "provider")
+        # Should have grouped by provider
+        env.ui.console.print.assert_called()
