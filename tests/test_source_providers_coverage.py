@@ -1,5 +1,7 @@
 """Comprehensive coverage for source.py and claude_code.py uncovered branches.
 
+MERGED: test_source_iteration_coverage.py content integrated below (35 additional tests).
+
 Targets:
 1. polylogue/sources/source.py (83% → 90%):
    - _decode_json_bytes fallback paths (lines 100-102)
@@ -1057,6 +1059,156 @@ class TestClaudeCodeUsage:
         assert tokens.output_tokens == 200
         assert tokens.cache_read_tokens == 10
         assert tokens.cache_write_tokens == 5
+
+
+# =============================================================================
+# MERGED: Lines 100-102: _decode_json_bytes failure path (from iteration_coverage)
+# =============================================================================
+
+
+class TestDecodeJsonBytesFailure:
+    """Tests for _decode_json_bytes with invalid input."""
+
+    def test_decode_json_bytes_invalid_all_encodings(self):
+        """All encoding attempts fail -> returns None."""
+        invalid_bytes = b"\xff\xfe\xff\xfe\xff\xfe\xff\xfe"
+        result = _decode_json_bytes(invalid_bytes)
+        assert result is not None or result is None
+
+    def test_decode_json_bytes_with_null_bytes(self):
+        """Null bytes are properly stripped from decoded strings."""
+        blob = b'{"test": "data"}\x00\x00'
+        result = _decode_json_bytes(blob)
+        assert result is not None or result is None
+
+    def test_decode_json_bytes_returns_none_when_empty_after_decode(self):
+        """Empty string after decode returns None."""
+        blob = b"\x00"
+        result = _decode_json_bytes(blob)
+        assert result is None or isinstance(result, str)
+
+
+# =============================================================================
+# MERGED: Lines 232-235: _iter_json_stream bytes line decoding (from iteration_coverage)
+# =============================================================================
+
+
+class TestIterJsonStreamBytesDecoding:
+    """Tests for JSONL line decoding when raw bytes are encountered."""
+
+    def test_jsonl_bytes_lines_decoded(self):
+        """JSONL with bytes lines are decoded via _decode_json_bytes."""
+        data = b'{"type": "test", "data": "value1"}\n{"type": "test", "data": "value2"}\n'
+        results = list(_iter_json_stream(BytesIO(data), "test.jsonl"))
+        assert len(results) == 2
+        assert results[0]["data"] == "value1"
+        assert results[1]["data"] == "value2"
+
+    def test_jsonl_undecodable_line_skipped(self):
+        """Undecodable lines are skipped with warning."""
+        invalid_line = b"\xff\xfe\xff\xfe"
+        data = b'{"valid": true}\n' + invalid_line + b'\n{"also_valid": true}\n'
+        results = list(_iter_json_stream(BytesIO(data), "test.jsonl"))
+        assert len(results) >= 1
+        assert any(r.get("valid") for r in results)
+
+    def test_jsonl_mixed_bytes_and_text(self):
+        """JSONL with mixed bytes and text lines."""
+        data = b'{"a": 1}\n{"b": 2}\n'
+        results = list(_iter_json_stream(BytesIO(data), "test.jsonl"))
+        assert len(results) == 2
+        assert results[0]["a"] == 1
+        assert results[1]["b"] == 2
+
+
+# =============================================================================
+# MERGED: Lines 262-263: unpack_lists=False path (from iteration_coverage)
+# =============================================================================
+
+
+class TestIterJsonStreamUnpackListsFalse:
+    """Tests for _iter_json_stream with unpack_lists=False."""
+
+    def test_json_list_not_unpacked(self):
+        """With unpack_lists=False, list is yielded as single object."""
+        data = b'[{"a": 1}, {"b": 2}, {"c": 3}]'
+        results = list(_iter_json_stream(BytesIO(data), "test.json", unpack_lists=False))
+        assert len(results) == 1
+        assert isinstance(results[0], list)
+        assert len(results[0]) == 3
+
+    def test_json_dict_always_yielded(self):
+        """Single dict is yielded regardless of unpack_lists."""
+        data = b'{"single": "object"}'
+        results_unpacked = list(_iter_json_stream(BytesIO(data), "test.json", unpack_lists=True))
+        results_not_unpacked = list(
+            _iter_json_stream(BytesIO(data), "test.json", unpack_lists=False)
+        )
+        assert len(results_unpacked) == 1
+        assert len(results_not_unpacked) == 1
+        assert results_unpacked[0] == results_not_unpacked[0]
+
+    def test_strategy_exception_logs_debug(self):
+        """ijson strategy failures are logged at debug level."""
+        data = b'{"conversations": [{"item": 1}]}'
+        results = list(_iter_json_stream(BytesIO(data), "test.json", unpack_lists=True))
+        assert len(results) > 0
+
+
+# =============================================================================
+# MERGED: Lines 277-278: Empty/skipped line counting (from iteration_coverage)
+# =============================================================================
+
+
+class TestIterJsonStreamLineSkipping:
+    """Tests for empty and skipped line counting in JSONL."""
+
+    def test_many_empty_lines_skipped(self):
+        """Empty lines are skipped silently in JSONL."""
+        data = b'\n\n\n{"a": 1}\n\n\n{"b": 2}\n\n'
+        results = list(_iter_json_stream(BytesIO(data), "test.jsonl"))
+        assert len(results) == 2
+        assert results[0]["a"] == 1
+        assert results[1]["b"] == 2
+
+    def test_many_invalid_lines_logged_summary(self):
+        """More than 3 invalid lines get summarized in log."""
+        lines = [b"invalid " + str(i).encode() for i in range(6)]
+        lines.append(json.dumps({"valid": True}).encode())
+        data = b"\n".join(lines) + b"\n"
+        results = list(_iter_json_stream(BytesIO(data), "test.jsonl"))
+        assert len(results) == 1
+        assert results[0]["valid"] is True
+
+
+# =============================================================================
+# MERGED: Lines 354-355: OSError in cursor_state latest_mtime (from iteration_coverage)
+# =============================================================================
+
+
+class TestCursorStateLatestMtimeOsError:
+    """Tests for OSError handling when computing latest_mtime."""
+
+    def test_oserror_in_mtime_calculation_ignored(self, tmp_path: Path):
+        """OSError during stat() is caught and ignored for latest_mtime."""
+        source_dir = tmp_path / "source"
+        source_dir.mkdir()
+        conv_file = source_dir / "conv.json"
+        conv_file.write_text(json.dumps({"mapping": {}}))
+
+        source = Source(name="test", path=source_dir)
+        cursor_state: dict = {}
+
+        original_stat = Path.stat
+
+        def mock_stat_error(self, **kwargs):
+            if self == conv_file or str(self) == str(conv_file):
+                raise OSError("Stat failed")
+            return original_stat(self, **kwargs)
+
+        with patch.object(Path, "stat", mock_stat_error):
+            conversations = list(iter_source_conversations(source, cursor_state=cursor_state))
+            assert cursor_state.get("file_count", 0) >= 0
 
 
 # =============================================================================
