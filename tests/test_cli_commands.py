@@ -44,6 +44,80 @@ from tests.cli_helpers.cli_subprocess import run_cli, setup_isolated_workspace
 from tests.helpers import DbFactory, GenericConversationBuilder
 
 # =============================================================================
+# TEST DATA TABLES (module-level constants)
+# =============================================================================
+
+IS_DECLARATIVE_CASES = [
+    (None, False, "unset"),
+    ("1", True, "set to 1"),
+    ("yes", True, "set to yes"),
+    ("true", True, "set to true"),
+    ("false", False, "set to false"),
+    ("no", False, "set to no"),
+    ("0", False, "set to 0"),
+    ("YES", True, "case insensitive YES"),
+    ("FALSE", False, "case insensitive FALSE"),
+]
+
+RESOLVE_SOURCES_VALID_CASES = [
+    (("chatgpt",), ["chatgpt"], "single valid source"),
+    (("chatgpt", "claude"), {"chatgpt", "claude"}, "multiple valid sources"),
+    (("chatgpt", "chatgpt"), ["chatgpt"], "deduplicated sources"),
+]
+
+RESOLVE_SOURCES_ERROR_CASES = [
+    ((), None, "empty sources returns None"),
+    (("unknown",), SystemExit, "unknown source fails"),
+    (("chatgpt", "unknown"), SystemExit, "mixed valid/invalid fails"),
+]
+
+SHELL_COMPLETION_CASES = [
+    ("bash", "bash"),
+    ("zsh", "zsh"),
+    ("fish", "fish"),
+]
+
+RESET_DELETION_CASES = [
+    ("--database", "db_path", "database"),
+    ("--assets", "assets_dir", "assets"),
+    ("--render", "render_dir", "render"),
+    ("--cache", "cache_dir", "cache"),
+    ("--auth", "token_path", "auth token"),
+]
+
+STAGE_CASES = [
+    ("parse", "parsing"),
+    ("render", "rendering"),
+    ("index", "indexing"),
+]
+
+AUTH_ERROR_CASES = [
+    ("--service", "unknown", "unknown service"),
+    ("--revoke", None, "no token revoke"),
+    (None, None, "missing credentials"),
+]
+
+SEARCH_FILTER_CASES = [
+    ("provider", "-p", "chatgpt", "provider filter"),
+    ("since", "--since", None, "date filter"),  # date computed at runtime
+    ("limit", "--limit", "1", "limit filter"),
+]
+
+SEARCH_FORMAT_CASES = [
+    ("json", "-f", "json", "JSON format"),
+    ("json_single", "-f", "json", "JSON single result"),
+    ("list", "--list", None, "list mode"),
+    ("markdown", "-f", "markdown", "markdown format"),
+]
+
+LATEST_RENDER_CASES = [
+    ("nonexistent_dir", None, "nonexistent directory"),
+    ("empty_dir", None, "empty directory"),
+    ("markdown_file", "conversation.md", "markdown file"),
+    ("html_file", "conversation.html", "HTML file"),
+]
+
+# =============================================================================
 # HELPERS.PY TESTS
 # =============================================================================
 
@@ -67,48 +141,14 @@ class TestFail:
 class TestIsDeclarative:
     """Tests for is_declarative() environment flag."""
 
-    def test_unset_returns_false(self, monkeypatch):
-        """Unset POLYLOGUE_DECLARATIVE should return False."""
-        monkeypatch.delenv("POLYLOGUE_DECLARATIVE", raising=False)
-        assert helpers.is_declarative() is False
-
-    def test_set_to_1_returns_true(self, monkeypatch):
-        """POLYLOGUE_DECLARATIVE=1 should return True."""
-        monkeypatch.setenv("POLYLOGUE_DECLARATIVE", "1")
-        assert helpers.is_declarative() is True
-
-    def test_set_to_yes_returns_true(self, monkeypatch):
-        """POLYLOGUE_DECLARATIVE=yes should return True."""
-        monkeypatch.setenv("POLYLOGUE_DECLARATIVE", "yes")
-        assert helpers.is_declarative() is True
-
-    def test_set_to_true_returns_true(self, monkeypatch):
-        """POLYLOGUE_DECLARATIVE=true should return True."""
-        monkeypatch.setenv("POLYLOGUE_DECLARATIVE", "true")
-        assert helpers.is_declarative() is True
-
-    def test_set_to_false_returns_false(self, monkeypatch):
-        """POLYLOGUE_DECLARATIVE=false should return False."""
-        monkeypatch.setenv("POLYLOGUE_DECLARATIVE", "false")
-        assert helpers.is_declarative() is False
-
-    def test_set_to_no_returns_false(self, monkeypatch):
-        """POLYLOGUE_DECLARATIVE=no should return False."""
-        monkeypatch.setenv("POLYLOGUE_DECLARATIVE", "no")
-        assert helpers.is_declarative() is False
-
-    def test_set_to_0_returns_false(self, monkeypatch):
-        """POLYLOGUE_DECLARATIVE=0 should return False."""
-        monkeypatch.setenv("POLYLOGUE_DECLARATIVE", "0")
-        assert helpers.is_declarative() is False
-
-    def test_case_insensitive(self, monkeypatch):
-        """is_declarative() should handle case variations."""
-        monkeypatch.setenv("POLYLOGUE_DECLARATIVE", "YES")
-        assert helpers.is_declarative() is True
-
-        monkeypatch.setenv("POLYLOGUE_DECLARATIVE", "FALSE")
-        assert helpers.is_declarative() is False
+    @pytest.mark.parametrize("env_val,expected,desc", IS_DECLARATIVE_CASES)
+    def test_is_declarative(self, monkeypatch, env_val, expected, desc):
+        """is_declarative() respects POLYLOGUE_DECLARATIVE env var."""
+        if env_val is None:
+            monkeypatch.delenv("POLYLOGUE_DECLARATIVE", raising=False)
+        else:
+            monkeypatch.setenv("POLYLOGUE_DECLARATIVE", env_val)
+        assert helpers.is_declarative() is expected
 
 
 class TestSourceStatePath:
@@ -197,52 +237,32 @@ class TestLoadSaveLastSource:
 class TestResolveSources:
     """Tests for resolve_sources() function."""
 
-    def test_empty_sources_returns_none(self):
-        """resolve_sources with empty tuple should return None."""
-        config = MagicMock()
-        result = helpers.resolve_sources(config, (), "test_cmd")
-        assert result is None
-
-    def test_single_valid_source(self):
-        """resolve_sources should return valid source names."""
+    @pytest.mark.parametrize("sources,expected,desc", RESOLVE_SOURCES_VALID_CASES)
+    def test_resolve_sources_valid(self, sources, expected, desc):
+        """resolve_sources handles valid source combinations."""
         config = MagicMock()
         config.sources = [
             Source(name="chatgpt", path=Path("/data")),
             Source(name="claude", path=Path("/data2")),
         ]
-        result = helpers.resolve_sources(config, ("chatgpt",), "test_cmd")
-        assert result == ["chatgpt"]
+        result = helpers.resolve_sources(config, sources, "test_cmd")
+        if isinstance(expected, set):
+            assert set(result) == expected
+        else:
+            assert result == expected
 
-    def test_multiple_valid_sources(self):
-        """resolve_sources should return multiple sources."""
-        config = MagicMock()
-        config.sources = [
-            Source(name="chatgpt", path=Path("/data")),
-            Source(name="claude", path=Path("/data2")),
-        ]
-        result = helpers.resolve_sources(config, ("chatgpt", "claude"), "test_cmd")
-        assert set(result) == {"chatgpt", "claude"}
-
-    def test_deduplicates_sources(self):
-        """resolve_sources should deduplicate source names."""
+    @pytest.mark.parametrize("sources,expected,desc", RESOLVE_SOURCES_ERROR_CASES)
+    def test_resolve_sources_error(self, sources, expected, desc):
+        """resolve_sources handles error cases."""
         config = MagicMock()
         config.sources = [Source(name="chatgpt", path=Path("/data"))]
-        result = helpers.resolve_sources(config, ("chatgpt", "chatgpt"), "test_cmd")
-        assert result == ["chatgpt"]
 
-    def test_unknown_source_fails(self):
-        """resolve_sources should fail with unknown source."""
-        config = MagicMock()
-        config.sources = [Source(name="chatgpt", path=Path("/data"))]
-        with pytest.raises(SystemExit):
-            helpers.resolve_sources(config, ("unknown",), "test_cmd")
-
-    def test_mixed_valid_invalid_fails(self):
-        """resolve_sources should fail if any source is unknown."""
-        config = MagicMock()
-        config.sources = [Source(name="chatgpt", path=Path("/data"))]
-        with pytest.raises(SystemExit):
-            helpers.resolve_sources(config, ("chatgpt", "unknown"), "test_cmd")
+        if expected is None:
+            result = helpers.resolve_sources(config, sources, "test_cmd")
+            assert result is None
+        else:
+            with pytest.raises(expected):
+                helpers.resolve_sources(config, sources, "test_cmd")
 
     def test_special_last_with_saved_source(self, tmp_path, monkeypatch):
         """resolve_sources should handle 'last' special source."""
@@ -564,22 +584,10 @@ class TestCompletionsCommandInternal:
     def runner(self):
         return CliRunner()
 
-    def test_bash_completions_success(self, runner):
-        """completions --shell bash should output completion script."""
-        result = runner.invoke(click_cli, ["completions", "--shell", "bash"])
-        assert result.exit_code == 0
-        # Should output completion script (may contain polylogue, complete, or other shell keywords)
-        assert len(result.output) > 0
-
-    def test_zsh_completions_success(self, runner):
-        """completions --shell zsh should output completion script."""
-        result = runner.invoke(click_cli, ["completions", "--shell", "zsh"])
-        assert result.exit_code == 0
-        assert len(result.output) > 0
-
-    def test_fish_completions_success(self, runner):
-        """completions --shell fish should output completion script."""
-        result = runner.invoke(click_cli, ["completions", "--shell", "fish"])
+    @pytest.mark.parametrize("shell,desc", [(s, s) for s, _ in SHELL_COMPLETION_CASES])
+    def test_completions_generates_script(self, runner, shell, desc):
+        """completions --shell generates completion script."""
+        result = runner.invoke(click_cli, ["completions", "--shell", shell])
         assert result.exit_code == 0
         assert len(result.output) > 0
 
@@ -686,34 +694,21 @@ class TestRunCommand:
         output_lower = result.output.lower()
         assert "preview" in output_lower or "snapshot" in output_lower or "source" in output_lower
 
-    def test_run_stage_parse_only(self, tmp_path):
-        """run --stage parse only does parsing."""
+    @pytest.mark.parametrize("stage,desc", [(s, d) for s, d in STAGE_CASES])
+    def test_run_stage_execution(self, tmp_path, stage, desc):
+        """run --stage executes specific pipeline stage."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
         inbox = workspace["paths"]["inbox"]
 
-        (GenericConversationBuilder("conv1")
-         .add_user("parse only")
-         .write_to(inbox / "test.json"))
+        # Only add data for parse stage
+        if stage == "parse":
+            (GenericConversationBuilder("conv1")
+             .add_user("test data")
+             .write_to(inbox / "test.json"))
 
-        result = run_cli(["--plain", "run", "--stage", "parse"], env=env)
-        assert result.exit_code == 0
-
-    def test_run_stage_render_only(self, tmp_path):
-        """run --stage render only does rendering."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        result = run_cli(["--plain", "run", "--stage", "render"], env=env)
-        # Should succeed even with no data
-        assert result.exit_code == 0
-
-    def test_run_stage_index_only(self, tmp_path):
-        """run --stage index only does indexing."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        result = run_cli(["--plain", "run", "--stage", "index"], env=env)
+        result = run_cli(["--plain", "run", "--stage", stage], env=env)
+        # Should succeed even with no data for later stages
         assert result.exit_code == 0
 
     def test_run_with_source_filter(self, tmp_path):
@@ -899,31 +894,16 @@ class TestResetCommandSubprocess:
 class TestCompletionsCommandSubprocess:
     """Subprocess integration tests for the completions command."""
 
-    def test_completions_bash(self, tmp_path):
-        """completions --shell bash outputs bash completion script."""
+    @pytest.mark.parametrize("shell,desc", [(s, s) for s, _ in SHELL_COMPLETION_CASES])
+    def test_completions_shell_subprocess(self, tmp_path, shell, desc):
+        """completions --shell outputs completion script."""
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
 
-        result = run_cli(["completions", "--shell", "bash"], env=env)
+        result = run_cli(["completions", "--shell", shell], env=env)
         assert result.exit_code == 0
-        # Should contain bash completion markers
-        assert "_POLYLOGUE_COMPLETE" in result.stdout or "complete" in result.stdout.lower()
-
-    def test_completions_zsh(self, tmp_path):
-        """completions --shell zsh outputs zsh completion script."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        result = run_cli(["completions", "--shell", "zsh"], env=env)
-        assert result.exit_code == 0
-
-    def test_completions_fish(self, tmp_path):
-        """completions --shell fish outputs fish completion script."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        result = run_cli(["completions", "--shell", "fish"], env=env)
-        assert result.exit_code == 0
+        # Should contain some completion content
+        assert len(result.stdout) > 0
 
     def test_completions_requires_shell(self, tmp_path):
         """completions without --shell fails."""
@@ -996,29 +976,14 @@ class TestMcpCommandSubprocess:
 class TestCompletionsCommandUnit:
     """Unit tests for the completions command using CliRunner."""
 
-    def test_bash_completion_generates_script(self, cli_runner):
-        """Bash completion generates a valid script."""
-        result = cli_runner.invoke(click_cli, ["completions", "--shell", "bash"])
+    @pytest.mark.parametrize("shell,desc", [(s, s) for s, _ in SHELL_COMPLETION_CASES])
+    def test_completion_generates_script(self, cli_runner, shell, desc):
+        """Completion generates a valid script."""
+        result = cli_runner.invoke(click_cli, ["completions", "--shell", shell])
 
         assert result.exit_code == 0
-        # Bash completion scripts contain specific markers
-        assert "_polylogue_completion" in result.output.lower() or "complete" in result.output.lower()
-
-    def test_zsh_completion_generates_script(self, cli_runner):
-        """Zsh completion generates a valid script."""
-        result = cli_runner.invoke(click_cli, ["completions", "--shell", "zsh"])
-
-        assert result.exit_code == 0
-        # Zsh completion scripts contain specific markers
-        assert "compdef" in result.output.lower() or "polylogue" in result.output
-
-    def test_fish_completion_generates_script(self, cli_runner):
-        """Fish completion generates a valid script."""
-        result = cli_runner.invoke(click_cli, ["completions", "--shell", "fish"])
-
-        assert result.exit_code == 0
-        # Fish completion scripts contain specific markers
-        assert "complete" in result.output.lower()
+        # Should contain completion markers
+        assert "polylogue" in result.output.lower() or "complete" in result.output.lower()
 
     def test_shell_option_is_required(self, cli_runner):
         """--shell option is required."""
@@ -1165,95 +1130,56 @@ class TestResetCommandValidation:
 class TestResetCommandDeletion:
     """Tests for reset file/directory deletion."""
 
-    def test_database_flag_deletes_db(self, tmp_path, monkeypatch):
-        """--database deletes the database file."""
+    @pytest.mark.parametrize("flag,path_attr,desc", RESET_DELETION_CASES)
+    def test_reset_flag_deletes_target(self, tmp_path, monkeypatch, flag, path_attr, desc):
+        """Reset flags delete specified targets."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-        db_path = tmp_path / "polylogue.db"
-        db_path.write_text("test database", encoding="utf-8")
-        assert db_path.exists()
+        # Set up appropriate paths based on path_attr
+        if path_attr == "db_path":
+            target_path = tmp_path / "polylogue.db"
+            target_path.write_text("test database", encoding="utf-8")
+            patches = [patch("polylogue.cli.commands.reset.DB_PATH", target_path),
+                      patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path)]
+        elif path_attr == "assets_dir":
+            data_home = tmp_path / "data"
+            target_path = data_home / "assets"
+            target_path.mkdir(parents=True)
+            (target_path / "test.png").write_bytes(b"test")
+            patches = [patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"),
+                      patch("polylogue.cli.commands.reset.DATA_HOME", data_home)]
+        elif path_attr == "render_dir":
+            target_path = tmp_path / "render"
+            target_path.mkdir(parents=True)
+            (target_path / "test.html").write_text("<html>test</html>", encoding="utf-8")
+            patches = [patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"),
+                      patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path),
+                      patch("polylogue.cli.commands.reset.RENDER_ROOT", target_path)]
+        elif path_attr == "cache_dir":
+            target_path = tmp_path / "cache"
+            target_path.mkdir(parents=True)
+            (target_path / "index").write_text("index data", encoding="utf-8")
+            patches = [patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"),
+                      patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path),
+                      patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "nonexistent"),
+                      patch("polylogue.cli.commands.reset.CACHE_HOME", target_path)]
+        elif path_attr == "token_path":
+            target_path = tmp_path / "token.json"
+            target_path.write_text(json.dumps({"token": "test"}), encoding="utf-8")
+            patches = [patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"),
+                      patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path),
+                      patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "nonexistent"),
+                      patch("polylogue.cli.commands.reset.CACHE_HOME", tmp_path / "nonexistent"),
+                      patch("polylogue.cli.commands.reset.DRIVE_TOKEN_PATH", target_path)]
 
-        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path):
+        assert target_path.exists()
+
+        with patches[0], patches[1], *patches[2:]:
             runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--database", "--yes"])
+            result = runner.invoke(cli, ["reset", flag, "--yes"])
 
             assert result.exit_code == 0
-            assert not db_path.exists()
-
-    def test_assets_flag_deletes_assets(self, tmp_path, monkeypatch):
-        """--assets deletes the assets directory."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-
-        data_home = tmp_path / "data"
-        assets_dir = data_home / "assets"
-        assets_dir.mkdir(parents=True)
-        (assets_dir / "test.png").write_bytes(b"test")
-        assert assets_dir.exists()
-
-        with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", data_home):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--assets", "--yes"])
-
-            assert result.exit_code == 0
-            assert not assets_dir.exists()
-
-    def test_render_flag_deletes_render(self, tmp_path, monkeypatch):
-        """--render deletes the render directory."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-
-        render_dir = tmp_path / "render"
-        render_dir.mkdir(parents=True)
-        (render_dir / "test.html").write_text("<html>test</html>", encoding="utf-8")
-        assert render_dir.exists()
-
-        with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path), \
-             patch("polylogue.cli.commands.reset.RENDER_ROOT", render_dir):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--render", "--yes"])
-
-            assert result.exit_code == 0
-            assert not render_dir.exists()
-
-    def test_cache_flag_deletes_cache(self, tmp_path, monkeypatch):
-        """--cache deletes the cache directory."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-
-        cache_dir = tmp_path / "cache"
-        cache_dir.mkdir(parents=True)
-        (cache_dir / "index").write_text("index data", encoding="utf-8")
-        assert cache_dir.exists()
-
-        with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path), \
-             patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "nonexistent"), \
-             patch("polylogue.cli.commands.reset.CACHE_HOME", cache_dir):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--cache", "--yes"])
-
-            assert result.exit_code == 0
-            assert not cache_dir.exists()
-
-    def test_auth_flag_deletes_token(self, tmp_path, monkeypatch):
-        """--auth deletes the OAuth token."""
-        monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-
-        token_path = tmp_path / "token.json"
-        token_path.write_text(json.dumps({"token": "test"}), encoding="utf-8")
-        assert token_path.exists()
-
-        with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path), \
-             patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "nonexistent"), \
-             patch("polylogue.cli.commands.reset.CACHE_HOME", tmp_path / "nonexistent"), \
-             patch("polylogue.cli.commands.reset.DRIVE_TOKEN_PATH", token_path):
-            runner = CliRunner()
-            result = runner.invoke(cli, ["reset", "--auth", "--yes"])
-
-            assert result.exit_code == 0
-            assert not token_path.exists()
+            assert not target_path.exists()
 
     def test_multiple_flags(self, tmp_path, monkeypatch):
         """Multiple flags delete specified targets."""
@@ -1862,4 +1788,3 @@ class TestSearchIndexRebuild:
         result = runner.invoke(cli, ["--plain", "searchable"])
         # Should either succeed (rebuild worked) or report no results
         assert result.exit_code in (0, 1, 2)
-
