@@ -245,6 +245,13 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
                 click.echo("--stream requires a specific conversation. Use --latest or specify an ID.", err=True)
                 raise SystemExit(1)
 
+        # Warn about flags that are incompatible with streaming
+        if params.get("transform"):
+            click.echo("Warning: --transform is ignored in --stream mode (messages are streamed individually).", err=True)
+        output_dest = params.get("output")
+        if output_dest and output_dest != "stdout":
+            click.echo(f"Warning: --output {output_dest} is ignored in --stream mode (output goes to stdout).", err=True)
+
         output_format = params.get("output_format") or "plaintext"
         stream_format = "json-lines" if output_format == "json" else output_format
         if stream_format not in ("plaintext", "markdown", "json-lines"):
@@ -256,6 +263,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             full_id,
             output_format=stream_format,
             dialogue_only=params.get("dialogue_only", False),
+            message_limit=params.get("limit"),
         )
         return
 
