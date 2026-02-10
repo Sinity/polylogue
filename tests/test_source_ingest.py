@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import zipfile
+from pathlib import Path
 
 from polylogue.config import Source
 from polylogue.sources import iter_source_conversations, parse_drive_payload
@@ -573,3 +574,113 @@ class TestTOCTOUHandling:
 
         assert cursor_state.get("failed_count", 0) >= 1, \
             "file2 failure should be tracked"
+
+
+# --- Merged from test_source_ingest_json_list.py ---
+
+
+def test_iter_source_conversations_handles_codex_json_list(tmp_path: Path):
+    """Test that Codex/Claude-Code/Gemini single-conversation JSON lists are not unpacked."""
+    # A Codex/Claude-Code export is often a list of messages representing one conversation
+    # If unpacked, this would look like N conversations with 0 messages each.
+    # If not unpacked, it looks like 1 conversation with N messages.
+    payload = [
+        {"type": "session_meta", "payload": {"id": "test-session", "timestamp": "2025-01-01"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-1",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Hello"}],
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "msg-2",
+                "role": "assistant",
+                "content": [{"type": "input_text", "text": "Hi"}],
+            },
+        },
+    ]
+
+    # Write as a single JSON file
+    source_file = tmp_path / "codex_export.json"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    # Name hint helps detection
+    source = Source(name="codex", path=source_file)
+
+    conversations = list(iter_source_conversations(source))
+
+    # Should result in ONE conversation with messages, NOT multiple empty ones
+    assert len(conversations) == 1
+    convo = conversations[0]
+    assert convo.provider_name == "codex"
+    # 2 response_item messages
+    assert len(convo.messages) == 2
+    assert convo.messages[0].text == "Hello"
+
+
+def test_iter_source_conversations_handles_claude_code_json_list(tmp_path: Path):
+    """Test that Claude Code single-conversation JSON lists are not unpacked."""
+    payload = [
+        {
+            "type": "user",
+            "uuid": "u1",
+            "sessionId": "sess-1",
+            "message": {"content": "Hello"},
+        },
+        {
+            "type": "assistant",
+            "uuid": "a1",
+            "sessionId": "sess-1",
+            "message": {"content": "Hi"},
+        },
+    ]
+
+    source_file = tmp_path / "claude-code_export.json"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    source = Source(name="claude-code", path=source_file)
+
+    conversations = list(iter_source_conversations(source))
+
+    assert len(conversations) == 1
+    convo = conversations[0]
+    assert convo.provider_name == "claude-code"
+    assert len(convo.messages) == 2
+    assert convo.messages[0].text == "Hello"
+
+
+def test_iter_source_conversations_still_unpacks_chatgpt_json_list(tmp_path: Path):
+    """Test that ChatGPT list of conversations IS unpacked (default behavior)."""
+    # ChatGPT export is a list of conversation objects
+    payload = [
+        {
+            "title": "Conv 1",
+            "mapping": {
+                "n1": {"message": {"content": {"parts": ["Msg 1"]}, "author": {"role": "user"}}}
+            }
+        },
+        {
+            "title": "Conv 2",
+            "mapping": {
+                "n2": {"message": {"content": {"parts": ["Msg 2"]}, "author": {"role": "user"}}}
+            }
+        }
+    ]
+
+    source_file = tmp_path / "chatgpt_export.json"
+    source_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    source = Source(name="chatgpt", path=source_file)
+
+    conversations = list(iter_source_conversations(source))
+
+    # Should unpack into 2 conversations
+    assert len(conversations) == 2
+    assert conversations[0].messages[0].text == "Msg 1"
+    assert conversations[1].messages[0].text == "Msg 2"
