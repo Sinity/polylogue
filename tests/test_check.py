@@ -379,3 +379,64 @@ class TestCheckCommand:
         assert integrity_check is not None
         assert integrity_check["status"] == "ok"
         assert integrity_check["detail"] == "ok"
+
+
+# --- Merged from test_supplementary_coverage.py ---
+
+
+class TestCheckCommandSupplementary:
+    """Tests for check command edge cases."""
+
+    def test_vacuum_without_repair_fails(self, cli_workspace):
+        """--vacuum requires --repair."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--vacuum"])
+        assert result.exit_code != 0
+
+    def test_preview_without_repair_fails(self, cli_workspace):
+        """--preview requires --repair."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--preview"])
+        assert result.exit_code != 0
+
+    def test_json_output_with_repair(self, cli_workspace):
+        """--json with --repair includes repair results."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--json", "--repair", "--preview"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output)
+        assert "repairs" in data
+
+    def test_repair_with_no_issues_shows_message(self, cli_workspace):
+        """When repair finds no issues, should show 'No issues' message."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--repair"])
+        assert result.exit_code == 0
+        assert "No issues" in result.output or "Repaired" in result.output or "repair" in result.output.lower()
+
+    def test_vacuum_with_repair(self, cli_workspace):
+        """--vacuum with --repair should attempt VACUUM."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--repair", "--vacuum"])
+        assert result.exit_code == 0
+        assert "VACUUM" in result.output

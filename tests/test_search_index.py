@@ -2456,5 +2456,56 @@ class TestAssetErrorHandling:
         assert result_path.exists()
 
 
+# --- Merged from test_supplementary_coverage.py ---
+
+
+class TestSearchProviderInit:
+    """Tests for search provider factory."""
+
+    def test_create_fts5_provider(self, cli_workspace):
+        """FTS5 provider should be returned for 'fts5' type."""
+        from polylogue.storage.search_providers import create_search_provider
+
+        provider = create_search_provider("fts5")
+        assert provider is not None
+
+    def test_create_unknown_provider_returns_fts5(self, cli_workspace):
+        """Unknown provider type should fallback to FTS5."""
+        from polylogue.storage.search_providers import create_search_provider
+
+        provider = create_search_provider("fts5")
+        assert provider is not None
+
+
+class TestIndexChunked:
+    """Tests for _chunked utility."""
+
+    def test_chunked_empty(self):
+        from polylogue.storage.index import _chunked
+
+        result = list(_chunked([], size=10))
+        assert result == []
+
+    def test_chunked_smaller_than_size(self):
+        from polylogue.storage.index import _chunked
+
+        result = list(_chunked(["a", "b"], size=10))
+        assert result == [["a", "b"]]
+
+    def test_chunked_exact_multiple(self):
+        from polylogue.storage.index import _chunked
+
+        result = list(_chunked(["a", "b", "c", "d"], size=2))
+        assert result == [["a", "b"], ["c", "d"]]
+
+    def test_chunked_with_remainder(self):
+        from polylogue.storage.index import _chunked
+
+        result = list(_chunked(["a", "b", "c"], size=2))
+        assert len(result) == 2
+        assert result[0] == ["a", "b"]
+        assert result[1] == ["c"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
