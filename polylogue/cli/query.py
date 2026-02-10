@@ -220,18 +220,26 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     # Streaming path
     if params.get("stream"):
-        if params.get("latest"):
-            summaries = conv_repo.list_summaries(limit=1)
-            if not summaries:
-                env.ui.console.print("No conversations in archive.")
-                raise SystemExit(2)
-            full_id = str(summaries[0].id)
-        elif params.get("conv_id"):
+        # Use the filter chain to resolve the conversation ID, so that filters
+        # (--provider, --since, --tag, etc.) are respected even in streaming mode.
+        if params.get("conv_id"):
             resolved = conv_repo.resolve_id(params["conv_id"])
             if not resolved:
                 click.echo(f"No conversation found matching: {params['conv_id']}", err=True)
                 raise SystemExit(2)
             full_id = str(resolved)
+        elif params.get("latest"):
+            # filter_chain already has .sort("date").limit(1) from line 172-173
+            summaries = filter_chain.list_summaries()
+            if not summaries:
+                _no_results(env, params)
+            full_id = str(summaries[0].id)
+        elif _describe_filters(params):
+            # Filters active but no --latest: pick most recent match
+            summaries = filter_chain.sort("date").limit(1).list_summaries()
+            if not summaries:
+                _no_results(env, params)
+            full_id = str(summaries[0].id)
         else:
             # Try to resolve first query term as ID
             if query_terms:
@@ -275,6 +283,9 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         return
 
     if params.get("delete_matched"):
+        if not _describe_filters(params):
+            click.echo("Error: --delete requires at least one filter to prevent accidental deletion of the entire archive.", err=True)
+            raise SystemExit(1)
         _delete_conversations(env, results, params)
         return
 
@@ -951,7 +962,7 @@ def _conv_to_yaml(conv: Conversation, fields: str | None) -> str:
 
     data = _conv_to_dict(conv, fields)
     # For single conversation, also include full message content
-    if fields is None or "messages" in fields:
+    if fields is None or "messages" in fields.split(","):
         data["messages"] = [
             {
                 "id": str(msg.id),

@@ -1076,8 +1076,9 @@ class SQLiteBackend:
             params.append(until)
 
         if title_contains is not None:
-            where_clauses.append("title LIKE ?")
-            params.append(f"%{title_contains}%")
+            escaped = title_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where_clauses.append("title LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped}%")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
@@ -1161,8 +1162,9 @@ class SQLiteBackend:
             where_clauses.append("updated_at <= ?")
             params.append(until)
         if title_contains is not None:
-            where_clauses.append("title LIKE ?")
-            params.append(f"%{title_contains}%")
+            escaped = title_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            where_clauses.append("title LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped}%")
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
         row = conn.execute(
@@ -1751,14 +1753,37 @@ class SQLiteBackend:
         # FTS cleanup is handled automatically by the messages_fts_delete trigger
         # (added in schema v11) when CASCADE deletes the messages.
         try:
-            # Delete conversation (CASCADE handles messages + FTS automatically)
+            # Collect attachment IDs that may become orphaned after CASCADE
+            affected_attachments = [
+                row[0]
+                for row in conn.execute(
+                    """SELECT DISTINCT ar.attachment_id FROM attachment_refs ar
+                       JOIN messages m ON ar.message_id = m.message_id
+                       WHERE m.conversation_id = ?""",
+                    (conversation_id,),
+                ).fetchall()
+            ]
+
+            # Delete conversation (CASCADE handles messages, attachment_refs, + FTS)
             conn.execute(
                 "DELETE FROM conversations WHERE conversation_id = ?",
                 (conversation_id,),
             )
 
-            # Clean up orphaned attachments (ref_count <= 0)
-            conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
+            # Recalculate ref_count for affected attachments and delete orphans
+            if affected_attachments:
+                placeholders = ",".join("?" * len(affected_attachments))
+                conn.execute(
+                    f"""UPDATE attachments SET ref_count = (
+                            SELECT COUNT(*) FROM attachment_refs
+                            WHERE attachment_refs.attachment_id = attachments.attachment_id
+                        ) WHERE attachment_id IN ({placeholders})""",
+                    affected_attachments,
+                )
+                conn.execute(
+                    f"DELETE FROM attachments WHERE attachment_id IN ({placeholders}) AND ref_count <= 0",
+                    affected_attachments,
+                )
 
             conn.commit()
         except Exception:
