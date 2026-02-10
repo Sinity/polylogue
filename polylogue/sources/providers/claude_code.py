@@ -241,8 +241,17 @@ class ClaudeCodeRecord(BaseModel):
 
     @property
     def text_content(self) -> str:
-        """Extract plain text content."""
+        """Extract plain text content.
+
+        For user/assistant records, text lives in self.message.content.
+        For system records (compact_boundary, local_command), text lives
+        in a top-level 'content' field stored as Pydantic extra.
+        """
         if not self.message:
+            # Fall back to top-level content field (system records)
+            top_content = getattr(self, "content", None)
+            if isinstance(top_content, str):
+                return top_content
             return ""
 
         if isinstance(self.message, dict):

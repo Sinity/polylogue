@@ -107,7 +107,9 @@ def index_status(conn: sqlite3.Connection | None = None) -> dict[str, object]:
         exists = bool(row)
         count = 0
         if exists:
-            count = c.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0]
+            # COUNT(*) on FTS virtual table is O(N) and extremely slow (minutes on large DBs).
+            # The backing docsize table has one row per indexed document and counts instantly.
+            count = c.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0]
         return {"exists": exists, "count": int(count)}
 
     if conn is not None:

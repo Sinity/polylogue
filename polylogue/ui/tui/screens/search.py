@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sqlite3
+
 from textual.app import ComposeResult
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import DataTable, Input
@@ -43,8 +45,11 @@ class Search(Container):
 
         try:
             summaries = repo.search_summaries(query, limit=50)
-        except Exception:
-            table.add_row("—", "—", "Search index not built. Run: polylogue run", "")
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc):
+                table.add_row("—", "—", "Search index not built. Run: polylogue run", "")
+            else:
+                table.add_row("—", "—", f"Search error: {exc}", "")
             return
 
         for s in summaries:

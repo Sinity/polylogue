@@ -245,6 +245,13 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
                 click.echo("--stream requires a specific conversation. Use --latest or specify an ID.", err=True)
                 raise SystemExit(1)
 
+        # Warn about flags that are incompatible with streaming
+        if params.get("transform"):
+            click.echo("Warning: --transform is ignored in --stream mode (messages are streamed individually).", err=True)
+        output_dest = params.get("output")
+        if output_dest and output_dest != "stdout":
+            click.echo(f"Warning: --output {output_dest} is ignored in --stream mode (output goes to stdout).", err=True)
+
         output_format = params.get("output_format") or "plaintext"
         stream_format = "json-lines" if output_format == "json" else output_format
         if stream_format not in ("plaintext", "markdown", "json-lines"):
@@ -256,6 +263,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
             full_id,
             output_format=stream_format,
             dialogue_only=params.get("dialogue_only", False),
+            message_limit=params.get("limit"),
         )
         return
 
@@ -522,11 +530,14 @@ def _output_stats_by(env: AppEnv, results: list[Conversation], dimension: str) -
         if dimension == "provider":
             key = conv.provider or "unknown"
         elif dimension == "month":
-            key = conv.updated_at.strftime("%Y-%m") if conv.updated_at else "unknown"
+            dt = conv.display_date
+            key = dt.strftime("%Y-%m") if dt else "unknown"
         elif dimension == "year":
-            key = conv.updated_at.strftime("%Y") if conv.updated_at else "unknown"
+            dt = conv.display_date
+            key = dt.strftime("%Y") if dt else "unknown"
         elif dimension == "day":
-            key = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else "unknown"
+            dt = conv.display_date
+            key = dt.strftime("%Y-%m-%d") if dt else "unknown"
         else:
             key = "all"
         groups[key].append(conv)
@@ -631,7 +642,7 @@ def _format_list(
     else:
         lines = []
         for conv in results:
-            date = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else "unknown"
+            date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else "unknown"
             raw_title = conv.display_title or conv.id[:20]
             title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
             msg_count = len(conv.messages)
@@ -664,7 +675,7 @@ def _output_summary_list(
                 "id": str(s.id),
                 "provider": s.provider,
                 "title": s.display_title,
-                "date": s.updated_at.isoformat() if s.updated_at else None,
+                "date": s.display_date.isoformat() if s.display_date else None,
                 "tags": s.tags,
                 "summary": s.summary,
                 "messages": msg_counts.get(str(s.id), 0),
@@ -680,7 +691,7 @@ def _output_summary_list(
                 "id": str(s.id),
                 "provider": s.provider,
                 "title": s.display_title,
-                "date": s.updated_at.isoformat() if s.updated_at else None,
+                "date": s.display_date.isoformat() if s.display_date else None,
                 "tags": s.tags,
                 "messages": msg_counts.get(str(s.id), 0),
             }
@@ -695,7 +706,7 @@ def _output_summary_list(
         writer = csv.writer(buf)
         writer.writerow(["id", "date", "provider", "title", "messages", "tags", "summary"])
         for s in summaries:
-            date = s.updated_at.strftime("%Y-%m-%d") if s.updated_at else ""
+            date = s.display_date.strftime("%Y-%m-%d") if s.display_date else ""
             tags_str = ",".join(s.tags) if s.tags else ""
             writer.writerow([
                 str(s.id),
@@ -711,7 +722,7 @@ def _output_summary_list(
         # Plain text format (default) — now with message counts
         lines = []
         for s in summaries:
-            date = s.updated_at.strftime("%Y-%m-%d") if s.updated_at else "unknown"
+            date = s.display_date.strftime("%Y-%m-%d") if s.display_date else "unknown"
             raw_title = s.display_title or str(s.id)[:20]
             title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
             count = msg_counts.get(str(s.id), 0)
@@ -729,7 +740,7 @@ def _conv_to_csv(results: list[Conversation]) -> str:
     writer.writerow(["id", "date", "provider", "title", "messages", "words", "tags", "summary"])
 
     for conv in results:
-        date = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else ""
+        date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else ""
         tags_str = ",".join(conv.tags) if conv.tags else ""
         writer.writerow(
             [
@@ -757,7 +768,7 @@ def _conv_to_dict(conv: Conversation, fields: str | None) -> dict[str, Any]:
         "id": str(conv.id),
         "provider": conv.provider,
         "title": conv.display_title,
-        "date": conv.updated_at.isoformat() if conv.updated_at else None,
+        "date": conv.display_date.isoformat() if conv.display_date else None,
         "messages": len(conv.messages),
         "words": sum(m.word_count for m in conv.messages),
         "tags": conv.tags,
@@ -810,8 +821,8 @@ def _conv_to_csv_messages(conv: Conversation) -> str:
 def _conv_to_markdown(conv: Conversation) -> str:
     """Convert conversation to markdown."""
     lines = [f"# {conv.display_title or conv.id}", ""]
-    if conv.updated_at:
-        lines.append(f"**Date**: {conv.updated_at.strftime('%Y-%m-%d %H:%M')}")
+    if conv.display_date:
+        lines.append(f"**Date**: {conv.display_date.strftime('%Y-%m-%d %H:%M')}")
     lines.append(f"**Provider**: {conv.provider}")
     lines.append("")
 
@@ -897,7 +908,7 @@ def _conv_to_obsidian(conv: Conversation) -> str:
         "---",
         f"id: {_yaml_safe(str(conv.id))}",
         f"provider: {_yaml_safe(conv.provider)}",
-        f"date: {conv.updated_at.isoformat() if conv.updated_at else 'unknown'}",
+        f"date: {conv.display_date.isoformat() if conv.display_date else 'unknown'}",
         f"tags: [{tags_formatted}]",
         "---",
         "",
@@ -910,7 +921,7 @@ def _conv_to_org(conv: Conversation) -> str:
     """Convert conversation to Org-mode format."""
     lines = [
         f"#+TITLE: {conv.display_title or conv.id}",
-        f"#+DATE: {conv.updated_at.strftime('%Y-%m-%d') if conv.updated_at else 'unknown'}",
+        f"#+DATE: {conv.display_date.strftime('%Y-%m-%d') if conv.display_date else 'unknown'}",
         f"#+PROPERTY: provider {conv.provider}",
         "",
     ]
