@@ -27,41 +27,24 @@ from polylogue.sources.providers.claude_ai import ClaudeAIChatMessage, ClaudeAIC
 class TestGeminiRoleNormalized:
     """Test GeminiMessage.role_normalized edge cases."""
 
-    def test_role_user_lowercase(self):
-        msg = GeminiMessage(text="hi", role="user")
-        assert msg.role_normalized == "user"
-
-    def test_role_user_uppercase(self):
-        msg = GeminiMessage(text="hi", role="USER")
-        assert msg.role_normalized == "user"
-
-    def test_role_model_lowercase(self):
-        msg = GeminiMessage(text="hi", role="model")
-        assert msg.role_normalized == "assistant"
-
-    def test_role_model_uppercase(self):
-        msg = GeminiMessage(text="hi", role="MODEL")
-        assert msg.role_normalized == "assistant"
-
-    def test_role_assistant_lowercase(self):
-        msg = GeminiMessage(text="hi", role="assistant")
-        assert msg.role_normalized == "assistant"
-
-    def test_role_system(self):
-        msg = GeminiMessage(text="hi", role="system")
-        assert msg.role_normalized == "system"
-
-    def test_role_system_uppercase(self):
-        msg = GeminiMessage(text="hi", role="SYSTEM")
-        assert msg.role_normalized == "system"
-
-    def test_role_unknown(self):
-        msg = GeminiMessage(text="hi", role="unknown_role")
-        assert msg.role_normalized == "unknown"
-
-    def test_role_empty_string(self):
-        msg = GeminiMessage(text="hi", role="")
-        assert msg.role_normalized == "unknown"
+    @pytest.mark.parametrize("role,expected", [
+        ("user", "user"),
+        ("USER", "user"),
+        ("model", "assistant"),
+        ("MODEL", "assistant"),
+        ("assistant", "assistant"),
+        ("system", "system"),
+        ("SYSTEM", "system"),
+        ("unknown_role", "unknown"),
+        ("", "unknown"),
+    ], ids=[
+        "user_lowercase", "user_uppercase", "model_lowercase", "model_uppercase",
+        "assistant_lowercase", "system_lowercase", "system_uppercase",
+        "unknown_role", "empty_string"
+    ])
+    def test_role_normalized(self, role, expected):
+        msg = GeminiMessage(text="hi", role=role)
+        assert msg.role_normalized == expected
 
     def test_role_none_defaults_to_unknown(self):
         # role field is required in Pydantic, but test defensive code path
@@ -77,21 +60,16 @@ class TestGeminiTextContent:
         msg = GeminiMessage(text="Direct text", role="user")
         assert msg.text_content == "Direct text"
 
-    def test_text_content_empty_text_with_parts(self):
-        msg = GeminiMessage(
-            text="",
-            role="user",
-            parts=[GeminiPart(text="Part 1"), GeminiPart(text="Part 2")],
-        )
-        assert msg.text_content == "Part 1\nPart 2"
-
-    def test_text_content_parts_dict_with_text(self):
-        msg = GeminiMessage(
-            text="",
-            role="user",
-            parts=[{"text": "Dict 1"}, {"text": "Dict 2"}],
-        )
-        assert msg.text_content == "Dict 1\nDict 2"
+    @pytest.mark.parametrize("parts,expected", [
+        ([GeminiPart(text="Part 1"), GeminiPart(text="Part 2")], "Part 1\nPart 2"),
+        ([{"text": "Dict 1"}, {"text": "Dict 2"}], "Dict 1\nDict 2"),
+        ([GeminiPart(text="Typed"), {"text": "Dict"}], "Typed\nDict"),
+        ([{"image": "data:..."}, {"audio": "data:..."}], ""),
+        ([], ""),
+    ], ids=["typed_parts", "dict_parts", "mixed_parts", "no_text_keys", "empty_list"])
+    def test_text_content_from_parts(self, parts, expected):
+        msg = GeminiMessage(text="", role="user", parts=parts)
+        assert msg.text_content == expected
 
     def test_text_content_parts_dict_with_non_string_text(self):
         """Coverage for line 135: coerce non-string text to str."""
@@ -103,23 +81,6 @@ class TestGeminiTextContent:
         # Pydantic coercion; parts should be string-coerced
         content = msg.text_content
         assert isinstance(content, str)
-
-    def test_text_content_parts_mixed_typed_and_dict(self):
-        msg = GeminiMessage(
-            text="",
-            role="user",
-            parts=[GeminiPart(text="Typed"), {"text": "Dict"}],
-        )
-        assert msg.text_content == "Typed\nDict"
-
-    def test_text_content_parts_dict_without_text_key(self):
-        msg = GeminiMessage(
-            text="",
-            role="user",
-            parts=[{"image": "data:..."}, {"audio": "data:..."}],
-        )
-        # Parts without 'text' should be skipped
-        assert msg.text_content == ""
 
     def test_text_content_parts_dict_with_none_text(self):
         msg = GeminiMessage(
@@ -138,10 +99,6 @@ class TestGeminiTextContent:
         )
         # Typed parts with None text should be skipped
         assert msg.text_content == "Valid"
-
-    def test_text_content_empty_parts_list(self):
-        msg = GeminiMessage(text="", role="user", parts=[])
-        assert msg.text_content == ""
 
     def test_text_content_prefers_text_over_parts(self):
         msg = GeminiMessage(
@@ -163,23 +120,19 @@ class TestGeminiToMeta:
         assert meta.provider == "gemini"
         assert meta.tokens is None
 
-    def test_to_meta_with_token_count(self):
-        msg = GeminiMessage(text="hello", role="model", tokenCount=42)
+    @pytest.mark.parametrize("tokenCount,has_tokens,expected_output", [
+        (42, True, 42),
+        (0, True, 0),
+        (None, False, None),
+    ], ids=["with_count", "zero_count", "none_count"])
+    def test_to_meta_token_count(self, tokenCount, has_tokens, expected_output):
+        msg = GeminiMessage(text="hello", role="user", tokenCount=tokenCount)
         meta = msg.to_meta()
-        assert meta.role == "assistant"
-        assert meta.tokens is not None
-        assert meta.tokens.output_tokens == 42
-
-    def test_to_meta_token_count_zero(self):
-        msg = GeminiMessage(text="hello", role="user", tokenCount=0)
-        meta = msg.to_meta()
-        assert meta.tokens is not None
-        assert meta.tokens.output_tokens == 0
-
-    def test_to_meta_token_count_none(self):
-        msg = GeminiMessage(text="hello", role="user", tokenCount=None)
-        meta = msg.to_meta()
-        assert meta.tokens is None
+        if has_tokens:
+            assert meta.tokens is not None
+            assert meta.tokens.output_tokens == expected_output
+        else:
+            assert meta.tokens is None
 
 
 class TestGeminiExtractReasoningTraces:
@@ -209,30 +162,21 @@ class TestGeminiExtractReasoningTraces:
         traces = msg.extract_reasoning_traces()
         assert len(traces) == 0
 
-    def test_extract_reasoning_traces_with_string_signatures(self):
-        """Coverage for line 157: str signature handling."""
+    @pytest.mark.parametrize("signatures,expected_in_raw", [
+        (["sig1", "sig2"], ["sig1", "sig2"]),
+        ([{"key": "value"}], [{"key": "value"}]),
+    ], ids=["string_sigs", "dict_sigs"])
+    def test_extract_reasoning_traces_with_signatures(self, signatures, expected_in_raw):
+        """Coverage for line 157-162: various signature types."""
         msg = GeminiMessage(
             text="Thought",
             role="model",
             isThought=True,
-            thoughtSignatures=["sig1", "sig2"],
+            thoughtSignatures=signatures,
         )
         traces = msg.extract_reasoning_traces()
         assert len(traces) == 1
-        assert "sig1" in traces[0].raw["thoughtSignatures"]
-        assert "sig2" in traces[0].raw["thoughtSignatures"]
-
-    def test_extract_reasoning_traces_with_dict_signatures(self):
-        """Coverage for line 162: dict signature handling."""
-        msg = GeminiMessage(
-            text="Thought",
-            role="model",
-            isThought=True,
-            thoughtSignatures=[{"key": "value"}],
-        )
-        traces = msg.extract_reasoning_traces()
-        assert len(traces) == 1
-        assert {"key": "value"} in traces[0].raw["thoughtSignatures"]
+        assert traces[0].raw["thoughtSignatures"] == expected_in_raw
 
     def test_extract_reasoning_traces_with_model_signatures(self):
         """Coverage for line 159-160: BaseModel signature handling."""
@@ -403,75 +347,43 @@ class TestGeminiExtractContentBlocks:
 class TestClaudeAIChatMessageRoleNormalized:
     """Test ClaudeAIChatMessage.role_normalized."""
 
-    def test_sender_human(self):
-        msg = ClaudeAIChatMessage(uuid="1", text="hi", sender="human")
-        assert msg.role_normalized == "user"
-
-    def test_sender_assistant(self):
-        msg = ClaudeAIChatMessage(uuid="1", text="hi", sender="assistant")
-        assert msg.role_normalized == "assistant"
-
-    def test_sender_other(self):
-        msg = ClaudeAIChatMessage(uuid="1", text="hi", sender="system")
-        assert msg.role_normalized == "assistant"
-
-    def test_sender_empty(self):
-        msg = ClaudeAIChatMessage(uuid="1", text="hi", sender="")
-        assert msg.role_normalized == "assistant"
+    @pytest.mark.parametrize("sender,expected", [
+        ("human", "user"),
+        ("assistant", "assistant"),
+        ("system", "assistant"),
+        ("", "assistant"),
+    ], ids=["human", "assistant", "system", "empty"])
+    def test_role_normalized(self, sender, expected):
+        msg = ClaudeAIChatMessage(uuid="1", text="hi", sender=sender)
+        assert msg.role_normalized == expected
 
 
 class TestClaudeAIChatMessageParsedTimestamp:
     """Test ClaudeAIChatMessage.parsed_timestamp."""
 
-    def test_parsed_timestamp_valid_iso(self):
+    @pytest.mark.parametrize("created_at,expect_datetime", [
+        ("2024-06-15T10:30:00Z", True),
+        ("2024-06-15T10:30:00+00:00", True),
+        ("not-a-date", False),
+        ("", False),
+    ], ids=["iso_z", "iso_offset", "invalid", "empty"])
+    def test_parsed_timestamp(self, created_at, expect_datetime):
         msg = ClaudeAIChatMessage(
             uuid="1",
             text="hi",
             sender="human",
-            created_at="2024-06-15T10:30:00Z",
+            created_at=created_at,
         )
         ts = msg.parsed_timestamp
-        assert ts is not None
-        assert isinstance(ts, datetime)
-        assert ts.year == 2024
-        assert ts.month == 6
-        assert ts.day == 15
-
-    def test_parsed_timestamp_iso_with_offset(self):
-        msg = ClaudeAIChatMessage(
-            uuid="1",
-            text="hi",
-            sender="human",
-            created_at="2024-06-15T10:30:00+00:00",
-        )
-        ts = msg.parsed_timestamp
-        assert ts is not None
-        assert isinstance(ts, datetime)
+        if expect_datetime:
+            assert ts is not None
+            assert isinstance(ts, datetime)
+        else:
+            assert ts is None
 
     def test_parsed_timestamp_none_when_no_created_at(self):
         """Coverage for line 51-52: None created_at."""
         msg = ClaudeAIChatMessage(uuid="1", text="hi", sender="human")
-        assert msg.parsed_timestamp is None
-
-    def test_parsed_timestamp_invalid_format(self):
-        """Coverage for line 55: ValueError on bad format."""
-        msg = ClaudeAIChatMessage(
-            uuid="1",
-            text="hi",
-            sender="human",
-            created_at="not-a-date",
-        )
-        ts = msg.parsed_timestamp
-        assert ts is None
-
-    def test_parsed_timestamp_empty_string(self):
-        msg = ClaudeAIChatMessage(
-            uuid="1",
-            text="hi",
-            sender="human",
-            created_at="",
-        )
-        # Empty string is falsy, so should return None
         assert msg.parsed_timestamp is None
 
     def test_parsed_timestamp_malformed_iso(self):
@@ -579,41 +491,27 @@ class TestClaudeAIConversationTitle:
 class TestClaudeAIConversationCreatedDatetime:
     """Test ClaudeAIConversation.created_datetime property."""
 
-    def test_created_datetime_valid(self):
+    @pytest.mark.parametrize("date_str,expect_valid", [
+        ("2024-06-15T10:30:00Z", True),
+        ("2024-06-15T10:30:00+05:00", True),
+        ("not-a-date", False),
+    ], ids=["iso_z", "iso_offset", "invalid"])
+    def test_created_datetime(self, date_str, expect_valid):
         """Coverage for line 111: valid datetime parsing."""
         conv = ClaudeAIConversation(
             uuid="c-1",
             name="Test",
-            created_at="2024-06-15T10:30:00Z",
+            created_at=date_str,
             updated_at="2024-06-15T10:30:00Z",
         )
         dt = conv.created_datetime
-        assert dt is not None
-        assert dt.year == 2024
-        assert dt.month == 6
-        assert dt.day == 15
-
-    def test_created_datetime_with_offset(self):
-        conv = ClaudeAIConversation(
-            uuid="c-1",
-            name="Test",
-            created_at="2024-06-15T10:30:00+05:00",
-            updated_at="2024-06-15T10:30:00+05:00",
-        )
-        dt = conv.created_datetime
-        assert dt is not None
-        assert isinstance(dt, datetime)
-
-    def test_created_datetime_invalid(self):
-        """Coverage for line 113: ValueError on bad format."""
-        conv = ClaudeAIConversation(
-            uuid="c-1",
-            name="Test",
-            created_at="not-a-date",
-            updated_at="2024-01-01T00:00:00Z",
-        )
-        dt = conv.created_datetime
-        assert dt is None
+        if expect_valid:
+            assert dt is not None
+            assert dt.year == 2024
+            assert dt.month == 6
+            assert dt.day == 15
+        else:
+            assert dt is None
 
 
 class TestClaudeAIConversationUpdatedDatetime:
