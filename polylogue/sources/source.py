@@ -258,9 +258,12 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
             if found_any:
                 return
         except ijson.common.JSONError:
-            pass  # Expected, try next strategy
+            if found_any:
+                return  # Already yielded items — don't retry to avoid duplicates
         except Exception as exc:
             LOGGER.debug("Strategy 1 (ijson items) failed for %s: %s", path_name, exc)
+            if found_any:
+                return  # Already yielded items — don't retry to avoid duplicates
 
         handle.seek(0)
         # Strategy 2: Try streaming conversations list
@@ -273,9 +276,12 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
             if found_any:
                 return
         except ijson.common.JSONError:
-            pass  # Expected, try next strategy
+            if found_any:
+                return  # Already yielded items — don't retry to avoid duplicates
         except Exception as exc:
             LOGGER.debug("Strategy 2 (ijson conversations.item) failed for %s: %s", path_name, exc)
+            if found_any:
+                return  # Already yielded items — don't retry to avoid duplicates
 
         handle.seek(0)
     # Strategy 3: Load full object (fallback for single dicts or unknown structures)
