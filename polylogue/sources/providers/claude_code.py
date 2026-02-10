@@ -14,6 +14,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
     CostInfo,
@@ -204,20 +205,10 @@ class ClaudeCodeRecord(BaseModel):
         """Parse timestamp to datetime."""
         if self.timestamp is None:
             return None
-        try:
-            # Handle numeric timestamps (Unix milliseconds)
-            if isinstance(self.timestamp, (int, float)):
-                # If > 1e11, assume milliseconds and convert to seconds
-                ts_val = float(self.timestamp)
-                if ts_val > 1e11:
-                    ts_val = ts_val / 1000.0
-                return datetime.fromtimestamp(ts_val)
-
-            # Handle ISO format with Z suffix
-            ts = str(self.timestamp).replace("Z", "+00:00")
-            return datetime.fromisoformat(ts)
-        except (ValueError, OSError):
-            return None
+        # Handle millisecond timestamps (Claude Code uses Unix ms)
+        if isinstance(self.timestamp, (int, float)) and float(self.timestamp) > 1e11:
+            return parse_timestamp(float(self.timestamp) / 1000.0)
+        return parse_timestamp(self.timestamp)
 
     @property
     def role(self) -> str:

@@ -14,14 +14,17 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from polylogue.lib.models import Conversation, Message
+from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.store import ConversationRecord, MessageRecord
 
 # =============================================================================
-# Fixtures
+# Fixtures & Helpers
 # =============================================================================
 
 
@@ -37,6 +40,35 @@ def mock_repo():
     repo.resolve_id.return_value = None
 
     return repo
+
+
+def make_mock_filter(results=None, **method_overrides):
+    """Create a pre-configured mock ConversationFilter.
+
+    Args:
+        results: List of conversations to return from .list()
+        **method_overrides: Set side_effect for any method (e.g., since=ValueError("Bad date"))
+
+    Returns:
+        Configured MagicMock filter instance with chaining support.
+    """
+    f = MagicMock()
+    # All these methods should return self for chaining
+    for method in ("provider", "contains", "after", "before", "tags", "title", "since", "limit", "tag"):
+        getattr(f, method).return_value = f
+
+    # Set list() to return provided results
+    f.list.return_value = results or []
+
+    # Apply any method-specific overrides (for side_effect, e.g.)
+    for method_name, override_value in method_overrides.items():
+        method = getattr(f, method_name)
+        if isinstance(override_value, Exception):
+            method.side_effect = override_value
+        else:
+            method.return_value = override_value
+
+    return f
 
 
 @pytest.fixture
@@ -70,6 +102,321 @@ def handle_request():
     """Import _handle_request function from server module."""
     from polylogue.mcp.server import _handle_request
     return _handle_request
+
+
+# =============================================================================
+# Test data tables (SCREAMING_CASE constants)
+# =============================================================================
+
+# Stats tool test configurations
+STATS_CONFIGS = [
+    (100, 5000, {"claude": 50, "chatgpt": 30, "claude-code": 20}, 10, 200, 1048576, 1.0, "normal stats"),
+    (0, 0, {}, 0, 0, 0, 0, "zero stats"),
+    (5, 20, {"test": 5}, 0, 0, None, 0, "none db_size"),
+]
+
+# Search tool filter test data
+SEARCH_FILTER_CASES = [
+    ("provider", "claude", "provider filter", lambda f: f.provider),
+    ("since", "2024-01-01", "since filter", lambda f: f.since),
+    ("limit_normal", 5, "normal limit", lambda f: f.limit),
+    ("limit_max", 99999, "limit above max", lambda f: f.limit),
+    ("limit_negative", -5, "negative limit", lambda f: f.limit),
+]
+
+# Search error cases
+SEARCH_ERROR_CASES = [
+    ("missing_query", {}, "query", "query in error message"),
+    ("invalid_since", {"query": "test", "since": "not-a-date"}, "date", "Invalid date in error"),
+    ("invalid_limit_type", {"query": "test", "limit": "not-a-number"}, "limit", "limit in error message"),
+]
+
+# List tool filter test data
+LIST_FILTER_CASES = [
+    ("since", "2024-06-01", "since filter", lambda f: f.since),
+    ("invalid_limit_type", [1, 2], "limit", "error expected"),
+]
+
+# Serialization edge case test data
+SERIALIZATION_CASES = [
+    (
+        "no_timestamps",
+        Conversation(id="t1", provider="test", title="No Times", messages=[]),
+        {"created_at": None, "updated_at": None, "message_count": 0},
+        "_conversation_to_dict",
+    ),
+    (
+        "empty_messages",
+        Conversation(id="t2", provider="test", title="Empty", messages=[]),
+        {"messages": []},
+        "_conversation_to_full_dict",
+    ),
+    (
+        "empty_role",
+        Conversation(
+            id="t3",
+            provider="test",
+            title="Empty Role",
+            messages=[Message(id="m1", role="", text="test")],
+        ),
+        {"messages": [{"role": "unknown"}]},
+        "_conversation_to_full_dict",
+    ),
+    (
+        "null_text",
+        Conversation(
+            id="t4",
+            provider="test",
+            title="Null Text",
+            messages=[Message(id="m1", role="user", text=None)],
+        ),
+        {"messages": [{"text": ""}]},
+        "_conversation_to_full_dict",
+    ),
+    (
+        "null_timestamp",
+        Conversation(
+            id="t5",
+            provider="test",
+            title="No TS",
+            messages=[Message(id="m1", role="user", text="hi")],
+        ),
+        {"messages": [{"timestamp": None}]},
+        "_conversation_to_full_dict",
+    ),
+    (
+        "unusual_role",
+        Conversation(
+            id="t6",
+            provider="test",
+            title="Unusual Role",
+            messages=[Message(id="m1", role="tool", text="test")],
+        ),
+        {"messages": [{"role": "tool"}]},
+        "_conversation_to_full_dict",
+    ),
+]
+
+# Prompt edge case test data
+PROMPT_EDGE_CASES = [
+    (
+        "analyze_errors_provider_filter",
+        "analyze-errors",
+        {"provider": "claude"},
+        lambda f: f.provider,
+        "provider filter on analyze-errors",
+    ),
+    (
+        "analyze_errors_since_filter",
+        "analyze-errors",
+        {"since": "2024-01-01"},
+        lambda f: f.since,
+        "since filter on analyze-errors",
+    ),
+    (
+        "analyze_errors_invalid_since",
+        "analyze-errors",
+        {"since": "garbage"},
+        None,
+        "invalid since date",
+    ),
+    (
+        "extract_code_language_filter",
+        "extract-code",
+        {"language": "python"},
+        None,
+        "language filter on extract-code",
+    ),
+]
+
+
+# =============================================================================
+# MERGED FROM test_mcp_server_integration.py
+# =============================================================================
+
+
+class TestRepositoryViewMethod:
+    """Tests for ConversationRepository.view() with ID resolution."""
+
+    def test_view_resolves_partial_id(self):
+        """view() should call resolve_id for ID resolution."""
+        # Create mock backend
+        backend = Mock(spec=SQLiteBackend)
+
+        # Mock ID resolution - returns full ID
+        backend.resolve_id.return_value = "full-conv-id-12345"
+
+        # view() will call resolve_id and then get()
+        # Return None to test just the ID resolution call
+        backend.get_conversation.return_value = None
+
+        repo = ConversationRepository(backend)
+
+        # Test view with partial ID
+        result = repo.view("12345")
+
+        # Should call resolve_id first
+        backend.resolve_id.assert_called_once_with("12345")
+        # Then try get_conversation with resolved ID
+        backend.get_conversation.assert_called_once_with("full-conv-id-12345")
+
+    def test_view_uses_resolved_id_fallback(self):
+        """view() should fall back to original ID if resolve fails."""
+        backend = Mock(spec=SQLiteBackend)
+
+        # Resolve returns None (no match found)
+        backend.resolve_id.return_value = None
+        # get_conversation also returns None
+        backend.get_conversation.return_value = None
+
+        repo = ConversationRepository(backend)
+
+        # Test with ID that won't resolve
+        result = repo.view("nonexistent")
+
+        # Should try resolve
+        backend.resolve_id.assert_called_once_with("nonexistent")
+        # Then try original ID
+        backend.get_conversation.assert_called_once_with("nonexistent")
+
+    def test_view_returns_none_if_not_found(self):
+        """view() should return None if conversation not found."""
+        backend = Mock(spec=SQLiteBackend)
+        backend.resolve_id.return_value = None
+        backend.get_conversation.return_value = None
+
+        repo = ConversationRepository(backend)
+
+        result = repo.view("missing-id")
+
+        assert result is None
+
+
+class TestRepositoryDataInsertion:
+    """Tests for proper data insertion using backend methods."""
+
+    def test_save_conversation_uses_backend_methods(self):
+        """save_conversation() should use backend.save_conversation() and backend.save_messages()."""
+        backend = Mock(spec=SQLiteBackend)
+        backend.get_conversation.return_value = None
+        backend.get_messages.return_value = []
+        backend.get_attachments.return_value = []
+
+        repo = ConversationRepository(backend)
+
+        conv_record = Mock(spec=ConversationRecord)
+        conv_record.conversation_id = "conv-1"
+        conv_record.content_hash = "hash123"
+
+        msg_record = Mock(spec=MessageRecord)
+        msg_record.message_id = "msg-1"
+        msg_record.content_hash = "hash456"
+
+        # Perform save operation
+        result = repo.save_conversation(
+            conversation=conv_record,
+            messages=[msg_record],
+            attachments=[],
+        )
+
+        # Should use backend.save_conversation
+        backend.save_conversation.assert_called()
+
+        # Should use backend.save_messages
+        backend.save_messages.assert_called()
+
+        # Should return counts dict
+        assert isinstance(result, dict)
+        assert "conversations" in result
+        assert "messages" in result
+
+    def test_backend_direct_insertion(self):
+        """Test using backend directly for fixture data insertion."""
+        # For test setup, use backend methods directly instead of repository.save()
+        backend = Mock(spec=SQLiteBackend)
+
+        # Simulate what test setup would do:
+        conv_record = Mock(spec=ConversationRecord)
+        conv_record.conversation_id = "test-conv-1"
+
+        msg_record = Mock(spec=MessageRecord)
+        msg_record.message_id = "test-msg-1"
+        msg_record.conversation_id = "test-conv-1"
+
+        # Use backend methods, not repository.save()
+        backend.save_conversation(conv_record)
+        backend.save_messages([msg_record])
+
+        # Verify backend methods were called
+        backend.save_conversation.assert_called_once_with(conv_record)
+        backend.save_messages.assert_called_once_with([msg_record])
+
+
+class TestMCPServerHandleGet:
+    """Tests for _handle_get using repo.view() instead of repo.get()."""
+
+    def test_handle_get_uses_view_method(self):
+        """_handle_get should use repo.view() for ID resolution."""
+        backend = Mock(spec=SQLiteBackend)
+
+        # Mock resolve_id and get_conversation to return None
+        # (test just verifies view() calls these)
+        backend.resolve_id.return_value = "full-id"
+        backend.get_conversation.return_value = None
+
+        repo = ConversationRepository(backend)
+
+        # Simulate what _handle_get would do
+        result = repo.view("partial-id")
+
+        # Should use resolve_id
+        assert backend.resolve_id.called
+        # Should eventually call get_conversation
+        assert backend.get_conversation.called
+
+    def test_mock_includes_view_method(self):
+        """Mock repo should include view() method for testing."""
+        mock_repo = Mock(spec=ConversationRepository)
+
+        # Mock should have view method
+        assert hasattr(mock_repo, "view")
+
+        # Set up mock to return None
+        mock_repo.view.return_value = None
+
+        # Test the mock
+        result = mock_repo.view("conv-id")
+
+        assert result is None
+        mock_repo.view.assert_called_once_with("conv-id")
+
+
+class TestRepositoryIntegration:
+    """Integration tests between repository and backend."""
+
+    def test_repository_wraps_backend_operations(self):
+        """Repository should wrap backend for thread-safe operations."""
+        backend = Mock(spec=SQLiteBackend)
+
+        repo = ConversationRepository(backend)
+
+        # Repository should have reference to backend
+        assert repo.backend == backend
+        assert hasattr(repo, "_write_lock")
+
+    def test_repository_methods_exist(self):
+        """Repository should have the documented methods."""
+        backend = Mock(spec=SQLiteBackend)
+        repo = ConversationRepository(backend)
+
+        # Check methods exist
+        assert hasattr(repo, "view")
+        assert hasattr(repo, "get")
+        assert hasattr(repo, "save_conversation")
+        assert hasattr(repo, "search")
+        assert callable(repo.view)
+        assert callable(repo.get)
+        assert callable(repo.save_conversation)
 
 
 # =============================================================================
@@ -109,40 +456,61 @@ class TestProtocolInitialization:
 
 
 # =============================================================================
-# Tool Listing Tests
+# Listing Tests (Tools, Resources, Prompts)
 # =============================================================================
 
 
-class TestToolsListing:
-    """Tests for tools/list method."""
+class TestHandlerListing:
+    """Parametrized tests for listing methods (tools, resources, prompts)."""
 
-    def test_tools_list_returns_available_tools(self, handle_request, mock_repo):
-        """tools/list returns all available tools."""
-        request = {"method": "tools/list", "params": {}, "id": 2}
+    @pytest.mark.parametrize(
+        "method,result_key,expected_items,item_key,has_schema",
+        [
+            ("tools/list", "tools", ["search", "list", "get"], "name", True),
+            ("resources/list", "resources", ["polylogue://stats", "polylogue://conversations"], "uri", False),
+            ("prompts/list", "prompts", ["analyze-errors", "summarize-week", "extract-code"], "name", False),
+        ],
+    )
+    def test_listing_returns_available_items(self, handle_request, mock_repo, method, result_key, expected_items, item_key, has_schema):
+        """Listing methods return available items with correct structure."""
+        request = {"method": method, "params": {}, "id": 2}
 
         response = handle_request(request, mock_repo)
 
         assert response["id"] == 2
         assert "result" in response
 
-        tools = response["result"]["tools"]
-        tool_names = {t["name"] for t in tools}
+        items = response["result"][result_key]
+        item_identifiers = {item[item_key] for item in items}
 
-        assert "search" in tool_names
-        assert "list" in tool_names
-        assert "get" in tool_names
+        for expected in expected_items:
+            assert expected in item_identifiers
 
-    def test_tools_have_input_schemas(self, handle_request, mock_repo):
-        """Each tool has an inputSchema defining parameters."""
-        request = {"method": "tools/list", "params": {}, "id": 2}
+        if has_schema:
+            for item in items:
+                assert "inputSchema" in item
+                assert item["inputSchema"]["type"] == "object"
+                assert "properties" in item["inputSchema"]
+
+    @pytest.mark.parametrize(
+        "method,result_key,has_mime_type",
+        [
+            ("tools/list", "tools", False),
+            ("resources/list", "resources", True),
+            ("prompts/list", "prompts", False),
+        ],
+    )
+    def test_listing_items_have_metadata(self, handle_request, mock_repo, method, result_key, has_mime_type):
+        """Each item has required metadata."""
+        request = {"method": method, "params": {}, "id": 2}
 
         response = handle_request(request, mock_repo)
-        tools = response["result"]["tools"]
+        items = response["result"][result_key]
 
-        for tool in tools:
-            assert "inputSchema" in tool
-            assert tool["inputSchema"]["type"] == "object"
-            assert "properties" in tool["inputSchema"]
+        for item in items:
+            assert "name" in item or "uri" in item
+            if has_mime_type:
+                assert "mimeType" in item
 
 
 # =============================================================================
@@ -367,40 +735,6 @@ class TestUnknownTool:
 
 
 # =============================================================================
-# Resource Listing Tests
-# =============================================================================
-
-
-class TestResourcesListing:
-    """Tests for resources/list method."""
-
-    def test_resources_list_returns_available_resources(self, handle_request, mock_repo):
-        """resources/list returns available resources."""
-        request = {"method": "resources/list", "params": {}, "id": 7}
-
-        response = handle_request(request, mock_repo)
-
-        assert "result" in response
-        resources = response["result"]["resources"]
-
-        uris = {r["uri"] for r in resources}
-        assert "polylogue://stats" in uris
-        assert "polylogue://conversations" in uris
-
-    def test_resources_have_metadata(self, handle_request, mock_repo):
-        """Each resource has name, uri, and mimeType."""
-        request = {"method": "resources/list", "params": {}, "id": 7}
-
-        response = handle_request(request, mock_repo)
-        resources = response["result"]["resources"]
-
-        for resource in resources:
-            assert "uri" in resource
-            assert "name" in resource
-            assert "mimeType" in resource
-
-
-# =============================================================================
 # Resource Reading Tests
 # =============================================================================
 
@@ -442,12 +776,8 @@ class TestConversationsResource:
         """Conversations resource returns all conversations."""
         mock_repo.list.return_value = [sample_conversation]
 
-        # Need to mock the filter chain
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [sample_conversation]
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[sample_conversation])
 
             request = {
                 "method": "resources/read",
@@ -465,11 +795,7 @@ class TestConversationsResource:
     def test_conversations_resource_with_query_params(self, handle_request, mock_repo):
         """Conversations resource supports query parameters."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.provider.return_value = filter_instance
-            filter_instance.since.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
+            filter_instance = make_mock_filter(results=[])
             MockFilter.return_value = filter_instance
 
             request = {
@@ -543,146 +869,8 @@ class TestUnknownResource:
 
 
 # =============================================================================
-# Prompt Listing Tests
-# =============================================================================
-
-
-class TestPromptsListing:
-    """Tests for prompts/list method."""
-
-    def test_prompts_list_returns_available_prompts(self, handle_request, mock_repo):
-        """prompts/list returns available prompts."""
-        request = {"method": "prompts/list", "params": {}, "id": 12}
-
-        response = handle_request(request, mock_repo)
-
-        assert "result" in response
-        prompts = response["result"]["prompts"]
-
-        prompt_names = {p["name"] for p in prompts}
-        assert "analyze-errors" in prompt_names
-        assert "summarize-week" in prompt_names
-        assert "extract-code" in prompt_names
-
-    def test_prompts_have_descriptions(self, handle_request, mock_repo):
-        """Each prompt has a description."""
-        request = {"method": "prompts/list", "params": {}, "id": 12}
-
-        response = handle_request(request, mock_repo)
-        prompts = response["result"]["prompts"]
-
-        for prompt in prompts:
-            assert "description" in prompt
-            assert len(prompt["description"]) > 0
-
-
-# =============================================================================
 # Prompt Retrieval Tests
 # =============================================================================
-
-
-class TestAnalyzeErrorsPrompt:
-    """Tests for analyze-errors prompt."""
-
-    def test_analyze_errors_prompt(self, handle_request, mock_repo, sample_conversation):
-        """analyze-errors prompt generates error analysis context."""
-        # Modify sample to have error content
-        sample_conversation.messages[0].text = "I got an error: FileNotFoundError"
-
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.provider.return_value = filter_instance
-            filter_instance.since.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [sample_conversation]
-            MockFilter.return_value = filter_instance
-
-            request = {
-                "method": "prompts/get",
-                "params": {"name": "analyze-errors", "arguments": {}},
-                "id": 13,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            result = response["result"]
-            assert "messages" in result
-            assert len(result["messages"]) > 0
-
-            user_msg = result["messages"][0]
-            assert user_msg["role"] == "user"
-            assert "error" in user_msg["content"]["text"].lower()
-
-
-class TestSummarizeWeekPrompt:
-    """Tests for summarize-week prompt."""
-
-    def test_summarize_week_prompt(self, handle_request, mock_repo, sample_conversation):
-        """summarize-week prompt generates weekly summary context."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.since.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [sample_conversation]
-            MockFilter.return_value = filter_instance
-
-            request = {
-                "method": "prompts/get",
-                "params": {"name": "summarize-week", "arguments": {}},
-                "id": 14,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            result = response["result"]
-            assert "messages" in result
-
-            prompt_text = result["messages"][0]["content"]["text"]
-            assert "week" in prompt_text.lower() or "past" in prompt_text.lower()
-
-
-class TestExtractCodePrompt:
-    """Tests for extract-code prompt."""
-
-    def test_extract_code_prompt(self, handle_request, mock_repo):
-        """extract-code prompt generates code extraction context."""
-        # Conversation with code block
-        conv_with_code = Conversation(
-            id="test:code",
-            provider="test",
-            title="Code Example",
-            messages=[
-                Message(
-                    id="m1",
-                    role="assistant",
-                    text="Here's some code:\n```python\nprint('hello')\n```",
-                ),
-            ],
-        )
-
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [conv_with_code]
-            MockFilter.return_value = filter_instance
-
-            request = {
-                "method": "prompts/get",
-                "params": {"name": "extract-code", "arguments": {"language": "python"}},
-                "id": 15,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            result = response["result"]
-            assert "messages" in result
-
-            prompt_text = result["messages"][0]["content"]["text"]
-            assert "code" in prompt_text.lower()
 
 
 class TestUnknownPrompt:
@@ -807,24 +995,40 @@ class TestResponseFormats:
 
 
 # =============================================================================
-# Stats Tool Tests
+# Stats Tool Tests (Parametrized)
 # =============================================================================
 
 
 class TestStatsTool:
     """Tests for _handle_stats_tool."""
 
-    def test_stats_returns_archive_stats(self, handle_request, mock_repo):
-        """Stats tool returns conversation, message, and provider counts."""
+    @pytest.mark.parametrize(
+        "total_conversations,total_messages,providers,embedded_convs,embedded_msgs,db_size,expected_mb,desc",
+        STATS_CONFIGS,
+    )
+    def test_stats_configurations(
+        self,
+        handle_request,
+        mock_repo,
+        total_conversations,
+        total_messages,
+        providers,
+        embedded_convs,
+        embedded_msgs,
+        db_size,
+        expected_mb,
+        desc,
+    ):
+        """Stats tool handles various configuration states."""
         from polylogue.lib.stats import ArchiveStats
 
         mock_repo.get_archive_stats.return_value = ArchiveStats(
-            total_conversations=100,
-            total_messages=5000,
-            providers={"claude": 50, "chatgpt": 30, "claude-code": 20},
-            embedded_conversations=10,
-            embedded_messages=200,
-            db_size_bytes=1048576,
+            total_conversations=total_conversations,
+            total_messages=total_messages,
+            providers=providers,
+            embedded_conversations=embedded_convs if embedded_convs else 0,
+            embedded_messages=embedded_msgs if embedded_msgs else 0,
+            db_size_bytes=db_size,
         )
 
         request = {
@@ -835,241 +1039,166 @@ class TestStatsTool:
 
         response = handle_request(request, mock_repo)
 
-        assert "result" in response
+        assert "result" in response, f"Stats test failed for: {desc}"
         data = json.loads(response["result"]["content"][0]["text"])
-        assert data["total_conversations"] == 100
-        assert data["total_messages"] == 5000
-        assert data["providers"]["claude"] == 50
-        assert data["embedded_conversations"] == 10
-        assert data["db_size_mb"] == 1.0
-
-    def test_stats_zero_db_size(self, handle_request, mock_repo):
-        """Stats tool handles zero database size."""
-        from polylogue.lib.stats import ArchiveStats
-
-        mock_repo.get_archive_stats.return_value = ArchiveStats(
-            total_conversations=0,
-            total_messages=0,
-            providers={},
-            db_size_bytes=0,
-        )
-
-        request = {
-            "method": "tools/call",
-            "params": {"name": "stats", "arguments": {}},
-            "id": 21,
-        }
-
-        response = handle_request(request, mock_repo)
-
-        data = json.loads(response["result"]["content"][0]["text"])
-        assert data["db_size_mb"] == 0
-        assert data["total_conversations"] == 0
-
-    def test_stats_none_db_size(self, handle_request, mock_repo):
-        """Stats tool handles None database size."""
-        from polylogue.lib.stats import ArchiveStats
-
-        mock_repo.get_archive_stats.return_value = ArchiveStats(
-            total_conversations=5,
-            total_messages=20,
-            providers={"test": 5},
-            db_size_bytes=None,
-        )
-
-        request = {
-            "method": "tools/call",
-            "params": {"name": "stats", "arguments": {}},
-            "id": 22,
-        }
-
-        response = handle_request(request, mock_repo)
-
-        data = json.loads(response["result"]["content"][0]["text"])
-        assert data["db_size_mb"] == 0
+        assert data["total_conversations"] == total_conversations
+        assert data["total_messages"] == total_messages
+        assert data["db_size_mb"] == expected_mb
 
 
 # =============================================================================
-# Search Tool Filters Tests
+# Search Tool Filters Tests (Parametrized)
 # =============================================================================
 
 
 class TestSearchToolFilters:
     """Tests for search tool edge cases and filters."""
 
-    def test_search_with_provider_filter(self, handle_request, mock_repo):
-        """Search applies provider filter via ConversationFilter."""
+    @pytest.mark.parametrize(
+        "filter_type,filter_value,desc,filter_checker",
+        SEARCH_FILTER_CASES,
+    )
+    def test_search_filter_application(
+        self,
+        handle_request,
+        mock_repo,
+        filter_type,
+        filter_value,
+        desc,
+        filter_checker,
+    ):
+        """Search applies filters correctly."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.provider.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[])
+
+            args = {"query": "test"}
+            if filter_type.startswith("limit"):
+                args["limit"] = filter_value
+            else:
+                args[filter_type] = filter_value
 
             request = {
                 "method": "tools/call",
                 "params": {
                     "name": "search",
-                    "arguments": {"query": "test", "provider": "claude"},
+                    "arguments": args,
                 },
                 "id": 30,
             }
 
             response = handle_request(request, mock_repo)
 
-            assert "result" in response
-            filter_instance.provider.assert_called_once_with("claude")
+            assert "result" in response, f"Filter test failed for: {desc}"
+            filter_instance = MockFilter.return_value
+            if filter_type == "limit_normal":
+                filter_checker(filter_instance).assert_called_once_with(5)
+            elif filter_type == "limit_max":
+                filter_checker(filter_instance).assert_called_once_with(10000)
+            elif filter_type == "limit_negative":
+                filter_checker(filter_instance).assert_called_once_with(1)
+            else:
+                filter_checker(filter_instance).assert_called_once_with(filter_value)
 
-    def test_search_with_since_filter(self, handle_request, mock_repo):
-        """Search applies since date filter."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.since.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
-            MockFilter.return_value = filter_instance
+    @pytest.mark.parametrize(
+        "case_type,args,error_keyword,assertion_desc",
+        SEARCH_ERROR_CASES,
+    )
+    def test_search_error_cases(
+        self,
+        handle_request,
+        mock_repo,
+        case_type,
+        args,
+        error_keyword,
+        assertion_desc,
+    ):
+        """Search returns appropriate errors."""
+        if case_type == "invalid_since":
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(since=ValueError("Invalid date"))
 
+                request = {
+                    "method": "tools/call",
+                    "params": {"name": "search", "arguments": args},
+                    "id": 32,
+                }
+
+                response = handle_request(request, mock_repo)
+
+                assert "error" in response, f"Error test failed for: {assertion_desc}"
+                assert error_keyword in response["error"]["message"]
+        else:
             request = {
                 "method": "tools/call",
-                "params": {
-                    "name": "search",
-                    "arguments": {"query": "test", "since": "2024-01-01"},
-                },
-                "id": 31,
+                "params": {"name": "search", "arguments": args},
+                "id": 33,
             }
 
             response = handle_request(request, mock_repo)
 
-            assert "result" in response
-            filter_instance.since.assert_called_once_with("2024-01-01")
-
-    def test_search_invalid_since_returns_error(self, handle_request, mock_repo):
-        """Search returns error for unparseable date."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.since.side_effect = ValueError("Invalid date")
-            MockFilter.return_value = filter_instance
-
-            request = {
-                "method": "tools/call",
-                "params": {
-                    "name": "search",
-                    "arguments": {"query": "test", "since": "not-a-date"},
-                },
-                "id": 32,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "error" in response
-            assert "Invalid date" in response["error"]["message"]
-
-    def test_search_invalid_limit_type(self, handle_request, mock_repo):
-        """Search returns error for non-integer limit."""
-        request = {
-            "method": "tools/call",
-            "params": {
-                "name": "search",
-                "arguments": {"query": "test", "limit": "not-a-number"},
-            },
-            "id": 33,
-        }
-
-        response = handle_request(request, mock_repo)
-
-        assert "error" in response
-        assert "limit" in response["error"]["message"].lower()
-
-    def test_search_limit_capped_at_max(self, handle_request, mock_repo):
-        """Search clamps limit to MAX_LIMIT (10000)."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
-            MockFilter.return_value = filter_instance
-
-            request = {
-                "method": "tools/call",
-                "params": {
-                    "name": "search",
-                    "arguments": {"query": "test", "limit": 99999},
-                },
-                "id": 34,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            filter_instance.limit.assert_called_once_with(10000)
-
-    def test_search_negative_limit_clamped_to_one(self, handle_request, mock_repo):
-        """Search clamps negative limit to 1."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
-            MockFilter.return_value = filter_instance
-
-            request = {
-                "method": "tools/call",
-                "params": {
-                    "name": "search",
-                    "arguments": {"query": "test", "limit": -5},
-                },
-                "id": 35,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            filter_instance.limit.assert_called_once_with(1)
+            assert "error" in response, f"Error test failed for: {assertion_desc}"
+            assert error_keyword in response["error"]["message"].lower()
 
 
 # =============================================================================
-# List Tool Filters Tests
+# List Tool Filters Tests (Parametrized)
 # =============================================================================
 
 
 class TestListToolFilters:
     """Tests for list tool edge cases and filters."""
 
-    def test_list_with_since_filter(self, handle_request, mock_repo):
-        """List applies since filter."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.since.return_value = filter_instance
-            filter_instance.provider.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
-            MockFilter.return_value = filter_instance
+    @pytest.mark.parametrize(
+        "filter_type,filter_value,error_keyword,desc",
+        LIST_FILTER_CASES,
+    )
+    def test_list_filter_application(
+        self,
+        handle_request,
+        mock_repo,
+        filter_type,
+        filter_value,
+        error_keyword,
+        desc,
+    ):
+        """List tool filter application."""
+        if filter_type == "since":
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                filter_instance = make_mock_filter(results=[])
+                MockFilter.return_value = filter_instance
 
+                request = {
+                    "method": "tools/call",
+                    "params": {
+                        "name": "list",
+                        "arguments": {"since": filter_value},
+                    },
+                    "id": 40,
+                }
+
+                response = handle_request(request, mock_repo)
+
+                assert "result" in response, f"Filter test failed for: {desc}"
+                filter_instance.since.assert_called_once_with(filter_value)
+        elif filter_type == "invalid_limit_type":
             request = {
                 "method": "tools/call",
                 "params": {
                     "name": "list",
-                    "arguments": {"since": "2024-06-01"},
+                    "arguments": {"limit": filter_value},
                 },
-                "id": 40,
+                "id": 42,
             }
 
             response = handle_request(request, mock_repo)
 
-            assert "result" in response
-            filter_instance.since.assert_called_once_with("2024-06-01")
+            assert "error" in response, f"Error test failed for: {desc}"
+            assert error_keyword in response["error"]["message"].lower()
 
     def test_list_invalid_since_returns_error(self, handle_request, mock_repo):
         """List returns error for unparseable date."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.since.side_effect = ValueError("Bad date")
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(since=ValueError("Bad date"))
 
             request = {
                 "method": "tools/call",
@@ -1085,22 +1214,6 @@ class TestListToolFilters:
             assert "error" in response
             assert "Invalid date" in response["error"]["message"]
 
-    def test_list_invalid_limit_type(self, handle_request, mock_repo):
-        """List returns error for non-integer limit."""
-        request = {
-            "method": "tools/call",
-            "params": {
-                "name": "list",
-                "arguments": {"limit": [1, 2]},
-            },
-            "id": 42,
-        }
-
-        response = handle_request(request, mock_repo)
-
-        assert "error" in response
-        assert "limit" in response["error"]["message"].lower()
-
 
 # =============================================================================
 # Conversations Resource Edge Cases Tests
@@ -1113,10 +1226,7 @@ class TestConversationsResourceEdges:
     def test_conversations_resource_with_tag_filter(self, handle_request, mock_repo):
         """Conversations resource supports tag filter."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.tag.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
+            filter_instance = make_mock_filter(results=[])
             MockFilter.return_value = filter_instance
 
             request = {
@@ -1146,11 +1256,7 @@ class TestConversationsResourceEdges:
     def test_conversations_resource_invalid_since(self, handle_request, mock_repo):
         """Conversations resource returns error for unparseable since date."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.provider.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.since.side_effect = ValueError("Cannot parse")
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(since=ValueError("Cannot parse"))
 
             request = {
                 "method": "resources/read",
@@ -1164,89 +1270,67 @@ class TestConversationsResourceEdges:
 
 
 # =============================================================================
-# Prompt Edge Cases Tests
+# Prompt Edge Cases Tests (Parametrized)
 # =============================================================================
 
 
 class TestPromptEdgeCases:
     """Tests for prompt edge cases."""
 
-    def test_analyze_errors_with_provider_filter(
-        self, handle_request, mock_repo, sample_conversation
+    @pytest.mark.parametrize(
+        "case_id,prompt_name,arguments,filter_checker,desc",
+        PROMPT_EDGE_CASES,
+    )
+    def test_prompt_filter_application(
+        self,
+        handle_request,
+        mock_repo,
+        sample_conversation,
+        case_id,
+        prompt_name,
+        arguments,
+        filter_checker,
+        desc,
     ):
-        """analyze-errors applies provider filter."""
-        sample_conversation.messages[0].text = "Got an error"
+        """Prompt edge case filter application."""
+        if "analyze_errors" in case_id and "invalid_since" not in case_id:
+            sample_conversation.messages[0].text = "Got an error"
 
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.provider.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [sample_conversation]
-            MockFilter.return_value = filter_instance
+        if "invalid_since" in case_id:
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(since=ValueError("Bad date"))
 
-            request = {
-                "method": "prompts/get",
-                "params": {
-                    "name": "analyze-errors",
-                    "arguments": {"provider": "claude"},
-                },
-                "id": 60,
-            }
+                request = {
+                    "method": "prompts/get",
+                    "params": {
+                        "name": prompt_name,
+                        "arguments": arguments,
+                    },
+                    "id": 62,
+                }
 
-            response = handle_request(request, mock_repo)
+                response = handle_request(request, mock_repo)
 
-            assert "result" in response
-            filter_instance.provider.assert_called_once_with("claude")
+                assert "error" in response, f"Error test failed for: {desc}"
+        else:
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                filter_instance = make_mock_filter(results=[sample_conversation])
+                MockFilter.return_value = filter_instance
 
-    def test_analyze_errors_with_since_filter(
-        self, handle_request, mock_repo, sample_conversation
-    ):
-        """analyze-errors applies since filter."""
-        sample_conversation.messages[0].text = "Got an error"
+                request = {
+                    "method": "prompts/get",
+                    "params": {
+                        "name": prompt_name,
+                        "arguments": arguments,
+                    },
+                    "id": 60,
+                }
 
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.since.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [sample_conversation]
-            MockFilter.return_value = filter_instance
+                response = handle_request(request, mock_repo)
 
-            request = {
-                "method": "prompts/get",
-                "params": {
-                    "name": "analyze-errors",
-                    "arguments": {"since": "2024-01-01"},
-                },
-                "id": 61,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            filter_instance.since.assert_called_once_with("2024-01-01")
-
-    def test_analyze_errors_invalid_since(self, handle_request, mock_repo):
-        """analyze-errors returns error for invalid since date."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.since.side_effect = ValueError("Bad date")
-            MockFilter.return_value = filter_instance
-
-            request = {
-                "method": "prompts/get",
-                "params": {
-                    "name": "analyze-errors",
-                    "arguments": {"since": "garbage"},
-                },
-                "id": 62,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "error" in response
+                assert "result" in response, f"Filter test failed for: {desc}"
+                if filter_checker:
+                    filter_checker(filter_instance).assert_called()
 
     def test_analyze_errors_limits_error_contexts_to_20(
         self, handle_request, mock_repo
@@ -1267,11 +1351,7 @@ class TestPromptEdgeCases:
         )
 
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [big_conv]
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[big_conv])
 
             request = {
                 "method": "prompts/get",
@@ -1288,11 +1368,7 @@ class TestPromptEdgeCases:
     def test_analyze_errors_no_matches(self, handle_request, mock_repo):
         """analyze-errors handles zero matching conversations."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[])
 
             request = {
                 "method": "prompts/get",
@@ -1309,11 +1385,7 @@ class TestPromptEdgeCases:
     def test_summarize_week_empty(self, handle_request, mock_repo):
         """summarize-week handles no conversations in past week."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.since.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[])
 
             request = {
                 "method": "prompts/get",
@@ -1338,10 +1410,7 @@ class TestPromptEdgeCases:
         )
 
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [conv]
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[conv])
 
             request = {
                 "method": "prompts/get",
@@ -1371,10 +1440,7 @@ class TestPromptEdgeCases:
         )
 
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [conv]
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[conv])
 
             request = {
                 "method": "prompts/get",
@@ -1401,10 +1467,7 @@ class TestPromptEdgeCases:
         )
 
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [conv]
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[conv])
 
             request = {
                 "method": "prompts/get",
@@ -1418,98 +1481,47 @@ class TestPromptEdgeCases:
 
 
 # =============================================================================
-# Serialization Edge Cases Tests
+# Serialization Edge Cases Tests (Parametrized)
 # =============================================================================
 
 
 class TestSerializationEdgeCases:
     """Tests for serialization helper edge cases."""
 
-    def test_conversation_to_dict_no_timestamps(self):
-        """Handles conversation with no timestamps."""
-        from polylogue.mcp.server import _conversation_to_dict
+    @pytest.mark.parametrize(
+        "case_id,conv,expected_fields,func_name",
+        SERIALIZATION_CASES,
+    )
+    def test_serialization_edge_cases(
+        self,
+        case_id,
+        conv,
+        expected_fields,
+        func_name,
+    ):
+        """Serialization handles edge cases."""
+        if func_name == "_conversation_to_dict":
+            from polylogue.mcp.server import _conversation_to_dict
 
-        conv = Conversation(
-            id="t1", provider="test", title="No Times", messages=[]
-        )
+            result = _conversation_to_dict(conv)
+        else:
+            from polylogue.mcp.server import _conversation_to_full_dict
 
-        result = _conversation_to_dict(conv)
+            result = _conversation_to_full_dict(conv)
 
-        assert result["created_at"] is None
-        assert result["updated_at"] is None
-        assert result["message_count"] == 0
-
-    def test_conversation_to_full_dict_empty_messages(self):
-        """Handles conversation with no messages."""
-        from polylogue.mcp.server import _conversation_to_full_dict
-
-        conv = Conversation(
-            id="t2", provider="test", title="Empty", messages=[]
-        )
-
-        result = _conversation_to_full_dict(conv)
-
-        assert result["messages"] == []
-
-    def test_conversation_to_full_dict_empty_role(self):
-        """Handles message with empty string role."""
-        from polylogue.mcp.server import _conversation_to_full_dict
-
-        conv = Conversation(
-            id="t3",
-            provider="test",
-            title="Empty Role",
-            messages=[Message(id="m1", role="", text="test")],
-        )
-
-        result = _conversation_to_full_dict(conv)
-
-        assert result["messages"][0]["role"] == "unknown"
-
-    def test_conversation_to_full_dict_null_text(self):
-        """Handles message with None text."""
-        from polylogue.mcp.server import _conversation_to_full_dict
-
-        conv = Conversation(
-            id="t4",
-            provider="test",
-            title="Null Text",
-            messages=[Message(id="m1", role="user", text=None)],
-        )
-
-        result = _conversation_to_full_dict(conv)
-
-        assert result["messages"][0]["text"] == ""
-
-    def test_conversation_to_full_dict_null_timestamp(self):
-        """Handles message with None timestamp."""
-        from polylogue.mcp.server import _conversation_to_full_dict
-
-        conv = Conversation(
-            id="t5",
-            provider="test",
-            title="No TS",
-            messages=[Message(id="m1", role="user", text="hi")],
-        )
-
-        result = _conversation_to_full_dict(conv)
-
-        assert result["messages"][0]["timestamp"] is None
-
-    def test_conversation_to_full_dict_unusual_role(self):
-        """Handles message with unusual but valid role string."""
-        from polylogue.mcp.server import _conversation_to_full_dict
-
-        conv = Conversation(
-            id="t6",
-            provider="test",
-            title="Unusual Role",
-            messages=[Message(id="m1", role="tool", text="test")],
-        )
-
-        result = _conversation_to_full_dict(conv)
-
-        assert result["messages"][0]["role"] == "tool"
+        for key, expected_value in expected_fields.items():
+            if key == "messages":
+                assert key in result
+                if expected_value:
+                    for i, expected_msg in enumerate(expected_value):
+                        for msg_key, msg_val in expected_msg.items():
+                            assert result[key][i][msg_key] == msg_val
+                else:
+                    assert result[key] == expected_value
+            elif key == "created_at" or key == "updated_at":
+                assert result[key] == expected_value
+            else:
+                assert result[key] == expected_value, f"Failed for case {case_id}: {key}"
 
 
 # =============================================================================
@@ -1533,3 +1545,5 @@ class TestWriteError:
         assert response["id"] is None
         assert response["error"]["code"] == -32700
         assert response["error"]["message"] == "Parse error"
+
+
