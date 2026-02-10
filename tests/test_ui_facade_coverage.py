@@ -34,29 +34,18 @@ class TestPlainConsole:
         pc.print("hello", "world")
         assert "hello world" in capsys.readouterr().out
 
-    def test_print_strips_rich_markup(self, capsys):
+    @pytest.mark.parametrize("input_text,expected_stripped,unexpected", [
+        ("[bold]Important[/bold]", "Important", "[bold]"),
+        ("[green]Success[/green]", "Success", "[green]"),
+        ("[#d97757]colored[/#d97757]", "colored", "[#d97757]"),
+    ])
+    def test_print_strips_markup(self, capsys, input_text, expected_stripped, unexpected):
         from polylogue.ui.facade import PlainConsole
         pc = PlainConsole()
-        pc.print("[bold]Important[/bold]")
+        pc.print(input_text)
         captured = capsys.readouterr().out
-        assert "Important" in captured
-        assert "[bold]" not in captured
-
-    def test_print_green_markup(self, capsys):
-        from polylogue.ui.facade import PlainConsole
-        pc = PlainConsole()
-        pc.print("[green]Success[/green]")
-        captured = capsys.readouterr().out
-        assert "Success" in captured
-        assert "[green]" not in captured
-
-    def test_print_custom_color_markup(self, capsys):
-        from polylogue.ui.facade import PlainConsole
-        pc = PlainConsole()
-        pc.print("[#d97757]colored[/#d97757]")
-        captured = capsys.readouterr().out
-        assert "colored" in captured
-        assert "[#d97757]" not in captured
+        assert expected_stripped in captured
+        assert unexpected not in captured
 
     def test_print_ignores_extra_kwargs(self, capsys):
         from polylogue.ui.facade import PlainConsole
@@ -200,85 +189,29 @@ class TestConfirm:
         # Plain mode doesn't prompt, just returns default
         assert facade.confirm("anything", default=True) is True
 
-    def test_stub_value_true(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("stub_value,expected", [
+        (True, True),
+        (False, False),
+        ("yes", True),
+        ("y", True),
+        ("true", True),
+        ("1", True),
+        ("no", False),
+        ("n", False),
+        ("false", False),
+        ("0", False),
+    ], ids=[
+        "bool_true", "bool_false", "str_yes", "str_y",
+        "str_true", "str_1", "str_no", "str_n",
+        "str_false", "str_0"
+    ])
+    def test_stub_value_parsing(self, tmp_path, monkeypatch, stub_value, expected):
         from polylogue.ui.facade import ConsoleFacade
         stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": True}) + "\n")
+        stub_file.write_text(json.dumps({"type": "confirm", "value": stub_value}) + "\n")
         monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
         facade = ConsoleFacade(plain=False)
-        assert facade.confirm("Continue?") is True
-
-    def test_stub_value_false(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": False}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.confirm("Continue?") is False
-
-    def test_stub_value_string_yes(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": "yes"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.confirm("Continue?") is True
-
-    def test_stub_value_string_y(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": "y"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.confirm("Continue?") is True
-
-    def test_stub_value_string_true(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": "true"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.confirm("Continue?") is True
-
-    def test_stub_value_string_1(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": "1"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.confirm("Continue?") is True
-
-    def test_stub_value_string_no(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": "no"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.confirm("Continue?") is False
-
-    def test_stub_value_string_n(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": "n"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.confirm("Continue?") is False
-
-    def test_stub_value_string_false(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": "false"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.confirm("Continue?") is False
-
-    def test_stub_value_string_0(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "confirm", "value": "0"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        assert facade.confirm("Continue?") is False
+        assert facade.confirm("Continue?") is expected
 
     def test_stub_use_default_true(self, tmp_path, monkeypatch):
         from polylogue.ui.facade import ConsoleFacade
@@ -362,46 +295,29 @@ class TestChoose:
         result = facade.choose("Pick:", ["a", "b", "c"])
         assert result is None
 
-    def test_stub_index_zero(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("index,options,expected", [
+        (0, ["a", "b", "c"], "a"),
+        (2, ["a", "b", "c"], "c"),
+        ("2", ["a", "b", "c"], "c"),
+    ], ids=["zero", "last", "string_valid"])
+    def test_stub_index_valid(self, tmp_path, monkeypatch, index, options, expected):
         from polylogue.ui.facade import ConsoleFacade
         stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "index": 0}) + "\n")
+        stub_file.write_text(json.dumps({"type": "choose", "index": index}) + "\n")
         monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
         facade = ConsoleFacade(plain=False)
-        result = facade.choose("Pick:", ["a", "b", "c"])
-        assert result == "a"
+        result = facade.choose("Pick:", options)
+        assert result == expected
 
-    def test_stub_index_last(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "index": 2}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        result = facade.choose("Pick:", ["a", "b", "c"])
-        assert result == "c"
-
-    def test_stub_index_out_of_bounds(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("invalid_index", [99, -1, "not_a_number"], ids=["out_of_bounds", "negative", "string_invalid"])
+    def test_stub_index_invalid(self, tmp_path, monkeypatch, invalid_index):
         from polylogue.ui.facade import ConsoleFacade
         import questionary
         stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "index": 99}) + "\n")
+        stub_file.write_text(json.dumps({"type": "choose", "index": invalid_index}) + "\n")
         monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
         facade = ConsoleFacade(plain=False)
-        # Out of bounds, questionary is called
-        mock_select = MagicMock()
-        mock_select.return_value.ask.return_value = None
-        monkeypatch.setattr(questionary, "select", lambda *args, **kwargs: mock_select.return_value)
-        result = facade.choose("Pick:", ["a", "b", "c"])
-        assert result is None
-
-    def test_stub_index_negative(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        import questionary
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "index": -1}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        # Negative index, questionary is called
+        # Invalid index, questionary is called
         mock_select = MagicMock()
         mock_select.return_value.ask.return_value = None
         monkeypatch.setattr(questionary, "select", lambda *args, **kwargs: mock_select.return_value)
@@ -416,29 +332,6 @@ class TestChoose:
         facade = ConsoleFacade(plain=False)
         result = facade.choose("Pick:", ["first", "second"])
         assert result == "first"
-
-    def test_stub_index_string(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "index": "2"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        result = facade.choose("Pick:", ["a", "b", "c"])
-        assert result == "c"
-
-    def test_stub_index_string_invalid(self, tmp_path, monkeypatch):
-        from polylogue.ui.facade import ConsoleFacade
-        import questionary
-        stub_file = tmp_path / "stubs.jsonl"
-        stub_file.write_text(json.dumps({"type": "choose", "index": "not_a_number"}) + "\n")
-        monkeypatch.setenv("POLYLOGUE_TEST_PROMPT_FILE", str(stub_file))
-        facade = ConsoleFacade(plain=False)
-        # Invalid index string, questionary is called
-        mock_select = MagicMock()
-        mock_select.return_value.ask.return_value = None
-        monkeypatch.setattr(questionary, "select", lambda *args, **kwargs: mock_select.return_value)
-        result = facade.choose("Pick:", ["a", "b", "c"])
-        assert result is None
 
     def test_many_options_uses_autocomplete(self, tmp_path, monkeypatch):
         from polylogue.ui.facade import ConsoleFacade
@@ -691,56 +584,27 @@ class TestRenderDiff:
 
 
 class TestStatusMethods:
-    def test_error_plain(self, capsys):
+    @pytest.mark.parametrize("method,text,expected_icon", [
+        ("error", "Something broke", "✗"),
+        ("warning", "Watch out", "!"),
+        ("success", "All good", "✓"),
+        ("info", "FYI", None),
+    ], ids=["error", "warning", "success", "info"])
+    def test_status_method_plain(self, capsys, method, text, expected_icon):
         from polylogue.ui.facade import ConsoleFacade
         facade = ConsoleFacade(plain=True)
-        facade.error("Something broke")
+        getattr(facade, method)(text)
         output = capsys.readouterr().out
-        assert "Something broke" in output
-        assert "✗" in output or "X" in output
+        assert text in output
+        if expected_icon:
+            assert expected_icon in output or expected_icon.upper() in output
 
-    def test_warning_plain(self, capsys):
-        from polylogue.ui.facade import ConsoleFacade
-        facade = ConsoleFacade(plain=True)
-        facade.warning("Watch out")
-        output = capsys.readouterr().out
-        assert "Watch out" in output
-        assert "!" in output or "W" in output
-
-    def test_success_plain(self, capsys):
-        from polylogue.ui.facade import ConsoleFacade
-        facade = ConsoleFacade(plain=True)
-        facade.success("All good")
-        output = capsys.readouterr().out
-        assert "All good" in output
-        assert "✓" in output
-
-    def test_info_plain(self, capsys):
-        from polylogue.ui.facade import ConsoleFacade
-        facade = ConsoleFacade(plain=True)
-        facade.info("FYI")
-        output = capsys.readouterr().out
-        assert "FYI" in output
-
-    def test_error_rich(self):
+    @pytest.mark.parametrize("method", ["error", "warning", "success", "info"])
+    def test_status_method_rich(self, method):
         from polylogue.ui.facade import ConsoleFacade
         facade = ConsoleFacade(plain=False)
-        facade.error("Error")
-
-    def test_warning_rich(self):
-        from polylogue.ui.facade import ConsoleFacade
-        facade = ConsoleFacade(plain=False)
-        facade.warning("Warning")
-
-    def test_success_rich(self):
-        from polylogue.ui.facade import ConsoleFacade
-        facade = ConsoleFacade(plain=False)
-        facade.success("Success")
-
-    def test_info_rich(self):
-        from polylogue.ui.facade import ConsoleFacade
-        facade = ConsoleFacade(plain=False)
-        facade.info("Info")
+        getattr(facade, method)("Test message")
+        # Should not raise
 
 
 # =============================================================================
@@ -913,12 +777,11 @@ class TestResolveVersion:
         result = _resolve_version()
         assert len(result.version) > 0
 
-    def test_version_info_attributes(self):
+    @pytest.mark.parametrize("attr", ["version", "commit", "dirty"])
+    def test_version_info_has_attribute(self, attr):
         from polylogue.version import _resolve_version
         result = _resolve_version()
-        assert hasattr(result, "version")
-        assert hasattr(result, "commit")
-        assert hasattr(result, "dirty")
+        assert hasattr(result, attr)
 
     def test_commit_is_none_or_string(self):
         from polylogue.version import _resolve_version
@@ -1055,15 +918,11 @@ class TestConsoleFacadeTheme:
 
 
 class TestConsoleFacadeBoxStyles:
-    def test_panel_box_set(self):
+    @pytest.mark.parametrize("attr", ["_panel_box", "_banner_box"])
+    def test_box_style_set(self, attr):
         from polylogue.ui.facade import ConsoleFacade
         facade = ConsoleFacade(plain=False)
-        assert facade._panel_box is not None
-
-    def test_banner_box_set(self):
-        from polylogue.ui.facade import ConsoleFacade
-        facade = ConsoleFacade(plain=False)
-        assert facade._banner_box is not None
+        assert getattr(facade, attr) is not None
 
     def test_different_box_styles(self):
         from polylogue.ui.facade import ConsoleFacade
