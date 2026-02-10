@@ -499,6 +499,11 @@ class ConversationSummary(BaseModel):
         )
 
     @property
+    def display_date(self) -> datetime | None:
+        """Best available date: updated_at > created_at > None."""
+        return self.updated_at or self.created_at
+
+    @property
     def display_title(self) -> str:
         """Display title with precedence: user_title > title > truncated ID."""
         user_title = self.metadata.get("title")
@@ -568,6 +573,10 @@ class Conversation(BaseModel):
     # Allow MessageCollection which is not a standard Pydantic type
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    @property
+    def display_date(self) -> datetime | None:
+        """Best available date: updated_at > created_at > None."""
+        return self.updated_at or self.created_at
 
     @classmethod
     def from_records(
