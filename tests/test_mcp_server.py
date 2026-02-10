@@ -1725,3 +1725,21 @@ class TestWriteError:
         assert response["id"] is None
         assert response["error"]["code"] == -32700
         assert response["error"]["message"] == "Parse error"
+
+
+# --- Merged from test_supplementary_coverage.py ---
+
+
+class TestMcpCommandSupplementary:
+    """Tests for MCP command edge cases."""
+
+    def test_mcp_import_error(self, cli_workspace):
+        """Should show clear error when MCP deps not installed."""
+        from click.testing import CliRunner
+        from unittest.mock import patch
+
+        from polylogue.cli.click_app import cli
+
+        with patch("polylogue.cli.commands.mcp.mcp_command") as mock_cmd:
+            # Simulate ImportError path by testing with a mock
+            pass  # The actual ImportError test is in test_mcp_server.py already

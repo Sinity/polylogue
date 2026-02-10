@@ -1548,3 +1548,53 @@ class TestOpenInBrowserSecurity:
         # Should return False gracefully
         result = open_in_browser(invalid_path)
         assert result is False
+
+
+# --- Merged from test_supplementary_coverage.py ---
+
+
+class TestPolylogueRootInitSupplementary:
+    """Tests for polylogue.__init__.__getattr__ lazy imports."""
+
+    def test_lazy_import_conversation_repository(self):
+        """ConversationRepository should be importable via lazy __getattr__."""
+        import polylogue
+
+        repo_cls = polylogue.ConversationRepository
+        assert repo_cls is not None
+        assert repo_cls.__name__ == "ConversationRepository"
+
+    def test_lazy_import_unknown_raises(self):
+        """Unknown attributes should raise AttributeError."""
+        import polylogue
+
+        with pytest.raises(AttributeError, match="has no attribute"):
+            _ = polylogue.NonExistentThing
+
+
+class TestLibInitSupplementary:
+    """Tests for polylogue.lib.__init__.__getattr__ lazy imports."""
+
+    def test_lazy_import_conversation_repository(self):
+        import polylogue.lib
+
+        repo_cls = polylogue.lib.ConversationRepository
+        assert repo_cls.__name__ == "ConversationRepository"
+
+    def test_lazy_import_conversation_projection(self):
+        import polylogue.lib
+
+        proj_cls = polylogue.lib.ConversationProjection
+        assert proj_cls.__name__ == "ConversationProjection"
+
+    def test_lazy_import_archive_stats(self):
+        import polylogue.lib
+
+        stats_cls = polylogue.lib.ArchiveStats
+        assert stats_cls.__name__ == "ArchiveStats"
+
+    def test_lazy_import_unknown_raises(self):
+        import polylogue.lib
+
+        with pytest.raises(AttributeError, match="has no attribute"):
+            _ = polylogue.lib.NonExistentThing
