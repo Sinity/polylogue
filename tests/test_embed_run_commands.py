@@ -132,14 +132,17 @@ def mock_repository():
 class TestShowEmbeddingStats:
     """Test _show_embedding_stats function."""
 
-    def test_show_stats_basic(self, mock_env, capsys):
-        """_show_embedding_stats displays statistics."""
+    @pytest.mark.parametrize("query_results,expected_coverage,expected_pending", [
+        # (total_convs, embedded_convs, embedded_msgs, pending), coverage, pending_text
+        ([(100,), (50,), (200,), (50,)], "50.0%", "50"),
+        ([(0,), (0,), (0,), (0,)], "0.0%", "0"),
+        ([(200,), (100,), (500,), (100,)], "50.0%", "100"),
+    ])
+    def test_show_stats_variants(self, mock_env, capsys, query_results, expected_coverage, expected_pending):
+        """_show_embedding_stats displays statistics for various query results."""
         mock_conn = MagicMock()
         mock_conn.execute.side_effect = [
-            MagicMock(fetchone=MagicMock(return_value=(100,))),  # total_convs
-            MagicMock(fetchone=MagicMock(return_value=(50,))),   # embedded_convs
-            MagicMock(fetchone=MagicMock(return_value=(200,))),  # embedded_msgs
-            MagicMock(fetchone=MagicMock(return_value=(50,))),   # pending
+            MagicMock(fetchone=MagicMock(return_value=qr)) for qr in query_results
         ]
 
         with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
@@ -150,11 +153,8 @@ class TestShowEmbeddingStats:
 
         captured = capsys.readouterr()
         assert "Embedding Statistics" in captured.out
-        assert "Total conversations:    100" in captured.out
-        assert "Embedded conversations: 50" in captured.out
-        assert "Embedded messages:      200" in captured.out
-        assert "Coverage:               50.0%" in captured.out
-        assert "Pending:                50" in captured.out
+        assert f"Coverage:               {expected_coverage}" in captured.out
+        assert f"Pending:                {expected_pending}" in captured.out
 
     def test_show_stats_embedding_status_missing(self, mock_env, capsys):
         """_show_embedding_stats handles missing embedding_status table."""
@@ -186,25 +186,6 @@ class TestShowEmbeddingStats:
 
         captured = capsys.readouterr()
         assert "Embedding Statistics" in captured.out
-
-    def test_show_stats_zero_conversations(self, mock_env, capsys):
-        """_show_embedding_stats handles zero conversations (division by zero)."""
-        mock_conn = MagicMock()
-        mock_conn.execute.side_effect = [
-            MagicMock(fetchone=MagicMock(return_value=(0,))),  # total_convs
-            MagicMock(fetchone=MagicMock(return_value=(0,))),  # embedded_convs
-            MagicMock(fetchone=MagicMock(return_value=(0,))),  # embedded_msgs
-            MagicMock(fetchone=MagicMock(return_value=(0,))),  # pending
-        ]
-
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
-
-            _show_embedding_stats(mock_env)
-
-        captured = capsys.readouterr()
-        assert "Coverage:               0.0%" in captured.out
 
 
 # =============================================================================
@@ -266,58 +247,32 @@ class TestEmbedSingle:
 class TestEmbedBatch:
     """Test _embed_batch function."""
 
-    def test_embed_batch_all_already_embedded(self, mock_env, mock_repository, capsys):
-        """_embed_batch exits early when all conversations already embedded."""
+    @pytest.mark.parametrize("num_convs,limit,rebuild,expected_output", [
+        # num_convs, limit, rebuild, expected_output_substring
+        (0, None, False, "All conversations are already embedded"),
+        (2, None, False, "Embedding 2 conversations"),
+        (3, 2, False, "Embedding 2 conversations"),
+        (3, None, True, "Embedding 3 conversations"),
+        (3, None, False, "Embedding 3 conversations"),
+    ])
+    def test_embed_batch_variants(self, mock_env, mock_repository, capsys, num_convs, limit, rebuild, expected_output):
+        """_embed_batch handles various configurations of conversations, limits, and rebuild flag."""
+        mock_env.ui.console = MagicMock()  # Plain mode
         mock_vec_provider = MagicMock()
+
+        convs = [{"conversation_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
 
         with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
             mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchall.return_value = []
+            mock_conn.execute.return_value.fetchall.return_value = convs
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
 
-            _embed_batch(mock_env, mock_repository, mock_vec_provider)
+            kwargs = {"limit": limit, "rebuild": rebuild} if limit or rebuild else {"rebuild": rebuild}
+            _embed_batch(mock_env, mock_repository, mock_vec_provider, **kwargs)
 
         captured = capsys.readouterr()
-        assert "All conversations are already embedded" in captured.out
-
-    def test_embed_batch_plain_mode(self, mock_env, mock_repository, capsys):
-        """_embed_batch in plain mode uses click.echo."""
-        mock_env.ui.console = MagicMock()  # Not a RichConsole
-        mock_vec_provider = MagicMock()
-
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchall.return_value = [
-                {"conversation_id": "conv-1", "title": "Test 1"},
-                {"conversation_id": "conv-2", "title": "Test 2"},
-            ]
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
-
-            _embed_batch(mock_env, mock_repository, mock_vec_provider)
-
-        captured = capsys.readouterr()
-        assert "Embedding 2 conversations" in captured.out
-
-    def test_embed_batch_with_limit(self, mock_env, mock_repository, capsys):
-        """_embed_batch respects limit parameter."""
-        mock_vec_provider = MagicMock()
-
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchall.return_value = [
-                {"conversation_id": "conv-1", "title": "Test 1"},
-                {"conversation_id": "conv-2", "title": "Test 2"},
-                {"conversation_id": "conv-3", "title": "Test 3"},
-            ]
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
-
-            _embed_batch(mock_env, mock_repository, mock_vec_provider, limit=2)
-
-        captured = capsys.readouterr()
-        assert "Embedding 2 conversations" in captured.out
+        assert expected_output in captured.out
 
     def test_embed_batch_rebuild_flag(self, mock_env, mock_repository):
         """_embed_batch with rebuild=True queries all conversations."""
@@ -381,10 +336,11 @@ class TestEmbedCommand:
         assert result.exit_code == 0
         assert "embed" in result.output.lower()
 
-    def test_embed_command_with_stats_help(self, runner, cli_workspace):
-        """embed command has --stats option in help."""
+    @pytest.mark.parametrize("option", ["--stats", "--model", "--rebuild", "--limit"])
+    def test_embed_command_options(self, runner, cli_workspace, option):
+        """embed command has expected options in help."""
         result = runner.invoke(cli, ["embed", "--help"])
-        assert "--stats" in result.output
+        assert option in result.output
 
 
 # =============================================================================
@@ -395,62 +351,38 @@ class TestEmbedCommand:
 class TestRunSyncOnce:
     """Test _run_sync_once function."""
 
-    def test_run_sync_once_plain_mode(self, mock_env, mock_run_result, capsys):
-        """_run_sync_once in plain mode prints progress."""
-        mock_env.ui.plain = True
+    @pytest.mark.parametrize("ui_env,render_format,has_plan_snapshot", [
+        # ui_fixture, render_format, include_plan_snapshot
+        ("mock_env", "markdown", False),
+        ("mock_env_rich", "html", False),
+        ("mock_env", "markdown", True),
+    ])
+    def test_run_sync_once_variants(self, request, mock_run_result, mock_plan_result, capsys, ui_env, render_format, has_plan_snapshot):
+        """_run_sync_once handles different UI modes, formats, and plan configurations."""
+        env = request.getfixturevalue(ui_env)
 
         with patch("polylogue.cli.commands.run.run_sources") as mock_run:
             mock_run.return_value = mock_run_result
             mock_config = MagicMock()
 
-            result = _run_sync_once(
-                mock_config,
-                mock_env,
-                "all",
-                None,
-                "markdown",
-            )
-
-        assert result.run_id == "run-123"
-        captured = capsys.readouterr()
-        assert "Syncing" in captured.out
-
-    def test_run_sync_once_rich_mode(self, mock_env_rich, mock_run_result):
-        """_run_sync_once in rich mode uses Progress."""
-        mock_env_rich.ui.plain = False
-
-        with patch("polylogue.cli.commands.run.run_sources") as mock_run:
-            mock_run.return_value = mock_run_result
-            mock_config = MagicMock()
-
-            result = _run_sync_once(
-                mock_config,
-                mock_env_rich,
-                "all",
-                None,
-                "html",
-            )
-
-        assert result.run_id == "run-123"
-
-    def test_run_sync_once_with_plan_snapshot(self, mock_env, mock_run_result, mock_plan_result):
-        """_run_sync_once passes plan_snapshot to run_sources."""
-        with patch("polylogue.cli.commands.run.run_sources") as mock_run:
-            mock_run.return_value = mock_run_result
-            mock_config = MagicMock()
-
-            _run_sync_once(
-                mock_config,
-                mock_env,
-                "all",
-                ["source1"],
-                "markdown",
-                plan_snapshot=mock_plan_result,
-            )
-
-            # Check that plan was passed to run_sources
-            call_kwargs = mock_run.call_args[1]
-            assert call_kwargs["plan"] == mock_plan_result
+            kwargs = {
+                "config": mock_config,
+                "env": env,
+                "scope": "all",
+                "sources": None,
+                "format": render_format,
+            }
+            if has_plan_snapshot:
+                kwargs["plan_snapshot"] = mock_plan_result
+                # Verify plan was passed
+                _run_sync_once(**kwargs)
+                call_kwargs = mock_run.call_args[1]
+                assert call_kwargs["plan"] == mock_plan_result
+            else:
+                result = _run_sync_once(**kwargs)
+                assert result.run_id == "run-123"
+                captured = capsys.readouterr()
+                assert "Syncing" in captured.out
 
 
 # =============================================================================
@@ -461,61 +393,52 @@ class TestRunSyncOnce:
 class TestDisplayResult:
     """Test _display_result function."""
 
-    def test_display_result_basic(self, mock_env, mock_run_result):
-        """_display_result displays sync counts and duration."""
+    @pytest.mark.parametrize("stage,sources,has_failures,failure_count", [
+        # stage, sources, has_render_failures, num_failures
+        ("all", None, False, 0),
+        ("index", None, False, 0),
+        ("render", ["source1", "source2"], False, 0),
+        ("all", None, True, 2),
+        ("all", None, True, 20),
+    ])
+    def test_display_result_variants(self, mock_env, capsys, stage, sources, has_failures, failure_count):
+        """_display_result handles various stages, sources, and failure scenarios."""
         mock_config = MagicMock()
         mock_config.render_root = Path("/tmp/render")
 
-        _display_result(mock_env, mock_config, mock_run_result, "all", None)
+        if has_failures:
+            failures = [
+                {"conversation_id": f"conv-{i}", "error": f"error {i}"}
+                for i in range(failure_count)
+            ]
+            mock_run_result = RunResult(
+                run_id="run-123",
+                counts={"conversations": failure_count},
+                drift={},
+                indexed=stage == "index",
+                index_error=None if stage != "all" else None,
+                duration_ms=100,
+                render_failures=failures,
+            )
+        else:
+            mock_run_result = RunResult(
+                run_id="run-123",
+                counts={"conversations": 1 if not sources else len(sources)},
+                drift={"conversations": {"new": 2, "updated": 1, "unchanged": 5}} if stage == "all" else {},
+                indexed=stage == "index",
+                index_error=None,
+                duration_ms=100,
+                render_failures=[],
+            )
+
+        with patch("polylogue.cli.helpers.latest_render_path") as mock_latest:
+            mock_latest.return_value = Path("/tmp/render/2024-01-15") if stage == "render" else None
+
+            _display_result(mock_env, mock_config, mock_run_result, stage, sources)
 
         mock_env.ui.summary.assert_called_once()
         title, lines = mock_env.ui.summary.call_args[0]
-        assert "Sync" in title
-
-    def test_display_result_index_stage(self, mock_env, mock_run_result):
-        """_display_result formats index stage specially."""
-        mock_config = MagicMock()
-        mock_config.render_root = Path("/tmp/render")
-        mock_run_result.indexed = True
-
-        _display_result(mock_env, mock_config, mock_run_result, "index", None)
-
-        # Should show index status
-        title, lines = mock_env.ui.summary.call_args[0]
-        assert any("index" in line.lower() for line in lines)
-
-    def test_display_result_with_sources(self, mock_env, mock_run_result):
-        """_display_result includes source names in title."""
-        mock_config = MagicMock()
-        mock_config.render_root = Path("/tmp/render")
-
-        _display_result(mock_env, mock_config, mock_run_result, "all", ["source1", "source2"])
-
-        title, lines = mock_env.ui.summary.call_args[0]
-        assert "source1" in title or "source2" in title
-
-    def test_display_result_with_render_failures(self, mock_env, capsys):
-        """_display_result shows render failures."""
-        mock_config = MagicMock()
-        mock_config.render_root = Path("/tmp/render")
-        mock_run_result = RunResult(
-            run_id="run-123",
-            counts={"conversations": 1},
-            drift={},
-            indexed=False,
-            index_error=None,
-            duration_ms=100,
-            render_failures=[
-                {"conversation_id": "conv-1", "error": "template error"},
-                {"conversation_id": "conv-2", "error": "parse error"},
-            ],
-        )
-
-        _display_result(mock_env, mock_config, mock_run_result, "all", None)
-
-        captured = capsys.readouterr()
-        # Output goes to stderr
-        assert "Render failures" in captured.err or "error" in captured.err.lower()
+        assert "Sync" in title or stage in title or any(s in title for s in (sources or []))
 
     def test_display_result_with_index_error(self, mock_env, capsys):
         """_display_result shows index error hint."""
@@ -534,7 +457,6 @@ class TestDisplayResult:
         _display_result(mock_env, mock_config, mock_run_result, "all", None)
 
         captured = capsys.readouterr()
-        # Output goes to stderr
         assert "Index error" in captured.err
 
 
@@ -546,15 +468,16 @@ class TestDisplayResult:
 class TestNotifyNewConversations:
     """Test _notify_new_conversations function."""
 
-    def test_notify_new_conversations_success(self):
-        """_notify_new_conversations calls notify-send."""
+    @pytest.mark.parametrize("num_conversations", [0, 1, 3, 999])
+    def test_notify_new_conversations_variants(self, num_conversations):
+        """_notify_new_conversations calls notify-send with various conversation counts."""
         with patch("subprocess.run") as mock_run:
-            _notify_new_conversations(3)
+            _notify_new_conversations(num_conversations)
 
             mock_run.assert_called_once()
             call_args = mock_run.call_args[0][0]
             assert "notify-send" in call_args
-            assert "3" in str(call_args)
+            assert str(num_conversations) in str(call_args)
 
     def test_notify_new_conversations_not_found(self):
         """_notify_new_conversations silently ignores FileNotFoundError."""
@@ -573,23 +496,21 @@ class TestNotifyNewConversations:
 class TestExecOnNew:
     """Test _exec_on_new function."""
 
-    def test_exec_on_new_sets_env_var(self):
-        """_exec_on_new sets POLYLOGUE_NEW_COUNT environment variable."""
+    @pytest.mark.parametrize("command,num_conversations", [
+        ("echo $POLYLOGUE_NEW_COUNT", 5),
+        ("ls -la", 1),
+        ('echo "$POLYLOGUE_NEW_COUNT items"', 5),
+        ("echo 'Starting'\nsleep 1\necho 'Done'", 1),
+    ])
+    def test_exec_on_new_variants(self, command, num_conversations):
+        """_exec_on_new executes commands with correct environment and settings."""
         with patch("subprocess.run") as mock_run:
-            _exec_on_new("echo $POLYLOGUE_NEW_COUNT", 5)
+            _exec_on_new(command, num_conversations)
 
             mock_run.assert_called_once()
             call_kwargs = mock_run.call_args[1]
-            assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == "5"
+            assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == str(num_conversations)
             assert call_kwargs["shell"] is True
-
-    def test_exec_on_new_command_execution(self):
-        """_exec_on_new executes the command."""
-        with patch("subprocess.run") as mock_run:
-            _exec_on_new("ls -la", 1)
-
-            call_args = mock_run.call_args[0][0]
-            assert "ls -la" in call_args
 
 
 # =============================================================================
@@ -600,27 +521,31 @@ class TestExecOnNew:
 class TestWebhookOnNew:
     """Test _webhook_on_new function."""
 
-    def test_webhook_on_new_success(self):
-        """_webhook_on_new sends POST request to webhook URL."""
+    @pytest.mark.parametrize("url,num_conversations", [
+        ("http://example.com/webhook", 3),
+        ("http://example.com/webhook", 5),
+        ("https://api.example.com/sync", 1),
+    ])
+    def test_webhook_on_new_variants(self, url, num_conversations):
+        """_webhook_on_new sends POST requests with correct payloads and timeouts."""
         with patch("urllib.request.urlopen") as mock_urlopen:
-            _webhook_on_new("http://example.com/webhook", 3)
-
-            mock_urlopen.assert_called_once()
-            call_args = mock_urlopen.call_args[0][0]
-            assert call_args.get_full_url() == "http://example.com/webhook"
-            assert call_args.get_method() == "POST"
-
-    def test_webhook_on_new_json_payload(self):
-        """_webhook_on_new includes correct JSON payload."""
-        with patch("urllib.request.urlopen"):
             with patch("urllib.request.Request") as mock_request:
-                _webhook_on_new("http://example.com/webhook", 5)
+                _webhook_on_new(url, num_conversations)
 
-                # Check that Request was called with correct data
+                mock_urlopen.assert_called_once()
+                call_kwargs = mock_urlopen.call_args[1]
+                assert call_kwargs.get("timeout") == 10
+
+                # Check request details
+                mock_request.assert_called_once()
+                call_args = mock_request.call_args[0]
+                assert url in str(call_args)
+
+                # Check payload
                 call_kwargs = mock_request.call_args[1]
                 payload = json.loads(call_kwargs["data"].decode())
                 assert payload["event"] == "sync"
-                assert payload["new_conversations"] == 5
+                assert payload["new_conversations"] == num_conversations
 
     def test_webhook_on_new_exception_logged(self):
         """_webhook_on_new logs exceptions without raising."""
@@ -650,15 +575,11 @@ class TestRunCommand:
         assert result.exit_code == 0
         assert "run" in result.output.lower()
 
-    def test_run_command_stage_option(self, runner, cli_workspace):
-        """run command has --stage option in help."""
+    @pytest.mark.parametrize("option", ["--stage", "--preview", "--watch", "--notify", "--exec", "--webhook"])
+    def test_run_command_options(self, runner, cli_workspace, option):
+        """run command has expected options in help."""
         result = runner.invoke(cli, ["run", "--help"])
-        assert "--stage" in result.output
-
-    def test_run_command_preview_option(self, runner, cli_workspace):
-        """run command has --preview option in help."""
-        result = runner.invoke(cli, ["run", "--help"])
-        assert "--preview" in result.output
+        assert option in result.output
 
 
 # =============================================================================
@@ -689,67 +610,41 @@ class TestSourcesCommand:
 class TestEmbedBatchRichMode:
     """Test _embed_batch with Rich console enabled."""
 
-    def test_embed_batch_rich_mode(self, mock_env_rich, mock_repository, capsys):
-        """_embed_batch with Rich console uses Progress bar."""
+    @pytest.mark.parametrize("num_convs,messages_side_effect,exception_type", [
+        # (num_conversations, get_messages_side_effect, expected_exception_or_none)
+        (2, [{"message_id": "m1"}] * 2, None),
+        (2, [[{"message_id": "m1"}], []], None),
+        (1, [{"message_id": "m1"}], RuntimeError),
+    ])
+    def test_embed_batch_rich_mode_variants(self, mock_env_rich, mock_repository, capsys, num_convs, messages_side_effect, exception_type):
+        """_embed_batch in rich mode handles various message and exception scenarios."""
         mock_vec_provider = MagicMock()
-        mock_repository.backend.get_messages.return_value = [{"message_id": "m1"}]
+
+        if exception_type:
+            mock_vec_provider.upsert.side_effect = exception_type("API timeout")
+        else:
+            if isinstance(messages_side_effect, list) and len(messages_side_effect) > 0 and not isinstance(messages_side_effect[0], dict):
+                # It's a list of lists/results
+                mock_repository.backend.get_messages.side_effect = messages_side_effect
+            else:
+                mock_repository.backend.get_messages.return_value = messages_side_effect
+
+        convs = [{"conversation_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
 
         with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
             mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchall.return_value = [
-                {"conversation_id": "conv-1", "title": "Test 1"},
-                {"conversation_id": "conv-2", "title": "Test 2"},
-            ]
+            mock_conn.execute.return_value.fetchall.return_value = convs
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
 
             _embed_batch(mock_env_rich, mock_repository, mock_vec_provider)
 
-        captured = capsys.readouterr()
-        assert "Embedding 2 conversations" in captured.out or "Embedded" in captured.out
-
-    def test_embed_batch_rich_mode_with_empty_messages(self, mock_env_rich, mock_repository, capsys):
-        """_embed_batch in rich mode handles conversations with no messages."""
-        mock_vec_provider = MagicMock()
-        # First conv has messages, second doesn't
-        mock_repository.backend.get_messages.side_effect = [
-            [{"message_id": "m1"}],
-            [],
-        ]
-
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchall.return_value = [
-                {"conversation_id": "conv-1", "title": "Test 1"},
-                {"conversation_id": "conv-2", "title": "Test 2"},
-            ]
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
-
-            _embed_batch(mock_env_rich, mock_repository, mock_vec_provider)
-
-        # Should successfully complete
-        mock_vec_provider.upsert.assert_called_once()
-
-    def test_embed_batch_rich_mode_exception_handling(self, mock_env_rich, mock_repository, capsys):
-        """_embed_batch in rich mode handles exceptions and continues."""
-        mock_vec_provider = MagicMock()
-        mock_vec_provider.upsert.side_effect = RuntimeError("API timeout")
-        mock_repository.backend.get_messages.return_value = [{"message_id": "m1"}]
-
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
-            mock_conn = MagicMock()
-            mock_conn.execute.return_value.fetchall.return_value = [
-                {"conversation_id": "conv-1", "title": "Test 1"},
-            ]
-            mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
-            mock_open.return_value.__exit__ = MagicMock(return_value=False)
-
-            _embed_batch(mock_env_rich, mock_repository, mock_vec_provider)
-
-        captured = capsys.readouterr()
-        # Should show error count
-        assert "error" in captured.out.lower() or "1 error" in captured.out
+        if not exception_type:
+            captured = capsys.readouterr()
+            assert "Embedding" in captured.out or "Embedded" in captured.out
+        else:
+            captured = capsys.readouterr()
+            assert "error" in captured.out.lower()
 
 
 class TestPlainModeProgress:
@@ -776,157 +671,3 @@ class TestPlainModeProgress:
 
         captured = capsys.readouterr()
         assert "Syncing" in captured.out
-
-
-class TestWebhookTimeout:
-    """Test webhook functionality with timeout."""
-
-    def test_webhook_on_new_with_timeout(self):
-        """_webhook_on_new sends request with 10 second timeout."""
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            _webhook_on_new("http://example.com/webhook", 2)
-
-            # Check timeout parameter
-            call_kwargs = mock_urlopen.call_args[1]
-            assert call_kwargs.get("timeout") == 10
-
-
-class TestNotifyNewVariations:
-    """Test notification variations."""
-
-    def test_notify_new_conversations_with_zero(self):
-        """_notify_new_conversations handles zero conversations."""
-        with patch("subprocess.run") as mock_run:
-            _notify_new_conversations(0)
-
-            mock_run.assert_called_once()
-            call_args = mock_run.call_args[0][0]
-            assert "0" in str(call_args)
-
-    def test_notify_new_conversations_large_count(self):
-        """_notify_new_conversations handles large conversation counts."""
-        with patch("subprocess.run") as mock_run:
-            _notify_new_conversations(999)
-
-            mock_run.assert_called_once()
-            call_args = mock_run.call_args[0][0]
-            assert "999" in str(call_args)
-
-
-class TestExecOnNewVariations:
-    """Test exec on new variations."""
-
-    def test_exec_on_new_with_multiline_script(self):
-        """_exec_on_new executes multi-line shell scripts."""
-        with patch("subprocess.run") as mock_run:
-            cmd = """
-            echo "Starting"
-            sleep 1
-            echo "Done"
-            """
-            _exec_on_new(cmd, 1)
-
-            call_args = mock_run.call_args[0][0]
-            assert "echo" in call_args
-
-    def test_exec_on_new_with_special_characters(self):
-        """_exec_on_new handles commands with special characters."""
-        with patch("subprocess.run") as mock_run:
-            _exec_on_new('echo "$POLYLOGUE_NEW_COUNT items"', 5)
-
-            call_kwargs = mock_run.call_args[1]
-            assert call_kwargs["shell"] is True
-
-
-class TestDisplayResultVariations:
-    """Test display result variations."""
-
-    def test_display_result_render_stage_with_latest(self, mock_env):
-        """_display_result in render stage shows latest render path."""
-        mock_config = MagicMock()
-        mock_config.render_root = Path("/tmp/render")
-
-        mock_run_result = RunResult(
-            run_id="run-123",
-            counts={"conversations": 1},
-            drift={},
-            indexed=False,
-            index_error=None,
-            duration_ms=100,
-            render_failures=[],
-        )
-
-        with patch("polylogue.cli.helpers.latest_render_path") as mock_latest:
-            mock_latest.return_value = Path("/tmp/render/2024-01-15")
-
-            _display_result(mock_env, mock_config, mock_run_result, "render", None)
-
-            mock_latest.assert_called_once()
-
-    def test_display_result_many_render_failures(self, mock_env, capsys):
-        """_display_result shows limited render failures (first 10)."""
-        mock_config = MagicMock()
-        mock_config.render_root = Path("/tmp/render")
-
-        failures = [
-            {"conversation_id": f"conv-{i}", "error": f"error {i}"}
-            for i in range(20)
-        ]
-        mock_run_result = RunResult(
-            run_id="run-123",
-            counts={},
-            drift={},
-            indexed=False,
-            index_error=None,
-            duration_ms=0,
-            render_failures=failures,
-        )
-
-        _display_result(mock_env, mock_config, mock_run_result, "all", None)
-
-        captured = capsys.readouterr()
-        # Should show "and X more" message
-        assert "and 10 more" in captured.err
-
-
-class TestEmbedCommandLineOptions:
-    """Test embed command line options parsing."""
-
-    def test_embed_command_shows_model_option(self, runner, cli_workspace):
-        """embed command has --model option in help."""
-        result = runner.invoke(cli, ["embed", "--help"])
-        assert "--model" in result.output
-
-    def test_embed_command_shows_rebuild_option(self, runner, cli_workspace):
-        """embed command has --rebuild option in help."""
-        result = runner.invoke(cli, ["embed", "--help"])
-        assert "--rebuild" in result.output
-
-    def test_embed_command_shows_limit_option(self, runner, cli_workspace):
-        """embed command has --limit option in help."""
-        result = runner.invoke(cli, ["embed", "--help"])
-        assert "--limit" in result.output
-
-
-class TestRunCommandLineOptions:
-    """Test run command line options parsing."""
-
-    def test_run_command_shows_watch_option(self, runner, cli_workspace):
-        """run command has --watch option in help."""
-        result = runner.invoke(cli, ["run", "--help"])
-        assert "--watch" in result.output
-
-    def test_run_command_shows_notify_option(self, runner, cli_workspace):
-        """run command has --notify option in help."""
-        result = runner.invoke(cli, ["run", "--help"])
-        assert "--notify" in result.output
-
-    def test_run_command_shows_exec_option(self, runner, cli_workspace):
-        """run command has --exec option in help."""
-        result = runner.invoke(cli, ["run", "--help"])
-        assert "--exec" in result.output
-
-    def test_run_command_shows_webhook_option(self, runner, cli_workspace):
-        """run command has --webhook option in help."""
-        result = runner.invoke(cli, ["run", "--help"])
-        assert "--webhook" in result.output

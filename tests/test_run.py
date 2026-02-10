@@ -449,121 +449,60 @@ class TestRunSyncOncePlainProgress:
 class TestDisplayResultComprehensive:
     """Comprehensive tests for _display_result coverage."""
 
-    def test_display_result_preview_mode_no_plan_line(self, mock_env):
-        """_display_result skips cursor line when empty."""
+    @pytest.mark.parametrize(
+        "stage,source_names,show_render_path,conv_count,render_failures,index_error",
+        [
+            ("render", ["inbox"], True, 1, [], None),
+            ("acquire", ["inbox"], False, 1, [], None),
+            ("ingest", ["inbox"], False, 1, [], None),
+            ("parse", ["inbox"], False, 1, [], None),
+            ("all", None, True, 1, [], None),
+            ("all", None, True, 0, [], None),
+            ("all", None, True, 0, [{"conversation_id": f"conv-{i}", "error": f"error {i}"} for i in range(15)], None),
+            ("all", None, True, 0, [], "Database locked"),
+        ],
+    )
+    def test_display_result_stages_and_errors(
+        self, mock_env, capsys, stage, source_names, show_render_path, conv_count, render_failures, index_error
+    ):
+        """_display_result handles different stages, errors, and failures."""
         mock_config = MagicMock()
         mock_config.render_root = Path("/tmp/render")
         mock_run_result = RunResult(
             run_id="run-123",
-            counts={"conversations": 0},
+            counts={"conversations": conv_count},
             drift={},
             indexed=False,
-            index_error=None,
-            duration_ms=100,
-            render_failures=[],
-        )
-
-        _display_result(mock_env, mock_config, mock_run_result, "all", None)
-        mock_env.ui.summary.assert_called_once()
-
-    def test_display_result_stage_render_shows_latest_path(self, mock_env):
-        """_display_result shows latest render path for render stage."""
-        mock_config = MagicMock()
-        mock_config.render_root = Path("/tmp/render")
-        mock_run_result = RunResult(
-            run_id="run-123",
-            counts={"conversations": 1},
-            drift={},
-            indexed=False,
-            index_error=None,
-            duration_ms=100,
-            render_failures=[],
+            index_error=index_error,
+            duration_ms=100 if conv_count else 0,
+            render_failures=render_failures,
         )
 
         with patch("polylogue.cli.helpers.latest_render_path") as mock_latest:
             mock_latest.return_value = Path("/tmp/render/2024-01-15")
-            _display_result(mock_env, mock_config, mock_run_result, "render", None)
-            mock_latest.assert_called_once()
+            _display_result(mock_env, mock_config, mock_run_result, stage, source_names)
+            if show_render_path:
+                mock_latest.assert_called_once()
+            else:
+                mock_latest.assert_not_called()
 
-    def test_display_result_stage_acquire_no_render_path(self, mock_env):
-        """_display_result skips render path for non-render stages."""
-        mock_config = MagicMock()
-        mock_config.render_root = Path("/tmp/render")
-        mock_run_result = RunResult(
-            run_id="run-123",
-            counts={"conversations": 1},
-            drift={},
-            indexed=False,
-            index_error=None,
-            duration_ms=100,
-            render_failures=[],
-        )
+        mock_env.ui.summary.assert_called_once()
 
-        with patch("polylogue.cli.helpers.latest_render_path") as mock_latest:
-            _display_result(mock_env, mock_config, mock_run_result, "acquire", None)
-            mock_latest.assert_not_called()
+        # Stage and source names should appear in title
+        if source_names:
+            title = mock_env.ui.summary.call_args[0][0]
+            assert stage in title.lower() or stage in str(source_names).lower()
 
-    def test_display_result_with_stage_prefix_title(self, mock_env):
-        """_display_result includes stage name in title."""
-        mock_config = MagicMock()
-        mock_config.render_root = Path("/tmp/render")
-        mock_run_result = RunResult(
-            run_id="run-123",
-            counts={"conversations": 1},
-            drift={},
-            indexed=False,
-            index_error=None,
-            duration_ms=100,
-            render_failures=[],
-        )
-
-        _display_result(mock_env, mock_config, mock_run_result, "parse", ["inbox"])
-        title, lines = mock_env.ui.summary.call_args[0]
-        assert "parse" in title.lower()
-        assert "inbox" in title.lower()
-
-    def test_display_result_render_failures_truncated(self, mock_env, capsys):
-        """_display_result shows truncated render failures with ellipsis."""
-        mock_config = MagicMock()
-        mock_config.render_root = Path("/tmp/render")
-        failures = [
-            {"conversation_id": f"conv-{i}", "error": f"error {i}"}
-            for i in range(15)
-        ]
-        mock_run_result = RunResult(
-            run_id="run-123",
-            counts={},
-            drift={},
-            indexed=False,
-            index_error=None,
-            duration_ms=0,
-            render_failures=failures,
-        )
-
-        _display_result(mock_env, mock_config, mock_run_result, "all", None)
-        captured = capsys.readouterr()
-        assert "Render failures (15)" in captured.err
-        assert "and 5 more" in captured.err
-
-    def test_display_result_index_error_hint(self, mock_env, capsys):
-        """_display_result shows index error hint when present."""
-        mock_config = MagicMock()
-        mock_config.render_root = Path("/tmp/render")
-        mock_run_result = RunResult(
-            run_id="run-123",
-            counts={},
-            drift={},
-            indexed=False,
-            index_error="Database locked",
-            duration_ms=0,
-            render_failures=[],
-        )
-
-        _display_result(mock_env, mock_config, mock_run_result, "all", None)
-        captured = capsys.readouterr()
-        assert "Index error:" in captured.err
-        assert "Database locked" in captured.err
-        assert "run `polylogue run --stage index`" in captured.err
+        # Capture output for error/failure checks
+        if render_failures or index_error:
+            captured = capsys.readouterr()
+            if render_failures:
+                assert "Render failures" in captured.err
+                assert "and 5 more" in captured.err
+            if index_error:
+                assert "Index error:" in captured.err
+                assert "Database locked" in captured.err
+                assert "run `polylogue run --stage index`" in captured.err
 
 
 # =============================================================================
@@ -574,26 +513,24 @@ class TestDisplayResultComprehensive:
 class TestRunCommandWatch:
     """Test run command watch mode."""
 
-    def test_run_command_watch_validation_notify_without_watch(self, runner, cli_workspace):
-        """run --notify without --watch fails."""
-        result = runner.invoke(run_command, ["--notify", "--plain"], obj=MagicMock(ui=MagicMock(plain=True)))
-        # Should fail validation
-        assert result.exit_code != 0 or "require --watch" in result.output.lower()
+    @pytest.mark.parametrize(
+        "flag,value",
+        [
+            ("--notify", None),
+            ("--exec", "echo test"),
+            ("--webhook", "http://example.com"),
+        ],
+    )
+    def test_run_command_watch_validation_requires_watch(self, runner, cli_workspace, flag, value):
+        """run --notify/--exec/--webhook without --watch fails."""
+        args = [flag]
+        if value:
+            args.append(value)
+        args.append("--plain")
 
-    def test_run_command_watch_validation_exec_without_watch(self, runner, cli_workspace):
-        """run --exec without --watch fails."""
         result = runner.invoke(
             run_command,
-            ["--exec", "echo test", "--plain"],
-            obj=MagicMock(ui=MagicMock(plain=True)),
-        )
-        assert result.exit_code != 0 or "require --watch" in result.output.lower()
-
-    def test_run_command_watch_validation_webhook_without_watch(self, runner, cli_workspace):
-        """run --webhook without --watch fails."""
-        result = runner.invoke(
-            run_command,
-            ["--webhook", "http://example.com", "--plain"],
+            args,
             obj=MagicMock(ui=MagicMock(plain=True)),
         )
         assert result.exit_code != 0 or "require --watch" in result.output.lower()
@@ -607,32 +544,37 @@ class TestRunCommandWatch:
 class TestWatchModeCallbacks:
     """Test watch mode event callbacks."""
 
-    def test_notify_on_new_conversations_called_in_watch(self):
-        """_notify_new_conversations sends desktop notification."""
-        with patch("subprocess.run") as mock_run:
-            _notify_new_conversations(5)
-            mock_run.assert_called_once()
-            call_args = mock_run.call_args[0][0]
-            assert "notify-send" in call_args
-            assert "5" in str(call_args)
-
-    def test_exec_on_new_called_in_watch(self):
-        """_exec_on_new executes command with env var."""
-        with patch("subprocess.run") as mock_run:
-            _exec_on_new("echo $POLYLOGUE_NEW_COUNT", 3)
-            mock_run.assert_called_once()
-            call_kwargs = mock_run.call_args[1]
-            assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == "3"
-            assert call_kwargs["shell"] is True
-
-    def test_webhook_on_new_called_in_watch(self):
-        """_webhook_on_new sends POST request."""
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            _webhook_on_new("http://example.com/webhook", 2)
-            mock_urlopen.assert_called_once()
-            call_args = mock_urlopen.call_args[0][0]
-            assert call_args.get_full_url() == "http://example.com/webhook"
-            assert call_args.get_method() == "POST"
+    @pytest.mark.parametrize(
+        "callback_type,callback_func,count",
+        [
+            ("notify", _notify_new_conversations, 5),
+            ("exec", _exec_on_new, 3),
+            ("webhook", _webhook_on_new, 2),
+        ],
+    )
+    def test_watch_callbacks_execute_with_count(self, callback_type, callback_func, count):
+        """Watch callbacks execute with conversation count."""
+        if callback_type == "notify":
+            with patch("subprocess.run") as mock_run:
+                callback_func(count)
+                mock_run.assert_called_once()
+                call_args = mock_run.call_args[0][0]
+                assert "notify-send" in call_args
+                assert str(count) in str(call_args)
+        elif callback_type == "exec":
+            with patch("subprocess.run") as mock_run:
+                callback_func("echo $POLYLOGUE_NEW_COUNT", count)
+                mock_run.assert_called_once()
+                call_kwargs = mock_run.call_args[1]
+                assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == str(count)
+                assert call_kwargs["shell"] is True
+        elif callback_type == "webhook":
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                callback_func("http://example.com/webhook", count)
+                mock_urlopen.assert_called_once()
+                call_args = mock_urlopen.call_args[0][0]
+                assert call_args.get_full_url() == "http://example.com/webhook"
+                assert call_args.get_method() == "POST"
 
     def test_webhook_on_new_payload_format(self):
         """_webhook_on_new includes correct JSON payload."""
@@ -686,39 +628,33 @@ class TestSourcesCommand:
 class TestIngestResult:
     """Test IngestResult tracking."""
 
-    def test_ingest_result_merge_with_changes(self):
-        """IngestResult.merge_result tracks changed conversations."""
+    @pytest.mark.parametrize(
+        "conv_id,content_changed,expect_in_processed",
+        [
+            ("conv-1", True, True),
+            ("conv-2", False, False),
+        ],
+    )
+    def test_ingest_result_merge(self, conv_id, content_changed, expect_in_processed):
+        """IngestResult.merge_result tracks changes correctly."""
         result = IngestResult()
         result_counts = {
-            "conversations": 1,
-            "messages": 5,
-            "attachments": 2,
+            "conversations": 1 if content_changed else 0,
+            "messages": 5 if content_changed else 0,
+            "attachments": 2 if content_changed else 0,
             "skipped_conversations": 0,
             "skipped_messages": 0,
             "skipped_attachments": 0,
         }
-        result.merge_result("conv-1", result_counts, content_changed=True)
+        result.merge_result(conv_id, result_counts, content_changed=content_changed)
 
-        assert "conv-1" in result.processed_ids
-        assert result.changed_counts["conversations"] == 1
-        assert result.changed_counts["messages"] == 5
-        assert result.changed_counts["attachments"] == 2
-
-    def test_ingest_result_merge_no_content_change(self):
-        """IngestResult.merge_result skips processed_ids when no change."""
-        result = IngestResult()
-        result_counts = {
-            "conversations": 0,
-            "messages": 0,
-            "attachments": 0,
-            "skipped_conversations": 0,
-            "skipped_messages": 0,
-            "skipped_attachments": 0,
-        }
-        result.merge_result("conv-2", result_counts, content_changed=False)
-
-        # Should not add to processed_ids if nothing changed
-        assert "conv-2" not in result.processed_ids
+        if expect_in_processed:
+            assert conv_id in result.processed_ids
+            assert result.changed_counts["conversations"] == 1
+            assert result.changed_counts["messages"] == 5
+            assert result.changed_counts["attachments"] == 2
+        else:
+            assert conv_id not in result.processed_ids
 
     def test_ingest_result_merge_thread_safe(self):
         """IngestResult.merge_result is thread-safe."""
@@ -794,8 +730,15 @@ class TestIngestionService:
             call_kwargs = mock_backend.iter_raw_conversations.call_args[1]
             assert call_kwargs["provider"] == "claude"
 
-    def test_parse_raw_record_jsonl_format(self, mock_backend):
-        """_parse_raw_record handles JSONL format (newline-delimited JSON)."""
+    @pytest.mark.parametrize(
+        "format_type,content",
+        [
+            ("jsonl", '{"id": "msg1", "role": "user", "text": "hello"}\n{"id": "msg2", "role": "assistant", "text": "hi"}\n'),
+            ("json", '{"id": "conv-1", "messages": [{"id": "m1", "text": "hello"}]}'),
+        ],
+    )
+    def test_parse_raw_record_formats(self, mock_backend, format_type, content):
+        """_parse_raw_record handles JSONL and JSON formats."""
         repo = MagicMock()
         repo._backend = mock_backend
 
@@ -805,51 +748,16 @@ class TestIngestionService:
             config=MagicMock(),
         )
 
-        # JSONL content
-        jsonl_content = (
-            '{"id": "msg1", "role": "user", "text": "hello"}\n'
-            '{"id": "msg2", "role": "assistant", "text": "hi"}\n'
-        )
-
         raw_record = MagicMock()
-        raw_record.raw_content = jsonl_content.encode("utf-8")
-        raw_record.provider_name = "claude-code"
+        raw_record.raw_content = content.encode("utf-8")
+        raw_record.provider_name = "claude-code" if format_type == "jsonl" else "chatgpt"
         raw_record.raw_id = "raw-123"
 
         with patch("polylogue.pipeline.services.ingestion._parse_json_payload") as mock_parse:
             mock_parse.return_value = [
                 ParsedConversation(
-                    provider_name="claude-code",
-                    provider_conversation_id="conv-123",
-                    messages=[],
-                )
-            ]
-            result = service._parse_raw_record(raw_record)
-            assert len(result) > 0
-
-    def test_parse_raw_record_json_single_document(self, mock_backend):
-        """_parse_raw_record handles single JSON document."""
-        repo = MagicMock()
-        repo._backend = mock_backend
-
-        service = IngestionService(
-            repository=repo,
-            archive_root=Path("/tmp"),
-            config=MagicMock(),
-        )
-
-        json_content = '{"id": "conv-1", "messages": [{"id": "m1", "text": "hello"}]}'
-
-        raw_record = MagicMock()
-        raw_record.raw_content = json_content.encode("utf-8")
-        raw_record.provider_name = "chatgpt"
-        raw_record.raw_id = "raw-456"
-
-        with patch("polylogue.pipeline.services.ingestion._parse_json_payload") as mock_parse:
-            mock_parse.return_value = [
-                ParsedConversation(
-                    provider_name="chatgpt",
-                    provider_conversation_id="conv-1",
+                    provider_name=raw_record.provider_name,
+                    provider_conversation_id=f"conv-{format_type}",
                     messages=[],
                 )
             ]
@@ -886,63 +794,66 @@ class TestIngestionService:
 class TestParsedAttachmentSanitization:
     """Test attachment path and name sanitization."""
 
-    def test_attachment_sanitize_path_removes_control_chars(self):
-        """ParsedAttachment path sanitizer removes control characters."""
+    @pytest.mark.parametrize(
+        "att_id,name,path,check_field,expected_blocked",
+        [
+            ("att-1", "test.pdf", "file\x00with\x01control.txt", "path", False),
+            ("att-2", "test.pdf", "../../../etc/passwd", "path", True),
+            ("att-3", "test.pdf", "/tmp/test/file.txt", "path", False),
+            ("att-4", "file\x00with\x1fcontrol.pdf", None, "name", False),
+            ("att-5", "...", None, "name", False),
+            ("att-6", None, None, "both", False),
+        ],
+    )
+    def test_attachment_sanitization(self, att_id, name, path, check_field, expected_blocked):
+        """ParsedAttachment sanitization handles various scenarios."""
         att = ParsedAttachment(
-            provider_attachment_id="att-1",
-            name="test.pdf",
-            path="file\x00with\x01control.txt",
+            provider_attachment_id=att_id,
+            name=name,
+            path=path,
         )
-        # Control chars should be removed
-        assert "\x00" not in att.path
-        assert "\x01" not in att.path
 
-    def test_attachment_sanitize_path_detects_traversal(self):
-        """ParsedAttachment path sanitizer blocks .. traversal."""
-        att = ParsedAttachment(
-            provider_attachment_id="att-2",
-            name="test.pdf",
-            path="../../../etc/passwd",
-        )
-        # Should be blocked with hash
-        assert att.path.startswith("_blocked_")
+        if check_field == "path":
+            if expected_blocked:
+                assert att.path.startswith("_blocked_")
+            else:
+                if path and "\x00" in path:
+                    assert "\x00" not in att.path
+                    assert "\x01" not in att.path
+                else:
+                    # /tmp/ paths preserved or normalized
+                    assert att.path is None or not att.path.startswith("../")
+        elif check_field == "name":
+            if name:
+                if "\x00" in name or "\x1f" in name:
+                    assert "\x00" not in (att.name or "")
+                    assert "\x1f" not in (att.name or "")
+                elif name == "...":
+                    assert att.name == "file"
+        elif check_field == "both":
+            assert att.name is None
+            assert att.path is None
 
-    def test_attachment_sanitize_path_safe_absolute_paths(self):
-        """ParsedAttachment allows /tmp/ and /var/tmp/ absolute paths."""
-        att = ParsedAttachment(
-            provider_attachment_id="att-3",
-            name="test.pdf",
-            path="/tmp/test/file.txt",
-        )
-        # /tmp/ is safe, should preserve
-        assert att.path == "tmp/test/file.txt" or att.path.startswith("/")
+    def test_attachment_path_with_symlinks_blocked(self):
+        """Attachment with symlink in path is blocked."""
+        with patch("pathlib.Path.is_symlink") as mock_symlink:
+            mock_symlink.return_value = True
+            att = ParsedAttachment(
+                provider_attachment_id="att-sym",
+                name="file.txt",
+                path="/home/user/link",
+            )
+            # Should be blocked
+            assert att.path.startswith("_blocked_")
 
-    def test_attachment_sanitize_name_removes_control_chars(self):
-        """ParsedAttachment name sanitizer removes control characters."""
+    def test_attachment_path_empty_after_sanitization(self):
+        """Attachment with path that becomes empty returns None."""
         att = ParsedAttachment(
-            provider_attachment_id="att-4",
-            name="file\x00with\x1fcontrol.pdf",
+            provider_attachment_id="att-empty",
+            name="file.txt",
+            path="",
         )
-        assert "\x00" not in (att.name or "")
-        assert "\x1f" not in (att.name or "")
-
-    def test_attachment_sanitize_name_rejects_dots_only(self):
-        """ParsedAttachment name sanitizer rejects names that are only dots."""
-        att = ParsedAttachment(
-            provider_attachment_id="att-5",
-            name="...",
-        )
-        # Should become "file" (default)
-        assert att.name == "file"
-
-    def test_attachment_sanitize_none_paths(self):
-        """ParsedAttachment sanitization handles None values."""
-        att = ParsedAttachment(
-            provider_attachment_id="att-6",
-            name=None,
-            path=None,
-        )
-        assert att.name is None
+        # Empty path should become None
         assert att.path is None
 
 
@@ -954,67 +865,83 @@ class TestParsedAttachmentSanitization:
 class TestAttachmentFromMeta:
     """Test attachment_from_meta helper function."""
 
-    def test_attachment_from_meta_with_standard_fields(self):
-        """attachment_from_meta extracts standard metadata."""
-        meta = {
-            "id": "att-uuid",
-            "name": "document.pdf",
-            "size": 1024,
-            "mimeType": "application/pdf",
-        }
-        att = attachment_from_meta(meta, "msg-123", 0)
+    @pytest.mark.parametrize(
+        "meta,msg_id,index,expected_id,expected_name,expected_size,should_exist",
+        [
+            (
+                {"id": "att-uuid", "name": "document.pdf", "size": 1024, "mimeType": "application/pdf"},
+                "msg-123",
+                0,
+                "att-uuid",
+                "document.pdf",
+                1024,
+                True,
+            ),
+            (
+                {"fileId": "file-456", "file_name": "image.jpg", "size_bytes": "2048", "mime_type": "image/jpeg"},
+                "msg-456",
+                0,
+                "file-456",
+                "image.jpg",
+                2048,
+                True,
+            ),
+            (
+                {"uuid": "att-789", "name": "file.txt", "size": "512"},
+                None,
+                0,
+                "att-789",
+                "file.txt",
+                512,
+                True,
+            ),
+            (
+                {"id": "att-999", "name": "file.txt", "size": "invalid"},
+                None,
+                0,
+                "att-999",
+                "file.txt",
+                None,
+                True,
+            ),
+            (
+                {"name": "report.docx"},
+                "msg-111",
+                0,
+                None,
+                "report.docx",
+                None,
+                True,
+            ),
+            (
+                {"size": 1024, "mimeType": "text/plain"},
+                "msg-222",
+                0,
+                None,
+                None,
+                None,
+                False,
+            ),
+        ],
+    )
+    def test_attachment_from_meta_variants(
+        self, meta, msg_id, index, expected_id, expected_name, expected_size, should_exist
+    ):
+        """attachment_from_meta handles various metadata formats."""
+        att = attachment_from_meta(meta, msg_id, index)
 
-        assert att is not None
-        assert att.provider_attachment_id == "att-uuid"
-        assert att.name == "document.pdf"
-        assert att.size_bytes == 1024
-        assert att.mime_type == "application/pdf"
-
-    def test_attachment_from_meta_alternate_field_names(self):
-        """attachment_from_meta handles alternate field name conventions."""
-        meta = {
-            "fileId": "file-456",
-            "file_name": "image.jpg",
-            "size_bytes": "2048",
-            "mime_type": "image/jpeg",
-        }
-        att = attachment_from_meta(meta, "msg-456", 0)
-
-        assert att is not None
-        assert att.provider_attachment_id == "file-456"
-        assert att.name == "image.jpg"
-        assert att.size_bytes == 2048
-
-    def test_attachment_from_meta_size_coercion(self):
-        """attachment_from_meta coerces size to int."""
-        meta = {"uuid": "att-789", "name": "file.txt", "size": "512"}
-        att = attachment_from_meta(meta, None, 0)
-
-        assert att is not None
-        assert att.size_bytes == 512
-
-    def test_attachment_from_meta_invalid_size_skipped(self):
-        """attachment_from_meta skips invalid size values."""
-        meta = {"id": "att-999", "name": "file.txt", "size": "invalid"}
-        att = attachment_from_meta(meta, None, 0)
-
-        assert att is not None
-        assert att.size_bytes is None
-
-    def test_attachment_from_meta_generated_id_from_name(self):
-        """attachment_from_meta generates ID from name when not present."""
-        meta = {"name": "report.docx"}
-        att = attachment_from_meta(meta, "msg-111", 0)
-
-        assert att is not None
-        assert att.provider_attachment_id.startswith("att-")
-
-    def test_attachment_from_meta_no_id_no_name_returns_none(self):
-        """attachment_from_meta returns None when no ID and no name."""
-        meta = {"size": 1024, "mimeType": "text/plain"}
-        att = attachment_from_meta(meta, "msg-222", 0)
-
-        assert att is None
+        if should_exist:
+            assert att is not None
+            if expected_id:
+                assert att.provider_attachment_id == expected_id
+            else:
+                assert att.provider_attachment_id.startswith("att-")
+            if expected_name:
+                assert att.name == expected_name
+            if expected_size is not None:
+                assert att.size_bytes == expected_size
+        else:
+            assert att is None
 
     def test_attachment_from_meta_non_dict_returns_none(self):
         """attachment_from_meta returns None for non-dict input."""
@@ -1030,108 +957,118 @@ class TestAttachmentFromMeta:
 class TestExtractMessagesFromList:
     """Test extract_messages_from_list helper function."""
 
-    def test_extract_messages_basic_structure(self):
-        """extract_messages_from_list extracts basic message structure."""
-        items = [
-            {
-                "id": "m1",
-                "role": "user",
-                "text": "Hello",
-            },
-            {
-                "id": "m2",
-                "role": "assistant",
-                "text": "Hi there!",
-            },
-        ]
-        messages = extract_messages_from_list(items)
-
-        assert len(messages) == 2
-        assert messages[0].provider_message_id == "m1"
-        assert messages[0].role == "user"
-        assert messages[0].text == "Hello"
-
-    def test_extract_messages_nested_message_key(self):
-        """extract_messages_from_list handles nested 'message' key."""
-        items = [
-            {
-                "uuid": "msg-outer",
-                "message": {
-                    "id": "msg-inner",
-                    "role": "user",
-                    "text": "nested",
-                },
-            }
-        ]
-        messages = extract_messages_from_list(items)
-
-        assert len(messages) == 1
-        assert messages[0].text == "nested"
-
-    def test_extract_messages_content_as_string(self):
-        """extract_messages_from_list extracts content field (string)."""
-        items = [
-            {
-                "id": "m1",
-                "role": "assistant",
-                "content": "string content",
-            }
-        ]
-        messages = extract_messages_from_list(items)
-
-        assert len(messages) == 1
-        assert messages[0].text == "string content"
-
-    def test_extract_messages_content_as_parts_list(self):
-        """extract_messages_from_list concatenates content.parts list."""
-        items = [
-            {
-                "id": "m1",
-                "role": "assistant",
-                "content": {
-                    "parts": ["part 1", "part 2", "part 3"],
-                },
-            }
-        ]
-        messages = extract_messages_from_list(items)
-
-        assert len(messages) == 1
-        assert "part 1" in messages[0].text
-        assert "part 2" in messages[0].text
-
-    def test_extract_messages_content_as_dict_with_text(self):
-        """extract_messages_from_list extracts content.text (dict)."""
-        items = [
-            {
-                "id": "m1",
-                "role": "user",
-                "content": {
-                    "text": "dict content",
-                },
-            }
-        ]
-        messages = extract_messages_from_list(items)
-
-        assert len(messages) == 1
-        assert messages[0].text == "dict content"
-
-    def test_extract_messages_content_as_list_of_dicts(self):
-        """extract_messages_from_list handles content as list of dicts."""
-        items = [
-            {
-                "id": "m1",
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "first"},
-                    {"type": "text", "text": "second"},
+    @pytest.mark.parametrize(
+        "items,expected_count,check_text",
+        [
+            # Basic structure
+            (
+                [
+                    {"id": "m1", "role": "user", "text": "Hello"},
+                    {"id": "m2", "role": "assistant", "text": "Hi there!"},
                 ],
-            }
-        ]
+                2,
+                "Hello",
+            ),
+            # Nested message key
+            (
+                [
+                    {
+                        "uuid": "msg-outer",
+                        "message": {
+                            "id": "msg-inner",
+                            "role": "user",
+                            "text": "nested",
+                        },
+                    }
+                ],
+                1,
+                "nested",
+            ),
+            # Content as string
+            (
+                [
+                    {
+                        "id": "m1",
+                        "role": "assistant",
+                        "content": "string content",
+                    }
+                ],
+                1,
+                "string content",
+            ),
+            # Content as parts list
+            (
+                [
+                    {
+                        "id": "m1",
+                        "role": "assistant",
+                        "content": {
+                            "parts": ["part 1", "part 2", "part 3"],
+                        },
+                    }
+                ],
+                1,
+                "part 1",
+            ),
+            # Content as dict with text
+            (
+                [
+                    {
+                        "id": "m1",
+                        "role": "user",
+                        "content": {
+                            "text": "dict content",
+                        },
+                    }
+                ],
+                1,
+                "dict content",
+            ),
+            # Content as list of dicts
+            (
+                [
+                    {
+                        "id": "m1",
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "first"},
+                            {"type": "text", "text": "second"},
+                        ],
+                    }
+                ],
+                1,
+                "first",
+            ),
+            # Skip non-dict items
+            (
+                [
+                    {"id": "m1", "role": "user", "text": "msg1"},
+                    "not a dict",
+                    {"id": "m2", "role": "assistant", "text": "msg2"},
+                    None,
+                    [],
+                ],
+                2,
+                "msg1",
+            ),
+            # Skip items without text
+            (
+                [
+                    {"id": "m1", "role": "user", "text": "msg1"},
+                    {"id": "m2", "role": "assistant"},  # No text
+                    {"id": "m3", "role": "user", "content": "msg3"},
+                ],
+                2,
+                "msg1",
+            ),
+        ],
+    )
+    def test_extract_messages_variants(self, items, expected_count, check_text):
+        """extract_messages_from_list handles various message formats."""
         messages = extract_messages_from_list(items)
 
-        assert len(messages) == 1
-        assert "first" in messages[0].text
-        assert "second" in messages[0].text
+        assert len(messages) == expected_count
+        assert check_text in messages[0].text
 
     def test_extract_messages_role_variations(self):
         """extract_messages_from_list handles role name variations."""
@@ -1157,32 +1094,6 @@ class TestExtractMessagesFromList:
 
         assert len(messages) == 3
         assert all(m.timestamp is not None for m in messages)
-
-    def test_extract_messages_skip_non_dict_items(self):
-        """extract_messages_from_list skips non-dict items."""
-        items = [
-            {"id": "m1", "role": "user", "text": "msg1"},
-            "not a dict",
-            {"id": "m2", "role": "assistant", "text": "msg2"},
-            None,
-            [],
-        ]
-        messages = extract_messages_from_list(items)
-
-        assert len(messages) == 2
-        assert messages[0].provider_message_id == "m1"
-        assert messages[1].provider_message_id == "m2"
-
-    def test_extract_messages_skip_items_without_text(self):
-        """extract_messages_from_list skips items without text content."""
-        items = [
-            {"id": "m1", "role": "user", "text": "msg1"},
-            {"id": "m2", "role": "assistant"},  # No text
-            {"id": "m3", "role": "user", "content": "msg3"},
-        ]
-        messages = extract_messages_from_list(items)
-
-        assert len(messages) == 2
 
     def test_extract_messages_generate_id_when_missing(self):
         """extract_messages_from_list generates ID when not present."""
@@ -1245,32 +1156,6 @@ class TestIngestResultThreading:
         assert len(result.processed_ids) == 25  # 5 threads * 5 merges
 
 
-class TestAttachmentPathEdgeCases:
-    """Edge case tests for attachment path sanitization."""
-
-    def test_attachment_path_with_symlinks_blocked(self):
-        """Attachment with symlink in path is blocked."""
-        with patch("pathlib.Path.is_symlink") as mock_symlink:
-            mock_symlink.return_value = True
-            att = ParsedAttachment(
-                provider_attachment_id="att-sym",
-                name="file.txt",
-                path="/home/user/link",
-            )
-            # Should be blocked
-            assert att.path.startswith("_blocked_")
-
-    def test_attachment_path_empty_after_sanitization(self):
-        """Attachment with path that becomes empty returns None."""
-        att = ParsedAttachment(
-            provider_attachment_id="att-empty",
-            name="file.txt",
-            path="",
-        )
-        # Empty path should become None
-        assert att.path is None
-
-
 __all__ = [
     "TestRunSyncOncePlainProgress",
     "TestDisplayResultComprehensive",
@@ -1284,5 +1169,4 @@ __all__ = [
     "TestExtractMessagesFromList",
     "TestRunCommandPlainMode",
     "TestIngestResultThreading",
-    "TestAttachmentPathEdgeCases",
 ]

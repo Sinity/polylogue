@@ -534,225 +534,138 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
         assert stored_ref_count == actual_refs, f"Mismatch: ref_count={stored_ref_count}, actual_refs={actual_refs}"
 
 
-class TestAttachmentRecordValidation:
-    """Tests for AttachmentRecord field validation."""
+# =============================================================================
+# ATTACHMENT RECORD VALIDATION (parametrized)
+# =============================================================================
 
-    def test_size_bytes_rejects_negative(self):
-        """size_bytes cannot be negative."""
-        from pydantic import ValidationError
+from polylogue.storage.store import MAX_ATTACHMENT_SIZE
 
-        with pytest.raises(ValidationError):
-            AttachmentRecord(
-                attachment_id="test",
-                conversation_id="conv1",
-                message_id="msg1",
-                mime_type="text/plain",
-                size_bytes=-100,
-                provider_meta=None,
-            )
+# Valid size_bytes test cases
+VALID_ATTACHMENT_SIZES = [
+    (0, "zero"),
+    (100 * 1024 * 1024, "100MB"),
+    (MAX_ATTACHMENT_SIZE, "max_1TB"),
+    (None, "unknown"),
+]
 
-    def test_size_bytes_rejects_impossibly_large(self):
-        """size_bytes cannot exceed reasonable maximum (1TB)."""
-        from pydantic import ValidationError
 
-        from polylogue.storage.store import MAX_ATTACHMENT_SIZE
+@pytest.mark.parametrize("size_bytes,desc", VALID_ATTACHMENT_SIZES, ids=str)
+def test_attachment_size_bytes_valid(size_bytes, desc):
+    """size_bytes accepts valid values: {desc}."""
+    record = AttachmentRecord(
+        attachment_id="test",
+        conversation_id="conv1",
+        message_id="msg1",
+        mime_type="text/plain",
+        size_bytes=size_bytes,
+        provider_meta=None,
+    )
+    assert record.size_bytes == size_bytes
 
-        with pytest.raises(ValidationError):
-            AttachmentRecord(
-                attachment_id="test",
-                conversation_id="conv1",
-                message_id="msg1",
-                mime_type="text/plain",
-                size_bytes=MAX_ATTACHMENT_SIZE * 10,  # 10TB - clearly invalid
-                provider_meta=None,
-            )
 
-    def test_size_bytes_allows_zero(self):
-        """size_bytes of 0 should be valid (empty file)."""
-        record = AttachmentRecord(
+# Invalid size_bytes test cases
+INVALID_ATTACHMENT_SIZES = [
+    (-100, "negative"),
+    (MAX_ATTACHMENT_SIZE * 10, "10TB"),
+    (MAX_ATTACHMENT_SIZE + 1, "over_max"),
+]
+
+
+@pytest.mark.parametrize("size_bytes,desc", INVALID_ATTACHMENT_SIZES, ids=str)
+def test_attachment_size_bytes_invalid(size_bytes, desc):
+    """size_bytes rejects invalid values: {desc}."""
+    with pytest.raises(ValidationError):
+        AttachmentRecord(
             attachment_id="test",
             conversation_id="conv1",
             message_id="msg1",
             mime_type="text/plain",
-            size_bytes=0,
+            size_bytes=size_bytes,
             provider_meta=None,
         )
-        assert record.size_bytes == 0
 
-    def test_size_bytes_allows_reasonable_values(self):
-        """size_bytes should allow reasonable file sizes."""
-        # 100MB - reasonable
-        record = AttachmentRecord(
-            attachment_id="test",
-            conversation_id="conv1",
-            message_id="msg1",
-            mime_type="text/plain",
-            size_bytes=100 * 1024 * 1024,
-            provider_meta=None,
+
+# =============================================================================
+# PROVIDER NAME VALIDATION (parametrized)
+# =============================================================================
+
+# Valid provider names
+VALID_PROVIDER_NAMES = [
+    ("chatgpt", "known"),
+    ("claude", "known"),
+    ("claude-code", "hyphenated"),
+    ("codex", "known"),
+    ("gemini", "known"),
+    ("custom_provider", "custom_underscore"),
+    ("Provider123", "mixed_case"),
+    ("a", "single_letter"),
+    ("A-Z_123", "valid_chars"),
+    ("CustomProvider", "camelcase"),
+]
+
+
+@pytest.mark.parametrize("name,desc", VALID_PROVIDER_NAMES, ids=str)
+def test_provider_name_accepts_valid(name, desc):
+    """provider_name accepts {desc}."""
+    record = ConversationRecord(
+        conversation_id="test",
+        provider_name=name,
+        provider_conversation_id="ext1",
+        title="Test",
+        content_hash="hash123",
+    )
+    assert record.provider_name == name
+
+
+# Invalid simple cases
+SIMPLE_INVALID_NAMES = [
+    ("", "empty"),
+    ("   ", "whitespace"),
+    ("123invalid", "starts_number"),
+    ("-invalid", "starts_hyphen"),
+    ("_invalid", "starts_underscore"),
+]
+
+
+@pytest.mark.parametrize("name,desc", SIMPLE_INVALID_NAMES, ids=str)
+def test_provider_name_rejects_invalid(name, desc):
+    """provider_name rejects {desc}."""
+    with pytest.raises(ValidationError):
+        ConversationRecord(
+            conversation_id="test",
+            provider_name=name,
+            provider_conversation_id="ext1",
+            title="Test",
+            content_hash="hash123",
         )
-        assert record.size_bytes == 100 * 1024 * 1024
 
-    def test_size_bytes_allows_max_size(self):
-        """size_bytes should allow exactly the maximum size (1TB)."""
-        from polylogue.storage.store import MAX_ATTACHMENT_SIZE
 
-        record = AttachmentRecord(
-            attachment_id="test",
-            conversation_id="conv1",
-            message_id="msg1",
-            mime_type="text/plain",
-            size_bytes=MAX_ATTACHMENT_SIZE,
-            provider_meta=None,
+# Special character cases
+SPECIAL_CHAR_NAMES = [
+    ("../escape", "path_escape"),
+    ("name\x00null", "null_byte"),
+    ("name\nwith\nnewlines", "newlines"),
+    ("path/separator", "forward_slash"),
+    ("back\\slash", "backslash"),
+    ("name.with.dots", "dots"),
+    ("name with spaces", "spaces"),
+    ("!invalid", "exclamation"),
+    ("@symbol", "at_symbol"),
+    ("invalid/name", "slash"),
+]
+
+
+@pytest.mark.parametrize("name,desc", SPECIAL_CHAR_NAMES, ids=str)
+def test_provider_name_rejects_special_chars(name, desc):
+    """provider_name rejects special characters: {desc}."""
+    with pytest.raises(ValidationError, match="invalid"):
+        ConversationRecord(
+            conversation_id="test",
+            provider_name=name,
+            provider_conversation_id="ext1",
+            title="Test",
+            content_hash="hash123",
         )
-        assert record.size_bytes == MAX_ATTACHMENT_SIZE
-
-    def test_size_bytes_rejects_one_byte_over_max(self):
-        """size_bytes cannot exceed maximum by even one byte."""
-        from pydantic import ValidationError
-
-        from polylogue.storage.store import MAX_ATTACHMENT_SIZE
-
-        with pytest.raises(ValidationError):
-            AttachmentRecord(
-                attachment_id="test",
-                conversation_id="conv1",
-                message_id="msg1",
-                mime_type="text/plain",
-                size_bytes=MAX_ATTACHMENT_SIZE + 1,
-                provider_meta=None,
-            )
-
-    def test_size_bytes_allows_none(self):
-        """size_bytes can be None (unknown size)."""
-        record = AttachmentRecord(
-            attachment_id="test",
-            conversation_id="conv1",
-            message_id="msg1",
-            mime_type="text/plain",
-            size_bytes=None,
-            provider_meta=None,
-        )
-        assert record.size_bytes is None
-
-
-class TestProviderNameValidation:
-    """Tests for provider_name field validation."""
-
-    def test_provider_name_rejects_empty(self):
-        """provider_name cannot be empty."""
-        with pytest.raises(ValidationError):
-            ConversationRecord(
-                conversation_id="test",
-                provider_name="",
-                provider_conversation_id="ext1",
-                title="Test",
-                content_hash="hash123",
-            )
-
-    def test_provider_name_rejects_whitespace_only(self):
-        """provider_name cannot be only whitespace."""
-        with pytest.raises(ValidationError):
-            ConversationRecord(
-                conversation_id="test",
-                provider_name="   ",
-                provider_conversation_id="ext1",
-                title="Test",
-                content_hash="hash123",
-            )
-
-    def test_provider_name_rejects_special_characters(self):
-        """provider_name should only contain safe characters."""
-        invalid_names = [
-            "../escape",
-            "name\x00null",
-            "name\nwith\nnewlines",
-            "path/separator",
-            "back\\slash",
-            "name.with.dots",
-            "name with spaces",
-            "!invalid",
-            "@symbol",
-        ]
-
-        for name in invalid_names:
-            with pytest.raises(ValidationError, match="invalid"):
-                ConversationRecord(
-                    conversation_id="test",
-                    provider_name=name,
-                    provider_conversation_id="ext1",
-                    title="Test",
-                    content_hash="hash123",
-                )
-
-    def test_provider_name_rejects_starting_with_number(self):
-        """provider_name must start with a letter."""
-        with pytest.raises(ValidationError, match="Must start with a letter"):
-            ConversationRecord(
-                conversation_id="test",
-                provider_name="123invalid",
-                provider_conversation_id="ext1",
-                title="Test",
-                content_hash="hash123",
-            )
-
-    def test_provider_name_rejects_starting_with_hyphen(self):
-        """provider_name must start with a letter."""
-        with pytest.raises(ValidationError, match="Must start with a letter"):
-            ConversationRecord(
-                conversation_id="test",
-                provider_name="-invalid",
-                provider_conversation_id="ext1",
-                title="Test",
-                content_hash="hash123",
-            )
-
-    def test_provider_name_rejects_starting_with_underscore(self):
-        """provider_name must start with a letter."""
-        with pytest.raises(ValidationError, match="Must start with a letter"):
-            ConversationRecord(
-                conversation_id="test",
-                provider_name="_invalid",
-                provider_conversation_id="ext1",
-                title="Test",
-                content_hash="hash123",
-            )
-
-    def test_provider_name_allows_valid_names(self):
-        """Valid provider names should be accepted."""
-        valid_names = [
-            "chatgpt",
-            "claude",
-            "claude-code",
-            "codex",
-            "gemini",
-            "custom_provider",
-            "Provider123",
-            "a",  # Single letter
-            "A-Z_123",  # Mix of valid characters
-            "CustomProvider",
-        ]
-
-        for name in valid_names:
-            record = ConversationRecord(
-                conversation_id="test",
-                provider_name=name,
-                provider_conversation_id="ext1",
-                title="Test",
-                content_hash="hash123",
-            )
-            assert record.provider_name == name
-
-    def test_provider_name_validates_on_store_records(self, test_conn):
-        """ConversationRecord rejects invalid provider names at construction time."""
-        # Should raise ValidationError during record creation (Pydantic validates at construction)
-        with pytest.raises(ValidationError):
-            ConversationRecord(
-                conversation_id="test",
-                provider_name="invalid/name",
-                provider_conversation_id="ext1",
-                title="Test",
-                content_hash="hash123",
-            )
 
 
 # =============================================================================
@@ -3721,113 +3634,76 @@ class TestDeleteConversation:
 # ============================================================================
 
 
-class TestGetConversationStats:
-    """Tests for get_conversation_stats operation."""
+# =============================================================================
+# GET CONVERSATION STATS (parametrized)
+# =============================================================================
 
-    def test_get_conversation_stats_basic(self, tmp_path):
-        """Test getting message counts for a conversation."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        record = ConversationRecord(
+# Test cases for get_conversation_stats with different message configurations
+CONVERSATION_STATS_CASES = [
+    (
+        [],
+        {"total": 0, "dialogue": 0, "tool": 0},
+        "empty",
+    ),
+    (
+        [
+            ("msg-0", "user", "Message 0"),
+            ("msg-1", "assistant", "Message 1"),
+            ("msg-2", "user", "Message 2"),
+            ("msg-3", "assistant", "Message 3"),
+            ("msg-4", "user", "Message 4"),
+        ],
+        {"total": 5, "dialogue": 5, "tool": 0},
+        "dialogue_only",
+    ),
+    (
+        [
+            ("msg-1", "user", "Hello"),
+            ("msg-2", "tool", "Tool output"),
+            ("msg-3", "assistant", "Response"),
+        ],
+        {"total": 3, "dialogue": 2, "tool": 1},
+        "with_tool",
+    ),
+]
+
+
+@pytest.mark.parametrize("messages_spec,expected,desc", CONVERSATION_STATS_CASES, ids=str)
+def test_get_conversation_stats(tmp_path, messages_spec, expected, desc):
+    """get_conversation_stats counts correctly: {desc}."""
+    backend = SQLiteBackend(db_path=tmp_path / "test.db")
+    record = ConversationRecord(
+        conversation_id="conv-1",
+        provider_name="claude",
+        provider_conversation_id="prov-1",
+        title="Test",
+        created_at="2025-01-01T00:00:00Z",
+        updated_at="2025-01-01T00:00:00Z",
+        content_hash="hash",
+        version=1,
+    )
+    backend.save_conversation(record)
+
+    messages = [
+        MessageRecord(
+            message_id=msg_id,
             conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Test",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="hash",
+            role=role,
+            text=text,
+            timestamp=f"2025-01-01T10:{i:02d}:00Z",
+            content_hash=f"h{i}",
             version=1,
         )
-        backend.save_conversation(record)
+        for i, (msg_id, role, text) in enumerate(messages_spec)
+    ]
 
-        messages = [
-            MessageRecord(
-                message_id=f"msg-{i}",
-                conversation_id="conv-1",
-                role="user" if i % 2 == 0 else "assistant",
-                text=f"Message {i}",
-                timestamp=f"2025-01-01T10:{i:02d}:00Z",
-                content_hash=f"h{i}",
-                version=1,
-            )
-            for i in range(5)
-        ]
+    if messages:
         backend.save_messages(messages)
 
-        stats = backend.get_conversation_stats("conv-1")
-        assert stats["total_messages"] == 5
-        assert stats["dialogue_messages"] == 5
-        assert stats["tool_messages"] == 0
-
-    def test_get_conversation_stats_with_tool_messages(self, tmp_path):
-        """Test stats with mixed message types."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        record = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Test",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="hash",
-            version=1,
-        )
-        backend.save_conversation(record)
-
-        messages = [
-            MessageRecord(
-                message_id="msg-1",
-                conversation_id="conv-1",
-                role="user",
-                text="Hello",
-                timestamp="2025-01-01T10:00:00Z",
-                content_hash="h1",
-                version=1,
-            ),
-            MessageRecord(
-                message_id="msg-2",
-                conversation_id="conv-1",
-                role="tool",
-                text="Tool output",
-                timestamp="2025-01-01T10:01:00Z",
-                content_hash="h2",
-                version=1,
-            ),
-            MessageRecord(
-                message_id="msg-3",
-                conversation_id="conv-1",
-                role="assistant",
-                text="Response",
-                timestamp="2025-01-01T10:02:00Z",
-                content_hash="h3",
-                version=1,
-            ),
-        ]
-        backend.save_messages(messages)
-
-        stats = backend.get_conversation_stats("conv-1")
-        assert stats["total_messages"] == 3
-        assert stats["dialogue_messages"] == 2
-        assert stats["tool_messages"] == 1
-
-    def test_get_conversation_stats_empty_conversation(self, tmp_path):
-        """Test stats for conversation with no messages."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        record = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Test",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="hash",
-            version=1,
-        )
-        backend.save_conversation(record)
-
-        stats = backend.get_conversation_stats("conv-1")
-        assert stats["total_messages"] == 0
-        assert stats["dialogue_messages"] == 0
-        assert stats["tool_messages"] == 0
+    stats = backend.get_conversation_stats("conv-1")
+    assert stats["total_messages"] == expected["total"]
+    assert stats["dialogue_messages"] == expected["dialogue"]
+    assert stats["tool_messages"] == expected["tool"]
 
 
 # ============================================================================
@@ -3835,62 +3711,69 @@ class TestGetConversationStats:
 # ============================================================================
 
 
-class TestHelperFunctions:
-    """Tests for module-level helper functions."""
+# =============================================================================
+# HELPER FUNCTIONS (parametrized)
+# =============================================================================
 
-    def test_json_or_none_with_dict(self):
-        """Test _json_or_none with a dictionary."""
-        result = _json_or_none({"key": "value"})
+# Test _json_or_none function
+JSON_OR_NONE_CASES = [
+    ({"key": "value"}, "dict", True),
+    (None, "none", False),
+    ({"nested": {"key": "value"}, "list": [1, 2, 3]}, "nested dict", True),
+]
+
+
+@pytest.mark.parametrize("input_val,desc,is_json", JSON_OR_NONE_CASES, ids=str)
+def test_json_or_none(input_val, desc, is_json):
+    """_json_or_none handles {desc}."""
+    result = _json_or_none(input_val)
+    if is_json:
         assert isinstance(result, str)
-        assert json.loads(result) == {"key": "value"}
-
-    def test_json_or_none_with_none(self):
-        """Test _json_or_none with None."""
-        result = _json_or_none(None)
+        assert json.loads(result) == input_val
+    else:
         assert result is None
 
-    def test_json_or_none_with_nested_dict(self):
-        """Test _json_or_none with nested structures."""
-        data = {"nested": {"key": "value"}, "list": [1, 2, 3]}
-        result = _json_or_none(data)
-        assert json.loads(result) == data
 
-    def test_make_ref_id_deterministic(self):
-        """Test that _make_ref_id produces deterministic results."""
-        ref_id_1 = _make_ref_id("att-1", "conv-1", "msg-1")
-        ref_id_2 = _make_ref_id("att-1", "conv-1", "msg-1")
-        assert ref_id_1 == ref_id_2
+def test_make_ref_id_deterministic():
+    """_make_ref_id produces consistent hashes."""
+    ref_id_1 = _make_ref_id("att-1", "conv-1", "msg-1")
+    ref_id_2 = _make_ref_id("att-1", "conv-1", "msg-1")
+    assert ref_id_1 == ref_id_2
 
-    def test_make_ref_id_different_inputs(self):
-        """Test that _make_ref_id produces different IDs for different inputs."""
-        ref_id_1 = _make_ref_id("att-1", "conv-1", "msg-1")
-        ref_id_2 = _make_ref_id("att-2", "conv-1", "msg-1")
-        assert ref_id_1 != ref_id_2
 
-    def test_make_ref_id_format(self):
-        """Test that _make_ref_id has the correct format."""
-        ref_id = _make_ref_id("att-1", "conv-1", "msg-1")
-        assert ref_id.startswith("ref-")
-        assert len(ref_id) == len("ref-") + 16  # 16-char hex digest
+def test_make_ref_id_different_inputs():
+    """_make_ref_id produces different IDs for different inputs."""
+    ref_id_1 = _make_ref_id("att-1", "conv-1", "msg-1")
+    ref_id_2 = _make_ref_id("att-2", "conv-1", "msg-1")
+    assert ref_id_1 != ref_id_2
 
-    def test_make_ref_id_with_none_message_id(self):
-        """Test _make_ref_id with None message_id."""
-        ref_id_1 = _make_ref_id("att-1", "conv-1", None)
-        ref_id_2 = _make_ref_id("att-1", "conv-1", "msg-1")
-        assert ref_id_1 != ref_id_2
 
-    def test_default_db_path(self, tmp_path, monkeypatch):
-        """Test that default_db_path returns correct path."""
-        monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
-        import importlib
+def test_make_ref_id_format():
+    """_make_ref_id returns expected format."""
+    ref_id = _make_ref_id("att-1", "conv-1", "msg-1")
+    assert ref_id.startswith("ref-")
+    assert len(ref_id) == len("ref-") + 16  # 16-char hex digest
 
-        import polylogue.paths
 
-        importlib.reload(polylogue.paths)
+def test_make_ref_id_with_none_message_id():
+    """_make_ref_id works with None message_id."""
+    ref_id_1 = _make_ref_id("att-1", "conv-1", None)
+    ref_id_2 = _make_ref_id("att-1", "conv-1", "msg-1")
+    assert ref_id_1 != ref_id_2
 
-        path = default_db_path()
-        assert str(path).endswith("polylogue.db")
-        assert "polylogue" in str(path)
+
+def test_default_db_path(tmp_path, monkeypatch):
+    """Test that default_db_path returns correct path."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    import importlib
+
+    import polylogue.paths
+
+    importlib.reload(polylogue.paths)
+
+    path = default_db_path()
+    assert str(path).endswith("polylogue.db")
+    assert "polylogue" in str(path)
 
 
 # ============================================================================

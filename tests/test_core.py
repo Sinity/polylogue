@@ -380,273 +380,183 @@ def test_encoder_fallback_comprehensive(scenario, desc):
 
 
 # =============================================================================
-# ENVIRONMENT VARIABLE TESTS (from test_core_utilities.py)
+# ENVIRONMENT VARIABLE TESTS - PARAMETRIZED
 # =============================================================================
 
 
-class TestGetEnv:
-    """Tests for get_env() function with POLYLOGUE_* precedence."""
-
-    def test_get_env_returns_prefixed_first(self, monkeypatch):
-        """POLYLOGUE_* variable takes precedence over unprefixed."""
-        from polylogue.lib.env import get_env
-
-        monkeypatch.setenv("QDRANT_URL", "http://global:6333")
-        monkeypatch.setenv("POLYLOGUE_QDRANT_URL", "http://local:6333")
-
-        result = get_env("QDRANT_URL")
-        assert result == "http://local:6333"
-
-    def test_get_env_falls_back_to_unprefixed(self, monkeypatch):
-        """Falls back to unprefixed when prefixed not set."""
-        from polylogue.lib.env import get_env
-
-        monkeypatch.setenv("QDRANT_URL", "http://global:6333")
-        monkeypatch.delenv("POLYLOGUE_QDRANT_URL", raising=False)
-
-        result = get_env("QDRANT_URL")
-        assert result == "http://global:6333"
-
-    def test_get_env_returns_default(self, monkeypatch):
-        """Returns default when neither variable is set."""
-        from polylogue.lib.env import get_env
-
-        monkeypatch.delenv("MISSING_VAR", raising=False)
-        monkeypatch.delenv("POLYLOGUE_MISSING_VAR", raising=False)
-
-        result = get_env("MISSING_VAR", "fallback")
-        assert result == "fallback"
-
-    def test_get_env_returns_none_without_default(self, monkeypatch):
-        """Returns None when neither variable is set and no default given."""
-        from polylogue.lib.env import get_env
-
-        monkeypatch.delenv("TOTALLY_MISSING", raising=False)
-        monkeypatch.delenv("POLYLOGUE_TOTALLY_MISSING", raising=False)
-
-        result = get_env("TOTALLY_MISSING")
-        assert result is None
-
-    def test_get_env_empty_string_is_falsy(self, monkeypatch):
-        """Empty string values are treated as falsy (falls through)."""
-        from polylogue.lib.env import get_env
-
-        monkeypatch.setenv("POLYLOGUE_EMPTY", "")
-        monkeypatch.setenv("EMPTY", "real_value")
-
-        result = get_env("EMPTY")
-        assert result == "real_value"
+GET_ENV_CASES = [
+    ("prefixed_precedence", "QDRANT_URL", {"POLYLOGUE_QDRANT_URL": "http://local:6333", "QDRANT_URL": "http://global:6333"}, "http://local:6333", None, "POLYLOGUE_* variable takes precedence over unprefixed"),
+    ("unprefixed_fallback", "QDRANT_URL", {"QDRANT_URL": "http://global:6333"}, "http://global:6333", None, "Falls back to unprefixed when prefixed not set"),
+    ("default_value", "MISSING_VAR", {}, "fallback", "fallback", "Returns default when neither variable is set"),
+    ("none_without_default", "TOTALLY_MISSING", {}, None, None, "Returns None when neither variable is set and no default given"),
+    ("empty_string_fallback", "EMPTY", {"POLYLOGUE_EMPTY": "", "EMPTY": "real_value"}, "real_value", None, "Empty string values are treated as falsy (falls through)"),
+]
 
 
-class TestGetEnvMulti:
-    """Tests for get_env_multi() with multiple fallback names."""
+@pytest.mark.parametrize("scenario,var_name,env_vars,expected,default_val,desc", GET_ENV_CASES)
+def test_get_env_comprehensive(scenario, var_name, env_vars, expected, default_val, desc, monkeypatch):
+    """Comprehensive get_env() tests."""
+    from polylogue.lib.env import get_env
 
-    def test_get_env_multi_prefixed_first(self, monkeypatch):
-        """Prefixed variable takes precedence over all."""
-        from polylogue.lib.env import get_env_multi
+    for key, value in env_vars.items():
+        monkeypatch.setenv(key, value)
 
-        monkeypatch.setenv("POLYLOGUE_GOOGLE_API_KEY", "polylogue_key")
-        monkeypatch.setenv("GOOGLE_API_KEY", "google_key")
-        monkeypatch.setenv("GEMINI_API_KEY", "gemini_key")
+    if default_val is not None:
+        result = get_env(var_name, default_val)
+    else:
+        result = get_env(var_name)
 
-        result = get_env_multi("GOOGLE_API_KEY", "GEMINI_API_KEY")
-        assert result == "polylogue_key"
+    assert result == expected, f"Failed {desc}"
 
-    def test_get_env_multi_unprefixed_primary(self, monkeypatch):
-        """Unprefixed primary takes precedence over alternatives."""
-        from polylogue.lib.env import get_env_multi
 
-        monkeypatch.delenv("POLYLOGUE_GOOGLE_API_KEY", raising=False)
-        monkeypatch.setenv("GOOGLE_API_KEY", "google_key")
-        monkeypatch.setenv("GEMINI_API_KEY", "gemini_key")
+GET_ENV_MULTI_CASES = [
+    ("prefixed_precedence", ("GOOGLE_API_KEY", "GEMINI_API_KEY"), {"POLYLOGUE_GOOGLE_API_KEY": "polylogue_key", "GOOGLE_API_KEY": "google_key", "GEMINI_API_KEY": "gemini_key"}, "polylogue_key", None, "Prefixed variable takes precedence over all"),
+    ("unprefixed_primary", ("GOOGLE_API_KEY", "GEMINI_API_KEY"), {"GOOGLE_API_KEY": "google_key", "GEMINI_API_KEY": "gemini_key"}, "google_key", None, "Unprefixed primary takes precedence over alternatives"),
+    ("alternative_fallback", ("GOOGLE_API_KEY", "GEMINI_API_KEY"), {"GEMINI_API_KEY": "gemini_key"}, "gemini_key", None, "Falls back to alternative when primary not set"),
+    ("default_value", ("MISSING", "ALSO_MISSING"), {}, "default_val", "default_val", "Returns default when no variables are set"),
+    ("single_var", ("SINGLE_KEY",), {"SINGLE_KEY": "single_value"}, "single_value", None, "Works with no alternative names provided"),
+]
 
-        result = get_env_multi("GOOGLE_API_KEY", "GEMINI_API_KEY")
-        assert result == "google_key"
 
-    def test_get_env_multi_falls_to_alternative(self, monkeypatch):
-        """Falls back to alternative when primary not set."""
-        from polylogue.lib.env import get_env_multi
+@pytest.mark.parametrize("scenario,var_names,env_vars,expected,default_val,desc", GET_ENV_MULTI_CASES)
+def test_get_env_multi_comprehensive(scenario, var_names, env_vars, expected, default_val, desc, monkeypatch):
+    """Comprehensive get_env_multi() tests."""
+    from polylogue.lib.env import get_env_multi
 
-        monkeypatch.delenv("POLYLOGUE_GOOGLE_API_KEY", raising=False)
-        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-        monkeypatch.setenv("GEMINI_API_KEY", "gemini_key")
+    for key, value in env_vars.items():
+        monkeypatch.setenv(key, value)
 
-        result = get_env_multi("GOOGLE_API_KEY", "GEMINI_API_KEY")
-        assert result == "gemini_key"
+    if default_val is not None:
+        result = get_env_multi(*var_names, default=default_val)
+    else:
+        result = get_env_multi(*var_names)
 
-    def test_get_env_multi_returns_default(self, monkeypatch):
-        """Returns default when no variables are set."""
-        from polylogue.lib.env import get_env_multi
-
-        monkeypatch.delenv("POLYLOGUE_MISSING", raising=False)
-        monkeypatch.delenv("MISSING", raising=False)
-        monkeypatch.delenv("ALSO_MISSING", raising=False)
-
-        result = get_env_multi("MISSING", "ALSO_MISSING", default="default_val")
-        assert result == "default_val"
-
-    def test_get_env_multi_no_alternatives(self, monkeypatch):
-        """Works with no alternative names provided."""
-        from polylogue.lib.env import get_env_multi
-
-        monkeypatch.setenv("SINGLE_KEY", "single_value")
-        monkeypatch.delenv("POLYLOGUE_SINGLE_KEY", raising=False)
-
-        result = get_env_multi("SINGLE_KEY")
-        assert result == "single_value"
+    assert result == expected, f"Failed {desc}"
 
 
 # =============================================================================
-# DATE PARSING TESTS (from test_core_utilities.py)
+# DATE PARSING TESTS - PARAMETRIZED
 # =============================================================================
 
 
-class TestParseDate:
-    """Tests for parse_date() with natural language support."""
+PARSE_DATE_CASES = [
+    ("2024-01-15", 2024, 1, 15, "ISO format"),
+    ("2024-01-15T10:30:00", 10, 30, 0, "ISO format with time"),
+    ("yesterday", "past", None, None, "natural yesterday"),
+    ("2 days ago", "past", None, None, "relative dates"),
+    ("not a date at all xyz123", None, None, None, "invalid returns None"),
+    ("2024-06-15", None, None, None, "UTC-aware returned"),
+]
 
-    def test_parse_date_iso_format(self):
-        """Parses ISO format dates correctly."""
-        from polylogue.lib.dates import parse_date
 
-        result = parse_date("2024-01-15")
+@pytest.mark.parametrize("input_val,exp_year_or_hour,exp_month_or_minute,exp_day_or_second,desc", PARSE_DATE_CASES)
+def test_parse_date_comprehensive(input_val, exp_year_or_hour, exp_month_or_minute, exp_day_or_second, desc):
+    """Comprehensive parse_date() tests."""
+    from polylogue.lib.dates import parse_date
+
+    result = parse_date(input_val)
+
+    if desc == "ISO format":
         assert result is not None
-        assert result.year == 2024
-        assert result.month == 1
-        assert result.day == 15
+        assert result.year == exp_year_or_hour
+        assert result.month == exp_month_or_minute
+        assert result.day == exp_day_or_second
         assert result.tzinfo is not None
 
-    def test_parse_date_iso_with_time(self):
-        """Parses ISO format with time correctly."""
-        from polylogue.lib.dates import parse_date
-
-        result = parse_date("2024-01-15T10:30:00")
+    elif desc == "ISO format with time":
         assert result is not None
-        assert result.hour == 10
-        assert result.minute == 30
+        assert result.hour == exp_year_or_hour
+        assert result.minute == exp_month_or_minute
+        assert result.second == exp_day_or_second
 
-    def test_parse_date_natural_yesterday(self):
-        """Parses 'yesterday' naturally."""
-        from polylogue.lib.dates import parse_date
-
-        result = parse_date("yesterday")
+    elif desc == "natural yesterday":
         assert result is not None
         assert result < datetime.now(timezone.utc)
 
-    def test_parse_date_natural_relative(self):
-        """Parses relative dates like '2 days ago'."""
-        from polylogue.lib.dates import parse_date
-
-        result = parse_date("2 days ago")
+    elif desc == "relative dates":
         assert result is not None
         now = datetime.now(timezone.utc)
         assert result < now
 
-    def test_parse_date_invalid_returns_none(self):
-        """Returns None for unparseable input."""
-        from polylogue.lib.dates import parse_date
-
-        result = parse_date("not a date at all xyz123")
+    elif desc == "invalid returns None":
         assert result is None
 
-    def test_parse_date_returns_utc_aware(self):
-        """All returned dates are UTC-aware."""
-        from polylogue.lib.dates import parse_date
-
-        result = parse_date("2024-06-15")
+    elif desc == "UTC-aware returned":
         assert result is not None
         assert result.tzinfo is not None
 
 
-class TestFormatDateIso:
-    """Tests for format_date_iso() function."""
-
-    def test_format_date_iso_basic(self):
-        """Formats datetime as ISO string."""
-        from polylogue.lib.dates import format_date_iso
-
-        dt = datetime(2024, 1, 15, 10, 30, 45)
-        result = format_date_iso(dt)
-        assert result == "2024-01-15 10:30:45"
-
-    def test_format_date_iso_midnight(self):
-        """Formats midnight correctly."""
-        from polylogue.lib.dates import format_date_iso
-
-        dt = datetime(2024, 12, 25, 0, 0, 0)
-        result = format_date_iso(dt)
-        assert result == "2024-12-25 00:00:00"
-
-    def test_format_date_iso_with_timezone(self):
-        """Works with timezone-aware datetime."""
-        from polylogue.lib.dates import format_date_iso
-
-        dt = datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc)
-        result = format_date_iso(dt)
-        assert result == "2024-06-15 14:30:00"
-
-
 # =============================================================================
-# VERSION TESTS (from test_core_utilities.py)
+# DATE FORMATTING TESTS - PARAMETRIZED
 # =============================================================================
 
 
-class TestVersionInfo:
-    """Tests for VersionInfo dataclass."""
-
-    def test_version_info_str_without_commit(self):
-        """String representation without commit hash."""
-        from polylogue.version import VersionInfo
-
-        info = VersionInfo(version="1.2.3")
-        assert str(info) == "1.2.3"
-        assert info.full == "1.2.3"
-        assert info.short == "1.2.3"
-
-    def test_version_info_str_with_commit(self):
-        """String representation with commit hash."""
-        from polylogue.version import VersionInfo
-
-        info = VersionInfo(version="1.2.3", commit="abc123def456")
-        assert str(info) == "1.2.3+abc123de"
-        assert info.full == "1.2.3+abc123de"
-        assert info.short == "1.2.3"
-
-    def test_version_info_str_with_dirty(self):
-        """String representation with dirty flag."""
-        from polylogue.version import VersionInfo
-
-        info = VersionInfo(version="1.2.3", commit="abc123def456", dirty=True)
-        assert str(info) == "1.2.3+abc123de-dirty"
-        assert info.full == "1.2.3+abc123de-dirty"
-        assert info.short == "1.2.3"
-
-    def test_version_info_short_property(self):
-        """Short property always returns just version."""
-        from polylogue.version import VersionInfo
-
-        info = VersionInfo(version="0.9.0", commit="deadbeef", dirty=True)
-        assert info.short == "0.9.0"
+FORMAT_DATE_CASES = [
+    (datetime(2024, 1, 15, 10, 30, 45), "2024-01-15 10:30:45", "basic"),
+    (datetime(2024, 12, 25, 0, 0, 0), "2024-12-25 00:00:00", "midnight"),
+    (datetime(2024, 6, 15, 14, 30, 0, tzinfo=timezone.utc), "2024-06-15 14:30:00", "with timezone"),
+]
 
 
-class TestVersionResolution:
-    """Tests for version resolution mechanism."""
+@pytest.mark.parametrize("dt,expected,desc", FORMAT_DATE_CASES)
+def test_format_date_iso_comprehensive(dt, expected, desc):
+    """Comprehensive format_date_iso() tests."""
+    from polylogue.lib.dates import format_date_iso
 
-    def test_version_info_available(self):
-        """VERSION_INFO is available at module level."""
-        from polylogue.version import VERSION_INFO
+    result = format_date_iso(dt)
+    assert result == expected
 
-        assert VERSION_INFO is not None
-        assert hasattr(VERSION_INFO, "version")
-        assert hasattr(VERSION_INFO, "full")
-        assert hasattr(VERSION_INFO, "short")
 
-    def test_polylogue_version_available(self):
-        """POLYLOGUE_VERSION constant is available."""
-        from polylogue.version import POLYLOGUE_VERSION
+# =============================================================================
+# VERSION TESTS - PARAMETRIZED
+# =============================================================================
 
-        assert POLYLOGUE_VERSION is not None
-        assert isinstance(POLYLOGUE_VERSION, str)
-        assert len(POLYLOGUE_VERSION) > 0
+
+VERSION_INFO_CASES = [
+    ("1.2.3", None, False, "1.2.3", "1.2.3", "without commit"),
+    ("1.2.3", "abc123def456", False, "1.2.3+abc123de", "1.2.3", "with commit"),
+    ("1.2.3", "abc123def456", True, "1.2.3+abc123de-dirty", "1.2.3", "with dirty"),
+    ("0.9.0", "deadbeef", True, "0.9.0+deadbeef-dirty", "0.9.0", "short property"),
+]
+
+
+@pytest.mark.parametrize("version,commit,dirty,exp_full,exp_short,desc", VERSION_INFO_CASES)
+def test_version_info_comprehensive(version, commit, dirty, exp_full, exp_short, desc):
+    """Comprehensive VersionInfo tests."""
+    from polylogue.version import VersionInfo
+
+    if commit is None:
+        info = VersionInfo(version=version)
+    else:
+        info = VersionInfo(version=version, commit=commit, dirty=dirty)
+
+    assert str(info) == exp_full
+    assert info.full == exp_full
+    assert info.short == exp_short
+
+
+# =============================================================================
+# VERSION RESOLUTION TESTS
+# =============================================================================
+
+
+def test_version_info_available():
+    """VERSION_INFO is available at module level."""
+    from polylogue.version import VERSION_INFO
+
+    assert VERSION_INFO is not None
+    assert hasattr(VERSION_INFO, "version")
+    assert hasattr(VERSION_INFO, "full")
+    assert hasattr(VERSION_INFO, "short")
+
+
+def test_polylogue_version_available():
+    """POLYLOGUE_VERSION constant is available."""
+    from polylogue.version import POLYLOGUE_VERSION
+
+    assert POLYLOGUE_VERSION is not None
+    assert isinstance(POLYLOGUE_VERSION, str)
+    assert len(POLYLOGUE_VERSION) > 0
 
 
 # =============================================================================
@@ -923,26 +833,33 @@ def test_repository_get_attachment_metadata_decoded(test_db):
     assert att.provider_meta == meta or att.provider_meta is None
 
 
-# --- Merged from test_simple_coverage.py ---
+# =============================================================================
+# TIMESTAMP PARSING TESTS - PARAMETRIZED
+# =============================================================================
 
 
-class TestTimestampParsing:
-    """Test core/timestamps.py edge cases."""
+TIMESTAMP_PARSE_CASES = [
+    (None, "None"),
+    (1704067200.0, "numeric timestamp"),
+]
 
-    def test_parse_timestamp_none(self):
-        """Test parse_timestamp with None."""
-        from polylogue.lib.timestamps import parse_timestamp
 
-        result = parse_timestamp(None)
+@pytest.mark.parametrize("ts_input,desc", TIMESTAMP_PARSE_CASES)
+def test_parse_timestamp_comprehensive(ts_input, desc):
+    """Comprehensive parse_timestamp() tests."""
+    from polylogue.lib.timestamps import parse_timestamp
+
+    result = parse_timestamp(ts_input)
+
+    if desc == "None":
         assert result is None
-
-    def test_parse_timestamp_numeric(self):
-        """Test parse_timestamp with numeric timestamp."""
-        from polylogue.lib.timestamps import parse_timestamp
-
-        # Valid numeric timestamp
-        result = parse_timestamp(1704067200.0)
+    elif desc == "numeric timestamp":
         assert result is not None
+
+
+# =============================================================================
+# JSON UTILS TESTS
+# =============================================================================
 
 
 class TestJsonUtils:
@@ -963,30 +880,36 @@ class TestJsonUtils:
             loads("{invalid}")
 
 
-# --- Merged from test_supplementary_coverage.py ---
+# =============================================================================
+# VERSION EDGE CASES - PARAMETRIZED
+# =============================================================================
 
 
-class TestVersionEdgeCases:
-    """Tests for version detection edge cases."""
+VERSION_EDGE_CASES = [
+    ("resolve_version", "VersionInfo object returned"),
+    ("str_representation", "version included in string"),
+    ("dirty_state", "dirty state indicated"),
+]
 
-    def test_resolve_version_returns_version_info(self):
-        """_resolve_version should return a VersionInfo object."""
+
+@pytest.mark.parametrize("scenario,desc", VERSION_EDGE_CASES)
+def test_version_edge_cases_comprehensive(scenario, desc):
+    """Comprehensive version edge case tests."""
+    if scenario == "resolve_version":
         from polylogue.version import _resolve_version
 
         info = _resolve_version()
         assert info is not None
         assert hasattr(info, "version")
 
-    def test_version_info_str(self):
-        """VersionInfo __str__ should include version."""
+    elif scenario == "str_representation":
         from polylogue.version import VersionInfo
 
         info = VersionInfo(version="1.0.0", commit="abc123", dirty=False)
         s = str(info)
         assert "1.0.0" in s
 
-    def test_version_info_dirty(self):
-        """VersionInfo should indicate dirty state."""
+    elif scenario == "dirty_state":
         from polylogue.version import VersionInfo
 
         info = VersionInfo(version="1.0.0", commit="abc123", dirty=True)
@@ -994,12 +917,26 @@ class TestVersionEdgeCases:
         assert "dirty" in s.lower() or "+" in s
 
 
-class TestDisplayDate:
-    """Tests for the display_date property on Conversation and ConversationSummary."""
+# =============================================================================
+# DISPLAY DATE TESTS - PARAMETRIZED
+# =============================================================================
 
-    def test_summary_display_date_prefers_updated(self):
-        from datetime import datetime, timezone
 
+DISPLAY_DATE_CASES = [
+    ("summary_prefers_updated", "prefers updated over created"),
+    ("summary_falls_back_to_created", "falls back to created when updated missing"),
+    ("summary_none_when_both_missing", "returns None when both missing"),
+    ("conversation_prefers_updated", "conversation prefers updated over created"),
+    ("conversation_falls_back_to_created", "conversation falls back to created when updated missing"),
+]
+
+
+@pytest.mark.parametrize("scenario,desc", DISPLAY_DATE_CASES)
+def test_display_date_comprehensive(scenario, desc):
+    """Comprehensive display_date tests."""
+    from datetime import datetime, timezone
+
+    if scenario == "summary_prefers_updated":
         from polylogue.lib.models import ConversationSummary
 
         created = datetime(2025, 1, 1, tzinfo=timezone.utc)
@@ -1009,9 +946,7 @@ class TestDisplayDate:
         )
         assert s.display_date == updated
 
-    def test_summary_display_date_falls_back_to_created(self):
-        from datetime import datetime, timezone
-
+    elif scenario == "summary_falls_back_to_created":
         from polylogue.lib.models import ConversationSummary
 
         created = datetime(2025, 1, 1, tzinfo=timezone.utc)
@@ -1020,15 +955,13 @@ class TestDisplayDate:
         )
         assert s.display_date == created
 
-    def test_summary_display_date_none_when_both_missing(self):
+    elif scenario == "summary_none_when_both_missing":
         from polylogue.lib.models import ConversationSummary
 
         s = ConversationSummary(id="test:1", provider="test")
         assert s.display_date is None
 
-    def test_conversation_display_date_prefers_updated(self):
-        from datetime import datetime, timezone
-
+    elif scenario == "conversation_prefers_updated":
         from polylogue.lib.models import Conversation, MessageCollection
 
         created = datetime(2025, 1, 1, tzinfo=timezone.utc)
@@ -1042,9 +975,7 @@ class TestDisplayDate:
         )
         assert c.display_date == updated
 
-    def test_conversation_display_date_falls_back_to_created(self):
-        from datetime import datetime, timezone
-
+    elif scenario == "conversation_falls_back_to_created":
         from polylogue.lib.models import Conversation, MessageCollection
 
         created = datetime(2025, 1, 1, tzinfo=timezone.utc)

@@ -21,6 +21,121 @@ from polylogue.storage.store import AttachmentRecord, ConversationRecord, Messag
 
 
 # =============================================================================
+# TEST DATA CONSTANTS (module-level for parametrization)
+# =============================================================================
+
+# ToolInvocation.is_file_operation test data
+TOOLINV_FILE_OPS = [
+    ("Read", True),
+    ("Write", True),
+    ("Edit", True),
+    ("NotebookEdit", True),
+    ("Bash", False),
+]
+
+# ToolInvocation.is_git_operation test data
+TOOLINV_GIT_OPS = [
+    ("Bash", {"command": "git commit -m 'test'"}, True, "git_command"),
+    ("Read", {"command": "git status"}, False, "not_bash"),
+    ("Bash", {"command": "ls -la"}, False, "non_git_bash"),
+    ("Bash", {"command": 123}, False, "non_string_cmd"),
+    ("Bash", {"command": "  git push  "}, True, "whitespace_git"),
+    ("Bash", {}, False, "no_command"),
+]
+
+# ToolInvocation.is_search_operation test data
+TOOLINV_SEARCH_OPS = [
+    ("Glob", True),
+    ("Grep", True),
+    ("WebSearch", True),
+    ("Bash", False),
+]
+
+# ToolInvocation.is_subagent test data
+TOOLINV_SUBAGENTS = [
+    ("Task", True),
+    ("Bash", False),
+]
+
+# ToolInvocation.affected_paths test data
+TOOLINV_AFFECTED_PATHS = [
+    ("Read", {"file_path": "/tmp/test.txt"}, ["/tmp/test.txt"], "read"),
+    ("Write", {"file_path": "/tmp/output.txt"}, ["/tmp/output.txt"], "write"),
+    ("Edit", {"file_path": "/tmp/code.py"}, ["/tmp/code.py"], "edit"),
+    ("Read", {"path": "/tmp/fallback.txt"}, ["/tmp/fallback.txt"], "path_fallback"),
+    ("Read", {"file_path": "/tmp/primary.txt", "path": "/tmp/fallback.txt"}, ["/tmp/primary.txt"], "file_path_priority"),
+    ("Read", {"file_path": 123}, [], "non_string_path"),
+    ("Glob", {"pattern": "**/*.py"}, ["**/*.py"], "glob"),
+    ("Glob", {"pattern": ["*.py", "*.txt"]}, [], "glob_non_string"),
+    ("Bash", {"command": 123}, [], "bash_non_string"),
+    ("Task", {"prompt": "do something"}, [], "other_tool"),
+]
+
+# Message._is_chatgpt_thinking test data
+CHATGPT_THINKING_META = [
+    (None, False, "no_meta"),
+    ({"raw": "not a dict"}, False, "raw_not_dict"),
+    ({"raw": {"content": {"content_type": "thoughts"}}}, True, "thoughts"),
+    ({"raw": {"content": {"content_type": "reasoning_recap"}}}, True, "reasoning_recap"),
+    ({"raw": {"content": "not a dict"}}, False, "content_not_dict"),
+    ({"raw": {}}, False, "tool_no_metadata"),
+    ({"raw": {"metadata": "not a dict"}}, False, "tool_metadata_not_dict"),
+]
+
+# Message.extract_thinking structured blocks test data
+EXTRACT_THINKING_BLOCKS = [
+    ([{"type": "thinking", "text": "thinking content"}, {"type": "text", "text": "response text"}], "thinking content", "single_block"),
+    ([{"type": "thinking", "text": "first thought"}, {"type": "thinking", "text": "second thought"}], "first thought\n\nsecond thought", "multiple_blocks"),
+    (["not a dict", {"type": "thinking", "text": "thinking"}], "thinking", "mixed_blocks"),
+    ([{"type": "thinking", "text": 123}], None, "text_not_string"),
+    ([{"type": "thinking", "text": "   \n\n   "}], None, "empty_after_strip"),
+]
+
+# Message.is_context_dump test data
+CONTEXT_DUMP_CONFIGS = [
+    (None, None, None, False, False, False, "no_text"),
+    (None, None, None, True, False, False, "attachments_short_text"),
+    (None, None, None, True, False, True, "attachments_long_text"),
+    (None, None, None, False, True, False, "system_prompt"),
+    (None, None, None, False, False, False, "code_fences"),
+    (None, None, None, False, False, False, "regex_pattern"),
+]
+
+# Message.from_record role handling test data
+MESSAGE_ROLE_CASES = [
+    ("", "unknown", "empty_role"),
+    ("   ", "unknown", "whitespace_role"),
+    ("  assistant  ", "assistant", "normal_role"),
+]
+
+# ConversationSummary metadata property test data
+SUMMARY_DISPLAY_TITLE = [
+    ({"title": "User Title"}, None, "User Title", "user_title"),
+    (None, "Auto Title", "Auto Title", "fallback_title"),
+    (None, None, "c1234567", "fallback_id"),
+]
+
+SUMMARY_TAGS = [
+    ({"tags": ["tag1", "tag2", 123]}, ["tag1", "tag2", "123"], "list"),
+    ({"tags": "not a list"}, [], "non_list"),
+    (None, [], "empty"),
+]
+
+SUMMARY_BRANCH_TYPE = [
+    ("continuation", True, False, "continuation"),
+    ("sidechain", False, True, "sidechain"),
+    (None, False, False, "other"),
+]
+
+# Attachment.from_record name test data
+ATTACHMENT_NAMES = [
+    ({"name": "file.txt"}, "file.txt", "with_name"),
+    ({"name": 123}, "att1", "name_not_string"),
+    (None, "att1", "no_provider_meta"),
+]
+
+
+# =============================================================================
 # TOOLINVOCATION COVERAGE
 # =============================================================================
 
@@ -28,13 +143,7 @@ from polylogue.storage.store import AttachmentRecord, ConversationRecord, Messag
 class TestToolInvocationFileOperation:
     """Test ToolInvocation.is_file_operation property."""
 
-    @pytest.mark.parametrize("tool_name,expected", [
-        ("Read", True),
-        ("Write", True),
-        ("Edit", True),
-        ("NotebookEdit", True),
-        ("Bash", False),
-    ])
+    @pytest.mark.parametrize("tool_name,expected", TOOLINV_FILE_OPS)
     def test_is_file_operation(self, tool_name, expected):
         """Line 93: Check is_file_operation with various tools."""
         tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input={})
@@ -44,15 +153,8 @@ class TestToolInvocationFileOperation:
 class TestToolInvocationGitOperation:
     """Test ToolInvocation.is_git_operation property (lines 98-101)."""
 
-    @pytest.mark.parametrize("tool_name,input_data,expected", [
-        ("Bash", {"command": "git commit -m 'test'"}, True),
-        ("Read", {"command": "git status"}, False),
-        ("Bash", {"command": "ls -la"}, False),
-        ("Bash", {"command": 123}, False),
-        ("Bash", {"command": "  git push  "}, True),
-        ("Bash", {}, False),
-    ], ids=["git_command", "not_bash", "non_git_bash", "non_string_cmd", "whitespace_git", "no_command"])
-    def test_is_git_operation(self, tool_name, input_data, expected):
+    @pytest.mark.parametrize("tool_name,input_data,expected,test_id", TOOLINV_GIT_OPS)
+    def test_is_git_operation(self, tool_name, input_data, expected, test_id):
         """Line 98-101: Test is_git_operation with various inputs."""
         tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input=input_data)
         assert tool.is_git_operation is expected
@@ -61,12 +163,7 @@ class TestToolInvocationGitOperation:
 class TestToolInvocationSearchOperation:
     """Test ToolInvocation.is_search_operation property (line 106)."""
 
-    @pytest.mark.parametrize("tool_name,expected", [
-        ("Glob", True),
-        ("Grep", True),
-        ("WebSearch", True),
-        ("Bash", False),
-    ])
+    @pytest.mark.parametrize("tool_name,expected", TOOLINV_SEARCH_OPS)
     def test_is_search_operation(self, tool_name, expected):
         """Line 106: Test is_search_operation with various tools."""
         tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input={})
@@ -76,10 +173,7 @@ class TestToolInvocationSearchOperation:
 class TestToolInvocationSubagent:
     """Test ToolInvocation.is_subagent property (line 111)."""
 
-    @pytest.mark.parametrize("tool_name,expected", [
-        ("Task", True),
-        ("Bash", False),
-    ])
+    @pytest.mark.parametrize("tool_name,expected", TOOLINV_SUBAGENTS)
     def test_is_subagent(self, tool_name, expected):
         """Line 111: Test is_subagent with various tools."""
         tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input={})
@@ -89,20 +183,8 @@ class TestToolInvocationSubagent:
 class TestToolInvocationAffectedPaths:
     """Test ToolInvocation.affected_paths property (lines 116-137)."""
 
-    @pytest.mark.parametrize("tool_name,input_data,expected", [
-        ("Read", {"file_path": "/tmp/test.txt"}, ["/tmp/test.txt"]),
-        ("Write", {"file_path": "/tmp/output.txt"}, ["/tmp/output.txt"]),
-        ("Edit", {"file_path": "/tmp/code.py"}, ["/tmp/code.py"]),
-        ("Read", {"path": "/tmp/fallback.txt"}, ["/tmp/fallback.txt"]),
-        ("Read", {"file_path": "/tmp/primary.txt", "path": "/tmp/fallback.txt"}, ["/tmp/primary.txt"]),
-        ("Read", {"file_path": 123}, []),
-        ("Glob", {"pattern": "**/*.py"}, ["**/*.py"]),
-        ("Glob", {"pattern": ["*.py", "*.txt"]}, []),
-        ("Bash", {"command": 123}, []),
-        ("Task", {"prompt": "do something"}, []),
-    ], ids=["read", "write", "edit", "path_fallback", "file_path_priority", "non_string_path",
-            "glob", "glob_non_string", "bash_non_string", "other_tool"])
-    def test_affected_paths(self, tool_name, input_data, expected):
+    @pytest.mark.parametrize("tool_name,input_data,expected,test_id", TOOLINV_AFFECTED_PATHS)
+    def test_affected_paths(self, tool_name, input_data, expected, test_id):
         """Lines 116-137: Test affected_paths with various tools."""
         tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input=input_data)
         assert tool.affected_paths == expected
@@ -139,17 +221,8 @@ class TestToolInvocationAffectedPaths:
 class TestMessageChatGPTThinking:
     """Test Message._is_chatgpt_thinking() method (lines 300-313)."""
 
-    @pytest.mark.parametrize("provider_meta,expected", [
-        (None, False),
-        ({"raw": "not a dict"}, False),
-        ({"raw": {"content": {"content_type": "thoughts"}}}, True),
-        ({"raw": {"content": {"content_type": "reasoning_recap"}}}, True),
-        ({"raw": {"content": "not a dict"}}, False),
-        ({"raw": {}}, False),
-        ({"raw": {"metadata": "not a dict"}}, False),
-    ], ids=["no_meta", "raw_not_dict", "thoughts", "reasoning_recap", "content_not_dict",
-            "tool_no_metadata", "tool_metadata_not_dict"])
-    def test_chatgpt_thinking(self, provider_meta, expected):
+    @pytest.mark.parametrize("provider_meta,expected,test_id", CHATGPT_THINKING_META)
+    def test_chatgpt_thinking(self, provider_meta, expected, test_id):
         """Lines 300-313: Test _is_chatgpt_thinking with various inputs."""
         msg = Message(id="m1", role="assistant", text="test", provider_meta=provider_meta)
         assert msg._is_chatgpt_thinking() is expected
@@ -228,14 +301,8 @@ class TestMessageContextDump:
 class TestMessageExtractThinking:
     """Test Message.extract_thinking() method (lines 424-440)."""
 
-    @pytest.mark.parametrize("blocks,expected", [
-        ([{"type": "thinking", "text": "thinking content"}, {"type": "text", "text": "response text"}], "thinking content"),
-        ([{"type": "thinking", "text": "first thought"}, {"type": "thinking", "text": "second thought"}], "first thought\n\nsecond thought"),
-        (["not a dict", {"type": "thinking", "text": "thinking"}], "thinking"),
-        ([{"type": "thinking", "text": 123}], None),
-        ([{"type": "thinking", "text": "   \n\n   "}], None),
-    ], ids=["single_block", "multiple_blocks", "mixed_blocks", "text_not_string", "empty_after_strip"])
-    def test_extract_thinking_structured(self, blocks, expected):
+    @pytest.mark.parametrize("blocks,expected,test_id", EXTRACT_THINKING_BLOCKS)
+    def test_extract_thinking_structured(self, blocks, expected, test_id):
         """Lines 423-431: Test extract_thinking with structured blocks."""
         msg = Message(
             id="m1",
@@ -341,60 +408,27 @@ class TestMessageExtractThinking:
 class TestConversationSummaryMetadata:
     """Test ConversationSummary metadata properties (lines 506-536)."""
 
-    def test_display_title_user_title(self):
-        """Line 509-511: Return user_title from metadata."""
+    @pytest.mark.parametrize("metadata,title,expected,test_id", SUMMARY_DISPLAY_TITLE)
+    def test_display_title(self, metadata, title, expected, test_id):
+        """Lines 509-514: Test display_title with various metadata/title."""
+        summary = ConversationSummary(
+            id="c123456789abcdef" if test_id == "fallback_id" else "c1",
+            provider="claude",
+            metadata=metadata,
+            title=title,
+        )
+        assert summary.display_title == expected
+
+    @pytest.mark.parametrize("metadata,expected,test_id", SUMMARY_TAGS)
+    def test_tags(self, metadata, expected, test_id):
+        """Lines 519-522: Test tags property."""
         summary = ConversationSummary(
             id="c1",
             provider="claude",
-            metadata={"title": "User Title"},
-        )
-        assert summary.display_title == "User Title"
-
-    def test_display_title_fallback_title(self):
-        """Lines 512-513: Use title field if no user title."""
-        summary = ConversationSummary(
-            id="c1",
-            provider="claude",
-            title="Auto Title",
-        )
-        assert summary.display_title == "Auto Title"
-
-    def test_display_title_fallback_id(self):
-        """Line 514: Use truncated ID if no title."""
-        summary = ConversationSummary(
-            id="c123456789abcdef",
-            provider="claude",
-        )
-        assert summary.display_title == "c1234567"
-
-    def test_tags_list(self):
-        """Lines 519-521: Convert list of tags to strings."""
-        summary = ConversationSummary(
-            id="c1",
-            provider="claude",
-            metadata={"tags": ["tag1", "tag2", 123]},
+            metadata=metadata,
         )
         tags = summary.tags
-        assert "tag1" in tags
-        assert "tag2" in tags
-        assert "123" in tags
-
-    def test_tags_non_list(self):
-        """Line 520: tags is not a list."""
-        summary = ConversationSummary(
-            id="c1",
-            provider="claude",
-            metadata={"tags": "not a list"},
-        )
-        assert summary.tags == []
-
-    def test_tags_empty(self):
-        """Lines 519-522: No tags in metadata."""
-        summary = ConversationSummary(
-            id="c1",
-            provider="claude",
-        )
-        assert summary.tags == []
+        assert tags == expected
 
     def test_summary_property(self):
         """Lines 527-528: Return summary from metadata."""
@@ -413,23 +447,16 @@ class TestConversationSummaryMetadata:
         )
         assert summary.summary is None
 
-    def test_is_continuation(self):
-        """Line 531-532: Check continuation branch type."""
+    @pytest.mark.parametrize("branch_type,is_cont,is_side,test_id", SUMMARY_BRANCH_TYPE)
+    def test_branch_type_properties(self, branch_type, is_cont, is_side, test_id):
+        """Lines 531-536: Test is_continuation and is_sidechain."""
         summary = ConversationSummary(
             id="c1",
             provider="claude",
-            branch_type="continuation",
+            branch_type=branch_type,
         )
-        assert summary.is_continuation is True
-
-    def test_is_sidechain(self):
-        """Line 535-536: Check sidechain branch type."""
-        summary = ConversationSummary(
-            id="c1",
-            provider="claude",
-            branch_type="sidechain",
-        )
-        assert summary.is_sidechain is True
+        assert summary.is_continuation is is_cont
+        assert summary.is_sidechain is is_side
 
 
 # =============================================================================
@@ -950,77 +977,34 @@ class TestDialoguePairValidation:
 class TestAttachmentFromRecord:
     """Test Attachment.from_record() class method (lines 213-222)."""
 
-    def test_from_record_with_name(self):
-        """Lines 214-217: Extract name from provider_meta."""
+    @pytest.mark.parametrize("provider_meta,expected,test_id", ATTACHMENT_NAMES)
+    def test_from_record_name(self, provider_meta, expected, test_id):
+        """Lines 214-218: Extract/derive name from provider_meta."""
         record = AttachmentRecord(
             attachment_id="att1",
             conversation_id="c1",
-            provider_meta={"name": "file.txt"},
+            provider_meta=provider_meta,
         )
         att = Attachment.from_record(record)
-        assert att.name == "file.txt"
-
-    def test_from_record_name_not_string(self):
-        """Lines 217-218: Use attachment_id if name is not string."""
-        record = AttachmentRecord(
-            attachment_id="att1",
-            conversation_id="c1",
-            provider_meta={"name": 123},
-        )
-        att = Attachment.from_record(record)
-        assert att.name == "att1"
-
-    def test_from_record_no_provider_meta(self):
-        """Line 214: No provider_meta."""
-        record = AttachmentRecord(
-            attachment_id="att1",
-            conversation_id="c1",
-        )
-        att = Attachment.from_record(record)
-        assert att.name == "att1"
+        assert att.name == expected
 
 
 class TestMessageFromRecord:
     """Test Message.from_record() class method."""
 
-    def test_from_record_empty_role(self):
-        """Line 249: Empty role becomes 'unknown'."""
+    @pytest.mark.parametrize("role,expected,test_id", MESSAGE_ROLE_CASES)
+    def test_from_record_role(self, role, expected, test_id):
+        """Line 249: Test role normalization in from_record."""
         record = MessageRecord(
             message_id="m1",
             conversation_id="c1",
-            role="",
+            role=role,
             text="hello",
             timestamp="2024-01-01T00:00:00Z",
             content_hash="hash1",
         )
         msg = Message.from_record(record, [])
-        assert msg.role == "unknown"
-
-    def test_from_record_whitespace_role(self):
-        """Line 249: Whitespace-only role becomes 'unknown'."""
-        record = MessageRecord(
-            message_id="m1",
-            conversation_id="c1",
-            role="   ",
-            text="hello",
-            timestamp="2024-01-01T00:00:00Z",
-            content_hash="hash1",
-        )
-        msg = Message.from_record(record, [])
-        assert msg.role == "unknown"
-
-    def test_from_record_normal_role(self):
-        """Line 249: Normal role is stripped."""
-        record = MessageRecord(
-            message_id="m1",
-            conversation_id="c1",
-            role="  assistant  ",
-            text="hello",
-            timestamp="2024-01-01T00:00:00Z",
-            content_hash="hash1",
-        )
-        msg = Message.from_record(record, [])
-        assert msg.role == "assistant"
+        assert msg.role == expected
 
 
 # =============================================================================

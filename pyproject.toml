@@ -82,6 +82,7 @@ branch = true
 [tool.coverage.report]
 skip_empty = true
 show_missing = true
+fail_under = 90
 
 [tool.mypy]
 python_version = "3.10"
