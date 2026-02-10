@@ -28,202 +28,84 @@ from polylogue.storage.store import AttachmentRecord, ConversationRecord, Messag
 class TestToolInvocationFileOperation:
     """Test ToolInvocation.is_file_operation property."""
 
-    def test_is_file_operation_read(self):
-        """Line 93: Check is_file_operation with Read tool."""
-        tool = ToolInvocation(tool_name="Read", tool_id="read-1", input={})
-        assert tool.is_file_operation is True
-
-    def test_is_file_operation_write(self):
-        """Check is_file_operation with Write tool."""
-        tool = ToolInvocation(tool_name="Write", tool_id="write-1", input={})
-        assert tool.is_file_operation is True
-
-    def test_is_file_operation_edit(self):
-        """Check is_file_operation with Edit tool."""
-        tool = ToolInvocation(tool_name="Edit", tool_id="edit-1", input={})
-        assert tool.is_file_operation is True
-
-    def test_is_file_operation_notebook_edit(self):
-        """Check is_file_operation with NotebookEdit tool."""
-        tool = ToolInvocation(tool_name="NotebookEdit", tool_id="nb-1", input={})
-        assert tool.is_file_operation is True
-
-    def test_is_file_operation_bash(self):
-        """Check is_file_operation with non-file tool (Bash)."""
-        tool = ToolInvocation(tool_name="Bash", tool_id="bash-1", input={})
-        assert tool.is_file_operation is False
+    @pytest.mark.parametrize("tool_name,expected", [
+        ("Read", True),
+        ("Write", True),
+        ("Edit", True),
+        ("NotebookEdit", True),
+        ("Bash", False),
+    ])
+    def test_is_file_operation(self, tool_name, expected):
+        """Line 93: Check is_file_operation with various tools."""
+        tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input={})
+        assert tool.is_file_operation is expected
 
 
 class TestToolInvocationGitOperation:
     """Test ToolInvocation.is_git_operation property (lines 98-101)."""
 
-    def test_is_git_operation_true_with_git_command(self):
-        """Line 98: Tool is Bash and command starts with 'git '."""
-        tool = ToolInvocation(
-            tool_name="Bash",
-            tool_id="git-1",
-            input={"command": "git commit -m 'test'"},
-        )
-        assert tool.is_git_operation is True
-
-    def test_is_git_operation_false_not_bash(self):
-        """Line 98: Tool is not Bash."""
-        tool = ToolInvocation(
-            tool_name="Read",
-            tool_id="read-1",
-            input={"command": "git status"},
-        )
-        assert tool.is_git_operation is False
-
-    def test_is_git_operation_false_non_git_bash(self):
-        """Line 100: Bash command but not starting with 'git '."""
-        tool = ToolInvocation(
-            tool_name="Bash",
-            tool_id="bash-1",
-            input={"command": "ls -la"},
-        )
-        assert tool.is_git_operation is False
-
-    def test_is_git_operation_command_not_string(self):
-        """Line 101: command is not a string."""
-        tool = ToolInvocation(
-            tool_name="Bash",
-            tool_id="bash-1",
-            input={"command": 123},
-        )
-        assert tool.is_git_operation is False
-
-    def test_is_git_operation_whitespace_handling(self):
-        """Line 101: command with leading whitespace."""
-        tool = ToolInvocation(
-            tool_name="Bash",
-            tool_id="bash-1",
-            input={"command": "  git push  "},
-        )
-        assert tool.is_git_operation is True
-
-    def test_is_git_operation_no_command(self):
-        """Line 100: No command in input."""
-        tool = ToolInvocation(
-            tool_name="Bash",
-            tool_id="bash-1",
-            input={},
-        )
-        assert tool.is_git_operation is False
+    @pytest.mark.parametrize("tool_name,input_data,expected", [
+        ("Bash", {"command": "git commit -m 'test'"}, True),
+        ("Read", {"command": "git status"}, False),
+        ("Bash", {"command": "ls -la"}, False),
+        ("Bash", {"command": 123}, False),
+        ("Bash", {"command": "  git push  "}, True),
+        ("Bash", {}, False),
+    ], ids=["git_command", "not_bash", "non_git_bash", "non_string_cmd", "whitespace_git", "no_command"])
+    def test_is_git_operation(self, tool_name, input_data, expected):
+        """Line 98-101: Test is_git_operation with various inputs."""
+        tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input=input_data)
+        assert tool.is_git_operation is expected
 
 
 class TestToolInvocationSearchOperation:
     """Test ToolInvocation.is_search_operation property (line 106)."""
 
-    def test_is_search_operation_glob(self):
-        """Line 106: Tool is Glob."""
-        tool = ToolInvocation(tool_name="Glob", tool_id="glob-1", input={})
-        assert tool.is_search_operation is True
-
-    def test_is_search_operation_grep(self):
-        """Line 106: Tool is Grep."""
-        tool = ToolInvocation(tool_name="Grep", tool_id="grep-1", input={})
-        assert tool.is_search_operation is True
-
-    def test_is_search_operation_websearch(self):
-        """Line 106: Tool is WebSearch."""
-        tool = ToolInvocation(tool_name="WebSearch", tool_id="ws-1", input={})
-        assert tool.is_search_operation is True
-
-    def test_is_search_operation_false(self):
-        """Tool is not a search operation."""
-        tool = ToolInvocation(tool_name="Bash", tool_id="bash-1", input={})
-        assert tool.is_search_operation is False
+    @pytest.mark.parametrize("tool_name,expected", [
+        ("Glob", True),
+        ("Grep", True),
+        ("WebSearch", True),
+        ("Bash", False),
+    ])
+    def test_is_search_operation(self, tool_name, expected):
+        """Line 106: Test is_search_operation with various tools."""
+        tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input={})
+        assert tool.is_search_operation is expected
 
 
 class TestToolInvocationSubagent:
     """Test ToolInvocation.is_subagent property (line 111)."""
 
-    def test_is_subagent_true(self):
-        """Line 111: Tool is Task."""
-        tool = ToolInvocation(tool_name="Task", tool_id="task-1", input={})
-        assert tool.is_subagent is True
-
-    def test_is_subagent_false(self):
-        """Tool is not Task."""
-        tool = ToolInvocation(tool_name="Bash", tool_id="bash-1", input={})
-        assert tool.is_subagent is False
+    @pytest.mark.parametrize("tool_name,expected", [
+        ("Task", True),
+        ("Bash", False),
+    ])
+    def test_is_subagent(self, tool_name, expected):
+        """Line 111: Test is_subagent with various tools."""
+        tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input={})
+        assert tool.is_subagent is expected
 
 
 class TestToolInvocationAffectedPaths:
     """Test ToolInvocation.affected_paths property (lines 116-137)."""
 
-    def test_affected_paths_read(self):
-        """Lines 118-121: Extract path from Read tool."""
-        tool = ToolInvocation(
-            tool_name="Read",
-            tool_id="read-1",
-            input={"file_path": "/tmp/test.txt"},
-        )
-        assert tool.affected_paths == ["/tmp/test.txt"]
-
-    def test_affected_paths_write(self):
-        """Lines 118-121: Extract path from Write tool."""
-        tool = ToolInvocation(
-            tool_name="Write",
-            tool_id="write-1",
-            input={"file_path": "/tmp/output.txt"},
-        )
-        assert tool.affected_paths == ["/tmp/output.txt"]
-
-    def test_affected_paths_edit(self):
-        """Lines 118-121: Extract path from Edit tool."""
-        tool = ToolInvocation(
-            tool_name="Edit",
-            tool_id="edit-1",
-            input={"file_path": "/tmp/code.py"},
-        )
-        assert tool.affected_paths == ["/tmp/code.py"]
-
-    def test_affected_paths_path_fallback(self):
-        """Lines 119-121: Use 'path' key if file_path not present."""
-        tool = ToolInvocation(
-            tool_name="Read",
-            tool_id="read-1",
-            input={"path": "/tmp/fallback.txt"},
-        )
-        assert tool.affected_paths == ["/tmp/fallback.txt"]
-
-    def test_affected_paths_both_keys(self):
-        """Lines 119-121: file_path takes precedence over path."""
-        tool = ToolInvocation(
-            tool_name="Read",
-            tool_id="read-1",
-            input={"file_path": "/tmp/primary.txt", "path": "/tmp/fallback.txt"},
-        )
-        assert tool.affected_paths == ["/tmp/primary.txt"]
-
-    def test_affected_paths_non_string_value(self):
-        """Lines 119-121: Skip if path value is not string."""
-        tool = ToolInvocation(
-            tool_name="Read",
-            tool_id="read-1",
-            input={"file_path": 123},
-        )
-        assert tool.affected_paths == []
-
-    def test_affected_paths_glob(self):
-        """Lines 123-126: Extract pattern from Glob tool."""
-        tool = ToolInvocation(
-            tool_name="Glob",
-            tool_id="glob-1",
-            input={"pattern": "**/*.py"},
-        )
-        assert tool.affected_paths == ["**/*.py"]
-
-    def test_affected_paths_glob_non_string(self):
-        """Lines 123-126: Skip if pattern is not string."""
-        tool = ToolInvocation(
-            tool_name="Glob",
-            tool_id="glob-1",
-            input={"pattern": ["*.py", "*.txt"]},
-        )
-        assert tool.affected_paths == []
+    @pytest.mark.parametrize("tool_name,input_data,expected", [
+        ("Read", {"file_path": "/tmp/test.txt"}, ["/tmp/test.txt"]),
+        ("Write", {"file_path": "/tmp/output.txt"}, ["/tmp/output.txt"]),
+        ("Edit", {"file_path": "/tmp/code.py"}, ["/tmp/code.py"]),
+        ("Read", {"path": "/tmp/fallback.txt"}, ["/tmp/fallback.txt"]),
+        ("Read", {"file_path": "/tmp/primary.txt", "path": "/tmp/fallback.txt"}, ["/tmp/primary.txt"]),
+        ("Read", {"file_path": 123}, []),
+        ("Glob", {"pattern": "**/*.py"}, ["**/*.py"]),
+        ("Glob", {"pattern": ["*.py", "*.txt"]}, []),
+        ("Bash", {"command": 123}, []),
+        ("Task", {"prompt": "do something"}, []),
+    ], ids=["read", "write", "edit", "path_fallback", "file_path_priority", "non_string_path",
+            "glob", "glob_non_string", "bash_non_string", "other_tool"])
+    def test_affected_paths(self, tool_name, input_data, expected):
+        """Lines 116-137: Test affected_paths with various tools."""
+        tool = ToolInvocation(tool_name=tool_name, tool_id="t1", input=input_data)
+        assert tool.affected_paths == expected
 
     def test_affected_paths_bash_extraction(self):
         """Lines 128-135: Extract paths from Bash command."""
@@ -248,24 +130,6 @@ class TestToolInvocationAffectedPaths:
         assert "-la" not in paths
         assert "/tmp/file" in paths
 
-    def test_affected_paths_bash_non_string_command(self):
-        """Lines 130-131: Handle non-string command."""
-        tool = ToolInvocation(
-            tool_name="Bash",
-            tool_id="bash-1",
-            input={"command": 123},
-        )
-        assert tool.affected_paths == []
-
-    def test_affected_paths_other_tool(self):
-        """Lines 116-137: Other tools return empty list."""
-        tool = ToolInvocation(
-            tool_name="Task",
-            tool_id="task-1",
-            input={"prompt": "do something"},
-        )
-        assert tool.affected_paths == []
-
 
 # =============================================================================
 # MESSAGE CLASSIFICATION COVERAGE
@@ -275,56 +139,20 @@ class TestToolInvocationAffectedPaths:
 class TestMessageChatGPTThinking:
     """Test Message._is_chatgpt_thinking() method (lines 300-313)."""
 
-    def test_chatgpt_thinking_no_meta(self):
-        """Line 296: No provider_meta."""
-        msg = Message(id="m1", role="assistant", text="test")
-        assert msg._is_chatgpt_thinking() is False
-
-    def test_chatgpt_thinking_raw_not_dict(self):
-        """Line 299: raw is not a dict."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="test",
-            provider_meta={"raw": "not a dict"},
-        )
-        assert msg._is_chatgpt_thinking() is False
-
-    def test_chatgpt_thinking_content_type_thoughts(self):
-        """Lines 303-307: content_type is 'thoughts'."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="test",
-            provider_meta={
-                "raw": {"content": {"content_type": "thoughts"}}
-            },
-        )
-        assert msg._is_chatgpt_thinking() is True
-
-    def test_chatgpt_thinking_content_type_reasoning_recap(self):
-        """Lines 303-307: content_type is 'reasoning_recap'."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="test",
-            provider_meta={
-                "raw": {"content": {"content_type": "reasoning_recap"}}
-            },
-        )
-        assert msg._is_chatgpt_thinking() is True
-
-    def test_chatgpt_thinking_content_not_dict(self):
-        """Lines 304: content is not a dict."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="test",
-            provider_meta={
-                "raw": {"content": "not a dict"}
-            },
-        )
-        assert msg._is_chatgpt_thinking() is False
+    @pytest.mark.parametrize("provider_meta,expected", [
+        (None, False),
+        ({"raw": "not a dict"}, False),
+        ({"raw": {"content": {"content_type": "thoughts"}}}, True),
+        ({"raw": {"content": {"content_type": "reasoning_recap"}}}, True),
+        ({"raw": {"content": "not a dict"}}, False),
+        ({"raw": {}}, False),
+        ({"raw": {"metadata": "not a dict"}}, False),
+    ], ids=["no_meta", "raw_not_dict", "thoughts", "reasoning_recap", "content_not_dict",
+            "tool_no_metadata", "tool_metadata_not_dict"])
+    def test_chatgpt_thinking(self, provider_meta, expected):
+        """Lines 300-313: Test _is_chatgpt_thinking with various inputs."""
+        msg = Message(id="m1", role="assistant", text="test", provider_meta=provider_meta)
+        assert msg._is_chatgpt_thinking() is expected
 
     def test_chatgpt_thinking_role_tool_with_finished_text(self):
         """Lines 310-313: role is 'tool' with finished_text metadata."""
@@ -337,30 +165,6 @@ class TestMessageChatGPTThinking:
             },
         )
         assert msg._is_chatgpt_thinking() is True
-
-    def test_chatgpt_thinking_role_tool_no_metadata(self):
-        """Lines 310-313: role is 'tool' but no metadata."""
-        msg = Message(
-            id="m1",
-            role="tool",
-            text="test",
-            provider_meta={
-                "raw": {}
-            },
-        )
-        assert msg._is_chatgpt_thinking() is False
-
-    def test_chatgpt_thinking_role_tool_metadata_not_dict(self):
-        """Lines 311: metadata is not a dict."""
-        msg = Message(
-            id="m1",
-            role="tool",
-            text="test",
-            provider_meta={
-                "raw": {"metadata": "not a dict"}
-            },
-        )
-        assert msg._is_chatgpt_thinking() is False
 
 
 class TestMessageContextDump:
@@ -424,35 +228,22 @@ class TestMessageContextDump:
 class TestMessageExtractThinking:
     """Test Message.extract_thinking() method (lines 424-440)."""
 
-    def test_extract_thinking_structured_blocks(self):
-        """Lines 423-431: Extract from content_blocks with type='thinking'."""
+    @pytest.mark.parametrize("blocks,expected", [
+        ([{"type": "thinking", "text": "thinking content"}, {"type": "text", "text": "response text"}], "thinking content"),
+        ([{"type": "thinking", "text": "first thought"}, {"type": "thinking", "text": "second thought"}], "first thought\n\nsecond thought"),
+        (["not a dict", {"type": "thinking", "text": "thinking"}], "thinking"),
+        ([{"type": "thinking", "text": 123}], None),
+        ([{"type": "thinking", "text": "   \n\n   "}], None),
+    ], ids=["single_block", "multiple_blocks", "mixed_blocks", "text_not_string", "empty_after_strip"])
+    def test_extract_thinking_structured(self, blocks, expected):
+        """Lines 423-431: Test extract_thinking with structured blocks."""
         msg = Message(
             id="m1",
             role="assistant",
             text="response",
-            provider_meta={
-                "content_blocks": [
-                    {"type": "thinking", "text": "thinking content"},
-                    {"type": "text", "text": "response text"},
-                ]
-            },
+            provider_meta={"content_blocks": blocks},
         )
-        assert msg.extract_thinking() == "thinking content"
-
-    def test_extract_thinking_multiple_blocks(self):
-        """Lines 425-431: Multiple thinking blocks joined with newlines."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="response",
-            provider_meta={
-                "content_blocks": [
-                    {"type": "thinking", "text": "first thought"},
-                    {"type": "thinking", "text": "second thought"},
-                ]
-            },
-        )
-        assert msg.extract_thinking() == "first thought\n\nsecond thought"
+        assert msg.extract_thinking() == expected
 
     def test_extract_thinking_structured_blocks_non_list(self):
         """Lines 424: content_blocks is not a list."""
@@ -468,36 +259,6 @@ class TestMessageExtractThinking:
         result = msg.extract_thinking()
         # Result depends on text content, not structured blocks
         assert result is None
-
-    def test_extract_thinking_structured_blocks_non_dict(self):
-        """Line 428: Block is not a dict."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="response",
-            provider_meta={
-                "content_blocks": [
-                    "not a dict",
-                    {"type": "thinking", "text": "thinking"},
-                ]
-            },
-        )
-        assert msg.extract_thinking() == "thinking"
-
-    def test_extract_thinking_structured_blocks_text_not_string(self):
-        """Line 428: text value is not a string."""
-        msg = Message(
-            id="m1",
-            role="assistant",
-            text="response",
-            provider_meta={
-                "content_blocks": [
-                    {"type": "thinking", "text": 123},
-                ]
-            },
-        )
-        # Non-string text should be skipped
-        assert msg.extract_thinking() is None
 
     def test_extract_thinking_xml_tags(self):
         """Lines 434-437: Extract from XML thinking tags."""
@@ -919,21 +680,15 @@ class TestMessageCollectionInitErrors:
                 source=source,
             )
 
-    def test_init_missing_arguments(self):
+    @pytest.mark.parametrize("kwargs", [
+        {},
+        {"conversation_id": "c1"},
+        {"source": Mock(spec=MessageSource)},
+    ], ids=["no_args", "only_conv_id", "only_source"])
+    def test_init_missing_arguments(self, kwargs):
         """Line 136: Missing required arguments."""
         with pytest.raises(ValueError, match="Must specify either"):
-            MessageCollection()
-
-    def test_init_partial_lazy_args(self):
-        """Line 136: Only conversation_id without source."""
-        with pytest.raises(ValueError, match="Must specify either"):
-            MessageCollection(conversation_id="c1")
-
-    def test_init_partial_lazy_args_source_only(self):
-        """Line 136: Only source without conversation_id."""
-        source = Mock(spec=MessageSource)
-        with pytest.raises(ValueError, match="Must specify either"):
-            MessageCollection(source=source)
+            MessageCollection(**kwargs)
 
 
 class TestMessageCollectionIsLazy:
@@ -966,11 +721,14 @@ class TestMessageCollectionIsLazy:
 class TestMessageCollectionLen:
     """Test MessageCollection.__len__ method (lines 183, 212)."""
 
-    def test_len_eager(self):
+    @pytest.mark.parametrize("messages,expected_len", [
+        ([Mock(spec=Message) for _ in range(3)], 3),
+        ([], 0),
+    ])
+    def test_len_eager(self, messages, expected_len):
         """Line 173: Eager mode returns len(list)."""
-        msgs = [Mock(spec=Message) for _ in range(3)]
-        coll = MessageCollection(messages=msgs)
-        assert len(coll) == 3
+        coll = MessageCollection(messages=messages)
+        assert len(coll) == expected_len
 
     def test_len_lazy_uncached(self):
         """Lines 179-181: Lazy mode queries source."""
