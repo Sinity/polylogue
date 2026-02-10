@@ -48,7 +48,6 @@ from polylogue.storage.backends.sqlite import (
     _apply_schema,
     _ensure_schema,
     _json_or_none,
-    _make_ref_id,
     _run_migrations,
     connection_context,
     default_db_path,
