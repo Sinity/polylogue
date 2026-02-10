@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.log import get_logger
-from polylogue.paths import DATA_HOME
+import polylogue.paths as _paths
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
@@ -19,6 +21,18 @@ from polylogue.storage.store import (
     RunRecord,
 )
 from polylogue.types import ConversationId
+
+
+def _parse_json(raw: str | None, *, field: str = "", record_id: str = "") -> Any:
+    """Parse a JSON string with diagnostic context on failure."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise DatabaseError(
+            f"Corrupt JSON in {field} for {record_id}: {exc} (value starts: {raw[:80]!r})"
+        ) from exc
 
 
 class DatabaseError(Exception):
@@ -112,8 +126,10 @@ def default_db_path() -> Path:
     """Return the default database path.
 
     Uses XDG_DATA_HOME/polylogue/polylogue.db (semantic data, not ephemeral state).
+    Reads from polylogue.paths at call time (not import time) so that
+    tests can reload the paths module with monkeypatched XDG_DATA_HOME.
     """
-    return DATA_HOME / "polylogue.db"
+    return _paths.DATA_HOME / "polylogue.db"
 
 
 def _json_or_none(value: dict[str, object] | None) -> str | None:
@@ -942,8 +958,6 @@ class SQLiteBackend:
         if row is None:
             return None
 
-        import json
-
         return ConversationRecord(
             conversation_id=row["conversation_id"],
             provider_name=row["provider_name"],
@@ -952,8 +966,8 @@ class SQLiteBackend:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             content_hash=row["content_hash"],
-            provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
-            metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+            provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
+            metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
             version=row["version"],
             parent_conversation_id=row["parent_conversation_id"],
             branch_type=row["branch_type"],
@@ -974,8 +988,6 @@ class SQLiteBackend:
         if not ids:
             return []
 
-        import json
-
         conn = self._get_connection()
         placeholders = ",".join("?" for _ in ids)
         rows = conn.execute(
@@ -994,8 +1006,8 @@ class SQLiteBackend:
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 content_hash=row["content_hash"],
-                provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
-                metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+                provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
+                metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
                 version=row["version"],
                 parent_conversation_id=row["parent_conversation_id"],
                 branch_type=row["branch_type"],
@@ -1092,8 +1104,6 @@ class SQLiteBackend:
 
         rows = conn.execute(query, tuple(params)).fetchall()
 
-        import json
-
         return [
             ConversationRecord(
                 conversation_id=row["conversation_id"],
@@ -1103,8 +1113,8 @@ class SQLiteBackend:
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 content_hash=row["content_hash"],
-                provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
-                metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+                provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
+                metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
                 version=row["version"],
                 parent_conversation_id=row["parent_conversation_id"],
                 branch_type=row["branch_type"],
@@ -1229,8 +1239,6 @@ class SQLiteBackend:
             (conversation_id,),
         ).fetchall()
 
-        import json
-
         return [
             MessageRecord(
                 message_id=row["message_id"],
@@ -1240,7 +1248,7 @@ class SQLiteBackend:
                 text=row["text"],
                 timestamp=row["timestamp"],
                 content_hash=row["content_hash"],
-                provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["message_id"]),
                 version=row["version"],
                 parent_message_id=row["parent_message_id"],
                 branch_index=row["branch_index"] or 0,
@@ -1315,8 +1323,6 @@ class SQLiteBackend:
             (conversation_id,),
         ).fetchall()
 
-        import json
-
         return [
             AttachmentRecord(
                 attachment_id=row["attachment_id"],
@@ -1325,7 +1331,7 @@ class SQLiteBackend:
                 mime_type=row["mime_type"],
                 size_bytes=row["size_bytes"],
                 path=row["path"],
-                provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["attachment_id"]),
             )
             for row in rows
         ]
@@ -1455,8 +1461,6 @@ class SQLiteBackend:
             (parent_id,),
         ).fetchall()
 
-        import json
-
         return [
             ConversationRecord(
                 conversation_id=row["conversation_id"],
@@ -1466,8 +1470,8 @@ class SQLiteBackend:
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
                 content_hash=row["content_hash"],
-                provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
-                metadata=json.loads(row["metadata"]) if row["metadata"] else None,
+                provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
+                metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
                 version=row["version"],
                 parent_conversation_id=row["parent_conversation_id"],
                 branch_type=row["branch_type"],
@@ -1571,8 +1575,6 @@ class SQLiteBackend:
 
     def get_metadata(self, conversation_id: str) -> dict[str, object]:
         """Get metadata dict for a conversation."""
-        import json
-
         conn = self._get_connection()
         row = conn.execute(
             "SELECT metadata FROM conversations WHERE conversation_id = ?",
@@ -1581,7 +1583,7 @@ class SQLiteBackend:
 
         if row is None:
             return {}
-        return json.loads(row["metadata"]) if row["metadata"] else {}
+        return _parse_json(row["metadata"], field="metadata", record_id=conversation_id) or {}
 
     def _metadata_read_modify_write(
         self, conversation_id: str, mutator: Callable[[dict[str, object]], bool]
@@ -1597,8 +1599,6 @@ class SQLiteBackend:
             mutator: Receives current metadata dict, mutates it in place,
                      returns True if a write is needed
         """
-        import json
-
         conn = self._get_connection()
 
         if conn.in_transaction:
@@ -1609,7 +1609,7 @@ class SQLiteBackend:
                 if mutator(current):
                     conn.execute(
                         "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
-                        (json.dumps(current), conversation_id),
+                        (json_dumps(current), conversation_id),
                     )
                 conn.execute("RELEASE SAVEPOINT metadata_rmw")
             except Exception:
@@ -1623,7 +1623,7 @@ class SQLiteBackend:
                 if mutator(current):
                     conn.execute(
                         "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
-                        (json.dumps(current), conversation_id),
+                        (json_dumps(current), conversation_id),
                     )
                 conn.commit()
             except Exception:
@@ -1718,12 +1718,10 @@ class SQLiteBackend:
 
     def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
         """Replace entire metadata dict."""
-        import json
-
         conn = self._get_connection()
         conn.execute(
             "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
-            (json.dumps(metadata), conversation_id),
+            (json_dumps(metadata), conversation_id),
         )
         conn.commit()
 
@@ -1793,8 +1791,6 @@ class SQLiteBackend:
         Yields:
             MessageRecord objects one at a time
         """
-        import json
-
         conn = self._get_connection()
         offset = 0
         yielded = 0
@@ -1833,7 +1829,7 @@ class SQLiteBackend:
                     text=row["text"],
                     timestamp=row["timestamp"],
                     content_hash=row["content_hash"],
-                    provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
+                    provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["message_id"]),
                     version=row["version"],
                     parent_message_id=row["parent_message_id"],
                     branch_index=row["branch_index"] or 0,
