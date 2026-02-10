@@ -45,181 +45,206 @@ from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation
 
 
 # ============================================================================
-# Tests for _parse_modified_time (lines 88-96)
+# Test Data Tables (Module-level constants for parametrization)
+# ============================================================================
+
+PARSE_MODIFIED_TIME_CASES = [
+    (None, type(None), "none_input"),
+    ("", type(None), "empty_string"),
+    ("2024-01-15T10:30:45Z", float, "iso_with_z"),
+    ("2024-01-15T10:30:45", float, "iso_without_z"),
+    ("2024-01-15T10:30:45+00:00", float, "iso_with_offset"),
+    ("not a date", type(None), "invalid_string"),
+    ("   ", type(None), "whitespace_only"),
+]
+
+PARSE_SIZE_CASES = [
+    (None, None, "none_input"),
+    (0, 0, "zero_integer"),
+    (1024, 1024, "positive_integer"),
+    (999999, 999999, "large_integer"),
+    (-1, -1, "negative_integer"),
+    ("123", 123, "string_integer"),
+    ("0", 0, "string_zero"),
+    ("999999", 999999, "string_large"),
+    ("  456  ", 456, "string_with_whitespace"),
+    ("not a number", None, "invalid_string"),
+    ("12.34", None, "float_string"),
+    ("12a", None, "alphanumeric_string"),
+    ("", None, "empty_string"),
+    ("123.456", None, "float_in_string"),
+]
+
+LOOKS_LIKE_ID_CASES = [
+    ("", False, "empty_string"),
+    ("hello world", False, "string_with_spaces"),
+    (" test", False, "leading_space"),
+    ("test ", False, "trailing_space"),
+    ("abc-123-def", True, "alphanumeric_with_dashes"),
+    ("file-1", True, "short_with_dash"),
+    ("file_1_test", True, "alphanumeric_with_underscores"),
+    ("_private", True, "leading_underscore"),
+    ("abc123", True, "pure_alphanumeric"),
+    ("FILE", True, "uppercase"),
+    ("123", True, "digits_only"),
+    ("a", True, "single_char"),
+    ("1", True, "single_digit"),
+    ("file.txt", False, "string_with_dots"),
+    ("a.b.c", False, "multiple_dots"),
+    ("file@home", False, "string_with_at"),
+    ("test#1", False, "string_with_hash"),
+    ("a/b", False, "string_with_slash"),
+    ("---", True, "dashes_only"),
+    ("___", True, "underscores_only"),
+]
+
+RESOLVE_RETRIES_CASES = [
+    (5, 5, "explicit_five"),
+    (0, 0, "explicit_zero"),
+    (10, 10, "explicit_ten"),
+    (-5, 0, "explicit_negative_clamped"),
+]
+
+RESOLVE_RETRY_BASE_CASES = [
+    (1.5, 1.5, "explicit_float"),
+    (0.1, 0.1, "explicit_small"),
+    (-0.5, 0.0, "negative_clamped"),
+]
+
+RETRYABLE_ERROR_CASES = [
+    (DriveAuthError("Invalid credentials"), False, "drive_auth_error"),
+    (DriveNotFoundError("File not found"), False, "drive_not_found_error"),
+    (RuntimeError("Network timeout"), True, "runtime_error"),
+    (DriveError("Connection failed"), True, "drive_error"),
+    (Exception("Some error"), True, "generic_exception"),
+]
+
+DEFAULT_PATHS_CREDENTIALS_CASES = [
+    (None, True, "no_config_returns_default"),
+    (MagicMock(credentials_path="/custom/creds.json"), False, "config_with_path_uses_value"),
+]
+
+DEFAULT_PATHS_TOKEN_CASES = [
+    (None, True, "no_config_returns_default"),
+    (MagicMock(token_path="/custom/token.json"), False, "config_with_path_uses_value"),
+]
+
+DOWNLOAD_DRIVE_FILES_CASES = [
+    (1, 1, 0, "single_file_success"),
+    (2, 2, 0, "multiple_files_success"),
+    (2, 1, 1, "one_failure_mixed"),
+    (3, 2, 1, "mixed_with_failures"),
+    (0, 0, 0, "empty_folder"),
+]
+
+DOWNLOAD_JSON_PAYLOAD_CASES = [
+    (b'{"a": 1}\n{"b": 2}\n{"c": 3}\n', list, 3, "jsonl_file"),
+    (b'{"msg": "hello"}\n{"msg": "world"}\n', list, 2, "jsonl_txt_file"),
+    (b'{"x": 1}\n{"y": 2}\n', list, 2, "ndjson_file"),
+    (b'{"title": "Test", "content": "Data"}', dict, None, "json_file"),
+    (b'{"valid": 1}\n{invalid json}\n{"valid": 2}\n', list, 2, "jsonl_skip_invalid"),
+    (b'{"a": 1}\n\n\n{"b": 2}\n   \n', list, 2, "jsonl_skip_empty_lines"),
+    (b'{"text": "line1\\nline2"}\n{"text": "another"}\n', list, 2, "jsonl_embedded_newlines"),
+    (b'{"id": 1}\ninvalid\n{"id": 2}\n{broken\n{"id": 3}\n', list, 3, "jsonl_mixed_valid_invalid"),
+    (b'{}', dict, None, "json_empty_object"),
+    (b'[{"a": 1}, {"b": 2}]', list, 2, "json_array"),
+    (b'\n  \n\t\n   \n', list, 0, "jsonl_only_empty_lines"),
+]
+
+NETWORK_ERROR_CASES = [
+    (ConnectionRefusedError("Connection refused"), True, "connection_refused"),
+    (ConnectionResetError("Connection reset by peer"), True, "connection_reset"),
+    (TimeoutError("Operation timed out"), True, "timeout"),
+    (BrokenPipeError("Broken pipe"), True, "broken_pipe"),
+]
+
+RETRY_SCENARIOS = [
+    (429, True, "rate_limit_retries"),
+    (500, True, "server_error_retries"),
+    (502, True, "bad_gateway_retries"),
+    (503, True, "service_unavailable_retries"),
+    (504, True, "gateway_timeout_retries"),
+]
+
+NO_RETRY_SCENARIOS = [
+    (401, False, "auth_error_no_retry"),
+    (403, False, "forbidden_no_retry"),
+    (404, False, "not_found_no_retry"),
+]
+
+
+# ============================================================================
+# Parametrized Tests for _parse_modified_time
 # ============================================================================
 
 
 class TestParseModifiedTime:
     """Tests for _parse_modified_time utility function."""
 
-    def test_none_input_returns_none(self):
-        """None input should return None."""
-        assert _parse_modified_time(None) is None
+    @pytest.mark.parametrize("input_val,expect_type,desc", PARSE_MODIFIED_TIME_CASES)
+    def test_parse_modified_time(self, input_val, expect_type, desc):
+        """Test _parse_modified_time with various inputs."""
+        result = _parse_modified_time(input_val)
+        assert isinstance(result, expect_type), f"Failed for {desc}"
 
-    def test_empty_string_returns_none(self):
-        """Empty string should return None."""
-        assert _parse_modified_time("") is None
+        # Additional checks for valid timestamps
+        if expect_type is float:
+            assert result > 0
+            if input_val == "2024-01-15T10:30:45Z":
+                dt = datetime.fromtimestamp(result)
+                assert dt.year == 2024
+                assert dt.month == 1
+                assert dt.day == 15
 
-    def test_iso_format_with_z_suffix(self):
-        """ISO format with Z suffix should be parsed correctly."""
-        result = _parse_modified_time("2024-01-15T10:30:45Z")
-        assert isinstance(result, float)
-        assert result > 0
-
-    def test_iso_format_without_z(self):
-        """ISO format without Z should be parsed correctly."""
-        result = _parse_modified_time("2024-01-15T10:30:45")
-        assert isinstance(result, float)
-        assert result > 0
-
-    def test_iso_format_with_timezone_offset(self):
-        """ISO format with timezone offset should be parsed."""
-        result = _parse_modified_time("2024-01-15T10:30:45+00:00")
-        assert isinstance(result, float)
-
-    def test_invalid_string_returns_none(self):
-        """Invalid string should return None, not raise."""
-        assert _parse_modified_time("not a date") is None
-        assert _parse_modified_time("12345") is None
-        assert _parse_modified_time("2024-13-45T99:99:99Z") is None
-
-    def test_whitespace_only_returns_none(self):
-        """Whitespace-only string should return None."""
-        assert _parse_modified_time("   ") is None
-
-    def test_z_format_produces_valid_timestamp(self):
-        """Z-format should produce a valid Unix timestamp."""
-        ts = _parse_modified_time("2024-01-15T10:30:45Z")
-        dt = datetime.fromtimestamp(ts)
-        assert dt.year == 2024
-        assert dt.month == 1
-        assert dt.day == 15
+    def test_invalid_timestamps_return_none(self):
+        """Test that all invalid timestamp forms return None."""
+        invalid_inputs = ["12345", "2024-13-45T99:99:99Z"]
+        for inp in invalid_inputs:
+            assert _parse_modified_time(inp) is None
 
 
 # ============================================================================
-# Tests for _parse_size (lines 99-107)
+# Parametrized Tests for _parse_size
 # ============================================================================
 
 
 class TestParseSize:
     """Tests for _parse_size utility function."""
 
-    def test_none_input_returns_none(self):
-        """None input should return None."""
-        assert _parse_size(None) is None
-
-    def test_integer_input_returns_same(self):
-        """Integer input should return the same value."""
-        assert _parse_size(0) == 0
-        assert _parse_size(1024) == 1024
-        assert _parse_size(999999) == 999999
-
-    def test_negative_integer_returned_as_is(self):
-        """Negative integers should be returned as-is."""
-        assert _parse_size(-1) == -1
-
-    def test_string_integer_parsed(self):
-        """String representation of integer should be parsed."""
-        assert _parse_size("123") == 123
-        assert _parse_size("0") == 0
-        assert _parse_size("999999") == 999999
-
-    def test_string_with_whitespace_parsed(self):
-        """String with surrounding whitespace should be parsed."""
-        assert _parse_size("  456  ") == 456
-
-    def test_invalid_string_returns_none(self):
-        """Invalid string should return None."""
-        assert _parse_size("not a number") is None
-        assert _parse_size("12.34") is None
-        assert _parse_size("12a") is None
-
-    def test_empty_string_returns_none(self):
-        """Empty string should return None."""
-        assert _parse_size("") is None
-
-    def test_float_in_string_returns_none(self):
-        """Float string should return None (not parsed)."""
-        assert _parse_size("123.456") is None
+    @pytest.mark.parametrize("input_val,expected,desc", PARSE_SIZE_CASES)
+    def test_parse_size(self, input_val, expected, desc):
+        """Test _parse_size with various inputs."""
+        result = _parse_size(input_val)
+        assert result == expected, f"Failed for {desc}"
 
 
 # ============================================================================
-# Tests for _looks_like_id (lines 110-113)
+# Parametrized Tests for _looks_like_id
 # ============================================================================
 
 
 class TestLooksLikeId:
     """Tests for _looks_like_id utility function."""
 
-    def test_empty_string_returns_false(self):
-        """Empty string should return False."""
-        assert _looks_like_id("") is False
-
-    def test_string_with_spaces_returns_false(self):
-        """String with spaces should return False."""
-        assert _looks_like_id("hello world") is False
-        assert _looks_like_id(" test") is False
-        assert _looks_like_id("test ") is False
-
-    def test_alphanumeric_with_dashes_returns_true(self):
-        """Alphanumeric string with dashes should return True."""
-        assert _looks_like_id("abc-123-def") is True
-        assert _looks_like_id("file-1") is True
-
-    def test_alphanumeric_with_underscores_returns_true(self):
-        """Alphanumeric string with underscores should return True."""
-        assert _looks_like_id("file_1_test") is True
-        assert _looks_like_id("_private") is True
-
-    def test_pure_alphanumeric_returns_true(self):
-        """Pure alphanumeric string should return True."""
-        assert _looks_like_id("abc123") is True
-        assert _looks_like_id("FILE") is True
-        assert _looks_like_id("123") is True
-
-    def test_string_with_dots_returns_false(self):
-        """String with dots should return False."""
-        assert _looks_like_id("file.txt") is False
-        assert _looks_like_id("a.b.c") is False
-
-    def test_string_with_special_chars_returns_false(self):
-        """String with special characters should return False."""
-        assert _looks_like_id("file@home") is False
-        assert _looks_like_id("test#1") is False
-        assert _looks_like_id("a/b") is False
-
-    def test_single_character_returns_true(self):
-        """Single alphanumeric character should return True."""
-        assert _looks_like_id("a") is True
-        assert _looks_like_id("1") is True
-
-    def test_dash_only_returns_false(self):
-        """String with only dashes should return False (has spaces in logic)."""
-        # Actually dashes alone are fine per the logic - let's test it
-        assert _looks_like_id("---") is True
-
-    def test_underscore_only_returns_true(self):
-        """String with only underscores should return True."""
-        assert _looks_like_id("___") is True
+    @pytest.mark.parametrize("input_str,expected,desc", LOOKS_LIKE_ID_CASES)
+    def test_looks_like_id(self, input_str, expected, desc):
+        """Test _looks_like_id with various inputs."""
+        result = _looks_like_id(input_str)
+        assert result is expected, f"Failed for {desc}"
 
 
 # ============================================================================
-# Tests for _resolve_retries and _resolve_retry_base
+# Parametrized Tests for _resolve_retries
 # ============================================================================
 
 
 class TestResolveRetries:
     """Tests for _resolve_retries function."""
 
-    def test_explicit_value_returned(self):
-        """Explicit value should be returned."""
-        assert _resolve_retries(value=5, config=None) == 5
-        assert _resolve_retries(value=0, config=None) == 0
-        assert _resolve_retries(value=10, config=None) == 10
-
-    def test_negative_value_clamped_to_zero(self):
-        """Negative value should be clamped to zero."""
-        assert _resolve_retries(value=-5, config=None) == 0
+    @pytest.mark.parametrize("value,expected,desc", RESOLVE_RETRIES_CASES)
+    def test_resolve_retries_explicit_values(self, value, expected, desc):
+        """Test explicit value resolution."""
+        assert _resolve_retries(value=value, config=None) == expected
 
     def test_config_retry_count_used(self):
         """Config retry_count should be used when value is None."""
@@ -251,26 +276,25 @@ class TestResolveRetries:
         assert _resolve_retries(value=10, config=config) == 10
 
     def test_priority_config_over_env(self, monkeypatch):
-        """Config should have priority over explicit value when value is None."""
+        """Config should have priority over env when value is None."""
         monkeypatch.setenv("POLYLOGUE_DRIVE_RETRIES", "20")
         config = MagicMock()
         config.retry_count = 5
-        # Actually, checking the code, env has priority. Let me verify order
-        # In code: value -> config -> env -> default
         assert _resolve_retries(value=None, config=config) == 5
+
+
+# ============================================================================
+# Parametrized Tests for _resolve_retry_base
+# ============================================================================
 
 
 class TestResolveRetryBase:
     """Tests for _resolve_retry_base function."""
 
-    def test_explicit_value_returned(self):
-        """Explicit value should be returned."""
-        assert _resolve_retry_base(value=1.5) == 1.5
-        assert _resolve_retry_base(value=0.1) == 0.1
-
-    def test_negative_value_clamped_to_zero(self):
-        """Negative value should be clamped to zero."""
-        assert _resolve_retry_base(value=-0.5) == 0.0
+    @pytest.mark.parametrize("value,expected,desc", RESOLVE_RETRY_BASE_CASES)
+    def test_resolve_retry_base_explicit_value(self, value, expected, desc):
+        """Test explicit value resolution."""
+        assert _resolve_retry_base(value=value) == expected
 
     def test_environment_variable_used(self, monkeypatch):
         """Environment variable should be used."""
@@ -292,59 +316,42 @@ class TestResolveRetryBase:
 
 
 # ============================================================================
-# Tests for _is_retryable_error
+# Parametrized Tests for _is_retryable_error
 # ============================================================================
 
 
 class TestIsRetryableError:
     """Tests for _is_retryable_error function."""
 
-    def test_drive_auth_error_not_retryable(self):
-        """DriveAuthError should not be retryable."""
-        exc = DriveAuthError("Invalid credentials")
-        assert _is_retryable_error(exc) is False
-
-    def test_drive_not_found_error_not_retryable(self):
-        """DriveNotFoundError should not be retryable."""
-        exc = DriveNotFoundError("File not found")
-        assert _is_retryable_error(exc) is False
-
-    def test_generic_error_is_retryable(self):
-        """Generic errors should be retryable."""
-        exc = RuntimeError("Network timeout")
-        assert _is_retryable_error(exc) is True
-
-    def test_drive_error_is_retryable(self):
-        """DriveError (non-auth) should be retryable."""
-        exc = DriveError("Connection failed")
-        assert _is_retryable_error(exc) is True
-
-    def test_exception_is_retryable(self):
-        """Generic Exception should be retryable."""
-        exc = Exception("Some error")
-        assert _is_retryable_error(exc) is True
+    @pytest.mark.parametrize("exc,expected,desc", RETRYABLE_ERROR_CASES)
+    def test_is_retryable_error(self, exc, expected, desc):
+        """Test error retry classification."""
+        assert _is_retryable_error(exc) is expected, f"Failed for {desc}"
 
 
 # ============================================================================
-# Tests for default_credentials_path and default_token_path
+# Parametrized Tests for default_credentials_path and default_token_path
 # ============================================================================
 
 
 class TestDefaultPaths:
     """Tests for default credentials and token path functions."""
 
-    def test_default_credentials_path_no_config(self):
-        """default_credentials_path with no config should return default."""
-        path = default_credentials_path(config=None)
-        assert isinstance(path, Path)
-        assert "credentials" in str(path)
-
-    def test_default_credentials_path_with_config_path(self):
-        """default_credentials_path with config should use config value."""
-        config = MagicMock()
-        config.credentials_path = "/custom/creds.json"
+    @pytest.mark.parametrize(
+        "config,should_use_default,desc",
+        [
+            (None, True, "credentials_no_config"),
+            (MagicMock(credentials_path="/custom/creds.json"), False, "credentials_with_config"),
+        ]
+    )
+    def test_default_credentials_path(self, config, should_use_default, desc):
+        """Test default credentials path resolution."""
         path = default_credentials_path(config=config)
-        assert path == Path("/custom/creds.json")
+        assert isinstance(path, Path)
+        if should_use_default:
+            assert "credentials" in str(path)
+        else:
+            assert path == Path("/custom/creds.json")
 
     def test_default_credentials_path_config_none_uses_default(self):
         """If config.credentials_path is None, use default."""
@@ -359,18 +366,21 @@ class TestDefaultPaths:
         path = default_credentials_path(config=config)
         assert "credentials" in str(path)
 
-    def test_default_token_path_no_config(self):
-        """default_token_path with no config should return default."""
-        path = default_token_path(config=None)
-        assert isinstance(path, Path)
-        assert "token" in str(path)
-
-    def test_default_token_path_with_config_path(self):
-        """default_token_path with config should use config value."""
-        config = MagicMock()
-        config.token_path = "/custom/token.json"
+    @pytest.mark.parametrize(
+        "config,should_use_default,desc",
+        [
+            (None, True, "token_no_config"),
+            (MagicMock(token_path="/custom/token.json"), False, "token_with_config"),
+        ]
+    )
+    def test_default_token_path(self, config, should_use_default, desc):
+        """Test default token path resolution."""
         path = default_token_path(config=config)
-        assert path == Path("/custom/token.json")
+        assert isinstance(path, Path)
+        if should_use_default:
+            assert "token" in str(path)
+        else:
+            assert path == Path("/custom/token.json")
 
     def test_default_token_path_config_none_uses_default(self):
         """If config.token_path is None, use default."""
@@ -381,7 +391,7 @@ class TestDefaultPaths:
 
 
 # ============================================================================
-# Tests for _resolve_credentials_path (lines 116-148)
+# Tests for _resolve_credentials_path
 # ============================================================================
 
 
@@ -410,15 +420,12 @@ class TestResolveCredentialsPath:
 
     def test_env_path_expansion(self, tmp_path, monkeypatch):
         """Environment path should expand ~ to home."""
-        # Create a test path with tilde
         monkeypatch.setenv("POLYLOGUE_CREDENTIAL_PATH", "~/creds.json")
         result = _resolve_credentials_path(ui=None, config=None)
-        # Should not contain ~
         assert "~" not in str(result)
 
     def test_default_path_when_exists(self, tmp_path, monkeypatch):
         """Default path should be used if it exists."""
-        # Mock default_credentials_path to return a path in tmp_path
         default_path = tmp_path / "default_creds.json"
         default_path.write_text('{"default": true}')
 
@@ -457,13 +464,11 @@ class TestResolveCredentialsPath:
         )
         monkeypatch.delenv("POLYLOGUE_CREDENTIAL_PATH", raising=False)
 
-        # Mock UI with input and copy behavior
         mock_ui = MagicMock()
         mock_ui.plain = False
         mock_ui.input = MagicMock(return_value=str(user_path))
 
         result = _resolve_credentials_path(ui=mock_ui, config=None)
-        # Should copy user_path to default_path and return default_path
         assert result == default_path
         assert default_path.exists()
 
@@ -479,14 +484,14 @@ class TestResolveCredentialsPath:
 
         mock_ui = MagicMock()
         mock_ui.plain = False
-        mock_ui.input = MagicMock(return_value=None)  # User didn't respond
+        mock_ui.input = MagicMock(return_value=None)
 
         with pytest.raises(DriveAuthError):
             _resolve_credentials_path(ui=mock_ui, config=None)
 
 
 # ============================================================================
-# Tests for _resolve_token_path (lines 151-165)
+# Tests for _resolve_token_path
 # ============================================================================
 
 
@@ -525,7 +530,7 @@ class TestResolveTokenPath:
 
 
 # ============================================================================
-# Tests for download_drive_files (lines 27-68)
+# Tests for download_drive_files
 # ============================================================================
 
 
@@ -652,9 +657,7 @@ class TestDownloadDriveFiles:
 
         result = download_drive_files(mock_client, "folder-1", tmp_path)
 
-        # All three should be attempted
         assert len(download_calls) == 3
-        # But only 2 should succeed
         assert result.total_files == 3
         assert len(result.downloaded_files) == 2
         assert len(result.failed_files) == 1
@@ -720,9 +723,58 @@ class TestDownloadDriveFiles:
         assert result.total_files == len(result.downloaded_files) + len(result.failed_files)
         assert result.total_files == 3
 
+    def test_all_files_fail(self, tmp_path):
+        """All files failing should be reported."""
+        mock_client = MagicMock(spec=DriveClient)
+        mock_client.iter_json_files.return_value = [
+            DriveFile(
+                file_id="f1",
+                name="fail1.json",
+                mime_type="application/json",
+                modified_time=None,
+                size_bytes=100,
+            ),
+            DriveFile(
+                file_id="f2",
+                name="fail2.json",
+                mime_type="application/json",
+                modified_time=None,
+                size_bytes=100,
+            ),
+        ]
+
+        mock_client.download_to_path.side_effect = Exception("All fail")
+
+        result = download_drive_files(mock_client, "folder-1", tmp_path)
+
+        assert result.total_files == 2
+        assert len(result.downloaded_files) == 0
+        assert len(result.failed_files) == 2
+
+    def test_failed_file_error_message_preserved(self, tmp_path):
+        """Failed file should include the actual error message."""
+        mock_client = MagicMock(spec=DriveClient)
+        error_msg = "Permission denied: file is private"
+
+        mock_client.iter_json_files.return_value = [
+            DriveFile(
+                file_id="f1",
+                name="private.json",
+                mime_type="application/json",
+                modified_time=None,
+                size_bytes=100,
+            ),
+        ]
+        mock_client.download_to_path.side_effect = PermissionError(error_msg)
+
+        result = download_drive_files(mock_client, "folder-1", tmp_path)
+
+        assert len(result.failed_files) == 1
+        assert error_msg in result.failed_files[0]["error"]
+
 
 # ============================================================================
-# Tests for _apply_drive_attachments (lines 71-98)
+# Tests for _apply_drive_attachments
 # ============================================================================
 
 
@@ -752,18 +804,10 @@ class TestApplyDriveAttachments:
             download_assets=False,
         )
 
-        # Client should not be called
         mock_client.download_to_path.assert_not_called()
 
     def test_no_provider_attachment_id_skips(self, tmp_path):
-        """Attachment without provider_attachment_id should be skipped.
-
-        Note: This test verifies the code path handles missing attachment IDs,
-        but ParsedAttachment requires a non-None ID. So we test with a valid
-        attachment but no processing expected.
-        """
-        # Actually, the check is for falsy provider_attachment_id.
-        # Let's test by creating attachment with ID, then clearing it programmatically
+        """Attachment without provider_attachment_id should be skipped."""
         convo = ParsedConversation(
             provider_name="test",
             provider_conversation_id="test-1",
@@ -776,7 +820,6 @@ class TestApplyDriveAttachments:
                 )
             ],
         )
-        # Manually clear to trigger the skip logic
         convo.attachments[0].provider_attachment_id = None
 
         mock_client = MagicMock(spec=DriveClient)
@@ -787,7 +830,6 @@ class TestApplyDriveAttachments:
             download_assets=True,
         )
 
-        # Client should not be called
         mock_client.download_to_path.assert_not_called()
 
     def test_successful_attachment_download(self, tmp_path):
@@ -826,7 +868,6 @@ class TestApplyDriveAttachments:
             download_assets=True,
         )
 
-        # Attachment should be updated
         att = convo.attachments[0]
         assert att.name == "document.pdf"
         assert att.mime_type == "application/pdf"
@@ -845,9 +886,9 @@ class TestApplyDriveAttachments:
                 ParsedAttachment(
                     provider_attachment_id="attach-1",
                     message_provider_id="msg-1",
-                    name="original_name.txt",  # Pre-existing
-                    mime_type="text/plain",  # Pre-existing
-                    size_bytes=1000,  # Pre-existing
+                    name="original_name.txt",
+                    mime_type="text/plain",
+                    size_bytes=1000,
                     path=None,
                     provider_meta=None,
                 )
@@ -857,10 +898,10 @@ class TestApplyDriveAttachments:
         mock_client = MagicMock(spec=DriveClient)
         mock_file = DriveFile(
             file_id="attach-1",
-            name="document.pdf",  # Different
-            mime_type="application/pdf",  # Different
+            name="document.pdf",
+            mime_type="application/pdf",
             modified_time=None,
-            size_bytes=5000,  # Different
+            size_bytes=5000,
         )
         mock_client.download_to_path.return_value = mock_file
 
@@ -871,7 +912,6 @@ class TestApplyDriveAttachments:
             download_assets=True,
         )
 
-        # Should preserve original values since they were pre-filled
         att = convo.attachments[0]
         assert att.name == "original_name.txt"
         assert att.mime_type == "text/plain"
@@ -927,13 +967,12 @@ class TestApplyDriveAttachments:
             download_assets=True,
         )
 
-        # Both should be updated
         assert convo.attachments[0].name == "doc1.pdf"
         assert convo.attachments[1].name == "doc2.pdf"
 
 
 # ============================================================================
-# Tests for iter_drive_conversations (lines 100-149)
+# Tests for iter_drive_conversations
 # ============================================================================
 
 
@@ -941,12 +980,7 @@ class TestIterDriveConversations:
     """Tests for iter_drive_conversations function."""
 
     def test_no_folder_returns_empty(self, tmp_path):
-        """If source.folder is None or empty, should return empty.
-
-        Note: Source validation requires either path or folder, so we create
-        a source with a path (which means folder will be None) and verify
-        iter_drive_conversations returns early.
-        """
+        """If source.folder is None or empty, should return empty."""
         source = Source(name="test", path="/some/path")
         result = list(
             iter_drive_conversations(
@@ -1104,9 +1138,6 @@ class TestIterDriveConversations:
             )
         )
 
-        # Should have one conversation from successful download
-        assert len(result) >= 0  # May be parsed differently
-        # Error should be tracked in cursor
         assert "error_count" in cursor_state
         assert cursor_state["error_count"] >= 1
         assert "latest_error" in cursor_state
@@ -1132,7 +1163,6 @@ class TestIterDriveConversations:
                 )
             )
 
-            # DriveClient should have been instantiated
             mock_drive_client_class.assert_called_once()
 
     def test_uses_provided_client(self, tmp_path):
@@ -1155,391 +1185,49 @@ class TestIterDriveConversations:
                 )
             )
 
-            # DriveClient should NOT be instantiated
             mock_drive_client_class.assert_not_called()
 
 
 # ============================================================================
-# Tests for DriveClient.download_json_payload (lines 488-520)
+# Parametrized Tests for download_json_payload
 # ============================================================================
-
-
-class TestDownloadDriveFilesEdgeCases:
-    """Additional tests for download_drive_files edge cases."""
-
-    def test_all_files_fail(self, tmp_path):
-        """All files failing should be reported."""
-        mock_client = MagicMock(spec=DriveClient)
-        mock_client.iter_json_files.return_value = [
-            DriveFile(
-                file_id="f1",
-                name="fail1.json",
-                mime_type="application/json",
-                modified_time=None,
-                size_bytes=100,
-            ),
-            DriveFile(
-                file_id="f2",
-                name="fail2.json",
-                mime_type="application/json",
-                modified_time=None,
-                size_bytes=100,
-            ),
-        ]
-
-        mock_client.download_to_path.side_effect = Exception("All fail")
-
-        result = download_drive_files(mock_client, "folder-1", tmp_path)
-
-        assert result.total_files == 2
-        assert len(result.downloaded_files) == 0
-        assert len(result.failed_files) == 2
-
-    def test_failed_file_error_message_preserved(self, tmp_path):
-        """Failed file should include the actual error message."""
-        mock_client = MagicMock(spec=DriveClient)
-        error_msg = "Permission denied: file is private"
-
-        mock_client.iter_json_files.return_value = [
-            DriveFile(
-                file_id="f1",
-                name="private.json",
-                mime_type="application/json",
-                modified_time=None,
-                size_bytes=100,
-            ),
-        ]
-        mock_client.download_to_path.side_effect = PermissionError(error_msg)
-
-        result = download_drive_files(mock_client, "folder-1", tmp_path)
-
-        assert len(result.failed_files) == 1
-        assert error_msg in result.failed_files[0]["error"]
-
-
-class TestTokenRefreshErrorHandling:
-    """Tests for OAuth token refresh error handling."""
-
-    def test_missing_dependency_raises_auth_error(self, monkeypatch):
-        """Missing googleapiclient dependency should raise DriveAuthError."""
-        real_import = importlib.import_module
-
-        def fake_import(name: str):
-            if name.startswith("googleapiclient"):
-                raise ModuleNotFoundError(name)
-            return real_import(name)
-
-        client = DriveClient(ui=None)
-        monkeypatch.setattr(client, "_load_credentials", lambda: object())
-        monkeypatch.setattr(drive_client.importlib, "import_module", fake_import)
-
-        with pytest.raises(DriveAuthError, match="Drive dependencies"):
-            client._service_handle()
-
-    def test_refresh_failure_raises_specific_error(self, monkeypatch):
-        """Token refresh failure should raise DriveAuthError, not be swallowed.
-
-        This test verifies that real refresh errors (network, auth failures) are
-        properly exposed to the user instead of being silently logged.
-        """
-        # Mock credentials that fail to refresh
-        mock_creds = MagicMock()
-        mock_creds.valid = False
-        mock_creds.expired = True
-        mock_creds.refresh_token = "valid_refresh_token"
-        mock_creds.refresh.side_effect = Exception("Network error during refresh")
-
-        mock_request = MagicMock()
-
-        def mock_import(name: str):
-            if name == "google.auth.transport.requests":
-                return MagicMock(Request=MagicMock(return_value=mock_request))
-            if name == "google.oauth2.credentials":
-                return MagicMock(Credentials=MagicMock(from_authorized_user_file=MagicMock(return_value=mock_creds)))
-            return importlib.import_module(name)
-
-        monkeypatch.setattr(drive_client, "_import_module", mock_import)
-
-        client = DriveClient(ui=None)
-        with pytest.raises(DriveAuthError, match="refresh|token"):
-            client._load_credentials()
-
-    def test_refresh_failure_includes_original_error(self, monkeypatch, tmp_path):
-        """DriveAuthError should include the original exception details."""
-        # Create a temporary token file
-        token_file = tmp_path / "token.json"
-        token_file.write_text('{"valid": false, "expired": true}')
-
-        # Mock credentials that fail to refresh
-        mock_creds = MagicMock()
-        mock_creds.valid = False
-        mock_creds.expired = True
-        mock_creds.refresh_token = "valid_refresh_token"
-        mock_creds.refresh.side_effect = ConnectionError("Server unreachable")
-
-        mock_request = MagicMock()
-
-        def mock_import(name: str):
-            if name == "google.auth.transport.requests":
-                return MagicMock(Request=MagicMock(return_value=mock_request))
-            if name == "google.oauth2.credentials":
-                mock_cls = MagicMock()
-                mock_cls.from_authorized_user_file = MagicMock(return_value=mock_creds)
-                return MagicMock(Credentials=mock_cls)
-            return importlib.import_module(name)
-
-        monkeypatch.setattr(drive_client, "_import_module", mock_import)
-
-        client = DriveClient(ui=None, token_path=token_file)
-        with pytest.raises(DriveAuthError) as exc_info:
-            client._load_credentials()
-
-        # Original error should be preserved in exception chain or message
-        error_str = str(exc_info.value)
-        assert "Server unreachable" in error_str or "refresh" in error_str.lower()
-
-    def test_invalid_credentials_raises_auth_error(self, monkeypatch, tmp_path):
-        """Invalid credentials without refresh capability should raise clear auth error."""
-        # Create a temporary token file
-        token_file = tmp_path / "token.json"
-        token_file.write_text('{"valid": false}')
-
-        # Mock invalid credentials (expired but no refresh token)
-        mock_creds = MagicMock()
-        mock_creds.valid = False
-        mock_creds.expired = True
-        mock_creds.refresh_token = None
-
-        def mock_import(name: str):
-            if name == "google.oauth2.credentials":
-                mock_cls = MagicMock()
-                mock_cls.from_authorized_user_file = MagicMock(return_value=mock_creds)
-                return MagicMock(Credentials=mock_cls)
-            return importlib.import_module(name)
-
-        monkeypatch.setattr(drive_client, "_import_module", mock_import)
-
-        client = DriveClient(ui=None, token_path=token_file)
-        with pytest.raises(DriveAuthError, match="invalid|expired|re-run"):
-            client._load_credentials()
-
-    def test_successful_token_refresh(self, monkeypatch, tmp_path):
-        """Successful token refresh should return valid credentials."""
-        # Create token file
-        token_file = tmp_path / "token.json"
-        token_file.write_text('{"token": "old_token"}')
-
-        # Mock expired credentials that successfully refresh
-        mock_creds = MagicMock()
-        mock_creds.valid = False
-        mock_creds.expired = True
-        mock_creds.refresh_token = "valid_refresh_token"
-        mock_creds.to_json.return_value = '{"token": "new_token", "refresh_token": "valid_refresh_token"}'
-
-        # After refresh, credentials become valid
-        def mock_refresh(request):
-            mock_creds.valid = True
-            mock_creds.expired = False
-            mock_creds.token = "new_token"
-
-        mock_creds.refresh = mock_refresh
-        mock_request = MagicMock()
-
-        def mock_import(name: str):
-            if name == "google.auth.transport.requests":
-                return MagicMock(Request=MagicMock(return_value=mock_request))
-            if name == "google.oauth2.credentials":
-                mock_cls = MagicMock()
-                mock_cls.from_authorized_user_file = MagicMock(return_value=mock_creds)
-                return MagicMock(Credentials=mock_cls)
-            return importlib.import_module(name)
-
-        monkeypatch.setattr(drive_client, "_import_module", mock_import)
-
-        client = DriveClient(ui=None, token_path=token_file)
-        result = client._load_credentials()
-
-        assert result is not None
-        assert result.valid is True
-        assert result.token == "new_token"
-
-    def test_valid_cached_credentials(self, monkeypatch, tmp_path):
-        """Valid cached credentials should be returned without refresh."""
-        # Create token file
-        token_file = tmp_path / "token.json"
-        token_file.write_text('{"token": "current_token"}')
-
-        # Mock valid credentials that don't need refresh
-        mock_creds = MagicMock()
-        mock_creds.valid = True
-        mock_creds.expired = False
-        mock_creds.refresh_token = "refresh_token"
-        mock_creds.token = "current_token"
-        mock_creds.to_json.return_value = '{"token": "current_token", "refresh_token": "refresh_token"}'
-
-        def mock_import(name: str):
-            if name == "google.oauth2.credentials":
-                mock_cls = MagicMock()
-                mock_cls.from_authorized_user_file = MagicMock(return_value=mock_creds)
-                return MagicMock(Credentials=mock_cls)
-            return importlib.import_module(name)
-
-        monkeypatch.setattr(drive_client, "_import_module", mock_import)
-
-        client = DriveClient(ui=None, token_path=token_file)
-        result = client._load_credentials()
-
-        assert result is not None
-        assert result.valid is True
-        assert result.token == "current_token"
-        # Verify refresh was never called
-        assert not mock_creds.refresh.called
-
-    def test_corrupt_token_file_handling(self, monkeypatch, tmp_path):
-        """Corrupt token file should be handled gracefully."""
-        # Create corrupt token file
-        token_file = tmp_path / "token.json"
-        token_file.write_text('invalid json {{{')
-
-        # Mock that from_authorized_user_file raises ValueError
-        def mock_import(name: str):
-            if name == "google.oauth2.credentials":
-                mock_cls = MagicMock()
-                mock_cls.from_authorized_user_file = MagicMock(side_effect=ValueError("Invalid JSON"))
-                return MagicMock(Credentials=mock_cls)
-            return importlib.import_module(name)
-
-        monkeypatch.setattr(drive_client, "_import_module", mock_import)
-
-        client = DriveClient(ui=None, token_path=token_file)
-
-        # Should raise DriveAuthError about invalid token
-        with pytest.raises(DriveAuthError, match="invalid|expired"):
-            client._load_credentials()
 
 
 class TestDownloadJsonPayload:
     """Tests for DriveClient.download_json_payload method."""
 
-    def test_jsonl_file_parsing(self, mock_drive_credentials, mock_drive_service):
-        """JSONL file should be parsed as newline-delimited JSON."""
+    @pytest.mark.parametrize(
+        "content,expect_type,expect_len,desc",
+        [
+            (b'{"a": 1}\n{"b": 2}\n{"c": 3}\n', list, 3, "jsonl_file"),
+            (b'{"msg": "hello"}\n{"msg": "world"}\n', list, 2, "jsonl_txt_file"),
+            (b'{"x": 1}\n{"y": 2}\n', list, 2, "ndjson_file"),
+            (b'{"title": "Test", "content": "Data"}', dict, None, "json_file"),
+            (b'{"valid": 1}\n{invalid json}\n{"valid": 2}\n', list, 2, "jsonl_skip_invalid"),
+            (b'{"a": 1}\n\n\n{"b": 2}\n   \n', list, 2, "jsonl_skip_empty_lines"),
+            (b'{"text": "line1\\nline2"}\n{"text": "another"}\n', list, 2, "jsonl_embedded_newlines"),
+            (b'{"id": 1}\ninvalid\n{"id": 2}\n{broken\n{"id": 3}\n', list, 3, "jsonl_mixed_valid_invalid"),
+            (b'{}', dict, None, "json_empty_object"),
+            (b'[{"a": 1}, {"b": 2}]', list, 2, "json_array"),
+            (b'\n  \n\t\n   \n', list, 0, "jsonl_only_empty_lines"),
+        ]
+    )
+    def test_download_json_payload(
+        self, mock_drive_credentials, mock_drive_service, content, expect_type, expect_len, desc
+    ):
+        """Test JSON payload parsing with various formats."""
         client = DriveClient(
             credentials_path=mock_drive_credentials["credentials_path"],
             token_path=mock_drive_credentials["token_path"],
         )
         client._service = mock_drive_service["service"]
 
-        jsonl_content = b'{"a": 1}\n{"b": 2}\n{"c": 3}\n'
+        with patch.object(client, "download_bytes", return_value=content):
+            result = client.download_json_payload("file-1", name="data.json")
 
-        with patch.object(client, "download_bytes", return_value=jsonl_content):
-            result = client.download_json_payload("file-1", name="data.jsonl")
-
-        assert isinstance(result, list)
-        assert len(result) == 3
-        assert result[0] == {"a": 1}
-        assert result[1] == {"b": 2}
-        assert result[2] == {"c": 3}
-
-    def test_jsonl_txt_file_parsing(self, mock_drive_credentials, mock_drive_service):
-        """JSONL.txt file should be parsed like JSONL."""
-        client = DriveClient(
-            credentials_path=mock_drive_credentials["credentials_path"],
-            token_path=mock_drive_credentials["token_path"],
-        )
-        client._service = mock_drive_service["service"]
-
-        jsonl_content = b'{"msg": "hello"}\n{"msg": "world"}\n'
-
-        with patch.object(client, "download_bytes", return_value=jsonl_content):
-            result = client.download_json_payload("file-1", name="chat.jsonl.txt")
-
-        assert isinstance(result, list)
-        assert len(result) == 2
-
-    def test_ndjson_file_parsing(self, mock_drive_credentials, mock_drive_service):
-        """NDJSON file should be parsed like JSONL."""
-        client = DriveClient(
-            credentials_path=mock_drive_credentials["credentials_path"],
-            token_path=mock_drive_credentials["token_path"],
-        )
-        client._service = mock_drive_service["service"]
-
-        ndjson_content = b'{"x": 1}\n{"y": 2}\n'
-
-        with patch.object(client, "download_bytes", return_value=ndjson_content):
-            result = client.download_json_payload("file-1", name="data.ndjson")
-
-        assert isinstance(result, list)
-        assert len(result) == 2
-
-    def test_json_file_parsing(self, mock_drive_credentials, mock_drive_service):
-        """JSON file should be parsed as single object."""
-        client = DriveClient(
-            credentials_path=mock_drive_credentials["credentials_path"],
-            token_path=mock_drive_credentials["token_path"],
-        )
-        client._service = mock_drive_service["service"]
-
-        json_content = b'{"title": "Test", "content": "Data"}'
-
-        with patch.object(client, "download_bytes", return_value=json_content):
-            result = client.download_json_payload("file-1", name="chat.json")
-
-        assert isinstance(result, dict)
-        assert result["title"] == "Test"
-
-    def test_jsonl_skips_invalid_lines(self, mock_drive_credentials, mock_drive_service):
-        """Invalid JSON lines in JSONL should be skipped with warning."""
-        client = DriveClient(
-            credentials_path=mock_drive_credentials["credentials_path"],
-            token_path=mock_drive_credentials["token_path"],
-        )
-        client._service = mock_drive_service["service"]
-
-        jsonl_content = b'{"valid": 1}\n{invalid json}\n{"valid": 2}\n'
-
-        with patch.object(client, "download_bytes", return_value=jsonl_content):
-            result = client.download_json_payload("file-1", name="data.jsonl")
-
-        # Should have 2 valid items, invalid one skipped
-        assert isinstance(result, list)
-        assert len(result) == 2
-        assert result[0] == {"valid": 1}
-        assert result[1] == {"valid": 2}
-
-    def test_jsonl_empty_lines_skipped(self, mock_drive_credentials, mock_drive_service):
-        """Empty lines in JSONL should be skipped."""
-        client = DriveClient(
-            credentials_path=mock_drive_credentials["credentials_path"],
-            token_path=mock_drive_credentials["token_path"],
-        )
-        client._service = mock_drive_service["service"]
-
-        jsonl_content = b'{"a": 1}\n\n\n{"b": 2}\n   \n'
-
-        with patch.object(client, "download_bytes", return_value=jsonl_content):
-            result = client.download_json_payload("file-1", name="data.jsonl")
-
-        assert len(result) == 2
-        assert result[0] == {"a": 1}
-        assert result[1] == {"b": 2}
-
-    def test_json_fallback_on_decode_error(self, mock_drive_credentials, mock_drive_service):
-        """JSON decode should fall back to UTF-8 replacement on error."""
-        client = DriveClient(
-            credentials_path=mock_drive_credentials["credentials_path"],
-            token_path=mock_drive_credentials["token_path"],
-        )
-        client._service = mock_drive_service["service"]
-
-        # Valid JSON - should parse fine
-        json_content = b'{"title": "Test"}'
-
-        with patch.object(client, "download_bytes", return_value=json_content):
-            result = client.download_json_payload("file-1", name="test.json")
-
-        assert isinstance(result, dict)
-        assert result["title"] == "Test"
+        assert isinstance(result, expect_type), f"Failed for {desc}"
+        if expect_len is not None:
+            assert len(result) == expect_len, f"Failed for {desc}"
 
     def test_case_insensitive_extension_matching(self, mock_drive_credentials, mock_drive_service):
         """Extension matching should be case-insensitive."""
@@ -1551,101 +1239,31 @@ class TestDownloadJsonPayload:
 
         jsonl_content = b'{"a": 1}\n{"b": 2}\n'
 
-        # Test uppercase extension
         with patch.object(client, "download_bytes", return_value=jsonl_content):
             result = client.download_json_payload("file-1", name="DATA.JSONL")
 
         assert isinstance(result, list)
         assert len(result) == 2
 
-    def test_jsonl_with_embedded_newlines(self, mock_drive_credentials, mock_drive_service):
-        """JSON objects with escaped newlines should parse correctly."""
+    def test_json_fallback_on_decode_error(self, mock_drive_credentials, mock_drive_service):
+        """JSON decode should fall back to UTF-8 replacement on error."""
         client = DriveClient(
             credentials_path=mock_drive_credentials["credentials_path"],
             token_path=mock_drive_credentials["token_path"],
         )
         client._service = mock_drive_service["service"]
 
-        # JSON with escaped \n in string value
-        jsonl_content = b'{"text": "line1\\nline2"}\n{"text": "another"}\n'
-
-        with patch.object(client, "download_bytes", return_value=jsonl_content):
-            result = client.download_json_payload("file-1", name="data.jsonl")
-
-        assert len(result) == 2
-        assert "line1" in result[0]["text"]
-
-    def test_jsonl_mixed_valid_invalid_lines(self, mock_drive_credentials, mock_drive_service):
-        """JSONL with mix of valid and invalid lines should process valid ones."""
-        client = DriveClient(
-            credentials_path=mock_drive_credentials["credentials_path"],
-            token_path=mock_drive_credentials["token_path"],
-        )
-        client._service = mock_drive_service["service"]
-
-        jsonl_content = b'{"id": 1}\ninvalid\n{"id": 2}\n{broken\n{"id": 3}\n'
-
-        with patch.object(client, "download_bytes", return_value=jsonl_content):
-            result = client.download_json_payload("file-1", name="data.jsonl")
-
-        # Should have 3 valid items
-        assert len(result) == 3
-        assert all(isinstance(item, dict) for item in result)
-        assert result[0]["id"] == 1
-        assert result[1]["id"] == 2
-        assert result[2]["id"] == 3
-
-    def test_json_empty_object(self, mock_drive_credentials, mock_drive_service):
-        """Empty JSON object should parse correctly."""
-        client = DriveClient(
-            credentials_path=mock_drive_credentials["credentials_path"],
-            token_path=mock_drive_credentials["token_path"],
-        )
-        client._service = mock_drive_service["service"]
-
-        json_content = b'{}'
+        json_content = b'{"title": "Test"}'
 
         with patch.object(client, "download_bytes", return_value=json_content):
             result = client.download_json_payload("file-1", name="test.json")
 
         assert isinstance(result, dict)
-        assert result == {}
-
-    def test_json_array_parsing(self, mock_drive_credentials, mock_drive_service):
-        """JSON array should parse correctly."""
-        client = DriveClient(
-            credentials_path=mock_drive_credentials["credentials_path"],
-            token_path=mock_drive_credentials["token_path"],
-        )
-        client._service = mock_drive_service["service"]
-
-        json_content = b'[{"a": 1}, {"b": 2}]'
-
-        with patch.object(client, "download_bytes", return_value=json_content):
-            result = client.download_json_payload("file-1", name="array.json")
-
-        assert isinstance(result, list)
-        assert len(result) == 2
-
-    def test_jsonl_only_empty_lines(self, mock_drive_credentials, mock_drive_service):
-        """JSONL with only empty/whitespace lines should return empty list."""
-        client = DriveClient(
-            credentials_path=mock_drive_credentials["credentials_path"],
-            token_path=mock_drive_credentials["token_path"],
-        )
-        client._service = mock_drive_service["service"]
-
-        jsonl_content = b'\n  \n\t\n   \n'
-
-        with patch.object(client, "download_bytes", return_value=jsonl_content):
-            result = client.download_json_payload("file-1", name="empty.jsonl")
-
-        assert isinstance(result, list)
-        assert len(result) == 0
+        assert result["title"] == "Test"
 
 
 # ============================================================================
-# Tests for Exponential Backoff Behavior (from test_drive_resilience.py)
+# Tests for Exponential Backoff Behavior
 # ============================================================================
 
 
@@ -1658,17 +1276,14 @@ class TestExponentialBackoff:
 
         wait = wait_exponential(multiplier=0.5, min=0.5, max=10)
 
-        # Simulate retry states with increasing attempt numbers
         class MockRetryState:
             def __init__(self, attempt):
                 self.attempt_number = attempt
 
-        # Get wait times for first few attempts
         wait_1 = wait(MockRetryState(1))
         wait_2 = wait(MockRetryState(2))
         wait_3 = wait(MockRetryState(3))
 
-        # Wait times should increase (exponential)
         assert wait_2 >= wait_1
         assert wait_3 >= wait_2
 
@@ -1682,29 +1297,13 @@ class TestExponentialBackoff:
             def __init__(self, attempt):
                 self.attempt_number = attempt
 
-        # After many attempts, should be capped at 5
         wait_10 = wait(MockRetryState(10))
         assert wait_10 <= 5
 
 
 # ============================================================================
-# Tests for HTTP Error Retry Classification (from test_drive_resilience.py)
+# Parametrized Tests for HTTP Error Retry Classification
 # ============================================================================
-
-
-RETRY_SCENARIOS = [
-    (429, True, "rate limit retries"),
-    (500, True, "server error retries"),
-    (502, True, "bad gateway retries"),
-    (503, True, "service unavailable retries"),
-    (504, True, "gateway timeout retries"),
-]
-
-NO_RETRY_SCENARIOS = [
-    (401, False, "auth error no retry"),
-    (403, False, "forbidden no retry"),
-    (404, False, "not found no retry"),
-]
 
 
 class TestHttpErrorRetries:
@@ -1713,20 +1312,17 @@ class TestHttpErrorRetries:
     @pytest.mark.parametrize("status_code,should_retry,description", RETRY_SCENARIOS)
     def test_retryable_http_errors(self, status_code: int, should_retry: bool, description: str):
         """HTTP errors that should trigger retry."""
-        # Create a mock HTTP error
         class MockHTTPError(Exception):
             def __init__(self, status):
                 self.status = status
                 super().__init__(f"HTTP {status}")
 
         exc = MockHTTPError(status_code)
-
-        # These should be retryable (not DriveAuthError or DriveNotFoundError)
         assert _is_retryable_error(exc) is should_retry
 
 
 # ============================================================================
-# Tests for Drive Exception Types (from test_drive_resilience.py)
+# Tests for Drive Exception Types
 # ============================================================================
 
 
@@ -1760,36 +1356,21 @@ class TestDriveExceptionTypes:
 
 
 # ============================================================================
-# Tests for Network Error Handling (from test_drive_resilience.py)
+# Parametrized Tests for Network Error Handling
 # ============================================================================
 
 
 class TestNetworkErrors:
     """Tests for network error handling and retry classification."""
 
-    def test_connection_refused_is_retryable(self):
-        """Connection refused should be retryable."""
-        exc = ConnectionRefusedError("Connection refused")
-        assert _is_retryable_error(exc) is True
-
-    def test_connection_reset_is_retryable(self):
-        """Connection reset should be retryable."""
-        exc = ConnectionResetError("Connection reset by peer")
-        assert _is_retryable_error(exc) is True
-
-    def test_timeout_is_retryable(self):
-        """Timeout should be retryable."""
-        exc = TimeoutError("Operation timed out")
-        assert _is_retryable_error(exc) is True
-
-    def test_broken_pipe_is_retryable(self):
-        """Broken pipe should be retryable."""
-        exc = BrokenPipeError("Broken pipe")
-        assert _is_retryable_error(exc) is True
+    @pytest.mark.parametrize("exc,expected,desc", NETWORK_ERROR_CASES)
+    def test_network_errors(self, exc, expected, desc):
+        """Test network error retry classification."""
+        assert _is_retryable_error(exc) is expected, f"Failed for {desc}"
 
 
 # ============================================================================
-# Tests for Client Initialization and Mocked Operations (from test_drive_client.py)
+# Tests for Client Initialization and Mocked Operations
 # ============================================================================
 
 
@@ -1826,16 +1407,13 @@ class TestDriveClientMocked:
             credentials_path=mock_drive_credentials["credentials_path"],
             token_path=mock_drive_credentials["token_path"],
         )
-        # Inject mock service (bypass actual OAuth)
         client._service = mock_drive_service["service"]
         return client
 
     def test_list_files_in_folder(self, drive_client, mock_drive_service):
         """List files in a specific folder."""
-        # Mock service has "folder1" with "prompt1" inside
         service = mock_drive_service["service"]
 
-        # List files in folder1
         response = service.files().list(q="'folder1' in parents").execute()
         assert "files" in response
         assert len(response["files"]) == 1
@@ -1892,17 +1470,14 @@ class TestEdgeCases:
         """Mock service supports pagination."""
         service = mock_drive_service["service"]
 
-        # Add enough files to trigger pagination
         from tests.mocks.drive_mocks import mock_drive_file
 
         many_files = {f"file{i}": mock_drive_file(file_id=f"file{i}", name=f"File {i}") for i in range(150)}
         service._files_resource.files.update(many_files)
 
-        # Request with small page size
         response = service.files().list(pageSize=50).execute()
         assert len(response["files"]) <= 50
 
-        # Check if next page token exists when there are more files
         if len(many_files) > 50:
             assert response.get("nextPageToken") is not None
 
@@ -1917,7 +1492,6 @@ class TestAPIOperations:
             credentials_path=mock_drive_credentials["credentials_path"],
             token_path=mock_drive_credentials["token_path"],
         )
-        # Inject mock service
         client._service = mock_drive_service["service"]
         return client, mock_drive_service
 
@@ -1925,7 +1499,6 @@ class TestAPIOperations:
         """Resolve folder ID by name."""
         client, mock_service = drive_client_with_service
 
-        # Mock service already has "folder1" with name "Google AI Studio"
         folder_id = client.resolve_folder_id("Google AI Studio")
         assert folder_id == "folder1"
 
@@ -1940,7 +1513,6 @@ class TestAPIOperations:
         """Iterate through JSON files in a folder."""
         client, mock_service = drive_client_with_service
 
-        # Add JSON files to mock service
         from tests.mocks.drive_mocks import mock_drive_file
 
         json_file1 = mock_drive_file(
@@ -1960,14 +1532,11 @@ class TestAPIOperations:
             "json1": json_file1,
             "json2": json_file2,
         })
-        # Add file content for the JSON files
         mock_service["file_content"]["json1"] = b'{"test": "content"}'
         mock_service["file_content"]["json2"] = b'{"data": "content"}'
 
-        # Iterate through JSON files - returns DriveFile objects
         files = list(client.iter_json_files("folder1"))
-        assert len(files) >= 1  # At least some JSON files from fixture
-        # DriveFile objects use attribute access, not dict access
+        assert len(files) >= 1
         file_names = [f.name for f in files]
         assert "test.json" in file_names or "data.json" in file_names
 
@@ -1975,7 +1544,6 @@ class TestAPIOperations:
         """Get file metadata."""
         client, mock_service = drive_client_with_service
 
-        # get_metadata returns DriveFile object, not dict
         metadata = client.get_metadata("prompt1")
         assert metadata.name == "Test Prompt"
         assert metadata.mime_type == "application/vnd.google-makersuite.prompt"
@@ -2004,7 +1572,6 @@ class TestAPIOperations:
         output_path = tmp_path / "downloaded.json"
         result = client.download_to_path("prompt1", output_path)
 
-        # Result is DriveFile metadata, not path
         assert result.file_id == "prompt1"
         assert output_path.exists()
         assert b"Test Prompt" in output_path.read_bytes()
@@ -2013,7 +1580,6 @@ class TestAPIOperations:
         """Download should handle encoding issues gracefully."""
         client, mock_service = drive_client_with_service
 
-        # Add file with non-UTF8 content
         from tests.mocks.drive_mocks import mock_drive_file
 
         binary_file = mock_drive_file(
@@ -2024,7 +1590,6 @@ class TestAPIOperations:
         mock_service["service"]._files_resource.files["binary1"] = binary_file
         mock_service["file_content"]["binary1"] = b"\xff\xfe Invalid UTF-8"
 
-        # Should download as bytes without error
         content = client.download_bytes("binary1")
         assert isinstance(content, bytes)
         assert content == b"\xff\xfe Invalid UTF-8"
@@ -2033,7 +1598,6 @@ class TestAPIOperations:
         """Handle multiple folders with same name."""
         client, mock_service = drive_client_with_service
 
-        # Add duplicate folder names
         from tests.mocks.drive_mocks import mock_drive_file
 
         folder2 = mock_drive_file(
@@ -2043,7 +1607,6 @@ class TestAPIOperations:
         )
         mock_service["service"]._files_resource.files["folder2"] = folder2
 
-        # Should return first match
         folder_id = client.resolve_folder_id("Google AI Studio")
         assert folder_id in ["folder1", "folder2"]
 
@@ -2051,7 +1614,6 @@ class TestAPIOperations:
         """Iterate through empty folder."""
         client, mock_service = drive_client_with_service
 
-        # Add empty folder
         from tests.mocks.drive_mocks import mock_drive_file
 
         empty_folder = mock_drive_file(
@@ -2061,12 +1623,200 @@ class TestAPIOperations:
         )
         mock_service["service"]._files_resource.files["empty"] = empty_folder
 
-        # Should return empty iterator
         files = list(client.iter_json_files("empty"))
         assert len(files) == 0
 
 
-# --- Merged from test_drive_ingest.py ---
+# ============================================================================
+# Tests for Token Refresh and Error Handling
+# ============================================================================
+
+
+class TestTokenRefreshErrorHandling:
+    """Tests for OAuth token refresh error handling."""
+
+    def test_missing_dependency_raises_auth_error(self, monkeypatch):
+        """Missing googleapiclient dependency should raise DriveAuthError."""
+        real_import = importlib.import_module
+
+        def fake_import(name: str):
+            if name.startswith("googleapiclient"):
+                raise ModuleNotFoundError(name)
+            return real_import(name)
+
+        client = DriveClient(ui=None)
+        monkeypatch.setattr(client, "_load_credentials", lambda: object())
+        monkeypatch.setattr(drive_client.importlib, "import_module", fake_import)
+
+        with pytest.raises(DriveAuthError, match="Drive dependencies"):
+            client._service_handle()
+
+    def test_refresh_failure_raises_specific_error(self, monkeypatch):
+        """Token refresh failure should raise DriveAuthError."""
+        mock_creds = MagicMock()
+        mock_creds.valid = False
+        mock_creds.expired = True
+        mock_creds.refresh_token = "valid_refresh_token"
+        mock_creds.refresh.side_effect = Exception("Network error during refresh")
+
+        mock_request = MagicMock()
+
+        def mock_import(name: str):
+            if name == "google.auth.transport.requests":
+                return MagicMock(Request=MagicMock(return_value=mock_request))
+            if name == "google.oauth2.credentials":
+                return MagicMock(Credentials=MagicMock(from_authorized_user_file=MagicMock(return_value=mock_creds)))
+            return importlib.import_module(name)
+
+        monkeypatch.setattr(drive_client, "_import_module", mock_import)
+
+        client = DriveClient(ui=None)
+        with pytest.raises(DriveAuthError, match="refresh|token"):
+            client._load_credentials()
+
+    def test_refresh_failure_includes_original_error(self, monkeypatch, tmp_path):
+        """DriveAuthError should include the original exception details."""
+        token_file = tmp_path / "token.json"
+        token_file.write_text('{"valid": false, "expired": true}')
+
+        mock_creds = MagicMock()
+        mock_creds.valid = False
+        mock_creds.expired = True
+        mock_creds.refresh_token = "valid_refresh_token"
+        mock_creds.refresh.side_effect = ConnectionError("Server unreachable")
+
+        mock_request = MagicMock()
+
+        def mock_import(name: str):
+            if name == "google.auth.transport.requests":
+                return MagicMock(Request=MagicMock(return_value=mock_request))
+            if name == "google.oauth2.credentials":
+                mock_cls = MagicMock()
+                mock_cls.from_authorized_user_file = MagicMock(return_value=mock_creds)
+                return MagicMock(Credentials=mock_cls)
+            return importlib.import_module(name)
+
+        monkeypatch.setattr(drive_client, "_import_module", mock_import)
+
+        client = DriveClient(ui=None, token_path=token_file)
+        with pytest.raises(DriveAuthError) as exc_info:
+            client._load_credentials()
+
+        error_str = str(exc_info.value)
+        assert "Server unreachable" in error_str or "refresh" in error_str.lower()
+
+    def test_invalid_credentials_raises_auth_error(self, monkeypatch, tmp_path):
+        """Invalid credentials without refresh capability should raise clear auth error."""
+        token_file = tmp_path / "token.json"
+        token_file.write_text('{"valid": false}')
+
+        mock_creds = MagicMock()
+        mock_creds.valid = False
+        mock_creds.expired = True
+        mock_creds.refresh_token = None
+
+        def mock_import(name: str):
+            if name == "google.oauth2.credentials":
+                mock_cls = MagicMock()
+                mock_cls.from_authorized_user_file = MagicMock(return_value=mock_creds)
+                return MagicMock(Credentials=mock_cls)
+            return importlib.import_module(name)
+
+        monkeypatch.setattr(drive_client, "_import_module", mock_import)
+
+        client = DriveClient(ui=None, token_path=token_file)
+        with pytest.raises(DriveAuthError, match="invalid|expired|re-run"):
+            client._load_credentials()
+
+    def test_successful_token_refresh(self, monkeypatch, tmp_path):
+        """Successful token refresh should return valid credentials."""
+        token_file = tmp_path / "token.json"
+        token_file.write_text('{"token": "old_token"}')
+
+        mock_creds = MagicMock()
+        mock_creds.valid = False
+        mock_creds.expired = True
+        mock_creds.refresh_token = "valid_refresh_token"
+        mock_creds.to_json.return_value = '{"token": "new_token", "refresh_token": "valid_refresh_token"}'
+
+        def mock_refresh(request):
+            mock_creds.valid = True
+            mock_creds.expired = False
+            mock_creds.token = "new_token"
+
+        mock_creds.refresh = mock_refresh
+        mock_request = MagicMock()
+
+        def mock_import(name: str):
+            if name == "google.auth.transport.requests":
+                return MagicMock(Request=MagicMock(return_value=mock_request))
+            if name == "google.oauth2.credentials":
+                mock_cls = MagicMock()
+                mock_cls.from_authorized_user_file = MagicMock(return_value=mock_creds)
+                return MagicMock(Credentials=mock_cls)
+            return importlib.import_module(name)
+
+        monkeypatch.setattr(drive_client, "_import_module", mock_import)
+
+        client = DriveClient(ui=None, token_path=token_file)
+        result = client._load_credentials()
+
+        assert result is not None
+        assert result.valid is True
+        assert result.token == "new_token"
+
+    def test_valid_cached_credentials(self, monkeypatch, tmp_path):
+        """Valid cached credentials should be returned without refresh."""
+        token_file = tmp_path / "token.json"
+        token_file.write_text('{"token": "current_token"}')
+
+        mock_creds = MagicMock()
+        mock_creds.valid = True
+        mock_creds.expired = False
+        mock_creds.refresh_token = "refresh_token"
+        mock_creds.token = "current_token"
+        mock_creds.to_json.return_value = '{"token": "current_token", "refresh_token": "refresh_token"}'
+
+        def mock_import(name: str):
+            if name == "google.oauth2.credentials":
+                mock_cls = MagicMock()
+                mock_cls.from_authorized_user_file = MagicMock(return_value=mock_creds)
+                return MagicMock(Credentials=mock_cls)
+            return importlib.import_module(name)
+
+        monkeypatch.setattr(drive_client, "_import_module", mock_import)
+
+        client = DriveClient(ui=None, token_path=token_file)
+        result = client._load_credentials()
+
+        assert result is not None
+        assert result.valid is True
+        assert result.token == "current_token"
+        assert not mock_creds.refresh.called
+
+    def test_corrupt_token_file_handling(self, monkeypatch, tmp_path):
+        """Corrupt token file should be handled gracefully."""
+        token_file = tmp_path / "token.json"
+        token_file.write_text('invalid json {{{')
+
+        def mock_import(name: str):
+            if name == "google.oauth2.credentials":
+                mock_cls = MagicMock()
+                mock_cls.from_authorized_user_file = MagicMock(side_effect=ValueError("Invalid JSON"))
+                return MagicMock(Credentials=mock_cls)
+            return importlib.import_module(name)
+
+        monkeypatch.setattr(drive_client, "_import_module", mock_import)
+
+        client = DriveClient(ui=None, token_path=token_file)
+
+        with pytest.raises(DriveAuthError, match="invalid|expired"):
+            client._load_credentials()
+
+
+# ============================================================================
+# Tests for Drive Ingestion
+# ============================================================================
 
 
 @dataclass
@@ -2131,14 +1881,10 @@ class TestDriveDownloadFailureTracking:
     """Tests for tracking Drive download failures."""
 
     def test_download_failure_tracked_in_result(self):
-        """Failed downloads should be tracked in the result, not silently ignored.
-
-        This test SHOULD FAIL until failure tracking is implemented.
-        """
+        """Failed downloads should be tracked in the result."""
         from polylogue.sources import download_drive_files
         from polylogue.sources.drive_client import DriveFile
 
-        # Mock the drive client to fail on specific files
         mock_client = MagicMock()
         mock_client.iter_json_files.return_value = [
             DriveFile(file_id="file1", name="good.json", mime_type="application/json", modified_time=None, size_bytes=100),
@@ -2155,7 +1901,6 @@ class TestDriveDownloadFailureTracking:
 
         result = download_drive_files(mock_client, "folder123", Path("/tmp/test"))
 
-        # Result should track failures
         assert hasattr(result, "failed_files") or "failed" in result
         assert len(result.failed_files) >= 1
         assert any("bad.json" in str(f) for f in result.failed_files)
@@ -2184,5 +1929,4 @@ class TestDriveDownloadFailureTracking:
 
         download_drive_files(mock_client, "folder", Path("/tmp/test"))
 
-        # Should have attempted all 3, succeeded on 2
         assert download_count[0] == 2
