@@ -30,29 +30,33 @@ class Browser(Container):
         tree = self.query_one("#browser-tree", Tree)
         tree.root.expand()
 
-        repo = get_repository()
+        try:
+            repo = get_repository()
 
-        # Query distinct providers from the database
-        from polylogue.storage.backends.sqlite import connection_context
+            # Query distinct providers from the database
+            from polylogue.storage.backends.sqlite import connection_context
 
-        with connection_context(None) as conn:
-            rows = conn.execute(
-                "SELECT DISTINCT provider_name FROM conversations ORDER BY provider_name"
-            ).fetchall()
-        providers = [row["provider_name"] for row in rows if row["provider_name"]]
+            with connection_context(None) as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT provider_name FROM conversations ORDER BY provider_name"
+                ).fetchall()
+            providers = [row["provider_name"] for row in rows if row["provider_name"]]
 
-        if not providers:
-            providers = ["chatgpt", "claude"]  # Fallback for empty DB
+            if not providers:
+                providers = ["chatgpt", "claude"]  # Fallback for empty DB
 
-        for provider in providers:
-            provider_node = tree.root.add(provider.capitalize(), expand=False)
+            for provider in providers:
+                provider_node = tree.root.add(provider.capitalize(), expand=False)
 
-            # Fetch summaries for this provider
-            summaries = repo.list_summaries(limit=50, provider=provider)
-            for summary in summaries:
-                label = summary.title or summary.id
-                # Store ID in data for retrieval
-                provider_node.add_leaf(label, data=summary.id)
+                # Fetch summaries for this provider
+                summaries = repo.list_summaries(limit=50, provider=provider)
+                for summary in summaries:
+                    label = summary.title or summary.id
+                    # Store ID in data for retrieval
+                    provider_node.add_leaf(label, data=summary.id)
+
+        except Exception as e:
+            self.notify(f"Failed to load browser: {e}", severity="error")
 
     async def on_tree_node_selected(self, message: Tree.NodeSelected[str]) -> None:
         """Handle tree node selection."""
