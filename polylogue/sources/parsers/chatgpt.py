@@ -32,7 +32,17 @@ def extract_messages_from_mapping(mapping: dict[str, object]) -> tuple[list[Pars
         parts = content.get("parts") or []
         if not isinstance(parts, list):
             continue
-        text = "\n".join(str(part) for part in parts if part)
+        text_parts = []
+        for part in parts:
+            if isinstance(part, str) and part:
+                text_parts.append(part)
+            elif isinstance(part, dict):
+                # Extract text from structured parts (e.g. tether_quote dicts)
+                t = part.get("text")
+                if isinstance(t, str) and t:
+                    text_parts.append(t)
+                # Skip image_asset_pointer and other non-text dicts
+        text = "\n".join(text_parts)
         if not text:
             continue
         # Role is required - skip messages without one

@@ -372,16 +372,18 @@ class TestExecuteQueryStreamMode:
         mock_get_repo,
         mock_load_config,
     ) -> None:
-        """Stream with --latest resolves to most recent conversation."""
+        """Stream with --latest resolves to most recent conversation via filter chain."""
         mock_load_config.return_value = MagicMock()
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
 
         summary = _make_summary(id="latest-conv-id")
-        mock_repo.list_summaries.return_value = [summary]
 
+        # --latest applies .sort("date").limit(1) to filter_chain,
+        # then the streaming path calls .list_summaries() on it.
         mock_filter = MagicMock()
+        mock_filter.sort.return_value.limit.return_value.list_summaries.return_value = [summary]
         MockFilter.return_value = mock_filter
 
         env = _make_env()
@@ -624,7 +626,7 @@ class TestExecuteQueryDelete:
         mock_get_repo,
         mock_load_config,
     ) -> None:
-        """delete_matched triggers _delete_conversations."""
+        """delete_matched with a filter triggers _delete_conversations."""
         mock_load_config.return_value = MagicMock()
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
@@ -633,10 +635,13 @@ class TestExecuteQueryDelete:
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
         convs = [_make_conv(), _make_conv()]
+        # Chain calls return the same mock so .provider().list() resolves correctly
+        mock_filter.provider.return_value = mock_filter
         mock_filter.list.return_value = convs
 
         env = _make_env()
-        params = _make_params(delete_matched=True)
+        # --delete requires at least one filter to prevent accidental full wipe
+        params = _make_params(delete_matched=True, provider="claude")
 
         self._fn(env, params)
 

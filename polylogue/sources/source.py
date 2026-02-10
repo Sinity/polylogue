@@ -120,7 +120,7 @@ def detect_provider(payload: Any, path: Path) -> str | None:
 
     if "chatgpt" in name or "chatgpt" in path_str:
         return "chatgpt"
-    if "claude-code" in name or "claude_code" in name or "claude-code" in path_str:
+    if "claude-code" in name or "claude_code" in name or "claude-code" in path_str or "claude_code" in path_str:
         return "claude-code"
     if "claude" in name or "/claude/" in path_str:
         return "claude"
@@ -371,6 +371,12 @@ def iter_source_conversations(
 
                         name = info.filename
                         lower_name = name.lower()
+
+                        # Filter Claude AI ZIP: only process conversations.json
+                        if provider_hint in ("claude", "claude-ai"):
+                            basename = lower_name.split("/")[-1]
+                            if basename not in ("conversations.json",):
+                                continue
 
                         # ZIP bomb protection
                         if info.compress_size > 0:
