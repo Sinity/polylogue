@@ -134,3 +134,90 @@ class TestIndexService:
             status = service.get_index_status()
             assert status["exists"] is True
             assert isinstance(status["count"], int)
+
+
+# --- Merged from test_supplementary_coverage.py ---
+
+
+class TestIndexServiceErrors:
+    """Tests for IndexService error handling paths."""
+
+    def test_update_index_failure(self):
+        """update_index should return False on exception."""
+        from unittest.mock import MagicMock, patch
+
+        from polylogue.pipeline.services.indexing import IndexService
+
+        config = MagicMock()
+        service = IndexService(config=config)
+
+        with patch(
+            "polylogue.pipeline.services.indexing.update_index_for_conversations",
+            side_effect=Exception("db locked"),
+        ):
+            result = service.update_index(["conv1", "conv2"])
+            assert result is False
+
+    def test_rebuild_index_failure(self):
+        """rebuild_index should return False on exception."""
+        from unittest.mock import MagicMock, patch
+
+        from polylogue.pipeline.services.indexing import IndexService
+
+        config = MagicMock()
+        service = IndexService(config=config)
+
+        with patch(
+            "polylogue.pipeline.services.indexing.rebuild_index",
+            side_effect=Exception("disk full"),
+        ):
+            result = service.rebuild_index()
+            assert result is False
+
+    def test_ensure_index_failure(self):
+        """ensure_index_exists should return False on exception."""
+        from unittest.mock import MagicMock, patch
+
+        from polylogue.pipeline.services.indexing import IndexService
+
+        config = MagicMock()
+        mock_conn = MagicMock()
+        service = IndexService(config=config, conn=mock_conn)
+
+        with patch(
+            "polylogue.pipeline.services.indexing.ensure_index",
+            side_effect=Exception("corruption"),
+        ):
+            result = service.ensure_index_exists()
+            assert result is False
+
+    def test_get_index_status_failure(self):
+        """get_index_status should return fallback on exception."""
+        from unittest.mock import MagicMock, patch
+
+        from polylogue.pipeline.services.indexing import IndexService
+
+        config = MagicMock()
+        service = IndexService(config=config)
+
+        with patch(
+            "polylogue.pipeline.services.indexing.index_status",
+            side_effect=Exception("no such table"),
+        ):
+            result = service.get_index_status()
+            assert result == {"exists": False, "count": 0}
+
+    def test_update_index_empty_ids_ensures_index(self):
+        """update_index with empty list should ensure index exists."""
+        from unittest.mock import MagicMock, patch
+
+        from polylogue.pipeline.services.indexing import IndexService
+
+        config = MagicMock()
+        mock_conn = MagicMock()
+        service = IndexService(config=config, conn=mock_conn)
+
+        with patch("polylogue.pipeline.services.indexing.ensure_index") as mock_ensure:
+            result = service.update_index([])
+            assert result is True
+            mock_ensure.assert_called_once_with(mock_conn)
