@@ -725,7 +725,7 @@ class ConversationFilter:
         print(f"\n{len(results)} matching conversations:\n")
         for i, conv in enumerate(results[:20], 1):  # Show max 20
             title = conv.display_title[:50]
-            date = conv.updated_at.strftime("%Y-%m-%d") if conv.updated_at else "unknown"
+            date = conv.display_date.strftime("%Y-%m-%d") if conv.display_date else "unknown"
             print(f"  {i:2}. [{conv.provider}] {title} ({date})")
 
         if len(results) > 20:
