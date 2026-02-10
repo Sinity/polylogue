@@ -41,8 +41,14 @@ def get_service_config() -> Config:
 
 
 def reset() -> None:
-    """Reset singletons. For tests."""
+    """Reset singletons. For tests.
+
+    Closes any open backend connection before clearing references,
+    preventing connection leaks across test boundaries.
+    """
     global _backend, _repository
+    if _backend is not None:
+        _backend.close()
     _backend = None
     _repository = None
 

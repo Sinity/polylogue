@@ -81,7 +81,7 @@ def _load_cached(archive_root: Path) -> dict[str, Any] | None:
         if isinstance(payload, dict):
             return payload
     except Exception as exc:
-        LOGGER.debug("Failed to load health cache: %s", exc)
+        LOGGER.warning("Failed to load health cache: %s", exc)
     return None
 
 

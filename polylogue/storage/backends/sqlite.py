@@ -10,7 +10,7 @@ from pathlib import Path
 
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.log import get_logger
-from polylogue.paths import DATA_HOME
+import polylogue.paths as _paths
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
@@ -112,8 +112,10 @@ def default_db_path() -> Path:
     """Return the default database path.
 
     Uses XDG_DATA_HOME/polylogue/polylogue.db (semantic data, not ephemeral state).
+    Reads from polylogue.paths at call time (not import time) so that
+    tests can reload the paths module with monkeypatched XDG_DATA_HOME.
     """
-    return DATA_HOME / "polylogue.db"
+    return _paths.DATA_HOME / "polylogue.db"
 
 
 def _json_or_none(value: dict[str, object] | None) -> str | None:
