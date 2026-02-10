@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from polylogue.paths import DATA_HOME
+import polylogue.paths as _paths
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 if TYPE_CHECKING:
@@ -31,8 +31,11 @@ SCHEMA_VERSION = 5
 
 
 def default_db_path() -> Path:
-    """Return the default database path (same as sync backend)."""
-    return DATA_HOME / "polylogue.db"
+    """Return the default database path (same as sync backend).
+
+    Reads from polylogue.paths at call time for test isolation.
+    """
+    return _paths.DATA_HOME / "polylogue.db"
 
 
 class AsyncSQLiteBackend:
