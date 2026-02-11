@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
@@ -148,12 +149,7 @@ class CodexRecord(BaseModel):
     @property
     def parsed_timestamp(self) -> datetime | None:
         """Parse timestamp to datetime."""
-        if not self.timestamp:
-            return None
-        try:
-            return datetime.fromisoformat(self.timestamp.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+        return parse_timestamp(self.timestamp)
 
     # =========================================================================
     # Viewport extraction

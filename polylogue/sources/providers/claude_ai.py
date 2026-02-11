@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import ContentBlock, ContentType, MessageMeta
 
 
@@ -48,12 +49,7 @@ class ClaudeAIChatMessage(BaseModel):
     @property
     def parsed_timestamp(self) -> datetime | None:
         """Parse timestamp to datetime."""
-        if not self.created_at:
-            return None
-        try:
-            return datetime.fromisoformat(self.created_at.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+        return parse_timestamp(self.created_at)
 
     def to_meta(self) -> MessageMeta:
         """Convert to harmonized MessageMeta."""
@@ -107,18 +103,12 @@ class ClaudeAIConversation(BaseModel):
     @property
     def created_datetime(self) -> datetime | None:
         """Parse creation timestamp."""
-        try:
-            return datetime.fromisoformat(self.created_at.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+        return parse_timestamp(self.created_at)
 
     @property
     def updated_datetime(self) -> datetime | None:
         """Parse update timestamp."""
-        try:
-            return datetime.fromisoformat(self.updated_at.replace("Z", "+00:00"))
-        except ValueError:
-            return None
+        return parse_timestamp(self.updated_at)
 
     @property
     def messages(self) -> list[ClaudeAIChatMessage]:
