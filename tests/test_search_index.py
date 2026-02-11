@@ -14,6 +14,8 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -26,6 +28,7 @@ from polylogue.cli.click_app import cli
 from polylogue.config import Config, IndexConfig, get_config
 from polylogue.health import get_health
 from polylogue.sources import IngestBundle, ingest_bundle
+from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 from polylogue.storage.backends.sqlite import (
     DatabaseError,
     SQLiteBackend,
@@ -39,8 +42,23 @@ from polylogue.storage.backends.sqlite import (
 )
 from polylogue.storage.index import ensure_index, rebuild_index, update_index_for_conversations
 from polylogue.storage.search import escape_fts5_query, search_messages
+from polylogue.sources.parsers.claude import (
+    SessionIndexEntry,
+    enrich_conversation_from_index,
+    find_sessions_index,
+    parse_sessions_index,
+)
+from polylogue.storage.search_cache import (
+    SearchCacheKey,
+    get_cache_stats,
+    invalidate_search_cache,
+)
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
+from polylogue.storage.search_providers.hybrid import (
+    HybridSearchProvider,
+    reciprocal_rank_fusion,
+)
 from polylogue.storage.store import ConversationRecord, MessageRecord
 from tests.helpers import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
 
@@ -2063,6 +2081,1053 @@ def test_chunked(input_list, chunk_size, expected_output, description):
 
     result = list(_chunked(input_list, size=chunk_size))
     assert result == expected_output, f"Failed for {description}"
+
+
+# --- merged from test_assets.py ---
+
+
+class TestConcurrentAssetWrite:
+    """Tests for concurrent asset writing safety."""
+
+    def test_concurrent_write_same_asset_no_corruption(self, tmp_path: Path):
+        """Concurrent writes to same asset should not corrupt file.
+
+        This test validates that atomic write is implemented.
+        """
+        asset_id = "concurrent-test-asset"
+        content = b"x" * 10000  # 10KB of data
+
+        def write_asset_thread(thread_id: int):
+            # Each thread writes the same content to the same asset
+            write_asset(tmp_path, asset_id, content)
+
+        # Run 10 concurrent writes
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            list(executor.map(write_asset_thread, range(10)))
+
+        # Verify file is not corrupted
+        final_path = asset_path(tmp_path, asset_id)
+        assert final_path.exists(), "Asset file should exist"
+        assert final_path.read_bytes() == content, "Asset content should not be corrupted"
+
+    def test_write_asset_atomic(self, tmp_path: Path):
+        """write_asset should use atomic write (write to temp, then rename)."""
+        asset_id = "atomic-test"
+        content = b"test content"
+
+        write_asset(tmp_path, asset_id, content)
+
+        final_path = asset_path(tmp_path, asset_id)
+        assert final_path.exists()
+        assert final_path.read_bytes() == content
+
+    def test_write_asset_creates_parent_directories(self, tmp_path: Path):
+        """write_asset should create necessary parent directories."""
+        asset_id = "deeply-nested-asset-id-with-hash-prefix"
+        content = b"nested content"
+
+        write_asset(tmp_path, asset_id, content)
+
+        final_path = asset_path(tmp_path, asset_id)
+        assert final_path.exists()
+        assert final_path.read_bytes() == content
+        assert final_path.parent.exists()
+
+    def test_write_asset_overwrites_existing(self, tmp_path: Path):
+        """write_asset should overwrite existing file atomically."""
+        asset_id = "overwrite-test"
+        old_content = b"old content"
+        new_content = b"new content that is different"
+
+        # Write initial content
+        write_asset(tmp_path, asset_id, old_content)
+        final_path = asset_path(tmp_path, asset_id)
+        assert final_path.read_bytes() == old_content
+
+        # Overwrite with new content
+        write_asset(tmp_path, asset_id, new_content)
+        assert final_path.read_bytes() == new_content
+
+    def test_write_asset_empty_content(self, tmp_path: Path):
+        """write_asset should handle empty content correctly."""
+        asset_id = "empty-asset"
+        content = b""
+
+        write_asset(tmp_path, asset_id, content)
+
+        final_path = asset_path(tmp_path, asset_id)
+        assert final_path.exists()
+        assert final_path.read_bytes() == content
+
+
+# --- merged from test_search_cache.py ---
+
+
+class TestSearchCacheKey:
+    """Tests for SearchCacheKey creation and behavior."""
+
+    def test_create_basic(self, tmp_path):
+        """Create a basic cache key."""
+        key = SearchCacheKey.create(
+            query="hello",
+            archive_root=tmp_path,
+        )
+        assert key.query == "hello"
+        assert key.archive_root == str(tmp_path)
+        assert key.limit == 20  # default
+        assert key.source is None
+        assert key.since is None
+
+    def test_create_with_all_params(self, tmp_path):
+        """Create a cache key with all parameters."""
+        key = SearchCacheKey.create(
+            query="test query",
+            archive_root=tmp_path / "archive",
+            render_root_path=tmp_path / "render",
+            db_path=tmp_path / "test.db",
+            limit=50,
+            source="claude",
+            since="2024-01-01",
+        )
+        assert key.query == "test query"
+        assert key.limit == 50
+        assert key.source == "claude"
+        assert key.since == "2024-01-01"
+        assert key.render_root_path == str(tmp_path / "render")
+        assert key.db_path == str(tmp_path / "test.db")
+
+    def test_key_is_frozen(self, tmp_path):
+        """Cache key is immutable (frozen dataclass)."""
+        key = SearchCacheKey.create(query="test", archive_root=tmp_path)
+        # Frozen dataclass should raise on attribute assignment
+        with pytest.raises(AttributeError):
+            key.query = "changed"
+
+    def test_same_params_same_key(self, tmp_path):
+        """Same parameters produce equal keys (same cache version)."""
+        key1 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=10)
+        key2 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=10)
+        assert key1 == key2
+
+    def test_different_query_different_key(self, tmp_path):
+        """Different queries produce different keys."""
+        key1 = SearchCacheKey.create(query="hello", archive_root=tmp_path)
+        key2 = SearchCacheKey.create(query="world", archive_root=tmp_path)
+        assert key1 != key2
+
+    def test_different_limit_different_key(self, tmp_path):
+        """Different limits produce different keys."""
+        key1 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=10)
+        key2 = SearchCacheKey.create(query="test", archive_root=tmp_path, limit=20)
+        assert key1 != key2
+
+    def test_none_render_root(self, tmp_path):
+        """None render_root_path stored as None."""
+        key = SearchCacheKey.create(
+            query="test", archive_root=tmp_path, render_root_path=None
+        )
+        assert key.render_root_path is None
+
+    def test_key_is_hashable(self, tmp_path):
+        """Cache key can be used as dict key (hashable)."""
+        key = SearchCacheKey.create(query="test", archive_root=tmp_path)
+        d = {key: "result"}
+        assert d[key] == "result"
+
+
+class TestInvalidateSearchCache:
+    """Tests for cache invalidation."""
+
+    def test_invalidation_increments_version(self, tmp_path):
+        """Invalidation changes cache version."""
+        key_before = SearchCacheKey.create(query="test", archive_root=tmp_path)
+        invalidate_search_cache()
+        key_after = SearchCacheKey.create(query="test", archive_root=tmp_path)
+
+        # Keys should differ due to version change
+        assert key_before != key_after
+        assert key_before.cache_version < key_after.cache_version
+
+    def test_multiple_invalidations(self, tmp_path):
+        """Multiple invalidations increment version each time."""
+        v1 = SearchCacheKey.create(query="test", archive_root=tmp_path).cache_version
+        invalidate_search_cache()
+        v2 = SearchCacheKey.create(query="test", archive_root=tmp_path).cache_version
+        invalidate_search_cache()
+        v3 = SearchCacheKey.create(query="test", archive_root=tmp_path).cache_version
+
+        assert v1 < v2 < v3
+
+
+class TestCacheStats:
+    """Tests for cache statistics."""
+
+    def test_stats_returns_dict(self):
+        """get_cache_stats returns a dictionary."""
+        stats = get_cache_stats()
+        assert isinstance(stats, dict)
+        assert "cache_version" in stats
+
+    def test_stats_version_matches_current(self, tmp_path):
+        """Stats version matches what keys use."""
+        key = SearchCacheKey.create(query="test", archive_root=tmp_path)
+        stats = get_cache_stats()
+        assert stats["cache_version"] == key.cache_version
+
+
+class TestCacheThreadSafety:
+    """Thread safety tests for cache invalidation."""
+
+    def test_concurrent_invalidation(self):
+        """Concurrent invalidation doesn't corrupt state."""
+        initial_stats = get_cache_stats()
+        initial_version = initial_stats["cache_version"]
+
+        errors: list[Exception] = []
+        num_threads = 10
+        invalidations_per_thread = 100
+
+        def invalidate_many():
+            try:
+                for _ in range(invalidations_per_thread):
+                    invalidate_search_cache()
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=invalidate_many) for _ in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors
+        final_stats = get_cache_stats()
+        expected_version = initial_version + (num_threads * invalidations_per_thread)
+        assert final_stats["cache_version"] == expected_version
+
+
+# --- merged from test_session_index.py ---
+
+
+@pytest.fixture
+def sample_sessions_index(tmp_path):
+    """Create a sample sessions-index.json file."""
+    index_data = {
+        "version": 1,
+        "entries": [
+            {
+                "sessionId": "abc123-def456",
+                "fullPath": str(tmp_path / "abc123-def456.jsonl"),
+                "fileMtime": 1700000000000,
+                "firstPrompt": "How do I fix the bug in auth?",
+                "summary": "Fixed authentication bug in login flow",
+                "messageCount": 12,
+                "created": "2024-01-15T10:30:00.000Z",
+                "modified": "2024-01-15T11:45:00.000Z",
+                "gitBranch": "feature/auth-fix",
+                "projectPath": "/home/user/myproject",
+                "isSidechain": False,
+            },
+            {
+                "sessionId": "ghi789-jkl012",
+                "fullPath": str(tmp_path / "ghi789-jkl012.jsonl"),
+                "firstPrompt": "No prompt",
+                "summary": "User Exits CLI Session",
+                "messageCount": 2,
+                "created": "2024-01-14T08:00:00.000Z",
+                "modified": "2024-01-14T08:01:00.000Z",
+                "gitBranch": "main",
+                "projectPath": "/home/user/myproject",
+                "isSidechain": False,
+            },
+            {
+                "sessionId": "sidechain-test",
+                "fullPath": str(tmp_path / "sidechain-test.jsonl"),
+                "firstPrompt": "Analyze this code",
+                "summary": "Sidechain analysis task",
+                "messageCount": 5,
+                "created": "2024-01-16T14:00:00.000Z",
+                "modified": "2024-01-16T14:30:00.000Z",
+                "gitBranch": "main",
+                "projectPath": "/home/user/myproject",
+                "isSidechain": True,
+            },
+        ],
+    }
+
+    index_path = tmp_path / "sessions-index.json"
+    index_path.write_text(json.dumps(index_data))
+    return index_path
+
+
+@pytest.fixture
+def sample_conversation():
+    """Create a sample parsed conversation."""
+    return ParsedConversation(
+        provider_name="claude-code",
+        provider_conversation_id="abc123-def456",
+        title="abc123-def456",  # Default title is session ID
+        created_at=None,
+        updated_at=None,
+        messages=[
+            ParsedMessage(
+                provider_message_id="msg-1",
+                role="user",
+                text="How do I fix the bug?",
+                timestamp="1700000000",
+            ),
+            ParsedMessage(
+                provider_message_id="msg-2",
+                role="assistant",
+                text="Let me help you fix that bug.",
+                timestamp="1700000001",
+            ),
+        ],
+    )
+
+
+class TestParseSessionsIndex:
+    """Tests for parse_sessions_index function."""
+
+    def test_parses_valid_index(self, sample_sessions_index):
+        """Parses valid sessions-index.json file."""
+        entries = parse_sessions_index(sample_sessions_index)
+
+        assert len(entries) == 3
+        assert "abc123-def456" in entries
+        assert "ghi789-jkl012" in entries
+        assert "sidechain-test" in entries
+
+    def test_extracts_all_fields(self, sample_sessions_index):
+        """Extracts all expected fields from index entries."""
+        entries = parse_sessions_index(sample_sessions_index)
+        entry = entries["abc123-def456"]
+
+        assert entry.session_id == "abc123-def456"
+        assert entry.first_prompt == "How do I fix the bug in auth?"
+        assert entry.summary == "Fixed authentication bug in login flow"
+        assert entry.message_count == 12
+        assert entry.created == "2024-01-15T10:30:00.000Z"
+        assert entry.modified == "2024-01-15T11:45:00.000Z"
+        assert entry.git_branch == "feature/auth-fix"
+        assert entry.project_path == "/home/user/myproject"
+        assert entry.is_sidechain is False
+
+    def test_returns_empty_on_missing_file(self, tmp_path):
+        """Returns empty dict when file doesn't exist."""
+        entries = parse_sessions_index(tmp_path / "nonexistent.json")
+        assert entries == {}
+
+    def test_returns_empty_on_invalid_json(self, tmp_path):
+        """Returns empty dict on invalid JSON."""
+        index_path = tmp_path / "sessions-index.json"
+        index_path.write_text("not valid json")
+
+        entries = parse_sessions_index(index_path)
+        assert entries == {}
+
+    def test_returns_empty_on_missing_entries(self, tmp_path):
+        """Returns empty dict when entries key is missing."""
+        index_path = tmp_path / "sessions-index.json"
+        index_path.write_text('{"version": 1}')
+
+        entries = parse_sessions_index(index_path)
+        assert entries == {}
+
+
+class TestSessionIndexEntry:
+    """Tests for SessionIndexEntry dataclass."""
+
+    def test_from_dict_creates_entry(self):
+        """Creates entry from dictionary."""
+        data = {
+            "sessionId": "test-123",
+            "fullPath": "/path/to/session.jsonl",
+            "firstPrompt": "Hello",
+            "summary": "Test session",
+            "messageCount": 5,
+            "created": "2024-01-01T00:00:00.000Z",
+            "modified": "2024-01-01T01:00:00.000Z",
+            "gitBranch": "main",
+            "projectPath": "/project",
+            "isSidechain": False,
+        }
+
+        entry = SessionIndexEntry.from_dict(data)
+
+        assert entry.session_id == "test-123"
+        assert entry.summary == "Test session"
+        assert entry.message_count == 5
+
+    def test_from_dict_handles_missing_optional_fields(self):
+        """Handles missing optional fields gracefully."""
+        data = {"sessionId": "test-123", "fullPath": "/path/to/session.jsonl"}
+
+        entry = SessionIndexEntry.from_dict(data)
+
+        assert entry.session_id == "test-123"
+        assert entry.first_prompt is None
+        assert entry.summary is None
+        assert entry.is_sidechain is False
+
+
+class TestEnrichConversationFromIndex:
+    """Tests for enrich_conversation_from_index function."""
+
+    def test_enriches_title_with_summary(self, sample_conversation, sample_sessions_index):
+        """Uses summary as title when available."""
+        entries = parse_sessions_index(sample_sessions_index)
+        entry = entries["abc123-def456"]
+
+        enriched = enrich_conversation_from_index(sample_conversation, entry)
+
+        assert enriched.title == "Fixed authentication bug in login flow"
+
+    def test_enriches_timestamps(self, sample_conversation, sample_sessions_index):
+        """Uses index timestamps when conversation lacks them."""
+        entries = parse_sessions_index(sample_sessions_index)
+        entry = entries["abc123-def456"]
+
+        enriched = enrich_conversation_from_index(sample_conversation, entry)
+
+        assert enriched.created_at == "2024-01-15T10:30:00.000Z"
+        assert enriched.updated_at == "2024-01-15T11:45:00.000Z"
+
+    def test_enriches_provider_meta(self, sample_conversation, sample_sessions_index):
+        """Adds git branch and project path to provider_meta."""
+        entries = parse_sessions_index(sample_sessions_index)
+        entry = entries["abc123-def456"]
+
+        enriched = enrich_conversation_from_index(sample_conversation, entry)
+
+        assert enriched.provider_meta["gitBranch"] == "feature/auth-fix"
+        assert enriched.provider_meta["projectPath"] == "/home/user/myproject"
+        assert enriched.provider_meta["isSidechain"] is False
+
+    def test_uses_first_prompt_when_no_summary(self, sample_conversation, sample_sessions_index):
+        """Falls back to firstPrompt when summary is generic."""
+        entries = parse_sessions_index(sample_sessions_index)
+        entry = entries["ghi789-jkl012"]
+
+        enrich_conversation_from_index(sample_conversation, entry)
+
+        # "User Exits CLI Session" is filtered out, falls back to firstPrompt
+        # But "No prompt" is also filtered, so keeps original title
+        # Actually, let's check the logic...
+
+    def test_truncates_long_first_prompt(self, sample_conversation):
+        """Truncates firstPrompt if longer than 80 chars."""
+        long_prompt = "A" * 100
+        entry = SessionIndexEntry(
+            session_id="test",
+            full_path="/path",
+            first_prompt=long_prompt,
+            summary=None,  # No summary, use firstPrompt
+            message_count=1,
+            created=None,
+            modified=None,
+            git_branch=None,
+            project_path=None,
+            is_sidechain=False,
+        )
+
+        enriched = enrich_conversation_from_index(sample_conversation, entry)
+
+        assert len(enriched.title) == 83  # 80 + "..."
+        assert enriched.title.endswith("...")
+
+
+class TestFindSessionsIndex:
+    """Tests for find_sessions_index function."""
+
+    def test_finds_index_in_same_directory(self, sample_sessions_index, tmp_path):
+        """Finds sessions-index.json in session file directory."""
+        session_file = tmp_path / "test-session.jsonl"
+        session_file.touch()
+
+        index_path = find_sessions_index(session_file)
+
+        assert index_path is not None
+        assert index_path.name == "sessions-index.json"
+
+    def test_returns_none_when_no_index(self, tmp_path):
+        """Returns None when no sessions-index.json exists."""
+        session_file = tmp_path / "test-session.jsonl"
+        session_file.touch()
+
+        index_path = find_sessions_index(session_file)
+
+        assert index_path is None
+
+
+# --- merged from test_hybrid_search.py ---
+
+
+class TestReciprocalRankFusion:
+    """Tests for the RRF algorithm."""
+
+    def test_rrf_empty_inputs(self):
+        """RRF with empty inputs returns empty list."""
+        result = reciprocal_rank_fusion()
+        assert result == []
+
+    def test_rrf_single_list(self):
+        """RRF with single list preserves order."""
+        results = [("msg1", 0.9), ("msg2", 0.8), ("msg3", 0.7)]
+        fused = reciprocal_rank_fusion(results)
+
+        # Order should be preserved
+        ids = [item_id for item_id, _ in fused]
+        assert ids == ["msg1", "msg2", "msg3"]
+
+    def test_rrf_two_identical_lists(self):
+        """RRF with identical lists doubles scores."""
+        list1 = [("msg1", 0.9), ("msg2", 0.8)]
+        list2 = [("msg1", 0.9), ("msg2", 0.8)]
+
+        fused = reciprocal_rank_fusion(list1, list2, k=60)
+
+        # Each item appears in both lists, so scores are doubled
+        scores = dict(fused)
+
+        # Score for rank 1: 1/(60+1) = 0.0164, doubled = 0.0328
+        expected_msg1_score = 2 * (1.0 / 61)
+        assert abs(scores["msg1"] - expected_msg1_score) < 0.0001
+
+    def test_rrf_disjoint_lists(self):
+        """RRF with disjoint lists returns all items."""
+        list1 = [("msg1", 0.9), ("msg2", 0.8)]
+        list2 = [("msg3", 0.95), ("msg4", 0.85)]
+
+        fused = reciprocal_rank_fusion(list1, list2, k=60)
+
+        # All 4 items should be present
+        ids = {item_id for item_id, _ in fused}
+        assert ids == {"msg1", "msg2", "msg3", "msg4"}
+
+    def test_rrf_overlapping_lists(self):
+        """RRF boosts items appearing in multiple lists."""
+        # msg2 appears at rank 2 in fts, rank 1 in vec
+        fts_results = [("msg1", 0.9), ("msg2", 0.8), ("msg3", 0.7)]
+        vec_results = [("msg2", 0.95), ("msg1", 0.85), ("msg4", 0.6)]
+
+        fused = reciprocal_rank_fusion(fts_results, vec_results, k=60)
+
+        # msg2 should rank highest (appears in both, good ranks in both)
+        scores = dict(fused)
+
+        # msg2: rank 2 in fts (1/62) + rank 1 in vec (1/61) = higher than msg1
+        # msg1: rank 1 in fts (1/61) + rank 2 in vec (1/62) = same as msg2 actually
+        # Wait, they're symmetric so msg1 and msg2 should have equal scores
+        assert abs(scores["msg1"] - scores["msg2"]) < 0.0001
+
+        # msg3 and msg4 appear only once, so lower scores
+        assert scores["msg1"] > scores["msg3"]
+        assert scores["msg1"] > scores["msg4"]
+
+    def test_rrf_k_parameter_effect(self):
+        """Different k values affect score magnitudes."""
+        results = [("msg1", 0.9), ("msg2", 0.8)]
+
+        fused_k60 = reciprocal_rank_fusion(results, k=60)
+        fused_k10 = reciprocal_rank_fusion(results, k=10)
+
+        # Lower k means higher scores
+        scores_k60 = dict(fused_k60)
+        scores_k10 = dict(fused_k10)
+
+        assert scores_k10["msg1"] > scores_k60["msg1"]
+
+    def test_rrf_original_scores_ignored(self):
+        """RRF uses rank, not original scores."""
+        # Different original scores, same ranks
+        list1 = [("msg1", 0.999), ("msg2", 0.001)]
+        list2 = [("msg1", 0.5), ("msg2", 0.4)]
+
+        fused = reciprocal_rank_fusion(list1, list2, k=60)
+
+        scores = dict(fused)
+        # Both lists have same order, so RRF scores should be equal
+        # regardless of original score differences
+        assert scores["msg1"] == scores["msg1"]  # Trivially true, but shows intent
+
+    def test_rrf_many_lists(self):
+        """RRF works with many result lists."""
+        lists = [
+            [("msg1", 0.9), ("msg2", 0.8)],
+            [("msg2", 0.9), ("msg1", 0.8)],
+            [("msg1", 0.9), ("msg3", 0.8)],
+            [("msg3", 0.9), ("msg2", 0.8)],
+        ]
+
+        fused = reciprocal_rank_fusion(*lists, k=60)
+
+        # msg1 and msg2 appear 3 times, msg3 appears 2 times
+        scores = dict(fused)
+        assert scores["msg1"] > scores["msg3"]
+        assert scores["msg2"] > scores["msg3"]
+
+
+class TestHybridSearchProviderRRF:
+    """Tests for HybridSearchProvider."""
+
+    @pytest.fixture
+    def mock_fts_provider(self):
+        """Create mock FTS5 provider."""
+        provider = MagicMock()
+        provider.db_path = None
+        return provider
+
+    @pytest.fixture
+    def mock_vector_provider(self):
+        """Create mock vector provider."""
+        return MagicMock()
+
+    @pytest.fixture
+    def hybrid_provider(self, mock_fts_provider, mock_vector_provider):
+        """Create hybrid provider with mocks."""
+        return HybridSearchProvider(
+            fts_provider=mock_fts_provider,
+            vector_provider=mock_vector_provider,
+            rrf_k=60,
+        )
+
+    def test_search_combines_results(self, hybrid_provider, mock_fts_provider, mock_vector_provider):
+        """search() combines FTS and vector results."""
+        # Set up mock returns
+        mock_fts_provider.search.return_value = ["msg1", "msg2", "msg3"]
+        mock_vector_provider.query.return_value = [
+            ("msg2", 0.95),
+            ("msg4", 0.85),
+            ("msg1", 0.75),
+        ]
+
+        results = hybrid_provider.search("test query", limit=10)
+
+        # Should have items from both sources
+        ids = [item_id for item_id, _ in results]
+        assert "msg1" in ids
+        assert "msg2" in ids
+        assert "msg3" in ids
+        assert "msg4" in ids
+
+        # msg1 and msg2 appear in both, should rank higher
+        scores = dict(results)
+        assert scores["msg1"] > scores["msg3"]
+        assert scores["msg2"] > scores["msg4"]
+
+    def test_search_empty_fts_results(self, hybrid_provider, mock_fts_provider, mock_vector_provider):
+        """search() works with empty FTS results."""
+        mock_fts_provider.search.return_value = []
+        mock_vector_provider.query.return_value = [
+            ("msg1", 0.95),
+            ("msg2", 0.85),
+        ]
+
+        results = hybrid_provider.search("test query", limit=10)
+
+        # Should have vector results only
+        ids = [item_id for item_id, _ in results]
+        assert ids == ["msg1", "msg2"]
+
+    def test_search_empty_vector_results(self, hybrid_provider, mock_fts_provider, mock_vector_provider):
+        """search() works with empty vector results."""
+        mock_fts_provider.search.return_value = ["msg1", "msg2"]
+        mock_vector_provider.query.return_value = []
+
+        results = hybrid_provider.search("test query", limit=10)
+
+        # Should have FTS results only
+        ids = [item_id for item_id, _ in results]
+        assert "msg1" in ids
+        assert "msg2" in ids
+
+    def test_search_both_empty(self, hybrid_provider, mock_fts_provider, mock_vector_provider):
+        """search() returns empty when both sources empty."""
+        mock_fts_provider.search.return_value = []
+        mock_vector_provider.query.return_value = []
+
+        results = hybrid_provider.search("test query", limit=10)
+        assert results == []
+
+    def test_search_respects_limit(self, hybrid_provider, mock_fts_provider, mock_vector_provider):
+        """search() respects the limit parameter."""
+        mock_fts_provider.search.return_value = [f"msg{i}" for i in range(20)]
+        mock_vector_provider.query.return_value = [(f"vec{i}", 0.9) for i in range(20)]
+
+        results = hybrid_provider.search("test query", limit=5)
+        assert len(results) == 5
+
+    def test_search_conversations_deduplicates(self, hybrid_provider, mock_fts_provider, mock_vector_provider):
+        """search_conversations() returns unique conversation IDs."""
+        # Multiple messages from same conversation
+        mock_fts_provider.search.return_value = ["msg1", "msg2", "msg3"]
+        mock_vector_provider.query.return_value = [
+            ("msg2", 0.95),
+            ("msg4", 0.85),
+        ]
+
+        # Mock the database lookup
+        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+            mock_context = MagicMock()
+            mock_conn.return_value.__enter__.return_value = mock_context
+            mock_context.execute.return_value.fetchall.return_value = [
+                {"message_id": "msg1", "conversation_id": "conv1"},
+                {"message_id": "msg2", "conversation_id": "conv1"},  # Same conv as msg1
+                {"message_id": "msg3", "conversation_id": "conv2"},
+                {"message_id": "msg4", "conversation_id": "conv3"},
+            ]
+
+            results = hybrid_provider.search_conversations("test query", limit=10)
+
+            # Should have 3 unique conversations
+            assert len(results) == 3
+            assert len(set(results)) == len(results)  # All unique
+
+
+class TestHybridSearchIntegration:
+    """Integration-style tests with realistic scenarios."""
+
+    def test_rrf_academic_example(self):
+        """Test RRF with academic paper example scenario.
+
+        Based on the original RRF paper, items appearing in multiple
+        rankings should be boosted proportionally.
+        """
+        # Simulate search results from two different ranking systems
+        # Both rank "python tutorial" highly but in different orders
+        fts_ranking = [
+            ("doc_python_intro", 0.95),
+            ("doc_python_advanced", 0.85),
+            ("doc_java_basics", 0.75),
+            ("doc_python_tips", 0.65),
+        ]
+
+        semantic_ranking = [
+            ("doc_python_advanced", 0.92),
+            ("doc_python_intro", 0.88),
+            ("doc_python_tips", 0.78),
+            ("doc_rust_guide", 0.68),
+        ]
+
+        fused = reciprocal_rank_fusion(fts_ranking, semantic_ranking, k=60)
+        ids = [doc_id for doc_id, _ in fused]
+
+        # Python docs should dominate (appear in both)
+        top_3 = ids[:3]
+        assert "doc_python_intro" in top_3
+        assert "doc_python_advanced" in top_3
+        assert "doc_python_tips" in top_3
+
+        # Java and Rust only appear once, should be lower
+        scores = dict(fused)
+        python_score = min(scores["doc_python_intro"], scores["doc_python_advanced"])
+        single_source_score = max(scores.get("doc_java_basics", 0), scores.get("doc_rust_guide", 0))
+        assert python_score > single_source_score
+
+
+# --- merged from test_search_provider_filtering.py ---
+
+
+class TestProviderFilteringIntegration:
+    """Integration tests for provider filtering in search.
+
+    These tests verify the fix for the FTS + provider filter bug where
+    filters were applied post-search instead of pre-search.
+    """
+
+    @pytest.fixture
+    def hybrid_provider(self):
+        """Create a HybridSearchProvider with mocked dependencies."""
+        mock_fts = MagicMock()
+        mock_fts.db_path = None
+        mock_vec = MagicMock()
+
+        return HybridSearchProvider(
+            fts_provider=mock_fts,
+            vector_provider=mock_vec,
+            rrf_k=60,
+        )
+
+    def test_provider_filter_applied_before_limit(self, hybrid_provider):
+        """Provider filter should be applied before limit, not after.
+
+        Bug scenario: Search returns 30 messages from "claude" provider,
+        but user wants "chatgpt" only. Old code would:
+        1. Get 30 claude messages
+        2. Apply limit=10 → 10 claude messages
+        3. Filter to chatgpt → 0 results
+
+        Fixed code should:
+        1. Get all matching messages
+        2. Filter by provider DURING conversation lookup
+        3. Return up to limit chatgpt conversations
+        """
+        # Mock search returns messages from various providers
+        hybrid_provider.fts_provider.search.return_value = [
+            f"msg-claude-{i}" for i in range(15)
+        ] + [f"msg-chatgpt-{i}" for i in range(5)]
+
+        hybrid_provider.vector_provider.query.return_value = [
+            (f"msg-claude-{i}", 0.9 - i * 0.01) for i in range(10)
+        ]
+
+        # Mock database to return conversation IDs with provider info
+        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+            mock_context = MagicMock()
+            mock_conn.return_value.__enter__.return_value = mock_context
+
+            # First call: message → conversation mapping
+            def mock_execute(*args, **kwargs):
+                sql = args[0] if args else ""
+                params = args[1] if len(args) > 1 else []
+
+                result = MagicMock()
+                if "FROM messages WHERE message_id IN" in sql:
+                    # Map messages to conversations
+                    rows = []
+                    for msg_id in params:
+                        if "claude" in msg_id:
+                            rows.append({
+                                "message_id": msg_id,
+                                "conversation_id": f"conv-claude-{msg_id.split('-')[2]}"
+                            })
+                        elif "chatgpt" in msg_id:
+                            rows.append({
+                                "message_id": msg_id,
+                                "conversation_id": f"conv-chatgpt-{msg_id.split('-')[2]}"
+                            })
+                    result.fetchall.return_value = rows
+                elif "FROM conversations" in sql and "provider_name IN" in sql and "source_name IN" in sql:
+                    # Provider filtering query (checks both provider_name and source_name)
+                    if "chatgpt" in str(params):
+                        # Return only chatgpt conversation IDs
+                        rows = [{
+                            "conversation_id": f"conv-chatgpt-{i}"
+                        } for i in range(5)]
+                    else:
+                        rows = []
+                    result.fetchall.return_value = rows
+                else:
+                    result.fetchall.return_value = []
+
+                return result
+
+            mock_context.execute.side_effect = mock_execute
+
+            # Search with provider filter
+            results = hybrid_provider.search_conversations(
+                "test query",
+                limit=10,
+                providers=["chatgpt"]
+            )
+
+            # Should return chatgpt conversations, not empty
+            assert len(results) > 0
+            # All results should be chatgpt conversations
+            assert all("chatgpt" in conv_id for conv_id in results)
+
+    def test_provider_filter_none_returns_all(self, hybrid_provider):
+        """When providers=None, should return conversations from all providers."""
+        hybrid_provider.fts_provider.search.return_value = [
+            "msg-claude-1", "msg-chatgpt-1", "msg-gemini-1"
+        ]
+        hybrid_provider.vector_provider.query.return_value = []
+
+        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+            mock_context = MagicMock()
+            mock_conn.return_value.__enter__.return_value = mock_context
+
+            mock_context.execute.return_value.fetchall.return_value = [
+                {"message_id": "msg-claude-1", "conversation_id": "conv-1"},
+                {"message_id": "msg-chatgpt-1", "conversation_id": "conv-2"},
+                {"message_id": "msg-gemini-1", "conversation_id": "conv-3"},
+            ]
+
+            results = hybrid_provider.search_conversations(
+                "test query",
+                limit=10,
+                providers=None  # No filter
+            )
+
+            # Should return all 3 conversations
+            assert len(results) == 3
+
+    def test_provider_filter_multiple_providers(self, hybrid_provider):
+        """Can filter by multiple providers at once."""
+        hybrid_provider.fts_provider.search.return_value = [
+            "msg-claude-1", "msg-chatgpt-1", "msg-gemini-1"
+        ]
+        hybrid_provider.vector_provider.query.return_value = []
+
+        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+            mock_context = MagicMock()
+            mock_conn.return_value.__enter__.return_value = mock_context
+
+            def mock_execute(*args, **kwargs):
+                sql = args[0] if args else ""
+                params = args[1] if len(args) > 1 else ()
+
+                result = MagicMock()
+                if "FROM messages WHERE message_id IN" in sql:
+                    result.fetchall.return_value = [
+                        {"message_id": "msg-claude-1", "conversation_id": "conv-1"},
+                        {"message_id": "msg-chatgpt-1", "conversation_id": "conv-2"},
+                        {"message_id": "msg-gemini-1", "conversation_id": "conv-3"},
+                    ]
+                elif "FROM conversations" in sql and ("provider_name IN" in sql or "source_name IN" in sql):
+                    # Filter to claude and chatgpt only based on params
+                    # The actual SQL checks both provider_name and source_name with OR
+                    if "claude" in str(params) and "chatgpt" in str(params):
+                        result.fetchall.return_value = [
+                            {"conversation_id": "conv-1"},
+                            {"conversation_id": "conv-2"},
+                        ]
+                    else:
+                        result.fetchall.return_value = []
+                else:
+                    result.fetchall.return_value = []
+                return result
+
+            mock_context.execute.side_effect = mock_execute
+
+            results = hybrid_provider.search_conversations(
+                "test query",
+                limit=10,
+                providers=["claude", "chatgpt"]
+            )
+
+            # Should return claude and chatgpt, but not gemini
+            assert len(results) == 2
+            assert "conv-1" in results
+            assert "conv-2" in results
+            assert "conv-3" not in results
+
+
+class TestFTS5ProviderDirectFiltering:
+    """Tests for FTS5Provider when used directly (not through hybrid).
+
+    While FTS5Provider doesn't have provider filtering in its search() method,
+    it should be tested to ensure it returns correct message IDs that can then
+    be filtered by the caller.
+    """
+
+    @pytest.fixture
+    def fts_provider(self, tmp_path: Path):
+        """Create an FTS5Provider with a test database."""
+        from polylogue.storage.search_providers.fts5 import FTS5Provider
+
+        db_path = tmp_path / "test.db"
+        return FTS5Provider(db_path=db_path)
+
+    def test_fts_search_returns_message_ids(self, fts_provider):
+        """FTS5Provider.search() should return a list of message IDs."""
+        # This is a contract test - search should return list[str]
+        # Even with empty database, it should return empty list, not None or error
+
+        results = fts_provider.search("nonexistent query")
+
+        assert isinstance(results, list)
+        assert all(isinstance(msg_id, str) for msg_id in results)
+
+    def test_fts_search_empty_query(self, fts_provider):
+        """Empty query should return empty results, not error."""
+        results = fts_provider.search("")
+        assert results == []
+
+    def test_fts_search_special_characters(self, fts_provider):
+        """Special characters in query should not crash FTS.
+
+        Note: FTS5 has special syntax - '?' is a syntax error.
+        This test documents that behavior. In production, queries should
+        be sanitized or wrapped in quotes to prevent syntax errors.
+        """
+        # Safe queries (valid FTS5 syntax)
+        safe_queries = [
+            "test",
+            "test AND query",
+            "test OR query",
+            'test "quoted phrase"',
+            "test*",
+        ]
+
+        for query in safe_queries:
+            results = fts_provider.search(query)
+            assert isinstance(results, list)
+
+        # Known syntax errors in FTS5
+        # These would need escaping/quoting in production
+        syntax_error_queries = ["test?"]
+
+        for query in syntax_error_queries:
+            # Should raise OperationalError with syntax error
+            # This is expected behavior - FTS5 query syntax is strict
+            try:
+                results = fts_provider.search(query)
+            except Exception:
+                # Expected - FTS5 syntax error
+                pass
+
+
+class TestSearchProviderSourceFiltering:
+    """Tests for source_name filtering in addition to provider_name.
+
+    The bug fix added support for filtering by source_name as well, since
+    some providers (like claude-code) can have multiple sources.
+    """
+
+    def test_hybrid_search_filters_by_source_name(self):
+        """HybridSearchProvider should filter by source_name as well as provider_name."""
+        mock_fts = MagicMock()
+        mock_fts.db_path = None
+        mock_fts.search.return_value = ["msg-1", "msg-2"]
+
+        mock_vec = MagicMock()
+        mock_vec.query.return_value = []
+
+        provider = HybridSearchProvider(
+            fts_provider=mock_fts,
+            vector_provider=mock_vec,
+        )
+
+        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+            mock_context = MagicMock()
+            mock_conn.return_value.__enter__.return_value = mock_context
+
+            def mock_execute(*args, **kwargs):
+                sql = args[0] if args else ""
+                params = args[1] if len(args) > 1 else []
+
+                result = MagicMock()
+                if "FROM messages WHERE message_id IN" in sql:
+                    result.fetchall.return_value = [
+                        {"message_id": "msg-1", "conversation_id": "conv-1"},
+                        {"message_id": "msg-2", "conversation_id": "conv-2"},
+                    ]
+                elif "provider_name IN" in sql and "source_name IN" in sql:
+                    # The fix checks both provider_name and source_name
+                    # This should be an OR condition (either matches)
+                    result.fetchall.return_value = [
+                        {"conversation_id": "conv-1"},
+                    ]
+                else:
+                    result.fetchall.return_value = []
+                return result
+
+            mock_context.execute.side_effect = mock_execute
+
+            results = provider.search_conversations(
+                "test",
+                limit=10,
+                providers=["specific-source"]
+            )
+
+            # Should have called the SQL with both provider_name and source_name checks
+            calls = [str(call) for call in mock_context.execute.call_args_list]
+            sql_calls = [call for call in calls if "provider_name" in call]
+
+            # Should have made a call checking both columns
+            assert any("source_name" in call for call in sql_calls)
 
 
 if __name__ == "__main__":
