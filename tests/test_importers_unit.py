@@ -805,8 +805,8 @@ NORMALIZE_ROLE_CASE_INSENSITIVE_CASES = [
 NORMALIZE_ROLE_EDGE_CASES = [
     ("  user  ", "user", "whitespace stripped user"),
     ("\tassistant\n", "assistant", "whitespace stripped assistant"),
-    ("custom_role", "custom_role", "unrecognized lowercased"),
-    ("BOT", "bot", "unrecognized BOT lowercased"),
+    ("custom_role", "unknown", "unrecognized returns unknown"),
+    ("BOT", "unknown", "unrecognized BOT returns unknown"),
 ]
 
 NORMALIZE_ROLE_STRICT_CASES = [

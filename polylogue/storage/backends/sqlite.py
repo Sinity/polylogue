@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 from collections.abc import Callable, Iterator
@@ -19,6 +18,8 @@ from polylogue.storage.store import (
     MessageRecord,
     RawConversationRecord,
     RunRecord,
+    _json_or_none,
+    _make_ref_id,
 )
 from polylogue.types import ConversationId
 
@@ -33,6 +34,101 @@ def _parse_json(raw: str | None, *, field: str = "", record_id: str = "") -> Any
         raise DatabaseError(
             f"Corrupt JSON in {field} for {record_id}: {exc} (value starts: {raw[:80]!r})"
         ) from exc
+
+
+def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
+    """Map a SQLite row to a ConversationRecord."""
+    return ConversationRecord(
+        conversation_id=row["conversation_id"],
+        provider_name=row["provider_name"],
+        provider_conversation_id=row["provider_conversation_id"],
+        title=row["title"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        content_hash=row["content_hash"],
+        provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
+        metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
+        version=row["version"],
+        parent_conversation_id=row["parent_conversation_id"],
+        branch_type=row["branch_type"],
+        raw_id=row["raw_id"],
+    )
+
+
+def _row_to_message(row: sqlite3.Row) -> MessageRecord:
+    """Map a SQLite row to a MessageRecord."""
+    return MessageRecord(
+        message_id=row["message_id"],
+        conversation_id=row["conversation_id"],
+        provider_message_id=row["provider_message_id"],
+        role=row["role"],
+        text=row["text"],
+        timestamp=row["timestamp"],
+        content_hash=row["content_hash"],
+        provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["message_id"]),
+        version=row["version"],
+        parent_message_id=row["parent_message_id"],
+        branch_index=row["branch_index"] or 0,
+    )
+
+
+def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
+    """Map a SQLite row to a RawConversationRecord."""
+    return RawConversationRecord(
+        raw_id=row["raw_id"],
+        provider_name=row["provider_name"],
+        source_name=row["source_name"],
+        source_path=row["source_path"],
+        source_index=row["source_index"],
+        raw_content=row["raw_content"],
+        acquired_at=row["acquired_at"],
+        file_mtime=row["file_mtime"],
+    )
+
+
+def _build_conversation_filters(
+    *,
+    source: str | None = None,
+    provider: str | None = None,
+    providers: list[str] | None = None,
+    parent_id: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    title_contains: str | None = None,
+) -> tuple[str, list[str | int]]:
+    """Build WHERE clause and params for conversation queries."""
+    where_clauses: list[str] = []
+    params: list[str | int] = []
+
+    if source is not None:
+        where_clauses.append("source_name = ?")
+        params.append(source)
+    if provider is not None:
+        where_clauses.append("provider_name = ?")
+        params.append(provider)
+    if providers:
+        placeholders = ",".join("?" for _ in providers)
+        where_clauses.append(
+            f"(provider_name IN ({placeholders}) OR source_name IN ({placeholders}))"
+        )
+        params.extend(providers)
+        params.extend(providers)
+    if parent_id is not None:
+        where_clauses.append("parent_conversation_id = ?")
+        params.append(parent_id)
+    if since is not None:
+        where_clauses.append("updated_at >= ?")
+        params.append(since)
+    if until is not None:
+        where_clauses.append("updated_at <= ?")
+        params.append(until)
+    if title_contains is not None:
+        escaped = title_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where_clauses.append("title LIKE ? ESCAPE '\\'")
+        params.append(f"%{escaped}%")
+
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    return where_sql, params
 
 
 class DatabaseError(Exception):
@@ -130,18 +226,6 @@ def default_db_path() -> Path:
     tests can reload the paths module with monkeypatched XDG_DATA_HOME.
     """
     return _paths.DATA_HOME / "polylogue.db"
-
-
-def _json_or_none(value: dict[str, object] | None) -> str | None:
-    if value is None:
-        return None
-    return json_dumps(value)
-
-
-def _make_ref_id(attachment_id: str, conversation_id: str, message_id: str | None) -> str:
-    seed = f"{attachment_id}:{conversation_id}:{message_id or ''}"
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
-    return f"ref-{digest}"
 
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
@@ -940,21 +1024,7 @@ class SQLiteBackend:
         if row is None:
             return None
 
-        return ConversationRecord(
-            conversation_id=row["conversation_id"],
-            provider_name=row["provider_name"],
-            provider_conversation_id=row["provider_conversation_id"],
-            title=row["title"],
-            created_at=row["created_at"],
-            updated_at=row["updated_at"],
-            content_hash=row["content_hash"],
-            provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
-            metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
-            version=row["version"],
-            parent_conversation_id=row["parent_conversation_id"],
-            branch_type=row["branch_type"],
-            raw_id=row["raw_id"],
-        )
+        return _row_to_conversation(row)
 
     def get_conversations_batch(self, ids: list[str]) -> list[ConversationRecord]:
         """Retrieve multiple conversations in a single query.
@@ -980,21 +1050,7 @@ class SQLiteBackend:
         # Build lookup for order preservation
         by_id = {}
         for row in rows:
-            by_id[row["conversation_id"]] = ConversationRecord(
-                conversation_id=row["conversation_id"],
-                provider_name=row["provider_name"],
-                provider_conversation_id=row["provider_conversation_id"],
-                title=row["title"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-                content_hash=row["content_hash"],
-                provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
-                metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
-                version=row["version"],
-                parent_conversation_id=row["parent_conversation_id"],
-                branch_type=row["branch_type"],
-                raw_id=row["raw_id"],
-            )
+            by_id[row["conversation_id"]] = _row_to_conversation(row)
 
         return [by_id[cid] for cid in ids if cid in by_id]
 
@@ -1026,43 +1082,11 @@ class SQLiteBackend:
         conn = self._get_connection()
 
         # Build query with filters
-        where_clauses = []
-        params: list[str | int] = []
-
-        if source is not None:
-            where_clauses.append("source_name = ?")
-            params.append(source)
-
-        if provider is not None:
-            where_clauses.append("provider_name = ?")
-            params.append(provider)
-
-        if providers:
-            placeholders = ",".join("?" for _ in providers)
-            where_clauses.append(
-                f"(provider_name IN ({placeholders}) OR source_name IN ({placeholders}))"
-            )
-            params.extend(providers)
-            params.extend(providers)
-
-        if parent_id is not None:
-            where_clauses.append("parent_conversation_id = ?")
-            params.append(parent_id)
-
-        if since is not None:
-            where_clauses.append("updated_at >= ?")
-            params.append(since)
-
-        if until is not None:
-            where_clauses.append("updated_at <= ?")
-            params.append(until)
-
-        if title_contains is not None:
-            escaped = title_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            where_clauses.append("title LIKE ? ESCAPE '\\'")
-            params.append(f"%{escaped}%")
-
-        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        where_sql, params = _build_conversation_filters(
+            source=source, provider=provider, providers=providers,
+            parent_id=parent_id,
+            since=since, until=until, title_contains=title_contains,
+        )
 
         # Build full query with ordering and pagination
         query = f"""
@@ -1087,24 +1111,7 @@ class SQLiteBackend:
 
         rows = conn.execute(query, tuple(params)).fetchall()
 
-        return [
-            ConversationRecord(
-                conversation_id=row["conversation_id"],
-                provider_name=row["provider_name"],
-                provider_conversation_id=row["provider_conversation_id"],
-                title=row["title"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-                content_hash=row["content_hash"],
-                provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
-                metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
-                version=row["version"],
-                parent_conversation_id=row["parent_conversation_id"],
-                branch_type=row["branch_type"],
-                raw_id=row["raw_id"],
-            )
-            for row in rows
-        ]
+        return [_row_to_conversation(row) for row in rows]
 
     def count_conversations(
         self,
@@ -1121,34 +1128,10 @@ class SQLiteBackend:
         just the count via COUNT(*) for maximum efficiency.
         """
         conn = self._get_connection()
-        where_clauses = []
-        params: list[str | int] = []
-
-        if source is not None:
-            where_clauses.append("source_name = ?")
-            params.append(source)
-        if provider is not None:
-            where_clauses.append("provider_name = ?")
-            params.append(provider)
-        if providers:
-            placeholders = ",".join("?" for _ in providers)
-            where_clauses.append(
-                f"(provider_name IN ({placeholders}) OR source_name IN ({placeholders}))"
-            )
-            params.extend(providers)
-            params.extend(providers)
-        if since is not None:
-            where_clauses.append("updated_at >= ?")
-            params.append(since)
-        if until is not None:
-            where_clauses.append("updated_at <= ?")
-            params.append(until)
-        if title_contains is not None:
-            escaped = title_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            where_clauses.append("title LIKE ? ESCAPE '\\'")
-            params.append(f"%{escaped}%")
-
-        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        where_sql, params = _build_conversation_filters(
+            source=source, provider=provider, providers=providers,
+            since=since, until=until, title_contains=title_contains,
+        )
         row = conn.execute(
             f"SELECT COUNT(*) as cnt FROM conversations {where_sql}",
             tuple(params),
@@ -1223,22 +1206,7 @@ class SQLiteBackend:
             (conversation_id,),
         ).fetchall()
 
-        return [
-            MessageRecord(
-                message_id=row["message_id"],
-                conversation_id=row["conversation_id"],
-                provider_message_id=row["provider_message_id"],
-                role=row["role"],
-                text=row["text"],
-                timestamp=row["timestamp"],
-                content_hash=row["content_hash"],
-                provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["message_id"]),
-                version=row["version"],
-                parent_message_id=row["parent_message_id"],
-                branch_index=row["branch_index"] or 0,
-            )
-            for row in rows
-        ]
+        return [_row_to_message(row) for row in rows]
 
     def save_messages(self, records: list[MessageRecord]) -> None:
         """Persist multiple message records using bulk insert."""
@@ -1445,24 +1413,7 @@ class SQLiteBackend:
             (parent_id,),
         ).fetchall()
 
-        return [
-            ConversationRecord(
-                conversation_id=row["conversation_id"],
-                provider_name=row["provider_name"],
-                provider_conversation_id=row["provider_conversation_id"],
-                title=row["title"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-                content_hash=row["content_hash"],
-                provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
-                metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
-                version=row["version"],
-                parent_conversation_id=row["parent_conversation_id"],
-                branch_type=row["branch_type"],
-                raw_id=row["raw_id"],
-            )
-            for row in rows
-        ]
+        return [_row_to_conversation(row) for row in rows]
 
     def resolve_id(self, id_prefix: str) -> str | None:
         """Resolve a partial conversation ID to a full ID.
@@ -1828,19 +1779,7 @@ class SQLiteBackend:
                 break
 
             for row in rows:
-                yield MessageRecord(
-                    message_id=row["message_id"],
-                    conversation_id=row["conversation_id"],
-                    provider_message_id=row["provider_message_id"],
-                    role=row["role"],
-                    text=row["text"],
-                    timestamp=row["timestamp"],
-                    content_hash=row["content_hash"],
-                    provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["message_id"]),
-                    version=row["version"],
-                    parent_message_id=row["parent_message_id"],
-                    branch_index=row["branch_index"] or 0,
-                )
+                yield _row_to_message(row)
                 yielded += 1
 
                 if limit is not None and yielded >= limit:
@@ -1991,16 +1930,7 @@ class SQLiteBackend:
         if row is None:
             return None
 
-        return RawConversationRecord(
-            raw_id=row["raw_id"],
-            provider_name=row["provider_name"],
-            source_name=row["source_name"],
-            source_path=row["source_path"],
-            source_index=row["source_index"],
-            raw_content=row["raw_content"],
-            acquired_at=row["acquired_at"],
-            file_mtime=row["file_mtime"],
-        )
+        return _row_to_raw_conversation(row)
 
     def iter_raw_conversations(
         self,
@@ -2034,16 +1964,7 @@ class SQLiteBackend:
         rows = conn.execute(query, tuple(params)).fetchall()
 
         for row in rows:
-            yield RawConversationRecord(
-                raw_id=row["raw_id"],
-                provider_name=row["provider_name"],
-                source_name=row["source_name"],
-                source_path=row["source_path"],
-                source_index=row["source_index"],
-                raw_content=row["raw_content"],
-                acquired_at=row["acquired_at"],
-                file_mtime=row["file_mtime"],
-            )
+            yield _row_to_raw_conversation(row)
 
     def get_raw_conversation_count(self, provider: str | None = None) -> int:
         """Get count of raw conversations.

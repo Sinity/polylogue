@@ -59,14 +59,10 @@ class TestRoleNormalization:
         with pytest.raises(ValueError, match="cannot be empty"):
             normalize_role("   ")
 
-    def test_normalize_unrecognized_returns_lowercased(self):
-        """Unrecognized roles should return lowercased original.
-
-        This allows for future role types without breaking existing code.
-        The 'unknown' role is a valid return value for truly unknown roles.
-        """
-        assert normalize_role("custom_role") == "custom_role"
-        assert normalize_role("CUSTOM") == "custom"
+    def test_normalize_unrecognized_returns_unknown(self):
+        """Unrecognized roles should return 'unknown'."""
+        assert normalize_role("custom_role") == "unknown"
+        assert normalize_role("CUSTOM") == "unknown"
 
     def test_role_enum_normalize_unknown(self):
         """Role.normalize() should return UNKNOWN for unrecognized roles."""
@@ -176,16 +172,11 @@ class TestParserRoleMappings:
             assert normalized != "unknown"
 
     def test_unknown_role_detection(self):
-        """Messages with truly unknown roles should be detected as such.
-
-        This is intentional behavior - if a provider sends a role we don't
-        recognize, it should normalize to that role (lowercased) or 'unknown'.
-        """
+        """Messages with truly unknown roles should be detected as such."""
         weird_role = "custom_ai_role"
         normalized = normalize_role(weird_role)
 
-        # Should return lowercased original
-        assert normalized == "custom_ai_role"
+        assert normalized == "unknown"
 
         # When using Role enum, should be UNKNOWN
         role_enum = Role.normalize(weird_role)
@@ -288,7 +279,7 @@ class TestRoleValidationInPipeline:
         for role in weird_roles:
             try:
                 result = normalize_role(role)
-                # Should return lowercased original, not crash
+                # Should return 'unknown', not crash
                 assert isinstance(result, str)
                 assert result.islower()
             except ValueError:

@@ -95,8 +95,8 @@ CLAUDE_CODE_TIMESTAMP_PARSING = [
 CLAUDE_AI_ROLE_MAPPING = [
     ("human", "user"),
     ("assistant", "assistant"),
-    ("system", "assistant"),
-    ("", "assistant"),
+    ("system", "system"),
+    ("", "unknown"),
 ]
 
 

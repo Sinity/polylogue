@@ -18,8 +18,8 @@ from polylogue.pipeline.runner import (
     run_sources,
 )
 from polylogue.storage.backends.sqlite import open_connection
-from polylogue.storage.store import PlanResult, store_records
-from tests.helpers import make_conversation
+from polylogue.storage.store import PlanResult
+from tests.helpers import make_conversation, store_records
 
 
 class TestRenderFailureTracking:

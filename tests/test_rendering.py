@@ -24,7 +24,6 @@ from polylogue.rendering.renderers import (
     list_formats,
 )
 from polylogue.storage.backends.sqlite import open_connection
-from polylogue.storage.store import store_records
 from tests.helpers import (
     ConversationBuilder,
     assert_contains_all,
@@ -33,6 +32,7 @@ from tests.helpers import (
     db_setup,
     make_conversation,
     make_message,
+    store_records,
 )
 
 # =============================================================================

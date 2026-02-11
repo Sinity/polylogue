@@ -29,9 +29,8 @@ from polylogue.storage.store import (
     ConversationRecord,
     MessageRecord,
     RunRecord,
-    store_records,
 )
-from tests.helpers import ConversationBuilder, make_conversation, make_message, make_attachment
+from tests.helpers import ConversationBuilder, make_conversation, make_message, make_attachment, store_records
 
 
 @pytest.fixture
