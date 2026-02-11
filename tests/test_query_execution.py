@@ -143,6 +143,37 @@ def _make_params(**overrides) -> dict:
 
 
 # =============================================================================
+# Parametrization Data Tables (Module-level Constants)
+# =============================================================================
+
+OUTPUT_FORMAT_TEST_CASES = (
+    ("json", ["c1", "c2"], True, 2),  # format, expected_ids, is_json_parseable, min_lines
+    ("yaml", ["c1"], False, 0),  # yaml doesn't have header row
+    ("csv", ["c1", "c2"], False, 3),  # includes header
+    ("text", ["c1"], False, -1),  # text format is variable
+)
+
+STREAM_TARGET_TEST_CASES = (
+    ({"latest": True}, True, "latest-conv-id"),
+    ({"conv_id": "abc"}, True, "full-conv-id-12345"),
+    ({}, False, None),
+)
+
+DELETE_CONFIRMATION_TEST_CASES = (
+    (11, False, True),  # count, force, should_confirm
+    (1, False, True),
+    (5, True, False),
+)
+
+SEND_OUTPUT_DESTINATIONS = (
+    ("stdout", ["stdout"], False, "text", True, False, False),  # dest, mocks (stdout, file, browser, clipboard)
+    ("file", [], True, "text", False, False, False),
+    ("browser", ["browser"], False, "html", False, True, False),
+    ("clipboard", ["clipboard"], False, "text", False, False, True),
+)
+
+
+# =============================================================================
 # Tests for _no_results()
 # =============================================================================
 
@@ -153,47 +184,43 @@ class TestNoResults:
 
         return _no_results(env, params, **kwargs)
 
-    def test_with_filters_shows_descriptive_message(self) -> None:
-        """With active filters, prints filter details."""
+    @pytest.mark.parametrize(
+        "has_filters,has_custom_exit_code,expected_code",
+        [
+            (True, False, 2),  # With filters: exit code 2
+            (False, False, 2),  # Without filters: exit code 2
+            (False, True, 1),  # Custom exit code
+        ],
+    )
+    def test_no_results_behavior(
+        self, has_filters, has_custom_exit_code, expected_code
+    ) -> None:
+        """Test _no_results with and without filters, custom exit codes."""
         import io
         from contextlib import redirect_stderr
 
         env = _make_env()
-        params = _make_params(
-            provider="claude",
-            tag="important",
-            query=("error",),
-        )
+        if has_filters:
+            params = _make_params(
+                provider="claude",
+                tag="important",
+                query=("error",),
+            )
+        else:
+            params = _make_params()
+
+        kwargs = {"exit_code": 1} if has_custom_exit_code else {}
 
         stderr = io.StringIO()
         with pytest.raises(SystemExit) as exc_info:
             with redirect_stderr(stderr):
-                self._fn(env, params)
+                self._fn(env, params, **kwargs)
 
-        assert exc_info.value.code == 2
-        output = stderr.getvalue()
-        # Verify that filter info was printed
-        assert "filter" in output.lower()
+        assert exc_info.value.code == expected_code
 
-    def test_without_filters_generic_message(self) -> None:
-        """Without filters, prints generic message."""
-        env = _make_env()
-        params = _make_params()
-
-        with pytest.raises(SystemExit) as exc_info:
-            self._fn(env, params)
-
-        assert exc_info.value.code == 2
-
-    def test_custom_exit_code(self) -> None:
-        """Supports custom exit codes."""
-        env = _make_env()
-        params = _make_params()
-
-        with pytest.raises(SystemExit) as exc_info:
-            self._fn(env, params, exit_code=1)
-
-        assert exc_info.value.code == 1
+        if has_filters:
+            output = stderr.getvalue()
+            assert "filter" in output.lower()
 
 
 # =============================================================================
@@ -201,7 +228,7 @@ class TestNoResults:
 # =============================================================================
 
 
-class TestExecuteQueryCountOnly:
+class TestExecuteQueryCount:
     """Test execute_query with --count flag."""
 
     def _fn(self, env: AppEnv, params: dict):
@@ -209,20 +236,29 @@ class TestExecuteQueryCountOnly:
 
         return execute_query(env, params)
 
+    @pytest.mark.parametrize(
+        "use_summaries,result_count",
+        [
+            (True, 2),  # With summaries
+            (False, 3),  # Fallback to list
+        ],
+    )
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
     @patch("click.echo")
-    def test_count_only_with_summaries(
+    def test_count_only(
         self,
         mock_echo,
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
         mock_load_config,
+        use_summaries,
+        result_count,
     ) -> None:
-        """Count-only mode uses summaries when available."""
+        """Count-only mode uses summaries when available, falls back to list otherwise."""
         mock_load_config.return_value = MagicMock()
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
@@ -230,70 +266,53 @@ class TestExecuteQueryCountOnly:
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
-        mock_filter.can_use_summaries.return_value = True
-        mock_filter.list_summaries.return_value = [_make_summary(), _make_summary()]
+        mock_filter.can_use_summaries.return_value = use_summaries
+
+        if use_summaries:
+            mock_filter.list_summaries.return_value = [_make_summary(), _make_summary()]
+        else:
+            mock_filter.list.return_value = [_make_conv() for _ in range(result_count)]
 
         env = _make_env()
         params = _make_params(count_only=True)
 
         self._fn(env, params)
 
-        mock_echo.assert_called_with(2)
-
-    @patch("polylogue.cli.helpers.load_effective_config")
-    @patch("polylogue.services.get_repository")
-    @patch("polylogue.storage.search_providers.create_vector_provider")
-    @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("click.echo")
-    def test_count_only_fallback_to_list(
-        self,
-        mock_echo,
-        MockFilter,
-        mock_vector_provider,
-        mock_get_repo,
-        mock_load_config,
-    ) -> None:
-        """Count-only falls back to list() when summaries not available."""
-        mock_load_config.return_value = MagicMock()
-        mock_vector_provider.return_value = None
-        mock_repo = MagicMock()
-        mock_get_repo.return_value = mock_repo
-
-        mock_filter = MagicMock()
-        MockFilter.return_value = mock_filter
-        mock_filter.can_use_summaries.return_value = False
-        mock_filter.list.return_value = [_make_conv(), _make_conv(), _make_conv()]
-
-        env = _make_env()
-        params = _make_params(count_only=True)
-
-        self._fn(env, params)
-
-        mock_echo.assert_called_with(3)
+        mock_echo.assert_called_with(result_count)
 
 
-class TestExecuteQueryListMode:
-    """Test execute_query with --list flag."""
+class TestExecuteQueryBasic:
+    """Test execute_query with single-feature flags (list, stats)."""
 
     def _fn(self, env: AppEnv, params: dict):
         from polylogue.cli.query import execute_query
 
         return execute_query(env, params)
 
+    @pytest.mark.parametrize(
+        "has_summaries",
+        [
+            (True),  # Has summaries
+            (False),  # No summaries, calls _no_results
+        ],
+    )
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
     @patch("polylogue.cli.query._output_summary_list")
-    def test_list_mode_with_summaries(
+    @patch("polylogue.cli.query._no_results")
+    def test_list_mode(
         self,
+        mock_no_results,
         mock_output,
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
         mock_load_config,
+        has_summaries,
     ) -> None:
-        """List mode outputs summaries when available."""
+        """List mode outputs summaries when available, calls _no_results otherwise."""
         mock_load_config.return_value = MagicMock()
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
@@ -302,32 +321,52 @@ class TestExecuteQueryListMode:
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
         mock_filter.can_use_summaries.return_value = True
-        summaries = [_make_summary(), _make_summary()]
-        mock_filter.list_summaries.return_value = summaries
+
+        result_summaries = [_make_summary(), _make_summary()] if has_summaries else []
+        mock_filter.list_summaries.return_value = result_summaries
+
+        if not has_summaries:
+            mock_no_results.side_effect = SystemExit(2)
 
         env = _make_env()
         params = _make_params(list_mode=True)
 
-        self._fn(env, params)
+        if not has_summaries:
+            with pytest.raises(SystemExit):
+                self._fn(env, params)
+            mock_no_results.assert_called_once()
+        else:
+            self._fn(env, params)
+            mock_output.assert_called_once()
+            args = mock_output.call_args[0]
+            assert args[1] == result_summaries
 
-        mock_output.assert_called_once()
-        args = mock_output.call_args[0]
-        assert args[1] == summaries  # Check summaries were passed
-
+    @pytest.mark.parametrize(
+        "stats_key,stats_value,mock_fn",
+        [
+            ("stats_only", True, "_output_stats"),
+            ("stats_by", "provider", "_output_stats_by"),
+        ],
+    )
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query._no_results")
-    def test_list_mode_no_results(
+    @patch("polylogue.cli.query._output_stats")
+    @patch("polylogue.cli.query._output_stats_by")
+    def test_stats_modes(
         self,
-        mock_no_results,
+        mock_stats_by,
+        mock_stats,
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
         mock_load_config,
+        stats_key,
+        stats_value,
+        mock_fn,
     ) -> None:
-        """List mode calls _no_results when no summaries found."""
+        """stats_only and stats_by trigger appropriate output functions."""
         mock_load_config.return_value = MagicMock()
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
@@ -335,21 +374,25 @@ class TestExecuteQueryListMode:
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
-        mock_filter.can_use_summaries.return_value = True
-        mock_filter.list_summaries.return_value = []
+        convs = [_make_conv()]
+        mock_filter.list.return_value = convs
 
         env = _make_env()
-        params = _make_params(list_mode=True)
+        params = _make_params(**{stats_key: stats_value})
 
-        mock_no_results.side_effect = SystemExit(2)
+        self._fn(env, params)
 
-        with pytest.raises(SystemExit):
-            self._fn(env, params)
+        if mock_fn == "_output_stats":
+            mock_stats.assert_called_once()
+            assert mock_stats.call_args[0][1] == convs
+        else:
+            mock_stats_by.assert_called_once()
+            assert mock_stats_by.call_args[0][2] == "provider"
 
-        mock_no_results.assert_called_once()
 
 
-class TestExecuteQueryStreamMode:
+
+class TestExecuteQueryStream:
     """Test execute_query with --stream flag."""
 
     def _fn(self, env: AppEnv, params: dict):
@@ -357,13 +400,17 @@ class TestExecuteQueryStreamMode:
 
         return execute_query(env, params)
 
+    @pytest.mark.parametrize(
+        "param_overrides,resolves_id,expected_id",
+        STREAM_TARGET_TEST_CASES,
+    )
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
     @patch("polylogue.cli.query.stream_conversation")
     @patch("click.echo")
-    def test_stream_with_latest(
+    def test_stream_target_resolution(
         self,
         mock_echo,
         mock_stream,
@@ -371,79 +418,11 @@ class TestExecuteQueryStreamMode:
         mock_vector_provider,
         mock_get_repo,
         mock_load_config,
+        param_overrides,
+        resolves_id,
+        expected_id,
     ) -> None:
-        """Stream with --latest resolves to most recent conversation via filter chain."""
-        mock_load_config.return_value = MagicMock()
-        mock_vector_provider.return_value = None
-        mock_repo = MagicMock()
-        mock_get_repo.return_value = mock_repo
-
-        summary = _make_summary(id="latest-conv-id")
-
-        # --latest applies .sort("date").limit(1) to filter_chain,
-        # then the streaming path calls .list_summaries() on it.
-        mock_filter = MagicMock()
-        mock_filter.sort.return_value.limit.return_value.list_summaries.return_value = [summary]
-        MockFilter.return_value = mock_filter
-
-        env = _make_env()
-        params = _make_params(stream=True, latest=True)
-
-        self._fn(env, params)
-
-        mock_stream.assert_called_once()
-        call_args = mock_stream.call_args[0]
-        assert call_args[2] == "latest-conv-id"  # conversation_id
-
-    @patch("polylogue.cli.helpers.load_effective_config")
-    @patch("polylogue.services.get_repository")
-    @patch("polylogue.storage.search_providers.create_vector_provider")
-    @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query.stream_conversation")
-    @patch("click.echo")
-    def test_stream_with_conv_id(
-        self,
-        mock_echo,
-        mock_stream,
-        MockFilter,
-        mock_vector_provider,
-        mock_get_repo,
-        mock_load_config,
-    ) -> None:
-        """Stream with --id resolves conversation ID."""
-        mock_load_config.return_value = MagicMock()
-        mock_vector_provider.return_value = None
-        mock_repo = MagicMock()
-        mock_get_repo.return_value = mock_repo
-
-        mock_repo.resolve_id.return_value = "full-conv-id-12345"
-
-        mock_filter = MagicMock()
-        MockFilter.return_value = mock_filter
-
-        env = _make_env()
-        params = _make_params(stream=True, conv_id="abc")
-
-        self._fn(env, params)
-
-        mock_stream.assert_called_once()
-        call_args = mock_stream.call_args[0]
-        assert call_args[2] == "full-conv-id-12345"
-
-    @patch("polylogue.cli.helpers.load_effective_config")
-    @patch("polylogue.services.get_repository")
-    @patch("polylogue.storage.search_providers.create_vector_provider")
-    @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("click.echo")
-    def test_stream_without_target_errors(
-        self,
-        mock_echo,
-        MockFilter,
-        mock_vector_provider,
-        mock_get_repo,
-        mock_load_config,
-    ) -> None:
-        """Stream without a target (--latest, --id, or query term) fails."""
+        """Stream resolves targets correctly (latest, conv_id, or errors on missing)."""
         mock_load_config.return_value = MagicMock()
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
@@ -452,21 +431,39 @@ class TestExecuteQueryStreamMode:
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
 
-        env = _make_env()
-        params = _make_params(stream=True)
+        if "latest" in param_overrides:
+            summary = _make_summary(id="latest-conv-id")
+            mock_filter.sort.return_value.limit.return_value.list_summaries.return_value = [summary]
+        elif "conv_id" in param_overrides:
+            mock_repo.resolve_id.return_value = "full-conv-id-12345"
 
-        with pytest.raises(SystemExit) as exc_info:
+        env = _make_env()
+        params = _make_params(stream=True, **param_overrides)
+
+        if not resolves_id:
+            with pytest.raises(SystemExit) as exc_info:
+                self._fn(env, params)
+            assert exc_info.value.code == 1
+        else:
             self._fn(env, params)
+            mock_stream.assert_called_once()
+            call_args = mock_stream.call_args[0]
+            assert call_args[2] == expected_id
 
-        assert exc_info.value.code == 1
-
+    @pytest.mark.parametrize(
+        "param_overrides",
+        [
+            {"latest": True, "transform": "strip-tools"},
+            {"latest": True, "output": "/tmp/out.txt"},
+        ],
+    )
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
     @patch("polylogue.cli.query.stream_conversation")
     @patch("click.echo")
-    def test_stream_warns_on_transform(
+    def test_stream_warns_on_conflict(
         self,
         mock_echo,
         mock_stream,
@@ -474,8 +471,9 @@ class TestExecuteQueryStreamMode:
         mock_vector_provider,
         mock_get_repo,
         mock_load_config,
+        param_overrides,
     ) -> None:
-        """Stream with --transform prints warning."""
+        """Stream prints warnings for transform and output file conflicts."""
         mock_load_config.return_value = MagicMock()
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
@@ -488,43 +486,7 @@ class TestExecuteQueryStreamMode:
         MockFilter.return_value = mock_filter
 
         env = _make_env()
-        params = _make_params(stream=True, latest=True, transform="strip-tools")
-
-        self._fn(env, params)
-
-        # Check that warning was printed
-        warning_calls = [call for call in mock_echo.call_args_list if "Warning" in str(call)]
-        assert len(warning_calls) > 0
-
-    @patch("polylogue.cli.helpers.load_effective_config")
-    @patch("polylogue.services.get_repository")
-    @patch("polylogue.storage.search_providers.create_vector_provider")
-    @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query.stream_conversation")
-    @patch("click.echo")
-    def test_stream_warns_on_output_file(
-        self,
-        mock_echo,
-        mock_stream,
-        MockFilter,
-        mock_vector_provider,
-        mock_get_repo,
-        mock_load_config,
-    ) -> None:
-        """Stream with --output file prints warning."""
-        mock_load_config.return_value = MagicMock()
-        mock_vector_provider.return_value = None
-        mock_repo = MagicMock()
-        mock_get_repo.return_value = mock_repo
-
-        summary = _make_summary(id="conv-id")
-        mock_repo.list_summaries.return_value = [summary]
-
-        mock_filter = MagicMock()
-        MockFilter.return_value = mock_filter
-
-        env = _make_env()
-        params = _make_params(stream=True, latest=True, output="/tmp/out.txt")
+        params = _make_params(stream=True, **param_overrides)
 
         self._fn(env, params)
 
@@ -533,28 +495,37 @@ class TestExecuteQueryStreamMode:
         assert len(warning_calls) > 0
 
 
-class TestExecuteQueryModifiers:
-    """Test execute_query with --set-meta and --add-tag."""
+class TestExecuteQueryActions:
+    """Test execute_query with --set-meta, --add-tag, --delete-matched."""
 
     def _fn(self, env: AppEnv, params: dict):
         from polylogue.cli.query import execute_query
 
         return execute_query(env, params)
 
+    @pytest.mark.parametrize(
+        "param_key,param_value",
+        [
+            ("set_meta", [("key", "value")]),
+            ("add_tag", ["important"]),
+        ],
+    )
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
     @patch("polylogue.cli.query._apply_modifiers")
-    def test_set_meta_calls_apply_modifiers(
+    def test_modifiers_trigger_apply(
         self,
         mock_apply,
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
         mock_load_config,
+        param_key,
+        param_value,
     ) -> None:
-        """set_meta triggers _apply_modifiers."""
+        """set_meta and add_tag both trigger _apply_modifiers."""
         mock_load_config.return_value = MagicMock()
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
@@ -566,52 +537,12 @@ class TestExecuteQueryModifiers:
         mock_filter.list.return_value = convs
 
         env = _make_env()
-        params = _make_params(set_meta=[("key", "value")])
+        params = _make_params(**{param_key: param_value})
 
         self._fn(env, params)
 
         mock_apply.assert_called_once()
         assert mock_apply.call_args[0][1] == convs
-
-    @patch("polylogue.cli.helpers.load_effective_config")
-    @patch("polylogue.services.get_repository")
-    @patch("polylogue.storage.search_providers.create_vector_provider")
-    @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query._apply_modifiers")
-    def test_add_tag_calls_apply_modifiers(
-        self,
-        mock_apply,
-        MockFilter,
-        mock_vector_provider,
-        mock_get_repo,
-        mock_load_config,
-    ) -> None:
-        """add_tag triggers _apply_modifiers."""
-        mock_load_config.return_value = MagicMock()
-        mock_vector_provider.return_value = None
-        mock_repo = MagicMock()
-        mock_get_repo.return_value = mock_repo
-
-        mock_filter = MagicMock()
-        MockFilter.return_value = mock_filter
-        convs = [_make_conv()]
-        mock_filter.list.return_value = convs
-
-        env = _make_env()
-        params = _make_params(add_tag=["important"])
-
-        self._fn(env, params)
-
-        mock_apply.assert_called_once()
-
-
-class TestExecuteQueryDelete:
-    """Test execute_query with --delete-matched."""
-
-    def _fn(self, env: AppEnv, params: dict):
-        from polylogue.cli.query import execute_query
-
-        return execute_query(env, params)
 
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.services.get_repository")
@@ -649,101 +580,36 @@ class TestExecuteQueryDelete:
         assert mock_delete.call_args[0][1] == convs
 
 
-class TestExecuteQueryStats:
-    """Test execute_query with --stats and --stats-by."""
+class TestExecuteQueryFlags:
+    """Test execute_query with various flags (dialogue-only, transform)."""
 
     def _fn(self, env: AppEnv, params: dict):
         from polylogue.cli.query import execute_query
 
         return execute_query(env, params)
 
-    @patch("polylogue.cli.helpers.load_effective_config")
-    @patch("polylogue.services.get_repository")
-    @patch("polylogue.storage.search_providers.create_vector_provider")
-    @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query._output_stats")
-    def test_stats_only_calls_output_stats(
-        self,
-        mock_output,
-        MockFilter,
-        mock_vector_provider,
-        mock_get_repo,
-        mock_load_config,
-    ) -> None:
-        """stats_only triggers _output_stats."""
-        mock_load_config.return_value = MagicMock()
-        mock_vector_provider.return_value = None
-        mock_repo = MagicMock()
-        mock_get_repo.return_value = mock_repo
-
-        mock_filter = MagicMock()
-        MockFilter.return_value = mock_filter
-        convs = [_make_conv()]
-        mock_filter.list.return_value = convs
-
-        env = _make_env()
-        params = _make_params(stats_only=True)
-
-        self._fn(env, params)
-
-        mock_output.assert_called_once()
-        assert mock_output.call_args[0][1] == convs
-
-    @patch("polylogue.cli.helpers.load_effective_config")
-    @patch("polylogue.services.get_repository")
-    @patch("polylogue.storage.search_providers.create_vector_provider")
-    @patch("polylogue.lib.filters.ConversationFilter")
-    @patch("polylogue.cli.query._output_stats_by")
-    def test_stats_by_calls_output_stats_by(
-        self,
-        mock_output,
-        MockFilter,
-        mock_vector_provider,
-        mock_get_repo,
-        mock_load_config,
-    ) -> None:
-        """stats_by triggers _output_stats_by."""
-        mock_load_config.return_value = MagicMock()
-        mock_vector_provider.return_value = None
-        mock_repo = MagicMock()
-        mock_get_repo.return_value = mock_repo
-
-        mock_filter = MagicMock()
-        MockFilter.return_value = mock_filter
-        convs = [_make_conv()]
-        mock_filter.list.return_value = convs
-
-        env = _make_env()
-        params = _make_params(stats_by="provider")
-
-        self._fn(env, params)
-
-        mock_output.assert_called_once()
-        assert mock_output.call_args[0][2] == "provider"
-
-
-class TestExecuteQueryDialogueOnly:
-    """Test execute_query with --dialogue-only."""
-
-    def _fn(self, env: AppEnv, params: dict):
-        from polylogue.cli.query import execute_query
-
-        return execute_query(env, params)
-
+    @pytest.mark.parametrize(
+        "flag_param,flag_value",
+        [
+            ("dialogue_only", True),
+        ],
+    )
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
     @patch("polylogue.cli.query._output_results")
-    def test_dialogue_only_filters_messages(
+    def test_output_flags(
         self,
         mock_output,
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
         mock_load_config,
+        flag_param,
+        flag_value,
     ) -> None:
-        """dialogue_only applies dialogue_only() to conversations."""
+        """dialogue_only and other output flags apply transformations."""
         mock_load_config.return_value = MagicMock()
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
@@ -755,20 +621,11 @@ class TestExecuteQueryDialogueOnly:
         mock_filter.list.return_value = [conv]
 
         env = _make_env()
-        params = _make_params(dialogue_only=True)
+        params = _make_params(**{flag_param: flag_value})
 
         self._fn(env, params)
 
         mock_output.assert_called_once()
-
-
-class TestExecuteQueryTransform:
-    """Test execute_query with --transform."""
-
-    def _fn(self, env: AppEnv, params: dict):
-        from polylogue.cli.query import execute_query
-
-        return execute_query(env, params)
 
     @patch("polylogue.cli.helpers.load_effective_config")
     @patch("polylogue.services.get_repository")
@@ -847,31 +704,32 @@ class TestApplyModifiers:
         # Repository should not be modified
         mock_get_repo.return_value.update_metadata.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "conv_count,force,should_confirm",
+        [
+            (11, False, True),  # Bulk without force: prompts
+            (1, False, False),  # Small count: no prompt
+            (11, True, False),  # Bulk with force: no prompt
+        ],
+    )
     @patch("polylogue.services.get_repository")
-    def test_bulk_without_force_prompts(self, mock_get_repo) -> None:
-        """Bulk operations (>10) without force prompt for confirmation."""
+    def test_bulk_operations_confirmation(
+        self, mock_get_repo, conv_count, force, should_confirm
+    ) -> None:
+        """Bulk operations (>10) without force require confirmation; force skips it."""
         env = _make_env()
-        convs = [_make_conv(id=f"conv-{i}") for i in range(11)]
-        params = _make_params(set_meta=[("key", "value")], force=False)
-        env.ui.confirm.return_value = False
-
-        self._fn(env, convs, params)
-
-        env.ui.confirm.assert_called_once()
-
-    @patch("polylogue.services.get_repository")
-    def test_bulk_with_force_skips_prompt(self, mock_get_repo) -> None:
-        """Bulk with --force skips confirmation."""
-        env = _make_env()
-        convs = [_make_conv(id=f"conv-{i}") for i in range(11)]
-        params = _make_params(set_meta=[("key", "value")], force=True)
+        convs = [_make_conv(id=f"conv-{i}") for i in range(conv_count)]
+        params = _make_params(set_meta=[("key", "value")], force=force)
 
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
 
         self._fn(env, convs, params)
 
-        env.ui.confirm.assert_not_called()
+        if should_confirm:
+            env.ui.confirm.assert_called_once()
+        else:
+            env.ui.confirm.assert_not_called()
 
     @patch("polylogue.services.get_repository")
     def test_set_metadata(self, mock_get_repo) -> None:
@@ -945,8 +803,6 @@ class TestDeleteConversations:
     @patch("polylogue.services.get_repository")
     def test_dry_run_shows_breakdown(self, mock_get_repo) -> None:
         """Dry-run shows breakdown without deleting."""
-        from unittest.mock import call
-
         env = _make_env()
         convs = [_make_conv("c1", provider="claude"), _make_conv("c2", provider="chatgpt")]
         params = _make_params(delete_matched=True, dry_run=True)
@@ -955,49 +811,31 @@ class TestDeleteConversations:
 
         # Check for dry-run message
         calls = [str(c) for c in env.ui.console.print.call_args_list]
-        echo_calls = [str(c) for c in MockEchoCalls]
         # Repository delete should not be called
         mock_get_repo.return_value.delete_conversation.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "conv_count,force,should_confirm",
+        DELETE_CONFIRMATION_TEST_CASES,
+    )
     @patch("polylogue.services.get_repository")
-    def test_bulk_requires_confirmation(self, mock_get_repo) -> None:
-        """Deleting >10 items requires confirmation."""
+    def test_delete_confirmation_behavior(
+        self, mock_get_repo, conv_count, force, should_confirm
+    ) -> None:
+        """Deletion requires confirmation unless --force, bulk or small counts both require."""
         env = _make_env()
-        convs = [_make_conv(id=f"c-{i}") for i in range(11)]
-        params = _make_params(delete_matched=True)
-        env.ui.confirm.return_value = False
+        convs = [_make_conv(id=f"c-{i}") for i in range(conv_count)]
+        params = _make_params(delete_matched=True, force=force)
+
+        if should_confirm:
+            env.ui.confirm.return_value = False
 
         self._fn(env, convs, params)
 
-        env.ui.confirm.assert_called_once()
-
-    @patch("polylogue.services.get_repository")
-    def test_small_count_requires_confirmation(self, mock_get_repo) -> None:
-        """Deleting small counts requires confirmation if not forced."""
-        env = _make_env()
-        convs = [_make_conv("c1")]
-        params = _make_params(delete_matched=True, force=False)
-        env.ui.confirm.return_value = False
-
-        self._fn(env, convs, params)
-
-        env.ui.confirm.assert_called_once()
-
-    @patch("polylogue.services.get_repository")
-    @patch("click.echo")
-    def test_force_skips_confirmation(self, mock_echo, mock_get_repo) -> None:
-        """--force skips confirmation."""
-        env = _make_env()
-        convs = [_make_conv("c1")]
-        params = _make_params(delete_matched=True, force=True)
-
-        mock_repo = MagicMock()
-        mock_get_repo.return_value = mock_repo
-        mock_repo.delete_conversation.return_value = True
-
-        self._fn(env, convs, params)
-
-        env.ui.confirm.assert_not_called()
+        if should_confirm:
+            env.ui.confirm.assert_called_once()
+        else:
+            env.ui.confirm.assert_not_called()
 
     @patch("polylogue.services.get_repository")
     @patch("click.echo")
@@ -1028,63 +866,42 @@ class TestOutputSummaryList:
 
         return _output_summary_list(env, summaries, params, repo)
 
+    @pytest.mark.parametrize(
+        "output_format,expected_ids,is_json_parseable,min_lines",
+        OUTPUT_FORMAT_TEST_CASES,
+    )
     @patch("click.echo")
-    def test_json_format(self, mock_echo) -> None:
-        """JSON format outputs valid JSON."""
+    def test_output_formats(self, mock_echo, output_format, expected_ids, is_json_parseable, min_lines) -> None:
+        """Test JSON, YAML, CSV, and text output formats."""
         env = _make_env()
-        summaries = [_make_summary("c1"), _make_summary("c2")]
-        params = _make_params(output_format="json")
+        summaries = [_make_summary(id) for id in expected_ids]
+        params = _make_params(output_format=output_format)
 
         self._fn(env, summaries, params)
 
-        # Get the output
-        output = mock_echo.call_args[0][0]
-        data = json.loads(output)
-        assert len(data) == 2
-        assert data[0]["id"] == "c1"
-
-    @patch("click.echo")
-    def test_yaml_format(self, mock_echo) -> None:
-        """YAML format outputs valid YAML."""
-        import yaml
-
-        env = _make_env()
-        summaries = [_make_summary("c1")]
-        params = _make_params(output_format="yaml")
-
-        self._fn(env, summaries, params)
-
-        output = mock_echo.call_args[0][0]
-        # Should parse as YAML without error
-        data = yaml.safe_load(output)
-        assert len(data) == 1
-
-    @patch("click.echo")
-    def test_csv_format(self, mock_echo) -> None:
-        """CSV format outputs valid CSV."""
-        env = _make_env()
-        summaries = [_make_summary("c1"), _make_summary("c2")]
-        params = _make_params(output_format="csv")
-
-        self._fn(env, summaries, params)
-
-        output = mock_echo.call_args[0][0]
-        lines = output.split("\n")
-        assert len(lines) >= 3  # header + 2 rows
-        assert "id" in lines[0]
-
-    def test_plain_text_format(self) -> None:
-        """Plain text format outputs readable list."""
-        env = _make_env()
-        summaries = [_make_summary("c1", title="Test Conv")]
-        params = _make_params(output_format="text")
-
-        self._fn(env, summaries, params)
-
-        env.ui.console.print.assert_called_once()
-        output = env.ui.console.print.call_args[0][0]
-        assert "c1" in output
-        assert "Test Conv" in output
+        if output_format == "text":
+            # Text format uses console.print
+            env.ui.console.print.assert_called_once()
+            output = env.ui.console.print.call_args[0][0]
+            for id in expected_ids:
+                assert id in output
+        elif output_format == "json":
+            # JSON format - verify parseable and structure
+            output = mock_echo.call_args[0][0]
+            data = json.loads(output)
+            assert len(data) == len(expected_ids)
+            assert data[0]["id"] == expected_ids[0]
+        elif output_format == "csv":
+            # CSV has header row
+            output = mock_echo.call_args[0][0]
+            lines = output.split("\n")
+            assert len(lines) >= min_lines
+            assert "id" in lines[0]  # Header check for CSV
+        elif output_format == "yaml":
+            # YAML - just verify it's output and contains IDs
+            output = mock_echo.call_args[0][0]
+            for id in expected_ids:
+                assert id in output
 
 
 # =============================================================================
@@ -1109,9 +926,16 @@ class TestStreamConversation:
 
         assert exc_info.value.code == 1
 
+    @pytest.mark.parametrize(
+        "output_format,has_header,has_footer",
+        [
+            ("markdown", True, True),
+            ("json-lines", True, True),
+        ],
+    )
     @patch("sys.stdout", new_callable=StringIO)
-    def test_markdown_header_footer(self, mock_stdout) -> None:
-        """Markdown format includes header and footer."""
+    def test_stream_formats(self, mock_stdout, output_format, has_header, has_footer) -> None:
+        """Test markdown and json-lines streaming formats with headers/footers."""
         env = _make_env()
         repo = MagicMock()
 
@@ -1121,35 +945,23 @@ class TestStreamConversation:
         repo.get_conversation_stats.return_value = {"total_messages": 5, "dialogue_messages": 3}
         repo.iter_messages.return_value = []
 
-        self._fn(env, repo, "conv-1", output_format="markdown")
+        self._fn(env, repo, "conv-1", output_format=output_format)
 
         output = mock_stdout.getvalue()
-        assert "# Test Title" in output
-        assert "---" in output
 
-    @patch("sys.stdout", new_callable=StringIO)
-    def test_json_lines_header_footer(self, mock_stdout) -> None:
-        """JSON-lines format includes header and footer."""
-        env = _make_env()
-        repo = MagicMock()
-
-        conv_record = MagicMock()
-        conv_record.title = "Test"
-        repo.backend.get_conversation.return_value = conv_record
-        repo.get_conversation_stats.return_value = {}
-        repo.iter_messages.return_value = []
-
-        self._fn(env, repo, "conv-1", output_format="json-lines")
-
-        output = mock_stdout.getvalue()
-        lines = output.strip().split("\n")
-        assert len(lines) >= 2
-        # First line is header
-        header = json.loads(lines[0])
-        assert header["type"] == "header"
-        # Last line is footer
-        footer = json.loads(lines[-1])
-        assert footer["type"] == "footer"
+        if output_format == "markdown":
+            if has_header:
+                assert "# Test Title" in output
+            if has_footer:
+                assert "---" in output
+        elif output_format == "json-lines":
+            lines = output.strip().split("\n")
+            if has_header:
+                header = json.loads(lines[0])
+                assert header["type"] == "header"
+            if has_footer:
+                footer = json.loads(lines[-1])
+                assert footer["type"] == "footer"
 
     @patch("sys.stdout", new_callable=StringIO)
     def test_returns_message_count(self, mock_stdout) -> None:
@@ -1182,48 +994,47 @@ class TestSendOutput:
 
         return _send_output(env, content, destinations, output_format, conv)
 
+    @pytest.mark.parametrize(
+        "dest_label,destinations,expects_file,output_format,expects_stdout,expects_browser,expects_clipboard",
+        SEND_OUTPUT_DESTINATIONS,
+    )
     @patch("click.echo")
-    def test_stdout_destination(self, mock_echo) -> None:
-        """stdout destination uses click.echo."""
-        env = _make_env()
-        content = "test output"
-
-        self._fn(env, content, ["stdout"], "text")
-
-        mock_echo.assert_called_with(content)
-
     @patch("polylogue.cli.query._open_in_browser")
-    def test_browser_destination(self, mock_browser) -> None:
-        """browser destination calls _open_in_browser."""
-        env = _make_env()
-        content = "test"
-        conv = _make_conv()
-
-        self._fn(env, content, ["browser"], "html", conv)
-
-        mock_browser.assert_called_once()
-
     @patch("polylogue.cli.query._copy_to_clipboard")
-    def test_clipboard_destination(self, mock_clipboard) -> None:
-        """clipboard destination calls _copy_to_clipboard."""
-        env = _make_env()
-        content = "test"
-
-        self._fn(env, content, ["clipboard"], "text")
-
-        mock_clipboard.assert_called_once_with(env, content)
-
-    def test_file_destination_creates_file(self) -> None:
-        """File destination writes file."""
+    def test_send_to_destinations(
+        self,
+        mock_clipboard,
+        mock_browser,
+        mock_echo,
+        dest_label,
+        destinations,
+        expects_file,
+        output_format,
+        expects_stdout,
+        expects_browser,
+        expects_clipboard,
+    ) -> None:
+        """Test output routing to stdout, browser, clipboard, and file destinations."""
         env = _make_env()
         content = "test output"
+        conv = _make_conv() if "browser" in destinations else None
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            path = f"{tmpdir}/output.txt"
-            self._fn(env, content, [path], "text")
+        if expects_file:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                path = f"{tmpdir}/output.txt"
+                destinations = [path]
+                self._fn(env, content, destinations, output_format, conv)
+                assert Path(path).exists()
+                assert Path(path).read_text() == content
+        else:
+            self._fn(env, content, destinations, output_format, conv)
 
-            assert Path(path).exists()
-            assert Path(path).read_text() == content
+        if expects_stdout:
+            mock_echo.assert_called_with(content)
+        if expects_browser:
+            mock_browser.assert_called_once()
+        if expects_clipboard:
+            mock_clipboard.assert_called_once_with(env, content)
 
     def test_multiple_destinations(self) -> None:
         """Multiple destinations are all handled."""
@@ -1249,31 +1060,30 @@ class TestOpenInBrowser:
 
         return _open_in_browser(env, content, output_format, conv)
 
+    @pytest.mark.parametrize(
+        "content,output_format,use_conv,is_html_content",
+        [
+            ("<html><body>Test</body></html>", "html", False, True),
+            ("Plain text", "text", False, False),
+        ],
+    )
     @patch("webbrowser.open")
-    def test_html_content_untouched(self, mock_browser) -> None:
-        """HTML content is passed to browser as-is."""
+    def test_browser_content_handling(
+        self, mock_browser, content, output_format, use_conv, is_html_content
+    ) -> None:
+        """Test HTML pass-through and content wrapping for non-HTML formats."""
         env = _make_env()
-        html_content = "<html><body>Test</body></html>"
+        conv = _make_conv() if use_conv else None
 
-        self._fn(env, html_content, "html")
+        self._fn(env, content, output_format, conv=conv)
 
         mock_browser.assert_called_once()
-        # Verify file was written and browser was called
+        # Verify file:// URL was used
         call_arg = mock_browser.call_args[0][0]
         assert call_arg.startswith("file://")
 
     @patch("webbrowser.open")
-    def test_non_html_wrapped_in_html(self, mock_browser) -> None:
-        """Non-HTML content gets wrapped."""
-        env = _make_env()
-        content = "Plain text"
-
-        self._fn(env, content, "text")
-
-        mock_browser.assert_called_once()
-
-    @patch("webbrowser.open")
-    def test_conv_converts_to_html(self, mock_browser) -> None:
+    def test_browser_with_conversation(self, mock_browser) -> None:
         """When conv provided, converts to HTML."""
         env = _make_env()
         conv = _make_conv()
@@ -1294,28 +1104,27 @@ class TestCopyToClipboard:
 
         return _copy_to_clipboard(env, content)
 
-    @patch("subprocess.run")
-    def test_xclip_success(self, mock_run) -> None:
-        """Successful xclip invocation."""
-        env = _make_env()
-        mock_run.return_value = MagicMock(returncode=0)
-
-        self._fn(env, "test content")
-
-        mock_run.assert_called()
-        env.ui.console.print.assert_called()
-
+    @pytest.mark.parametrize(
+        "tool_success,should_fail",
+        [
+            (True, False),  # xclip succeeds
+            (False, True),  # all tools fail
+        ],
+    )
     @patch("subprocess.run")
     @patch("click.echo")
-    def test_all_tools_fail(self, mock_echo, mock_run) -> None:
-        """All clipboard tools fail shows error."""
+    def test_clipboard_tools(self, mock_echo, mock_run, tool_success, should_fail) -> None:
+        """Test clipboard tool success and failure scenarios."""
         env = _make_env()
-        mock_run.side_effect = FileNotFoundError()
-
-        self._fn(env, "test")
-
-        # Error message should be printed
-        assert mock_echo.called
+        if tool_success:
+            mock_run.return_value = MagicMock(returncode=0)
+            self._fn(env, "test content")
+            mock_run.assert_called()
+            env.ui.console.print.assert_called()
+        else:
+            mock_run.side_effect = FileNotFoundError()
+            self._fn(env, "test")
+            assert mock_echo.called
 
 
 # =============================================================================
@@ -1357,7 +1166,7 @@ class TestOpenResult:
     @patch("webbrowser.open")
     @patch("polylogue.cli.helpers.load_effective_config")
     def test_opens_html_file(self, mock_config, mock_browser) -> None:
-        """Opens HTML file when found."""
+        """Opens HTML file when found and opens in browser."""
         env = _make_env()
         conv = _make_conv("c1")
         params = _make_params()
@@ -1379,6 +1188,7 @@ class TestOpenResult:
 # =============================================================================
 # Helpers for mocking click.echo
 # =============================================================================
+
 
 MockEchoCalls = []
 

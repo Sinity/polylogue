@@ -1174,7 +1174,10 @@ class TestResetCommandDeletion:
 
         assert target_path.exists()
 
-        with patches[0], patches[1], *patches[2:]:
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", flag, "--yes"])
 

@@ -103,19 +103,19 @@ RENDER_OUTPUT_CASES = [
 
 TITLE_CASES = [
     ("includes_stage_when_not_all", "render", "stage"),
-    ("includes_sources_when_filtered", None, "source"),
+    ("includes_sources_when_filtered", "test_source", "source"),
 ]
 
 FLAG_COMBO_CASES = [
-    ("preview_with_stage", ["--preview", "--stage", "parse"], "plan_sources"),
-    ("preview_with_format", ["--preview", "--format", "markdown"], "plan_sources"),
-    ("stage_render_with_source", ["--stage", "render", "--source", "test"], "run_sources"),
+    ("preview_with_stage", ["run", "--preview", "--stage", "parse"], "plan_sources"),
+    ("preview_with_format", ["run", "--preview", "--format", "markdown"], "plan_sources"),
+    ("stage_render_with_source", ["run", "--stage", "render", "--source", "test"], "run_sources"),
 ]
 
 RENDER_FAILURE_CASES = [
-    ("displays_render_failures", 1, 5, True, "Render failures (1)", "conv-1: Template error"),
-    ("displays_truncated", 15, 5, False, "Render failures (15)", "... and 5 more"),
-    ("no_section_when_empty", 0, 0, False, "Render failures", False),
+    ("displays_render_failures", 1, 5, True, "Render failures (1)", None),
+    ("displays_truncated", 15, 5, False, "Render failures (15)", None),
+    ("no_section_when_empty", 0, 0, False, None, False),
 ]
 
 

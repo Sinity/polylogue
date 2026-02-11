@@ -162,40 +162,33 @@ def filter_repo_empty(filter_db_empty):
 class TestConversationFilterHasTypes:
     """Tests for has() content type filtering."""
 
-    def test_has_thinking_filters_correctly(self, filter_repo_advanced):
-        """Filter conversations with thinking blocks."""
-        result = ConversationFilter(filter_repo_advanced).has("thinking").list()
-        # Should return only conv-thinking
-        assert len(result) >= 1
-        assert any("thinking" in c.id for c in result)
-
-    def test_has_tools_filters_correctly(self, filter_repo_advanced):
-        """Filter conversations with tool use."""
-        result = ConversationFilter(filter_repo_advanced).has("tools").list()
-        # Should return only conv-tools
-        assert len(result) >= 1
-        assert any("tools" in c.id for c in result)
-
-    def test_has_attachments_filters_correctly(self, filter_repo_advanced):
-        """Filter conversations with attachments.
-
-        Note: This filters using lazy-loaded conversations, so m.attachments
-        will be empty (they're not loaded in lazy mode). The filter checks
-        work correctly for eager-loaded conversations.
-        """
-        result = ConversationFilter(filter_repo_advanced).has("attachments").list()
-        # In lazy-load mode, attachments are not loaded, so this may return empty
-        # This is expected behavior - has("attachments") requires eager loading
-        # which the filter doesn't currently force
+    @pytest.mark.parametrize("content_type,expected_id_substr", [
+        ("thinking", "thinking"),
+        ("tools", "tools"),
+        ("attachments", None),  # no expected substring for attachments test
+        ("summary", None),  # no expected substring for summary test
+    ])
+    def test_has_content_type_filters_correctly(self, filter_repo_advanced, content_type, expected_id_substr):
+        """Filter conversations by content type."""
+        result = ConversationFilter(filter_repo_advanced).has(content_type).list()
         assert isinstance(result, list)
-
-    def test_has_summary_filters_correctly(self, filter_repo_advanced):
-        """Filter conversations with summaries."""
-        result = ConversationFilter(filter_repo_advanced).has("summary").list()
-        # Should return conversations with summary metadata
-        if len(result) > 0:
-            for conv in result:
-                assert conv.summary is not None
+        if content_type == "thinking":
+            # Should return only conv-thinking
+            assert len(result) >= 1
+            assert any(expected_id_substr in c.id for c in result)
+        elif content_type == "tools":
+            # Should return only conv-tools
+            assert len(result) >= 1
+            assert any(expected_id_substr in c.id for c in result)
+        elif content_type == "attachments":
+            # In lazy-load mode, attachments are not loaded, so this may return empty
+            # This is expected behavior
+            assert isinstance(result, list)
+        elif content_type == "summary":
+            # Should return conversations with summary metadata
+            if len(result) > 0:
+                for conv in result:
+                    assert conv.summary is not None
 
     def test_has_multiple_types_combines_filters(self, filter_repo_advanced):
         """Multiple has() calls combine as AND (all must match)."""
@@ -239,10 +232,15 @@ class TestConversationFilterHasTypes:
 class TestConversationFilterSample:
     """Tests for sample() random sampling."""
 
-    def test_sample_returns_correct_count(self, filter_repo_advanced):
+    @pytest.mark.parametrize("sample_size,condition_check", [
+        (2, lambda result: len(result) == 2),
+        (0, lambda result: len(result) == 0),
+        (1, lambda result: len(result) == 1),
+    ])
+    def test_sample_returns_correct_count(self, filter_repo_advanced, sample_size, condition_check):
         """sample(n) returns exactly n conversations."""
-        result = ConversationFilter(filter_repo_advanced).sample(2).list()
-        assert len(result) == 2
+        result = ConversationFilter(filter_repo_advanced).sample(sample_size).list()
+        assert condition_check(result)
 
     def test_sample_smaller_than_total(self, filter_repo_advanced):
         """sample(n) where n < total works."""
@@ -284,11 +282,6 @@ class TestConversationFilterSample:
         )
         # Limit should win, giving us at most 2
         assert len(result) <= 2
-
-    def test_sample_zero_returns_empty(self, filter_repo_advanced):
-        """sample(0) returns empty list."""
-        result = ConversationFilter(filter_repo_advanced).sample(0).list()
-        assert len(result) == 0
 
     def test_sample_randomness(self, filter_repo_advanced):
         """Multiple samples produce different results (probabilistic test)."""
@@ -430,89 +423,28 @@ class TestConversationFilterCombinedPosNeg:
 class TestConversationFilterSortEdgeCases:
     """Tests for sort() with various fields and reverse."""
 
-    def test_sort_tokens_ascending(self, filter_repo_advanced):
-        """Sort by token count ascending."""
-        result = ConversationFilter(filter_repo_advanced).sort("tokens").reverse().list()
-        assert len(result) > 0
-        # Verify ascending order (smallest tokens first)
-        if len(result) > 1:
-            for i in range(len(result) - 1):
-                tokens_i = sum(len(m.text or "") for m in result[i].messages) // 4
-                tokens_next = sum(len(m.text or "") for m in result[i + 1].messages) // 4
-                assert tokens_i <= tokens_next
+    @pytest.mark.parametrize("sort_field,reverse,check_order", [
+        ("tokens", True, lambda r, i: sum(len(m.text or "") for m in r[i].messages) // 4 <= sum(len(m.text or "") for m in r[i + 1].messages) // 4),
+        ("tokens", False, lambda r, i: sum(len(m.text or "") for m in r[i].messages) // 4 >= sum(len(m.text or "") for m in r[i + 1].messages) // 4),
+        ("words", True, lambda r, i: sum(m.word_count for m in r[i].messages) <= sum(m.word_count for m in r[i + 1].messages)),
+        ("words", False, lambda r, i: sum(m.word_count for m in r[i].messages) >= sum(m.word_count for m in r[i + 1].messages)),
+        ("longest", True, lambda r, i: max((m.word_count for m in r[i].messages), default=0) <= max((m.word_count for m in r[i + 1].messages), default=0)),
+        ("longest", False, lambda r, i: max((m.word_count for m in r[i].messages), default=0) >= max((m.word_count for m in r[i + 1].messages), default=0)),
+        ("messages", True, lambda r, i: len(r[i].messages) <= len(r[i + 1].messages)),
+        ("messages", False, lambda r, i: len(r[i].messages) >= len(r[i + 1].messages)),
+    ])
+    def test_sort_field_with_reverse(self, filter_repo_advanced, sort_field, reverse, check_order):
+        """Sort by field with reverse flag."""
+        if reverse:
+            result = ConversationFilter(filter_repo_advanced).sort(sort_field).reverse().list()
+        else:
+            result = ConversationFilter(filter_repo_advanced).sort(sort_field).list()
 
-    def test_sort_tokens_descending(self, filter_repo_advanced):
-        """Sort by token count descending."""
-        result = ConversationFilter(filter_repo_advanced).sort("tokens").list()
         assert len(result) > 0
-        # Verify descending order (most tokens first)
+        # Verify order for multi-item results
         if len(result) > 1:
             for i in range(len(result) - 1):
-                tokens_i = sum(len(m.text or "") for m in result[i].messages) // 4
-                tokens_next = sum(len(m.text or "") for m in result[i + 1].messages) // 4
-                assert tokens_i >= tokens_next
-
-    def test_sort_words_ascending(self, filter_repo_advanced):
-        """Sort by word count ascending."""
-        result = ConversationFilter(filter_repo_advanced).sort("words").reverse().list()
-        assert len(result) > 0
-        # Verify ascending word count
-        if len(result) > 1:
-            for i in range(len(result) - 1):
-                words_i = sum(m.word_count for m in result[i].messages)
-                words_next = sum(m.word_count for m in result[i + 1].messages)
-                assert words_i <= words_next
-
-    def test_sort_words_descending(self, filter_repo_advanced):
-        """Sort by word count descending."""
-        result = ConversationFilter(filter_repo_advanced).sort("words").list()
-        assert len(result) > 0
-        # Verify descending word count
-        if len(result) > 1:
-            for i in range(len(result) - 1):
-                words_i = sum(m.word_count for m in result[i].messages)
-                words_next = sum(m.word_count for m in result[i + 1].messages)
-                assert words_i >= words_next
-
-    def test_sort_longest_ascending(self, filter_repo_advanced):
-        """Sort by longest message word count ascending."""
-        result = ConversationFilter(filter_repo_advanced).sort("longest").reverse().list()
-        assert len(result) > 0
-        # Verify ascending longest message
-        if len(result) > 1:
-            for i in range(len(result) - 1):
-                longest_i = max((m.word_count for m in result[i].messages), default=0)
-                longest_next = max((m.word_count for m in result[i + 1].messages), default=0)
-                assert longest_i <= longest_next
-
-    def test_sort_longest_descending(self, filter_repo_advanced):
-        """Sort by longest message word count descending."""
-        result = ConversationFilter(filter_repo_advanced).sort("longest").list()
-        assert len(result) > 0
-        # Verify descending longest message
-        if len(result) > 1:
-            for i in range(len(result) - 1):
-                longest_i = max((m.word_count for m in result[i].messages), default=0)
-                longest_next = max((m.word_count for m in result[i + 1].messages), default=0)
-                assert longest_i >= longest_next
-
-    def test_sort_messages_ascending(self, filter_repo_advanced):
-        """Sort by message count ascending."""
-        result = ConversationFilter(filter_repo_advanced).sort("messages").reverse().list()
-        assert len(result) > 0
-        # Verify ascending message count
-        if len(result) > 1:
-            for i in range(len(result) - 1):
-                assert len(result[i].messages) <= len(result[i + 1].messages)
-
-    def test_sort_messages_descending(self, filter_repo_advanced):
-        """Sort by message count descending."""
-        result = ConversationFilter(filter_repo_advanced).sort("messages").list()
-        assert len(result) > 0
-        # Verify descending message count
-        if len(result) > 1:
-            for i in range(len(result) - 1):
-                assert len(result[i].messages) >= len(result[i + 1].messages)
+                assert check_order(result, i)
 
     def test_sort_and_limit_combined(self, filter_repo_advanced):
         """Sort by field and limit results."""
@@ -546,48 +478,16 @@ class TestConversationFilterSortEdgeCases:
 class TestConversationFilterLimitZeroWithSample:
     """Tests for limit(0) combined with other operations."""
 
-    def test_limit_zero_then_sample(self, filter_repo_advanced):
-        """limit(0) then sample() returns empty."""
-        result = (
-            ConversationFilter(filter_repo_advanced)
-            .limit(0)
-            .sample(5)
-            .list()
-        )
-        assert len(result) == 0
-
-    def test_sample_then_limit_zero(self, filter_repo_advanced):
-        """sample() then limit(0) returns empty."""
-        result = (
-            ConversationFilter(filter_repo_advanced)
-            .sample(5)
-            .limit(0)
-            .list()
-        )
-        assert len(result) == 0
-
-    def test_limit_zero_with_sort(self, filter_repo_advanced):
-        """limit(0) with sort returns empty."""
-        result = (
-            ConversationFilter(filter_repo_advanced)
-            .sort("messages")
-            .limit(0)
-            .list()
-        )
-        assert len(result) == 0
-
-    def test_limit_zero_with_all_filters(self, filter_repo_advanced):
-        """limit(0) overrides all other filters."""
-        result = (
-            ConversationFilter(filter_repo_advanced)
-            .provider("claude")
-            .tag("quantum")
-            .sort("date")
-            .sample(10)
-            .limit(0)
-            .list()
-        )
-        assert len(result) == 0
+    @pytest.mark.parametrize("setup_fn,description", [
+        (lambda f: f.limit(0).sample(5), "limit(0) then sample(5)"),
+        (lambda f: f.sample(5).limit(0), "sample(5) then limit(0)"),
+        (lambda f: f.sort("messages").limit(0), "sort('messages') then limit(0)"),
+        (lambda f: f.provider("claude").tag("quantum").sort("date").sample(10).limit(0), "all filters then limit(0)"),
+    ])
+    def test_limit_zero_with_other_operations(self, filter_repo_advanced, setup_fn, description):
+        """limit(0) overrides all other operations."""
+        result = setup_fn(ConversationFilter(filter_repo_advanced)).list()
+        assert len(result) == 0, f"Failed for: {description}"
 
 
 # ============================================================================
@@ -619,30 +519,29 @@ class TestConversationFilterListSummaries:
             # Note: Actual message loading behavior depends on model definition
             assert isinstance(summary, ConversationSummary)
 
-    def test_list_summaries_with_provider_filter(self, filter_repo_advanced):
-        """list_summaries() respects provider filter."""
-        result = ConversationFilter(filter_repo_advanced).provider("claude").list_summaries()
-        assert all(s.provider == "claude" for s in result)
+    @pytest.mark.parametrize("filter_fn,filter_name,expected_value", [
+        (lambda f: f.provider("claude"), "provider", "claude"),
+        (lambda f: f.tag("quantum"), "tag", "quantum"),
+        (lambda f: f.no_tag("simple"), "no_tag", "simple"),
+        (lambda f: f.title("Complex"), "title", "Complex"),
+    ])
+    def test_list_summaries_respects_metadata_filters(self, filter_repo_advanced, filter_fn, filter_name, expected_value):
+        """list_summaries() respects metadata-only filters."""
+        result = filter_fn(ConversationFilter(filter_repo_advanced)).list_summaries()
+
+        if filter_name == "provider":
+            assert all(s.provider == expected_value for s in result)
+        elif filter_name == "tag":
+            assert all(expected_value in s.tags for s in result)
+        elif filter_name == "no_tag":
+            assert all(expected_value not in s.tags for s in result)
+        elif filter_name == "title":
+            assert all(expected_value in s.display_title for s in result)
 
     def test_list_summaries_with_limit(self, filter_repo_advanced):
         """list_summaries() respects limit."""
         result = ConversationFilter(filter_repo_advanced).limit(2).list_summaries()
         assert len(result) <= 2
-
-    def test_list_summaries_with_tag_filter(self, filter_repo_advanced):
-        """list_summaries() respects tag filter."""
-        result = ConversationFilter(filter_repo_advanced).tag("quantum").list_summaries()
-        assert all("quantum" in s.tags for s in result)
-
-    def test_list_summaries_with_no_tag_filter(self, filter_repo_advanced):
-        """list_summaries() respects no_tag filter."""
-        result = ConversationFilter(filter_repo_advanced).no_tag("simple").list_summaries()
-        assert all("simple" not in s.tags for s in result)
-
-    def test_list_summaries_with_title_filter(self, filter_repo_advanced):
-        """list_summaries() respects title filter."""
-        result = ConversationFilter(filter_repo_advanced).title("Complex").list_summaries()
-        assert all("Complex" in s.display_title for s in result)
 
     def test_list_summaries_with_sort_date(self, filter_repo_advanced):
         """list_summaries() respects date sort."""
@@ -661,31 +560,17 @@ class TestConversationFilterListSummaries:
         result = ConversationFilter(filter_repo_advanced).sample(2).list_summaries()
         assert len(result) <= 2
 
-    def test_list_summaries_rejects_content_filters(self, filter_repo_advanced):
+    @pytest.mark.parametrize("invalid_filter_fn,error_match", [
+        (lambda f: f.has("thinking"), "Cannot use list_summaries"),
+        (lambda f: f.no_contains("error"), "Cannot use list_summaries"),
+        (lambda f: f.where(lambda c: True), "Cannot use list_summaries"),
+        (lambda f: f.sort("words"), "Cannot use list_summaries"),
+        (lambda f: f.sort("tokens"), "Cannot use list_summaries"),
+    ])
+    def test_list_summaries_rejects_content_filters(self, filter_repo_advanced, invalid_filter_fn, error_match):
         """list_summaries() raises error for content-dependent filters."""
-        # Filters that require message content should raise
-        with pytest.raises(ValueError, match="Cannot use list_summaries"):
-            ConversationFilter(filter_repo_advanced).has("thinking").list_summaries()
-
-    def test_list_summaries_rejects_negative_fts_filter(self, filter_repo_advanced):
-        """list_summaries() raises error for negative FTS."""
-        with pytest.raises(ValueError, match="Cannot use list_summaries"):
-            ConversationFilter(filter_repo_advanced).no_contains("error").list_summaries()
-
-    def test_list_summaries_rejects_custom_predicate(self, filter_repo_advanced):
-        """list_summaries() raises error for custom predicates."""
-        with pytest.raises(ValueError, match="Cannot use list_summaries"):
-            ConversationFilter(filter_repo_advanced).where(lambda c: True).list_summaries()
-
-    def test_list_summaries_rejects_word_sort(self, filter_repo_advanced):
-        """list_summaries() raises error for word count sort."""
-        with pytest.raises(ValueError, match="Cannot use list_summaries"):
-            ConversationFilter(filter_repo_advanced).sort("words").list_summaries()
-
-    def test_list_summaries_rejects_token_sort(self, filter_repo_advanced):
-        """list_summaries() raises error for token sort."""
-        with pytest.raises(ValueError, match="Cannot use list_summaries"):
-            ConversationFilter(filter_repo_advanced).sort("tokens").list_summaries()
+        with pytest.raises(ValueError, match=error_match):
+            invalid_filter_fn(ConversationFilter(filter_repo_advanced)).list_summaries()
 
     def test_list_summaries_allows_summary_has_filter(self, filter_repo_advanced):
         """list_summaries() allows has('summary') filter."""
@@ -749,30 +634,32 @@ class TestConversationFilterPick:
 class TestConversationFilterEmptyRepository:
     """Tests for filter operations on empty database."""
 
-    def test_empty_repo_list_returns_empty(self, filter_repo_empty):
-        """list() on empty repo returns empty list."""
-        result = ConversationFilter(filter_repo_empty).list()
-        assert len(result) == 0
+    @pytest.mark.parametrize("terminal_method,expected_result", [
+        ("list", []),
+        ("first", None),
+        ("count", 0),
+        ("delete", 0),
+        ("pick", None),
+    ])
+    def test_empty_repo_terminal_operations(self, filter_repo_empty, terminal_method, expected_result):
+        """Terminal operations on empty repo return expected values."""
+        filter_obj = ConversationFilter(filter_repo_empty)
 
-    def test_empty_repo_first_returns_none(self, filter_repo_empty):
-        """first() on empty repo returns None."""
-        result = ConversationFilter(filter_repo_empty).first()
-        assert result is None
+        if terminal_method == "list":
+            result = filter_obj.list()
+        elif terminal_method == "first":
+            result = filter_obj.first()
+        elif terminal_method == "count":
+            result = filter_obj.count()
+        elif terminal_method == "delete":
+            result = filter_obj.delete()
+        elif terminal_method == "pick":
+            result = filter_obj.pick()
 
-    def test_empty_repo_count_returns_zero(self, filter_repo_empty):
-        """count() on empty repo returns 0."""
-        result = ConversationFilter(filter_repo_empty).count()
-        assert result == 0
-
-    def test_empty_repo_delete_returns_zero(self, filter_repo_empty):
-        """delete() on empty repo returns 0."""
-        result = ConversationFilter(filter_repo_empty).delete()
-        assert result == 0
-
-    def test_empty_repo_pick_returns_none(self, filter_repo_empty):
-        """pick() on empty repo returns None."""
-        result = ConversationFilter(filter_repo_empty).pick()
-        assert result is None
+        if isinstance(expected_result, list):
+            assert result == expected_result
+        else:
+            assert result == expected_result
 
     def test_empty_repo_sample_returns_empty(self, filter_repo_empty):
         """sample() on empty repo returns empty."""
