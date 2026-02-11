@@ -688,8 +688,8 @@ class TestGetTool:
         assert "error" in response
         assert "not found" in response["error"]["message"].lower()
 
-    def test_get_truncates_long_messages(self, handle_request, mock_repo):
-        """Get truncates messages longer than 1000 chars."""
+    def test_get_returns_full_messages(self, handle_request, mock_repo):
+        """Get returns full message text without truncation."""
         long_text = "A" * 2000
         conv = Conversation(
             id="test:long",
@@ -712,8 +712,7 @@ class TestGetTool:
         result = json.loads(response["result"]["content"][0]["text"])
         msg_text = result["messages"][0]["text"]
 
-        assert len(msg_text) < len(long_text)
-        assert msg_text.endswith("...")
+        assert msg_text == long_text
 
 
 class TestUnknownTool:

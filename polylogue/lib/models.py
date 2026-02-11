@@ -158,12 +158,11 @@ class Attachment(BaseModel):
         )
 
 
-# Patterns for context dump detection (kept for is_context_dump)
+# Patterns for context dump detection (kept for is_context_dump).
+# Only patterns NOT already handled by fast inline checks in is_context_dump.
 _CONTEXT_PATTERNS = [
     r"^Contents of .+:",
     r"^<file path=",
-    r"<system>.*</system>",  # System prompts pasted as context
-    r"(```\w*\n.*?\n```.*?){3,}",  # 3+ code fences = context dump
 ]
 
 
