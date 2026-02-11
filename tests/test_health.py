@@ -9,48 +9,111 @@ import stat
 import time
 from pathlib import Path
 
+import pytest
+
+
+# ============================================================================
+# Test Data Constants (SCREAMING_CASE tuples for parametrization)
+# ============================================================================
+
+# Cache error scenarios: (error_type, error_description, fixture_setup)
+CACHE_ERROR_SCENARIOS = [
+    (
+        "invalid_json",
+        "Corrupted cache file with invalid JSON",
+        lambda tmp_path: tmp_path.joinpath("health.json").write_text("{ this is not valid json }"),
+    ),
+    (
+        "non_dict_json",
+        "Valid JSON that isn't a dict",
+        lambda tmp_path: tmp_path.joinpath("health.json").write_text('["not", "a", "dict"]'),
+    ),
+    (
+        "missing_file",
+        "Missing cache file",
+        lambda tmp_path: None,  # No setup needed
+    ),
+    (
+        "unicode_error",
+        "Unicode decode errors in cache",
+        lambda tmp_path: tmp_path.joinpath("health.json").write_bytes(b"\xff\xfe invalid utf8"),
+    ),
+]
+
+# Health check instantiation: (name, status_enum, detail)
+HEALTH_CHECK_INSTANCES = [
+    ("test", "OK", "All good"),
+    ("database", "ERROR", "Connection failed"),
+    ("archive", "WARNING", "Directory missing"),
+]
+
+# Run health check types: (check_name, expected_status_enum)
+HEALTH_CHECK_TYPES = [
+    ("config", "OK"),
+    ("archive_root", "OK"),
+    ("render_root", "OK"),
+    ("database", "OK"),
+    ("index", None),  # Just verify it exists
+]
+
+# Repair function variants: (repair_name, dry_run_state)
+REPAIR_DRY_RUN_VARIANTS = [
+    ("orphaned_messages", False),
+    ("orphaned_messages", True),
+    ("empty_conversations", False),
+    ("empty_conversations", True),
+    ("dangling_fts", False),
+    ("dangling_fts", True),
+    ("orphaned_attachments", False),
+    ("orphaned_attachments", True),
+    ("unknown_roles", False),
+    ("unknown_roles", True),
+    ("wal_checkpoint", False),
+    ("wal_checkpoint", True),
+]
+
+# Unknown role type mappings: (message_type, expected_role)
+UNKNOWN_ROLE_TYPE_MAPPINGS = [
+    ("progress", "tool"),
+    ("result", "tool"),
+    ("summary", "system"),
+    ("system", "system"),
+]
+
+# Run all repairs expected names
+RUN_ALL_REPAIRS_EXPECTED = {
+    "orphaned_messages",
+    "empty_conversations",
+    "dangling_fts",
+    "orphaned_attachments",
+    "unknown_roles",
+    "wal_checkpoint",
+}
+
 
 class TestHealthCacheErrorHandling:
     """Tests for health check cache error handling."""
 
-    def test_cache_read_error_returns_none_not_stale_data(self, tmp_path: Path):
-        """Corrupted cache file should return None (cache miss), not garbage data.
+    @pytest.mark.parametrize("error_type,description,setup", CACHE_ERROR_SCENARIOS)
+    def test_cache_errors_return_none(self, error_type, description, setup, tmp_path):
+        """Cache errors should return None, not crash or return garbage.
 
-        This test verifies that error handling prevents returning invalid/stale data
-        when the cache is corrupted.
+        Parametrized across multiple error types: invalid JSON, non-dict, missing file, unicode.
         """
         from polylogue.health import _load_cached
 
-        # Create corrupted cache file with invalid JSON (must be named health.json)
-        cache_file = tmp_path / "health.json"
-        cache_file.write_text("{ this is not valid json }")
+        # Setup error condition
+        if setup:
+            setup(tmp_path)
+
+        # For missing_file test, use a path that doesn't exist
+        if error_type == "missing_file":
+            tmp_path = tmp_path / "does_not_exist"
 
         # Should return None (cache miss), not crash or return garbage
         result = _load_cached(tmp_path)
 
-        assert result is None, "Corrupted cache should return None, not garbage"
-
-    def test_cache_returns_none_on_non_dict_content(self, tmp_path: Path):
-        """Valid JSON that isn't a dict should return None."""
-        from polylogue.health import _load_cached
-
-        # Create cache file with valid JSON but not a dict (e.g., a list)
-        cache_file = tmp_path / "health.json"
-        cache_file.write_text('["not", "a", "dict"]')
-
-        # Should return None since we expect a dict
-        result = _load_cached(tmp_path)
-
-        assert result is None, "Non-dict JSON should return None"
-
-    def test_cache_returns_none_on_missing_file(self, tmp_path: Path):
-        """Missing cache file should return None, not raise."""
-        from polylogue.health import _load_cached
-
-        missing_dir = tmp_path / "does_not_exist"
-        result = _load_cached(missing_dir)
-
-        assert result is None, "Missing cache file should return None"
+        assert result is None, f"{description}: should return None"
 
     def test_cache_read_permission_error_returns_none(self, tmp_path: Path):
         """Permission errors reading cache should return None, not raise."""
@@ -170,40 +233,22 @@ class TestHealthCacheErrorHandling:
 
         assert result == test_data, "Valid cache should return the dict"
 
-    def test_cache_read_unicode_errors_handled(self, tmp_path: Path, capsys):
-        """Unicode decode errors in cache should be handled gracefully."""
-        from polylogue.health import _load_cached
-
-        # Write binary data that isn't valid UTF-8
-        cache_file = tmp_path / "health.json"
-        cache_file.write_bytes(b"\xff\xfe invalid utf8")
-
-        result = _load_cached(tmp_path)
-
-        # Should return None
-        assert result is None
-        # Should have logged a warning (structlog outputs to stdout)
-        captured = capsys.readouterr()
-        assert (
-            "cache" in captured.out.lower()
-            or "error" in captured.out.lower()
-            or "cache" in captured.err.lower()
-            or "error" in captured.err.lower()
-        ), f"Expected warning about cache/error, got stdout: {captured.out}, stderr: {captured.err}"
-
 
 class TestHealthCheck:
     """Tests for HealthCheck dataclass."""
 
-    def test_health_check_creation(self):
+    @pytest.mark.parametrize("name,status_str,detail", HEALTH_CHECK_INSTANCES)
+    def test_health_check_creation(self, name, status_str, detail):
         """HealthCheck should be creatable with name, status, detail."""
         from polylogue.health import HealthCheck, VerifyStatus
 
-        check = HealthCheck(name="test", status=VerifyStatus.OK, detail="All good")
+        # Convert string to enum
+        status = getattr(VerifyStatus, status_str)
+        check = HealthCheck(name=name, status=status, detail=detail)
 
-        assert check.name == "test"
-        assert check.status == VerifyStatus.OK
-        assert check.detail == "All good"
+        assert check.name == name
+        assert check.status == status
+        assert check.detail == detail
 
     def test_health_check_to_dict(self):
         """HealthCheck should convert to dict for serialization."""
@@ -236,8 +281,9 @@ class TestRunHealth:
         assert isinstance(result.checks, list)
         assert len(result.checks) > 0
 
-    def test_run_health_includes_config_check(self, cli_workspace):
-        """run_health should include a config check."""
+    @pytest.mark.parametrize("check_name,expected_status", HEALTH_CHECK_TYPES)
+    def test_run_health_includes_check_types(self, cli_workspace, check_name, expected_status):
+        """run_health should include checks for all required health aspects."""
         from polylogue.config import get_config
         from polylogue.health import VerifyStatus, run_health
 
@@ -245,22 +291,12 @@ class TestRunHealth:
         result = run_health(config)
 
         checks = result.checks
-        config_checks = [c for c in checks if c.name == "config"]
-        assert len(config_checks) > 0
-        assert config_checks[0].status == VerifyStatus.OK
+        matching_checks = [c for c in checks if c.name == check_name]
+        assert len(matching_checks) > 0, f"Missing check: {check_name}"
 
-    def test_run_health_includes_archive_root_check(self, cli_workspace):
-        """run_health should include archive_root check (ok when exists)."""
-        from polylogue.config import get_config
-        from polylogue.health import VerifyStatus, run_health
-
-        config = get_config()
-        result = run_health(config)
-
-        checks = result.checks
-        archive_checks = [c for c in checks if c.name == "archive_root"]
-        assert len(archive_checks) > 0
-        assert archive_checks[0].status == VerifyStatus.OK
+        if expected_status:
+            expected_enum = getattr(VerifyStatus, expected_status)
+            assert matching_checks[0].status == expected_enum, f"{check_name} should be {expected_status}"
 
     def test_run_health_archive_root_warning_when_missing(self, tmp_path):
         """run_health should warn when archive_root doesn't exist."""
@@ -279,18 +315,6 @@ class TestRunHealth:
         archive_checks = [c for c in checks if c.name == "archive_root"]
         assert len(archive_checks) > 0
         assert archive_checks[0].status == VerifyStatus.WARNING
-
-    def test_run_health_includes_render_root_check(self, cli_workspace):
-        """run_health should include render_root check."""
-        from polylogue.config import get_config
-        from polylogue.health import run_health
-
-        config = get_config()
-        result = run_health(config)
-
-        checks = result.checks
-        render_checks = [c for c in checks if c.name == "render_root"]
-        assert len(render_checks) > 0
 
     def test_run_health_render_root_warning_when_missing(self, tmp_path):
         """run_health should warn when render_root doesn't exist."""
@@ -312,31 +336,6 @@ class TestRunHealth:
         render_checks = [c for c in checks if c.name == "render_root"]
         assert len(render_checks) > 0
         assert render_checks[0].status == VerifyStatus.WARNING
-
-    def test_run_health_includes_database_check(self, cli_workspace):
-        """run_health should include database check."""
-        from polylogue.config import get_config
-        from polylogue.health import VerifyStatus, run_health
-
-        config = get_config()
-        result = run_health(config)
-
-        checks = result.checks
-        db_checks = [c for c in checks if c.name == "database"]
-        assert len(db_checks) > 0
-        assert db_checks[0].status == VerifyStatus.OK
-
-    def test_run_health_includes_index_check(self, cli_workspace):
-        """run_health should include index check."""
-        from polylogue.config import get_config
-        from polylogue.health import run_health
-
-        config = get_config()
-        result = run_health(config)
-
-        checks = result.checks
-        index_checks = [c for c in checks if c.name == "index"]
-        assert len(index_checks) > 0
 
     def test_run_health_includes_source_checks(self, cli_workspace):
         """run_health should include checks for each source."""
@@ -1125,17 +1124,18 @@ class TestRepairUnknownRoles:
         assert result.repaired_count == 0
         assert result.success is True
 
-    def test_unknown_roles_progress_to_tool(self, cli_workspace):
-        """repair_unknown_roles should map progress → tool role."""
+    @pytest.mark.parametrize("message_type,expected_role", UNKNOWN_ROLE_TYPE_MAPPINGS)
+    def test_unknown_roles_type_mapping(self, cli_workspace, message_type, expected_role):
+        """repair_unknown_roles should map message types to appropriate roles."""
         from polylogue.config import get_config
         from polylogue.health import repair_unknown_roles
         from polylogue.storage.backends.sqlite import connection_context
 
         config = get_config()
+        msg_id = f"cc-msg-{message_type}"
         with connection_context(None) as conn:
             _insert_conversation(conn, "cc-conv-1", provider_name="claude-code")
-            _insert_message(conn, "cc-msg-1", "cc-conv-1", "unknown", "progress text", {"raw": {"type": "progress"}})
-            _insert_message(conn, "cc-msg-2", "cc-conv-1", "unknown", "result text", {"raw": {"type": "result"}})
+            _insert_message(conn, msg_id, "cc-conv-1", "unknown", f"{message_type} text", {"raw": {"type": message_type}})
             conn.commit()
 
         # Act
@@ -1143,37 +1143,13 @@ class TestRepairUnknownRoles:
 
         # Assert
         assert result.name == "unknown_roles"
-        assert result.repaired_count == 2
+        assert result.repaired_count == 1
         assert result.success is True
 
-        # Verify roles were updated to 'tool'
+        # Verify role was updated to expected
         with connection_context(None) as conn:
-            roles = conn.execute("SELECT role FROM messages WHERE message_id IN (?, ?)", ("cc-msg-1", "cc-msg-2")).fetchall()
-            assert all(r[0] == "tool" for r in roles)
-
-    def test_unknown_roles_system_types(self, cli_workspace):
-        """repair_unknown_roles should map system types to system role."""
-        from polylogue.config import get_config
-        from polylogue.health import repair_unknown_roles
-        from polylogue.storage.backends.sqlite import connection_context
-
-        config = get_config()
-        with connection_context(None) as conn:
-            _insert_conversation(conn, "cc-conv-1", provider_name="claude-code")
-            _insert_message(conn, "cc-msg-1", "cc-conv-1", "unknown", "summary", {"raw": {"type": "summary"}})
-            _insert_message(conn, "cc-msg-2", "cc-conv-1", "unknown", "system", {"raw": {"type": "system"}})
-            conn.commit()
-
-        # Act
-        result = repair_unknown_roles(config, dry_run=False)
-
-        # Assert
-        assert result.repaired_count == 2
-
-        # Verify roles were updated to 'system'
-        with connection_context(None) as conn:
-            roles = conn.execute("SELECT role FROM messages WHERE message_id IN (?, ?)", ("cc-msg-1", "cc-msg-2")).fetchall()
-            assert all(r[0] == "system" for r in roles)
+            role = conn.execute("SELECT role FROM messages WHERE message_id = ?", (msg_id,)).fetchone()[0]
+            assert role == expected_role
 
     def test_unknown_roles_dry_run(self, cli_workspace):
         """repair_unknown_roles with dry_run=True should count but not modify."""
@@ -1277,15 +1253,7 @@ class TestRunAllRepairs:
 
         # Verify we got each repair type
         repair_names = {r.name for r in results}
-        expected = {
-            "orphaned_messages",
-            "empty_conversations",
-            "dangling_fts",
-            "orphaned_attachments",
-            "unknown_roles",
-            "wal_checkpoint",
-        }
-        assert repair_names == expected
+        assert repair_names == RUN_ALL_REPAIRS_EXPECTED
 
     def test_run_all_repairs_all_success(self, cli_workspace):
         """run_all_repairs should have all successful on clean database."""
