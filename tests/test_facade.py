@@ -17,6 +17,7 @@ from polylogue.cli.helpers import (
     maybe_prompt_sources,
     print_summary,
     save_last_source,
+    source_state_path,
 )
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config, Source
@@ -1027,6 +1028,38 @@ class TestLoadSaveLastSource:
 
         result = load_last_source()
         assert result == expected_result
+
+    def test_load_non_dict_json_returns_none(self, tmp_path, monkeypatch):
+        """load_last_source() should return None if JSON is not a dict."""
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        path = source_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+        assert load_last_source() is None
+
+    def test_load_non_string_source_returns_none(self, tmp_path, monkeypatch):
+        """load_last_source() should return None if source is not a string."""
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        path = source_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"source": 123}), encoding="utf-8")
+        assert load_last_source() is None
+
+    def test_multiple_save_overwrites(self, tmp_path, monkeypatch):
+        """Multiple saves should overwrite previous value."""
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        save_last_source("chatgpt")
+        save_last_source("claude")
+        assert load_last_source() == "claude"
+
+    def test_save_creates_parent_dirs(self, tmp_path, monkeypatch):
+        """save_last_source() should create missing parent directories."""
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        path = source_state_path()
+        assert not path.parent.exists()
+        save_last_source("test")
+        assert path.parent.exists()
+        assert path.exists()
 
 
 # ============================================================================
