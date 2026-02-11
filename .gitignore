@@ -57,3 +57,4 @@ tests/test-datasets/*.jsonl
 tests/test-datasets/*.md
 tests/test-datasets/*.txt
 mutants/
+coverage_baseline.json
