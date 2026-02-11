@@ -41,8 +41,8 @@ from polylogue.storage.index import ensure_index, rebuild_index, update_index_fo
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
-from polylogue.storage.store import ConversationRecord, MessageRecord, store_records
-from tests.helpers import ConversationBuilder, DbFactory, make_conversation, make_message
+from polylogue.storage.store import ConversationRecord, MessageRecord
+from tests.helpers import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
 
 # test_db and test_conn fixtures are in conftest.py
 
