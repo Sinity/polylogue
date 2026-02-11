@@ -11,6 +11,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.roles import normalize_role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import ContentBlock, ContentType, MessageMeta
 
@@ -44,7 +45,10 @@ class ClaudeAIChatMessage(BaseModel):
     @property
     def role_normalized(self) -> str:
         """Normalize role to standard values."""
-        return "user" if self.sender == "human" else "assistant"
+        try:
+            return normalize_role(self.sender)
+        except ValueError:
+            return "unknown"
 
     @property
     def parsed_timestamp(self) -> datetime | None:
