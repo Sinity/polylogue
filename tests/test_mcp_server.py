@@ -24,7 +24,7 @@ from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import ConversationRecord, MessageRecord
 
 # =============================================================================
-# Fixtures
+# Fixtures & Helpers
 # =============================================================================
 
 
@@ -40,6 +40,35 @@ def mock_repo():
     repo.resolve_id.return_value = None
 
     return repo
+
+
+def make_mock_filter(results=None, **method_overrides):
+    """Create a pre-configured mock ConversationFilter.
+
+    Args:
+        results: List of conversations to return from .list()
+        **method_overrides: Set side_effect for any method (e.g., since=ValueError("Bad date"))
+
+    Returns:
+        Configured MagicMock filter instance with chaining support.
+    """
+    f = MagicMock()
+    # All these methods should return self for chaining
+    for method in ("provider", "contains", "after", "before", "tags", "title", "since", "limit", "tag"):
+        getattr(f, method).return_value = f
+
+    # Set list() to return provided results
+    f.list.return_value = results or []
+
+    # Apply any method-specific overrides (for side_effect, e.g.)
+    for method_name, override_value in method_overrides.items():
+        method = getattr(f, method_name)
+        if isinstance(override_value, Exception):
+            method.side_effect = override_value
+        else:
+            method.return_value = override_value
+
+    return f
 
 
 @pytest.fixture
@@ -427,40 +456,61 @@ class TestProtocolInitialization:
 
 
 # =============================================================================
-# Tool Listing Tests
+# Listing Tests (Tools, Resources, Prompts)
 # =============================================================================
 
 
-class TestToolsListing:
-    """Tests for tools/list method."""
+class TestHandlerListing:
+    """Parametrized tests for listing methods (tools, resources, prompts)."""
 
-    def test_tools_list_returns_available_tools(self, handle_request, mock_repo):
-        """tools/list returns all available tools."""
-        request = {"method": "tools/list", "params": {}, "id": 2}
+    @pytest.mark.parametrize(
+        "method,result_key,expected_items,item_key,has_schema",
+        [
+            ("tools/list", "tools", ["search", "list", "get"], "name", True),
+            ("resources/list", "resources", ["polylogue://stats", "polylogue://conversations"], "uri", False),
+            ("prompts/list", "prompts", ["analyze-errors", "summarize-week", "extract-code"], "name", False),
+        ],
+    )
+    def test_listing_returns_available_items(self, handle_request, mock_repo, method, result_key, expected_items, item_key, has_schema):
+        """Listing methods return available items with correct structure."""
+        request = {"method": method, "params": {}, "id": 2}
 
         response = handle_request(request, mock_repo)
 
         assert response["id"] == 2
         assert "result" in response
 
-        tools = response["result"]["tools"]
-        tool_names = {t["name"] for t in tools}
+        items = response["result"][result_key]
+        item_identifiers = {item[item_key] for item in items}
 
-        assert "search" in tool_names
-        assert "list" in tool_names
-        assert "get" in tool_names
+        for expected in expected_items:
+            assert expected in item_identifiers
 
-    def test_tools_have_input_schemas(self, handle_request, mock_repo):
-        """Each tool has an inputSchema defining parameters."""
-        request = {"method": "tools/list", "params": {}, "id": 2}
+        if has_schema:
+            for item in items:
+                assert "inputSchema" in item
+                assert item["inputSchema"]["type"] == "object"
+                assert "properties" in item["inputSchema"]
+
+    @pytest.mark.parametrize(
+        "method,result_key,has_mime_type",
+        [
+            ("tools/list", "tools", False),
+            ("resources/list", "resources", True),
+            ("prompts/list", "prompts", False),
+        ],
+    )
+    def test_listing_items_have_metadata(self, handle_request, mock_repo, method, result_key, has_mime_type):
+        """Each item has required metadata."""
+        request = {"method": method, "params": {}, "id": 2}
 
         response = handle_request(request, mock_repo)
-        tools = response["result"]["tools"]
+        items = response["result"][result_key]
 
-        for tool in tools:
-            assert "inputSchema" in tool
-            assert tool["inputSchema"]["type"] == "object"
-            assert "properties" in tool["inputSchema"]
+        for item in items:
+            assert "name" in item or "uri" in item
+            if has_mime_type:
+                assert "mimeType" in item
 
 
 # =============================================================================
@@ -685,40 +735,6 @@ class TestUnknownTool:
 
 
 # =============================================================================
-# Resource Listing Tests
-# =============================================================================
-
-
-class TestResourcesListing:
-    """Tests for resources/list method."""
-
-    def test_resources_list_returns_available_resources(self, handle_request, mock_repo):
-        """resources/list returns available resources."""
-        request = {"method": "resources/list", "params": {}, "id": 7}
-
-        response = handle_request(request, mock_repo)
-
-        assert "result" in response
-        resources = response["result"]["resources"]
-
-        uris = {r["uri"] for r in resources}
-        assert "polylogue://stats" in uris
-        assert "polylogue://conversations" in uris
-
-    def test_resources_have_metadata(self, handle_request, mock_repo):
-        """Each resource has name, uri, and mimeType."""
-        request = {"method": "resources/list", "params": {}, "id": 7}
-
-        response = handle_request(request, mock_repo)
-        resources = response["result"]["resources"]
-
-        for resource in resources:
-            assert "uri" in resource
-            assert "name" in resource
-            assert "mimeType" in resource
-
-
-# =============================================================================
 # Resource Reading Tests
 # =============================================================================
 
@@ -760,12 +776,8 @@ class TestConversationsResource:
         """Conversations resource returns all conversations."""
         mock_repo.list.return_value = [sample_conversation]
 
-        # Need to mock the filter chain
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [sample_conversation]
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[sample_conversation])
 
             request = {
                 "method": "resources/read",
@@ -783,11 +795,7 @@ class TestConversationsResource:
     def test_conversations_resource_with_query_params(self, handle_request, mock_repo):
         """Conversations resource supports query parameters."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.provider.return_value = filter_instance
-            filter_instance.since.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
+            filter_instance = make_mock_filter(results=[])
             MockFilter.return_value = filter_instance
 
             request = {
@@ -861,146 +869,8 @@ class TestUnknownResource:
 
 
 # =============================================================================
-# Prompt Listing Tests
-# =============================================================================
-
-
-class TestPromptsListing:
-    """Tests for prompts/list method."""
-
-    def test_prompts_list_returns_available_prompts(self, handle_request, mock_repo):
-        """prompts/list returns available prompts."""
-        request = {"method": "prompts/list", "params": {}, "id": 12}
-
-        response = handle_request(request, mock_repo)
-
-        assert "result" in response
-        prompts = response["result"]["prompts"]
-
-        prompt_names = {p["name"] for p in prompts}
-        assert "analyze-errors" in prompt_names
-        assert "summarize-week" in prompt_names
-        assert "extract-code" in prompt_names
-
-    def test_prompts_have_descriptions(self, handle_request, mock_repo):
-        """Each prompt has a description."""
-        request = {"method": "prompts/list", "params": {}, "id": 12}
-
-        response = handle_request(request, mock_repo)
-        prompts = response["result"]["prompts"]
-
-        for prompt in prompts:
-            assert "description" in prompt
-            assert len(prompt["description"]) > 0
-
-
-# =============================================================================
 # Prompt Retrieval Tests
 # =============================================================================
-
-
-class TestAnalyzeErrorsPrompt:
-    """Tests for analyze-errors prompt."""
-
-    def test_analyze_errors_prompt(self, handle_request, mock_repo, sample_conversation):
-        """analyze-errors prompt generates error analysis context."""
-        # Modify sample to have error content
-        sample_conversation.messages[0].text = "I got an error: FileNotFoundError"
-
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.provider.return_value = filter_instance
-            filter_instance.since.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [sample_conversation]
-            MockFilter.return_value = filter_instance
-
-            request = {
-                "method": "prompts/get",
-                "params": {"name": "analyze-errors", "arguments": {}},
-                "id": 13,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            result = response["result"]
-            assert "messages" in result
-            assert len(result["messages"]) > 0
-
-            user_msg = result["messages"][0]
-            assert user_msg["role"] == "user"
-            assert "error" in user_msg["content"]["text"].lower()
-
-
-class TestSummarizeWeekPrompt:
-    """Tests for summarize-week prompt."""
-
-    def test_summarize_week_prompt(self, handle_request, mock_repo, sample_conversation):
-        """summarize-week prompt generates weekly summary context."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.since.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [sample_conversation]
-            MockFilter.return_value = filter_instance
-
-            request = {
-                "method": "prompts/get",
-                "params": {"name": "summarize-week", "arguments": {}},
-                "id": 14,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            result = response["result"]
-            assert "messages" in result
-
-            prompt_text = result["messages"][0]["content"]["text"]
-            assert "week" in prompt_text.lower() or "past" in prompt_text.lower()
-
-
-class TestExtractCodePrompt:
-    """Tests for extract-code prompt."""
-
-    def test_extract_code_prompt(self, handle_request, mock_repo):
-        """extract-code prompt generates code extraction context."""
-        # Conversation with code block
-        conv_with_code = Conversation(
-            id="test:code",
-            provider="test",
-            title="Code Example",
-            messages=[
-                Message(
-                    id="m1",
-                    role="assistant",
-                    text="Here's some code:\n```python\nprint('hello')\n```",
-                ),
-            ],
-        )
-
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [conv_with_code]
-            MockFilter.return_value = filter_instance
-
-            request = {
-                "method": "prompts/get",
-                "params": {"name": "extract-code", "arguments": {"language": "python"}},
-                "id": 15,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            result = response["result"]
-            assert "messages" in result
-
-            prompt_text = result["messages"][0]["content"]["text"]
-            assert "code" in prompt_text.lower()
 
 
 class TestUnknownPrompt:
@@ -1199,13 +1069,7 @@ class TestSearchToolFilters:
     ):
         """Search applies filters correctly."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.provider.return_value = filter_instance
-            filter_instance.since.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[])
 
             args = {"query": "test"}
             if filter_type.startswith("limit"):
@@ -1225,6 +1089,7 @@ class TestSearchToolFilters:
             response = handle_request(request, mock_repo)
 
             assert "result" in response, f"Filter test failed for: {desc}"
+            filter_instance = MockFilter.return_value
             if filter_type == "limit_normal":
                 filter_checker(filter_instance).assert_called_once_with(5)
             elif filter_type == "limit_max":
@@ -1250,11 +1115,7 @@ class TestSearchToolFilters:
         """Search returns appropriate errors."""
         if case_type == "invalid_since":
             with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                filter_instance = MagicMock()
-                filter_instance.contains.return_value = filter_instance
-                filter_instance.limit.return_value = filter_instance
-                filter_instance.since.side_effect = ValueError("Invalid date")
-                MockFilter.return_value = filter_instance
+                MockFilter.return_value = make_mock_filter(since=ValueError("Invalid date"))
 
                 request = {
                     "method": "tools/call",
@@ -1303,11 +1164,7 @@ class TestListToolFilters:
         """List tool filter application."""
         if filter_type == "since":
             with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                filter_instance = MagicMock()
-                filter_instance.since.return_value = filter_instance
-                filter_instance.provider.return_value = filter_instance
-                filter_instance.limit.return_value = filter_instance
-                filter_instance.list.return_value = []
+                filter_instance = make_mock_filter(results=[])
                 MockFilter.return_value = filter_instance
 
                 request = {
@@ -1341,10 +1198,7 @@ class TestListToolFilters:
     def test_list_invalid_since_returns_error(self, handle_request, mock_repo):
         """List returns error for unparseable date."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.since.side_effect = ValueError("Bad date")
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(since=ValueError("Bad date"))
 
             request = {
                 "method": "tools/call",
@@ -1372,10 +1226,7 @@ class TestConversationsResourceEdges:
     def test_conversations_resource_with_tag_filter(self, handle_request, mock_repo):
         """Conversations resource supports tag filter."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.tag.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
+            filter_instance = make_mock_filter(results=[])
             MockFilter.return_value = filter_instance
 
             request = {
@@ -1405,11 +1256,7 @@ class TestConversationsResourceEdges:
     def test_conversations_resource_invalid_since(self, handle_request, mock_repo):
         """Conversations resource returns error for unparseable since date."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.provider.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.since.side_effect = ValueError("Cannot parse")
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(since=ValueError("Cannot parse"))
 
             request = {
                 "method": "resources/read",
@@ -1451,10 +1298,7 @@ class TestPromptEdgeCases:
 
         if "invalid_since" in case_id:
             with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                filter_instance = MagicMock()
-                filter_instance.contains.return_value = filter_instance
-                filter_instance.since.side_effect = ValueError("Bad date")
-                MockFilter.return_value = filter_instance
+                MockFilter.return_value = make_mock_filter(since=ValueError("Bad date"))
 
                 request = {
                     "method": "prompts/get",
@@ -1470,12 +1314,7 @@ class TestPromptEdgeCases:
                 assert "error" in response, f"Error test failed for: {desc}"
         else:
             with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                filter_instance = MagicMock()
-                filter_instance.contains.return_value = filter_instance
-                filter_instance.provider.return_value = filter_instance
-                filter_instance.since.return_value = filter_instance
-                filter_instance.limit.return_value = filter_instance
-                filter_instance.list.return_value = [sample_conversation]
+                filter_instance = make_mock_filter(results=[sample_conversation])
                 MockFilter.return_value = filter_instance
 
                 request = {
@@ -1512,11 +1351,7 @@ class TestPromptEdgeCases:
         )
 
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [big_conv]
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[big_conv])
 
             request = {
                 "method": "prompts/get",
@@ -1533,11 +1368,7 @@ class TestPromptEdgeCases:
     def test_analyze_errors_no_matches(self, handle_request, mock_repo):
         """analyze-errors handles zero matching conversations."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.contains.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[])
 
             request = {
                 "method": "prompts/get",
@@ -1554,11 +1385,7 @@ class TestPromptEdgeCases:
     def test_summarize_week_empty(self, handle_request, mock_repo):
         """summarize-week handles no conversations in past week."""
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.since.return_value = filter_instance
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = []
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[])
 
             request = {
                 "method": "prompts/get",
@@ -1583,10 +1410,7 @@ class TestPromptEdgeCases:
         )
 
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [conv]
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[conv])
 
             request = {
                 "method": "prompts/get",
@@ -1616,10 +1440,7 @@ class TestPromptEdgeCases:
         )
 
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [conv]
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[conv])
 
             request = {
                 "method": "prompts/get",
@@ -1646,10 +1467,7 @@ class TestPromptEdgeCases:
         )
 
         with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = MagicMock()
-            filter_instance.limit.return_value = filter_instance
-            filter_instance.list.return_value = [conv]
-            MockFilter.return_value = filter_instance
+            MockFilter.return_value = make_mock_filter(results=[conv])
 
             request = {
                 "method": "prompts/get",
@@ -1729,19 +1547,3 @@ class TestWriteError:
         assert response["error"]["message"] == "Parse error"
 
 
-# --- Merged from test_supplementary_coverage.py ---
-
-
-class TestMcpCommandSupplementary:
-    """Tests for MCP command edge cases."""
-
-    def test_mcp_import_error(self, cli_workspace):
-        """Should show clear error when MCP deps not installed."""
-        from click.testing import CliRunner
-        from unittest.mock import patch
-
-        from polylogue.cli.click_app import cli
-
-        with patch("polylogue.cli.commands.mcp.mcp_command") as mock_cmd:
-            # Simulate ImportError path by testing with a mock
-            pass  # The actual ImportError test is in test_mcp_server.py already
