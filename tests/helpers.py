@@ -347,48 +347,6 @@ def db_setup(workspace_env) -> Path:
 # =============================================================================
 
 
-class MessageBuilder:
-    """Fluent builder for MessageRecord.
-
-    Example:
-        msg = (MessageBuilder("m1", "conv1")
-               .role("user")
-               .text("Hello!")
-               .timestamp("2024-01-01T10:00:00Z")
-               .build())
-    """
-
-    def __init__(self, message_id: str, conversation_id: str):
-        self.data = {
-            "message_id": message_id,
-            "conversation_id": conversation_id,
-            "role": "user",
-            "text": "Default text",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "content_hash": uuid4().hex[:16],
-            "provider_meta": None,
-        }
-
-    def role(self, role: str) -> MessageBuilder:
-        self.data["role"] = role
-        return self
-
-    def text(self, text: str) -> MessageBuilder:
-        self.data["text"] = text
-        return self
-
-    def timestamp(self, timestamp: str | None) -> MessageBuilder:
-        self.data["timestamp"] = timestamp
-        return self
-
-    def meta(self, meta: dict | None) -> MessageBuilder:
-        self.data["provider_meta"] = meta
-        return self
-
-    def build(self) -> MessageRecord:
-        return MessageRecord(**self.data)
-
-
 class ConversationBuilder:
     """Fluent builder for creating conversations in test database.
 
@@ -821,25 +779,6 @@ def make_claude_chat_message(
     return msg
 
 
-def make_claude_code_message(
-    msg_type: str,
-    text: str,
-    **kwargs,
-) -> dict[str, Any]:
-    """Generate Claude Code message for importer tests.
-
-    Usage:
-        msg = make_claude_code_message("user_message", "Question")
-        msg = make_claude_code_message("tool_use", '{"name": "read"}')
-    """
-    msg = {
-        "type": msg_type,
-        "text": text,
-    }
-    msg.update(kwargs)
-    return msg
-
-
 # =============================================================================
 # FILE DATA BUILDERS (For creating test inbox files)
 # =============================================================================
@@ -977,28 +916,6 @@ class InboxBuilder:
 
         fname = filename or f"claude_{conv_id}.json"
         return self.add_json_file(fname, payload)
-
-    def add_claude_code_jsonl(
-        self,
-        session_id: str,
-        messages: list[dict] | None = None,
-        filename: str | None = None,
-    ) -> InboxBuilder:
-        """Add a Claude Code JSONL session file.
-
-        Args:
-            session_id: Session ID for filename
-            messages: List of message dicts (use make_claude_code_message())
-            filename: Custom filename
-        """
-        if messages is None:
-            messages = [
-                make_claude_code_message("user", "What is 2+2?"),
-                make_claude_code_message("assistant", "4"),
-            ]
-
-        fname = filename or f"{session_id}.jsonl"
-        return self.add_jsonl_file(fname, messages)
 
     def build(self) -> Path:
         """Write all files and return the inbox path."""
@@ -1249,124 +1166,5 @@ class GenericConversationBuilder:
         return path
 
 
-def write_test_inbox(
-    base_path: Path,
-    conversations: list[dict[str, Any]] | None = None,
-    format: str = "codex",
-) -> Path:
-    """Quick helper to write a test inbox with default conversations.
-
-    Args:
-        base_path: Directory to create inbox in
-        conversations: List of conversation payloads (auto-generated if None)
-        format: "codex", "chatgpt", or "claude"
-
-    Returns:
-        Path to the inbox directory
-    """
-    import json
-
-    inbox = base_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-
-    if conversations is None:
-        if format == "codex":
-            conversations = [
-                GenericConversationBuilder("conv1")
-                .title("Test")
-                .add_user("Hello")
-                .add_assistant("Hi!")
-                .build()
-            ]
-        elif format == "chatgpt":
-            conversations = [
-                ChatGPTExportBuilder("conv1")
-                .title("Test")
-                .add_node("user", "Hello")
-                .add_node("assistant", "Hi!")
-                .build()
-            ]
-        elif format == "claude":
-            conversations = [
-                ClaudeExportBuilder("conv1")
-                .name("Test")
-                .add_human("Hello")
-                .add_assistant("Hi!")
-                .build()
-            ]
-
-    for i, conv in enumerate(conversations):
-        filename = conv.get("id", f"conv{i+1}") + ".json"
-        (inbox / filename).write_text(json.dumps(conv), encoding="utf-8")
-
-    return inbox
 
 
-# =============================================================================
-# COVERAGE VERIFICATION HELPERS
-# =============================================================================
-
-
-def parametrized_case_count(test_cases: list) -> dict[str, int]:
-    """Count parametrized test cases by description pattern.
-
-    Usage:
-        CASES = [(input1, expected1, "desc1"), (input2, expected2, "desc2")]
-        counts = parametrized_case_count(CASES)
-        # Returns: {"total": 2, "desc1": 1, "desc2": 1}
-    """
-    counts = {"total": len(test_cases)}
-
-    for case in test_cases:
-        if len(case) >= 3:
-            desc = case[-1]  # Description is usually last element
-            counts[desc] = counts.get(desc, 0) + 1
-
-    return counts
-
-
-def verify_coverage(
-    old_test_names: list[str],
-    new_test_cases: list[tuple],
-    mapping: dict[str, str] | None = None,
-) -> dict[str, Any]:
-    """Verify parametrized tests cover all original tests.
-
-    Usage:
-        old = ["test_foo_basic", "test_foo_with_arg", "test_foo_empty"]
-        new = [(1, "basic"), (2, "with arg"), (None, "empty")]
-        mapping = {"test_foo_basic": "basic", "test_foo_with_arg": "with arg"}
-
-        result = verify_coverage(old, new, mapping)
-        # Returns: {"covered": 3, "missing": [], "extra": []}
-    """
-    old_set = set(old_test_names)
-    new_descriptions = {case[-1] for case in new_test_cases if len(case) >= 3}
-
-    if mapping:
-        # Map old test names to expected descriptions
-        covered = set()
-        for old_name in old_set:
-            expected_desc = mapping.get(old_name)
-            if expected_desc and expected_desc in new_descriptions:
-                covered.add(old_name)
-
-        missing = old_set - covered
-
-        # Check for extra cases not in mapping
-        expected_descriptions = set(mapping.values())
-        extra = new_descriptions - expected_descriptions
-    else:
-        # Without mapping, just report counts
-        covered = set()
-        missing = old_set
-        extra = new_descriptions
-
-    return {
-        "old_count": len(old_set),
-        "new_count": len(new_test_cases),
-        "covered": covered,
-        "missing": list(missing),
-        "extra": list(extra),
-        "coverage_percent": (len(covered) / len(old_set) * 100) if old_set else 100,
-    }
