@@ -57,14 +57,18 @@ from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
     MessageRecord,
+)
+from tests.helpers import (
     _make_ref_id,
     _prune_attachment_refs,
+    make_attachment,
+    make_conversation,
+    make_message,
     store_records,
     upsert_attachment,
     upsert_conversation,
     upsert_message,
 )
-from tests.helpers import make_attachment, make_conversation, make_message
 
 # test_db and test_conn fixtures are in conftest.py
 
