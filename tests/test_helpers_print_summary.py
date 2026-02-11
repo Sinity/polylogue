@@ -82,8 +82,8 @@ PROVIDER_COLOR_PARAMS = [
     ("claude", "#d97757"),
     ("chatgpt", "#10a37f"),
     ("gemini", "#4285f4"),
-    ("codex", "cyan"),
-    ("unknown-ai", "white"),
+    ("codex", "#00bcd4"),
+    ("unknown-ai", "#e5e7eb"),
 ]
 
 TOOL_USE_PARAMS = [
