@@ -300,54 +300,36 @@ def test_update_index_handles_large_batch(test_conn):
 # ============================================================================
 
 
-def test_search_finds_matching_text(workspace_env, storage_repository):
-    """search_messages() finds conversations with matching text."""
+SEARCH_BASIC_CASES = [
+    # (num_convs, search_term, expected_count, description)
+    (1, "python", 1, "single match"),
+    (3, "testing", 3, "multiple matches"),
+    (1, "nonexistent", 0, "no match"),
+]
+
+
+@pytest.mark.parametrize("num_convs,search_term,expected_count,description", SEARCH_BASIC_CASES)
+def test_search_basic_results(workspace_env, storage_repository, num_convs, search_term, expected_count, description):
+    """search_messages() returns correct number of results."""
     from polylogue.sources import IngestBundle, ingest_bundle
 
-    conv = make_conversation("conv1", title="Test Conv")
-    msg = make_message("msg1", "conv1", text="python programming language")
-
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
-    rebuild_index()
-
-    results = search_messages("python", archive_root=workspace_env["archive_root"], limit=10)
-
-    assert len(results.hits) == 1
-    assert results.hits[0].conversation_id == "conv1"
-    assert results.hits[0].message_id == "msg1"
-
-
-def test_search_returns_multiple_matches(workspace_env, storage_repository):
-    """search_messages() returns multiple matching conversations."""
-    from polylogue.sources import IngestBundle, ingest_bundle
-
-    for i in range(3):
+    # Create conversations
+    for i in range(num_convs):
+        if search_term == "nonexistent":
+            text = "hello world"
+        elif search_term == "testing":
+            text = "testing framework"
+        else:  # "python"
+            text = "python programming language"
+        
         conv = make_conversation(f"conv{i}", title=f"Conv {i}")
-        msg = make_message(f"msg{i}", f"conv{i}", text="testing framework")
+        msg = make_message(f"msg{i}", f"conv{i}", text=text)
         ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
 
     rebuild_index()
 
-    results = search_messages("testing", archive_root=workspace_env["archive_root"], limit=10)
-
-    assert len(results.hits) == 3
-    hit_conv_ids = {hit.conversation_id for hit in results.hits}
-    assert hit_conv_ids == {"conv0", "conv1", "conv2"}
-
-
-def test_search_no_results_returns_empty(workspace_env, storage_repository):
-    """search_messages() returns empty list when no matches found."""
-    from polylogue.sources import IngestBundle, ingest_bundle
-
-    conv = make_conversation("conv1")
-    msg = make_message("msg1", "conv1", text="hello world")
-
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
-    rebuild_index()
-
-    results = search_messages("nonexistent", archive_root=workspace_env["archive_root"], limit=10)
-
-    assert len(results.hits) == 0
+    results = search_messages(search_term, archive_root=workspace_env["archive_root"], limit=10)
+    assert len(results.hits) == expected_count, f"Failed for {description}"
 
 
 def test_search_respects_limit(workspace_env, storage_repository):
@@ -412,63 +394,28 @@ def test_search_includes_conversation_metadata(workspace_env, storage_repository
 # ============================================================================
 
 
-def test_search_with_special_characters(workspace_env, storage_repository):
-    """search_messages() handles special characters in text."""
+SEARCH_WITH_SPECIAL_TEXT_CASES = [
+    # (text, search_term, description)
+    ("C++ programming with @mentions and #hashtags", "programming", "special characters"),
+    ('She said "hello world" to me', "hello", "quoted text"),
+    ("Hello 世界 مرحبا мир café", "café", "unicode"),
+    ("The state-of-the-art algorithm", "state", "hyphenated"),
+]
+
+
+@pytest.mark.parametrize("text,search_term,description", SEARCH_WITH_SPECIAL_TEXT_CASES)
+def test_search_with_special_text(workspace_env, storage_repository, text, search_term, description):
+    """search_messages() handles special text patterns."""
     from polylogue.sources import IngestBundle, ingest_bundle
 
-    conv = make_conversation("conv1")
-    msg = make_message("msg1", "conv1", text="C++ programming with @mentions and #hashtags")
+    conv = make_conversation("conv1", title=f"Test {description}")
+    msg = make_message("msg1", "conv1", text=text)
 
     ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
-    # Search for word containing special chars
-    results = search_messages("programming", archive_root=workspace_env["archive_root"], limit=10)
-    assert len(results.hits) == 1
-
-
-def test_search_with_quotes_in_text(workspace_env, storage_repository):
-    """search_messages() handles quoted text correctly."""
-    from polylogue.sources import IngestBundle, ingest_bundle
-
-    conv = make_conversation("conv1")
-    msg = make_message("msg1", "conv1", text='She said "hello world" to me')
-
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
-    rebuild_index()
-
-    results = search_messages("hello", archive_root=workspace_env["archive_root"], limit=10)
-    assert len(results.hits) == 1
-
-
-def test_search_with_unicode_text(workspace_env, storage_repository):
-    """search_messages() handles unicode characters."""
-    from polylogue.sources import IngestBundle, ingest_bundle
-
-    conv = make_conversation("conv1", title="Unicode Test")
-    msg = make_message("msg1", "conv1", text="Hello 世界 مرحبا мир café")
-
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
-    rebuild_index()
-
-    results = search_messages("café", archive_root=workspace_env["archive_root"], limit=10)
-    assert len(results.hits) == 1
-
-
-def test_search_with_hyphenated_words(workspace_env, storage_repository):
-    """search_messages() handles words in hyphenated phrases."""
-    from polylogue.sources import IngestBundle, ingest_bundle
-
-    conv = make_conversation("conv1")
-    msg = make_message("msg1", "conv1", text="The state-of-the-art algorithm")
-
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
-    rebuild_index()
-
-    # Search for individual words within hyphenated phrase (FTS5 tokenizes on hyphens)
-    results = search_messages("state", archive_root=workspace_env["archive_root"], limit=10)
-    # Should find the message containing "state" (from state-of-the-art)
-    assert len(results.hits) == 1
+    results = search_messages(search_term, archive_root=workspace_env["archive_root"], limit=10)
+    assert len(results.hits) == 1, f"Failed for {description}"
 
 
 # ============================================================================
@@ -763,58 +710,31 @@ def test_search_prefers_legacy_render_when_present(workspace_env, storage_reposi
 # --since timestamp filtering tests
 
 
-def test_search_since_filters_by_iso_date(workspace_env, storage_repository):
-    """--since with ISO date filters messages correctly."""
+SEARCH_SINCE_VALID_CASES = [
+    # (conv_id, old_ts, new_ts, search_term, since_date, expected_msg_id, description)
+    ("conv:iso", "2024-01-10T10:00:00", "2024-01-20T10:00:00", "message", "2024-01-15", "msg:new-iso", "ISO date"),
+    ("conv:numeric", "1704067200.0", "1706227200.0", "numeric", "2024-01-15", "msg:new-num", "numeric timestamp"),
+]
+
+
+@pytest.mark.parametrize("conv_id,old_ts,new_ts,search_term,since_date,expected_msg_id,description", SEARCH_SINCE_VALID_CASES)
+def test_search_since_filters(workspace_env, storage_repository, conv_id, old_ts, new_ts, search_term, since_date, expected_msg_id, description):
+    """--since filters messages by timestamp (ISO and numeric formats)."""
     archive_root = workspace_env["archive_root"]
-    # Message with ISO timestamp: 2024-01-15T10:00:00
     bundle = IngestBundle(
-        conversation=make_conversation("conv:iso", title="ISO Test"),
+        conversation=make_conversation(conv_id, title=f"Test {description}"),
         messages=[
-            make_message("msg:old-iso", "conv:iso", text="old message iso", timestamp="2024-01-10T10:00:00"),
-            make_message("msg:new-iso", "conv:iso", text="new message iso", timestamp="2024-01-20T10:00:00"),
+            make_message(f"{conv_id}:old", conv_id, text=f"old message {description}", timestamp=old_ts),
+            make_message(f"{conv_id}:new", conv_id, text=f"new message {description}", timestamp=new_ts),
         ],
         attachments=[],
     )
     ingest_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
-    # Filter for messages after 2024-01-15
-    results = search_messages(
-        "message",
-        archive_root=archive_root,
-        since="2024-01-15",
-        limit=10,
-    )
-    assert len(results.hits) == 1
-    assert results.hits[0].message_id == "msg:new-iso"
-
-
-def test_search_since_filters_numeric_timestamps(workspace_env, storage_repository):
-    """--since works when DB has float timestamps (e.g., 1704067200.0)."""
-    archive_root = workspace_env["archive_root"]
-    # 1705312800.0 = 2024-01-15T10:00:00 UTC
-    # 1704067200.0 = 2024-01-01T00:00:00 UTC
-    # 1706227200.0 = 2024-01-26T00:00:00 UTC
-    bundle = IngestBundle(
-        conversation=make_conversation("conv:numeric", title="Numeric Test"),
-        messages=[
-            make_message("msg:old-num", "conv:numeric", text="old message numeric", timestamp="1704067200.0"),
-            make_message("msg:new-num", "conv:numeric", text="new message numeric", timestamp="1706227200.0"),
-        ],
-        attachments=[],
-    )
-    ingest_bundle(bundle, repository=storage_repository)
-    rebuild_index()
-
-    # Filter for messages after 2024-01-15
-    results = search_messages(
-        "numeric",
-        archive_root=archive_root,
-        since="2024-01-15",
-        limit=10,
-    )
-    assert len(results.hits) == 1
-    assert results.hits[0].message_id == "msg:new-num"
+    results = search_messages(search_term, archive_root=archive_root, since=since_date, limit=10)
+    assert len(results.hits) == 1, f"Failed for {description}"
+    assert results.hits[0].message_id == f"{conv_id}:new"
 
 
 def test_search_since_handles_mixed_timestamp_formats(workspace_env, storage_repository):
@@ -865,25 +785,25 @@ def test_search_since_handles_mixed_timestamp_formats(workspace_env, storage_rep
     assert hit_conv_ids == {"conv:iso-new", "conv:num-new"}
 
 
-def test_search_since_invalid_date_raises_error(workspace_env, storage_repository):
+SEARCH_SINCE_ERROR_CASES = [
+    # (invalid_date, expected_error_match)
+    ("not-a-date", "Invalid --since date"),
+    ("01/15/2024", "ISO format"),
+]
+
+
+@pytest.mark.parametrize("invalid_date,expected_error", SEARCH_SINCE_ERROR_CASES)
+def test_search_since_invalid_date_raises_error(workspace_env, storage_repository, invalid_date, expected_error):
     """Invalid --since format raises ValueError with helpful message."""
     archive_root = workspace_env["archive_root"]
     _seed_conversation(storage_repository)
     rebuild_index()
 
-    with pytest.raises(ValueError, match="Invalid --since date"):
+    with pytest.raises(ValueError, match=expected_error):
         search_messages(
             "hello",
             archive_root=archive_root,
-            since="not-a-date",
-            limit=5,
-        )
-
-    with pytest.raises(ValueError, match="ISO format"):
-        search_messages(
-            "hello",
-            archive_root=archive_root,
-            since="01/15/2024",  # Wrong format
+            since=invalid_date,
             limit=5,
         )
 
@@ -2477,34 +2397,22 @@ class TestSearchProviderInit:
         assert provider is not None
 
 
-class TestIndexChunked:
-    """Tests for _chunked utility."""
+INDEX_CHUNKED_CASES = [
+    # (input_list, chunk_size, expected_output, description)
+    ([], 10, [], "empty list"),
+    (["a", "b"], 10, [["a", "b"]], "smaller than chunk size"),
+    (["a", "b", "c", "d"], 2, [["a", "b"], ["c", "d"]], "exact multiple of chunk size"),
+    (["a", "b", "c"], 2, [["a", "b"], ["c"]], "with remainder"),
+]
 
-    def test_chunked_empty(self):
-        from polylogue.storage.index import _chunked
 
-        result = list(_chunked([], size=10))
-        assert result == []
+@pytest.mark.parametrize("input_list,chunk_size,expected_output,description", INDEX_CHUNKED_CASES)
+def test_chunked(input_list, chunk_size, expected_output, description):
+    """_chunked utility chunks items correctly."""
+    from polylogue.storage.index import _chunked
 
-    def test_chunked_smaller_than_size(self):
-        from polylogue.storage.index import _chunked
-
-        result = list(_chunked(["a", "b"], size=10))
-        assert result == [["a", "b"]]
-
-    def test_chunked_exact_multiple(self):
-        from polylogue.storage.index import _chunked
-
-        result = list(_chunked(["a", "b", "c", "d"], size=2))
-        assert result == [["a", "b"], ["c", "d"]]
-
-    def test_chunked_with_remainder(self):
-        from polylogue.storage.index import _chunked
-
-        result = list(_chunked(["a", "b", "c"], size=2))
-        assert len(result) == 2
-        assert result[0] == ["a", "b"]
-        assert result[1] == ["c"]
+    result = list(_chunked(input_list, size=chunk_size))
+    assert result == expected_output, f"Failed for {description}"
 
 
 if __name__ == "__main__":
