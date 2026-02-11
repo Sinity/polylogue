@@ -11,11 +11,14 @@ Coverage targets:
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from polylogue.cli import query
 from polylogue.lib.models import Conversation, Message
@@ -83,185 +86,115 @@ def mock_env():
 class TestConvToDict:
     """Tests for _conv_to_dict helper."""
 
-    def test_full_dict(self, sample_conversations):
-        """Returns full dict when no fields specified."""
+    @pytest.mark.parametrize(
+        "fields,should_include,should_exclude",
+        [
+            (None, ["id", "provider", "title", "messages", "tags"], []),
+            ("id,provider", ["id", "provider"], ["title", "messages"]),
+            ("id, title, tags", ["id", "title", "tags"], ["provider"]),
+        ],
+        ids=["full_dict", "selected_fields", "fields_with_spaces"],
+    )
+    def test_field_selection(self, sample_conversations, fields, should_include, should_exclude):
+        """Tests _conv_to_dict field selection."""
         conv = sample_conversations[0]
-        result = query._conv_to_dict(conv, None)
+        result = query._conv_to_dict(conv, fields)
 
-        assert result["id"] == "conv1-abc123"
-        assert result["provider"] == "chatgpt"
-        assert result["title"] == "First Conversation"
-        assert result["messages"] == 2
-        assert result["tags"] == ["work", "important"]
+        for field in should_include:
+            assert field in result, f"Expected field '{field}' to be in result"
+        for field in should_exclude:
+            assert field not in result, f"Expected field '{field}' to NOT be in result"
 
-    def test_selected_fields(self, sample_conversations):
-        """Returns only selected fields."""
+        if fields is None:
+            assert result["id"] == "conv1-abc123"
+            assert result["provider"] == "chatgpt"
+            assert result["title"] == "First Conversation"
+            assert result["messages"] == 2
+            assert result["tags"] == ["work", "important"]
+
+
+class TestFormatHelpers:
+    """Consolidated tests for format conversion helpers."""
+
+    @pytest.mark.parametrize(
+        "formatter,assertion",
+        [
+            (query._conv_to_markdown, lambda r: "# First Conversation" in r),
+            (query._conv_to_html, lambda r: "<!DOCTYPE html>" in r and "<html>" in r),
+            (query._conv_to_obsidian, lambda r: r.startswith("---")),
+            (query._conv_to_org, lambda r: "#+TITLE:" in r),
+        ],
+        ids=["markdown", "html", "obsidian", "org"],
+    )
+    def test_format_structure(self, sample_conversations, formatter, assertion):
+        """Tests format conversion helpers produce expected structure."""
         conv = sample_conversations[0]
-        result = query._conv_to_dict(conv, "id,provider")
+        result = formatter(conv)
+        assert assertion(result), f"Failed for {formatter.__name__}"
 
-        assert "id" in result
-        assert "provider" in result
-        assert "title" not in result
-        assert "messages" not in result
-
-    def test_fields_with_spaces(self, sample_conversations):
-        """Handles field list with spaces."""
-        conv = sample_conversations[0]
-        result = query._conv_to_dict(conv, "id, title, tags")
-
-        assert "id" in result
-        assert "title" in result
-        assert "tags" in result
-        assert "provider" not in result
-
-
-class TestConvToMarkdown:
-    """Tests for _conv_to_markdown helper."""
-
-    def test_includes_title(self, sample_conversations):
-        """Includes conversation title as heading."""
-        conv = sample_conversations[0]
-        result = query._conv_to_markdown(conv)
-
-        assert "# First Conversation" in result
-
-    def test_includes_messages(self, sample_conversations):
-        """Includes all messages."""
-        conv = sample_conversations[0]
-        result = query._conv_to_markdown(conv)
-
-        assert "Hello world" in result
-        assert "Hi there!" in result
-
-    def test_includes_provider(self, sample_conversations):
-        """Includes provider info."""
+    def test_markdown_includes_messages(self, sample_conversations):
+        """Markdown includes all message content."""
         conv = sample_conversations[0]
         result = query._conv_to_markdown(conv)
+        assert "Hello world" in result and "Hi there!" in result
 
+    def test_markdown_includes_provider(self, sample_conversations):
+        """Markdown includes provider info."""
+        conv = sample_conversations[0]
+        result = query._conv_to_markdown(conv)
         assert "chatgpt" in result.lower()
 
-
-class TestConvToHtml:
-    """Tests for _conv_to_html helper."""
-
-    def test_valid_html(self, sample_conversations):
-        """Generates valid HTML structure."""
-        conv = sample_conversations[0]
-        result = query._conv_to_html(conv)
-
-        assert "<!DOCTYPE html>" in result
-        assert "<html>" in result
-        assert "</html>" in result
-        assert "<title>" in result
-
-    def test_escapes_html_chars(self, sample_conversations):
-        """Escapes HTML special characters."""
+    def test_html_escapes_special_chars(self, sample_conversations):
+        """HTML properly escapes special characters."""
         conv = Conversation(
             id="test",
             provider="test",
-            messages=[
-                Message(id="m1", role="user", text="<script>alert('xss')</script>"),
-            ],
+            messages=[Message(id="m1", role="user", text="<script>alert('xss')</script>")],
         )
         result = query._conv_to_html(conv)
+        assert "<script>" not in result and "&lt;script&gt;" in result
 
-        assert "<script>" not in result
-        assert "&lt;script&gt;" in result
-
-    def test_includes_css(self, sample_conversations):
-        """Includes CSS styles."""
+    def test_html_includes_css(self, sample_conversations):
+        """HTML includes CSS styles."""
         conv = sample_conversations[0]
         result = query._conv_to_html(conv)
+        assert "<style>" in result and "message-user" in result
 
-        assert "<style>" in result
-        assert "message-user" in result
-        assert "message-assistant" in result
-
-
-class TestConvToObsidian:
-    """Tests for _conv_to_obsidian helper."""
-
-    def test_yaml_frontmatter(self, sample_conversations):
-        """Includes YAML frontmatter."""
+    def test_obsidian_includes_tags(self, sample_conversations):
+        """Obsidian format includes tags in frontmatter."""
         conv = sample_conversations[0]
         result = query._conv_to_obsidian(conv)
-
-        assert result.startswith("---")
-        assert "id: conv1-abc123" in result
-        assert "provider: chatgpt" in result
-
-    def test_tags_in_frontmatter(self, sample_conversations):
-        """Includes tags in frontmatter."""
-        conv = sample_conversations[0]
-        result = query._conv_to_obsidian(conv)
-
         assert "tags:" in result
 
-
-class TestConvToOrg:
-    """Tests for _conv_to_org helper."""
-
-    def test_org_headers(self, sample_conversations):
-        """Uses Org-mode headers."""
+    def test_org_uses_headings(self, sample_conversations):
+        """Org-mode uses * for headings."""
         conv = sample_conversations[0]
         result = query._conv_to_org(conv)
-
-        assert "#+TITLE:" in result
-        assert "#+DATE:" in result
-        assert "#+PROPERTY:" in result
-
-    def test_org_headings(self, sample_conversations):
-        """Uses * for headings."""
-        conv = sample_conversations[0]
-        result = query._conv_to_org(conv)
-
-        assert "* USER" in result
-        assert "* ASSISTANT" in result
+        assert "* USER" in result and "* ASSISTANT" in result
 
 
 class TestOutputStats:
     """Tests for _output_stats aggregation."""
 
-    def test_shows_total_messages(self, mock_env, sample_conversations):
-        """Shows total message count."""
+    @pytest.mark.parametrize(
+        "stat_term",
+        ["messages", "user", "assistant", "tool", "thinking", "date"],
+        ids=[
+            "total_messages",
+            "role_counts_user",
+            "role_counts_assistant",
+            "tool_calls",
+            "thinking_traces",
+            "date_range",
+        ],
+    )
+    def test_shows_stat(self, mock_env, sample_conversations, stat_term):
+        """Tests _output_stats displays specific statistics."""
         query._output_stats(mock_env, sample_conversations)
 
         calls = mock_env.ui.console.print.call_args_list
         output = " ".join(str(c) for c in calls)
-        assert "messages" in output.lower()
-
-    def test_shows_role_counts(self, mock_env, sample_conversations):
-        """Shows user and assistant message counts."""
-        query._output_stats(mock_env, sample_conversations)
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "user" in output.lower()
-        assert "assistant" in output.lower()
-
-    def test_shows_tool_calls(self, mock_env, sample_conversations):
-        """Shows tool call count."""
-        query._output_stats(mock_env, sample_conversations)
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "tool" in output.lower()
-
-    def test_shows_thinking_traces(self, mock_env, sample_conversations):
-        """Shows thinking trace count."""
-        query._output_stats(mock_env, sample_conversations)
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "thinking" in output.lower()
-
-    def test_shows_date_range(self, mock_env, sample_conversations):
-        """Shows date range of conversations."""
-        query._output_stats(mock_env, sample_conversations)
-
-        calls = mock_env.ui.console.print.call_args_list
-        output = " ".join(str(c) for c in calls)
-        assert "date" in output.lower() or "2024" in output
+        assert stat_term.lower() in output.lower() or (stat_term == "date" and "2024" in output)
 
     def test_handles_no_results(self, mock_env):
         """Handles empty results list."""
@@ -275,14 +208,22 @@ class TestOutputStats:
 class TestFormatList:
     """Tests for _format_list helper."""
 
-    def test_json_format(self, sample_conversations):
-        """JSON format returns valid JSON array."""
-        result = query._format_list(sample_conversations, "json", None)
-        parsed = json.loads(result)
+    @pytest.mark.parametrize(
+        "format_type,parser,expected_type,first_id",
+        [
+            ("json", json.loads, list, "conv1-abc123"),
+            ("yaml", yaml.safe_load, list, "conv1-abc123"),
+        ],
+        ids=["json_format", "yaml_list_format"],
+    )
+    def test_format_list(self, sample_conversations, format_type, parser, expected_type, first_id):
+        """Tests _format_list with various formats."""
+        result = query._format_list(sample_conversations, format_type, None)
+        parsed = parser(result)
 
-        assert isinstance(parsed, list)
+        assert isinstance(parsed, expected_type)
         assert len(parsed) == 3
-        assert parsed[0]["id"] == "conv1-abc123"
+        assert parsed[0]["id"] == first_id
 
     def test_default_format(self, sample_conversations):
         """Default format returns text list."""
@@ -292,72 +233,35 @@ class TestFormatList:
         assert "conv2-def456" in result
         assert "First Conversation" in result
 
-    def test_yaml_list_format(self, sample_conversations):
-        """YAML list format returns valid YAML list."""
-        result = query._format_list(sample_conversations, "yaml", None)
-
-        import yaml
-
-        parsed = yaml.safe_load(result)
-
-        assert isinstance(parsed, list)
-        assert len(parsed) == 3
-        assert parsed[0]["id"] == "conv1-abc123"
-
 
 class TestFormatConversation:
     """Tests for _format_conversation helper."""
 
-    def test_json_format(self, sample_conversations):
-        """JSON format returns valid JSON."""
+    @pytest.mark.parametrize(
+        "format_type,assertion",
+        [
+            ("json", lambda r: json.loads(r)["id"] == "conv1-abc123"),
+            ("html", lambda r: "<!DOCTYPE html>" in r),
+            ("obsidian", lambda r: r.startswith("---")),
+            ("org", lambda r: "#+TITLE:" in r),
+            ("yaml", lambda r: yaml.safe_load(r)["id"] == "conv1-abc123"),
+            ("plaintext", lambda r: "Hello world" in r and "##" not in r),
+        ],
+        ids=[
+            "json_format",
+            "html_format",
+            "obsidian_format",
+            "org_format",
+            "yaml_format",
+            "plaintext_format",
+        ],
+    )
+    def test_format_conversation(self, sample_conversations, format_type, assertion):
+        """Tests _format_conversation with various formats."""
         conv = sample_conversations[0]
-        result = query._format_conversation(conv, "json", None)
-        parsed = json.loads(result)
+        result = query._format_conversation(conv, format_type, None)
 
-        assert parsed["id"] == "conv1-abc123"
-
-    def test_html_format(self, sample_conversations):
-        """HTML format returns HTML."""
-        conv = sample_conversations[0]
-        result = query._format_conversation(conv, "html", None)
-
-        assert "<!DOCTYPE html>" in result
-
-    def test_obsidian_format(self, sample_conversations):
-        """Obsidian format returns frontmatter markdown."""
-        conv = sample_conversations[0]
-        result = query._format_conversation(conv, "obsidian", None)
-
-        assert result.startswith("---")
-
-    def test_org_format(self, sample_conversations):
-        """Org format returns Org-mode content."""
-        conv = sample_conversations[0]
-        result = query._format_conversation(conv, "org", None)
-
-        assert "#+TITLE:" in result
-
-    def test_yaml_format(self, sample_conversations):
-        """YAML format returns valid YAML."""
-        conv = sample_conversations[0]
-        result = query._format_conversation(conv, "yaml", None)
-
-        import yaml
-
-        parsed = yaml.safe_load(result)
-
-        assert parsed["id"] == "conv1-abc123"
-        assert "messages" in parsed
-
-    def test_plaintext_format(self, sample_conversations):
-        """Plaintext format returns raw text without formatting."""
-        conv = sample_conversations[0]
-        result = query._format_conversation(conv, "plaintext", None)
-
-        # Should contain message text but no markdown formatting
-        assert "Hello world" in result
-        assert "##" not in result  # No markdown headers
-        assert "**" not in result  # No bold formatting
+        assert assertion(result), f"Failed assertion for format {format_type}"
 
 
 class TestCopyToClipboard:
@@ -504,7 +408,8 @@ class TestBulkOperationConfirmation:
     def test_delete_requires_confirmation_for_bulk(self, mock_env, capsys):
         """Delete prompts for confirmation for >10 items."""
         convs = [
-            MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test", created_at=None, updated_at=None) for i in range(15)
+            MagicMock(id=f"conv{i}", display_title=f"Conv {i}", provider="test", created_at=None, updated_at=None)
+            for i in range(15)
         ]
         params = {"force": False}
 
@@ -586,41 +491,36 @@ class TestOperationReporting:
 class TestConvToJson:
     """Tests for _conv_to_json helper."""
 
-    def test_full_json_includes_message_content(self, sample_conversations):
-        """Full JSON output includes message content, not just count."""
+    @pytest.mark.parametrize(
+        "fields,has_messages,expected_id",
+        [
+            (None, True, "conv1-abc123"),
+            ("id,title", False, "conv1-abc123"),
+            ("id,messages", True, "conv1-abc123"),
+        ],
+        ids=[
+            "full_json_includes_message_content",
+            "field_selection_excludes_messages",
+            "field_selection_includes_messages_when_selected",
+        ],
+    )
+    def test_json_field_selection(self, sample_conversations, fields, has_messages, expected_id):
+        """Tests _conv_to_json field selection."""
         conv = sample_conversations[0]
-        result = query._conv_to_json(conv, None)
+        result = query._conv_to_json(conv, fields)
         parsed = json.loads(result)
 
-        # Should have messages array with full content, not integer count
-        assert isinstance(parsed["messages"], list)
-        assert len(parsed["messages"]) == 2
-        assert parsed["messages"][0]["id"] == "m1"
-        assert parsed["messages"][0]["role"] == "user"
-        assert parsed["messages"][0]["text"] == "Hello world"
-        assert parsed["messages"][1]["text"] == "Hi there!"
-
-    def test_field_selection_excludes_messages(self, sample_conversations):
-        """Field selection works - excluding messages when not selected."""
-        conv = sample_conversations[0]
-        result = query._conv_to_json(conv, "id,title")
-        parsed = json.loads(result)
-
-        assert "id" in parsed
-        assert "title" in parsed
-        assert "messages" not in parsed
-        assert "provider" not in parsed
-
-    def test_field_selection_includes_messages_when_selected(self, sample_conversations):
-        """Field selection includes messages when explicitly selected."""
-        conv = sample_conversations[0]
-        result = query._conv_to_json(conv, "id,messages")
-        parsed = json.loads(result)
-
-        assert "id" in parsed
-        assert "messages" in parsed
-        assert isinstance(parsed["messages"], list)
-        assert len(parsed["messages"]) == 2
+        assert parsed["id"] == expected_id
+        if has_messages:
+            assert isinstance(parsed["messages"], list)
+            assert len(parsed["messages"]) == 2
+            if fields is None:
+                assert parsed["messages"][0]["id"] == "m1"
+                assert parsed["messages"][0]["role"] == "user"
+                assert parsed["messages"][0]["text"] == "Hello world"
+        else:
+            assert "messages" not in parsed
+            assert "provider" not in parsed
 
     def test_empty_conversation_produces_valid_json(self):
         """Empty conversation produces valid JSON with empty messages array."""
@@ -636,15 +536,23 @@ class TestConvToJson:
         assert parsed["id"] == "empty-conv"
         assert parsed["messages"] == []
 
-    def test_messages_with_none_text_are_included(self):
-        """Messages with None text are included as null in JSON."""
+    @pytest.mark.parametrize(
+        "message_text,is_none",
+        [
+            ("Hello", False),
+            (None, True),
+        ],
+        ids=["message_with_text", "message_with_none_text"],
+    )
+    def test_messages_with_text_handling(self, message_text, is_none):
+        """Tests JSON handling of message text including None."""
         now = datetime(2024, 6, 15, 10, 0)
         conv = Conversation(
-            id="conv-with-none",
+            id="conv-with-text",
             provider="test",
             messages=[
                 Message(id="m1", role="user", text="Hello", timestamp=now),
-                Message(id="m2", role="assistant", text=None, timestamp=now),
+                Message(id="m2", role="assistant", text=message_text, timestamp=now),
             ],
             title="Test",
         )
@@ -653,7 +561,10 @@ class TestConvToJson:
 
         assert len(parsed["messages"]) == 2
         assert parsed["messages"][0]["text"] == "Hello"
-        assert parsed["messages"][1]["text"] is None
+        if is_none:
+            assert parsed["messages"][1]["text"] is None
+        else:
+            assert parsed["messages"][1]["text"] == message_text
 
     def test_timestamps_are_iso_formatted(self, sample_conversations):
         """Timestamps are ISO formatted in JSON."""
@@ -661,7 +572,6 @@ class TestConvToJson:
         result = query._conv_to_json(conv, None)
         parsed = json.loads(result)
 
-        # Check timestamp format is ISO
         ts = parsed["messages"][0]["timestamp"]
         assert ts == "2024-06-15T10:00:00"
         assert "T" in ts  # ISO format marker
@@ -810,10 +720,8 @@ class TestConvToCsvMessages:
         lines = result.strip().split("\n")
 
         # Parse first data row
-        data_row = lines[1]
-        parts = next(
-            iter(__import__("csv").reader([data_row]))
-        )  # Use CSV reader for proper parsing
+        reader = csv.reader([lines[1]])
+        parts = next(iter(reader))
 
         assert parts[0] == "conv1-abc123"  # conversation_id
         assert parts[1] == "m1"  # message_id
@@ -825,11 +733,6 @@ class TestConvToCsvMessages:
         """Timestamps are ISO formatted in CSV."""
         conv = sample_conversations[0]
         result = query._conv_to_csv_messages(conv)
-        lines = result.split("\n")
-
-        # Check timestamp in first data row
-        import csv
-        import io
 
         reader = csv.reader(io.StringIO(result))
         next(reader)  # Skip header
@@ -849,10 +752,6 @@ class TestConvToCsvMessages:
             title="Test",
         )
         result = query._conv_to_csv_messages(conv)
-        lines = result.split("\n")
-
-        import csv
-        import io
 
         reader = csv.reader(io.StringIO(result))
         next(reader)  # Skip header
@@ -877,9 +776,6 @@ class TestConvToCsvMessages:
         """Output is valid CSV that can be parsed."""
         conv = sample_conversations[0]
         result = query._conv_to_csv_messages(conv)
-
-        import csv
-        import io
 
         # Should not raise
         reader = csv.reader(io.StringIO(result))

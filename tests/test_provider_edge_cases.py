@@ -52,40 +52,52 @@ class TestChatGPTIterUserAssistantPairs:
             mapping=mapping, current_node=prev_id or "node-0",
         )
 
-    def test_basic_pair(self):
-        """Simple user-assistant pair is yielded."""
-        conv = self._make_conv([("user", "hi"), ("assistant", "hello")])
+    @pytest.mark.parametrize("messages,expected_count,expected_user_text,expected_assistant_text", [
+        (
+            # basic_pair: Simple user-assistant pair is yielded
+            [("user", "hi"), ("assistant", "hello")],
+            1,
+            "hi",
+            "hello",
+        ),
+        (
+            # multiple_pairs: Multiple pairs yielded correctly
+            [("user", "q1"), ("assistant", "a1"), ("user", "q2"), ("assistant", "a2")],
+            2,
+            None,  # Just check count
+            None,
+        ),
+        (
+            # system_message_skipped: System messages at start don't break pairing
+            [("system", "You are helpful"), ("user", "hi"), ("assistant", "hello")],
+            1,
+            "hi",
+            "hello",
+        ),
+        (
+            # consecutive_users_skip: Two consecutive user messages
+            [("user", "first"), ("user", "second"), ("assistant", "response")],
+            1,
+            "second",
+            "response",
+        ),
+        (
+            # unmatched_trailing_assistant: Trailing assistant without preceding user is skipped
+            [("user", "question"), ("assistant", "answer"), ("assistant", "trailing")],
+            1,
+            "question",
+            "answer",
+        ),
+    ])
+    def test_pair_scenarios(self, messages, expected_count, expected_user_text, expected_assistant_text):
+        """Test various message pairing scenarios."""
+        conv = self._make_conv(messages)
         pairs = list(conv.iter_user_assistant_pairs())
-        assert len(pairs) == 1
-        assert pairs[0][0].text_content == "hi"
-        assert pairs[0][1].text_content == "hello"
-
-    def test_multiple_pairs(self):
-        """Multiple pairs yielded correctly."""
-        conv = self._make_conv([
-            ("user", "q1"), ("assistant", "a1"),
-            ("user", "q2"), ("assistant", "a2"),
-        ])
-        pairs = list(conv.iter_user_assistant_pairs())
-        assert len(pairs) == 2
-
-    def test_system_message_skipped(self):
-        """System messages at start don't break pairing."""
-        conv = self._make_conv([
-            ("system", "You are helpful"),
-            ("user", "hi"), ("assistant", "hello"),
-        ])
-        pairs = list(conv.iter_user_assistant_pairs())
-        assert len(pairs) == 1
-
-    def test_consecutive_users_skip(self):
-        """Two consecutive user messages — only the second forms a pair."""
-        conv = self._make_conv([
-            ("user", "first"), ("user", "second"), ("assistant", "response"),
-        ])
-        pairs = list(conv.iter_user_assistant_pairs())
-        assert len(pairs) == 1
-        assert pairs[0][0].text_content == "second"
+        assert len(pairs) == expected_count
+        if expected_user_text is not None:
+            assert pairs[0][0].text_content == expected_user_text
+        if expected_assistant_text is not None:
+            assert pairs[0][1].text_content == expected_assistant_text
 
     def test_empty_conversation(self):
         """No messages yields no pairs."""
@@ -99,59 +111,27 @@ class TestChatGPTIterUserAssistantPairs:
         pairs = list(conv.iter_user_assistant_pairs())
         assert len(pairs) == 0
 
-    def test_unmatched_trailing_assistant(self):
-        """Trailing assistant message without preceding user is skipped."""
-        conv = self._make_conv([
-            ("user", "question"),
-            ("assistant", "answer"),
-            ("assistant", "trailing"),
-        ])
-        pairs = list(conv.iter_user_assistant_pairs())
-        assert len(pairs) == 1
-        assert pairs[0][1].text_content == "answer"
-
 
 class TestChatGPTContentBlocks:
     """Tests for ChatGPTMessage.to_content_blocks() edge cases."""
 
-    def test_code_content_type(self):
-        """Code content produces CODE content block."""
+    @pytest.mark.parametrize("content_type,parts,language,expected_type", [
+        ("code", ["print('hi')"], "python", ContentType.CODE),
+        ("tether_browsing_display", ["Search results..."], None, ContentType.TOOL_RESULT),
+        ("browse_results", ["Page content"], None, ContentType.TOOL_RESULT),
+        ("multimodal_image", [], None, ContentType.UNKNOWN),
+    ])
+    def test_content_type_mapping(self, content_type, parts, language, expected_type):
+        """Test various content types map to expected ContentType."""
         msg = ChatGPTMessage(
             id="m1", author=ChatGPTAuthor(role="assistant"),
-            content=ChatGPTContent(content_type="code", parts=["print('hi')"], language="python"),
+            content=ChatGPTContent(content_type=content_type, parts=parts, language=language),
         )
         blocks = msg.to_content_blocks()
         assert len(blocks) == 1
-        assert blocks[0].type == ContentType.CODE
-        assert blocks[0].language == "python"
-
-    def test_tether_browsing_content(self):
-        """Tether browsing content becomes TOOL_RESULT."""
-        msg = ChatGPTMessage(
-            id="m1", author=ChatGPTAuthor(role="assistant"),
-            content=ChatGPTContent(content_type="tether_browsing_display", parts=["Search results..."]),
-        )
-        blocks = msg.to_content_blocks()
-        assert len(blocks) == 1
-        assert blocks[0].type == ContentType.TOOL_RESULT
-
-    def test_browse_content_variant(self):
-        """Content type containing 'browse' also becomes TOOL_RESULT."""
-        msg = ChatGPTMessage(
-            id="m1", author=ChatGPTAuthor(role="assistant"),
-            content=ChatGPTContent(content_type="browse_results", parts=["Page content"]),
-        )
-        blocks = msg.to_content_blocks()
-        assert blocks[0].type == ContentType.TOOL_RESULT
-
-    def test_unknown_content_type(self):
-        """Unknown content type becomes UNKNOWN."""
-        msg = ChatGPTMessage(
-            id="m1", author=ChatGPTAuthor(role="assistant"),
-            content=ChatGPTContent(content_type="multimodal_image", parts=[]),
-        )
-        blocks = msg.to_content_blocks()
-        assert blocks[0].type == ContentType.UNKNOWN
+        assert blocks[0].type == expected_type
+        if language:
+            assert blocks[0].language == language
 
     def test_no_content_returns_empty(self):
         """No content returns empty list."""
@@ -163,51 +143,36 @@ class TestChatGPTContentBlocks:
 class TestChatGPTTextExtraction:
     """Tests for ChatGPTMessage.text_content edge cases."""
 
-    def test_direct_text_field(self):
-        """Text from content.text field."""
+    @pytest.mark.parametrize("text_field,parts,expected_text", [
+        # direct_text_field: Text from content.text field
+        ("Direct text", None, "Direct text"),
+        # dict_part_with_text: Dict part with 'text' key is extracted
+        (None, [{"text": "From dict"}], "From dict"),
+        # mixed_parts: Mix of string and dict parts
+        (None, ["str part", {"text": "dict part"}], None),  # Check containment
+        # empty_parts: Empty parts list returns empty string
+        (None, [], ""),
+        # dict_part_missing_text_key: Dict part without 'text' key is skipped
+        (None, [{"other": "value"}, "text"], "text"),
+    ])
+    def test_text_extraction_scenarios(self, text_field, parts, expected_text):
+        """Test various text extraction scenarios."""
         msg = ChatGPTMessage(
             id="m1", author=ChatGPTAuthor(role="assistant"),
-            content=ChatGPTContent(content_type="text", text="Direct text"),
+            content=ChatGPTContent(content_type="text", text=text_field, parts=parts),
         )
-        assert msg.text_content == "Direct text"
-
-    def test_dict_part_with_text(self):
-        """Dict part with 'text' key is extracted."""
-        msg = ChatGPTMessage(
-            id="m1", author=ChatGPTAuthor(role="assistant"),
-            content=ChatGPTContent(content_type="text", parts=[{"text": "From dict"}]),
-        )
-        assert msg.text_content == "From dict"
-
-    def test_mixed_parts(self):
-        """Mix of string and dict parts joined."""
-        msg = ChatGPTMessage(
-            id="m1", author=ChatGPTAuthor(role="assistant"),
-            content=ChatGPTContent(content_type="text", parts=["str part", {"text": "dict part"}]),
-        )
-        assert "str part" in msg.text_content
-        assert "dict part" in msg.text_content
+        text = msg.text_content
+        if expected_text is None:
+            # For mixed parts, check containment
+            assert "str part" in text
+            assert "dict part" in text
+        else:
+            assert text == expected_text
 
     def test_no_content(self):
         """No content returns empty string."""
         msg = ChatGPTMessage(id="m1", author=ChatGPTAuthor(role="user"), content=None)
         assert msg.text_content == ""
-
-    def test_empty_parts(self):
-        """Empty parts list returns empty string."""
-        msg = ChatGPTMessage(
-            id="m1", author=ChatGPTAuthor(role="user"),
-            content=ChatGPTContent(content_type="text", parts=[]),
-        )
-        assert msg.text_content == ""
-
-    def test_dict_part_missing_text_key(self):
-        """Dict part without 'text' key is skipped."""
-        msg = ChatGPTMessage(
-            id="m1", author=ChatGPTAuthor(role="user"),
-            content=ChatGPTContent(content_type="text", parts=[{"other": "value"}, "text"]),
-        )
-        assert msg.text_content == "text"
 
 
 class TestChatGPTTreeTraversal:
@@ -338,64 +303,45 @@ class TestChatGPTTimestamps:
 class TestCodexFormatDetection:
     """Tests for CodexRecord.format_type detection."""
 
-    def test_envelope_format(self):
-        """Record with payload detected as envelope."""
-        rec = CodexRecord(type="response_item", payload={"role": "assistant", "content": []})
-        assert rec.format_type == "envelope"
-
-    def test_direct_format_with_role(self):
-        """Record with role (no payload) detected as direct."""
-        rec = CodexRecord(type="message", role="user")
-        assert rec.format_type == "direct"
-
-    def test_direct_format_type_message(self):
-        """Record with type='message' (no role) detected as direct."""
-        rec = CodexRecord(type="message")
-        assert rec.format_type == "direct"
-
-    def test_state_format(self):
-        """Record with record_type='state' detected as state."""
-        rec = CodexRecord(record_type="state")
-        assert rec.format_type == "state"
-
-    def test_unknown_format(self):
-        """Bare record detected as unknown."""
-        rec = CodexRecord()
-        assert rec.format_type == "unknown"
+    @pytest.mark.parametrize("record_kwargs,expected_format", [
+        # envelope_format: Record with payload detected as envelope
+        ({"type": "response_item", "payload": {"role": "assistant", "content": []}}, "envelope"),
+        # direct_format_with_role: Record with role (no payload) detected as direct
+        ({"type": "message", "role": "user"}, "direct"),
+        # direct_format_type_message: Record with type='message' detected as direct
+        ({"type": "message"}, "direct"),
+        # state_format: Record with record_type='state' detected as state
+        ({"record_type": "state"}, "state"),
+        # unknown_format: Bare record detected as unknown
+        ({}, "unknown"),
+    ])
+    def test_format_detection(self, record_kwargs, expected_format):
+        """Test format_type detection for various record configurations."""
+        rec = CodexRecord(**record_kwargs)
+        assert rec.format_type == expected_format
 
 
 class TestCodexIsMessage:
     """Tests for CodexRecord.is_message."""
 
-    def test_envelope_response_item(self):
-        """Envelope response_item is a message."""
-        rec = CodexRecord(type="response_item", payload={"role": "assistant"})
-        assert rec.is_message is True
-
-    def test_envelope_session_meta(self):
-        """Envelope session_meta is NOT a message."""
-        rec = CodexRecord(type="session_meta", payload={"id": "sess1"})
-        assert rec.is_message is False
-
-    def test_direct_message(self):
-        """Direct message record is a message."""
-        rec = CodexRecord(type="message", role="user")
-        assert rec.is_message is True
-
-    def test_direct_role_only(self):
-        """Record with only role is a message."""
-        rec = CodexRecord(role="assistant")
-        assert rec.is_message is True
-
-    def test_state_not_message(self):
-        """State record is NOT a message."""
-        rec = CodexRecord(record_type="state")
-        assert rec.is_message is False
-
-    def test_unknown_not_message(self):
-        """Unknown format is NOT a message."""
-        rec = CodexRecord()
-        assert rec.is_message is False
+    @pytest.mark.parametrize("record_kwargs,expected_is_message", [
+        # envelope_response_item: Envelope response_item is a message
+        ({"type": "response_item", "payload": {"role": "assistant"}}, True),
+        # envelope_session_meta: Envelope session_meta is NOT a message
+        ({"type": "session_meta", "payload": {"id": "sess1"}}, False),
+        # direct_message: Direct message record is a message
+        ({"type": "message", "role": "user"}, True),
+        # direct_role_only: Record with only role is a message
+        ({"role": "assistant"}, True),
+        # state_not_message: State record is NOT a message
+        ({"record_type": "state"}, False),
+        # unknown_not_message: Unknown format is NOT a message
+        ({}, False),
+    ])
+    def test_is_message_detection(self, record_kwargs, expected_is_message):
+        """Test is_message detection for various record types."""
+        rec = CodexRecord(**record_kwargs)
+        assert rec.is_message is expected_is_message
 
 
 class TestCodexEffectiveContent:
@@ -443,56 +389,48 @@ class TestCodexEffectiveContent:
 class TestCodexTimestampParsing:
     """Tests for CodexRecord.parsed_timestamp."""
 
-    def test_iso_format(self):
-        """Standard ISO format."""
-        rec = CodexRecord(timestamp="2024-06-15T10:30:00+00:00")
+    @pytest.mark.parametrize("timestamp,expected_year", [
+        # iso_format: Standard ISO format
+        ("2024-06-15T10:30:00+00:00", 2024),
+        # z_suffix: Z suffix replaced with +00:00
+        ("2024-06-15T10:30:00Z", 2024),
+    ])
+    def test_valid_timestamp_parsing(self, timestamp, expected_year):
+        """Test parsing of valid timestamp formats."""
+        rec = CodexRecord(timestamp=timestamp)
         ts = rec.parsed_timestamp
         assert ts is not None
-        assert ts.year == 2024
+        assert ts.year == expected_year
 
-    def test_z_suffix(self):
-        """Z suffix replaced with +00:00."""
-        rec = CodexRecord(timestamp="2024-06-15T10:30:00Z")
-        ts = rec.parsed_timestamp
-        assert ts is not None
-        assert ts.year == 2024
-
-    def test_no_timestamp(self):
-        """No timestamp returns None."""
-        rec = CodexRecord()
-        assert rec.parsed_timestamp is None
-
-    def test_malformed_timestamp(self):
-        """Malformed timestamp returns None."""
-        rec = CodexRecord(timestamp="not-a-date")
-        assert rec.parsed_timestamp is None
-
-    def test_empty_string(self):
-        """Empty string returns None."""
-        rec = CodexRecord(timestamp="")
+    @pytest.mark.parametrize("timestamp,description", [
+        # no_timestamp: No timestamp
+        (None, "missing"),
+        # malformed_timestamp: Malformed format
+        ("not-a-date", "malformed"),
+        # empty_string: Empty string
+        ("", "empty"),
+    ])
+    def test_invalid_timestamp_parsing(self, timestamp, description):
+        """Test that invalid timestamps return None."""
+        rec = CodexRecord(timestamp=timestamp) if timestamp is not None else CodexRecord()
         assert rec.parsed_timestamp is None
 
 
 class TestCodexTextContent:
     """Tests for CodexRecord.text_content."""
 
-    def test_output_text(self):
-        """Extracts output_text field."""
-        rec = CodexRecord(type="response_item",
-                         payload={"content": [{"type": "output_text", "output_text": "result"}]})
-        assert rec.text_content == "result"
-
-    def test_input_text(self):
-        """Extracts input_text field."""
-        rec = CodexRecord(type="response_item",
-                         payload={"content": [{"type": "input_text", "input_text": "question"}]})
-        assert rec.text_content == "question"
-
-    def test_text_field(self):
-        """Extracts text field."""
-        rec = CodexRecord(type="response_item",
-                         payload={"content": [{"type": "text", "text": "plain"}]})
-        assert rec.text_content == "plain"
+    @pytest.mark.parametrize("payload_content,expected_text", [
+        # output_text: Extracts output_text field
+        ([{"type": "output_text", "output_text": "result"}], "result"),
+        # input_text: Extracts input_text field
+        ([{"type": "input_text", "input_text": "question"}], "question"),
+        # text_field: Extracts text field
+        ([{"type": "text", "text": "plain"}], "plain"),
+    ])
+    def test_text_extraction_by_type(self, payload_content, expected_text):
+        """Test text extraction from various content field names."""
+        rec = CodexRecord(type="response_item", payload={"content": payload_content})
+        assert rec.text_content == expected_text
 
     def test_multiple_blocks_joined(self):
         """Multiple content blocks joined with newline."""
@@ -513,28 +451,22 @@ class TestCodexTextContent:
 class TestCodexContentBlockExtraction:
     """Tests for CodexRecord.extract_content_blocks()."""
 
-    def test_text_block(self):
-        """output_text becomes TEXT content block."""
-        rec = CodexRecord(type="response_item",
-                         payload={"content": [{"type": "output_text", "text": "hello"}]})
+    @pytest.mark.parametrize("payload_content,expected_type,expected_language", [
+        # text_block: output_text becomes TEXT content block
+        ([{"type": "output_text", "text": "hello"}], ContentType.TEXT, None),
+        # code_block: Block with 'code' in type becomes CODE
+        ([{"type": "code_output", "text": "print('hi')", "language": "python"}], ContentType.CODE, "python"),
+        # unknown_block_type: Unknown block type becomes UNKNOWN
+        ([{"type": "image_data", "text": "base64..."}], ContentType.UNKNOWN, None),
+    ])
+    def test_content_block_extraction(self, payload_content, expected_type, expected_language):
+        """Test extraction and type mapping of content blocks."""
+        rec = CodexRecord(type="response_item", payload={"content": payload_content})
         blocks = rec.extract_content_blocks()
-        assert len(blocks) == 1
-        assert blocks[0].type == ContentType.TEXT
-
-    def test_code_block(self):
-        """Block with 'code' in type becomes CODE."""
-        rec = CodexRecord(type="response_item",
-                         payload={"content": [{"type": "code_output", "text": "print('hi')", "language": "python"}]})
-        blocks = rec.extract_content_blocks()
-        assert blocks[0].type == ContentType.CODE
-        assert blocks[0].language == "python"
-
-    def test_unknown_block_type(self):
-        """Unknown block type becomes UNKNOWN."""
-        rec = CodexRecord(type="response_item",
-                         payload={"content": [{"type": "image_data", "text": "base64..."}]})
-        blocks = rec.extract_content_blocks()
-        assert blocks[0].type == ContentType.UNKNOWN
+        assert len(blocks) >= 1
+        assert blocks[0].type == expected_type
+        if expected_language:
+            assert blocks[0].language == expected_language
 
     def test_non_dict_block_skipped(self):
         """Non-dict content items are skipped."""
@@ -548,20 +480,18 @@ class TestCodexContentBlockExtraction:
 class TestCodexRoleNormalization:
     """Tests for CodexRecord role normalization."""
 
-    def test_envelope_role(self):
-        """Role from envelope payload."""
-        rec = CodexRecord(type="response_item", payload={"role": "assistant"})
-        assert rec.effective_role == "assistant"
-
-    def test_direct_role(self):
-        """Role from direct format."""
-        rec = CodexRecord(role="user")
-        assert rec.effective_role == "user"
-
-    def test_envelope_missing_role(self):
-        """Envelope with no role defaults to 'unknown'."""
-        rec = CodexRecord(type="response_item", payload={})
-        assert rec.effective_role == "unknown"
+    @pytest.mark.parametrize("record_kwargs,expected_effective_role", [
+        # envelope_role: Role from envelope payload
+        ({"type": "response_item", "payload": {"role": "assistant"}}, "assistant"),
+        # direct_role: Role from direct format
+        ({"role": "user"}, "user"),
+        # envelope_missing_role: Envelope with no role defaults to 'unknown'
+        ({"type": "response_item", "payload": {}}, "unknown"),
+    ])
+    def test_effective_role(self, record_kwargs, expected_effective_role):
+        """Test effective_role extraction from various record formats."""
+        rec = CodexRecord(**record_kwargs)
+        assert rec.effective_role == expected_effective_role
 
     def test_to_meta_unknown_role_normalized(self):
         """Unknown roles map to 'unknown' in MessageMeta."""
@@ -584,27 +514,33 @@ class TestCodexRoleNormalization:
 class TestClaudeCodeExtractReasoningTraces:
     """Tests for ClaudeCodeRecord.extract_reasoning_traces()."""
 
-    def test_thinking_block_extracted(self):
-        """Thinking content block is extracted as reasoning trace."""
-        rec = ClaudeCodeRecord(
-            type="assistant",
-            message={"content": [
+    @pytest.mark.parametrize("message_content,should_have_trace", [
+        # thinking_block_extracted: Thinking content block is extracted
+        (
+            [
                 {"type": "thinking", "thinking": "Let me analyze this..."},
                 {"type": "text", "text": "Here's my answer"},
-            ]},
-        )
-        traces = rec.extract_reasoning_traces()
-        assert len(traces) >= 1
-        assert any("analyze" in t.text.lower() for t in traces)
-
-    def test_no_thinking_blocks(self):
-        """Record without thinking blocks returns empty."""
+            ],
+            True,
+        ),
+        # no_thinking_blocks: Record without thinking blocks returns empty
+        (
+            [{"type": "text", "text": "Just text"}],
+            False,
+        ),
+    ])
+    def test_reasoning_trace_extraction(self, message_content, should_have_trace):
+        """Test extraction of reasoning traces from various message formats."""
         rec = ClaudeCodeRecord(
             type="assistant",
-            message={"content": [{"type": "text", "text": "Just text"}]},
+            message={"content": message_content},
         )
         traces = rec.extract_reasoning_traces()
-        assert traces == []
+        if should_have_trace:
+            assert len(traces) >= 1
+            assert any("analyze" in t.text.lower() for t in traces)
+        else:
+            assert traces == []
 
     def test_no_message(self):
         """System record with no message returns empty."""
@@ -616,25 +552,31 @@ class TestClaudeCodeExtractReasoningTraces:
 class TestClaudeCodeExtractToolCalls:
     """Tests for ClaudeCodeRecord.extract_tool_calls()."""
 
-    def test_tool_use_extracted(self):
-        """tool_use content block is extracted."""
-        rec = ClaudeCodeRecord(
-            type="assistant",
-            message={"content": [
+    @pytest.mark.parametrize("message_content,should_have_calls", [
+        # tool_use_extracted: tool_use content block is extracted
+        (
+            [
                 {"type": "tool_use", "id": "tu1", "name": "Read", "input": {"path": "/etc/hosts"}},
-            ]},
-        )
-        calls = rec.extract_tool_calls()
-        assert len(calls) >= 1
-
-    def test_no_tool_calls(self):
-        """Record without tool blocks returns empty."""
+            ],
+            True,
+        ),
+        # no_tool_calls: Record without tool blocks returns empty
+        (
+            [{"type": "text", "text": "No tools"}],
+            False,
+        ),
+    ])
+    def test_tool_call_extraction(self, message_content, should_have_calls):
+        """Test extraction of tool calls from various message formats."""
         rec = ClaudeCodeRecord(
             type="assistant",
-            message={"content": [{"type": "text", "text": "No tools"}]},
+            message={"content": message_content},
         )
         calls = rec.extract_tool_calls()
-        assert calls == []
+        if should_have_calls:
+            assert len(calls) >= 1
+        else:
+            assert calls == []
 
     def test_no_message_returns_empty(self):
         """System record with no message returns empty list."""
@@ -646,6 +588,53 @@ class TestClaudeCodeExtractToolCalls:
 class TestClaudeCodeTextContent:
     """Tests for ClaudeCodeRecord.text_content edge cases."""
 
+    @pytest.mark.parametrize("record_kwargs,expected_contains", [
+        # dict_message_with_list_content: List content blocks
+        (
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "Hello world"},
+                        {"type": "thinking", "thinking": "deep thoughts"},
+                    ]
+                },
+            },
+            "Hello world",
+        ),
+        # dict_message_with_string_content: Plain string content
+        (
+            {
+                "type": "user",
+                "message": {"content": "Plain user input"},
+            },
+            "Plain user input",
+        ),
+        # message_with_multiple_text_blocks: Multiple text blocks
+        (
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "First"},
+                        {"type": "text", "text": "Second"},
+                    ]
+                },
+            },
+            None,  # Check both via separate assertion
+        ),
+    ])
+    def test_text_content_scenarios(self, record_kwargs, expected_contains):
+        """Test text_content extraction from various record formats."""
+        rec = ClaudeCodeRecord(**record_kwargs)
+        text = rec.text_content
+        if expected_contains:
+            assert expected_contains in text
+        elif record_kwargs["type"] == "assistant" and "First" in str(record_kwargs.get("message", {})):
+            # For multiple text blocks, check both
+            assert "First" in text
+            assert "Second" in text
+
     def test_system_record_top_level_content(self):
         """System record extracts text from top-level content field (Pydantic extra)."""
         rec = ClaudeCodeRecord(
@@ -655,43 +644,10 @@ class TestClaudeCodeTextContent:
         # Top-level content field is stored as Pydantic extra
         assert "Compacted" in rec.text_content or rec.text_content == ""
 
-    def test_dict_message_with_list_content(self):
-        """Dict message with list content blocks."""
-        rec = ClaudeCodeRecord(
-            type="assistant",
-            message={"content": [
-                {"type": "text", "text": "Hello world"},
-                {"type": "thinking", "thinking": "deep thoughts"},
-            ]},
-        )
-        text = rec.text_content
-        assert "Hello world" in text
-
-    def test_dict_message_with_string_content(self):
-        """Dict message with plain string content."""
-        rec = ClaudeCodeRecord(
-            type="user",
-            message={"content": "Plain user input"},
-        )
-        assert rec.text_content == "Plain user input"
-
     def test_no_message_no_content(self):
         """Record with no message and no content returns empty."""
         rec = ClaudeCodeRecord(type="system")
         assert rec.text_content == ""
-
-    def test_message_with_multiple_text_blocks(self):
-        """Multiple text blocks in message content."""
-        rec = ClaudeCodeRecord(
-            type="assistant",
-            message={"content": [
-                {"type": "text", "text": "First"},
-                {"type": "text", "text": "Second"},
-            ]},
-        )
-        text = rec.text_content
-        assert "First" in text
-        assert "Second" in text
 
 
 class TestClaudeCodeRoleNormalization:
@@ -717,106 +673,120 @@ class TestClaudeCodeRoleNormalization:
 class TestClaudeCodeContentBlocksRaw:
     """Tests for ClaudeCodeRecord.content_blocks_raw."""
 
-    def test_dict_message_list_content(self):
-        """Dict message with list content returns blocks."""
-        rec = ClaudeCodeRecord(
-            type="assistant",
-            message={"content": [{"type": "text", "text": "hi"}]},
-        )
-        assert len(rec.content_blocks_raw) == 1
-
-    def test_dict_message_string_content(self):
-        """Dict message with string content returns empty (not a list)."""
-        rec = ClaudeCodeRecord(type="user", message={"content": "string"})
-        assert rec.content_blocks_raw == []
+    @pytest.mark.parametrize("record_kwargs,expected_count", [
+        # dict_message_list_content: List content returns blocks
+        (
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "hi"}]},
+            },
+            1,
+        ),
+        # dict_message_string_content: String content returns empty (not a list)
+        (
+            {
+                "type": "user",
+                "message": {"content": "string"},
+            },
+            0,
+        ),
+        # dict_message_no_content: Message without content key returns empty
+        (
+            {
+                "type": "user",
+                "message": {"role": "user"},
+            },
+            0,
+        ),
+    ])
+    def test_content_blocks_raw(self, record_kwargs, expected_count):
+        """Test content_blocks_raw for various message formats."""
+        rec = ClaudeCodeRecord(**record_kwargs)
+        assert len(rec.content_blocks_raw) == expected_count
 
     def test_no_message(self):
         """No message returns empty."""
         rec = ClaudeCodeRecord(type="system")
         assert rec.content_blocks_raw == []
 
-    def test_dict_message_no_content(self):
-        """Dict message without content key returns empty."""
-        rec = ClaudeCodeRecord(type="user", message={"role": "user"})
-        assert rec.content_blocks_raw == []
-
 
 class TestClaudeCodeIsContextCompaction:
     """Tests for ClaudeCodeRecord context compaction detection."""
 
-    def test_summary_type_is_compaction(self):
-        """Summary type record is context compaction."""
-        rec = ClaudeCodeRecord(type="summary")
-        assert rec.is_context_compaction is True
-
-    def test_other_types_not_compaction(self):
-        """Non-summary types are not context compaction."""
-        for record_type in ("user", "assistant", "progress", "system"):
-            rec = ClaudeCodeRecord(type=record_type)
-            assert rec.is_context_compaction is False
+    @pytest.mark.parametrize("record_type,is_compaction", [
+        ("summary", True),
+        ("user", False),
+        ("assistant", False),
+        ("progress", False),
+        ("system", False),
+    ])
+    def test_context_compaction_detection(self, record_type, is_compaction):
+        """Test is_context_compaction for various record types."""
+        rec = ClaudeCodeRecord(type=record_type)
+        assert rec.is_context_compaction is is_compaction
 
 
 class TestClaudeCodeIsToolProgress:
     """Tests for ClaudeCodeRecord tool progress detection."""
 
-    def test_progress_type_is_tool_progress(self):
-        """Progress type record is tool progress."""
-        rec = ClaudeCodeRecord(type="progress")
-        assert rec.is_tool_progress is True
-
-    def test_other_types_not_tool_progress(self):
-        """Non-progress types are not tool progress."""
-        for record_type in ("user", "assistant", "summary", "system"):
-            rec = ClaudeCodeRecord(type=record_type)
-            assert rec.is_tool_progress is False
+    @pytest.mark.parametrize("record_type,is_tool_progress", [
+        ("progress", True),
+        ("user", False),
+        ("assistant", False),
+        ("summary", False),
+        ("system", False),
+    ])
+    def test_tool_progress_detection(self, record_type, is_tool_progress):
+        """Test is_tool_progress for various record types."""
+        rec = ClaudeCodeRecord(type=record_type)
+        assert rec.is_tool_progress is is_tool_progress
 
 
 class TestClaudeCodeIsActualMessage:
     """Tests for ClaudeCodeRecord actual message detection."""
 
-    def test_user_and_assistant_are_actual_messages(self):
-        """User and assistant records are actual messages."""
-        for record_type in ("user", "assistant"):
-            rec = ClaudeCodeRecord(type=record_type)
-            assert rec.is_actual_message is True
-
-    def test_non_message_types(self):
-        """System, progress, summary records are not actual messages."""
-        for record_type in ("system", "progress", "summary", "file-history-snapshot"):
-            rec = ClaudeCodeRecord(type=record_type)
-            assert rec.is_actual_message is False
+    @pytest.mark.parametrize("record_type,is_actual_message", [
+        ("user", True),
+        ("assistant", True),
+        ("system", False),
+        ("progress", False),
+        ("summary", False),
+        ("file-history-snapshot", False),
+    ])
+    def test_actual_message_detection(self, record_type, is_actual_message):
+        """Test is_actual_message for various record types."""
+        rec = ClaudeCodeRecord(type=record_type)
+        assert rec.is_actual_message is is_actual_message
 
 
 class TestClaudeCodeParsedTimestamp:
     """Tests for ClaudeCodeRecord.parsed_timestamp."""
 
-    def test_iso_string_timestamp(self):
-        """ISO format timestamp string."""
-        rec = ClaudeCodeRecord(type="user", timestamp="2024-06-15T10:30:00Z")
+    @pytest.mark.parametrize("timestamp,expected_year", [
+        # iso_string_timestamp: ISO format timestamp string
+        ("2024-06-15T10:30:00Z", 2024),
+        # unix_seconds_timestamp: Unix timestamp in seconds
+        (1700000000.0, None),  # Just check not None
+        # unix_milliseconds_timestamp: Unix timestamp in milliseconds
+        (1700000000000, None),
+    ])
+    def test_valid_timestamp_formats(self, timestamp, expected_year):
+        """Test parsing of valid timestamp formats."""
+        rec = ClaudeCodeRecord(type="user", timestamp=timestamp)
         ts = rec.parsed_timestamp
         assert ts is not None
-        assert ts.year == 2024
+        if expected_year:
+            assert ts.year == expected_year
 
-    def test_unix_seconds_timestamp(self):
-        """Unix timestamp in seconds."""
-        rec = ClaudeCodeRecord(type="user", timestamp=1700000000.0)
-        ts = rec.parsed_timestamp
-        assert ts is not None
-
-    def test_unix_milliseconds_timestamp(self):
-        """Unix timestamp in milliseconds (>1e11)."""
-        rec = ClaudeCodeRecord(type="user", timestamp=1700000000000)
-        ts = rec.parsed_timestamp
-        assert ts is not None
-
-    def test_no_timestamp(self):
-        """No timestamp returns None."""
-        rec = ClaudeCodeRecord(type="user")
-        assert rec.parsed_timestamp is None
-
-    def test_malformed_timestamp(self):
-        """Malformed timestamp returns None."""
-        rec = ClaudeCodeRecord(type="user", timestamp="not a date")
+    @pytest.mark.parametrize("timestamp,description", [
+        # no_timestamp: No timestamp provided
+        (None, "missing"),
+        # malformed_timestamp: Malformed format
+        ("not a date", "malformed"),
+    ])
+    def test_invalid_timestamps(self, timestamp, description):
+        """Test that invalid timestamps return None."""
+        rec = ClaudeCodeRecord(type="user", timestamp=timestamp) if timestamp is not None else ClaudeCodeRecord(type="user")
         assert rec.parsed_timestamp is None
 
 

@@ -137,20 +137,6 @@ DOWNLOAD_DRIVE_FILES_CASES = [
     (0, 0, 0, "empty_folder"),
 ]
 
-DOWNLOAD_JSON_PAYLOAD_CASES = [
-    (b'{"a": 1}\n{"b": 2}\n{"c": 3}\n', list, 3, "jsonl_file"),
-    (b'{"msg": "hello"}\n{"msg": "world"}\n', list, 2, "jsonl_txt_file"),
-    (b'{"x": 1}\n{"y": 2}\n', list, 2, "ndjson_file"),
-    (b'{"title": "Test", "content": "Data"}', dict, None, "json_file"),
-    (b'{"valid": 1}\n{invalid json}\n{"valid": 2}\n', list, 2, "jsonl_skip_invalid"),
-    (b'{"a": 1}\n\n\n{"b": 2}\n   \n', list, 2, "jsonl_skip_empty_lines"),
-    (b'{"text": "line1\\nline2"}\n{"text": "another"}\n', list, 2, "jsonl_embedded_newlines"),
-    (b'{"id": 1}\ninvalid\n{"id": 2}\n{broken\n{"id": 3}\n', list, 3, "jsonl_mixed_valid_invalid"),
-    (b'{}', dict, None, "json_empty_object"),
-    (b'[{"a": 1}, {"b": 2}]', list, 2, "json_array"),
-    (b'\n  \n\t\n   \n', list, 0, "jsonl_only_empty_lines"),
-]
-
 NETWORK_ERROR_CASES = [
     (ConnectionRefusedError("Connection refused"), True, "connection_refused"),
     (ConnectionResetError("Connection reset by peer"), True, "connection_reset"),
@@ -1197,23 +1183,23 @@ class TestDownloadJsonPayload:
     """Tests for DriveClient.download_json_payload method."""
 
     @pytest.mark.parametrize(
-        "content,expect_type,expect_len,desc",
+        "content,expect_type,expect_len,filename,desc",
         [
-            (b'{"a": 1}\n{"b": 2}\n{"c": 3}\n', list, 3, "jsonl_file"),
-            (b'{"msg": "hello"}\n{"msg": "world"}\n', list, 2, "jsonl_txt_file"),
-            (b'{"x": 1}\n{"y": 2}\n', list, 2, "ndjson_file"),
-            (b'{"title": "Test", "content": "Data"}', dict, None, "json_file"),
-            (b'{"valid": 1}\n{invalid json}\n{"valid": 2}\n', list, 2, "jsonl_skip_invalid"),
-            (b'{"a": 1}\n\n\n{"b": 2}\n   \n', list, 2, "jsonl_skip_empty_lines"),
-            (b'{"text": "line1\\nline2"}\n{"text": "another"}\n', list, 2, "jsonl_embedded_newlines"),
-            (b'{"id": 1}\ninvalid\n{"id": 2}\n{broken\n{"id": 3}\n', list, 3, "jsonl_mixed_valid_invalid"),
-            (b'{}', dict, None, "json_empty_object"),
-            (b'[{"a": 1}, {"b": 2}]', list, 2, "json_array"),
-            (b'\n  \n\t\n   \n', list, 0, "jsonl_only_empty_lines"),
+            (b'{"a": 1}\n{"b": 2}\n{"c": 3}\n', list, 3, "data.jsonl", "jsonl_file"),
+            (b'{"msg": "hello"}\n{"msg": "world"}\n', list, 2, "data.jsonl.txt", "jsonl_txt_file"),
+            (b'{"x": 1}\n{"y": 2}\n', list, 2, "data.ndjson", "ndjson_file"),
+            (b'{"title": "Test", "content": "Data"}', dict, None, "data.json", "json_file"),
+            (b'{"valid": 1}\n{invalid json}\n{"valid": 2}\n', list, 2, "data.jsonl", "jsonl_skip_invalid"),
+            (b'{"a": 1}\n\n\n{"b": 2}\n   \n', list, 2, "data.jsonl", "jsonl_skip_empty_lines"),
+            (b'{"text": "line1\\nline2"}\n{"text": "another"}\n', list, 2, "data.jsonl", "jsonl_embedded_newlines"),
+            (b'{"id": 1}\ninvalid\n{"id": 2}\n{broken\n{"id": 3}\n', list, 3, "data.jsonl", "jsonl_mixed_valid_invalid"),
+            (b'{}', dict, None, "data.json", "json_empty_object"),
+            (b'[{"a": 1}, {"b": 2}]', list, 2, "data.json", "json_array"),
+            (b'\n  \n\t\n   \n', list, 0, "data.jsonl", "jsonl_only_empty_lines"),
         ]
     )
     def test_download_json_payload(
-        self, mock_drive_credentials, mock_drive_service, content, expect_type, expect_len, desc
+        self, mock_drive_credentials, mock_drive_service, content, expect_type, expect_len, filename, desc
     ):
         """Test JSON payload parsing with various formats."""
         client = DriveClient(
@@ -1223,7 +1209,7 @@ class TestDownloadJsonPayload:
         client._service = mock_drive_service["service"]
 
         with patch.object(client, "download_bytes", return_value=content):
-            result = client.download_json_payload("file-1", name="data.json")
+            result = client.download_json_payload("file-1", name=filename)
 
         assert isinstance(result, expect_type), f"Failed for {desc}"
         if expect_len is not None:

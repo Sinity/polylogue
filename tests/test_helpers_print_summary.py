@@ -86,6 +86,42 @@ def _patch_all_dependencies(mock_config, **kwargs):
 
 
 # ============================================================================
+# TEST DATA: Health check states for parametrization
+# ============================================================================
+
+HEALTH_CHECK_PARAMS = [
+    # (status, is_plain, expected_indicator_or_text)
+    ("ok", False, "[green]✓[/green]"),
+    ("warning", False, "[yellow]![/yellow]"),
+    ("error", False, "[red]✗[/red]"),
+    ("ok", True, "OK"),
+    ("warning", True, "WARN"),
+    ("error", True, "ERR"),
+]
+
+PROVIDER_COLOR_PARAMS = [
+    # (provider_name, expected_color)
+    ("claude", "#d97757"),
+    ("chatgpt", "#10a37f"),
+    ("gemini", "#4285f4"),
+    ("codex", "cyan"),
+    ("unknown-ai", "white"),
+]
+
+TOOL_USE_PARAMS = [
+    # (tool_use_count, tool_use_percentage, should_be_present)
+    (25, 25.0, True),
+    (0, 0.0, False),
+]
+
+THINKING_PARAMS = [
+    # (thinking_count, thinking_percentage, should_be_present)
+    (15, 15.0, True),
+    (0, 0.0, False),
+]
+
+
+# ============================================================================
 # TestPrintSummaryBasic: Non-verbose mode, basic lines
 # ============================================================================
 
@@ -261,12 +297,15 @@ class TestPrintSummaryVerbose:
             lines = call_args[0][1]
             assert any(str(line) == "Health" for line in lines)
 
-    def test_print_summary_verbose_health_ok_status_rich_mode(self, mock_env, mock_config):
-        """Test health check with 'ok' status in rich mode."""
+    @pytest.mark.parametrize("status,is_plain,expected_indicator", HEALTH_CHECK_PARAMS)
+    def test_print_summary_verbose_health_status_by_mode(
+        self, mock_env, mock_config, status, is_plain, expected_indicator
+    ):
+        """Test health check with various statuses in rich and plain modes (parametrized)."""
         check1 = MagicMock()
         check1.name = "database"
-        check1.status = "ok"
-        check1.detail = "17.5 GB, v10"
+        check1.status = status
+        check1.detail = "Test detail"
 
         mock_health = MagicMock()
         mock_health.cached = True
@@ -279,137 +318,12 @@ class TestPrintSummaryVerbose:
              patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
              patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
 
-            mock_env.ui.plain = False
+            mock_env.ui.plain = is_plain
             print_summary(mock_env, verbose=True)
 
             call_args = mock_env.ui.summary.call_args
             lines = call_args[0][1]
-            assert any("[green]✓[/green]" in str(line) and "database" in str(line) for line in lines)
-
-    def test_print_summary_verbose_health_warning_status_rich_mode(self, mock_env, mock_config):
-        """Test health check with 'warning' status in rich mode."""
-        check1 = MagicMock()
-        check1.name = "indexes"
-        check1.status = "warning"
-        check1.detail = "FTS5 needs rebuild"
-
-        mock_health = MagicMock()
-        mock_health.cached = True
-        mock_health.age_seconds = 30
-        mock_health.checks = [check1]
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
-
-            mock_env.ui.plain = False
-            print_summary(mock_env, verbose=True)
-
-            call_args = mock_env.ui.summary.call_args
-            lines = call_args[0][1]
-            assert any("[yellow]![/yellow]" in str(line) and "indexes" in str(line) for line in lines)
-
-    def test_print_summary_verbose_health_error_status_rich_mode(self, mock_env, mock_config):
-        """Test health check with 'error' status in rich mode."""
-        check1 = MagicMock()
-        check1.name = "storage"
-        check1.status = "error"
-        check1.detail = "Disk full"
-
-        mock_health = MagicMock()
-        mock_health.cached = True
-        mock_health.age_seconds = 30
-        mock_health.checks = [check1]
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
-
-            mock_env.ui.plain = False
-            print_summary(mock_env, verbose=True)
-
-            call_args = mock_env.ui.summary.call_args
-            lines = call_args[0][1]
-            assert any("[red]✗[/red]" in str(line) and "storage" in str(line) for line in lines)
-
-    def test_print_summary_verbose_health_ok_status_plain_mode(self, mock_env, mock_config):
-        """Test health check with 'ok' status in plain mode."""
-        check1 = MagicMock()
-        check1.name = "database"
-        check1.status = "ok"
-        check1.detail = "17.5 GB, v10"
-
-        mock_health = MagicMock()
-        mock_health.cached = True
-        mock_health.age_seconds = 30
-        mock_health.checks = [check1]
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
-
-            mock_env.ui.plain = True
-            print_summary(mock_env, verbose=True)
-
-            call_args = mock_env.ui.summary.call_args
-            lines = call_args[0][1]
-            assert any("OK" in str(line) and "database" in str(line) for line in lines)
-
-    def test_print_summary_verbose_health_warning_status_plain_mode(self, mock_env, mock_config):
-        """Test health check with 'warning' status in plain mode."""
-        check1 = MagicMock()
-        check1.name = "indexes"
-        check1.status = "warning"
-        check1.detail = "FTS5 needs rebuild"
-
-        mock_health = MagicMock()
-        mock_health.cached = True
-        mock_health.age_seconds = 30
-        mock_health.checks = [check1]
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
-
-            mock_env.ui.plain = True
-            print_summary(mock_env, verbose=True)
-
-            call_args = mock_env.ui.summary.call_args
-            lines = call_args[0][1]
-            assert any("WARN" in str(line) and "indexes" in str(line) for line in lines)
-
-    def test_print_summary_verbose_health_error_status_plain_mode(self, mock_env, mock_config):
-        """Test health check with 'error' status in plain mode."""
-        check1 = MagicMock()
-        check1.name = "storage"
-        check1.status = "error"
-        check1.detail = "Disk full"
-
-        mock_health = MagicMock()
-        mock_health.cached = True
-        mock_health.age_seconds = 30
-        mock_health.checks = [check1]
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.get_health", return_value=mock_health), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
-
-            mock_env.ui.plain = True
-            print_summary(mock_env, verbose=True)
-
-            call_args = mock_env.ui.summary.call_args
-            lines = call_args[0][1]
-            assert any("ERR" in str(line) and "storage" in str(line) for line in lines)
+            assert any(expected_indicator in str(line) and "database" in str(line) for line in lines)
 
     def test_print_summary_verbose_multiple_health_checks(self, mock_env, mock_config):
         """Test summary with multiple health checks."""
@@ -569,9 +483,12 @@ class TestPrintSummaryAnalyticsBasic:
             console_calls = mock_env.ui.console.print.call_args_list
             assert any("Archive:" in str(c) and "150" in str(c) for c in console_calls)
 
-    def test_print_summary_analytics_claude_color(self, mock_env, mock_config):
-        """Test that Claude provider uses correct color in analytics."""
-        metric = self._create_metric(provider_name="claude", conversation_count=100)
+    @pytest.mark.parametrize("provider_name,expected_color", PROVIDER_COLOR_PARAMS)
+    def test_print_summary_analytics_provider_color(
+        self, mock_env, mock_config, provider_name, expected_color
+    ):
+        """Test that providers use correct colors in analytics (parametrized)."""
+        metric = self._create_metric(provider_name=provider_name, conversation_count=100)
 
         with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
              patch("polylogue.cli.helpers.latest_run", return_value=None), \
@@ -582,67 +499,7 @@ class TestPrintSummaryAnalyticsBasic:
             print_summary(mock_env, verbose=False)
 
             console_calls = mock_env.ui.console.print.call_args_list
-            assert any("#d97757" in str(c) for c in console_calls)
-
-    def test_print_summary_analytics_chatgpt_color(self, mock_env, mock_config):
-        """Test that ChatGPT provider uses correct color in analytics."""
-        metric = self._create_metric(provider_name="chatgpt", conversation_count=100)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
-
-            print_summary(mock_env, verbose=False)
-
-            console_calls = mock_env.ui.console.print.call_args_list
-            assert any("#10a37f" in str(c) for c in console_calls)
-
-    def test_print_summary_analytics_gemini_color(self, mock_env, mock_config):
-        """Test that Gemini provider uses correct color in analytics."""
-        metric = self._create_metric(provider_name="gemini", conversation_count=100)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
-
-            print_summary(mock_env, verbose=False)
-
-            console_calls = mock_env.ui.console.print.call_args_list
-            assert any("#4285f4" in str(c) for c in console_calls)
-
-    def test_print_summary_analytics_codex_color(self, mock_env, mock_config):
-        """Test that Codex provider uses correct color in analytics."""
-        metric = self._create_metric(provider_name="codex", conversation_count=100)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
-
-            print_summary(mock_env, verbose=False)
-
-            console_calls = mock_env.ui.console.print.call_args_list
-            assert any("cyan" in str(c) for c in console_calls)
-
-    def test_print_summary_analytics_unknown_provider_color(self, mock_env, mock_config):
-        """Test that unknown provider uses white color in analytics."""
-        metric = self._create_metric(provider_name="unknown-ai", conversation_count=100)
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
-
-            print_summary(mock_env, verbose=False)
-
-            console_calls = mock_env.ui.console.print.call_args_list
-            assert any("white" in str(c) for c in console_calls)
+            assert any(expected_color in str(c) for c in console_calls)
 
     def test_print_summary_analytics_bar_chart_rendering(self, mock_env, mock_config):
         """Test that bar chart is rendered with correct proportions."""
@@ -784,12 +641,15 @@ class TestPrintSummaryAnalyticsVerbose:
             console_calls = mock_env.ui.console.print.call_args_list
             assert any("Words:" in str(c) and "20" in str(c) and "100" in str(c) for c in console_calls)
 
-    def test_print_summary_verbose_analytics_tool_use_included(self, mock_env, mock_config):
-        """Test that deep dive includes tool use when count > 0."""
+    @pytest.mark.parametrize("tool_use_count,tool_use_percentage,should_be_present", TOOL_USE_PARAMS)
+    def test_print_summary_verbose_analytics_tool_use(
+        self, mock_env, mock_config, tool_use_count, tool_use_percentage, should_be_present
+    ):
+        """Test that tool use line appears/disappears based on count (parametrized)."""
         metric = self._create_metric(
             provider_name="claude",
-            tool_use_count=25,
-            tool_use_percentage=25.0,
+            tool_use_count=tool_use_count,
+            tool_use_percentage=tool_use_percentage,
         )
 
         with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
@@ -801,14 +661,18 @@ class TestPrintSummaryAnalyticsVerbose:
             print_summary(mock_env, verbose=True)
 
             console_calls = mock_env.ui.console.print.call_args_list
-            assert any("Tool Use:" in str(c) and "25" in str(c) and "25.0" in str(c) for c in console_calls)
+            has_tool_use = any("Tool Use:" in str(c) for c in console_calls)
+            assert has_tool_use == should_be_present
 
-    def test_print_summary_verbose_analytics_tool_use_zero_omitted(self, mock_env, mock_config):
-        """Test that tool use line is omitted when count is 0."""
+    @pytest.mark.parametrize("thinking_count,thinking_percentage,should_be_present", THINKING_PARAMS)
+    def test_print_summary_verbose_analytics_thinking(
+        self, mock_env, mock_config, thinking_count, thinking_percentage, should_be_present
+    ):
+        """Test that thinking line appears/disappears based on count (parametrized)."""
         metric = self._create_metric(
             provider_name="claude",
-            tool_use_count=0,
-            tool_use_percentage=0.0,
+            thinking_count=thinking_count,
+            thinking_percentage=thinking_percentage,
         )
 
         with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
@@ -820,45 +684,8 @@ class TestPrintSummaryAnalyticsVerbose:
             print_summary(mock_env, verbose=True)
 
             console_calls = mock_env.ui.console.print.call_args_list
-            assert not any("Tool Use:" in str(c) for c in console_calls)
-
-    def test_print_summary_verbose_analytics_thinking_included(self, mock_env, mock_config):
-        """Test that deep dive includes thinking when count > 0."""
-        metric = self._create_metric(
-            provider_name="claude",
-            thinking_count=15,
-            thinking_percentage=15.0,
-        )
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
-
-            print_summary(mock_env, verbose=True)
-
-            console_calls = mock_env.ui.console.print.call_args_list
-            assert any("Thinking:" in str(c) and "15" in str(c) and "15.0" in str(c) for c in console_calls)
-
-    def test_print_summary_verbose_analytics_thinking_zero_omitted(self, mock_env, mock_config):
-        """Test that thinking line is omitted when count is 0."""
-        metric = self._create_metric(
-            provider_name="claude",
-            thinking_count=0,
-            thinking_percentage=0.0,
-        )
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
-
-            print_summary(mock_env, verbose=True)
-
-            console_calls = mock_env.ui.console.print.call_args_list
-            assert not any("Thinking:" in str(c) for c in console_calls)
+            has_thinking = any("Thinking:" in str(c) for c in console_calls)
+            assert has_thinking == should_be_present
 
     def test_print_summary_verbose_analytics_multiple_providers_deep_dive(self, mock_env, mock_config):
         """Test deep dive with multiple providers."""

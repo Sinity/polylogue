@@ -111,14 +111,14 @@ MESSAGE_ROLE_CASES = [
 # ConversationSummary metadata property test data
 SUMMARY_DISPLAY_TITLE = [
     ({"title": "User Title"}, None, "User Title", "user_title"),
-    (None, "Auto Title", "Auto Title", "fallback_title"),
-    (None, None, "c1234567", "fallback_id"),
+    ({}, "Auto Title", "Auto Title", "fallback_title"),
+    ({}, None, "c1234567", "fallback_id"),
 ]
 
 SUMMARY_TAGS = [
     ({"tags": ["tag1", "tag2", 123]}, ["tag1", "tag2", "123"], "list"),
     ({"tags": "not a list"}, [], "non_list"),
-    (None, [], "empty"),
+    ({}, [], "empty"),
 ]
 
 SUMMARY_BRANCH_TYPE = [

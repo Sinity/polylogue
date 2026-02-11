@@ -27,6 +27,66 @@ from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.store import ConversationRecord, MessageRecord
 
 
+# ============================================================================
+# PARAMETRIZATION TABLES
+# ============================================================================
+
+# ArchiveStats initialization parameters: (conv_count, msg_count, word_count, providers, tags, last_sync)
+ARCHIVE_STATS_PARAMS = [
+    (10, 50, 1000, {"claude": 7, "chatgpt": 3}, {"test": 2, "work": 3}, None),
+    (5, 25, 500, {"claude": 5}, {}, "2025-01-15T12:30:45Z"),
+    (0, 0, 0, {}, {}, None),
+    (1, 1, 10, {"claude": 1}, {}, None),
+    (20, 100, 2000, {"claude": 10, "chatgpt": 5, "gemini": 5}, {"personal": 1, "work": 2}, "2025-01-20T10:00:00Z"),
+]
+
+# Load last source test states: (state_exists, json_valid, source_field_exists, expected_result)
+LOAD_SOURCE_STATES = [
+    (True, True, True, "test-source"),
+    (False, None, None, None),
+    (True, False, None, None),
+    (True, True, False, None),
+]
+
+# Maybe prompt sources scenarios: (ui_mode, sources_count, selection, has_last_choice, expect_choose_called)
+MAYBE_PROMPT_SCENARIOS = [
+    ("already_selected", 2, "source-a", False, False),
+    ("plain_mode", 2, None, False, False),
+    ("single_source", 1, None, False, False),
+    ("multiple_sources", 2, "source-b", False, True),
+    ("all_selected", 2, "all", False, True),
+    ("restore_last_choice", 2, "source-b", True, True),
+    ("no_choice_fails", 2, None, False, True),
+]
+
+# Latest render path scenarios: (root_exists, files_present, file_types)
+RENDER_PATH_SCENARIOS = [
+    ("no_root", False, []),
+    ("empty_root", True, []),
+    ("md_files", True, ["md"]),
+    ("html_files", True, ["html"]),
+    ("mixed_formats", True, ["md", "html"]),
+]
+
+# Polylogue init configurations: (db_path, property_to_check)
+POLYLOGUE_INIT_CONFIGS = [
+    (":memory:", "archive_root"),
+    ("file.db", "config"),
+    (":memory:", "repository"),
+    ("file.db", "archive_root"),
+    ("file.db", "repr"),
+]
+
+# List conversations filters: (setup_count, provider_filter, source_filter, limit, expected_count)
+LIST_CONV_FILTERS = [
+    (0, None, None, None, 0),
+    (3, None, None, None, 3),
+    (4, "claude", None, None, 2),
+    (5, None, "inbox", None, 5),
+    (5, None, "inbox", 3, 3),
+]
+
+
 @pytest.fixture
 def sample_chatgpt_file(tmp_path):
     """Create a sample ChatGPT export file."""
@@ -476,38 +536,28 @@ class TestPolylogueEdgeCases:
 class TestArchiveStatsCreation:
     """Test ArchiveStats instantiation and attributes."""
 
-    def test_archive_stats_init_basic(self):
-        """Test basic ArchiveStats initialization."""
+    @pytest.mark.parametrize(
+        "conv_count,msg_count,word_count,providers,tags,last_sync",
+        ARCHIVE_STATS_PARAMS,
+    )
+    def test_archive_stats_init(self, conv_count, msg_count, word_count, providers, tags, last_sync):
+        """Test ArchiveStats initialization with various parameter combinations."""
         stats = ArchiveStats(
-            conversation_count=10,
-            message_count=50,
-            word_count=1000,
-            providers={"claude": 7, "chatgpt": 3},
-            tags={"test": 2, "work": 3},
-            last_sync=None,
+            conversation_count=conv_count,
+            message_count=msg_count,
+            word_count=word_count,
+            providers=providers,
+            tags=tags,
+            last_sync=last_sync,
             recent=[],
         )
-        assert stats.conversation_count == 10
-        assert stats.message_count == 50
-        assert stats.word_count == 1000
-        assert stats.providers == {"claude": 7, "chatgpt": 3}
-        assert stats.tags == {"test": 2, "work": 3}
-        assert stats.last_sync is None
+        assert stats.conversation_count == conv_count
+        assert stats.message_count == msg_count
+        assert stats.word_count == word_count
+        assert stats.providers == providers
+        assert stats.tags == tags
+        assert stats.last_sync == last_sync
         assert stats.recent == []
-
-    def test_archive_stats_with_timestamp(self):
-        """Test ArchiveStats with last_sync timestamp."""
-        timestamp = "2025-01-15T12:30:45Z"
-        stats = ArchiveStats(
-            conversation_count=5,
-            message_count=25,
-            word_count=500,
-            providers={"claude": 5},
-            tags={},
-            last_sync=timestamp,
-            recent=[],
-        )
-        assert stats.last_sync == timestamp
 
     def test_archive_stats_with_recent_conversations(self):
         """Test ArchiveStats with recent conversations."""
@@ -547,20 +597,6 @@ class TestArchiveStatsCreation:
         assert "50" in repr_str
         assert "ArchiveStats" in repr_str
 
-    def test_archive_stats_empty_providers(self):
-        """Test ArchiveStats with empty providers."""
-        stats = ArchiveStats(
-            conversation_count=0,
-            message_count=0,
-            word_count=0,
-            providers={},
-            tags={},
-            last_sync=None,
-            recent=[],
-        )
-        assert stats.providers == {}
-        assert len(stats.recent) == 0
-
 
 # ============================================================================
 # POLYLOGUE INITIALIZATION TESTS
@@ -570,43 +606,38 @@ class TestArchiveStatsCreation:
 class TestPolylogueInit:
     """Test Polylogue initialization with various configurations."""
 
-    def test_polylogue_init_with_memory_db(self, tmp_path):
-        """Test Polylogue initialization with in-memory database."""
-        archive = Polylogue(archive_root=tmp_path, db_path=":memory:")
-        assert archive is not None
-        assert archive.archive_root == tmp_path
+    @pytest.mark.parametrize(
+        "db_path_type,property_name",
+        [
+            (":memory:", "archive_root"),
+            ("file.db", "config"),
+            (":memory:", "repository"),
+            ("file.db", "archive_root"),
+            ("file.db", "repr"),
+        ],
+    )
+    def test_polylogue_init_properties(self, tmp_path, db_path_type, property_name):
+        """Test Polylogue initialization with various db_path types and property access."""
+        if db_path_type == "file.db":
+            db_path = tmp_path / "test.db"
+        else:
+            db_path = db_path_type
 
-    def test_polylogue_init_with_file_db(self, tmp_path):
-        """Test Polylogue initialization with file-based database."""
-        db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        assert archive.config is not None
-        assert archive.repository is not None
 
-    def test_polylogue_config_property(self, tmp_path):
-        """Test Polylogue.config property returns Config object."""
-        archive = Polylogue(archive_root=tmp_path, db_path=":memory:")
-        cfg = archive.config
-        assert type(cfg).__name__ == "Config"
-        assert cfg.archive_root is not None
-
-    def test_polylogue_repository_property(self, tmp_path):
-        """Test Polylogue.repository property returns repository."""
-        archive = Polylogue(archive_root=tmp_path, db_path=":memory:")
-        repo = archive.repository
-        assert repo is not None
-
-    def test_polylogue_archive_root_property(self, tmp_path):
-        """Test Polylogue.archive_root property."""
-        archive = Polylogue(archive_root=tmp_path, db_path=":memory:")
-        assert archive.archive_root == tmp_path
-
-    def test_polylogue_repr(self, tmp_path):
-        """Test Polylogue __repr__ method."""
-        archive = Polylogue(archive_root=tmp_path, db_path=":memory:")
-        repr_str = repr(archive)
-        assert "Polylogue" in repr_str
-        assert "archive_root" in repr_str
+        if property_name == "archive_root":
+            assert archive.archive_root == tmp_path
+        elif property_name == "config":
+            cfg = archive.config
+            assert type(cfg).__name__ == "Config"
+            assert cfg.archive_root is not None
+        elif property_name == "repository":
+            repo = archive.repository
+            assert repo is not None
+        elif property_name == "repr":
+            repr_str = repr(archive)
+            assert "Polylogue" in repr_str
+            assert "archive_root" in repr_str
 
 
 # ============================================================================
@@ -738,138 +769,38 @@ class TestPolylogueGetConversations:
 class TestPolylogueListConversations:
     """Test listing conversations with various filters."""
 
-    def test_list_conversations_empty_db(self, tmp_path):
-        """Test listing from empty database."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        convs = archive.list_conversations()
-        assert convs == []
-
-    def test_list_conversations_all(self, tmp_path):
-        """Test listing all conversations."""
+    @pytest.mark.parametrize(
+        "setup_count,provider_filter,source_filter,limit,expected_count",
+        LIST_CONV_FILTERS,
+    )
+    def test_list_conversations_with_filters(self, tmp_path, setup_count, provider_filter, source_filter, limit, expected_count):
+        """Test listing conversations with various filter combinations."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
         backend = archive.repository.backend
 
-        for i in range(3):
+        # Setup conversations
+        for i in range(setup_count):
+            provider = "claude" if i < 2 else "chatgpt"
             conv_record = ConversationRecord(
                 conversation_id=f"conv-{i}",
-                provider_name="claude" if i < 2 else "chatgpt",
+                provider_name=provider,
                 provider_conversation_id=f"provider-{i}",
                 title=f"Conv {i}",
                 created_at="2025-01-01T00:00:00Z",
                 updated_at="2025-01-01T00:00:00Z",
                 content_hash=f"hash-{i}",
+                provider_meta={"source": source_filter or "inbox"} if source_filter else {},
             )
             backend.save_conversation(conv_record)
 
-        convs = archive.list_conversations()
-        assert len(convs) == 3
-
-    def test_list_conversations_filter_by_provider(self, tmp_path):
-        """Test listing with provider filter."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.repository.backend
-
-        for i in range(2):
-            backend.save_conversation(ConversationRecord(
-                conversation_id=f"claude-{i}",
-                provider_name="claude",
-                provider_conversation_id=f"p-{i}",
-                title=f"Claude {i}",
-                created_at="2025-01-01T00:00:00Z",
-                updated_at="2025-01-01T00:00:00Z",
-                content_hash=f"h-{i}",
-            ))
-        for i in range(2, 4):
-            backend.save_conversation(ConversationRecord(
-                conversation_id=f"chatgpt-{i}",
-                provider_name="chatgpt",
-                provider_conversation_id=f"p-{i}",
-                title=f"ChatGPT {i}",
-                created_at="2025-01-01T00:00:00Z",
-                updated_at="2025-01-01T00:00:00Z",
-                content_hash=f"h-{i}",
-            ))
-
-        claude_convs = archive.list_conversations(provider="claude")
-        assert len(claude_convs) == 2
-        assert all(c.provider == "claude" for c in claude_convs)
-
-    def test_list_conversations_with_limit(self, tmp_path):
-        """Test listing with limit."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.repository.backend
-
-        for i in range(5):
-            backend.save_conversation(ConversationRecord(
-                conversation_id=f"conv-{i}",
-                provider_name="claude",
-                provider_conversation_id=f"p-{i}",
-                title=f"Conv {i}",
-                created_at="2025-01-01T00:00:00Z",
-                updated_at="2025-01-01T00:00:00Z",
-                content_hash=f"h-{i}",
-            ))
-
-        convs = archive.list_conversations(limit=2)
-        assert len(convs) == 2
-
-    def test_list_conversations_filter_by_source(self, tmp_path):
-        """Test listing with source filter."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.repository.backend
-
-        # Create conversations with different sources in provider_meta
-        backend.save_conversation(ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="p-1",
-            title="Conv 1",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="h-1",
-            provider_meta={"source": "source-a"},
-        ))
-        backend.save_conversation(ConversationRecord(
-            conversation_id="conv-2",
-            provider_name="claude",
-            provider_conversation_id="p-2",
-            title="Conv 2",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="h-2",
-            provider_meta={"source": "source-b"},
-        ))
-
-        convs = archive.list_conversations(source="source-a")
-        assert len(convs) == 1
-        assert convs[0].id == "conv-1"
-
-    def test_list_conversations_source_and_limit(self, tmp_path):
-        """Test listing with both source and limit filters."""
-        db_path = tmp_path / "test.db"
-        archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        backend = archive.repository.backend
-
-        # Create multiple conversations with same source
-        for i in range(5):
-            backend.save_conversation(ConversationRecord(
-                conversation_id=f"conv-{i}",
-                provider_name="claude",
-                provider_conversation_id=f"p-{i}",
-                title=f"Conv {i}",
-                created_at="2025-01-01T00:00:00Z",
-                updated_at="2025-01-01T00:00:00Z",
-                content_hash=f"h-{i}",
-                provider_meta={"source": "inbox"},
-            ))
-
-        convs = archive.list_conversations(source="inbox", limit=3)
-        assert len(convs) == 3
+        # Retrieve with filters
+        convs = archive.list_conversations(
+            provider=provider_filter,
+            source=source_filter,
+            limit=limit,
+        )
+        assert len(convs) == expected_count
 
 
 # ============================================================================
@@ -1090,53 +1021,32 @@ class TestLoadSaveLastSource:
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["source"] == "my-source"
 
-    def test_load_last_source_exists(self, tmp_path, monkeypatch):
-        """Test loading existing last source."""
+    @pytest.mark.parametrize(
+        "state_exists,json_valid,source_field_exists,expected_result",
+        LOAD_SOURCE_STATES,
+    )
+    def test_load_last_source(self, tmp_path, monkeypatch, state_exists, json_valid, source_field_exists, expected_result):
+        """Test loading last source with various cache states."""
         state_dir = tmp_path / "state"
         state_dir.mkdir(parents=True, exist_ok=True)
         monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
 
-        # Create state file
-        source_file = state_dir / "polylogue" / "last-source.json"
-        source_file.parent.mkdir(parents=True, exist_ok=True)
-        source_file.write_text(json.dumps({"source": "test-source"}), encoding="utf-8")
+        if state_exists:
+            source_file = state_dir / "polylogue" / "last-source.json"
+            source_file.parent.mkdir(parents=True, exist_ok=True)
+
+            if json_valid:
+                if source_field_exists:
+                    content = json.dumps({"source": "test-source"})
+                else:
+                    content = json.dumps({"other": "value"})
+            else:
+                content = "invalid json"
+
+            source_file.write_text(content, encoding="utf-8")
 
         result = load_last_source()
-        assert result == "test-source"
-
-    def test_load_last_source_not_exists(self, tmp_path, monkeypatch):
-        """Test loading when file doesn't exist."""
-        state_dir = tmp_path / "state"
-        monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
-
-        result = load_last_source()
-        assert result is None
-
-    def test_load_last_source_invalid_json(self, tmp_path, monkeypatch):
-        """Test loading with invalid JSON."""
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
-
-        source_file = state_dir / "polylogue" / "last-source.json"
-        source_file.parent.mkdir(parents=True, exist_ok=True)
-        source_file.write_text("invalid json", encoding="utf-8")
-
-        result = load_last_source()
-        assert result is None
-
-    def test_load_last_source_missing_field(self, tmp_path, monkeypatch):
-        """Test loading when 'source' field is missing."""
-        state_dir = tmp_path / "state"
-        state_dir.mkdir(parents=True, exist_ok=True)
-        monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
-
-        source_file = state_dir / "polylogue" / "last-source.json"
-        source_file.parent.mkdir(parents=True, exist_ok=True)
-        source_file.write_text(json.dumps({"other": "value"}), encoding="utf-8")
-
-        result = load_last_source()
-        assert result is None
+        assert result == expected_result
 
 
 # ============================================================================

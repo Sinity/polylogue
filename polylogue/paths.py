@@ -32,11 +32,11 @@ DATA_HOME = DATA_ROOT / "polylogue"
 CACHE_HOME = CACHE_ROOT / "polylogue"
 STATE_HOME = STATE_ROOT / "polylogue"
 
-# Core paths (hardcoded, no configuration)
+# Core paths (can be overridden via env vars for testing)
 DB_PATH = DATA_HOME / "polylogue.db"
 INBOX_ROOT = DATA_HOME / "inbox"
-RENDER_ROOT = DATA_HOME / "render"
-ARCHIVE_ROOT = DATA_HOME  # DB and renders live here
+ARCHIVE_ROOT = _xdg_path("POLYLOGUE_ARCHIVE_ROOT", DATA_HOME)
+RENDER_ROOT = _xdg_path("POLYLOGUE_RENDER_ROOT", DATA_HOME / "render")
 
 # Drive OAuth paths
 DRIVE_CREDENTIALS_PATH = CONFIG_HOME / "polylogue-credentials.json"
