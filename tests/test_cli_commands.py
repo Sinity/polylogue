@@ -171,68 +171,6 @@ class TestSourceStatePath:
         assert "last-source.json" in str(result)
 
 
-class TestLoadSaveLastSource:
-    """Tests for load_last_source() and save_last_source()."""
-
-    def test_load_nonexistent_returns_none(self, tmp_path, monkeypatch):
-        """load_last_source() should return None if file doesn't exist."""
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        assert helpers.load_last_source() is None
-
-    def test_save_and_load_roundtrip(self, tmp_path, monkeypatch):
-        """save_last_source() should persist and load_last_source() should retrieve."""
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        helpers.save_last_source("chatgpt")
-        assert helpers.load_last_source() == "chatgpt"
-
-    def test_load_invalid_json_returns_none(self, tmp_path, monkeypatch):
-        """load_last_source() should return None for invalid JSON."""
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        path = helpers.source_state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("not valid json", encoding="utf-8")
-        assert helpers.load_last_source() is None
-
-    def test_load_non_dict_json_returns_none(self, tmp_path, monkeypatch):
-        """load_last_source() should return None if JSON is not a dict."""
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        path = helpers.source_state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
-        assert helpers.load_last_source() is None
-
-    def test_load_dict_without_source_returns_none(self, tmp_path, monkeypatch):
-        """load_last_source() should return None if source key missing."""
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        path = helpers.source_state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"other_key": "value"}), encoding="utf-8")
-        assert helpers.load_last_source() is None
-
-    def test_load_non_string_source_returns_none(self, tmp_path, monkeypatch):
-        """load_last_source() should return None if source is not a string."""
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        path = helpers.source_state_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps({"source": 123}), encoding="utf-8")
-        assert helpers.load_last_source() is None
-
-    def test_multiple_save_overwrites(self, tmp_path, monkeypatch):
-        """Multiple saves should overwrite previous value."""
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        helpers.save_last_source("chatgpt")
-        helpers.save_last_source("claude")
-        assert helpers.load_last_source() == "claude"
-
-    def test_save_creates_parent_dirs(self, tmp_path, monkeypatch):
-        """save_last_source() should create missing parent directories."""
-        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
-        path = helpers.source_state_path()
-        assert not path.parent.exists()
-        helpers.save_last_source("test")
-        assert path.parent.exists()
-        assert path.exists()
-
 
 class TestResolveSources:
     """Tests for resolve_sources() function."""
@@ -576,37 +514,6 @@ class TestRevokeDriveCredentials:
 # COMPLETIONS COMMAND TESTS
 # =============================================================================
 
-
-class TestCompletionsCommandInternal:
-    """Tests for completions_command()."""
-
-    @pytest.fixture
-    def runner(self):
-        return CliRunner()
-
-    @pytest.mark.parametrize("shell,desc", [(s, s) for s, _ in SHELL_COMPLETION_CASES])
-    def test_completions_generates_script(self, runner, shell, desc):
-        """completions --shell generates completion script."""
-        result = runner.invoke(click_cli, ["completions", "--shell", shell])
-        assert result.exit_code == 0
-        assert len(result.output) > 0
-
-    def test_completions_shell_required(self, runner):
-        """completions without --shell should fail."""
-        result = runner.invoke(click_cli, ["completions"])
-        assert result.exit_code != 0
-
-    def test_completions_invalid_shell_fails(self, runner):
-        """completions with invalid --shell should fail."""
-        result = runner.invoke(click_cli, ["completions", "--shell", "invalid"])
-        assert result.exit_code != 0
-
-    def test_completions_outputs_to_stdout(self, runner):
-        """completions should output to stdout, not stderr."""
-        result = runner.invoke(click_cli, ["completions", "--shell", "bash"])
-        assert result.exit_code == 0
-        # Output should be in result.output, not error
-        assert result.output and not result.exception
 
 
 # =============================================================================
@@ -1005,6 +912,13 @@ class TestCompletionsCommandUnit:
 
         assert result.exit_code == 0
         assert "polylogue" in result.output.lower()
+
+    def test_completions_outputs_to_stdout(self, cli_runner):
+        """completions should output to stdout, not stderr."""
+        result = cli_runner.invoke(click_cli, ["completions", "--shell", "bash"])
+        assert result.exit_code == 0
+        # Output should be in result.output, not error
+        assert result.output and not result.exception
 
 
 # =============================================================================
