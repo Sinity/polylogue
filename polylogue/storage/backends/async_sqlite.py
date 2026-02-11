@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import aiosqlite
 
 import polylogue.paths as _paths
+from polylogue.storage.backends.sqlite import _row_to_conversation, _row_to_message
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 if TYPE_CHECKING:
@@ -200,80 +201,24 @@ class AsyncSQLiteBackend:
             yield
 
     async def get_conversation(self, conversation_id: str) -> ConversationRecord | None:
-        """Retrieve a conversation by ID.
-
-        Args:
-            conversation_id: Conversation ID to retrieve
-
-        Returns:
-            ConversationRecord if found, None otherwise
-        """
+        """Retrieve a conversation by ID."""
         async with self._get_connection() as conn:
             cursor = await conn.execute(
                 "SELECT * FROM conversations WHERE conversation_id = ?",
                 (conversation_id,),
             )
             row = await cursor.fetchone()
-
-            if row is None:
-                return None
-
-            import json
-
-            return ConversationRecord(
-                conversation_id=row["conversation_id"],
-                provider_name=row["provider_name"],
-                provider_conversation_id=row["provider_conversation_id"],
-                title=row["title"],
-                created_at=row["created_at"],
-                updated_at=row["updated_at"],
-                content_hash=row["content_hash"],
-                provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
-                metadata=json.loads(row["metadata"]) if row["metadata"] else None,
-                version=row["version"],
-            )
+            return _row_to_conversation(row) if row is not None else None
 
     async def get_messages(self, conversation_id: str) -> list[MessageRecord]:
-        """Get all messages for a conversation.
-
-        Args:
-            conversation_id: Conversation ID
-
-        Returns:
-            List of MessageRecord objects ordered by timestamp
-        """
+        """Get all messages for a conversation."""
         async with self._get_connection() as conn:
             cursor = await conn.execute(
-                """
-                SELECT * FROM messages
-                WHERE conversation_id = ?
-                ORDER BY timestamp
-                """,
+                "SELECT * FROM messages WHERE conversation_id = ? ORDER BY timestamp",
                 (conversation_id,),
             )
             rows = await cursor.fetchall()
-
-            import json
-
-            messages = []
-            for row in rows:
-                messages.append(
-                    MessageRecord(
-                        message_id=row["message_id"],
-                        conversation_id=row["conversation_id"],
-                        provider_message_id=row["provider_message_id"],
-                        role=row["role"],
-                        text=row["text"],
-                        timestamp=row["timestamp"],
-                        content_hash=row["content_hash"],
-                        provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
-                        version=row["version"],
-                        parent_message_id=row["parent_message_id"] if "parent_message_id" in row.keys() else None,
-                        branch_index=(row["branch_index"] or 0) if "branch_index" in row.keys() else 0,
-                    )
-                )
-
-            return messages
+            return [_row_to_message(row) for row in rows]
 
     async def list_conversations(
         self,
@@ -281,21 +226,10 @@ class AsyncSQLiteBackend:
         limit: int | None = None,
         offset: int = 0,
     ) -> list[ConversationRecord]:
-        """List conversations with optional filtering.
-
-        Args:
-            provider: Filter by provider name
-            limit: Maximum number of conversations to return
-            offset: Number of conversations to skip
-
-        Returns:
-            List of ConversationRecord objects
-        """
+        """List conversations with optional filtering."""
         async with self._get_connection() as conn:
             query = "SELECT * FROM conversations"
-            from typing import Any
-
-            params: list[Any] = []
+            params: list[object] = []
 
             if provider:
                 query += " WHERE provider_name = ?"
@@ -313,27 +247,7 @@ class AsyncSQLiteBackend:
 
             cursor = await conn.execute(query, params)
             rows = await cursor.fetchall()
-
-            import json
-
-            conversations = []
-            for row in rows:
-                conversations.append(
-                    ConversationRecord(
-                        conversation_id=row["conversation_id"],
-                        provider_name=row["provider_name"],
-                        provider_conversation_id=row["provider_conversation_id"],
-                        title=row["title"],
-                        created_at=row["created_at"],
-                        updated_at=row["updated_at"],
-                        content_hash=row["content_hash"],
-                        provider_meta=json.loads(row["provider_meta"]) if row["provider_meta"] else None,
-                        metadata=json.loads(row["metadata"]) if row["metadata"] else None,
-                        version=row["version"],
-                    )
-                )
-
-            return conversations
+            return [_row_to_conversation(row) for row in rows]
 
     async def conversation_exists_by_hash(self, content_hash: str) -> bool:
         """Check if conversation with given content hash exists.
