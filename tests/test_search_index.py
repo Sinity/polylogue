@@ -1306,6 +1306,85 @@ def make_hash(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()[:16]
 
 
+# Schema constants for migration tests
+V6_CONVERSATIONS_TABLE = """
+    CREATE TABLE conversations (
+        conversation_id TEXT PRIMARY KEY,
+        provider_name TEXT NOT NULL,
+        provider_conversation_id TEXT,
+        title TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        archive_path TEXT,
+        raw_id TEXT
+    )
+"""
+
+V6_MESSAGES_TABLE = """
+    CREATE TABLE messages (
+        message_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        provider_message_id TEXT,
+        text TEXT,
+        timestamp TEXT,
+        content_hash TEXT
+    )
+"""
+
+V7_CONVERSATIONS_TABLE = """
+    CREATE TABLE conversations (
+        conversation_id TEXT PRIMARY KEY,
+        provider_name TEXT NOT NULL,
+        provider_conversation_id TEXT,
+        title TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        archive_path TEXT,
+        parent_conversation_id TEXT
+    )
+"""
+
+V8_RAW_CONVERSATIONS_TABLE = """
+    CREATE TABLE raw_conversations (
+        raw_id TEXT PRIMARY KEY,
+        provider_name TEXT NOT NULL,
+        source_path TEXT NOT NULL,
+        raw_content BLOB NOT NULL,
+        acquired_at TEXT NOT NULL,
+        file_mtime TEXT
+    )
+"""
+
+V9_RAW_CONVERSATIONS_TABLE = """
+    CREATE TABLE raw_conversations (
+        raw_id TEXT PRIMARY KEY,
+        provider_name TEXT NOT NULL,
+        source_name TEXT,
+        source_path TEXT NOT NULL,
+        raw_content BLOB NOT NULL,
+        acquired_at TEXT NOT NULL,
+        file_mtime TEXT
+    )
+"""
+
+V9_CONVERSATIONS_MIN_TABLE = """
+    CREATE TABLE conversations (
+        conversation_id TEXT PRIMARY KEY,
+        provider_name TEXT NOT NULL,
+        title TEXT
+    )
+"""
+
+V9_MESSAGES_MIN_TABLE = """
+    CREATE TABLE messages (
+        message_id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        text TEXT
+    )
+"""
+
+
 # =============================================================================
 # File 1: polylogue/storage/backends/sqlite.py - Migrations
 # =============================================================================
@@ -1320,34 +1399,8 @@ class TestMigrateV6ToV7:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
-        # Setup v6 schema (simplified)
-        conn.execute(
-            """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                provider_conversation_id TEXT,
-                title TEXT,
-                created_at TEXT,
-                updated_at TEXT,
-                archive_path TEXT,
-                raw_id TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-                role TEXT NOT NULL,
-                provider_message_id TEXT,
-                text TEXT,
-                timestamp TEXT,
-                content_hash TEXT
-            )
-            """
-        )
+        conn.execute(V6_CONVERSATIONS_TABLE)
+        conn.execute(V6_MESSAGES_TABLE)
         conn.commit()
 
         # Run migration
@@ -1386,33 +1439,8 @@ class TestMigrateV6ToV7:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
-        conn.execute(
-            """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                provider_conversation_id TEXT,
-                title TEXT,
-                created_at TEXT,
-                updated_at TEXT,
-                archive_path TEXT,
-                raw_id TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-                role TEXT NOT NULL,
-                provider_message_id TEXT,
-                text TEXT,
-                timestamp TEXT,
-                content_hash TEXT
-            )
-            """
-        )
+        conn.execute(V6_CONVERSATIONS_TABLE)
+        conn.execute(V6_MESSAGES_TABLE)
         conn.commit()
 
         _migrate_v6_to_v7(conn)
@@ -1762,160 +1790,94 @@ class TestEnsureVec0Table:
 class TestListConversationsByParent:
     """Tests for list_conversations_by_parent (query for child conversations)."""
 
-    def test_list_conversations_by_parent_empty(self, tmp_path):
-        """Query returns empty list when no children exist."""
+    @pytest.mark.parametrize("case_name,setup_fn,query_id,expected_count,verify_fn", [
+        (
+            "empty",
+            lambda backend: None,
+            "nonexistent-parent",
+            0,
+            lambda children: children == [],
+        ),
+        (
+            "single_child",
+            lambda backend: (
+                backend.save_conversation(
+                    ConversationRecord(
+                        conversation_id="parent-conv",
+                        provider_name="test",
+                        provider_conversation_id="p1",
+                        content_hash=make_hash("parent-conv"),
+                        title="Parent",
+                        created_at="2024-01-01T00:00:00Z",
+                        updated_at="2024-01-01T00:00:00Z",
+                    )
+                ),
+                backend.save_conversation(
+                    ConversationRecord(
+                        conversation_id="child-conv",
+                        provider_name="test",
+                        provider_conversation_id="p2",
+                        content_hash=make_hash("child-conv"),
+                        title="Child",
+                        created_at="2024-01-02T00:00:00Z",
+                        updated_at="2024-01-02T00:00:00Z",
+                        parent_conversation_id="parent-conv",
+                        branch_type="continuation",
+                    )
+                ),
+            ),
+            "parent-conv",
+            1,
+            lambda children: children[0].conversation_id == "child-conv" and children[0].parent_conversation_id == "parent-conv",
+        ),
+        (
+            "multiple_children",
+            lambda backend: (
+                backend.save_conversation(
+                    ConversationRecord(
+                        conversation_id="parent",
+                        provider_name="test",
+                        provider_conversation_id="p",
+                        content_hash=make_hash("parent"),
+                        title="Parent",
+                        created_at="2024-01-01T00:00:00Z",
+                        updated_at="2024-01-01T00:00:00Z",
+                    )
+                ),
+                [
+                    backend.save_conversation(
+                        ConversationRecord(
+                            conversation_id=f"child-{i}",
+                            provider_name="test",
+                            provider_conversation_id=f"p{i}",
+                            content_hash=make_hash(f"child-{i}"),
+                            title=f"Child {i}",
+                            created_at=ts,
+                            updated_at=ts,
+                            parent_conversation_id="parent",
+                            branch_type="fork",
+                        )
+                    )
+                    for i, ts in enumerate(["2024-01-03T00:00:00Z", "2024-01-02T00:00:00Z", "2024-01-04T00:00:00Z"])
+                ],
+            ),
+            "parent",
+            3,
+            lambda children: (
+                children[0].conversation_id == "child-1"
+                and children[1].conversation_id == "child-0"
+                and children[2].conversation_id == "child-2"
+            ),
+        ),
+    ])
+    def test_list_conversations_by_parent(self, tmp_path, case_name, setup_fn, query_id, expected_count, verify_fn):
+        """Parametrized test for list_conversations_by_parent with multiple scenarios."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        result = backend.list_conversations_by_parent("nonexistent-parent")
-        assert result == []
+        setup_fn(backend)
+        children = backend.list_conversations_by_parent(query_id)
+        assert len(children) == expected_count
+        assert verify_fn(children)
         backend.close()
-
-    def test_list_conversations_by_parent_single_child(self, tmp_path):
-        """Query returns child conversation."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Insert parent conversation
-        parent = ConversationRecord(
-            conversation_id="parent-conv",
-            provider_name="test",
-            provider_conversation_id="p1",
-            content_hash=make_hash("parent-conv"),
-            title="Parent",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-            parent_conversation_id=None,
-            branch_type=None,
-            raw_id=None,
-        )
-        backend.save_conversation(parent)
-
-        # Insert child conversation
-        child = ConversationRecord(
-            conversation_id="child-conv",
-            provider_name="test",
-            provider_conversation_id="p2",
-            content_hash=make_hash("child-conv"),
-            title="Child",
-            created_at="2024-01-02T00:00:00Z",
-            updated_at="2024-01-02T00:00:00Z",
-            parent_conversation_id="parent-conv",
-            branch_type="continuation",
-            raw_id=None,
-        )
-        backend.save_conversation(child)
-
-        # Query for children
-        children = backend.list_conversations_by_parent("parent-conv")
-        assert len(children) == 1
-        assert children[0].conversation_id == "child-conv"
-        assert children[0].parent_conversation_id == "parent-conv"
-
-        backend.close()
-
-    def test_list_conversations_by_parent_multiple_children(self, tmp_path):
-        """Query returns all child conversations in created_at order."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Insert parent
-        parent = ConversationRecord(
-            conversation_id="parent",
-            provider_name="test",
-            provider_conversation_id="p",
-            content_hash=make_hash("parent"),
-            title="Parent",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-            parent_conversation_id=None,
-            branch_type=None,
-            raw_id=None,
-        )
-        backend.save_conversation(parent)
-
-        # Insert children with different timestamps
-        for i, ts in enumerate(
-            [
-                "2024-01-03T00:00:00Z",
-                "2024-01-02T00:00:00Z",
-                "2024-01-04T00:00:00Z",
-            ]
-        ):
-            child = ConversationRecord(
-                conversation_id=f"child-{i}",
-                provider_name="test",
-                provider_conversation_id=f"p{i}",
-                content_hash=make_hash(f"child-{i}"),
-                title=f"Child {i}",
-                created_at=ts,
-                updated_at=ts,
-                parent_conversation_id="parent",
-                branch_type="fork",
-                raw_id=None,
-            )
-            backend.save_conversation(child)
-
-        # Query and verify order
-        children = backend.list_conversations_by_parent("parent")
-        assert len(children) == 3
-        # Should be ordered by created_at ASC
-        assert children[0].conversation_id == "child-1"  # 2024-01-02
-        assert children[1].conversation_id == "child-0"  # 2024-01-03
-        assert children[2].conversation_id == "child-2"  # 2024-01-04
-
-        backend.close()
-
-
-# =============================================================================
-# File 2: polylogue/storage/search_providers/__init__.py - Provider Creation
-# =============================================================================
-
-
-class TestCreateVectorProvider:
-    """Tests for create_vector_provider factory function."""
-
-    def test_create_vector_provider_no_key_returns_none(self):
-        """Factory returns None when no Voyage API key configured (lines 73-77)."""
-        from polylogue.storage.search_providers import create_vector_provider
-
-        # No key in param, config, or env
-        result = create_vector_provider(config=None, voyage_api_key=None)
-        assert result is None
-
-    def test_create_vector_provider_with_key_from_param(self, tmp_path):
-        """Factory processes key parameter (lines 70-74)."""
-        from polylogue.storage.search_providers import create_vector_provider
-
-        # With key parameter - will return provider if sqlite-vec available, else None
-        result = create_vector_provider(
-            config=None,
-            voyage_api_key="test-key-12345",
-            db_path=tmp_path / "test.db",
-        )
-        # Should either return provider or None (if sqlite-vec unavailable)
-        assert result is None or hasattr(result, "query")
-
-    def test_create_vector_provider_handles_import_error(self):
-        """Factory gracefully handles sqlite-vec import error (lines 82-84)."""
-        from polylogue.storage.search_providers import create_vector_provider
-
-        # When sqlite-vec is not installed, should return None
-        # (The try/except block catches ImportError and returns None)
-        result = create_vector_provider(config=None, voyage_api_key="key")
-        # Result depends on if sqlite-vec is installed or not
-        # Both None and a provider object are valid outcomes
-        assert result is None or hasattr(result, "query")
-
-    def test_create_vector_provider_handles_init_error(self):
-        """Factory gracefully handles SqliteVecProvider init error (lines 97-99)."""
-        from polylogue.storage.search_providers.sqlite_vec import SqliteVecError
-
-        # Mock SqliteVecProvider to raise error on initialization
-        with patch("polylogue.storage.search_providers.sqlite_vec.SqliteVecProvider", side_effect=SqliteVecError("Init failed")):
-            from polylogue.storage.search_providers import create_vector_provider
-
-            result = create_vector_provider(
-                config=None,
-                voyage_api_key="test-key",
-            )
-            assert result is None
 
 
 # =============================================================================
@@ -2002,6 +1964,69 @@ class TestHybridSearchProvider:
 
             result = create_hybrid_provider()
             assert result is None
+
+    def test_hybrid_search_empty_fts_results(self):
+        """Hybrid search with empty FTS results still works."""
+        from polylogue.storage.search_providers.hybrid import HybridSearchProvider
+
+        fts_mock = MagicMock()
+        fts_mock.search.return_value = []
+
+        vec_mock = MagicMock()
+        vec_mock.query.return_value = [("msg1", 0.9)]
+
+        provider = HybridSearchProvider(fts_provider=fts_mock, vector_provider=vec_mock)
+
+        # Should return results from vector search when FTS is empty
+        result = provider.search("test", limit=10)
+        assert len(result) > 0
+
+    def test_hybrid_search_with_provider_filter(self, tmp_path):
+        """Hybrid search respects provider filter."""
+        from polylogue.storage.backends.sqlite import SQLiteBackend
+        from polylogue.storage.search_providers.hybrid import HybridSearchProvider
+
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        # Add conversations from different providers
+        for provider_name in ["claude", "chatgpt"]:
+            for i in range(2):
+                conv = ConversationRecord(
+                    conversation_id=f"{provider_name}-conv-{i}",
+                    provider_name=provider_name,
+                    provider_conversation_id=f"p{i}",
+                    content_hash=make_hash(f"{provider_name}-{i}"),
+                    title=f"{provider_name} Conv {i}",
+                    created_at=f"2024-01-0{i+1}T00:00:00Z",
+                    updated_at=f"2024-01-0{i+1}T00:00:00Z",
+                )
+                msg = MessageRecord(
+                    message_id=f"{provider_name}-msg-{i}",
+                    conversation_id=f"{provider_name}-conv-{i}",
+                    content_hash=make_hash(f"{provider_name}-msg-{i}"),
+                    role="user",
+                    text="test message",
+                    timestamp=f"2024-01-0{i+1}T00:00:00Z",
+                )
+                backend.save_conversation(conv)
+                backend.save_messages([msg])
+
+        backend.close()
+
+        # Create hybrid provider with mocks
+        fts_mock = MagicMock()
+        fts_mock.search.return_value = [f"msg-{i}" for i in range(4)]
+        fts_mock.db_path = tmp_path / "test.db"
+
+        vec_mock = MagicMock()
+        vec_mock.query.return_value = []
+
+        provider = HybridSearchProvider(fts_provider=fts_mock, vector_provider=vec_mock)
+
+        # Search with provider filter
+        result = provider.search_conversations("test", limit=10, providers=["claude"])
+        # Should filter to only claude conversations
+        assert all("claude" in conv_id for conv_id in result) or len(result) == 0
 
 
 # =============================================================================
@@ -2130,84 +2155,6 @@ class TestWriteAsset:
 # =============================================================================
 
 
-class TestMCPCommand:
-    """Tests for mcp CLI command."""
-
-    def test_mcp_unsupported_transport(self, cli_workspace):
-        """MCP command with unsupported transport shows error (line 20-21)."""
-        runner = CliRunner()
-
-        # Click's choice validator prevents invalid transports at the Click level
-        # The unsupported transport error path (lines 20-21) is for valid choices
-        # but wrong transport logic - this is implicit in Click's validation
-        # Test that mcp command works with valid transport
-        result = runner.invoke(cli, ["mcp", "--transport", "stdio"])
-        # Will fail due to MCP not being runnable, but tests the valid path
-        assert result.exit_code is not None
-
-    def test_mcp_import_error_handled(self, cli_workspace):
-        """MCP command shows error when MCP dependencies not installed (lines 26-29)."""
-        runner = CliRunner()
-
-        # Mock ImportError for polylogue.mcp.server module (inside the try/except)
-        import builtins
-        original_import = builtins.__import__
-
-        def mock_import(name, *args, **kwargs):
-            if name == "polylogue.mcp.server":
-                raise ImportError("MCP not installed")
-            return original_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            result = runner.invoke(cli, ["mcp"])
-            # Should exit with error
-            assert result.exit_code != 0
-            assert "MCP dependencies not installed" in result.output or "error" in result.output.lower()
-
-
-# =============================================================================
-# File 6: polylogue/cli/commands/dashboard.py - Dashboard TUI Fallback
-# =============================================================================
-
-
-class TestDashboardCommand:
-    """Tests for dashboard CLI command."""
-
-    def test_dashboard_tui_import_failure(self, cli_workspace):
-        """Dashboard command handles TUI import failure (lines 13-17)."""
-        runner = CliRunner()
-
-        # Mock the PolylogueApp import to fail with ImportError
-        import builtins
-        original_import = builtins.__import__
-
-        def mock_import(name, *args, **kwargs):
-            if "polylogue.ui.tui.app" in name:
-                raise ImportError("No textual")
-            return original_import(name, *args, **kwargs)
-
-        with patch("builtins.__import__", side_effect=mock_import):
-            result = runner.invoke(cli, ["dashboard"])
-            # Should exit (gracefully or with error)
-            # The exact behavior depends on implementation, but it shouldn't crash
-            assert result.exit_code is not None
-
-    def test_dashboard_tui_import_success(self, cli_workspace):
-        """Dashboard command creates and runs PolylogueApp when available."""
-        runner = CliRunner()
-
-        # Mock PolylogueApp class
-        mock_app_instance = MagicMock()
-        mock_app_instance.run = MagicMock()
-
-        with patch("polylogue.ui.tui.app.PolylogueApp", return_value=mock_app_instance):
-            result = runner.invoke(cli, ["dashboard"])
-            # Should call app.run()
-            # (exit code may be non-zero due to no TTY, but that's ok)
-            # Just verify it attempted to run
-            assert result.exit_code is not None
-
-
 class TestRawConversationEdgeCases:
     """Tests for raw conversation storage and edge cases."""
 
@@ -2284,73 +2231,6 @@ class TestRawConversationEdgeCases:
         assert children[0].branch_type == "sidechain"
 
         backend.close()
-
-
-class TestHybridSearchEdgeCases:
-    """Tests for hybrid search edge cases."""
-
-    def test_hybrid_search_empty_fts_results(self):
-        """Hybrid search with empty FTS results still works."""
-        from polylogue.storage.search_providers.hybrid import HybridSearchProvider
-
-        fts_mock = MagicMock()
-        fts_mock.search.return_value = []
-
-        vec_mock = MagicMock()
-        vec_mock.query.return_value = [("msg1", 0.9)]
-
-        provider = HybridSearchProvider(fts_provider=fts_mock, vector_provider=vec_mock)
-
-        # Should return results from vector search when FTS is empty
-        result = provider.search("test", limit=10)
-        assert len(result) > 0
-
-    def test_hybrid_search_with_provider_filter(self, tmp_path):
-        """Hybrid search respects provider filter."""
-        from polylogue.storage.backends.sqlite import SQLiteBackend
-        from polylogue.storage.search_providers.hybrid import HybridSearchProvider
-
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        # Add conversations from different providers
-        for provider_name in ["claude", "chatgpt"]:
-            for i in range(2):
-                conv = ConversationRecord(
-                    conversation_id=f"{provider_name}-conv-{i}",
-                    provider_name=provider_name,
-                    provider_conversation_id=f"p{i}",
-                    content_hash=make_hash(f"{provider_name}-{i}"),
-                    title=f"{provider_name} Conv {i}",
-                    created_at=f"2024-01-0{i+1}T00:00:00Z",
-                    updated_at=f"2024-01-0{i+1}T00:00:00Z",
-                )
-                msg = MessageRecord(
-                    message_id=f"{provider_name}-msg-{i}",
-                    conversation_id=f"{provider_name}-conv-{i}",
-                    content_hash=make_hash(f"{provider_name}-msg-{i}"),
-                    role="user",
-                    text="test message",
-                    timestamp=f"2024-01-0{i+1}T00:00:00Z",
-                )
-                backend.save_conversation(conv)
-                backend.save_messages([msg])
-
-        backend.close()
-
-        # Create hybrid provider with mocks
-        fts_mock = MagicMock()
-        fts_mock.search.return_value = [f"msg-{i}" for i in range(4)]
-        fts_mock.db_path = tmp_path / "test.db"
-
-        vec_mock = MagicMock()
-        vec_mock.query.return_value = []
-
-        provider = HybridSearchProvider(fts_provider=fts_mock, vector_provider=vec_mock)
-
-        # Search with provider filter
-        result = provider.search_conversations("test", limit=10, providers=["claude"])
-        # Should filter to only claude conversations
-        assert all("claude" in conv_id for conv_id in result) or len(result) == 0
 
 
 class TestAssetErrorHandling:

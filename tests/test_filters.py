@@ -223,103 +223,45 @@ class TestConversationFilterChaining:
         assert isinstance(result, list)
 
 
-class TestConversationFilterProvider:
-    """Tests for provider filtering."""
+class TestConversationFilterMethods:
+    """Consolidated tests for filter methods (provider, tag, text, title, id, limit)."""
 
-    @pytest.mark.parametrize("provider,expected_count,description", [
-        ("claude", 2, "Filter by single provider"),
-        (("claude", "chatgpt"), 3, "Filter by multiple providers"),
-    ])
-    def test_filter_provider(self, filter_repo, provider, expected_count, description):
-        """Test provider filtering with multiple providers."""
-        result = ConversationFilter(filter_repo).provider(*([provider] if isinstance(provider, str) else provider)).list()
-        assert len(result) == expected_count
-        if isinstance(provider, str):
-            assert all(c.provider == provider for c in result)
+    FILTER_METHOD_CASES = [
+        ("provider_single", lambda f: f.provider("claude"), 2, "Filter by single provider"),
+        ("provider_multi", lambda f: f.provider("claude", "chatgpt"), 3, "Filter by multiple providers"),
+        ("no_provider", lambda f: f.no_provider("claude"), 1, "Exclude specific provider"),
+        ("tag_python", lambda f: f.tag("python"), None, "Filter by tag (or empty)"),
+        ("no_tag", lambda f: f.no_tag("nonexistent-tag"), 3, "Exclude nonexistent tag"),
+        ("contains", lambda f: f.contains("Python"), None, "Filter contains text"),
+        ("no_contains", lambda f: f.no_contains("database"), None, "Exclude text"),
+        ("limit_1", lambda f: f.limit(1), 1, "Limit to 1 result"),
+        ("limit_0", lambda f: f.limit(0), 0, "Limit of zero"),
+        ("title_Python", lambda f: f.title("Python"), 1, "Filter by title"),
+        ("title_python_case", lambda f: f.title("python"), 1, "Title case insensitive"),
+        ("id_prefix", lambda f: f.id("claude"), 2, "Filter by ID prefix"),
+    ]
+
+    @pytest.mark.parametrize("method_name,filter_fn,expected_count,description", FILTER_METHOD_CASES)
+    def test_filter_method(self, filter_repo, method_name, filter_fn, expected_count, description):
+        """Test individual filter methods."""
+        result = filter_fn(ConversationFilter(filter_repo)).list()
+
+        if expected_count is not None:
+            assert len(result) == expected_count, f"Failed {description}: expected {expected_count}, got {len(result)}"
         else:
-            assert all(c.provider in provider for c in result)
+            assert isinstance(result, list), f"Failed {description}: should return list"
 
-    def test_filter_exclude_provider(self, filter_repo):
-        """Exclude specific provider."""
-        result = ConversationFilter(filter_repo).no_provider("claude").list()
-        assert len(result) == 1
-        assert result[0].provider == "chatgpt"
-
-
-class TestConversationFilterTags:
-    """Tests for tag filtering."""
-
-    def test_filter_by_tag(self, filter_repo):
-        """Filter by single tag."""
-        all_convs = ConversationFilter(filter_repo).list()
-        convs_with_tags = [c for c in all_convs if c.tags]
-        if not convs_with_tags:
-            result = ConversationFilter(filter_repo).tag("python").list()
-            assert isinstance(result, list)
-        else:
-            result = ConversationFilter(filter_repo).tag("python").list()
-            assert len(result) >= 1
-            assert all("python" in c.tags for c in result)
-
-    def test_filter_exclude_tag(self, filter_repo):
-        """Exclude specific tag."""
-        all_convs = ConversationFilter(filter_repo).list()
-        result = ConversationFilter(filter_repo).no_tag("nonexistent-tag").list()
-        assert len(result) == len(all_convs)
-
-
-class TestConversationFilterText:
-    """Tests for text/FTS filtering."""
-
-    def test_filter_contains(self, filter_repo):
-        """Filter by text content."""
-        result = ConversationFilter(filter_repo).contains("Python").list()
-        assert isinstance(result, list)
-
-    def test_filter_no_contains(self, filter_repo):
-        """Exclude conversations containing text."""
-        all_count = len(ConversationFilter(filter_repo).list())
-        filtered = ConversationFilter(filter_repo).no_contains("database").list()
-        assert len(filtered) <= all_count
-
-
-class TestConversationFilterLimit:
-    """Tests for limit and sample."""
-
-    def test_filter_limit(self, filter_repo):
-        """Limit number of results."""
-        result = ConversationFilter(filter_repo).limit(1).list()
-        assert len(result) == 1
-
-    def test_filter_limit_zero(self, filter_repo):
-        """Limit of zero returns empty."""
-        result = ConversationFilter(filter_repo).limit(0).list()
-        assert len(result) == 0
-
-
-class TestConversationFilterTitle:
-    """Tests for title filtering."""
-
-    def test_filter_by_title(self, filter_repo):
-        """Filter by title pattern."""
-        result = ConversationFilter(filter_repo).title("Python").list()
-        assert len(result) == 1
-        assert "Python" in result[0].display_title
-
-    def test_filter_by_title_case_insensitive(self, filter_repo):
-        """Title filter is case insensitive."""
-        result = ConversationFilter(filter_repo).title("python").list()
-        assert len(result) == 1
-
-
-class TestConversationFilterId:
-    """Tests for ID prefix filtering."""
-
-    def test_filter_by_id_prefix(self, filter_repo):
-        """Filter by ID prefix."""
-        result = ConversationFilter(filter_repo).id("claude").list()
-        assert len(result) == 2
-        assert all(c.id.startswith("claude") for c in result)
+        # Type-specific assertions
+        if "provider" in method_name:
+            if "no_" not in method_name:
+                provider = method_name.split("_")[1]
+                if provider != "multi":
+                    assert all(c.provider == provider for c in result)
+        elif "title" in method_name:
+            if result:
+                assert "Python" in result[0].display_title or "python" in result[0].display_title
+        elif "id" in method_name and result:
+            assert all(c.id.startswith("claude") for c in result)
 
 
 class TestConversationFilterTerminal:

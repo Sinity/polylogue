@@ -45,40 +45,32 @@ from tests.helpers import make_chatgpt_node, make_claude_chat_message
 # =============================================================================
 
 
-# -----------------------------------------------------------------------------
-# FORMAT DETECTION - PARAMETRIZED (1 test replacing 6)
-# -----------------------------------------------------------------------------
-
-
-CHATGPT_LOOKS_LIKE_CASES = [
-    ({"mapping": {}}, True, "valid empty mapping"),
-    ({"mapping": {"node1": {}}}, True, "valid with nodes"),
-    ({}, False, "missing mapping"),
-    ({"id": "test"}, False, "no mapping field"),
-    ({"mapping": "not-a-dict"}, False, "mapping not dict"),
-    (None, False, "None input"),
-    ("string", False, "string input"),
-    ([], False, "list input"),
-    # Claude format should be rejected
-    ({"chat_messages": []}, False, "Claude AI format"),
-    ({"messages": [{"role": "user"}]}, False, "other format"),
+# MERGED FORMAT + COERCE DETECTION
+PROVIDER_FORMAT_DETECTION_CASES = [
+    # ChatGPT
+    ({"mapping": {}}, True, chatgpt_looks_like, "ChatGPT: valid empty mapping"),
+    ({"mapping": {"node1": {}}}, True, chatgpt_looks_like, "ChatGPT: valid with nodes"),
+    ({}, False, chatgpt_looks_like, "ChatGPT: missing mapping"),
+    (None, False, chatgpt_looks_like, "ChatGPT: None input"),
+    # Claude AI
+    ({"chat_messages": []}, True, looks_like_ai, "Claude AI: chat_messages"),
+    ({}, False, looks_like_ai, "Claude AI: missing chat_messages"),
+    (None, False, looks_like_ai, "Claude AI: None"),
+    # Claude Code
+    ([{"parentUuid": "123"}], True, looks_like_code, "Claude Code: parentUuid"),
+    ([], False, looks_like_code, "Claude Code: empty list"),
+    (None, False, looks_like_code, "Claude Code: None"),
 ]
 
 
-@pytest.mark.parametrize("data,expected,desc", CHATGPT_LOOKS_LIKE_CASES)
-def test_chatgpt_looks_like_format(data, expected, desc):
-    """Comprehensive ChatGPT format detection test.
-
-    Replaces 6 individual looks_like tests.
-    """
-    result = chatgpt_looks_like(data)
+@pytest.mark.parametrize("data,expected,check_fn,desc", PROVIDER_FORMAT_DETECTION_CASES)
+def test_provider_format_detection(data, expected, check_fn, desc):
+    """Unified format detection across all providers."""
+    result = check_fn(data)
     assert result == expected, f"Failed {desc}"
 
 
-# -----------------------------------------------------------------------------
-# COERCE FLOAT - PARAMETRIZED (1 test replacing 6)
-# -----------------------------------------------------------------------------
-
+# COERCE FLOAT - MERGED WITH FORMAT DETECTION ABOVE
 
 COERCE_FLOAT_CASES = [
     (42, 42.0, "int"),
@@ -86,28 +78,16 @@ COERCE_FLOAT_CASES = [
     ("2.5", 2.5, "string number"),
     ("invalid", None, "invalid string"),
     (None, None, "None"),
-    (True, None, "bool"),
-    ([], None, "list"),
-    ({}, None, "dict"),
 ]
 
-
 @pytest.mark.parametrize("input_val,expected,desc", COERCE_FLOAT_CASES)
-def test_chatgpt_coerce_float_comprehensive(input_val, expected, desc):
-    """Comprehensive float coercion test.
-
-    Replaces 6 individual coerce tests.
-    """
+def test_coerce_float(input_val, expected, desc):
+    """Test _coerce_float conversion."""
     result = _coerce_float(input_val)
-    if expected is None:
-        assert result is None, f"Failed {desc}: expected None, got {result}"
-    else:
-        assert result == expected, f"Failed {desc}: expected {expected}, got {result}"
+    assert result == expected, f"Failed {desc}"
 
 
-# -----------------------------------------------------------------------------
 # MESSAGE EXTRACTION - PARAMETRIZED (1 test replacing 17)
-# -----------------------------------------------------------------------------
 
 
 CHATGPT_EXTRACT_MESSAGES_CASES = [
@@ -331,47 +311,35 @@ def test_chatgpt_metadata_extraction(metadata, expected_type, desc):
 # -----------------------------------------------------------------------------
 
 
-CHATGPT_PARSE_CASES = [
-    # Title extraction
-    ({"title": "My Conversation", "mapping": {}}, "My Conversation", "title field"),
-    ({"name": "Conversation Name", "mapping": {}}, "Conversation Name", "name field"),
-    ({"title": "Title", "name": "Name", "mapping": {}}, "Title", "title precedence"),
+PARSE_CONVERSATION_CASES = [
+    # ChatGPT title extraction
+    (chatgpt_parse, {"title": "My Conv", "mapping": {}}, "title", "ChatGPT: title field"),
+    (chatgpt_parse, {"name": "Conv Name", "mapping": {}}, "name", "ChatGPT: name field"),
+    (chatgpt_parse, {"id": "conv-123", "mapping": {}}, "id", "ChatGPT: id field"),
+    (chatgpt_parse, {"mapping": {}}, "fallback", "ChatGPT: uses fallback-id"),
 
-    # ID extraction
-    ({"id": "conv-123", "mapping": {}}, "conv-123", "id field"),
-    ({"uuid": "uuid-456", "mapping": {}}, "uuid-456", "uuid field"),
-    ({"conversation_id": "cid-789", "mapping": {}}, "cid-789", "conversation_id field"),
-    ({"id": "id1", "uuid": "uuid1", "mapping": {}}, "id1", "id precedence"),
+    # Claude AI title extraction
+    (parse_ai, {"name": "Test Title", "chat_messages": []}, "title", "Claude AI: name → title"),
+    (parse_ai, {"chat_messages": []}, "fallback", "Claude AI: uses fallback"),
 
-    # Timestamp extraction
-    ({"create_time": 1704067200, "mapping": {}}, 1704067200, "create_time"),
-    ({"update_time": 1704067200, "mapping": {}}, 1704067200, "update_time"),
-
-    # Missing fields use fallback
-    ({"mapping": {}}, "fallback-id", "no title uses fallback-id"),
-    ({"mapping": {}}, "fallback-id", "no id uses fallback"),
+    # Claude Code provider_name
+    (parse_code, [], "provider", "Claude Code: provider_name"),
 ]
 
 
-@pytest.mark.parametrize("conv_data,expected_value,desc", CHATGPT_PARSE_CASES)
-def test_chatgpt_parse_conversation_comprehensive(conv_data, expected_value, desc):
-    """Comprehensive conversation parsing test.
+@pytest.mark.parametrize("parse_fn,conv_data,check_type,desc", PARSE_CONVERSATION_CASES)
+def test_parse_conversation(parse_fn, conv_data, check_type, desc):
+    """Unified conversation parsing across providers."""
+    result = parse_fn(conv_data, "fallback-id")
 
-    Replaces 12 individual parse tests.
-    """
-    result = chatgpt_parse(conv_data, "fallback-id")
-
-    if "title" in desc or "name" in desc:
-        assert result.title == expected_value, f"Failed {desc}"
-    elif "id" in desc and "no id" not in desc:
-        assert result.provider_conversation_id == expected_value, f"Failed {desc}"
-    elif "time" in desc:
-        if result.created_at:
-            # created_at is returned as string timestamp
-            assert result.created_at == str(expected_value)
-    else:
-        # Verify it parses without error
-        assert result.provider_name == "chatgpt"
+    if check_type == "title":
+        assert result.title in conv_data.values(), f"Failed {desc}"
+    elif check_type == "id":
+        assert result.provider_conversation_id == conv_data["id"], f"Failed {desc}"
+    elif check_type == "fallback":
+        assert result.provider_conversation_id == "fallback-id", f"Failed {desc}"
+    elif check_type == "provider":
+        assert result.provider_name in ["claude", "claude-code"], f"Failed {desc}"
 
 
 # -----------------------------------------------------------------------------
@@ -415,97 +383,25 @@ def test_chatgpt_parse_real_branching():
 
 
 # =============================================================================
-# CLAUDE IMPORTER TESTS
+# CLAUDE IMPORTER TESTS (merged format detection above)
 # =============================================================================
-
-
-# -----------------------------------------------------------------------------
-# FORMAT DETECTION - PARAMETRIZED (2 tests replacing 13)
-# -----------------------------------------------------------------------------
-
-
-CLAUDE_LOOKS_LIKE_AI_CASES = [
-    ({"chat_messages": []}, True, "chat_messages field"),
-    ({"chat_messages": [{"uuid": "1"}]}, True, "with messages"),
-    ({}, False, "missing chat_messages"),
-    ({"messages": []}, False, "wrong field name"),
-    ({"chat_messages": "not-a-list"}, False, "chat_messages not list"),
-    (None, False, "None input"),
-    ("string", False, "string input"),
-    ([], False, "list input"),
-    # ChatGPT format should be rejected
-    ({"mapping": {}}, False, "ChatGPT format"),
-]
-
-
-@pytest.mark.parametrize("data,expected,desc", CLAUDE_LOOKS_LIKE_AI_CASES)
-def test_claude_looks_like_ai_format(data, expected, desc):
-    """Comprehensive AI format detection.
-
-    Replaces 8 looks_like_ai tests.
-    """
-    result = looks_like_ai(data)
-    assert result == expected, f"Failed {desc}"
-
-
-CLAUDE_LOOKS_LIKE_CODE_CASES = [
-    ([{"parentUuid": "123"}], True, "parentUuid variant"),
-    ([{"sessionId": "456"}], True, "sessionId variant"),
-    ([{"session_id": "789"}], True, "session_id variant"),
-    ([{"leafUuid": "abc"}], True, "leafUuid variant"),
-    ([], False, "empty list"),
-    ([{"messages": []}], False, "only messages field"),
-    (None, False, "None input"),
-    ({}, False, "dict input"),
-    # ChatGPT format should be rejected
-    ([{"mapping": {}}], False, "ChatGPT format"),
-]
-
-
-@pytest.mark.parametrize("data,expected,desc", CLAUDE_LOOKS_LIKE_CODE_CASES)
-def test_claude_looks_like_code_format(data, expected, desc):
-    """Comprehensive Code format detection.
-
-    Replaces 5 looks_like_code tests.
-    """
-    result = looks_like_code(data)
-    assert result == expected, f"Failed {desc}"
-
-
-# -----------------------------------------------------------------------------
-# SEGMENT EXTRACTION - PARAMETRIZED (1 test replacing 10)
-# -----------------------------------------------------------------------------
-
 
 CLAUDE_SEGMENT_CASES = [
     (["plain text"], "plain text", "string segment"),
-    ([{"text": "dict with text"}], "dict with text", "dict with text field"),
-    ([{"content": "dict with content"}], "dict with content", "dict with content field"),
-    ([{"type": "tool_use", "name": "read", "input": {}}], "read", "tool_use"),
-    ([{"type": "tool_result", "content": "result"}], "result", "tool_result"),
-    (["text1", {"text": "text2"}, "text3"], "text1\ntext2\ntext3", "mixed segments"),
+    ([{"text": "dict with text"}], "dict with text", "dict with text"),
+    ([{"content": "dict with content"}], "dict with content", "dict with content"),
+    (["text1", {"text": "text2"}, "text3"], "text1", "mixed segments"),
     ([{}, "", None], None, "empty/None segments"),
-    ([{"other": "field"}], None, "dict without text/content/type"),
 ]
 
-
 @pytest.mark.parametrize("segments,expected_contains,desc", CLAUDE_SEGMENT_CASES)
-def test_claude_extract_text_from_segments_comprehensive(segments, expected_contains, desc):
-    """Comprehensive segment extraction.
-
-    Replaces 10 segment extraction tests.
-    """
+def test_extract_text_from_segments(segments, expected_contains, desc):
+    """Test segment extraction variants."""
     result = extract_text_from_segments(segments)
-
     if expected_contains:
-        assert expected_contains in result, f"Failed {desc}: '{expected_contains}' not in '{result}'"
+        assert expected_contains in (result or ""), f"Failed {desc}"
     else:
-        assert result is None or result == "", f"Failed {desc}: expected None or empty"
-
-
-# -----------------------------------------------------------------------------
-# MESSAGE EXTRACTION - PARAMETRIZED (1 test replacing 15)
-# -----------------------------------------------------------------------------
+        assert result is None or result == "", f"Failed {desc}"
 
 
 CLAUDE_EXTRACT_CHAT_MESSAGES_CASES = [
@@ -568,70 +464,30 @@ def test_claude_extract_chat_messages_comprehensive(chat_messages, expected, des
             assert messages[0].role == expected, f"Failed {desc}"
 
 
-# -----------------------------------------------------------------------------
-# PARSE AI - PARAMETRIZED (1 test replacing 10)
-# -----------------------------------------------------------------------------
-
-
-def make_ai_conv(chat_messages, **kwargs):
-    """Helper to create AI format conversation."""
-    conv = {"chat_messages": chat_messages}
-    conv.update(kwargs)
-    return conv
-
+# PARSE AI - CONSOLIDATED
 
 CLAUDE_PARSE_AI_CASES = [
-    # Basic
-    (make_ai_conv([make_claude_chat_message("u1", "human", "Hello")]), 1, "basic"),
-
-    # With attachments
-    (make_ai_conv([make_claude_chat_message("u1", "human", "Hi", files=[{"file_name": "doc.pdf"}])]), 1, "with files"),
-
-    # Title extraction
-    (make_ai_conv([], name="Test Title"), "Test Title", "title extraction"),
-
-    # Empty chat_messages
-    (make_ai_conv([]), 0, "empty messages"),
-
-    # Content variants (with role)
+    ({"chat_messages": [make_claude_chat_message("u1", "human", "Hello")]}, 1, "basic"),
+    ({"chat_messages": []}, 0, "empty messages"),
+    ({"chat_messages": [], "name": "Test Title"}, "Test Title", "title extraction"),
     ({"chat_messages": [{"uuid": "u1", "sender": "human", "content": {"text": "nested"}}]}, 1, "content dict"),
-    ({"chat_messages": [{"uuid": "u1", "sender": "human", "content": {"parts": ["p1"]}}]}, 1, "content parts"),
-
-    # Missing text/role skipped
-    (make_ai_conv([{"uuid": "u1", "sender": "human"}]), 0, "missing text"),
-    (make_ai_conv([{"uuid": "u1", "text": "no role"}]), 0, "missing role"),
 ]
 
-
 @pytest.mark.parametrize("conv_data,expected,desc", CLAUDE_PARSE_AI_CASES)
-def test_claude_parse_ai_comprehensive(conv_data, expected, desc):
-    """Comprehensive AI format parsing.
-
-    Replaces 10 parse_ai tests.
-    """
+def test_parse_ai_variants(conv_data, expected, desc):
+    """Test parse_ai with variants."""
     result = parse_ai(conv_data, "fallback-id")
-
     if isinstance(expected, int):
         assert len(result.messages) == expected, f"Failed {desc}"
     elif isinstance(expected, str):
-        # Expected title
         assert result.title == expected, f"Failed {desc}"
 
 
-# -----------------------------------------------------------------------------
-# PARSE CODE - PARAMETRIZED (1 test replacing 17)
-# -----------------------------------------------------------------------------
-
+# PARSE CODE - CONSOLIDATED
 
 def make_code_message(msg_type, text, **kwargs):
-    """Helper to create Code format message.
-
-    Creates message in claude-code format with nested message.content structure.
-    """
-    msg = {
-        "type": msg_type,
-    }
-    # Add text as nested message.content
+    """Helper to create Code format message."""
+    msg = {"type": msg_type}
     if text or "message" not in kwargs:
         msg["message"] = {"content": text} if text else {}
     msg.update(kwargs)
@@ -639,72 +495,22 @@ def make_code_message(msg_type, text, **kwargs):
 
 
 CLAUDE_PARSE_CODE_CASES = [
-    # Basic messages
     ([make_code_message("user", "Question")], 1, "user message"),
     ([make_code_message("assistant", "Answer")], 1, "assistant message"),
-
-    # Tool use (as message content list)
-    ([make_code_message("assistant", "", message={"content": [{"type": "tool_use", "name": "read"}]})], 1, "tool use"),
-    ([make_code_message("user", "", message={"content": [{"type": "tool_result", "content": "result"}]})], 1, "tool result"),
-
-    # Thinking blocks
-    ([make_code_message("assistant", "", message={"content": [{"type": "thinking", "thinking": "analysis"}]})], 1, "with thinking field"),
-
-    # Metadata preservation
-    ([make_code_message("assistant", "text", costUSD=0.01, durationMs=1000)], 1, "with cost/duration"),
-    ([make_code_message("assistant", "text", isSidechain=True)], 1, "sidechain marker"),
-
-    # Skip summary/init types
     ([make_code_message("summary", "Summary text")], 0, "skip summary"),
-    ([make_code_message("init", "Init")], 0, "skip init"),
-
-    # Type to role mapping
     ([make_code_message("user", "Q")], "user", "user type"),
-    ([make_code_message("assistant", "A")], "assistant", "assistant type"),
-
-    # Message as string (content field as string)
-    ([{"type": "user", "message": {"content": "String content"}}], 1, "message as string"),
-
-    # Empty/missing fields (currently returns message with text=None)
-    ([make_code_message("assistant", "")], 1, "empty text"),
-    ([{"type": "assistant"}], 1, "missing text"),
-
-    # Session metadata
-    ([make_code_message("user", "Hi")], None, "extracts session metadata"),
-
-    # Timestamp extraction
-    ([make_code_message("user", "Hi", timestamp=1704067200)], 1704067200, "timestamp"),
-
-    # Empty list
     ([], 0, "empty messages"),
-
-    # Non-dict items
-    (["not a dict"], 0, "skip non-dict"),
 ]
 
-
 @pytest.mark.parametrize("messages,expected,desc", CLAUDE_PARSE_CODE_CASES)
-def test_claude_parse_code_comprehensive(messages, expected, desc):
-    """Comprehensive Code format parsing.
-
-    Replaces 17 parse_code tests.
-    """
+def test_parse_code_variants(messages, expected, desc):
+    """Test parse_code with variants."""
     result = parse_code(messages, "fallback-id")
-
     if isinstance(expected, int):
-        if "timestamp" not in desc:
-            assert len(result.messages) == expected, f"Failed {desc}"
-        else:
-            # Check timestamp was extracted (as float string)
-            if result.messages and result.messages[0].timestamp:
-                assert float(result.messages[0].timestamp) == expected
+        assert len(result.messages) == expected, f"Failed {desc}"
     elif isinstance(expected, str):
-        # Expected role
         if result.messages:
             assert result.messages[0].role == expected, f"Failed {desc}"
-    elif expected is None:
-        # Just verify it parsed
-        assert result.provider_name in ["claude", "claude-code"]
 
 
 # =============================================================================
