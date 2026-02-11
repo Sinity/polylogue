@@ -270,11 +270,8 @@ def default_db_path() -> Path:
     return _paths.DATA_HOME / "polylogue.db"
 
 
-def _apply_schema(conn: sqlite3.Connection) -> None:
-    """Apply fresh schema at version SCHEMA_VERSION."""
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(
-        """
+# Core DDL shared between sync and async backends (single source of truth).
+SCHEMA_DDL = """
         CREATE TABLE IF NOT EXISTS raw_conversations (
             raw_id TEXT PRIMARY KEY,
             provider_name TEXT NOT NULL,
@@ -434,8 +431,13 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_embedding_status_needs
         ON embedding_status(needs_reindex) WHERE needs_reindex = 1;
-        """
-    )
+"""
+
+
+def _apply_schema(conn: sqlite3.Connection) -> None:
+    """Apply fresh schema at version SCHEMA_VERSION."""
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(SCHEMA_DDL)
 
     # v10: Create vec0 table if sqlite-vec is available
     vec_available = False

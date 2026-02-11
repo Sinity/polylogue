@@ -47,9 +47,9 @@ def serve_stdio() -> None:
             _write_error(-32700, "Parse error")
         except KeyboardInterrupt:
             break
-        except Exception as exc:
+        except Exception:
             logger.exception("MCP request handler error")
-            _write_error(-32603, f"Internal error: {exc}")
+            _write_error(-32603, "Internal server error")
 
 
 def _handle_request(request: dict[str, Any], repo: ConversationRepository) -> dict[str, Any]:
@@ -162,6 +162,12 @@ def _handle_request(request: dict[str, Any], repo: ConversationRepository) -> di
                         "mimeType": "application/json",
                         "description": "List of all conversations in the archive",
                     },
+                    {
+                        "uri": "polylogue://conversation/{id}",
+                        "name": "Conversation by ID",
+                        "mimeType": "application/json",
+                        "description": "Get a single conversation with full message content",
+                    },
                 ],
             },
         )
@@ -258,7 +264,7 @@ def _conversation_to_full_dict(conv: Any) -> dict[str, Any]:
         {
             "id": str(msg.id),
             "role": (msg.role.value if hasattr(msg.role, "value") else str(msg.role)) if msg.role else "unknown",
-            "text": ((msg.text or "")[:1000] + "...") if len(msg.text or "") > 1000 else (msg.text or ""),
+            "text": msg.text or "",
             "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
         }
         for msg in conv.messages

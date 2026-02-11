@@ -16,19 +16,13 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
-
 import aiosqlite
 
 import polylogue.paths as _paths
 from polylogue.storage.backends.sqlite import _row_to_conversation, _row_to_message
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
-if TYPE_CHECKING:
-    pass
-
 LOGGER = logging.getLogger(__name__)
-SCHEMA_VERSION = 5
 
 
 def default_db_path() -> Path:
@@ -112,82 +106,15 @@ class AsyncSQLiteBackend:
             yield conn
 
     async def _ensure_schema(self, conn: aiosqlite.Connection) -> None:
-        """Ensure database schema exists (same as sync version)."""
-        from polylogue.storage.backends.sqlite import SCHEMA_VERSION
+        """Ensure database schema exists.
 
-        await conn.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS conversations (
-                conversation_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                provider_conversation_id TEXT NOT NULL,
-                title TEXT,
-                created_at TEXT,
-                updated_at TEXT,
-                content_hash TEXT NOT NULL,
-                provider_meta TEXT,
-                metadata TEXT DEFAULT '{}',
-                source_name TEXT GENERATED ALWAYS AS (json_extract(provider_meta, '$.source')) STORED,
-                version INTEGER NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_conversations_provider
-            ON conversations(provider_name, provider_conversation_id);
-            CREATE INDEX IF NOT EXISTS idx_conversations_source_name
-            ON conversations(source_name) WHERE source_name IS NOT NULL;
-            CREATE TABLE IF NOT EXISTS messages (
-                message_id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL,
-                provider_message_id TEXT,
-                role TEXT,
-                text TEXT,
-                timestamp TEXT,
-                content_hash TEXT NOT NULL,
-                provider_meta TEXT,
-                version INTEGER NOT NULL,
-                parent_message_id TEXT,
-                branch_index INTEGER NOT NULL DEFAULT 0,
-                FOREIGN KEY (conversation_id)
-                    REFERENCES conversations(conversation_id) ON DELETE CASCADE
-            );
-            CREATE INDEX IF NOT EXISTS idx_messages_conversation
-            ON messages(conversation_id);
-            CREATE TABLE IF NOT EXISTS attachments (
-                attachment_id TEXT PRIMARY KEY,
-                mime_type TEXT,
-                size_bytes INTEGER,
-                path TEXT,
-                ref_count INTEGER NOT NULL DEFAULT 0,
-                provider_meta TEXT,
-                UNIQUE (attachment_id)
-            );
-            CREATE TABLE IF NOT EXISTS attachment_refs (
-                ref_id TEXT PRIMARY KEY,
-                attachment_id TEXT NOT NULL,
-                conversation_id TEXT NOT NULL,
-                message_id TEXT,
-                provider_meta TEXT,
-                FOREIGN KEY (attachment_id)
-                    REFERENCES attachments(attachment_id) ON DELETE CASCADE,
-                FOREIGN KEY (conversation_id)
-                    REFERENCES conversations(conversation_id) ON DELETE CASCADE,
-                FOREIGN KEY (message_id)
-                    REFERENCES messages(message_id) ON DELETE SET NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_attachment_refs_conversation
-            ON attachment_refs(conversation_id);
-            CREATE INDEX IF NOT EXISTS idx_attachment_refs_message
-            ON attachment_refs(message_id);
-            CREATE TABLE IF NOT EXISTS runs (
-                run_id TEXT PRIMARY KEY,
-                timestamp TEXT NOT NULL,
-                plan_snapshot TEXT,
-                counts_json TEXT,
-                drift_json TEXT,
-                indexed INTEGER,
-                duration_ms INTEGER
-            );
-            """
-        )
+        Uses the shared ``SCHEMA_DDL`` constant (single source of truth) so
+        the async backend never drifts behind the canonical DDL.
+        """
+        from polylogue.storage.backends.sqlite import SCHEMA_DDL, SCHEMA_VERSION
+
+        await conn.execute("PRAGMA foreign_keys = ON")
+        await conn.executescript(SCHEMA_DDL)
         await conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await conn.commit()
 
@@ -240,6 +167,9 @@ class AsyncSQLiteBackend:
             if limit:
                 query += " LIMIT ?"
                 params.append(limit)
+            elif offset:
+                # SQLite requires LIMIT before OFFSET; -1 means unlimited
+                query += " LIMIT -1"
 
             if offset:
                 query += " OFFSET ?"
@@ -310,8 +240,9 @@ class AsyncSQLiteBackend:
                     INSERT OR REPLACE INTO conversations (
                         conversation_id, provider_name, provider_conversation_id,
                         title, created_at, updated_at, content_hash,
-                        provider_meta, metadata, version
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        provider_meta, metadata, version,
+                        parent_conversation_id, branch_type, raw_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 (
                     conversation.conversation_id,
@@ -324,6 +255,9 @@ class AsyncSQLiteBackend:
                     json.dumps(conversation.provider_meta) if conversation.provider_meta else None,
                     json.dumps(conversation.metadata) if conversation.metadata else None,
                     conversation.version,
+                    conversation.parent_conversation_id,
+                    conversation.branch_type,
+                    conversation.raw_id,
                 ),
             )
 
@@ -340,6 +274,8 @@ class AsyncSQLiteBackend:
                         msg.content_hash,
                         json.dumps(msg.provider_meta) if msg.provider_meta else None,
                         msg.version or 1,
+                        msg.parent_message_id,
+                        msg.branch_index,
                     )
                     for msg in messages
                 ]
@@ -348,8 +284,9 @@ class AsyncSQLiteBackend:
                         INSERT OR REPLACE INTO messages (
                             message_id, conversation_id, provider_message_id,
                             role, text, timestamp, content_hash,
-                            provider_meta, version
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            provider_meta, version,
+                            parent_message_id, branch_index
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                     message_data,
                 )

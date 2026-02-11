@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+from pydantic import ValidationError
+
+from polylogue.lib.log import get_logger
+from polylogue.sources.providers.gemini import GeminiMessage
+
 from .base import ParsedAttachment, ParsedConversation, ParsedMessage, normalize_role
+
+_logger = get_logger(__name__)
 
 
 def extract_text_from_chunk(chunk: dict[str, object]) -> str | None:
@@ -102,30 +109,77 @@ def parse_chunked_prompt(provider: str, payload: dict[str, object], fallback_id:
             continue
         role = normalize_role(role_val)
         msg_id = str(chunk_obj.get("id") or f"chunk-{idx}")
-        # Preserve useful metadata (isThought for Gemini thinking traces, tokenCount, etc.)
-        meta: dict[str, object] = {"raw": chunk_obj}
-        if chunk_obj.get("isThought"):
-            meta["isThought"] = True
-        token_count = chunk_obj.get("tokenCount")
-        if token_count:
-            meta["tokenCount"] = token_count
 
-        # Extract structured content blocks for semantic detection
-        content_blocks: list[dict[str, object]] = []
-        if chunk_obj.get("isThought"):
-            # Gemini thinking block
-            content_blocks.append({
-                "type": "thinking",
-                "text": text,
-            })
-        else:
-            # Regular text content
-            content_blocks.append({
-                "type": "text",
-                "text": text,
-            })
-        if content_blocks:
+        # Try to parse via the rich GeminiMessage typed model for structured extraction
+        meta: dict[str, object] = {"raw": chunk_obj}
+        try:
+            gem = GeminiMessage.model_validate(chunk_obj)
+            # Extract rich metadata from the typed model
+            if gem.isThought:
+                meta["isThought"] = True
+            if gem.tokenCount is not None:
+                meta["tokenCount"] = gem.tokenCount
+            if gem.finishReason:
+                meta["finishReason"] = gem.finishReason
+            if gem.thinkingBudget is not None:
+                meta["thinkingBudget"] = gem.thinkingBudget
+            if gem.safetyRatings:
+                meta["safetyRatings"] = [r for r in gem.safetyRatings]
+            if gem.grounding:
+                meta["grounding"] = (
+                    gem.grounding.model_dump() if hasattr(gem.grounding, "model_dump") else gem.grounding
+                )
+            if gem.branchParent:
+                meta["branchParent"] = (
+                    gem.branchParent.model_dump() if hasattr(gem.branchParent, "model_dump") else gem.branchParent
+                )
+            if gem.branchChildren:
+                meta["branchChildren"] = gem.branchChildren
+            if gem.executableCode:
+                meta["executableCode"] = gem.executableCode
+            if gem.codeExecutionResult:
+                meta["codeExecutionResult"] = gem.codeExecutionResult
+            if gem.errorMessage:
+                meta["errorMessage"] = gem.errorMessage
+            if gem.isEdited:
+                meta["isEdited"] = True
+
+            # Extract structured content blocks via the typed model
+            content_blocks = [
+                {"type": cb.type.value if hasattr(cb.type, "value") else str(cb.type), "text": cb.text}
+                for cb in gem.extract_content_blocks()
+                if cb.text
+            ]
+            if not content_blocks:
+                # Fallback: basic block from text
+                content_blocks = [{"type": "thinking" if gem.isThought else "text", "text": text}]
             meta["content_blocks"] = content_blocks
+
+            # Extract reasoning traces if present
+            traces = gem.extract_reasoning_traces()
+            if traces:
+                meta["reasoning_traces"] = [
+                    {"text": t.text, "token_count": t.token_count, "provider": t.provider}
+                    for t in traces
+                ]
+        except (ValidationError, Exception):
+            # Fallback: basic extraction for non-conforming chunks
+            if chunk_obj.get("isThought"):
+                meta["isThought"] = True
+            token_count = chunk_obj.get("tokenCount")
+            if token_count:
+                meta["tokenCount"] = token_count
+            block_type = "thinking" if chunk_obj.get("isThought") else "text"
+            meta["content_blocks"] = [{"type": block_type, "text": text}]
+            exec_code = chunk_obj.get("executableCode")
+            if isinstance(exec_code, dict) and exec_code:
+                meta["executableCode"] = exec_code
+            exec_result = chunk_obj.get("codeExecutionResult")
+            if isinstance(exec_result, dict) and exec_result:
+                meta["codeExecutionResult"] = exec_result
+            error_msg = chunk_obj.get("errorMessage")
+            if isinstance(error_msg, str) and error_msg:
+                meta["errorMessage"] = error_msg
 
         messages.append(
             ParsedMessage(

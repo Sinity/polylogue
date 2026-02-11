@@ -270,15 +270,15 @@ class ConversationRepository:
         msg_to_conv = self._get_message_conversation_mapping(message_ids)
 
         conv_scores: dict[str, float] = {}
-        for msg_id, score in results:
+        for msg_id, distance in results:
             conv_id = msg_to_conv.get(msg_id)
             if conv_id:
-                conv_scores[conv_id] = max(conv_scores.get(conv_id, 0.0), score)
+                # Lower distance = more similar; keep the best (lowest) per conversation
+                conv_scores[conv_id] = min(conv_scores.get(conv_id, float("inf")), distance)
 
         ranked_ids = sorted(
             conv_scores.keys(),
             key=lambda x: conv_scores[x],
-            reverse=True,
         )[:limit]
 
         return self._get_many(ranked_ids)
