@@ -46,8 +46,23 @@ def _parse_json(raw: str | None, *, field: str = "", record_id: str = "") -> Any
         ) from exc
 
 
+def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
+    """Get a column value, returning default if the column doesn't exist.
+
+    Handles schema version differences where optional columns may be absent.
+    """
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return default
+
+
 def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
-    """Map a SQLite row to a ConversationRecord."""
+    """Map a SQLite row to a ConversationRecord.
+
+    Handles missing optional columns (parent_conversation_id, branch_type,
+    raw_id) for compatibility with older schema versions.
+    """
     return ConversationRecord(
         conversation_id=row["conversation_id"],
         provider_name=row["provider_name"],
@@ -59,14 +74,18 @@ def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
         provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
         metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
         version=row["version"],
-        parent_conversation_id=row["parent_conversation_id"],
-        branch_type=row["branch_type"],
-        raw_id=row["raw_id"],
+        parent_conversation_id=_row_get(row, "parent_conversation_id"),
+        branch_type=_row_get(row, "branch_type"),
+        raw_id=_row_get(row, "raw_id"),
     )
 
 
 def _row_to_message(row: sqlite3.Row) -> MessageRecord:
-    """Map a SQLite row to a MessageRecord."""
+    """Map a SQLite row to a MessageRecord.
+
+    Handles missing optional columns (parent_message_id, branch_index)
+    for compatibility with older schema versions.
+    """
     return MessageRecord(
         message_id=row["message_id"],
         conversation_id=row["conversation_id"],
@@ -77,8 +96,8 @@ def _row_to_message(row: sqlite3.Row) -> MessageRecord:
         content_hash=row["content_hash"],
         provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["message_id"]),
         version=row["version"],
-        parent_message_id=row["parent_message_id"],
-        branch_index=row["branch_index"] or 0,
+        parent_message_id=_row_get(row, "parent_message_id"),
+        branch_index=_row_get(row, "branch_index", 0) or 0,
     )
 
 
