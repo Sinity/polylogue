@@ -87,102 +87,42 @@ class ConversationFilter:
     # --- Filter methods (return self for chaining) ---
 
     def contains(self, text: str) -> ConversationFilter:
-        """Filter to conversations containing text (FTS search).
-
-        Args:
-            text: Text to search for in message content
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations containing text (FTS search)."""
         self._fts_terms.append(text)
         return self
 
     def no_contains(self, text: str) -> ConversationFilter:
-        """Exclude conversations containing text.
-
-        Args:
-            text: Text to exclude
-
-        Returns:
-            self for chaining
-        """
+        """Exclude conversations containing text."""
         self._negative_fts_terms.append(text)
         return self
 
     def provider(self, *names: str) -> ConversationFilter:
-        """Filter to conversations from specific providers.
-
-        Args:
-            *names: Provider names (e.g., "claude", "chatgpt")
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations from specific providers."""
         self._providers.extend(names)
         return self
 
     def no_provider(self, *names: str) -> ConversationFilter:
-        """Exclude conversations from specific providers.
-
-        Args:
-            *names: Provider names to exclude
-
-        Returns:
-            self for chaining
-        """
+        """Exclude conversations from specific providers."""
         self._excluded_providers.extend(names)
         return self
 
     def tag(self, *tags: str) -> ConversationFilter:
-        """Filter to conversations with specific tags.
-
-        Args:
-            *tags: Tag names to include
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations with specific tags."""
         self._tags.extend(tags)
         return self
 
     def no_tag(self, *tags: str) -> ConversationFilter:
-        """Exclude conversations with specific tags.
-
-        Args:
-            *tags: Tag names to exclude
-
-        Returns:
-            self for chaining
-        """
+        """Exclude conversations with specific tags."""
         self._excluded_tags.extend(tags)
         return self
 
     def has(self, *types: str) -> ConversationFilter:
-        """Filter to conversations containing specific content types.
-
-        Args:
-            *types: Content types like "thinking", "tools", "attachments", "summary"
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations containing specific content types."""
         self._has_types.extend(types)
         return self
 
     def since(self, date: str | datetime) -> ConversationFilter:
-        """Filter to conversations after date.
-
-        Args:
-            date: Date string (e.g., "2024-01-01", "yesterday", "last week")
-                  or datetime object
-
-        Returns:
-            self for chaining
-
-        Raises:
-            ValueError: If date string cannot be parsed
-        """
+        """Filter to conversations after date."""
         if isinstance(date, str):
             parsed = parse_date(date)
             if parsed is None:
@@ -194,18 +134,7 @@ class ConversationFilter:
         return self
 
     def until(self, date: str | datetime) -> ConversationFilter:
-        """Filter to conversations before date.
-
-        Args:
-            date: Date string (e.g., "2024-12-31", "today", "last month")
-                  or datetime object
-
-        Returns:
-            self for chaining
-
-        Raises:
-            ValueError: If date string cannot be parsed
-        """
+        """Filter to conversations before date."""
         if isinstance(date, str):
             parsed = parse_date(date)
             if parsed is None:
@@ -217,107 +146,47 @@ class ConversationFilter:
         return self
 
     def title(self, pattern: str) -> ConversationFilter:
-        """Filter to conversations with titles containing pattern.
-
-        Args:
-            pattern: Text pattern to match in title
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations with titles containing pattern."""
         self._title_pattern = pattern
         return self
 
     def id(self, prefix: str) -> ConversationFilter:
-        """Filter to conversations with ID starting with prefix.
-
-        Args:
-            prefix: ID prefix to match
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations with ID starting with prefix."""
         self._id_prefix = prefix
         return self
 
     def sort(self, field: SortField) -> ConversationFilter:
-        """Set sort field.
-
-        Args:
-            field: Sort field - "date", "tokens", "messages", "words", "longest", "random"
-
-        Returns:
-            self for chaining
-        """
+        """Set sort field."""
         self._sort_field = field
         return self
 
     def reverse(self) -> ConversationFilter:
-        """Reverse sort order (ascending instead of descending).
-
-        Returns:
-            self for chaining
-        """
+        """Reverse sort order (ascending instead of descending)."""
         self._sort_reverse = True
         return self
 
     def limit(self, n: int) -> ConversationFilter:
-        """Limit number of results.
-
-        Args:
-            n: Maximum number of conversations to return
-
-        Returns:
-            self for chaining
-        """
+        """Limit number of results."""
         self._limit_count = n
         return self
 
     def sample(self, n: int) -> ConversationFilter:
-        """Randomly sample n conversations from results.
-
-        Args:
-            n: Number of conversations to sample
-
-        Returns:
-            self for chaining
-        """
+        """Randomly sample n conversations from results."""
         self._sample_count = n
         return self
 
     def similar(self, text: str) -> ConversationFilter:
-        """Rank by semantic similarity to text (requires vector index).
-
-        Args:
-            text: Text to compare against
-
-        Returns:
-            self for chaining
-        """
+        """Rank by semantic similarity to text (requires vector index)."""
         self._similar_text = text
         return self
 
     def where(self, predicate: Callable[[Conversation], bool]) -> ConversationFilter:
-        """Add custom filter predicate.
-
-        Args:
-            predicate: Function that takes Conversation and returns bool
-
-        Returns:
-            self for chaining
-        """
+        """Add custom filter predicate."""
         self._predicates.append(predicate)
         return self
 
     def is_continuation(self, value: bool = True) -> ConversationFilter:
-        """Filter to continuation conversations (or exclude them if value=False).
-
-        Args:
-            value: If True, include only continuations. If False, exclude them.
-
-        Returns:
-            self for chaining
-        """
+        """Filter to continuation conversations (or exclude them if value=False)."""
         if value:
             self._predicates.append(lambda c: c.is_continuation)
         else:
@@ -325,14 +194,7 @@ class ConversationFilter:
         return self
 
     def is_sidechain(self, value: bool = True) -> ConversationFilter:
-        """Filter to sidechain conversations (or exclude them if value=False).
-
-        Args:
-            value: If True, include only sidechains. If False, exclude them.
-
-        Returns:
-            self for chaining
-        """
+        """Filter to sidechain conversations (or exclude them if value=False)."""
         if value:
             self._predicates.append(lambda c: c.is_sidechain)
         else:
@@ -340,14 +202,7 @@ class ConversationFilter:
         return self
 
     def is_root(self, value: bool = True) -> ConversationFilter:
-        """Filter to root conversations (those with no parent).
-
-        Args:
-            value: If True, include only roots. If False, exclude roots.
-
-        Returns:
-            self for chaining
-        """
+        """Filter to root conversations (those with no parent)."""
         if value:
             self._predicates.append(lambda c: c.is_root)
         else:
@@ -355,26 +210,12 @@ class ConversationFilter:
         return self
 
     def parent(self, conversation_id: str) -> ConversationFilter:
-        """Filter to conversations that are children of the given parent.
-
-        Args:
-            conversation_id: Parent conversation ID
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations that are children of the given parent."""
         self._predicates.append(lambda c: c.parent_id == conversation_id)
         return self
 
     def has_branches(self, value: bool = True) -> ConversationFilter:
-        """Filter to conversations that have branching messages.
-
-        Args:
-            value: If True, include only those with branches. If False, exclude them.
-
-        Returns:
-            self for chaining
-        """
+        """Filter to conversations that have branching messages."""
         if value:
             self._predicates.append(lambda c: any(m.branch_index > 0 for m in c.messages))
         else:

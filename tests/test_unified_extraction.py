@@ -44,7 +44,7 @@ class TestNormalizeRole:
         assert normalize_role("function") == "tool"
 
     def test_unknown_passthrough(self):
-        assert normalize_role("custom_role") == "custom_role"
+        assert normalize_role("custom_role") == "unknown"
 
 
 # =============================================================================

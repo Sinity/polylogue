@@ -85,8 +85,7 @@ def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
 
 def test_store_records_commits_within_lock(tmp_path: Path):
     """Verify store_records commits inside the lock scope."""
-    from polylogue.storage.store import store_records
-    from tests.helpers import make_conversation, make_message
+    from tests.helpers import make_conversation, make_message, store_records
 
     # Create a test database
     db_path = tmp_path / "test.db"
@@ -123,8 +122,7 @@ def test_store_records_commits_within_lock(tmp_path: Path):
 def test_concurrent_store_records_no_deadlock(workspace_env):
     """Verify concurrent store_records calls don't deadlock."""
     from polylogue.storage.backends.sqlite import open_connection
-    from polylogue.storage.store import store_records
-    from tests.helpers import make_conversation, make_message
+    from tests.helpers import make_conversation, make_message, store_records
 
     # Initialize the database using workspace_env fixture (sets up proper env vars)
     with open_connection(None):

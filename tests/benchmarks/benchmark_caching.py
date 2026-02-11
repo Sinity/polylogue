@@ -10,7 +10,8 @@ from polylogue.storage.db import open_connection
 from polylogue.storage.index import ensure_index
 from polylogue.storage.search import search_messages
 from polylogue.storage.search_cache import invalidate_search_cache
-from polylogue.storage.store import ConversationRecord, MessageRecord, upsert_conversation, upsert_message
+from polylogue.storage.store import ConversationRecord, MessageRecord
+from tests.helpers import upsert_conversation, upsert_message
 
 
 def create_test_database() -> Path:

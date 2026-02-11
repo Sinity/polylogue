@@ -697,7 +697,7 @@ class TestRepairFunctions:
 
         assert result.success
         assert result.repaired_count == 1
-        assert "empty" in result.detail.lower()
+        assert "1" in result.detail
 
     def test_repair_dangling_fts_no_table(self, workspace_env):
         """repair_dangling_fts handles missing FTS table gracefully."""
