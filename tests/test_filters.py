@@ -227,22 +227,22 @@ class TestConversationFilterMethods:
     """Consolidated tests for filter methods (provider, tag, text, title, id, limit)."""
 
     FILTER_METHOD_CASES = [
-        ("provider_single", lambda f: f.provider("claude"), 2, "Filter by single provider"),
-        ("provider_multi", lambda f: f.provider("claude", "chatgpt"), 3, "Filter by multiple providers"),
-        ("no_provider", lambda f: f.no_provider("claude"), 1, "Exclude specific provider"),
-        ("tag_python", lambda f: f.tag("python"), None, "Filter by tag (or empty)"),
-        ("no_tag", lambda f: f.no_tag("nonexistent-tag"), 3, "Exclude nonexistent tag"),
-        ("contains", lambda f: f.contains("Python"), None, "Filter contains text"),
-        ("no_contains", lambda f: f.no_contains("database"), None, "Exclude text"),
-        ("limit_1", lambda f: f.limit(1), 1, "Limit to 1 result"),
-        ("limit_0", lambda f: f.limit(0), 0, "Limit of zero"),
-        ("title_Python", lambda f: f.title("Python"), 1, "Filter by title"),
-        ("title_python_case", lambda f: f.title("python"), 1, "Title case insensitive"),
-        ("id_prefix", lambda f: f.id("claude"), 2, "Filter by ID prefix"),
+        ("provider_single", lambda f: f.provider("claude"), 2, "claude", "Filter by single provider"),
+        ("provider_multi", lambda f: f.provider("claude", "chatgpt"), 3, "multi", "Filter by multiple providers"),
+        ("no_provider", lambda f: f.no_provider("claude"), 1, "not_claude", "Exclude specific provider"),
+        ("tag_python", lambda f: f.tag("python"), None, None, "Filter by tag (or empty)"),
+        ("no_tag", lambda f: f.no_tag("nonexistent-tag"), 3, None, "Exclude nonexistent tag"),
+        ("contains", lambda f: f.contains("Python"), None, None, "Filter contains text"),
+        ("no_contains", lambda f: f.no_contains("database"), None, None, "Exclude text"),
+        ("limit_1", lambda f: f.limit(1), 1, None, "Limit to 1 result"),
+        ("limit_0", lambda f: f.limit(0), 0, None, "Limit of zero"),
+        ("title_Python", lambda f: f.title("Python"), 1, "title", "Filter by title"),
+        ("title_python_case", lambda f: f.title("python"), 1, "title", "Title case insensitive"),
+        ("id_prefix", lambda f: f.id("claude"), 2, "id_prefix", "Filter by ID prefix"),
     ]
 
-    @pytest.mark.parametrize("method_name,filter_fn,expected_count,description", FILTER_METHOD_CASES)
-    def test_filter_method(self, filter_repo, method_name, filter_fn, expected_count, description):
+    @pytest.mark.parametrize("method_name,filter_fn,expected_count,check_type,description", FILTER_METHOD_CASES)
+    def test_filter_method(self, filter_repo, method_name, filter_fn, expected_count, check_type, description):
         """Test individual filter methods."""
         result = filter_fn(ConversationFilter(filter_repo)).list()
 
@@ -252,15 +252,15 @@ class TestConversationFilterMethods:
             assert isinstance(result, list), f"Failed {description}: should return list"
 
         # Type-specific assertions
-        if "provider" in method_name:
-            if "no_" not in method_name:
-                provider = method_name.split("_")[1]
-                if provider != "multi":
-                    assert all(c.provider == provider for c in result)
-        elif "title" in method_name:
-            if result:
-                assert "Python" in result[0].display_title or "python" in result[0].display_title
-        elif "id" in method_name and result:
+        if check_type == "claude" and result:
+            assert all(c.provider == "claude" for c in result)
+        elif check_type == "not_claude" and result:
+            assert all(c.provider != "claude" for c in result)
+        elif check_type == "multi" and result:
+            assert all(c.provider in ("claude", "chatgpt") for c in result)
+        elif check_type == "title" and result:
+            assert "Python" in result[0].display_title or "python" in result[0].display_title
+        elif check_type == "id_prefix" and result:
             assert all(c.id.startswith("claude") for c in result)
 
 

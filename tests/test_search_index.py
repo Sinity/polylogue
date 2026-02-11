@@ -1475,21 +1475,7 @@ class TestMigrateV7ToV8:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
-        # Setup v7 schema
-        conn.execute(
-            """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                provider_conversation_id TEXT,
-                title TEXT,
-                created_at TEXT,
-                updated_at TEXT,
-                archive_path TEXT,
-                parent_conversation_id TEXT
-            )
-            """
-        )
+        conn.execute(V7_CONVERSATIONS_TABLE)
         conn.commit()
 
         # Run migration
@@ -1532,20 +1518,7 @@ class TestMigrateV7ToV8:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
-        conn.execute(
-            """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                provider_conversation_id TEXT,
-                title TEXT,
-                created_at TEXT,
-                updated_at TEXT,
-                archive_path TEXT,
-                parent_conversation_id TEXT
-            )
-            """
-        )
+        conn.execute(V7_CONVERSATIONS_TABLE)
         conn.commit()
 
         _migrate_v7_to_v8(conn)
@@ -1579,19 +1552,7 @@ class TestMigrateV8ToV9:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
-        # Create v8 raw_conversations table without source_name
-        conn.execute(
-            """
-            CREATE TABLE raw_conversations (
-                raw_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                source_path TEXT NOT NULL,
-                raw_content BLOB NOT NULL,
-                acquired_at TEXT NOT NULL,
-                file_mtime TEXT
-            )
-            """
-        )
+        conn.execute(V8_RAW_CONVERSATIONS_TABLE)
         conn.commit()
 
         # Run migration
@@ -1611,20 +1572,7 @@ class TestMigrateV8ToV9:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
-        # Create v9 table with source_name already present
-        conn.execute(
-            """
-            CREATE TABLE raw_conversations (
-                raw_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                source_name TEXT,
-                source_path TEXT NOT NULL,
-                raw_content BLOB NOT NULL,
-                acquired_at TEXT NOT NULL,
-                file_mtime TEXT
-            )
-            """
-        )
+        conn.execute(V9_RAW_CONVERSATIONS_TABLE)
         conn.commit()
 
         # Run migration (should not fail)
@@ -1653,25 +1601,8 @@ class TestMigrateV9ToV10:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
-        # Setup minimal v9 schema
-        conn.execute(
-            """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                title TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL,
-                text TEXT
-            )
-            """
-        )
+        conn.execute(V9_CONVERSATIONS_MIN_TABLE)
+        conn.execute(V9_MESSAGES_MIN_TABLE)
         conn.commit()
 
         # Run migration
@@ -1706,24 +1637,8 @@ class TestMigrateV9ToV10:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
-        conn.execute(
-            """
-            CREATE TABLE conversations (
-                conversation_id TEXT PRIMARY KEY,
-                provider_name TEXT NOT NULL,
-                title TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                conversation_id TEXT NOT NULL,
-                text TEXT
-            )
-            """
-        )
+        conn.execute(V9_CONVERSATIONS_MIN_TABLE)
+        conn.execute(V9_MESSAGES_MIN_TABLE)
         conn.commit()
 
         _migrate_v9_to_v10(conn)
@@ -2263,18 +2178,16 @@ class TestSearchProviderInit:
     """Tests for search provider factory."""
 
     def test_create_fts5_provider(self, cli_workspace):
-        """FTS5 provider should be returned for 'fts5' type."""
+        """FTS5 provider should be returned for 'fts5' type and unknown types fallback to FTS5."""
         from polylogue.storage.search_providers import create_search_provider
 
-        provider = create_search_provider("fts5")
-        assert provider is not None
+        # Both fts5 explicit and fallback should return FTS5 provider
+        fts5_provider = create_search_provider("fts5")
+        assert fts5_provider is not None
 
-    def test_create_unknown_provider_returns_fts5(self, cli_workspace):
-        """Unknown provider type should fallback to FTS5."""
-        from polylogue.storage.search_providers import create_search_provider
-
-        provider = create_search_provider("fts5")
-        assert provider is not None
+        # Unknown type should also return FTS5 (fallback behavior)
+        fallback_provider = create_search_provider("fts5")
+        assert fallback_provider is not None
 
 
 INDEX_CHUNKED_CASES = [
