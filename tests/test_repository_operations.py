@@ -553,7 +553,7 @@ class TestGetSummaryNotFound:
 
 
 class TestGetRootEdgeCases:
-    """Test get_root() with parent not found (orphaned trees)."""
+    """Test get_root() edge cases."""
 
     @pytest.mark.parametrize("conv_id,expected_root", [
         ("conv-1", "conv-1"),  # Root returns itself

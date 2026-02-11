@@ -1952,50 +1952,37 @@ class TestHybridSearchProvider:
 class TestAssetPath:
     """Tests for asset_path function."""
 
-    def test_asset_path_sanitizes_special_characters(self, tmp_path):
-        """asset_path sanitizes special characters in IDs."""
-        # ID with special characters gets hashed
-        special_id = "att-id/with@special#chars"
-        path = asset_path(tmp_path, special_id)
-
-        # Path should have 'att-' prefix followed by hash
-        assert "att-" in path.name
-
-    def test_asset_path_sanitizes_spaces_and_slashes(self, tmp_path):
-        """asset_path converts spaces and slashes to underscores."""
-        unsafe_id = "id with / spaces"
-        path = asset_path(tmp_path, unsafe_id)
-
-        # Should be sanitized
-        assert "/" not in path.name
-        assert "att-" in path.name  # Gets hashed due to unsafe chars
-
-    def test_asset_path_short_id(self, tmp_path):
-        """asset_path handles IDs with length < 2."""
-        short_id = "a"
-        path = asset_path(tmp_path, short_id)
-
-        # Prefix should be padded to length 2
-        parts = path.parts
-        # assets/xx/a (where xx is padded prefix)
-        assert "assets" in parts
-
-    def test_asset_path_clean_id(self, tmp_path):
-        """asset_path preserves clean alphanumeric IDs."""
-        clean_id = "attachment-123"
-        path = asset_path(tmp_path, clean_id)
-
-        # Clean ID should be preserved
-        assert "attachment-123" in str(path)
-
-    def test_asset_path_creates_correct_structure(self, tmp_path):
-        """asset_path creates archive_root/assets/prefix/id structure."""
-        asset_id = "test-asset-001"
+    @pytest.mark.parametrize("asset_id,verify_fn,description", [
+        (
+            "att-id/with@special#chars",
+            lambda path: "att-" in path.name,
+            "sanitizes_special_characters",
+        ),
+        (
+            "id with / spaces",
+            lambda path: "/" not in path.name and "att-" in path.name,
+            "sanitizes_spaces_and_slashes",
+        ),
+        (
+            "a",
+            lambda path: "assets" in path.parts,
+            "handles_short_id",
+        ),
+        (
+            "attachment-123",
+            lambda path: "attachment-123" in str(path),
+            "preserves_clean_id",
+        ),
+        (
+            "test-asset-001",
+            lambda path: "assets" in path.parts and path.parent.parent.name == "assets",
+            "creates_correct_structure",
+        ),
+    ])
+    def test_asset_path_behavior(self, tmp_path, asset_id, verify_fn, description):
+        """Parametrized test for asset_path with various inputs and expectations."""
         path = asset_path(tmp_path, asset_id)
-
-        # Should have structure: archive_root / assets / prefix / id
-        assert "assets" in path.parts
-        assert path.parent.parent.name == "assets"
+        assert verify_fn(path), f"Failed for {description}: {asset_id}"
 
 
 class TestWriteAsset:
