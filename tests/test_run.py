@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import subprocess
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, call, patch
@@ -20,6 +21,10 @@ from polylogue.cli.commands.run import (
     sources_command,
 )
 from polylogue.config import Source, get_config
+from polylogue.pipeline.enrichment import (
+    enrich_content_blocks,
+    enrich_message_metadata,
+)
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
 from polylogue.pipeline.services.ingestion import IngestionService
 from polylogue.sources.parsers.base import (
@@ -874,6 +879,418 @@ class TestExtractMessagesFromList:
             assert all(m.provider_message_id for m in messages)
 
 
+# --- merged from test_content_enrichment.py ---
+
+# =============================================================================
+# enrich_content_blocks Tests
+# =============================================================================
+
+
+class TestEnrichContentBlocks:
+	"""Tests for enrich_content_blocks function."""
+
+	def test_empty_list_returns_empty(self):
+		"""Empty input returns empty output."""
+		result = enrich_content_blocks([])
+		assert result == []
+
+	def test_plain_text_unchanged(self):
+		"""Plain text blocks pass through unchanged."""
+		blocks = [{"type": "text", "text": "Hello world"}]
+		result = enrich_content_blocks(blocks)
+
+		assert len(result) == 1
+		assert result[0]["type"] == "text"
+		assert result[0]["text"] == "Hello world"
+
+	def test_fenced_code_block_extracted(self):
+		"""Fenced code blocks are extracted as code type."""
+		blocks = [{"type": "text", "text": "```python\nprint('hello')\n```"}]
+		result = enrich_content_blocks(blocks)
+
+		assert len(result) == 1
+		assert result[0]["type"] == "code"
+		assert result[0]["language"] == "python"
+		assert "print('hello')" in result[0]["text"]
+
+	def test_fenced_code_with_declared_language(self):
+		"""Fenced blocks preserve declared language."""
+		blocks = [{"type": "text", "text": "```javascript\nconsole.log('hi')\n```"}]
+		result = enrich_content_blocks(blocks)
+
+		assert result[0]["type"] == "code"
+		assert result[0]["declared_language"] == "javascript"
+		assert result[0]["language"] == "javascript"
+
+	def test_fenced_code_without_language_detected(self):
+		"""Fenced blocks without language get detection."""
+		blocks = [{"type": "text", "text": "```\ndef foo():\n    pass\n```"}]
+		result = enrich_content_blocks(blocks)
+
+		assert result[0]["type"] == "code"
+		# Language might be detected or None
+		assert "text" in result[0]
+
+	def test_mixed_text_and_code(self):
+		"""Text with embedded code blocks is split."""
+		blocks = [{"type": "text", "text": "Here is code:\n```python\nx = 1\n```\nDone."}]
+		result = enrich_content_blocks(blocks)
+
+		# Should be split into multiple blocks
+		assert len(result) >= 2
+
+		# Find code block
+		code_blocks = [b for b in result if b["type"] == "code"]
+		assert len(code_blocks) == 1
+		assert code_blocks[0]["language"] == "python"
+
+	def test_existing_code_block_without_language(self):
+		"""Code blocks without language get detection."""
+		blocks = [{"type": "code", "text": "def hello():\n    print('hi')"}]
+		result = enrich_content_blocks(blocks)
+
+		assert len(result) == 1
+		assert result[0]["type"] == "code"
+		# Language should be detected (or None if detection fails)
+		assert "language" in result[0]
+
+	def test_existing_code_block_with_language(self):
+		"""Code blocks with language pass through unchanged."""
+		blocks = [{"type": "code", "text": "const x = 1", "language": "javascript"}]
+		result = enrich_content_blocks(blocks)
+
+		assert len(result) == 1
+		assert result[0]["type"] == "code"
+		assert result[0]["language"] == "javascript"
+		assert result[0]["text"] == "const x = 1"
+
+	def test_other_block_types_unchanged(self):
+		"""Non-text, non-code blocks pass through unchanged."""
+		blocks = [
+			{"type": "image", "url": "https://example.com/img.png"},
+			{"type": "file", "name": "doc.pdf"},
+		]
+		result = enrich_content_blocks(blocks)
+
+		assert len(result) == 2
+		assert result[0]["type"] == "image"
+		assert result[1]["type"] == "file"
+
+	def test_multiple_code_blocks(self):
+		"""Multiple fenced code blocks are all extracted."""
+		text = """First code:
+```python
+x = 1
+```
+Second code:
+```javascript
+let y = 2
+```
+Done."""
+		blocks = [{"type": "text", "text": text}]
+		result = enrich_content_blocks(blocks)
+
+		# Find code blocks
+		code_blocks = [b for b in result if b["type"] == "code"]
+		assert len(code_blocks) == 2
+
+		languages = {b["language"] for b in code_blocks}
+		assert "python" in languages
+		assert "javascript" in languages
+
+	def test_empty_fenced_block(self):
+		"""Empty fenced blocks are handled gracefully."""
+		blocks = [{"type": "text", "text": "```\n\n```"}]
+		result = enrich_content_blocks(blocks)
+
+		# Should handle without error
+		assert len(result) >= 0
+
+
+# =============================================================================
+# enrich_message_metadata Tests
+# =============================================================================
+
+
+class TestEnrichMessageMetadata:
+	"""Tests for enrich_message_metadata function."""
+
+	def test_none_metadata_returns_none(self):
+		"""None metadata returns None."""
+		result = enrich_message_metadata(None)
+		assert result is None
+
+	def test_empty_metadata_returns_empty(self):
+		"""Empty metadata returns empty."""
+		result = enrich_message_metadata({})
+		assert result == {}
+
+	def test_metadata_without_content_blocks_unchanged(self):
+		"""Metadata without content_blocks passes through."""
+		meta = {"model": "gpt-4", "temperature": 0.7}
+		result = enrich_message_metadata(meta)
+
+		assert result == meta
+
+	def test_metadata_with_content_blocks_enriched(self):
+		"""Metadata with content_blocks gets enriched."""
+		meta = {
+			"model": "gpt-4",
+			"content_blocks": [
+				{"type": "text", "text": "```python\nprint('hi')\n```"}
+			]
+		}
+		result = enrich_message_metadata(meta)
+
+		assert "content_blocks" in result
+		assert result["model"] == "gpt-4"  # Other fields preserved
+
+		# Check enrichment happened
+		enriched_blocks = result["content_blocks"]
+		assert len(enriched_blocks) >= 1
+		code_blocks = [b for b in enriched_blocks if b["type"] == "code"]
+		assert len(code_blocks) == 1
+
+	def test_original_metadata_not_mutated(self):
+		"""Original metadata dict is not mutated."""
+		meta = {
+			"model": "gpt-4",
+			"content_blocks": [{"type": "text", "text": "Hello"}]
+		}
+		original_blocks = meta["content_blocks"]
+
+		enrich_message_metadata(meta)
+
+		# Original should be unchanged
+		assert meta["content_blocks"] is original_blocks
+		assert meta["content_blocks"][0]["type"] == "text"
+
+
+# =============================================================================
+# Language Detection Integration Tests
+# =============================================================================
+
+
+class TestLanguageDetectionIntegration:
+	"""Tests for language detection within enrichment."""
+
+	@pytest.mark.parametrize("code,expected_lang", [
+		("def foo():\n    pass", "python"),
+		("function foo() { }", "javascript"),
+		("fn main() { }", "rust"),
+		("package main\nfunc main() { }", "go"),
+	])
+	def test_language_detection_accuracy(self, code: str, expected_lang: str):
+		"""Language detection works for common languages."""
+		blocks = [{"type": "code", "text": code}]
+		result = enrich_content_blocks(blocks)
+
+		# May detect correctly or return None
+		if result[0].get("language"):
+			# If detected, should match expected
+			assert result[0]["language"] == expected_lang
+
+	def test_language_alias_normalization(self):
+		"""Language aliases are normalized."""
+		blocks = [{"type": "text", "text": "```py\nprint('hi')\n```"}]
+		result = enrich_content_blocks(blocks)
+
+		# 'py' should be normalized to 'python'
+		code_blocks = [b for b in result if b["type"] == "code"]
+		if code_blocks and code_blocks[0].get("language"):
+			assert code_blocks[0]["language"] == "python"
+
+
+# --- merged from test_pipeline_concurrent.py ---
+
+
+def test_counts_lock_prevents_lost_updates():
+	"""Verify _counts_lock prevents lost updates under concurrent access."""
+	# Simulate the pattern from runner.py's _handle_future
+	counts = {"conversations": 0, "messages": 0}
+	lock = threading.Lock()
+	iterations = 1000
+	workers = 4
+
+	def increment_with_lock():
+		for _ in range(iterations):
+			with lock:
+				counts["conversations"] += 1
+				counts["messages"] += 1
+
+	with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+		futures = [executor.submit(increment_with_lock) for _ in range(workers)]
+		for f in futures:
+			f.result()
+
+	expected = iterations * workers
+	assert counts["conversations"] == expected, f"Lost updates: {expected - counts['conversations']}"
+	assert counts["messages"] == expected
+
+
+# NOTE: A test_counts_without_lock_may_lose_updates test was removed here.
+# Race condition demonstration tests are inherently non-deterministic -
+# they "may or may not" observe the race depending on thread scheduling.
+# This provides no value in CI and can cause flaky failures.
+# The fix is validated by test_counts_lock_prevents_lost_updates above.
+
+
+def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
+	"""Verify attachment_content_id returns values instead of mutating."""
+	from polylogue.pipeline.ids import attachment_content_id
+	from polylogue.sources import ParsedAttachment
+
+	# Create a test file
+	test_file = tmp_path / "test.txt"
+	test_file.write_text("test content")
+
+	# Create attachment with original values
+	original_path = str(test_file)
+	original_meta = {"key": "value"}
+	attachment = ParsedAttachment(
+		provider_attachment_id="att-1",
+		message_provider_id="msg-1",
+		name="test.txt",
+		mime_type="text/plain",
+		size_bytes=12,
+		path=original_path,  # Must set path for file to be processed
+		provider_meta=original_meta.copy(),
+	)
+
+	# Call the function
+	aid, returned_meta, returned_path = attachment_content_id(
+		"test-provider",
+		attachment,
+		archive_root=tmp_path,
+	)
+
+	# Verify it returns a tuple
+	assert isinstance(aid, str)
+	assert isinstance(returned_meta, dict)
+	assert returned_meta.get("sha256") is not None  # Hash should be added
+
+	# The original attachment should NOT be mutated
+	# (The function now returns values instead of mutating)
+	assert attachment.provider_meta == original_meta
+
+
+def test_store_records_commits_within_lock(tmp_path: Path):
+	"""Verify store_records commits inside the lock scope."""
+	from tests.helpers import make_conversation, make_message, store_records
+
+	# Create a test database
+	db_path = tmp_path / "test.db"
+
+	# Track commit calls to verify ordering
+	commit_order = []
+	lock_held = threading.Event()
+
+	original_commit = None
+
+	def tracking_commit(self):
+		commit_order.append(("commit", lock_held.is_set()))
+		if original_commit:
+			return original_commit(self)
+
+	# We need to verify that commit happens while _WRITE_LOCK is held
+	# This is tricky to test directly, but we can verify the code structure
+
+	# For now, just verify the function works and commits
+	from polylogue.storage.backends.sqlite import open_connection
+
+	with open_connection(db_path) as conn:
+		record = make_conversation("test:1", title="Test", content_hash="abc123")
+		messages = [make_message("test:1:msg1", "test:1", text="Hello")]
+		result = store_records(
+			conversation=record,
+			messages=messages,
+			attachments=[],
+			conn=conn,
+		)
+		assert result["conversations"] >= 0  # Either inserted or skipped
+
+
+def test_concurrent_store_records_no_deadlock(workspace_env):
+	"""Verify concurrent store_records calls don't deadlock."""
+	from polylogue.storage.backends.sqlite import open_connection
+	from tests.helpers import make_conversation, make_message, store_records
+
+	# Initialize the database using workspace_env fixture (sets up proper env vars)
+	with open_connection(None):
+		pass
+
+	def store_one(idx: int):
+		record = make_conversation(f"test:{idx}", title=f"Test {idx}", content_hash=f"hash{idx}")
+		messages = [make_message(f"test:{idx}:msg1", f"test:{idx}", text=f"Hello {idx}")]
+		return store_records(
+			conversation=record,
+			messages=messages,
+			attachments=[],
+		)
+
+	# Run concurrent stores
+	workers = 4
+	iterations = 10
+	with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+		futures = [executor.submit(store_one, i) for i in range(iterations)]
+		results = [f.result(timeout=30) for f in futures]  # 30s timeout to detect deadlock
+
+	# All should succeed
+	assert len(results) == iterations
+	for r in results:
+		assert r["conversations"] >= 0
+
+
+def test_set_add_is_thread_safe():
+	"""Verify that set.add() under lock is safe for processed_ids pattern."""
+	processed_ids: set[str] = set()
+	lock = threading.Lock()
+	iterations = 1000
+	workers = 4
+
+	def add_ids(worker_id: int):
+		for i in range(iterations):
+			with lock:
+				processed_ids.add(f"worker{worker_id}:item{i}")
+
+	with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+		futures = [executor.submit(add_ids, w) for w in range(workers)]
+		for f in futures:
+			f.result()
+
+	expected_count = iterations * workers
+	assert len(processed_ids) == expected_count
+
+
+def test_failing_future_does_not_abort_remaining():
+	"""A single failing future must not prevent remaining futures from being processed.
+
+	Regression test: before the fix, an exception in _handle_future() would break
+	the as_completed loop, silently abandoning all remaining unprocessed futures.
+	"""
+	results_processed = []
+
+	def _work(idx: int) -> int:
+		if idx == 2:
+			raise ValueError(f"Deliberate failure on item {idx}")
+		return idx
+
+	with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+		futures = {executor.submit(_work, i): f"item-{i}" for i in range(5)}
+		errors = 0
+
+		for fut in concurrent.futures.as_completed(futures):
+			try:
+				results_processed.append(fut.result())
+			except Exception:
+				errors += 1
+
+	# All 5 futures must have been visited (4 succeed, 1 fails)
+	assert len(results_processed) == 4, f"Expected 4 successes, got {len(results_processed)}"
+	assert errors == 1
+	assert set(results_processed) == {0, 1, 3, 4}
+
+
 # =============================================================================
 # INTEGRATION TESTS
 # =============================================================================
@@ -888,4 +1305,7 @@ __all__ = [
     "TestParsedAttachmentSanitization",
     "TestAttachmentFromMeta",
     "TestExtractMessagesFromList",
+    "TestEnrichContentBlocks",
+    "TestEnrichMessageMetadata",
+    "TestLanguageDetectionIntegration",
 ]
