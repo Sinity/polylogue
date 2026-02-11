@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.roles import normalize_role
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
@@ -111,13 +112,11 @@ class GeminiMessage(BaseModel):
     @property
     def role_normalized(self) -> str:
         """Normalize role to standard values."""
-        role = self.role.lower() if self.role else "unknown"
-        return {
-            "user": "user",
-            "model": "assistant",
-            "assistant": "assistant",
-            "system": "system",
-        }.get(role, "unknown")
+        role = self.role if self.role else "unknown"
+        try:
+            return normalize_role(role)
+        except ValueError:
+            return "unknown"
 
     @property
     def text_content(self) -> str:

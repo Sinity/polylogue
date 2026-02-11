@@ -11,13 +11,319 @@ Created during aggressive test consolidation to eliminate repeated patterns.
 
 from __future__ import annotations
 
+import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from polylogue.storage.backends.sqlite import open_connection
-from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, store_records
+from polylogue.storage.backends.sqlite import open_connection, connection_context
+from polylogue.storage.store import (
+    AttachmentRecord,
+    ConversationRecord,
+    MessageRecord,
+    RunRecord,
+    _json_or_none,
+    _make_ref_id,
+)
+
+# Thread-safety lock for writes (matches store.py pattern)
+_WRITE_LOCK = threading.Lock()
+
+# =============================================================================
+# STORE FUNCTIONS (moved from store.py for testing)
+# =============================================================================
+
+
+def _prune_attachment_refs(conn: sqlite3.Connection, conversation_id: str, keep_ref_ids: set[str]) -> None:
+    """Prune old attachment references for a conversation."""
+    query = "SELECT ref_id, attachment_id FROM attachment_refs WHERE conversation_id = ?"
+    params: list[str] = [conversation_id]
+    if keep_ref_ids:
+        placeholders = ", ".join("?" for _ in keep_ref_ids)
+        query += f" AND ref_id NOT IN ({placeholders})"
+        params.extend(sorted(keep_ref_ids))
+    rows = conn.execute(query, tuple(params)).fetchall()
+    if not rows:
+        return
+
+    ref_ids = [row["ref_id"] for row in rows]
+    attachments = {row["attachment_id"] for row in rows}
+
+    # Use SAVEPOINT for atomic multi-step ref_count operations
+    # If interrupted, all changes rollback to prevent incorrect ref_count
+    conn.execute("SAVEPOINT prune_attachment_refs")
+    try:
+        placeholders = ", ".join("?" for _ in ref_ids)
+        conn.execute(
+            f"DELETE FROM attachment_refs WHERE ref_id IN ({placeholders})",
+            tuple(ref_ids),
+        )
+
+        # Recalculate ref_count from actual attachment_refs table
+        # This is race-safe: instead of decrementing (which could race),
+        # we recompute from source of truth using COUNT(*)
+        # Single UPDATE query with IN clause instead of N individual queries
+        if attachments:
+            att_placeholders = ", ".join("?" for _ in attachments)
+            conn.execute(
+                f"""
+                UPDATE attachments
+                SET ref_count = (
+                    SELECT COUNT(*)
+                    FROM attachment_refs
+                    WHERE attachment_refs.attachment_id = attachments.attachment_id
+                )
+                WHERE attachment_id IN ({att_placeholders})
+                """,
+                tuple(attachments),
+            )
+        conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
+        conn.execute("RELEASE SAVEPOINT prune_attachment_refs")
+    except Exception:
+        conn.execute("ROLLBACK TO SAVEPOINT prune_attachment_refs")
+        raise
+
+
+def upsert_conversation(conn: sqlite3.Connection, record: ConversationRecord) -> bool:
+    """Upsert a conversation record."""
+    res = conn.execute(
+        """
+        INSERT INTO conversations (
+            conversation_id,
+            provider_name,
+            provider_conversation_id,
+            title,
+            created_at,
+            updated_at,
+            content_hash,
+            provider_meta,
+            version,
+            parent_conversation_id,
+            branch_type,
+            raw_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(conversation_id) DO UPDATE SET
+            title = excluded.title,
+            created_at = excluded.created_at,
+            updated_at = excluded.updated_at,
+            content_hash = excluded.content_hash,
+            provider_meta = excluded.provider_meta,
+            parent_conversation_id = excluded.parent_conversation_id,
+            branch_type = excluded.branch_type,
+            raw_id = COALESCE(excluded.raw_id, conversations.raw_id)
+        WHERE
+            content_hash != excluded.content_hash
+            OR IFNULL(title, '') != IFNULL(excluded.title, '')
+            OR IFNULL(created_at, '') != IFNULL(excluded.created_at, '')
+            OR IFNULL(updated_at, '') != IFNULL(excluded.updated_at, '')
+            OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
+            OR IFNULL(parent_conversation_id, '') != IFNULL(excluded.parent_conversation_id, '')
+            OR IFNULL(branch_type, '') != IFNULL(excluded.branch_type, '')
+            OR IFNULL(raw_id, '') != IFNULL(excluded.raw_id, '')
+        """,
+        (
+            record.conversation_id,
+            record.provider_name,
+            record.provider_conversation_id,
+            record.title,
+            record.created_at,
+            record.updated_at,
+            record.content_hash,
+            _json_or_none(record.provider_meta),
+            record.version,
+            record.parent_conversation_id,
+            record.branch_type,
+            record.raw_id,
+        ),
+    )
+    return bool(res.rowcount > 0)
+
+
+def upsert_message(conn: sqlite3.Connection, record: MessageRecord) -> bool:
+    """Upsert a message record."""
+    res = conn.execute(
+        """
+        INSERT INTO messages (
+            message_id,
+            conversation_id,
+            provider_message_id,
+            role,
+            text,
+            timestamp,
+            content_hash,
+            provider_meta,
+            version,
+            parent_message_id,
+            branch_index
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(message_id) DO UPDATE SET
+            role = excluded.role,
+            text = excluded.text,
+            timestamp = excluded.timestamp,
+            content_hash = excluded.content_hash,
+            provider_meta = excluded.provider_meta,
+            parent_message_id = excluded.parent_message_id,
+            branch_index = excluded.branch_index
+        WHERE
+            content_hash != excluded.content_hash
+            OR IFNULL(role, '') != IFNULL(excluded.role, '')
+            OR IFNULL(text, '') != IFNULL(excluded.text, '')
+            OR IFNULL(timestamp, '') != IFNULL(excluded.timestamp, '')
+            OR IFNULL(provider_meta, '') != IFNULL(excluded.provider_meta, '')
+            OR IFNULL(parent_message_id, '') != IFNULL(excluded.parent_message_id, '')
+            OR branch_index != excluded.branch_index
+        """,
+        (
+            record.message_id,
+            record.conversation_id,
+            record.provider_message_id,
+            record.role,
+            record.text,
+            record.timestamp,
+            record.content_hash,
+            _json_or_none(record.provider_meta),
+            record.version,
+            record.parent_message_id,
+            record.branch_index,
+        ),
+    )
+    return bool(res.rowcount > 0)
+
+
+def upsert_attachment(conn: sqlite3.Connection, record: AttachmentRecord) -> bool:
+    """Upsert an attachment record."""
+    # Ensure attachment metadata exists (idempotent, doesn't touch ref_count)
+    conn.execute(
+        """
+        INSERT INTO attachments (
+            attachment_id,
+            mime_type,
+            size_bytes,
+            path,
+            ref_count,
+            provider_meta
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(attachment_id) DO UPDATE SET
+            mime_type = COALESCE(excluded.mime_type, attachments.mime_type),
+            size_bytes = COALESCE(excluded.size_bytes, attachments.size_bytes),
+            path = COALESCE(excluded.path, attachments.path),
+            provider_meta = COALESCE(excluded.provider_meta, attachments.provider_meta)
+        """,
+        (
+            record.attachment_id,
+            record.mime_type,
+            record.size_bytes,
+            record.path,
+            0,
+            _json_or_none(record.provider_meta),
+        ),
+    )
+
+    # Atomically insert ref and increment count in a single statement
+    # This prevents race conditions where multiple threads could increment simultaneously
+    ref_id = _make_ref_id(record.attachment_id, record.conversation_id, record.message_id)
+    res = conn.execute(
+        """
+        INSERT OR IGNORE INTO attachment_refs (
+            ref_id,
+            attachment_id,
+            conversation_id,
+            message_id,
+            provider_meta
+        ) VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            ref_id,
+            record.attachment_id,
+            record.conversation_id,
+            record.message_id,
+            _json_or_none(record.provider_meta),
+        ),
+    )
+
+    # Only increment if we actually inserted a new ref
+    # Use atomic increment to avoid read-modify-write race
+    if res.rowcount > 0:
+        conn.execute(
+            "UPDATE attachments SET ref_count = ref_count + 1 WHERE attachment_id = ?",
+            (record.attachment_id,),
+        )
+        return True
+    return False
+
+
+def record_run(conn: sqlite3.Connection, record: RunRecord) -> None:
+    """Record a pipeline run."""
+    conn.execute(
+        """
+        INSERT INTO runs (
+            run_id,
+            timestamp,
+            plan_snapshot,
+            counts_json,
+            drift_json,
+            indexed,
+            duration_ms
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record.run_id,
+            record.timestamp,
+            _json_or_none(record.plan_snapshot),
+            _json_or_none(record.counts),
+            _json_or_none(record.drift),
+            int(record.indexed) if record.indexed is not None else None,
+            record.duration_ms,
+        ),
+    )
+
+
+def store_records(
+    *,
+    conversation: ConversationRecord,
+    messages: list[MessageRecord],
+    attachments: list[AttachmentRecord],
+    conn: sqlite3.Connection | None = None,
+) -> dict[str, int]:
+    """Store conversation records (conversation, messages, attachments).
+
+    Thread-safe with write lock. Returns count of inserted/updated records.
+    """
+    counts = {
+        "conversations": 0,
+        "messages": 0,
+        "attachments": 0,
+        "skipped_conversations": 0,
+        "skipped_messages": 0,
+        "skipped_attachments": 0,
+    }
+
+    with connection_context(conn) as db_conn, _WRITE_LOCK:
+        if upsert_conversation(db_conn, conversation):
+            counts["conversations"] += 1
+        else:
+            counts["skipped_conversations"] += 1
+        for message in messages:
+            if upsert_message(db_conn, message):
+                counts["messages"] += 1
+            else:
+                counts["skipped_messages"] += 1
+        seen_ref_ids: set[str] = set()
+        for attachment in attachments:
+            ref_id = _make_ref_id(attachment.attachment_id, attachment.conversation_id, attachment.message_id)
+            seen_ref_ids.add(ref_id)
+            if upsert_attachment(db_conn, attachment):
+                counts["attachments"] += 1
+            else:
+                counts["skipped_attachments"] += 1
+        _prune_attachment_refs(db_conn, conversation.conversation_id, seen_ref_ids)
+        # Commit inside lock to ensure atomic transaction boundaries
+        db_conn.commit()
+
+    return counts
+
 
 # =============================================================================
 # DATABASE SETUP UTILITIES
@@ -39,48 +345,6 @@ def db_setup(workspace_env) -> Path:
 # =============================================================================
 # MESSAGE/CONVERSATION BUILDERS (Fluent API)
 # =============================================================================
-
-
-class MessageBuilder:
-    """Fluent builder for MessageRecord.
-
-    Example:
-        msg = (MessageBuilder("m1", "conv1")
-               .role("user")
-               .text("Hello!")
-               .timestamp("2024-01-01T10:00:00Z")
-               .build())
-    """
-
-    def __init__(self, message_id: str, conversation_id: str):
-        self.data = {
-            "message_id": message_id,
-            "conversation_id": conversation_id,
-            "role": "user",
-            "text": "Default text",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "content_hash": uuid4().hex[:16],
-            "provider_meta": None,
-        }
-
-    def role(self, role: str) -> MessageBuilder:
-        self.data["role"] = role
-        return self
-
-    def text(self, text: str) -> MessageBuilder:
-        self.data["text"] = text
-        return self
-
-    def timestamp(self, timestamp: str | None) -> MessageBuilder:
-        self.data["timestamp"] = timestamp
-        return self
-
-    def meta(self, meta: dict | None) -> MessageBuilder:
-        self.data["provider_meta"] = meta
-        return self
-
-    def build(self) -> MessageRecord:
-        return MessageRecord(**self.data)
 
 
 class ConversationBuilder:
@@ -515,25 +779,6 @@ def make_claude_chat_message(
     return msg
 
 
-def make_claude_code_message(
-    msg_type: str,
-    text: str,
-    **kwargs,
-) -> dict[str, Any]:
-    """Generate Claude Code message for importer tests.
-
-    Usage:
-        msg = make_claude_code_message("user_message", "Question")
-        msg = make_claude_code_message("tool_use", '{"name": "read"}')
-    """
-    msg = {
-        "type": msg_type,
-        "text": text,
-    }
-    msg.update(kwargs)
-    return msg
-
-
 # =============================================================================
 # FILE DATA BUILDERS (For creating test inbox files)
 # =============================================================================
@@ -671,28 +916,6 @@ class InboxBuilder:
 
         fname = filename or f"claude_{conv_id}.json"
         return self.add_json_file(fname, payload)
-
-    def add_claude_code_jsonl(
-        self,
-        session_id: str,
-        messages: list[dict] | None = None,
-        filename: str | None = None,
-    ) -> InboxBuilder:
-        """Add a Claude Code JSONL session file.
-
-        Args:
-            session_id: Session ID for filename
-            messages: List of message dicts (use make_claude_code_message())
-            filename: Custom filename
-        """
-        if messages is None:
-            messages = [
-                make_claude_code_message("user", "What is 2+2?"),
-                make_claude_code_message("assistant", "4"),
-            ]
-
-        fname = filename or f"{session_id}.jsonl"
-        return self.add_jsonl_file(fname, messages)
 
     def build(self) -> Path:
         """Write all files and return the inbox path."""
@@ -943,124 +1166,5 @@ class GenericConversationBuilder:
         return path
 
 
-def write_test_inbox(
-    base_path: Path,
-    conversations: list[dict[str, Any]] | None = None,
-    format: str = "codex",
-) -> Path:
-    """Quick helper to write a test inbox with default conversations.
-
-    Args:
-        base_path: Directory to create inbox in
-        conversations: List of conversation payloads (auto-generated if None)
-        format: "codex", "chatgpt", or "claude"
-
-    Returns:
-        Path to the inbox directory
-    """
-    import json
-
-    inbox = base_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-
-    if conversations is None:
-        if format == "codex":
-            conversations = [
-                GenericConversationBuilder("conv1")
-                .title("Test")
-                .add_user("Hello")
-                .add_assistant("Hi!")
-                .build()
-            ]
-        elif format == "chatgpt":
-            conversations = [
-                ChatGPTExportBuilder("conv1")
-                .title("Test")
-                .add_node("user", "Hello")
-                .add_node("assistant", "Hi!")
-                .build()
-            ]
-        elif format == "claude":
-            conversations = [
-                ClaudeExportBuilder("conv1")
-                .name("Test")
-                .add_human("Hello")
-                .add_assistant("Hi!")
-                .build()
-            ]
-
-    for i, conv in enumerate(conversations):
-        filename = conv.get("id", f"conv{i+1}") + ".json"
-        (inbox / filename).write_text(json.dumps(conv), encoding="utf-8")
-
-    return inbox
 
 
-# =============================================================================
-# COVERAGE VERIFICATION HELPERS
-# =============================================================================
-
-
-def parametrized_case_count(test_cases: list) -> dict[str, int]:
-    """Count parametrized test cases by description pattern.
-
-    Usage:
-        CASES = [(input1, expected1, "desc1"), (input2, expected2, "desc2")]
-        counts = parametrized_case_count(CASES)
-        # Returns: {"total": 2, "desc1": 1, "desc2": 1}
-    """
-    counts = {"total": len(test_cases)}
-
-    for case in test_cases:
-        if len(case) >= 3:
-            desc = case[-1]  # Description is usually last element
-            counts[desc] = counts.get(desc, 0) + 1
-
-    return counts
-
-
-def verify_coverage(
-    old_test_names: list[str],
-    new_test_cases: list[tuple],
-    mapping: dict[str, str] | None = None,
-) -> dict[str, Any]:
-    """Verify parametrized tests cover all original tests.
-
-    Usage:
-        old = ["test_foo_basic", "test_foo_with_arg", "test_foo_empty"]
-        new = [(1, "basic"), (2, "with arg"), (None, "empty")]
-        mapping = {"test_foo_basic": "basic", "test_foo_with_arg": "with arg"}
-
-        result = verify_coverage(old, new, mapping)
-        # Returns: {"covered": 3, "missing": [], "extra": []}
-    """
-    old_set = set(old_test_names)
-    new_descriptions = {case[-1] for case in new_test_cases if len(case) >= 3}
-
-    if mapping:
-        # Map old test names to expected descriptions
-        covered = set()
-        for old_name in old_set:
-            expected_desc = mapping.get(old_name)
-            if expected_desc and expected_desc in new_descriptions:
-                covered.add(old_name)
-
-        missing = old_set - covered
-
-        # Check for extra cases not in mapping
-        expected_descriptions = set(mapping.values())
-        extra = new_descriptions - expected_descriptions
-    else:
-        # Without mapping, just report counts
-        covered = set()
-        missing = old_set
-        extra = new_descriptions
-
-    return {
-        "old_count": len(old_set),
-        "new_count": len(new_test_cases),
-        "covered": covered,
-        "missing": list(missing),
-        "extra": list(extra),
-        "coverage_percent": (len(covered) / len(old_set) * 100) if old_set else 100,
-    }

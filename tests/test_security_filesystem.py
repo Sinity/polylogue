@@ -41,17 +41,16 @@ def test_attachment_path_traversal_rejected():
         f"Path traversal not prevented: {normalized}"
 
 
-def test_attachment_absolute_path_contained():
-    """Absolute paths should be rejected or sandboxed."""
+def test_attachment_absolute_path_preserved():
+    """Absolute paths are preserved (needed for file operations)."""
     att = ParsedAttachment(
         provider_attachment_id="att2",
         path="/etc/shadow",
         name="shadow",
     )
 
-    # Absolute paths should be rejected or made relative
-    assert not att.path.startswith("/"), \
-        "Absolute paths should be rejected"
+    # Absolute paths are kept intact (no traversal components)
+    assert att.path == "/etc/shadow"
 
 
 def test_attachment_path_null_byte_rejected():

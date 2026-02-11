@@ -120,7 +120,7 @@ def detect_provider(payload: Any, path: Path) -> str | None:
 
     if "chatgpt" in name or "chatgpt" in path_str:
         return "chatgpt"
-    if "claude-code" in name or "claude_code" in name or "claude-code" in path_str:
+    if "claude-code" in name or "claude_code" in name or "claude-code" in path_str or "claude_code" in path_str:
         return "claude-code"
     if "claude" in name or "/claude/" in path_str:
         return "claude"
@@ -258,9 +258,12 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
             if found_any:
                 return
         except ijson.common.JSONError:
-            pass  # Expected, try next strategy
+            if found_any:
+                return  # Already yielded items — don't retry to avoid duplicates
         except Exception as exc:
             LOGGER.debug("Strategy 1 (ijson items) failed for %s: %s", path_name, exc)
+            if found_any:
+                return  # Already yielded items — don't retry to avoid duplicates
 
         handle.seek(0)
         # Strategy 2: Try streaming conversations list
@@ -273,9 +276,12 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
             if found_any:
                 return
         except ijson.common.JSONError:
-            pass  # Expected, try next strategy
+            if found_any:
+                return  # Already yielded items — don't retry to avoid duplicates
         except Exception as exc:
             LOGGER.debug("Strategy 2 (ijson conversations.item) failed for %s: %s", path_name, exc)
+            if found_any:
+                return  # Already yielded items — don't retry to avoid duplicates
 
         handle.seek(0)
     # Strategy 3: Load full object (fallback for single dicts or unknown structures)
@@ -371,6 +377,12 @@ def iter_source_conversations(
 
                         name = info.filename
                         lower_name = name.lower()
+
+                        # Filter Claude AI ZIP: only process conversations.json
+                        if provider_hint in ("claude", "claude-ai"):
+                            basename = lower_name.split("/")[-1]
+                            if basename not in ("conversations.json",):
+                                continue
 
                         # ZIP bomb protection
                         if info.compress_size > 0:
