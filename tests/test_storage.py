@@ -18,6 +18,7 @@ This file contains tests for:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -1771,6 +1772,104 @@ class TestConversationOperations:
         # This previously generated invalid SQL: ... ORDER BY ... OFFSET ? (no LIMIT)
         result = backend.list_conversations(offset=2)
         assert len(result) == 3  # 5 total - 2 skipped = 3
+        backend.close()
+
+    def test_title_contains_escapes_percent_wildcard(self, tmp_path: Path) -> None:
+        """LIKE % wildcard should be escaped in title search."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        def make_hash(s: str) -> str:
+            """Create a 16-char content hash."""
+            return hashlib.sha256(s.encode()).hexdigest()[:16]
+
+        # Create conversations with titles containing % and x
+        conv1 = ConversationRecord(
+            conversation_id="conv-1",
+            provider_name="test",
+            provider_conversation_id="prov-1",
+            title="100% done",
+            created_at="2025-01-01",
+            updated_at="2025-01-01",
+            content_hash=make_hash("100% done"),
+        )
+        conv2 = ConversationRecord(
+            conversation_id="conv-2",
+            provider_name="test",
+            provider_conversation_id="prov-2",
+            title="100x done",
+            created_at="2025-01-02",
+            updated_at="2025-01-02",
+            content_hash=make_hash("100x done"),
+        )
+        backend.save_conversation(conv1)
+        backend.save_conversation(conv2)
+
+        # Search for "100%"
+        results = backend.list_conversations(title_contains="100%")
+        assert len(results) == 1
+        assert results[0].title == "100% done"
+        backend.close()
+
+    def test_title_contains_escapes_underscore_wildcard(self, tmp_path: Path) -> None:
+        """LIKE _ wildcard should be escaped in title search."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        def make_hash(s: str) -> str:
+            """Create a 16-char content hash."""
+            return hashlib.sha256(s.encode()).hexdigest()[:16]
+
+        # Create conversations
+        conv1 = ConversationRecord(
+            conversation_id="conv-1",
+            provider_name="test",
+            provider_conversation_id="prov-1",
+            title="100_ done",
+            created_at="2025-01-01",
+            updated_at="2025-01-01",
+            content_hash=make_hash("100_ done"),
+        )
+        conv2 = ConversationRecord(
+            conversation_id="conv-2",
+            provider_name="test",
+            provider_conversation_id="prov-2",
+            title="100x done",
+            created_at="2025-01-02",
+            updated_at="2025-01-02",
+            content_hash=make_hash("100x done"),
+        )
+        backend.save_conversation(conv1)
+        backend.save_conversation(conv2)
+
+        # Search for "100_"
+        results = backend.list_conversations(title_contains="100_")
+        assert len(results) == 1
+        assert results[0].title == "100_ done"
+        backend.close()
+
+    def test_title_contains_escapes_backslash(self, tmp_path: Path) -> None:
+        """Backslashes should be escaped in title search."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+
+        def make_hash(s: str) -> str:
+            """Create a 16-char content hash."""
+            return hashlib.sha256(s.encode()).hexdigest()[:16]
+
+        # Create a conversation with backslash
+        conv = ConversationRecord(
+            conversation_id="conv-1",
+            provider_name="test",
+            provider_conversation_id="prov-1",
+            title="C:\\Users\\test",
+            created_at="2025-01-01",
+            updated_at="2025-01-01",
+            content_hash=make_hash("C:\\Users\\test"),
+        )
+        backend.save_conversation(conv)
+
+        # Search for "C:\Users\test" - should find it
+        results = backend.list_conversations(title_contains="C:\\Users\\test")
+        assert len(results) == 1
+        assert "C:" in results[0].title
         backend.close()
 
 
