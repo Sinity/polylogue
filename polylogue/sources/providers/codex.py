@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
+from polylogue.lib.roles import normalize_role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
@@ -158,11 +159,10 @@ class CodexRecord(BaseModel):
     def to_meta(self) -> MessageMeta:
         """Convert to harmonized MessageMeta."""
         role = self.effective_role
-        role_normalized = {
-            "user": "user",
-            "assistant": "assistant",
-            "system": "system",
-        }.get(role, "unknown")
+        try:
+            role_normalized = normalize_role(role)
+        except ValueError:
+            role_normalized = "unknown"
 
         return MessageMeta(
             id=self.id,

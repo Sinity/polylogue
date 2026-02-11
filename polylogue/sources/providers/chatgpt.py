@@ -12,6 +12,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from polylogue.lib.roles import normalize_role
 from polylogue.lib.timestamps import parse_timestamp
 from polylogue.lib.viewports import (
     ContentBlock,
@@ -120,14 +121,11 @@ class ChatGPTMessage(BaseModel):
     @property
     def role_normalized(self) -> str:
         """Normalize role to standard values."""
-        role = self.author.role.lower() if self.author.role else "unknown"
-        mapping = {
-            "user": "user",
-            "assistant": "assistant",
-            "system": "system",
-            "tool": "tool",
-        }
-        return mapping.get(role, "unknown")
+        role = self.author.role if self.author.role else "unknown"
+        try:
+            return normalize_role(role)
+        except ValueError:
+            return "unknown"
 
     def to_meta(self) -> MessageMeta:
         """Convert to harmonized MessageMeta."""
