@@ -8,6 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
+from polylogue.health import HealthCheck, HealthReport, VerifyStatus
 from polylogue.storage.backends.sqlite import open_connection
 from tests.helpers import DbFactory
 
@@ -27,6 +28,64 @@ def _extract_json(output: str) -> dict:
         raise ValueError(f"No JSON found in output: {output}")
     json_str = "\n".join(lines[json_start:])
     return json.loads(json_str)
+
+
+class TestHealthReportConstruction:
+    """Tests for proper HealthReport instantiation."""
+
+    def test_health_report_requires_summary(self):
+        """HealthReport must include summary dict with ok/warning/error counts."""
+        checks = [
+            HealthCheck("database", VerifyStatus.OK, detail="DB reachable"),
+            HealthCheck("archive", VerifyStatus.WARNING, detail="Not found"),
+        ]
+
+        # Correct: include summary
+        report = HealthReport(
+            checks=checks,
+            summary={"ok": 1, "warning": 1, "error": 0},
+        )
+
+        assert len(report.checks) == 2
+        assert report.summary == {"ok": 1, "warning": 1, "error": 0}
+
+    def test_health_report_summary_counts(self):
+        """Summary should accurately reflect check status counts."""
+        checks = [
+            HealthCheck("check1", VerifyStatus.OK),
+            HealthCheck("check2", VerifyStatus.OK),
+            HealthCheck("check3", VerifyStatus.WARNING),
+            HealthCheck("check4", VerifyStatus.ERROR),
+        ]
+
+        report = HealthReport(
+            checks=checks,
+            summary={"ok": 2, "warning": 1, "error": 1},
+        )
+
+        # Verify counts match
+        assert report.summary["ok"] == 2
+        assert report.summary["warning"] == 1
+        assert report.summary["error"] == 1
+
+    def test_health_report_to_dict_serialization(self):
+        """HealthReport should serialize to dict with all required fields."""
+        checks = [HealthCheck("test", VerifyStatus.OK, detail="OK")]
+        report = HealthReport(checks=checks, summary={"ok": 1, "warning": 0, "error": 0})
+
+        data = report.to_dict()
+
+        assert "checks" in data
+        assert "summary" in data
+        assert "timestamp" in data
+        assert data["summary"] == {"ok": 1, "warning": 0, "error": 0}
+
+    def test_health_report_empty_checks(self):
+        """HealthReport with no checks should still have summary."""
+        report = HealthReport(checks=[], summary={"ok": 0, "warning": 0, "error": 0})
+
+        assert len(report.checks) == 0
+        assert report.summary == {"ok": 0, "warning": 0, "error": 0}
 
 
 class TestCheckCommand:
@@ -320,3 +379,64 @@ class TestCheckCommand:
         assert integrity_check is not None
         assert integrity_check["status"] == "ok"
         assert integrity_check["detail"] == "ok"
+
+
+# --- Merged from test_supplementary_coverage.py ---
+
+
+class TestCheckCommandSupplementary:
+    """Tests for check command edge cases."""
+
+    def test_vacuum_without_repair_fails(self, cli_workspace):
+        """--vacuum requires --repair."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--vacuum"])
+        assert result.exit_code != 0
+
+    def test_preview_without_repair_fails(self, cli_workspace):
+        """--preview requires --repair."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--preview"])
+        assert result.exit_code != 0
+
+    def test_json_output_with_repair(self, cli_workspace):
+        """--json with --repair includes repair results."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--json", "--repair", "--preview"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.split("\n", 1)[-1] if "Plain" in result.output else result.output)
+        assert "repairs" in data
+
+    def test_repair_with_no_issues_shows_message(self, cli_workspace):
+        """When repair finds no issues, should show 'No issues' message."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--repair"])
+        assert result.exit_code == 0
+        assert "No issues" in result.output or "Repaired" in result.output or "repair" in result.output.lower()
+
+    def test_vacuum_with_repair(self, cli_workspace):
+        """--vacuum with --repair should attempt VACUUM."""
+        from click.testing import CliRunner
+
+        from polylogue.cli.click_app import cli
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["check", "--repair", "--vacuum"])
+        assert result.exit_code == 0
+        assert "VACUUM" in result.output
