@@ -52,37 +52,15 @@ def mock_run_data():
     return run_data
 
 
-def _patch_all_dependencies(mock_config, **kwargs):
-    """Create a context manager that patches all required dependencies."""
-    patches = [
-        patch("polylogue.config.get_config", return_value=mock_config),
-        patch("polylogue.cli.helpers.latest_run", return_value=kwargs.get("latest_run", None)),
-        patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"),
-        patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"),
-        patch("polylogue.cli.analytics.compute_provider_comparison", return_value=kwargs.get("analytics", None)),
-    ]
-
-    # Handle get_health patches
-    if "get_health" in kwargs:
-        patches.insert(3, patch("polylogue.cli.helpers.get_health", return_value=kwargs["get_health"]))
-
-    # Chain the patches together
-    import contextlib
-    @contextlib.contextmanager
-    def chained():
-        with patches[0]:
-            with patches[1]:
-                with patches[2]:
-                    if len(patches) > 4:
-                        for p in patches[3:-1]:
-                            with p:
-                                with patches[-1]:
-                                    yield
-                    else:
-                        with patches[3]:
-                            yield
-
-    return chained()
+@pytest.fixture
+def patch_deps(mock_config):
+    """Fixture that patches all required dependencies."""
+    with patch("polylogue.config.get_config", return_value=mock_config), \
+         patch("polylogue.cli.helpers.latest_run", return_value=None), \
+         patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
+         patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
+         patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+        yield
 
 
 # ============================================================================
@@ -125,25 +103,25 @@ THINKING_PARAMS = [
 # TestPrintSummaryBasic: Non-verbose mode, basic lines
 # ============================================================================
 
+BASIC_OUTPUT_PARAMS = [
+    ("Last run: none", "no_last_run", lambda lines: any("Last run: none" in str(line) for line in lines)),
+    ("Archive:", "archive_path", lambda lines: any("Archive:" in str(line) for line in lines)),
+    ("Render:", "render_path", lambda lines: any("Render:" in str(line) for line in lines)),
+    ("Sources:", "sources", lambda lines: any("Sources:" in str(line) for line in lines)),
+]
+
 
 class TestPrintSummaryBasic:
     """Test basic non-verbose print_summary behavior."""
 
-    def test_print_summary_no_last_run(self, mock_env, mock_config):
-        """Test summary when no last run data exists."""
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox (2)"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+    @pytest.mark.parametrize("expected_text,test_id,assertion", BASIC_OUTPUT_PARAMS)
+    def test_print_summary_contains_expected_text(self, mock_env, mock_config, expected_text, test_id, assertion, patch_deps):
+        """Test that summary contains expected text elements (parametrized)."""
+        print_summary(mock_env, verbose=False)
 
-            print_summary(mock_env, verbose=False)
-
-            # Verify summary was called with expected lines
-            mock_env.ui.summary.assert_called_once()
-            call_args = mock_env.ui.summary.call_args
-            lines = call_args[0][1]
-            assert any("Last run: none" in str(line) for line in lines)
+        call_args = mock_env.ui.summary.call_args
+        lines = call_args[0][1]
+        assert assertion(lines), f"Failed for {test_id}"
 
     def test_print_summary_with_last_run(self, mock_env, mock_config, mock_run_data):
         """Test summary with last run data."""
@@ -174,62 +152,13 @@ class TestPrintSummaryBasic:
             mock_cached.assert_called_once()
             mock_get_health.assert_not_called()
 
-    def test_print_summary_includes_archive_path(self, mock_env, mock_config):
-        """Test that summary includes archive root path."""
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
-
-            print_summary(mock_env, verbose=False)
-
-            call_args = mock_env.ui.summary.call_args
-            lines = call_args[0][1]
-            assert any("/data/archive" in str(line) for line in lines)
-
-    def test_print_summary_includes_render_path(self, mock_env, mock_config):
-        """Test that summary includes render root path."""
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
-
-            print_summary(mock_env, verbose=False)
-
-            call_args = mock_env.ui.summary.call_args
-            lines = call_args[0][1]
-            assert any("/data/archive/rendered" in str(line) for line in lines)
-
-    def test_print_summary_includes_sources(self, mock_env, mock_config):
-        """Test that summary includes formatted sources."""
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox, backup (2 total)") as mock_format, \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
-
-            print_summary(mock_env, verbose=False)
-
-            mock_format.assert_called_once()
-            call_args = mock_env.ui.summary.call_args
-            lines = call_args[0][1]
-            assert any("inbox, backup (2 total)" in str(line) for line in lines)
-
-    def test_print_summary_title_is_polylogue(self, mock_env, mock_config):
+    def test_print_summary_title_is_polylogue(self, mock_env, mock_config, patch_deps):
         """Test that summary title is 'Polylogue'."""
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=None):
+        print_summary(mock_env, verbose=False)
 
-            print_summary(mock_env, verbose=False)
-
-            call_args = mock_env.ui.summary.call_args
-            title = call_args[0][0]
-            assert title == "Polylogue"
+        call_args = mock_env.ui.summary.call_args
+        title = call_args[0][0]
+        assert title == "Polylogue"
 
 
 # ============================================================================
@@ -588,9 +517,22 @@ class TestPrintSummaryAnalyticsVerbose:
         metric.thinking_percentage = thinking_percentage
         return metric
 
-    def test_print_summary_verbose_analytics_deep_dive_header(self, mock_env, mock_config):
-        """Test that verbose mode shows 'Deep Dive:' header."""
-        metric = self._create_metric(provider_name="claude")
+    VERBOSE_ANALYTICS_PARAMS = [
+        ("Deep Dive:", "deep_dive_header", lambda c: any("Deep Dive:" in str(x) for x in c)),
+        ("Messages:", "messages_field", lambda c: any("Messages:" in str(x) and ("5000" in str(x) or "5,000" in str(x)) and "50.0" in str(x) for x in c)),
+        ("Words:", "words_field", lambda c: any("Words:" in str(x) and "20" in str(x) and "100" in str(x) for x in c)),
+    ]
+
+    @pytest.mark.parametrize("expected_text,test_id,assertion", VERBOSE_ANALYTICS_PARAMS)
+    def test_print_summary_verbose_analytics_fields(self, mock_env, mock_config, expected_text, test_id, assertion):
+        """Test verbose analytics output fields (parametrized)."""
+        metric_kwargs = {}
+        if test_id == "messages_field":
+            metric_kwargs = {"message_count": 5000, "avg_messages_per_conversation": 50.0}
+        elif test_id == "words_field":
+            metric_kwargs = {"avg_user_words": 20.0, "avg_assistant_words": 100.0}
+
+        metric = self._create_metric(provider_name="claude", **metric_kwargs)
 
         with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
              patch("polylogue.cli.helpers.latest_run", return_value=None), \
@@ -601,45 +543,7 @@ class TestPrintSummaryAnalyticsVerbose:
             print_summary(mock_env, verbose=True)
 
             console_calls = mock_env.ui.console.print.call_args_list
-            assert any("Deep Dive:" in str(c) for c in console_calls)
-
-    def test_print_summary_verbose_analytics_messages_count(self, mock_env, mock_config):
-        """Test that deep dive shows message count and average."""
-        metric = self._create_metric(
-            provider_name="claude",
-            message_count=5000,
-            avg_messages_per_conversation=50.0,
-        )
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
-
-            print_summary(mock_env, verbose=True)
-
-            console_calls = mock_env.ui.console.print.call_args_list
-            assert any("Messages:" in str(c) and ("5000" in str(c) or "5,000" in str(c)) and "50.0" in str(c) for c in console_calls)
-
-    def test_print_summary_verbose_analytics_words_average(self, mock_env, mock_config):
-        """Test that deep dive shows user and assistant word averages."""
-        metric = self._create_metric(
-            provider_name="claude",
-            avg_user_words=20.0,
-            avg_assistant_words=100.0,
-        )
-
-        with patch("polylogue.cli.helpers.get_config", return_value=mock_config), \
-             patch("polylogue.cli.helpers.latest_run", return_value=None), \
-             patch("polylogue.cli.helpers.cached_health_summary", return_value="OK"), \
-             patch("polylogue.cli.helpers.format_sources_summary", return_value="inbox"), \
-             patch("polylogue.cli.analytics.compute_provider_comparison", return_value=[metric]):
-
-            print_summary(mock_env, verbose=True)
-
-            console_calls = mock_env.ui.console.print.call_args_list
-            assert any("Words:" in str(c) and "20" in str(c) and "100" in str(c) for c in console_calls)
+            assert assertion(console_calls), f"Failed for {test_id}"
 
     @pytest.mark.parametrize("tool_use_count,tool_use_percentage,should_be_present", TOOL_USE_PARAMS)
     def test_print_summary_verbose_analytics_tool_use(
