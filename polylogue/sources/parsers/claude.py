@@ -610,6 +610,48 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
             meta["isSidechain"] = True
         if record.isMeta:
             meta["isMeta"] = True
+        # Extract record-level metadata (cwd, gitBranch, version, model, token usage)
+        if record.cwd:
+            meta["cwd"] = record.cwd
+        if record.gitBranch:
+            meta["gitBranch"] = record.gitBranch
+        if record.version:
+            meta["version"] = record.version
+        # Extract model and token usage from message content
+        if isinstance(record.message, dict):
+            model = record.message.get("model")
+            if isinstance(model, str) and model:
+                meta["model"] = model
+            usage = record.message.get("usage")
+            if isinstance(usage, dict) and usage:
+                token_info: dict[str, object] = {}
+                for k in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+                    v = usage.get(k)
+                    if isinstance(v, int) and v > 0:
+                        token_info[k] = v
+                if token_info:
+                    meta["token_usage"] = token_info
+            stop_reason = record.message.get("stop_reason")
+            if isinstance(stop_reason, str) and stop_reason:
+                meta["stop_reason"] = stop_reason
+        elif hasattr(record.message, "model") and record.message is not None:
+            if hasattr(record.message, "model") and record.message.model:
+                meta["model"] = record.message.model
+            if hasattr(record.message, "usage") and record.message.usage:
+                usage_obj = record.message.usage
+                token_info = {}
+                if hasattr(usage_obj, "input_tokens") and usage_obj.input_tokens:
+                    token_info["input_tokens"] = usage_obj.input_tokens
+                if hasattr(usage_obj, "output_tokens") and usage_obj.output_tokens:
+                    token_info["output_tokens"] = usage_obj.output_tokens
+                if hasattr(usage_obj, "cache_creation_input_tokens") and usage_obj.cache_creation_input_tokens:
+                    token_info["cache_creation_input_tokens"] = usage_obj.cache_creation_input_tokens
+                if hasattr(usage_obj, "cache_read_input_tokens") and usage_obj.cache_read_input_tokens:
+                    token_info["cache_read_input_tokens"] = usage_obj.cache_read_input_tokens
+                if token_info:
+                    meta["token_usage"] = token_info
+            if hasattr(record.message, "stop_reason") and record.message.stop_reason:
+                meta["stop_reason"] = record.message.stop_reason
 
         # Extract content blocks using typed model
         content_blocks_raw = record.content_blocks_raw
@@ -739,6 +781,22 @@ def parse_code(payload: list[object], fallback_id: str) -> ParsedConversation:
         for m in messages
     )
     branch_type = "sidechain" if has_sidechain else None
+
+    # Collect unique cwd paths and models across messages
+    cwds = set()
+    models = set()
+    for m in messages:
+        if m.provider_meta:
+            cwd_val = m.provider_meta.get("cwd")
+            if isinstance(cwd_val, str):
+                cwds.add(cwd_val)
+            model_val = m.provider_meta.get("model")
+            if isinstance(model_val, str):
+                models.add(model_val)
+    if cwds:
+        conv_meta["working_directories"] = sorted(cwds)
+    if models:
+        conv_meta["models_used"] = sorted(models)
 
     # Infer title from first user message (fallback to session ID)
     title = str(conv_id)
