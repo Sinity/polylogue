@@ -2744,26 +2744,10 @@ class TestSaveGetMessages:
         backend.save_conversation(conv)
 
         messages = [
-            MessageRecord(
-                message_id="msg-1",
-                conversation_id="conv-1",
-                provider_message_id="prov-msg-1",
-                role="user",
-                text="Hello",
-                timestamp="2025-01-01T10:00:00Z",
-                content_hash="msg-hash-1",
-                version=1,
-            ),
-            MessageRecord(
-                message_id="msg-2",
-                conversation_id="conv-1",
-                provider_message_id="prov-msg-2",
-                role="assistant",
-                text="Hi there",
-                timestamp="2025-01-01T10:01:00Z",
-                content_hash="msg-hash-2",
-                version=1,
-            ),
+            make_message("msg-1", "conv-1", role="user", text="Hello",
+                        timestamp="2025-01-01T10:00:00Z", content_hash="msg-hash-1", version=1, provider_message_id="prov-msg-1"),
+            make_message("msg-2", "conv-1", role="assistant", text="Hi there",
+                        timestamp="2025-01-01T10:01:00Z", content_hash="msg-hash-2", version=1, provider_message_id="prov-msg-2"),
         ]
         backend.save_messages(messages)
 
@@ -2825,38 +2809,17 @@ class TestSaveGetMessages:
     def test_save_messages_upsert_different_hash(self, tmp_path):
         """Test upsert: same message_id, different content_hash → updates."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        conv = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Test",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="hash",
-            version=1,
-        )
+        conv = make_conversation("conv-1", provider_name="claude", title="Test",
+                                created_at="2025-01-01T00:00:00Z", updated_at="2025-01-01T00:00:00Z",
+                                content_hash="hash", version=1)
         backend.save_conversation(conv)
 
-        msg1 = MessageRecord(
-            message_id="msg-1",
-            conversation_id="conv-1",
-            role="user",
-            text="Original",
-            timestamp="2025-01-01T10:00:00Z",
-            content_hash="hash_old",
-            version=1,
-        )
+        msg1 = make_message("msg-1", "conv-1", role="user", text="Original",
+                           timestamp="2025-01-01T10:00:00Z", content_hash="hash_old", version=1)
         backend.save_messages([msg1])
 
-        msg2 = MessageRecord(
-            message_id="msg-1",
-            conversation_id="conv-1",
-            role="user",
-            text="Updated",
-            timestamp="2025-01-01T10:00:00Z",
-            content_hash="hash_new",
-            version=2,
-        )
+        msg2 = make_message("msg-1", "conv-1", role="user", text="Updated",
+                           timestamp="2025-01-01T10:00:00Z", content_hash="hash_new", version=2)
         backend.save_messages([msg2])
 
         retrieved = backend.get_messages("conv-1")
