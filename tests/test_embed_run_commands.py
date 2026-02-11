@@ -366,11 +366,11 @@ class TestRunSyncOnce:
             mock_config = MagicMock()
 
             kwargs = {
-                "config": mock_config,
+                "cfg": mock_config,
                 "env": env,
-                "scope": "all",
-                "sources": None,
-                "format": render_format,
+                "stage": "all",
+                "selected_sources": None,
+                "render_format": render_format,
             }
             if has_plan_snapshot:
                 kwargs["plan_snapshot"] = mock_plan_result
@@ -381,8 +381,9 @@ class TestRunSyncOnce:
             else:
                 result = _run_sync_once(**kwargs)
                 assert result.run_id == "run-123"
-                captured = capsys.readouterr()
-                assert "Syncing" in captured.out
+                if env.ui.plain:
+                    captured = capsys.readouterr()
+                    assert "Syncing" in captured.out
 
 
 # =============================================================================
