@@ -24,6 +24,16 @@ from polylogue.storage.store import (
 from polylogue.types import ConversationId
 
 
+_VEC0_DDL = """
+    CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
+        message_id TEXT PRIMARY KEY,
+        embedding float[1024],
+        +provider_name TEXT,
+        +conversation_id TEXT
+    )
+"""
+
+
 def _parse_json(raw: str | None, *, field: str = "", record_id: str = "") -> Any:
     """Parse a JSON string with diagnostic context on failure."""
     if not raw:
@@ -84,6 +94,19 @@ def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
         acquired_at=row["acquired_at"],
         file_mtime=row["file_mtime"],
     )
+
+
+def _update_ref_counts(conn: sqlite3.Connection, attachment_ids: set[str]) -> None:
+    """Recalculate ref_count for the given attachment IDs from attachment_refs."""
+    for aid in attachment_ids:
+        conn.execute(
+            """
+            UPDATE attachments
+            SET ref_count = (SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?)
+            WHERE attachment_id = ?
+            """,
+            (aid, aid),
+        )
 
 
 def _build_conversation_filters(
@@ -404,14 +427,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         pass
 
     if vec_available:
-        conn.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
-                message_id TEXT PRIMARY KEY,
-                embedding float[1024],
-                +provider_name TEXT,
-                +conversation_id TEXT
-            )
-        """)
+        conn.execute(_VEC0_DDL)
 
     conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
@@ -708,16 +724,7 @@ def _migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
         LOGGER.info("sqlite-vec not available, skipping vec0 table creation")
 
     if vec_available:
-        # vec0 virtual table for message embeddings
-        # Using 1024 dimensions as default for voyage-4
-        conn.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
-                message_id TEXT PRIMARY KEY,
-                embedding float[1024],
-                +provider_name TEXT,
-                +conversation_id TEXT
-            )
-        """)
+        conn.execute(_VEC0_DDL)
 
         # Index on conversation_id for filtering
         # Note: vec0 tables handle their own indexing, but we add metadata for filtering
@@ -879,14 +886,7 @@ def _ensure_vec0_table(conn: sqlite3.Connection) -> None:
         "SELECT name FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
     ).fetchone()
     if not exists:
-        conn.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
-                message_id TEXT PRIMARY KEY,
-                embedding float[1024],
-                +provider_name TEXT,
-                +conversation_id TEXT
-            )
-        """)
+        conn.execute(_VEC0_DDL)
         conn.commit()
         LOGGER.info("Created missing message_embeddings vec0 table")
 
@@ -1333,16 +1333,7 @@ class SQLiteBackend:
                 (conversation_id,),
             )
 
-        # Batch update ref counts for affected attachments
-        for aid in attachment_ids_to_check:
-            conn.execute(
-                """
-                UPDATE attachments
-                SET ref_count = (SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?)
-                WHERE attachment_id = ?
-                """,
-                (aid, aid),
-            )
+        _update_ref_counts(conn, attachment_ids_to_check)
 
         # Clean up orphaned attachments (ref_count <= 0)
         conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
@@ -1383,16 +1374,7 @@ class SQLiteBackend:
         conn.executemany(ref_query, ref_data)
 
         # 3. Recalculate ref counts for all affected attachments in this batch
-        attachment_ids = {r.attachment_id for r in records}
-        for aid in attachment_ids:
-            conn.execute(
-                """
-                UPDATE attachments
-                SET ref_count = (SELECT COUNT(*) FROM attachment_refs WHERE attachment_id = ?)
-                WHERE attachment_id = ?
-                """,
-                (aid, aid),
-            )
+        _update_ref_counts(conn, {r.attachment_id for r in records})
 
     def list_conversations_by_parent(self, parent_id: str) -> list[ConversationRecord]:
         """List all conversations that have the given conversation as parent.
@@ -1481,28 +1463,17 @@ class SQLiteBackend:
 
         if providers:
             placeholders = ",".join("?" for _ in providers)
-            rows = conn.execute(
-                f"""
-                SELECT DISTINCT messages_fts.conversation_id
-                FROM messages_fts
-                JOIN conversations ON conversations.conversation_id = messages_fts.conversation_id
-                WHERE messages_fts MATCH ?
-                  AND (conversations.provider_name IN ({placeholders})
-                       OR conversations.source_name IN ({placeholders}))
-                LIMIT ?
-                """,
-                (fts_query, *providers, *providers, limit),
-            ).fetchall()
+            from_clause = "messages_fts JOIN conversations ON conversations.conversation_id = messages_fts.conversation_id"
+            provider_filter = f" AND (conversations.provider_name IN ({placeholders}) OR conversations.source_name IN ({placeholders}))"
+            params: tuple[Any, ...] = (fts_query, *providers, *providers, limit)
         else:
-            rows = conn.execute(
-                """
-                SELECT DISTINCT conversation_id
-                FROM messages_fts
-                WHERE messages_fts MATCH ?
-                LIMIT ?
-                """,
-                (fts_query, limit),
-            ).fetchall()
+            from_clause = "messages_fts"
+            provider_filter = ""
+            params = (fts_query, limit)
+        rows = conn.execute(
+            f"SELECT DISTINCT messages_fts.conversation_id FROM {from_clause} WHERE messages_fts MATCH ?{provider_filter} LIMIT ?",
+            params,
+        ).fetchall()
 
         return [str(row["conversation_id"]) for row in rows]
 
@@ -1623,32 +1594,22 @@ class SQLiteBackend:
             Dict of tag → count, sorted by count descending.
         """
         conn = self._get_connection()
+        where = "WHERE metadata IS NOT NULL AND json_extract(metadata, '$.tags') IS NOT NULL"
+        params: tuple[str, ...] = ()
         if provider:
-            rows = conn.execute(
-                """
-                SELECT tag.value AS tag_name, COUNT(*) AS cnt
-                FROM conversations,
-                     json_each(json_extract(metadata, '$.tags')) AS tag
-                WHERE metadata IS NOT NULL
-                  AND json_extract(metadata, '$.tags') IS NOT NULL
-                  AND provider_name = ?
-                GROUP BY tag.value
-                ORDER BY cnt DESC
-                """,
-                (provider,),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """
-                SELECT tag.value AS tag_name, COUNT(*) AS cnt
-                FROM conversations,
-                     json_each(json_extract(metadata, '$.tags')) AS tag
-                WHERE metadata IS NOT NULL
-                  AND json_extract(metadata, '$.tags') IS NOT NULL
-                GROUP BY tag.value
-                ORDER BY cnt DESC
-                """,
-            ).fetchall()
+            where += " AND provider_name = ?"
+            params = (provider,)
+        rows = conn.execute(
+            f"""
+            SELECT tag.value AS tag_name, COUNT(*) AS cnt
+            FROM conversations,
+                 json_each(json_extract(metadata, '$.tags')) AS tag
+            {where}
+            GROUP BY tag.value
+            ORDER BY cnt DESC
+            """,
+            params,
+        ).fetchall()
         return {row["tag_name"]: row["cnt"] for row in rows}
 
     def set_metadata(self, conversation_id: str, metadata: dict[str, object]) -> None:
@@ -1976,15 +1937,12 @@ class SQLiteBackend:
             Count of raw conversation records
         """
         conn = self._get_connection()
-
+        query = "SELECT COUNT(*) as cnt FROM raw_conversations"
+        params: tuple[str, ...] = ()
         if provider is not None:
-            row = conn.execute(
-                "SELECT COUNT(*) as cnt FROM raw_conversations WHERE provider_name = ?",
-                (provider,),
-            ).fetchone()
-        else:
-            row = conn.execute("SELECT COUNT(*) as cnt FROM raw_conversations").fetchone()
-
+            query += " WHERE provider_name = ?"
+            params = (provider,)
+        row = conn.execute(query, params).fetchone()
         return int(row["cnt"])
 
 

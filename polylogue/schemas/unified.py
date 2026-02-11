@@ -28,10 +28,7 @@ from pydantic import BaseModel, Field
 
 try:
     from glom import glom
-
-    GLOM_AVAILABLE = True
 except ImportError:
-    GLOM_AVAILABLE = False
 
     def glom(target: Any, spec: Any) -> Any: ...
 

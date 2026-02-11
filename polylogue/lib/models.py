@@ -137,70 +137,6 @@ class ToolInvocation(BaseModel):
         return paths
 
 
-class GitOperation(BaseModel):
-    """Parsed git operation from Bash tool use."""
-
-    command: str
-    """Git subcommand (commit, push, checkout, etc.)."""
-
-    branch: str | None = None
-    """Branch name if applicable."""
-
-    commit_hash: str | None = None
-    """Commit hash if applicable."""
-
-    files: list[str] = Field(default_factory=list)
-    """Files affected by the operation."""
-
-    message: str | None = None
-    """Commit message if this is a commit operation."""
-
-
-class FileChange(BaseModel):
-    """File modification extracted from Edit/Write tools."""
-
-    path: str
-    """Absolute path to the file."""
-
-    operation: str
-    """Operation type: read, write, edit, delete."""
-
-    old_content: str | None = None
-    """Previous content (for edits)."""
-
-    new_content: str | None = None
-    """New content (for writes/edits)."""
-
-
-class SubagentSpawn(BaseModel):
-    """Subagent spawn extracted from Task tool invocations."""
-
-    agent_type: str
-    """Type of subagent (e.g., Explore, Plan, Bash)."""
-
-    prompt: str
-    """Prompt/task given to the subagent."""
-
-    description: str | None = None
-    """Short description of what the agent will do."""
-
-    run_in_background: bool = False
-    """Whether this agent runs in background."""
-
-
-class ContextCompaction(BaseModel):
-    """Context compaction event."""
-
-    timestamp: datetime | None = None
-    """When the compaction occurred."""
-
-    summary: str
-    """Summary of compacted content."""
-
-    messages_compacted: int | None = None
-    """Number of messages that were compacted."""
-
-
 class Attachment(BaseModel):
     id: str
     name: str | None = None
@@ -734,14 +670,6 @@ class Conversation(BaseModel):
         """Return a view with only substantive dialogue."""
         return self.filter(lambda m: m.is_substantive)
 
-    def without_attachments(self) -> Conversation:
-        """Return a view with attachments stripped from messages.
-
-        Note: This materializes messages to apply the transformation.
-        """
-        new_msgs = [m.model_copy(update={"attachments": []}) for m in self.messages]
-        return self.model_copy(update={"messages": MessageCollection(messages=new_msgs)})
-
     def mainline_messages(self) -> list[Message]:
         """Return only mainline messages (branch_index == 0)."""
         return [m for m in self.messages if m.branch_index == 0]
@@ -842,10 +770,6 @@ class Conversation(BaseModel):
     @property
     def word_count(self) -> int:
         return sum(m.word_count for m in self.messages)
-
-    @property
-    def substantive_word_count(self) -> int:
-        return sum(m.word_count for m in self.messages if m.is_substantive)
 
     @property
     def total_cost_usd(self) -> float:
