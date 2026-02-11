@@ -51,9 +51,6 @@ from polylogue.health import (
 )
 from polylogue.storage.backends.sqlite import create_default_backend
 
-# =============================================================================
-# CLI UTILITIES TESTS (from test_cli_utilities.py)
-# =============================================================================
 from polylogue.storage.repository import ConversationRepository
 
 # ============================================================================
