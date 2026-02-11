@@ -1,3 +1,5 @@
+"""Full-text search and FTS5 query escaping."""
+
 from __future__ import annotations
 
 import logging
@@ -165,7 +167,7 @@ def _search_messages_impl(
     with open_connection(db_path) as conn:
         exists = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='messages_fts'").fetchone()
         if not exists:
-            raise DatabaseError("Search index not built. Run `polylogue sync` with index enabled.")
+            raise DatabaseError("Search index not built. Run `polylogue run` with index enabled.")
 
         # Escape the query to avoid syntax errors with special characters
         fts_query = escape_fts5_query(query)

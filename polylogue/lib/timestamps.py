@@ -32,9 +32,13 @@ def parse_timestamp(value: str | int | float | None) -> datetime | None:
 
         # Handle string
         if isinstance(value, str):
-            # Check if it looks like an epoch (all digits, possibly with decimal)
+            # Check if it looks like an epoch (all digits, possibly with decimal).
+            # Realistic epoch range: 1970-01-02 through ~2100 (86400 to 4102444800).
+            # Values below 86400 (like "2025") would be misinterpreted as year strings.
             if value.replace(".", "").isdigit():
-                return datetime.fromtimestamp(float(value), tz=timezone.utc)
+                epoch_f = float(value)
+                if epoch_f >= 86400:
+                    return datetime.fromtimestamp(epoch_f, tz=timezone.utc)
 
             # Try ISO 8601 parsing
             try:

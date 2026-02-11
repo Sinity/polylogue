@@ -105,6 +105,20 @@ class GeminiMessage(BaseModel):
     safetyRatings: list[dict[str, Any]] = Field(default_factory=list)
     """Safety rating results."""
 
+    # Code execution
+    executableCode: dict[str, Any] | None = None
+    """Executable code block with language and code."""
+
+    codeExecutionResult: dict[str, Any] | None = None
+    """Code execution result with outcome and output."""
+
+    # Edit tracking
+    errorMessage: str | None = None
+    """Error message if present."""
+
+    isEdited: bool = False
+    """Whether this message was edited by the user."""
+
     # =========================================================================
     # Viewport extraction methods
     # =========================================================================
@@ -210,5 +224,27 @@ class GeminiMessage(BaseModel):
                         type=ContentType.FILE,
                         raw=part,
                     ))
+
+        # Code execution blocks
+        if self.executableCode:
+            language = self.executableCode.get("language", "")
+            code = self.executableCode.get("code", "")
+            if code:
+                blocks.append(ContentBlock(
+                    type=ContentType.CODE,
+                    text=code,
+                    language=language if isinstance(language, str) else None,
+                    raw=self.executableCode,
+                ))
+
+        if self.codeExecutionResult:
+            outcome = self.codeExecutionResult.get("outcome", "")
+            output = self.codeExecutionResult.get("output", "")
+            if output or outcome:
+                blocks.append(ContentBlock(
+                    type=ContentType.TOOL_RESULT,
+                    text=str(output) if output else f"[{outcome}]",
+                    raw=self.codeExecutionResult,
+                ))
 
         return blocks
