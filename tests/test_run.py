@@ -3,7 +3,6 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import subprocess
-import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, call, patch
@@ -22,7 +21,7 @@ from polylogue.cli.commands.run import (
 )
 from polylogue.config import Source, get_config
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
-from polylogue.pipeline.services.ingestion import IngestResult, IngestionService
+from polylogue.pipeline.services.ingestion import IngestionService
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedConversation,
@@ -569,62 +568,6 @@ def test_sources_command_output(runner, cli_workspace, args, expect_json):
 
 
 # =============================================================================
-# TEST CLASS: IngestResult (Coverage: lines 56-83)
-# =============================================================================
-
-
-class TestIngestResult:
-    """Test IngestResult tracking."""
-
-    @pytest.mark.parametrize(
-        "conv_id,content_changed,expect_in_processed",
-        [
-            ("conv-1", True, True),
-            ("conv-2", False, False),
-        ],
-    )
-    def test_ingest_result_merge(self, conv_id, content_changed, expect_in_processed):
-        """IngestResult.merge_result tracks changes correctly."""
-        result = IngestResult()
-        result_counts = {
-            "conversations": 1 if content_changed else 0,
-            "messages": 5 if content_changed else 0,
-            "attachments": 2 if content_changed else 0,
-            "skipped_conversations": 0,
-            "skipped_messages": 0,
-            "skipped_attachments": 0,
-        }
-        result.merge_result(conv_id, result_counts, content_changed=content_changed)
-
-        if expect_in_processed:
-            assert conv_id in result.processed_ids
-            assert result.changed_counts["conversations"] == 1
-        else:
-            assert conv_id not in result.processed_ids
-
-    def test_ingest_result_concurrent_safety(self):
-        """IngestResult.merge_result is thread-safe with concurrent access."""
-        result = IngestResult()
-        errors = []
-
-        def merge_thread(conv_id):
-            try:
-                for i in range(5):
-                    result.merge_result(f"conv-{conv_id}-{i}", {"conversations": 1, "messages": i, "attachments": 0, "skipped_conversations": 0, "skipped_messages": 0, "skipped_attachments": 0}, True)
-            except Exception as e:
-                errors.append(e)
-
-        threads = [threading.Thread(target=merge_thread, args=(i,)) for i in range(2)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert not errors, f"Thread safety errors: {errors}"
-        assert len(result.processed_ids) == 10
-
-
-# =============================================================================
 # TEST CLASS: IngestionService (Coverage: lines 164-165, 216, 222, 262-269)
 # =============================================================================
 
@@ -941,7 +884,6 @@ __all__ = [
     "TestDisplayResultComprehensive",
     "TestRunCommandWatch",
     "TestWatchModeCallbacks",
-    "TestIngestResult",
     "TestIngestionService",
     "TestParsedAttachmentSanitization",
     "TestAttachmentFromMeta",

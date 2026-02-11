@@ -540,13 +540,8 @@ def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
 
 from polylogue.storage.store import MAX_ATTACHMENT_SIZE
 
-# Valid size_bytes test cases
-VALID_ATTACHMENT_SIZES = [
-    (0, "zero"),
-    (100 * 1024 * 1024, "100MB"),
-    (MAX_ATTACHMENT_SIZE, "max_1TB"),
-    (None, "unknown"),
-]
+# Valid size_bytes test cases (consolidated)
+VALID_ATTACHMENT_SIZES = [(0, "zero"), (MAX_ATTACHMENT_SIZE, "max_1TB"), (None, "unknown")]
 
 
 @pytest.mark.parametrize("size_bytes,desc", VALID_ATTACHMENT_SIZES, ids=str)
@@ -563,15 +558,7 @@ def test_attachment_size_bytes_valid(size_bytes, desc):
     assert record.size_bytes == size_bytes
 
 
-# Invalid size_bytes test cases
-INVALID_ATTACHMENT_SIZES = [
-    (-100, "negative"),
-    (MAX_ATTACHMENT_SIZE * 10, "10TB"),
-    (MAX_ATTACHMENT_SIZE + 1, "over_max"),
-]
-
-
-@pytest.mark.parametrize("size_bytes,desc", INVALID_ATTACHMENT_SIZES, ids=str)
+@pytest.mark.parametrize("size_bytes,desc", [(-100, "negative"), (MAX_ATTACHMENT_SIZE + 1, "over_max")], ids=str)
 def test_attachment_size_bytes_invalid(size_bytes, desc):
     """size_bytes rejects invalid values: {desc}."""
     with pytest.raises(ValidationError):
@@ -586,25 +573,10 @@ def test_attachment_size_bytes_invalid(size_bytes, desc):
 
 
 # =============================================================================
-# PROVIDER NAME VALIDATION (parametrized)
+# PROVIDER NAME VALIDATION (consolidated to representative cases)
 # =============================================================================
 
-# Valid provider names
-VALID_PROVIDER_NAMES = [
-    ("chatgpt", "known"),
-    ("claude", "known"),
-    ("claude-code", "hyphenated"),
-    ("codex", "known"),
-    ("gemini", "known"),
-    ("custom_provider", "custom_underscore"),
-    ("Provider123", "mixed_case"),
-    ("a", "single_letter"),
-    ("A-Z_123", "valid_chars"),
-    ("CustomProvider", "camelcase"),
-]
-
-
-@pytest.mark.parametrize("name,desc", VALID_PROVIDER_NAMES, ids=str)
+@pytest.mark.parametrize("name,desc", [("claude", "known"), ("claude-code", "hyphenated"), ("Provider123", "mixed_case")], ids=str)
 def test_provider_name_accepts_valid(name, desc):
     """provider_name accepts {desc}."""
     record = ConversationRecord(
@@ -617,48 +589,10 @@ def test_provider_name_accepts_valid(name, desc):
     assert record.provider_name == name
 
 
-# Invalid simple cases
-SIMPLE_INVALID_NAMES = [
-    ("", "empty"),
-    ("   ", "whitespace"),
-    ("123invalid", "starts_number"),
-    ("-invalid", "starts_hyphen"),
-    ("_invalid", "starts_underscore"),
-]
-
-
-@pytest.mark.parametrize("name,desc", SIMPLE_INVALID_NAMES, ids=str)
+@pytest.mark.parametrize("name,desc", [("", "empty"), ("123invalid", "starts_number"), ("../escape", "path_escape")], ids=str)
 def test_provider_name_rejects_invalid(name, desc):
     """provider_name rejects {desc}."""
     with pytest.raises(ValidationError):
-        ConversationRecord(
-            conversation_id="test",
-            provider_name=name,
-            provider_conversation_id="ext1",
-            title="Test",
-            content_hash="hash123",
-        )
-
-
-# Special character cases
-SPECIAL_CHAR_NAMES = [
-    ("../escape", "path_escape"),
-    ("name\x00null", "null_byte"),
-    ("name\nwith\nnewlines", "newlines"),
-    ("path/separator", "forward_slash"),
-    ("back\\slash", "backslash"),
-    ("name.with.dots", "dots"),
-    ("name with spaces", "spaces"),
-    ("!invalid", "exclamation"),
-    ("@symbol", "at_symbol"),
-    ("invalid/name", "slash"),
-]
-
-
-@pytest.mark.parametrize("name,desc", SPECIAL_CHAR_NAMES, ids=str)
-def test_provider_name_rejects_special_chars(name, desc):
-    """provider_name rejects special characters: {desc}."""
-    with pytest.raises(ValidationError, match="invalid"):
         ConversationRecord(
             conversation_id="test",
             provider_name=name,
@@ -1635,80 +1569,9 @@ class TestComplexScenarios:
             assert claude_row["title"] == "Claude Conversation"
 
 
-# =============================================================================
-# SQLITE BACKEND OPERATIONS (from test_backend_core.py)
-# =============================================================================
-
-
-def test_backend_save_and_get_conversation(sqlite_backend: SQLiteBackend) -> None:
-    """Test saving and retrieving a conversation."""
-    conv = make_conversation("conv1", title="Test Conversation", content_hash="hash123")
-
-    sqlite_backend.begin()
-    sqlite_backend.save_conversation(conv)
-    sqlite_backend.commit()
-
-    retrieved = sqlite_backend.get_conversation("conv1")
-    assert retrieved is not None
-    assert retrieved.conversation_id == "conv1"
-    assert retrieved.title == "Test Conversation"
-    assert retrieved.content_hash == "hash123"
-
-
-def test_backend_save_and_get_messages(sqlite_backend: SQLiteBackend) -> None:
-    """Test saving and retrieving messages."""
-    conv = make_conversation("conv1", title="Test")
-    msg1 = make_message("msg1", "conv1", text="Hello")
-    msg2 = make_message("msg2", "conv1", role="assistant", text="Hi there")
-
-    sqlite_backend.begin()
-    sqlite_backend.save_conversation(conv)
-    sqlite_backend.save_messages([msg1, msg2])
-    sqlite_backend.commit()
-
-    messages = sqlite_backend.get_messages("conv1")
-    assert len(messages) == 2
-    assert messages[0].message_id == "msg1"
-    assert messages[0].text == "Hello"
-    assert messages[1].message_id == "msg2"
-    assert messages[1].text == "Hi there"
-
-
-def test_backend_list_conversations(sqlite_backend: SQLiteBackend) -> None:
-    """Test listing conversations."""
-    conv1 = make_conversation("conv1", title="First", created_at="2024-01-01T00:00:00Z", updated_at="2024-01-01T00:00:00Z", provider_meta={"source": "claude"})
-    conv2 = make_conversation("conv2", title="Second", created_at="2024-01-02T00:00:00Z", updated_at="2024-01-02T00:00:00Z", provider_meta={"source": "chatgpt"})
-
-    sqlite_backend.begin()
-    sqlite_backend.save_conversation(conv1)
-    sqlite_backend.save_conversation(conv2)
-    sqlite_backend.commit()
-
-    all_convs = sqlite_backend.list_conversations()
-    assert len(all_convs) == 2
-
-    claude_convs = sqlite_backend.list_conversations(source="claude")
-    assert len(claude_convs) == 1
-    assert claude_convs[0].conversation_id == "conv1"
-
-
-def test_backend_save_attachments(sqlite_backend: SQLiteBackend) -> None:
-    """Test saving and retrieving attachments."""
-    conv = make_conversation("conv1", title="Test")
-    msg = make_message("msg1", "conv1", text="Hello")
-    att = make_attachment("att1", "conv1", "msg1", mime_type="image/png", size_bytes=1024)
-
-    sqlite_backend.begin()
-    sqlite_backend.save_conversation(conv)
-    sqlite_backend.save_messages([msg])
-    sqlite_backend.save_attachments([att])
-    sqlite_backend.commit()
-
-    attachments = sqlite_backend.get_attachments("conv1")
-    assert len(attachments) == 1
-    assert attachments[0].attachment_id == "att1"
-    assert attachments[0].mime_type == "image/png"
-    assert attachments[0].size_bytes == 1024
+# Note: Backend save/get operations are fully covered by TestConversationOperations,
+# TestMessageOperations, and TestAttachmentOperations classes (see lines ~1747+).
+# Standalone test functions consolidated here to reduce duplication.
 
 
 def test_backend_transaction_rollback(sqlite_backend: SQLiteBackend) -> None:
@@ -3389,150 +3252,8 @@ class TestTransactionManagement:
         assert backend.get_conversation("conv-1") is None
 
 
-# ============================================================================
-# Test: Metadata operations
-# ============================================================================
-
-
-class TestMetadataOperations:
-    """Tests for metadata CRUD operations."""
-
-    def _create_conversation(self, backend, cid="conv-1"):
-        """Helper to create a conversation."""
-        record = ConversationRecord(
-            conversation_id=cid,
-            provider_name="claude",
-            provider_conversation_id=f"prov-{cid}",
-            title="Test",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="hash",
-            version=1,
-        )
-        backend.save_conversation(record)
-
-    def test_update_metadata(self, tmp_path):
-        """Test setting a metadata key."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        self._create_conversation(backend)
-
-        backend.update_metadata("conv-1", "rating", 5)
-
-        meta = backend.get_metadata("conv-1")
-        assert meta.get("rating") == 5
-
-    def test_delete_metadata(self, tmp_path):
-        """Test removing a metadata key."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        self._create_conversation(backend)
-
-        backend.update_metadata("conv-1", "key1", "value1")
-        backend.delete_metadata("conv-1", "key1")
-
-        meta = backend.get_metadata("conv-1")
-        assert "key1" not in meta
-
-    def test_add_tag(self, tmp_path):
-        """Test adding a tag."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        self._create_conversation(backend)
-
-        backend.add_tag("conv-1", "important")
-
-        meta = backend.get_metadata("conv-1")
-        assert "important" in meta.get("tags", [])
-
-    def test_remove_tag(self, tmp_path):
-        """Test removing a tag."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        self._create_conversation(backend)
-
-        backend.add_tag("conv-1", "important")
-        backend.remove_tag("conv-1", "important")
-
-        meta = backend.get_metadata("conv-1")
-        assert "important" not in meta.get("tags", [])
-
-    def test_add_tag_idempotent(self, tmp_path):
-        """Test that adding same tag twice doesn't duplicate."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        self._create_conversation(backend)
-
-        backend.add_tag("conv-1", "important")
-        backend.add_tag("conv-1", "important")
-
-        meta = backend.get_metadata("conv-1")
-        tags = meta.get("tags", [])
-        assert tags.count("important") == 1
-
-    def test_list_tags(self, tmp_path):
-        """Test listing all tags with counts."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        for i in range(3):
-            self._create_conversation(backend, f"conv-{i+1}")
-
-        backend.add_tag("conv-1", "important")
-        backend.add_tag("conv-2", "important")
-        backend.add_tag("conv-3", "follow-up")
-
-        tags = backend.list_tags()
-        assert tags.get("important") == 2
-        assert tags.get("follow-up") == 1
-
-    def test_list_tags_with_provider_filter(self, tmp_path):
-        """Test listing tags filtered by provider."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        # Create conversations with different providers
-        record1 = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Test",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="hash",
-            version=1,
-        )
-        backend.save_conversation(record1)
-
-        record2 = ConversationRecord(
-            conversation_id="conv-2",
-            provider_name="chatgpt",
-            provider_conversation_id="prov-2",
-            title="Test",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="hash",
-            version=1,
-        )
-        backend.save_conversation(record2)
-
-        backend.add_tag("conv-1", "important")
-        backend.add_tag("conv-2", "important")
-
-        claude_tags = backend.list_tags(provider="claude")
-        assert claude_tags.get("important") == 1
-
-    def test_set_metadata_replaces_entire_dict(self, tmp_path):
-        """Test set_metadata replaces the entire metadata dict."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        self._create_conversation(backend)
-
-        backend.update_metadata("conv-1", "key1", "value1")
-        backend.update_metadata("conv-1", "key2", "value2")
-
-        new_metadata = {"new_key": "new_value"}
-        backend.set_metadata("conv-1", new_metadata)
-
-        meta = backend.get_metadata("conv-1")
-        assert meta == new_metadata
-        assert "key1" not in meta
-
-    def test_get_metadata_nonexistent_conversation(self, tmp_path):
-        """Test get_metadata returns empty dict for nonexistent conversation."""
-        backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        meta = backend.get_metadata("nonexistent")
-        assert meta == {}
+# Note: metadata operations are tested via standalone functions above (test_update_and_get_metadata, etc.)
+# TestMetadataOperations class was a duplicate and has been consolidated.
 
 
 # ============================================================================

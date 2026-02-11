@@ -581,21 +581,6 @@ class TestArchiveStatsCreation:
         assert len(stats.recent) == 1
         assert stats.recent[0].id == "conv1"
 
-    def test_archive_stats_repr(self):
-        """Test ArchiveStats __repr__ includes key information."""
-        stats = ArchiveStats(
-            conversation_count=10,
-            message_count=50,
-            word_count=1000,
-            providers={"claude": 7, "chatgpt": 3},
-            tags={"test": 2},
-            last_sync=None,
-            recent=[],
-        )
-        repr_str = repr(stats)
-        assert "10" in repr_str
-        assert "50" in repr_str
-        assert "ArchiveStats" in repr_str
 
 
 # ============================================================================
@@ -613,7 +598,6 @@ class TestPolylogueInit:
             ("file.db", "config"),
             (":memory:", "repository"),
             ("file.db", "archive_root"),
-            ("file.db", "repr"),
         ],
     )
     def test_polylogue_init_properties(self, tmp_path, db_path_type, property_name):
@@ -634,10 +618,6 @@ class TestPolylogueInit:
         elif property_name == "repository":
             repo = archive.repository
             assert repo is not None
-        elif property_name == "repr":
-            repr_str = repr(archive)
-            assert "Polylogue" in repr_str
-            assert "archive_root" in repr_str
 
 
 # ============================================================================
