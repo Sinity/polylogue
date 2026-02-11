@@ -32,120 +32,91 @@ from polylogue.sources.source import (
 class TestIterJsonStreamJsonl:
     """Tests for JSONL file streaming."""
 
-    def test_jsonl_yields_each_line(self):
-        data = b'{"a": 1}\n{"b": 2}\n'
-        results = list(_iter_json_stream(BytesIO(data), "test.jsonl"))
-        assert len(results) == 2
-        assert results[0] == {"a": 1}
-        assert results[1] == {"b": 2}
+    @pytest.mark.parametrize("filename,data,expected_count,checks", [
+        # Basic case: yields each line
+        ("test.jsonl", b'{"a": 1}\n{"b": 2}\n', 2,
+         lambda r: r[0] == {"a": 1} and r[1] == {"b": 2}),
 
-    def test_jsonl_skips_empty_lines(self):
-        data = b'\n\n{"a": 1}\n\n'
-        results = list(_iter_json_stream(BytesIO(data), "test.jsonl"))
-        assert len(results) == 1
-        assert results[0] == {"a": 1}
+        # Skips empty lines
+        ("test.jsonl", b'\n\n{"a": 1}\n\n', 1,
+         lambda r: r[0] == {"a": 1}),
 
-    def test_jsonl_skips_invalid_lines(self):
-        data = b'{"valid": true}\nnot json\n{"also": "valid"}\n'
-        results = list(_iter_json_stream(BytesIO(data), "test.jsonl"))
-        assert len(results) == 2
-        assert results[0] == {"valid": True}
-        assert results[1] == {"also": "valid"}
+        # Skips invalid lines
+        ("test.jsonl", b'{"valid": true}\nnot json\n{"also": "valid"}\n', 2,
+         lambda r: r[0] == {"valid": True} and r[1] == {"also": "valid"}),
 
-    def test_jsonl_handles_bytes_with_encoding_issues(self):
-        # A valid JSON line with special handling for null bytes
-        line = b'{"id": "test"}\n'
-        results = list(_iter_json_stream(BytesIO(line), "test.jsonl"))
-        assert len(results) == 1
-        assert results[0]["id"] == "test"
+        # Handles bytes with encoding issues
+        ("test.jsonl", b'{"id": "test"}\n', 1,
+         lambda r: r[0]["id"] == "test"),
 
-    def test_ndjson_extension(self):
-        data = b'{"a": 1}\n'
-        results = list(_iter_json_stream(BytesIO(data), "test.ndjson"))
-        assert len(results) == 1
-        assert results[0] == {"a": 1}
+        # .ndjson extension
+        ("test.ndjson", b'{"a": 1}\n', 1,
+         lambda r: r[0] == {"a": 1}),
 
-    def test_jsonl_txt_extension(self):
-        data = b'{"a": 1}\n'
-        results = list(_iter_json_stream(BytesIO(data), "data.jsonl.txt"))
-        assert len(results) == 1
-        assert results[0] == {"a": 1}
+        # .jsonl.txt extension
+        ("data.jsonl.txt", b'{"a": 1}\n', 1,
+         lambda r: r[0] == {"a": 1}),
 
-    def test_jsonl_many_errors_summarized(self):
-        """More than 3 errors should be summarized."""
-        lines = []
-        for i in range(6):
-            lines.append(b"bad json " + str(i).encode())
-        lines.append(json.dumps({"good": True}).encode())
-        data = b"\n".join(lines) + b"\n"
-        results = list(_iter_json_stream(BytesIO(data), "test.jsonl"))
-        assert len(results) == 1
-        assert results[0]["good"] is True
+        # Many errors summarized (>3 errors)
+        ("test.jsonl",
+         b"\n".join([b"bad json " + str(i).encode() for i in range(6)] +
+                    [json.dumps({"good": True}).encode()]) + b"\n",
+         1,
+         lambda r: r[0]["good"] is True),
 
-    def test_jsonl_empty_file(self):
-        data = b""
-        results = list(_iter_json_stream(BytesIO(data), "test.jsonl"))
-        assert results == []
+        # Empty file
+        ("test.jsonl", b"", 0, lambda r: True),
 
-    def test_jsonl_only_whitespace(self):
-        data = b"\n\n\n"
-        results = list(_iter_json_stream(BytesIO(data), "test.jsonl"))
-        assert results == []
+        # Only whitespace
+        ("test.jsonl", b"\n\n\n", 0, lambda r: True),
+    ])
+    def test_jsonl_variations(self, filename, data, expected_count, checks):
+        results = list(_iter_json_stream(BytesIO(data), filename))
+        assert len(results) == expected_count
+        if expected_count > 0:
+            assert checks(results)
 
 
 class TestIterJsonStreamJson:
     """Tests for JSON file streaming (ijson strategies + fallback)."""
 
-    def test_root_list_strategy(self):
-        """Strategy 1: ijson items(item) for root-level list."""
-        data = json.dumps([{"id": 1}, {"id": 2}]).encode()
-        results = list(_iter_json_stream(BytesIO(data), "test.json"))
-        assert len(results) == 2
-        assert results[0]["id"] == 1
-        assert results[1]["id"] == 2
+    @pytest.mark.parametrize("data_obj,unpack_lists,expected_count,checks", [
+        # Strategy 1: root-level list
+        ([{"id": 1}, {"id": 2}], True, 2,
+         lambda r: r[0]["id"] == 1 and r[1]["id"] == 2),
 
-    def test_conversations_key_strategy(self):
-        """Strategy 2: ijson conversations.item for nested list."""
-        data = json.dumps({"conversations": [{"id": "c1"}, {"id": "c2"}]}).encode()
-        results = list(_iter_json_stream(BytesIO(data), "test.json"))
-        assert len(results) == 2
-        assert results[0]["id"] == "c1"
-        assert results[1]["id"] == "c2"
+        # Strategy 2: nested conversations.item
+        ({"conversations": [{"id": "c1"}, {"id": "c2"}]}, True, 2,
+         lambda r: r[0]["id"] == "c1" and r[1]["id"] == "c2"),
 
-    def test_single_dict_fallback(self):
-        """Strategy 3: json.load for single dict."""
-        data = json.dumps({"id": "single", "data": True}).encode()
-        results = list(_iter_json_stream(BytesIO(data), "test.json"))
-        assert len(results) == 1
-        assert results[0]["id"] == "single"
+        # Strategy 3: single dict fallback
+        ({"id": "single", "data": True}, True, 1,
+         lambda r: r[0]["id"] == "single"),
 
-    def test_unpack_lists_false(self):
-        """With unpack_lists=False, list is yielded as single item."""
-        data = json.dumps([{"id": 1}, {"id": 2}]).encode()
-        results = list(_iter_json_stream(BytesIO(data), "test.json", unpack_lists=False))
-        assert len(results) == 1
-        assert isinstance(results[0], list)
-        assert len(results[0]) == 2
-        assert results[0][0]["id"] == 1
+        # unpack_lists=False yields list as single item
+        ([{"id": 1}, {"id": 2}], False, 1,
+         lambda r: isinstance(r[0], list) and len(r[0]) == 2),
 
-    def test_empty_list(self):
-        data = json.dumps([]).encode()
-        results = list(_iter_json_stream(BytesIO(data), "test.json"))
-        assert len(results) == 0
+        # Empty list
+        ([], True, 0, lambda r: True),
 
-    def test_empty_dict(self):
-        data = json.dumps({}).encode()
-        results = list(_iter_json_stream(BytesIO(data), "test.json"))
-        assert len(results) == 1
-        assert results[0] == {}
+        # Empty dict
+        ({}, True, 1, lambda r: r[0] == {}),
 
-    def test_nested_conversations_with_unpack_false(self):
-        """With unpack_lists=False, nested conversations are not unpacked."""
-        data = json.dumps({"conversations": [{"id": "c1"}, {"id": "c2"}]}).encode()
-        results = list(_iter_json_stream(BytesIO(data), "test.json", unpack_lists=False))
-        assert len(results) == 1
-        assert isinstance(results[0], dict)
-        assert "conversations" in results[0]
+        # Nested conversations with unpack_lists=False
+        ({"conversations": [{"id": "c1"}, {"id": "c2"}]}, False, 1,
+         lambda r: isinstance(r[0], dict) and "conversations" in r[0]),
+
+        # Single list item unpacked correctly
+        ([{"single": True}], True, 1,
+         lambda r: r[0]["single"] is True),
+    ])
+    def test_json_variations(self, data_obj, unpack_lists, expected_count, checks):
+        data = json.dumps(data_obj).encode()
+        results = list(_iter_json_stream(BytesIO(data), "test.json", unpack_lists=unpack_lists))
+        assert len(results) == expected_count
+        if expected_count > 0:
+            assert checks(results)
 
 
 # =============================================================================
@@ -156,58 +127,53 @@ class TestIterJsonStreamJson:
 class TestRawCaptureBasic:
     """Tests for basic raw byte capture functionality."""
 
-    def test_json_file_captures_raw_bytes(self, tmp_path):
-        """Raw bytes are captured for JSON file conversations."""
+    @pytest.mark.parametrize("state_desc,capture_raw,expect_raw", [
+        ("json_file_captures_raw", True, True),
+        ("capture_raw_false", False, False),
+        ("no_path_nonexistent", True, None),
+        ("nonexistent_path", True, None),
+        ("empty_directory", True, None),
+    ])
+    def test_raw_capture_file_states(self, tmp_path, state_desc, capture_raw, expect_raw):
         from tests.helpers import GenericConversationBuilder
 
-        (GenericConversationBuilder("raw-test")
-         .add_message("user", "hello", text="hello")
-         .write_to(tmp_path / "conv.json"))
+        # Setup based on state description
+        if state_desc == "json_file_captures_raw":
+            (GenericConversationBuilder("raw-test")
+             .add_message("user", "hello", text="hello")
+             .write_to(tmp_path / "conv.json"))
+            source_path = tmp_path
+        elif state_desc == "capture_raw_false":
+            (GenericConversationBuilder("no-raw")
+             .add_message("user", "hi", text="hi")
+             .write_to(tmp_path / "conv.json"))
+            source_path = tmp_path
+        elif state_desc == "no_path_nonexistent":
+            source_path = tmp_path / "nonexistent"
+        elif state_desc == "nonexistent_path":
+            source_path = tmp_path / "does_not_exist"
+        else:  # empty_directory
+            source_path = tmp_path
 
-        source = Source(name="chatgpt", path=tmp_path)
-        results = list(iter_source_conversations_with_raw(source))
-        assert len(results) >= 1
-        raw_data, conv = results[0]
-        assert raw_data is not None
-        assert raw_data.raw_bytes is not None
-        assert len(raw_data.raw_bytes) > 0
-        assert raw_data.source_path is not None
-        assert raw_data.file_mtime is not None
+        source = Source(name="chatgpt" if "captures_raw" in state_desc else "test", path=source_path)
+        results = list(iter_source_conversations_with_raw(source, capture_raw=capture_raw))
 
-    def test_capture_raw_false_yields_none(self, tmp_path):
-        """With capture_raw=False, raw data is None for non-grouped providers."""
-        from tests.helpers import GenericConversationBuilder
+        # Validate results based on state
+        if state_desc.startswith(("no_path", "nonexistent", "empty")):
+            assert results == []
+        else:
+            assert len(results) >= 1
 
-        (GenericConversationBuilder("no-raw")
-         .add_message("user", "hi", text="hi")
-         .write_to(tmp_path / "conv.json"))
-
-        source = Source(name="chatgpt", path=tmp_path)
-        results = list(iter_source_conversations_with_raw(source, capture_raw=False))
-        assert len(results) >= 1
-        raw_data, conv = results[0]
-        assert raw_data is None
-
-    def test_no_path_returns_empty(self, tmp_path):
-        """Source with no path (using folder) yields nothing if folder doesn't exist."""
-        # Source requires either path or folder, use folder with nonexistent path
-        nonexistent = tmp_path / "nonexistent"
-        source = Source(name="empty", folder=str(nonexistent))
-        results = list(iter_source_conversations_with_raw(source))
-        assert results == []
-
-    def test_nonexistent_path_returns_empty(self, tmp_path):
-        """Source with nonexistent path yields nothing."""
-        nonexistent = tmp_path / "does_not_exist"
-        source = Source(name="test", path=nonexistent)
-        results = list(iter_source_conversations_with_raw(source))
-        assert results == []
-
-    def test_empty_directory_returns_empty(self, tmp_path):
-        """Empty directory yields nothing."""
-        source = Source(name="test", path=tmp_path)
-        results = list(iter_source_conversations_with_raw(source))
-        assert results == []
+        if expect_raw is not None and len(results) > 0:
+            raw_data, conv = results[0]
+            if expect_raw:
+                assert raw_data is not None
+                assert raw_data.raw_bytes is not None
+                assert len(raw_data.raw_bytes) > 0
+                assert raw_data.source_path is not None
+                assert raw_data.file_mtime is not None
+            else:
+                assert raw_data is None
 
 
 # =============================================================================
@@ -406,60 +372,53 @@ class TestRawCaptureZip:
 class TestRawCaptureCursorState:
     """Tests for cursor state tracking in raw capture."""
 
-    def test_cursor_state_tracks_file_count(self, tmp_path):
+    @pytest.mark.parametrize("state_desc,capture_raw", [
+        ("file_count", True),
+        ("latest_mtime", True),
+        ("failures", True),
+        ("empty_dir", True),
+        ("capture_raw_false", False),
+    ])
+    def test_cursor_state_variations(self, tmp_path, state_desc, capture_raw):
         from tests.helpers import GenericConversationBuilder
 
-        for i in range(3):
-            (GenericConversationBuilder(f"c{i}")
-             .add_message("user", f"msg{i}", text=f"msg{i}")
-             .write_to(tmp_path / f"conv{i}.json"))
+        # Setup based on state description
+        if state_desc == "file_count":
+            for i in range(3):
+                (GenericConversationBuilder(f"c{i}")
+                 .add_message("user", f"msg{i}", text=f"msg{i}")
+                 .write_to(tmp_path / f"conv{i}.json"))
+        elif state_desc == "latest_mtime":
+            (GenericConversationBuilder("c1")
+             .add_message("user", "test", text="test")
+             .write_to(tmp_path / "conv.json"))
+        elif state_desc == "failures":
+            (tmp_path / "bad.json").write_text("not json at all")
+        elif state_desc == "capture_raw_false":
+            (GenericConversationBuilder("c1")
+             .write_to(tmp_path / "conv.json"))
+        # else: empty_dir - do nothing
 
         source = Source(name="test", path=tmp_path)
         cursor_state: dict = {}
-        list(iter_source_conversations_with_raw(source, cursor_state=cursor_state))
-        assert cursor_state["file_count"] == 3
+        list(iter_source_conversations_with_raw(source, capture_raw=capture_raw,
+                                                cursor_state=cursor_state))
 
-    def test_cursor_state_tracks_latest_mtime(self, tmp_path):
-        from tests.helpers import GenericConversationBuilder
-
-        (GenericConversationBuilder("c1")
-         .add_message("user", "test", text="test")
-         .write_to(tmp_path / "conv.json"))
-
-        source = Source(name="test", path=tmp_path)
-        cursor_state: dict = {}
-        list(iter_source_conversations_with_raw(source, cursor_state=cursor_state))
-        assert "latest_mtime" in cursor_state
-        assert "latest_path" in cursor_state
-        assert isinstance(cursor_state["latest_mtime"], float)
-
-    def test_cursor_state_tracks_failures(self, tmp_path):
-        (tmp_path / "bad.json").write_text("not json at all")
-
-        source = Source(name="test", path=tmp_path)
-        cursor_state: dict = {}
-        list(iter_source_conversations_with_raw(source, cursor_state=cursor_state))
-        assert cursor_state.get("failed_count", 0) >= 1
-        assert len(cursor_state.get("failed_files", [])) >= 1
-
-    def test_cursor_state_empty_dir(self, tmp_path):
-        source = Source(name="test", path=tmp_path)
-        cursor_state: dict = {}
-        list(iter_source_conversations_with_raw(source, cursor_state=cursor_state))
-        assert cursor_state["file_count"] == 0
-        assert cursor_state.get("failed_count", 0) == 0
-
-    def test_cursor_state_with_capture_raw_false(self, tmp_path):
-        """Cursor state works regardless of capture_raw setting."""
-        from tests.helpers import GenericConversationBuilder
-
-        (GenericConversationBuilder("c1")
-         .write_to(tmp_path / "conv.json"))
-
-        source = Source(name="test", path=tmp_path)
-        cursor_state: dict = {}
-        list(iter_source_conversations_with_raw(source, capture_raw=False, cursor_state=cursor_state))
-        assert cursor_state["file_count"] == 1
+        # Validate cursor state based on state description
+        if state_desc == "file_count":
+            assert cursor_state["file_count"] == 3
+        elif state_desc == "latest_mtime":
+            assert "latest_mtime" in cursor_state
+            assert "latest_path" in cursor_state
+            assert isinstance(cursor_state["latest_mtime"], float)
+        elif state_desc == "failures":
+            assert cursor_state.get("failed_count", 0) >= 1
+            assert len(cursor_state.get("failed_files", [])) >= 1
+        elif state_desc == "empty_dir":
+            assert cursor_state["file_count"] == 0
+            assert cursor_state.get("failed_count", 0) == 0
+        elif state_desc == "capture_raw_false":
+            assert cursor_state["file_count"] == 1
 
     def test_cursor_state_accumulated_from_multiple_calls(self, tmp_path):
         """Cursor state can be reused across multiple calls."""
@@ -524,27 +483,18 @@ class TestRawCaptureErrorHandling:
 
         assert cursor_state["file_count"] >= 1
 
-    def test_skip_dirs_respected(self, tmp_path):
-        """_SKIP_DIRS are pruned in raw capture variant too."""
+    @pytest.mark.parametrize("skip_dir_type,skip_check", [
+        ("analysis", lambda tmp_path: (tmp_path / "analysis").mkdir() or True),
+        ("__pycache__", lambda tmp_path: (tmp_path / "__pycache__").mkdir() or True),
+    ])
+    def test_skip_dirs_respected(self, tmp_path, skip_dir_type, skip_check):
+        """_SKIP_DIRS and __pycache__ are pruned."""
         from tests.helpers import GenericConversationBuilder
 
-        analysis_dir = tmp_path / "analysis"
-        analysis_dir.mkdir()
+        skip_check(tmp_path)
+        skip_dir = tmp_path / skip_dir_type
         (GenericConversationBuilder("skipped")
-         .write_to(analysis_dir / "data.json"))
-
-        source = Source(name="test", path=tmp_path)
-        results = list(iter_source_conversations_with_raw(source))
-        assert len(results) == 0
-
-    def test_skip_pycache_dir(self, tmp_path):
-        """__pycache__ directories are skipped."""
-        from tests.helpers import GenericConversationBuilder
-
-        pycache_dir = tmp_path / "__pycache__"
-        pycache_dir.mkdir()
-        (GenericConversationBuilder("skipped")
-         .write_to(pycache_dir / "data.json"))
+         .write_to(skip_dir / "data.json"))
 
         source = Source(name="test", path=tmp_path)
         results = list(iter_source_conversations_with_raw(source))
@@ -570,46 +520,81 @@ class TestRawCaptureErrorHandling:
 class TestParseDrivePayload:
     """Tests for Drive-specific payload parsing."""
 
-    def test_list_of_chunks(self):
-        """List with role/text items parsed as chunked prompt."""
-        payload = [
-            {"role": "user", "text": "Hello drive"},
-            {"role": "model", "text": "Hi"},
-        ]
-        results = parse_drive_payload("drive", payload, "drive-test")
-        assert len(results) >= 1
-        assert results[0].provider_name == "drive"
+    @pytest.mark.parametrize("provider,payload,conv_id,depth,expected_min,checks", [
+        # List of chunks (role/text items)
+        ("drive",
+         [{"role": "user", "text": "Hello drive"}, {"role": "model", "text": "Hi"}],
+         "drive-test", None, 1,
+         lambda r: r[0].provider_name == "drive"),
 
-    def test_dict_with_chunked_prompt(self):
-        """Dict with 'chunks' key parsed directly."""
-        payload = {"chunks": [
-            {"role": "user", "text": "Hello"},
-        ]}
-        results = parse_drive_payload("drive", payload, "drive-chunk")
-        assert len(results) == 1
+        # Dict with 'chunks' key
+        ("drive",
+         {"chunks": [{"role": "user", "text": "Hello"}]},
+         "drive-chunk", None, 1,
+         lambda r: True),
 
-    def test_dict_with_chunkedPrompt(self):
-        """Dict with 'chunkedPrompt' key parsed."""
-        payload = {"chunkedPrompt": {"messages": []}}
-        results = parse_drive_payload("drive", payload, "drive-cp")
-        assert len(results) >= 1
+        # Dict with 'chunkedPrompt' key
+        ("drive",
+         {"chunkedPrompt": {"messages": []}},
+         "drive-cp", None, 1,
+         lambda r: True),
 
-    def test_nested_list_recurses(self):
-        """Nested lists are recursed into."""
-        payload = [
-            [{"role": "user", "text": "Nested"}],
-        ]
-        results = parse_drive_payload("drive", payload, "nested")
-        assert len(results) >= 1
+        # Nested list recurses
+        ("drive",
+         [[{"role": "user", "text": "Nested"}]],
+         "nested", None, 1,
+         lambda r: True),
 
-    def test_max_depth_stops_recursion(self):
-        """Exceeding max depth returns empty."""
-        results = parse_drive_payload("drive", [{"role": "user", "text": "deep"}], "deep", _depth=11)
-        assert results == []
+        # Max depth stops recursion
+        ("drive",
+         [{"role": "user", "text": "deep"}],
+         "deep", 11, 0,
+         lambda r: r == []),
 
-    def test_empty_list(self):
-        results = parse_drive_payload("drive", [], "empty")
-        assert results == []
+        # Empty list
+        ("drive",
+         [],
+         "empty", None, 0,
+         lambda r: r == []),
+
+        # Dict with conversations key unpacked
+        ("drive",
+         {"conversations": [
+             {"chunks": [{"role": "user", "text": "Conv 1"}]},
+             {"chunks": [{"role": "user", "text": "Conv 2"}]},
+         ]},
+         "conv-list", None, 2,
+         lambda r: True),
+
+        # Gemini provider handles lists
+        ("gemini",
+         [{"role": "user", "parts": ["Hello Gemini"]}, {"role": "model", "parts": ["Hi"]}],
+         "gemini-test", None, 1,
+         lambda r: True),
+
+        # Deep nesting within limit
+        ("drive",
+         [[[{"role": "user", "text": "Deep"}]]],
+         "nested-deep", 0, 0,
+         lambda r: isinstance(r, list)),
+
+        # List of dicts with chunks key
+        ("drive",
+         [
+             {"chunks": [{"role": "user", "text": "First"}]},
+             {"chunks": [{"role": "user", "text": "Second"}]},
+         ],
+         "multi-conv", None, 2,
+         lambda r: True),
+    ])
+    def test_parse_drive_payload_variations(self, provider, payload, conv_id,
+                                           depth, expected_min, checks):
+        if depth is not None:
+            results = parse_drive_payload(provider, payload, conv_id, _depth=depth)
+        else:
+            results = parse_drive_payload(provider, payload, conv_id)
+        assert len(results) >= expected_min
+        assert checks(results)
 
     def test_dict_detects_chatgpt(self):
         """Dict payload triggers detect_provider for chatgpt."""
@@ -623,42 +608,6 @@ class TestParseDrivePayload:
     def test_non_dict_non_list_returns_empty(self):
         results = parse_drive_payload("drive", "plain string", "nope")
         assert results == []
-
-    def test_list_of_dicts_with_chunks_key(self):
-        """List of conversation dicts with 'chunks' key."""
-        payload = [
-            {"chunks": [{"role": "user", "text": "First"}]},
-            {"chunks": [{"role": "user", "text": "Second"}]},
-        ]
-        results = parse_drive_payload("drive", payload, "multi-conv")
-        assert len(results) >= 2
-
-    def test_gemini_provider_list_handling(self):
-        """Gemini provider handles lists same way as drive."""
-        payload = [
-            {"role": "user", "parts": ["Hello Gemini"]},
-            {"role": "model", "parts": ["Hi"]},
-        ]
-        results = parse_drive_payload("gemini", payload, "gemini-test")
-        assert len(results) >= 1
-
-    def test_deep_nesting_within_limit(self):
-        """Deep nesting within max depth limit."""
-        payload = [[[{"role": "user", "text": "Deep"}]]]
-        results = parse_drive_payload("drive", payload, "nested-deep", _depth=0)
-        # Should recurse through nesting
-        assert isinstance(results, list)
-
-    def test_dict_with_conversations_key_in_drive_context(self):
-        """Dict with 'conversations' key is unpacked."""
-        payload = {
-            "conversations": [
-                {"chunks": [{"role": "user", "text": "Conv 1"}]},
-                {"chunks": [{"role": "user", "text": "Conv 2"}]},
-            ]
-        }
-        results = parse_drive_payload("drive", payload, "conv-list")
-        assert len(results) >= 2
 
 
 # =============================================================================
