@@ -15,6 +15,7 @@ Usage:
 
 from __future__ import annotations
 
+import gzip
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -98,11 +99,14 @@ class SchemaValidator:
         Raises:
             FileNotFoundError: If no schema exists for the provider
         """
-        schema_path = SCHEMA_DIR / f"{provider}.schema.json"
-        if not schema_path.exists():
+        gz_path = SCHEMA_DIR / f"{provider}.schema.json.gz"
+        plain_path = SCHEMA_DIR / f"{provider}.schema.json"
+        if gz_path.exists():
+            schema = json.loads(gzip.decompress(gz_path.read_bytes()).decode("utf-8"))
+        elif plain_path.exists():
+            schema = json.loads(plain_path.read_text(encoding="utf-8"))
+        else:
             raise FileNotFoundError(f"No schema found for provider: {provider}")
-
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
         return cls(schema, strict=strict)
 
     @classmethod
@@ -110,7 +114,12 @@ class SchemaValidator:
         """List providers with available schemas."""
         if not SCHEMA_DIR.exists():
             return []
-        return sorted(p.stem.replace(".schema", "") for p in SCHEMA_DIR.glob("*.schema.json"))
+        names: set[str] = set()
+        for pattern in ("*.schema.json.gz", "*.schema.json"):
+            for p in SCHEMA_DIR.glob(pattern):
+                name = p.name.replace(".schema.json.gz", "").replace(".schema.json", "")
+                names.add(name)
+        return sorted(names)
 
     def validate(self, data: Any) -> ValidationResult:
         """Validate data against the schema with drift detection.

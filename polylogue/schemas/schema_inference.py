@@ -12,6 +12,7 @@ Can be used as:
 
 from __future__ import annotations
 
+import gzip
 import json
 import re
 import sqlite3
@@ -457,11 +458,15 @@ def generate_all_schemas(
         results.append(result)
 
         if result.success and result.schema:
-            output_path = output_dir / f"{provider}.schema.json"
-            output_path.write_text(
-                json.dumps(result.schema, indent=2, sort_keys=True),
-                encoding="utf-8",
+            output_path = output_dir / f"{provider}.schema.json.gz"
+            compressed = gzip.compress(
+                json.dumps(result.schema, separators=(",", ":"), sort_keys=True).encode("utf-8"),
             )
+            output_path.write_bytes(compressed)
+            # Remove legacy uncompressed file if present
+            legacy_path = output_dir / f"{provider}.schema.json"
+            if legacy_path.exists():
+                legacy_path.unlink()
 
     return results
 

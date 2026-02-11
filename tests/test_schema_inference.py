@@ -496,7 +496,7 @@ class TestGenerateAllSchemas:
 
         assert output_dir.exists()
         assert len(results) == 1
-        assert (output_dir / "test.schema.json").exists()
+        assert (output_dir / "test.schema.json.gz").exists()
 
     def test_skips_failed_schemas(self, tmp_path):
         """Failed schemas are not written to disk."""
@@ -508,7 +508,7 @@ class TestGenerateAllSchemas:
         with patch("polylogue.schemas.schema_inference.generate_provider_schema", return_value=failed_result):
             results = generate_all_schemas(tmp_path, providers=["broken"])
 
-        assert not (tmp_path / "broken.schema.json").exists()
+        assert not (tmp_path / "broken.schema.json.gz").exists()
         assert results[0].success is False
 
 
