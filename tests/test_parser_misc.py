@@ -669,23 +669,6 @@ class TestCodexParser:
 class TestDriveParser:
     """Test Drive parser edge cases."""
 
-    DRIVE_PARSER_CASES = [
-        ("empty_chunk", {}, None, extract_text_from_chunk, "Extract text from empty chunk"),
-        ("with_parts", {"parts": ["Part 1", "Part 2"]}, "Part 1\nPart 2", extract_text_from_chunk, "Extract with parts"),
-    ]
-
-    COLLECT_DOCS_CASES = [
-        ("non_dict", "not a dict", [], "_collect_drive_docs: non-dict"),
-        ("nested", {"driveDocument": "doc1", "metadata": {"driveDocument": "doc2"}}, ["doc1", "doc2"], "_collect_drive_docs: nested"),
-    ]
-
-    ATTACHMENT_FROM_DOC_CASES = [
-        ("string_id", "doc-string-id", "msg-1", "doc-string-id", "string ID"),
-        ("non_dict_non_string", 123, "msg-1", None, "non-dict/non-string"),
-        ("missing_id", {"name": "file.pdf", "size": 1000}, "msg-1", None, "missing ID"),
-        ("size_as_string", {"id": "doc-1", "sizeBytes": "5000"}, "msg-1", "doc-1", "size as string"),
-    ]
-
     def test_extract_text_from_chunk(self):
         """Test extract_text_from_chunk with variants."""
         from polylogue.sources.parsers.drive import extract_text_from_chunk

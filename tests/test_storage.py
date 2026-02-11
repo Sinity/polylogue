@@ -2607,18 +2607,10 @@ class TestSaveGetConversation:
     def test_save_and_get_conversation_basic(self, tmp_path):
         """Test basic save and retrieval of a conversation."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        record = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-conv-1",
-            title="Test Conversation",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T12:00:00Z",
-            content_hash="hash123",
-            provider_meta={"source": "test"},
-            metadata={"tags": ["important"]},
-            version=1,
-        )
+        record = make_conversation("conv-1", provider_name="claude", title="Test Conversation",
+                                    created_at="2025-01-01T00:00:00Z", updated_at="2025-01-01T12:00:00Z",
+                                    content_hash="hash123", provider_meta={"source": "test"},
+                                    metadata={"tags": ["important"]}, version=1)
         backend.save_conversation(record)
         retrieved = backend.get_conversation("conv-1")
         assert retrieved is not None
@@ -2636,28 +2628,14 @@ class TestSaveGetConversation:
     def test_save_conversation_upsert_different_hash(self, tmp_path):
         """Test upsert: same ID, different content_hash → updates."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        record1 = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Original Title",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T10:00:00Z",
-            content_hash="hash_old",
-            version=1,
-        )
+        record1 = make_conversation("conv-1", provider_name="claude", title="Original Title",
+                                    created_at="2025-01-01T00:00:00Z", updated_at="2025-01-01T10:00:00Z",
+                                    content_hash="hash_old", version=1)
         backend.save_conversation(record1)
 
-        record2 = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Updated Title",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T12:00:00Z",
-            content_hash="hash_new",
-            version=2,
-        )
+        record2 = make_conversation("conv-1", provider_name="claude", title="Updated Title",
+                                    created_at="2025-01-01T00:00:00Z", updated_at="2025-01-01T12:00:00Z",
+                                    content_hash="hash_new", version=2)
         backend.save_conversation(record2)
 
         retrieved = backend.get_conversation("conv-1")
@@ -2667,16 +2645,9 @@ class TestSaveGetConversation:
     def test_save_conversation_no_update_same_hash(self, tmp_path):
         """Test upsert: same ID and content_hash → no update."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        record = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Original",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T10:00:00Z",
-            content_hash="hash123",
-            version=1,
-        )
+        record = make_conversation("conv-1", provider_name="claude", title="Original",
+                                    created_at="2025-01-01T00:00:00Z", updated_at="2025-01-01T10:00:00Z",
+                                    content_hash="hash123", version=1)
         backend.save_conversation(record)
         retrieved1 = backend.get_conversation("conv-1")
 
@@ -2690,34 +2661,18 @@ class TestSaveGetConversation:
     def test_save_conversation_metadata_not_overwritten(self, tmp_path):
         """Test that upsert does NOT overwrite user metadata."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        record1 = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Test",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T10:00:00Z",
-            content_hash="hash1",
-            metadata={"tags": ["important"]},
-            version=1,
-        )
+        record1 = make_conversation("conv-1", provider_name="claude", title="Test",
+                                    created_at="2025-01-01T00:00:00Z", updated_at="2025-01-01T10:00:00Z",
+                                    content_hash="hash1", metadata={"tags": ["important"]}, version=1)
         backend.save_conversation(record1)
 
         # Update metadata manually
         backend.update_metadata("conv-1", "custom_key", "custom_value")
 
         # Save new record with different content_hash
-        record2 = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Test",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T12:00:00Z",
-            content_hash="hash2",
-            metadata=None,  # Empty metadata in the record
-            version=2,
-        )
+        record2 = make_conversation("conv-1", provider_name="claude", title="Test",
+                                    created_at="2025-01-01T00:00:00Z", updated_at="2025-01-01T12:00:00Z",
+                                    content_hash="hash2", metadata=None, version=2)
         backend.save_conversation(record2)
 
         # Metadata should still have the custom key
@@ -2747,31 +2702,16 @@ class TestSaveGetConversation:
         """Test save_conversation with parent and branch_type."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         # Create parent conversation
-        parent = ConversationRecord(
-            conversation_id="conv-parent",
-            provider_name="claude",
-            provider_conversation_id="prov-parent",
-            title="Parent",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="hash-parent",
-            version=1,
-        )
+        parent = make_conversation("conv-parent", provider_name="claude", title="Parent",
+                                    created_at="2025-01-01T00:00:00Z", updated_at="2025-01-01T00:00:00Z",
+                                    content_hash="hash-parent", version=1)
         backend.save_conversation(parent)
 
         # Create child conversation
-        child = ConversationRecord(
-            conversation_id="conv-child",
-            provider_name="claude",
-            provider_conversation_id="prov-child",
-            title="Child",
-            created_at="2025-01-01T01:00:00Z",
-            updated_at="2025-01-01T01:00:00Z",
-            content_hash="hash-child",
-            version=1,
-            parent_conversation_id="conv-parent",
-            branch_type="continuation",
-        )
+        child = make_conversation("conv-child", provider_name="claude", title="Child",
+                                  created_at="2025-01-01T01:00:00Z", updated_at="2025-01-01T01:00:00Z",
+                                  content_hash="hash-child", version=1,
+                                  parent_conversation_id="conv-parent", branch_type="continuation")
         backend.save_conversation(child)
 
         retrieved = backend.get_conversation("conv-child")
@@ -2842,16 +2782,9 @@ class TestSaveGetMessages:
     def test_get_messages_ordering_by_timestamp(self, tmp_path):
         """Test that messages are returned ordered by timestamp."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        conv = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Test",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="hash",
-            version=1,
-        )
+        conv = make_conversation("conv-1", provider_name="claude", title="Test",
+                                created_at="2025-01-01T00:00:00Z", updated_at="2025-01-01T00:00:00Z",
+                                content_hash="hash", version=1)
         backend.save_conversation(conv)
 
         # Save in non-chronological order
@@ -2932,16 +2865,9 @@ class TestSaveGetMessages:
     def test_save_messages_no_update_same_hash(self, tmp_path):
         """Test upsert: same message_id and content_hash → no update."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        conv = ConversationRecord(
-            conversation_id="conv-1",
-            provider_name="claude",
-            provider_conversation_id="prov-1",
-            title="Test",
-            created_at="2025-01-01T00:00:00Z",
-            updated_at="2025-01-01T00:00:00Z",
-            content_hash="hash",
-            version=1,
-        )
+        conv = make_conversation("conv-1", provider_name="claude", title="Test",
+                                created_at="2025-01-01T00:00:00Z", updated_at="2025-01-01T00:00:00Z",
+                                content_hash="hash", version=1)
         backend.save_conversation(conv)
 
         msg = MessageRecord(

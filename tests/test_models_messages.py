@@ -20,19 +20,10 @@ from polylogue.lib.models import (
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 
 
-# =============================================================================
-# TEST DATA CONSTANTS (module-level for parametrization)
-# =============================================================================
-
-# ToolInvocation property test data
-TOOLINV_FILE_OPS = [
-    ("Read", True),
-    ("Write", True),
-    ("Edit", True),
-    ("NotebookEdit", True),
-    ("Bash", False),
-]
-
+# Test data for parametrized tests
+TOOLINV_FILE_OPS = [("Read", True), ("Write", True), ("Edit", True), ("NotebookEdit", True), ("Bash", False)]
+TOOLINV_SEARCH_OPS = [("Glob", True), ("Grep", True), ("WebSearch", True), ("Bash", False)]
+TOOLINV_SUBAGENTS = [("Task", True), ("Bash", False)]
 TOOLINV_GIT_OPS = [
     ("Bash", {"command": "git commit -m 'test'"}, True, "git_command"),
     ("Read", {"command": "git status"}, False, "not_bash"),
@@ -41,19 +32,6 @@ TOOLINV_GIT_OPS = [
     ("Bash", {"command": "  git push  "}, True, "whitespace_git"),
     ("Bash", {}, False, "no_command"),
 ]
-
-TOOLINV_SEARCH_OPS = [
-    ("Glob", True),
-    ("Grep", True),
-    ("WebSearch", True),
-    ("Bash", False),
-]
-
-TOOLINV_SUBAGENTS = [
-    ("Task", True),
-    ("Bash", False),
-]
-
 TOOLINV_AFFECTED_PATHS = [
     ("Read", {"file_path": "/tmp/test.txt"}, ["/tmp/test.txt"], "read"),
     ("Write", {"file_path": "/tmp/output.txt"}, ["/tmp/output.txt"], "write"),
@@ -66,19 +44,13 @@ TOOLINV_AFFECTED_PATHS = [
     ("Bash", {"command": 123}, [], "bash_non_string"),
     ("Task", {"prompt": "do something"}, [], "other_tool"),
 ]
-
-# Message._is_chatgpt_thinking test data
 CHATGPT_THINKING_META = [
-    (None, False, "no_meta"),
-    ({"raw": "not a dict"}, False, "raw_not_dict"),
+    (None, False, "no_meta"), ({"raw": "not a dict"}, False, "raw_not_dict"),
     ({"raw": {"content": {"content_type": "thoughts"}}}, True, "thoughts"),
     ({"raw": {"content": {"content_type": "reasoning_recap"}}}, True, "reasoning_recap"),
     ({"raw": {"content": "not a dict"}}, False, "content_not_dict"),
-    ({"raw": {}}, False, "tool_no_metadata"),
-    ({"raw": {"metadata": "not a dict"}}, False, "tool_metadata_not_dict"),
+    ({"raw": {}}, False, "tool_no_metadata"), ({"raw": {"metadata": "not a dict"}}, False, "tool_metadata_not_dict"),
 ]
-
-# Message.extract_thinking test data
 EXTRACT_THINKING_BLOCKS = [
     ([{"type": "thinking", "text": "thinking content"}, {"type": "text", "text": "response text"}], "thinking content", "single_block"),
     ([{"type": "thinking", "text": "first thought"}, {"type": "thinking", "text": "second thought"}], "first thought\n\nsecond thought", "multiple_blocks"),
@@ -86,77 +58,22 @@ EXTRACT_THINKING_BLOCKS = [
     ([{"type": "thinking", "text": 123}], None, "text_not_string"),
     ([{"type": "thinking", "text": "   \n\n   "}], None, "empty_after_strip"),
 ]
-
-# Message.is_context_dump test data
 CONTEXT_DUMP_CASES = [
-    (None, [], False, "no_text"),
-    ("short", [Attachment(id="att1")], True, "attachments_short_text"),
+    (None, [], False, "no_text"), ("short", [Attachment(id="att1")], True, "attachments_short_text"),
     ("x" * 100, [Attachment(id="att1")], False, "attachments_long_text"),
     ("<system>system prompt content</system>", [], True, "system_prompt"),
     ("```\ncode1\n```\n```\ncode2\n```\n```\ncode3\n```", [], True, "code_fences"),
     ("Contents of /tmp/file.txt:\nsome content", [], True, "regex_pattern"),
 ]
-
-# Message.from_record role handling test data
-MESSAGE_ROLE_CASES = [
-    ("", "unknown", "empty_role"),
-    ("   ", "unknown", "whitespace_role"),
-    ("  assistant  ", "assistant", "normal_role"),
-]
-
-# ConversationSummary metadata property test data
+MESSAGE_ROLE_CASES = [("", "unknown", "empty_role"), ("   ", "unknown", "whitespace_role"), ("  assistant  ", "assistant", "normal_role")]
 SUMMARY_DISPLAY_TITLE = [
     ({"title": "User Title"}, None, "User Title", "user_title"),
     ({}, "Auto Title", "Auto Title", "fallback_title"),
     ({}, None, "c1234567", "fallback_id"),
 ]
-
-SUMMARY_TAGS = [
-    ({"tags": ["tag1", "tag2", 123]}, ["tag1", "tag2", "123"], "list"),
-    ({"tags": "not a list"}, [], "non_list"),
-    ({}, [], "empty"),
-]
-
-SUMMARY_BRANCH_TYPE = [
-    ("continuation", True, False, "continuation"),
-    ("sidechain", False, True, "sidechain"),
-    (None, False, False, "other"),
-]
-
-# Attachment.from_record name test data
-ATTACHMENT_NAMES = [
-    ({"name": "file.txt"}, "file.txt", "with_name"),
-    ({"name": 123}, "att1", "name_not_string"),
-    (None, "att1", "no_provider_meta"),
-]
-
-# Conversation filter test data
-FILTER_CASES = [
-    ("custom_predicate", {}, 2, "custom_predicate"),  # uses lambda
-    ("user_only", {}, 2, "user_only"),
-    ("assistant_only", {}, 1, "assistant_only"),
-    ("dialogue_only", {}, 2, "dialogue_only"),
-    ("without_noise", {}, 1, "without_noise"),
-    ("substantive_only", {}, 1, "substantive_only"),
-]
-
-# Conversation.iter_pairs test data
-ITER_PAIRS_CASES = [
-    ("basic", 2, "basic"),
-    ("odd_messages", 1, "odd_messages"),
-    ("out_of_order", 0, "out_of_order"),
-    ("empty", 0, "empty"),
-]
-
-# Conversation.iter_branches test data
-ITER_BRANCHES_CASES = [
-    ("multiple_children", 1, "multiple_children"),
-    ("single_child", 0, "single_child"),
-    ("no_parent", 0, "no_parent"),
-    ("sorted_by_index", 2, "sorted_by_index"),
-]
-
-# DialoguePair validation test data
+SUMMARY_TAGS = [({"tags": ["tag1", "tag2", 123]}, ["tag1", "tag2", "123"], "list"), ({"tags": "not a list"}, [], "non_list"), ({}, [], "empty")]
+SUMMARY_BRANCH_TYPE = [("continuation", True, False, "continuation"), ("sidechain", False, True, "sidechain"), (None, False, False, "other")]
+ATTACHMENT_NAMES = [({"name": "file.txt"}, "file.txt", "with_name"), ({"name": 123}, "att1", "name_not_string"), (None, "att1", "no_provider_meta")]
 DIALOGUE_PAIR_CASES = [
     ("valid", "user", "assistant", True, None, "valid"),
     ("invalid_user_role", "assistant", "assistant", False, "user message must have user role", "invalid_user_role"),
@@ -353,6 +270,20 @@ class TestMessageExtractThinking:
         )
         assert msg.extract_thinking() is None
 
+    def test_extract_thinking_empty_text_with_blocks(self):
+        """Line 431: Thinking block text is empty after strip."""
+        msg = Message(
+            id="m1",
+            role="assistant",
+            text="response",
+            provider_meta={
+                "content_blocks": [
+                    {"type": "thinking", "text": "   \n\n   "},
+                ]
+            },
+        )
+        assert msg.extract_thinking() is None
+
 
 # =============================================================================
 # CONVERSATIONSUMMARY METADATA PROPERTIES
@@ -421,209 +352,160 @@ class TestConversationSummaryMetadata:
 class TestConversationFilter:
     """Test Conversation filter methods (lines 708-735)."""
 
-    def _make_message(self, role: str, text: str, is_tool: bool = False) -> Message:
-        """Helper to create test messages."""
-        provider_meta = {}
-        if is_tool:
-            provider_meta["content_blocks"] = [{"type": "tool_use"}]
-        return Message(
-            id=f"m-{role}",
-            role=role,
-            text=text,
-            provider_meta=provider_meta,
-        )
+    def _make_msg(self, role: str, text: str = "text", is_tool: bool = False) -> Message:
+        """Helper: create message."""
+        meta = {"content_blocks": [{"type": "tool_use"}]} if is_tool else {}
+        return Message(id=f"m{role}", role=role, text=text, provider_meta=meta)
 
-    @pytest.mark.parametrize("filter_type,_,expected_count,test_id", FILTER_CASES)
-    def test_filter_methods(self, filter_type, _, expected_count, test_id):
-        """Lines 714-735: Test all filter methods."""
-        if filter_type == "custom_predicate":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("user", "hello"),
-                    self._make_message("assistant", "hi"),
-                    self._make_message("user", "bye"),
-                ]
-            )
-            conv = Conversation(id="c1", provider="claude", messages=msgs)
-            filtered = conv.filter(lambda m: m.is_user)
-            assert len(filtered.messages) == expected_count
+    def test_filter_custom_predicate(self):
+        """Line 714: Filter with custom predicate."""
+        msgs = MessageCollection(messages=[
+            self._make_msg("user", "hello"), self._make_msg("assistant", "hi"),
+            self._make_msg("user", "bye"),
+        ])
+        conv = Conversation(id="c1", provider="claude", messages=msgs)
+        assert len(conv.filter(lambda m: m.is_user).messages) == 2
 
-        elif filter_type == "user_only":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("user", "q1"),
-                    self._make_message("assistant", "a1"),
-                    self._make_message("user", "q2"),
-                ]
-            )
-            conv = Conversation(id="c1", provider="claude", messages=msgs)
-            user_only = conv.user_only()
-            assert all(m.is_user for m in user_only.messages)
+    def test_user_only(self):
+        """Line 719: Filter user messages only."""
+        msgs = MessageCollection(messages=[
+            self._make_msg("user", "q1"), self._make_msg("assistant", "a1"),
+            self._make_msg("user", "q2"),
+        ])
+        conv = Conversation(id="c1", provider="claude", messages=msgs)
+        assert all(m.is_user for m in conv.user_only().messages)
 
-        elif filter_type == "assistant_only":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("user", "q1"),
-                    self._make_message("assistant", "a1"),
-                    self._make_message("user", "q2"),
-                ]
-            )
-            conv = Conversation(id="c1", provider="claude", messages=msgs)
-            assistant_only = conv.assistant_only()
-            assert all(m.is_assistant for m in assistant_only.messages)
+    def test_assistant_only(self):
+        """Line 722: Filter assistant messages only."""
+        msgs = MessageCollection(messages=[
+            self._make_msg("user", "q1"), self._make_msg("assistant", "a1"),
+            self._make_msg("user", "q2"),
+        ])
+        conv = Conversation(id="c1", provider="claude", messages=msgs)
+        assert all(m.is_assistant for m in conv.assistant_only().messages)
 
-        elif filter_type == "dialogue_only":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("user", "q1"),
-                    self._make_message("assistant", "a1"),
-                    self._make_message("system", "sys"),
-                ]
-            )
-            conv = Conversation(id="c1", provider="claude", messages=msgs)
-            dialogue = conv.dialogue_only()
-            assert all(m.is_dialogue for m in dialogue.messages)
-            assert len(dialogue.messages) == expected_count
+    def test_dialogue_only(self):
+        """Line 727: Filter dialogue only (user + assistant)."""
+        msgs = MessageCollection(messages=[
+            self._make_msg("user", "q1"), self._make_msg("assistant", "a1"),
+            self._make_msg("system", "sys"),
+        ])
+        conv = Conversation(id="c1", provider="claude", messages=msgs)
+        dialogue = conv.dialogue_only()
+        assert all(m.is_dialogue for m in dialogue.messages)
+        assert len(dialogue.messages) == 2
 
-        elif filter_type == "without_noise":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("user", "real question"),
-                    self._make_message("assistant", "tool", is_tool=True),
-                    self._make_message("system", "sys msg"),
-                ]
-            )
-            conv = Conversation(id="c1", provider="claude", messages=msgs)
-            clean = conv.without_noise()
-            assert all(not m.is_noise for m in clean.messages)
+    def test_without_noise(self):
+        """Line 731: Filter out noise (tool calls, context dumps, system)."""
+        msgs = MessageCollection(messages=[
+            self._make_msg("user", "real question"),
+            self._make_msg("assistant", "tool", is_tool=True),
+            self._make_msg("system", "sys msg"),
+        ])
+        conv = Conversation(id="c1", provider="claude", messages=msgs)
+        assert all(not m.is_noise for m in conv.without_noise().messages)
 
-        elif filter_type == "substantive_only":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("user", "this is a substantive user message"),
-                    self._make_message("assistant", "short"),
-                    self._make_message("user", "x"),
-                ]
-            )
-            conv = Conversation(id="c1", provider="claude", messages=msgs)
-            substantive = conv.substantive_only()
-            assert all(m.is_substantive for m in substantive.messages)
+    def test_substantive_only(self):
+        """Line 735: Filter substantive messages only."""
+        msgs = MessageCollection(messages=[
+            self._make_msg("user", "this is a substantive user message"),
+            self._make_msg("assistant", "short"),
+            self._make_msg("user", "x"),
+        ])
+        conv = Conversation(id="c1", provider="claude", messages=msgs)
+        assert all(m.is_substantive for m in conv.substantive_only().messages)
 
 
 class TestConversationIterPairs:
     """Test Conversation.iter_pairs() method (lines 763-772)."""
 
-    def _make_message(self, role: str, text: str) -> Message:
-        """Helper to create test messages."""
-        return Message(id=f"m-{role}", role=role, text=text)
+    def test_iter_pairs_basic(self):
+        """Lines 765-770: Iterate over user/assistant pairs."""
+        msgs = MessageCollection(messages=[
+            Message(id="m1", role="user", text="this is a substantive question"),
+            Message(id="m2", role="assistant", text="this is a substantive answer"),
+            Message(id="m3", role="user", text="another substantive question"),
+            Message(id="m4", role="assistant", text="another substantive answer"),
+        ])
+        pairs = list(Conversation(id="c1", provider="claude", messages=msgs).iter_pairs())
+        assert len(pairs) == 2
 
-    @pytest.mark.parametrize("case_type,expected_pairs,test_id", ITER_PAIRS_CASES)
-    def test_iter_pairs(self, case_type, expected_pairs, test_id):
-        """Lines 765-772: Test iter_pairs with various message patterns."""
-        if case_type == "basic":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("user", "this is a substantive question"),
-                    self._make_message("assistant", "this is a substantive answer"),
-                    self._make_message("user", "another substantive question"),
-                    self._make_message("assistant", "another substantive answer"),
-                ]
-            )
-        elif case_type == "odd_messages":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("user", "this is a substantive question"),
-                    self._make_message("assistant", "this is a substantive answer"),
-                    self._make_message("user", "another substantive question"),
-                ]
-            )
-        elif case_type == "out_of_order":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("assistant", "a1"),
-                    self._make_message("user", "q1"),
-                ]
-            )
-        elif case_type == "empty":
-            msgs = MessageCollection(messages=[])
+    def test_iter_pairs_odd_messages(self):
+        """Lines 767-772: Handle odd number of substantive messages."""
+        msgs = MessageCollection(messages=[
+            Message(id="m1", role="user", text="this is a substantive question"),
+            Message(id="m2", role="assistant", text="this is a substantive answer"),
+            Message(id="m3", role="user", text="another substantive question"),
+        ])
+        pairs = list(Conversation(id="c1", provider="claude", messages=msgs).iter_pairs())
+        assert len(pairs) == 1
 
-        conv = Conversation(id="c1", provider="claude", messages=msgs)
-        pairs = list(conv.iter_pairs())
-        assert len(pairs) == expected_pairs
+    def test_iter_pairs_out_of_order(self):
+        """Lines 768-772: Skip out-of-order messages."""
+        msgs = MessageCollection(messages=[
+            Message(id="m1", role="assistant", text="a1"),
+            Message(id="m2", role="user", text="q1"),
+        ])
+        pairs = list(Conversation(id="c1", provider="claude", messages=msgs).iter_pairs())
+        assert len(pairs) == 0
+
+    def test_iter_pairs_empty(self):
+        """Line 767: Empty conversation."""
+        msgs = MessageCollection(messages=[])
+        pairs = list(Conversation(id="c1", provider="claude", messages=msgs).iter_pairs())
+        assert len(pairs) == 0
 
 
 class TestConversationIterBranches:
     """Test Conversation.iter_branches() method (lines 782-808)."""
 
-    def _make_message(self, msg_id: str, parent_id: str | None, branch_idx: int) -> Message:
-        """Helper to create test messages with parent relationships."""
-        return Message(
-            id=msg_id,
-            role="assistant",
-            text=f"msg {msg_id}",
-            parent_id=parent_id,
-            branch_index=branch_idx,
-        )
+    def _make_msg(self, msg_id: str, parent_id: str | None, branch_idx: int) -> Message:
+        """Helper: create message with parent relationship."""
+        return Message(id=msg_id, role="assistant", text=f"msg {msg_id}",
+                      parent_id=parent_id, branch_index=branch_idx)
 
-    @pytest.mark.parametrize("case_type,expected_branches,test_id", ITER_BRANCHES_CASES)
-    def test_iter_branches(self, case_type, expected_branches, test_id):
-        """Lines 799-808: Test iter_branches with various parent/child patterns."""
-        if case_type == "multiple_children":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("m1", parent_id=None, branch_idx=0),
-                    self._make_message("m2", parent_id="m1", branch_idx=0),
-                    self._make_message("m3", parent_id="m1", branch_idx=1),  # branch
-                ]
-            )
-            expected_len = 1
-            parent_id_to_check = "m1"
-            child_count = 2
-        elif case_type == "single_child":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("m1", parent_id=None, branch_idx=0),
-                    self._make_message("m2", parent_id="m1", branch_idx=0),
-                ]
-            )
-            expected_len = 0
-            parent_id_to_check = None
-            child_count = None
-        elif case_type == "no_parent":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("m1", parent_id=None, branch_idx=0),
-                    self._make_message("m2", parent_id=None, branch_idx=0),
-                ]
-            )
-            expected_len = 0
-            parent_id_to_check = None
-            child_count = None
-        elif case_type == "sorted_by_index":
-            msgs = MessageCollection(
-                messages=[
-                    self._make_message("m1", parent_id=None, branch_idx=0),
-                    self._make_message("m3", parent_id="m1", branch_idx=2),
-                    self._make_message("m2", parent_id="m1", branch_idx=1),
-                ]
-            )
-            expected_len = 1
-            parent_id_to_check = "m1"
-            child_count = 2
+    def test_iter_branches_multiple_children(self):
+        """Lines 799-808: Group messages by parent with multiple children."""
+        msgs = MessageCollection(messages=[
+            self._make_msg("m1", None, 0),
+            self._make_msg("m2", "m1", 0),
+            self._make_msg("m3", "m1", 1),
+        ])
+        branches = list(Conversation(id="c1", provider="claude", messages=msgs).iter_branches())
+        assert len(branches) == 1
+        assert branches[0][0] == "m1"
+        assert len(branches[0][1]) == 2
 
-        conv = Conversation(id="c1", provider="claude", messages=msgs)
-        branches_list = list(conv.iter_branches())
-        assert len(branches_list) == expected_len
+    def test_iter_branches_single_child(self):
+        """Lines 804-805: Only parents with 2+ children are branches."""
+        msgs = MessageCollection(messages=[
+            self._make_msg("m1", None, 0),
+            self._make_msg("m2", "m1", 0),
+        ])
+        branches = list(Conversation(id="c1", provider="claude", messages=msgs).iter_branches())
+        assert len(branches) == 0
 
-        if expected_len > 0:
-            parent_id, children = branches_list[0]
-            if parent_id_to_check:
-                assert parent_id == parent_id_to_check
-            if child_count:
-                assert len(children) == child_count
-                if case_type == "sorted_by_index":
-                    assert children[0].branch_index == 1
-                    assert children[1].branch_index == 2
+    def test_iter_branches_no_parent(self):
+        """Line 800: Skip messages without parent_id."""
+        msgs = MessageCollection(messages=[
+            self._make_msg("m1", None, 0),
+            self._make_msg("m2", None, 0),
+        ])
+        branches = list(Conversation(id="c1", provider="claude", messages=msgs).iter_branches())
+        assert len(branches) == 0
+
+    def test_iter_branches_sorted_by_index(self):
+        """Lines 806-807: Children sorted by branch_index."""
+        msgs = MessageCollection(messages=[
+            self._make_msg("m1", None, 0),
+            self._make_msg("m3", "m1", 2),
+            self._make_msg("m2", "m1", 1),
+        ])
+        branches = list(Conversation(id="c1", provider="claude", messages=msgs).iter_branches())
+        assert len(branches) == 1
+        children = branches[0][1]
+        assert children[0].branch_index == 1
+        assert children[1].branch_index == 2
 
 
 # =============================================================================
@@ -776,6 +658,22 @@ class TestMessageCollectionEquality:
         """Line 225: NotImplemented if comparing with non-MessageCollection."""
         coll = MessageCollection(messages=[])
         assert (coll == []) is False
+
+
+class TestMessageCollectionHash:
+    """Test MessageCollection.__hash__ method (line 231)."""
+
+    def test_hash_uses_id(self):
+        """Line 231: Hash uses object id."""
+        coll1 = MessageCollection(messages=[])
+        coll2 = MessageCollection(messages=[])
+        # Different objects should have different hashes
+        assert hash(coll1) != hash(coll2)
+
+    def test_hash_same_object(self):
+        """Line 231: Same object has same hash."""
+        coll = MessageCollection(messages=[])
+        assert hash(coll) == hash(coll)
 
 
 class TestMessageCollectionToList:
