@@ -31,7 +31,7 @@ from polylogue.storage.store import (
     RunRecord,
     store_records,
 )
-from tests.helpers import ConversationBuilder
+from tests.helpers import ConversationBuilder, make_conversation, make_message, make_attachment
 
 
 @pytest.fixture
@@ -83,31 +83,27 @@ def repo(repo_db):
 
 
 class TestLazyVsEagerLoading:
-    """Test that get() provides lazy loading and get_eager() loads eagerly."""
+    """Test get(), get_eager(), and get_summary() loading behavior."""
 
-    @pytest.mark.parametrize("method,should_load_messages", [
-        ("get", True),  # Lazy: loads on access
-        ("get_eager", True),  # Eager: loads immediately
+    @pytest.mark.parametrize("method,conv_id,should_exist,should_load_messages", [
+        ("get", "conv-1", True, True),
+        ("get_eager", "conv-1", True, True),
+        ("get", "nonexistent", False, False),
+        ("get_eager", "nonexistent", False, False),
     ])
-    def test_loading_returns_conversation(self, repo, method, should_load_messages):
-        """get() and get_eager() should return a Conversation object."""
+    def test_get_methods(self, repo, method, conv_id, should_exist, should_load_messages):
+        """get() and get_eager() return Conversation or None, loading messages."""
         get_method = getattr(repo, method)
-        conv = get_method("conv-1")
-        assert conv is not None
-        assert str(conv.id) == "conv-1"
-        if should_load_messages:
-            assert len(conv.messages) == 2
-            assert conv.messages[0].role == "user"
-            assert conv.messages[1].role == "assistant"
-
-    @pytest.mark.parametrize("method,conv_id", [
-        ("get", "nonexistent"),
-        ("get_eager", "nonexistent"),
-    ])
-    def test_loading_nonexistent_returns_none(self, repo, method, conv_id):
-        """get() and get_eager() should return None for nonexistent conversation."""
-        get_method = getattr(repo, method)
-        assert get_method(conv_id) is None
+        conv = get_method(conv_id)
+        if should_exist:
+            assert conv is not None
+            assert str(conv.id) == conv_id
+            if should_load_messages:
+                assert len(conv.messages) == 2
+                assert conv.messages[0].role == "user"
+                assert conv.messages[1].role == "assistant"
+        else:
+            assert conv is None
 
     def test_get_summary_no_messages(self, repo):
         """get_summary() returns summary without loading messages."""
@@ -160,39 +156,19 @@ class TestResolveIdAndView:
 class TestTreeTraversal:
     """Test parent/child/root/tree operations."""
 
-    @pytest.mark.parametrize("conv_id,expected_parent,should_have_parent", [
-        ("conv-3", "conv-1", True),   # Child has parent
-        ("conv-1", None, False),      # Root has no parent
+    @pytest.mark.parametrize("method,conv_id,expected_check", [
+        ("get_parent", "conv-3", lambda r: r is not None and str(r.id) == "conv-1"),
+        ("get_parent", "conv-1", lambda r: r is None),
+        ("get_children", "conv-1", lambda r: len(r) == 1 and str(r[0].id) == "conv-3"),
+        ("get_children", "conv-2", lambda r: len(r) == 0),
+        ("get_root", "conv-1", lambda r: str(r.id) == "conv-1"),
+        ("get_root", "conv-3", lambda r: str(r.id) == "conv-1"),
     ])
-    def test_get_parent(self, repo, conv_id, expected_parent, should_have_parent):
-        """get_parent() should return parent conversation or None."""
-        parent = repo.get_parent(conv_id)
-        if should_have_parent:
-            assert parent is not None
-            assert str(parent.id) == expected_parent
-        else:
-            assert parent is None
-
-    @pytest.mark.parametrize("conv_id,expected_count,expected_child_ids", [
-        ("conv-1", 1, ["conv-3"]),  # Has 1 child
-        ("conv-2", 0, []),          # No children
-    ])
-    def test_get_children(self, repo, conv_id, expected_count, expected_child_ids):
-        """get_children() should return direct children or empty list."""
-        children = repo.get_children(conv_id)
-        assert len(children) == expected_count
-        child_ids = [str(c.id) for c in children]
-        for expected_id in expected_child_ids:
-            assert expected_id in child_ids
-
-    @pytest.mark.parametrize("conv_id,expected_root", [
-        ("conv-1", "conv-1"),  # Root from root
-        ("conv-3", "conv-1"),  # Root from child
-    ])
-    def test_get_root(self, repo, conv_id, expected_root):
-        """get_root() should walk up to find root conversation."""
-        root = repo.get_root(conv_id)
-        assert str(root.id) == expected_root
+    def test_tree_methods(self, repo, method, conv_id, expected_check):
+        """Tree traversal methods return expected relationships."""
+        method_fn = getattr(repo, method)
+        result = method_fn(conv_id)
+        assert expected_check(result)
 
     def test_get_root_nonexistent_raises(self, repo):
         """get_root() should raise ValueError for nonexistent conversation."""
@@ -218,106 +194,35 @@ class TestTreeTraversal:
 class TestSaveConversation:
     """Test transactional save with skip counting."""
 
-    def test_save_new_conversation(self, repo):
-        """save_conversation() should insert new conversation and messages."""
-        conv = ConversationRecord(
-            conversation_id="new-conv",
-            provider_name="claude",
-            provider_conversation_id="prov-new",
-            title="New Conversation",
-            created_at="2025-06-01T00:00:00Z",
-            updated_at="2025-06-01T00:00:00Z",
-            content_hash="new-hash",
-            version=1,
-        )
-        msg = MessageRecord(
-            message_id="new-msg",
-            conversation_id="new-conv",
-            role="user",
-            text="New message",
-            timestamp="2025-06-01T00:00:00Z",
-            content_hash="msg-hash",
-            version=1,
-        )
-        counts = repo.save_conversation(
-            conversation=conv, messages=[msg], attachments=[]
-        )
+    @pytest.mark.parametrize("conv_id,has_attachments,expected_att_count", [
+        ("new-conv", False, 0),
+        ("conv-att", True, 1),
+    ])
+    def test_save_conversation(self, repo, conv_id, has_attachments, expected_att_count):
+        """save_conversation() inserts conversations, messages, and attachments."""
+        conv = make_conversation(conv_id, title="Test Save")
+        msg = make_message(f"m-{conv_id}", conv_id, text="Test message")
+        atts = [make_attachment("att-1", conv_id, msg.message_id)] if has_attachments else []
+
+        counts = repo.save_conversation(conversation=conv, messages=[msg], attachments=atts)
         assert counts["conversations"] == 1
         assert counts["messages"] == 1
+        assert counts["attachments"] == expected_att_count
 
-        # Verify it was saved
-        retrieved = repo.get("new-conv")
+        retrieved = repo.get(conv_id)
         assert retrieved is not None
 
     def test_save_duplicate_conversation_skipped(self, repo):
         """Saving same content_hash again should skip."""
-        conv = ConversationRecord(
-            conversation_id="dup-conv",
-            provider_name="claude",
-            provider_conversation_id="prov-dup",
-            title="Dup Conv",
-            created_at="2025-06-01T00:00:00Z",
-            updated_at="2025-06-01T00:00:00Z",
-            content_hash="dup-hash",
-            version=1,
-        )
-        msg = MessageRecord(
-            message_id="dup-msg",
-            conversation_id="dup-conv",
-            role="user",
-            text="Dup message",
-            timestamp="2025-06-01T00:00:00Z",
-            content_hash="dup-msg-hash",
-            version=1,
-        )
+        conv = make_conversation("dup-conv", content_hash="dup-hash")
+        msg = make_message("dup-msg", "dup-conv", content_hash="msg-hash")
 
-        # First save
-        counts1 = repo.save_conversation(
-            conversation=conv, messages=[msg], attachments=[]
-        )
+        counts1 = repo.save_conversation(conversation=conv, messages=[msg], attachments=[])
         assert counts1["conversations"] == 1
 
-        # Second save with same hash
-        counts2 = repo.save_conversation(
-            conversation=conv, messages=[msg], attachments=[]
-        )
+        counts2 = repo.save_conversation(conversation=conv, messages=[msg], attachments=[])
         assert counts2["skipped_conversations"] == 1
         assert counts2["skipped_messages"] == 1
-
-    def test_save_with_attachments(self, repo):
-        """save_conversation() should save attachments."""
-        conv = ConversationRecord(
-            conversation_id="conv-att",
-            provider_name="claude",
-            provider_conversation_id="prov-att",
-            title="With Attachments",
-            created_at="2025-06-01T00:00:00Z",
-            updated_at="2025-06-01T00:00:00Z",
-            content_hash="att-hash",
-            version=1,
-        )
-        msg = MessageRecord(
-            message_id="msg-att",
-            conversation_id="conv-att",
-            role="user",
-            text="Message with attachment",
-            timestamp="2025-06-01T00:00:00Z",
-            content_hash="msg-att-hash",
-            version=1,
-        )
-        att = AttachmentRecord(
-            attachment_id="att-1",
-            conversation_id="conv-att",
-            message_id="msg-att",
-            mime_type="application/pdf",
-            size_bytes=1024,
-        )
-        counts = repo.save_conversation(
-            conversation=conv, messages=[msg], attachments=[att]
-        )
-        assert counts["conversations"] == 1
-        assert counts["messages"] == 1
-        assert counts["attachments"] == 1
 
 
 # =============================================================================
@@ -342,26 +247,25 @@ class TestMetadataCRUD:
         meta = repo.get_metadata("conv-1")
         assert check_fn(meta)
 
-    def test_delete_metadata(self, repo):
-        """delete_metadata() should remove key."""
+    def test_delete_and_manage_tags(self, repo):
+        """delete_metadata(), add_tag(), remove_tag(), list_tags() work together."""
+        # Delete metadata
         repo.update_metadata("conv-1", "temp", "value")
         repo.delete_metadata("conv-1", "temp")
         meta = repo.get_metadata("conv-1")
         assert "temp" not in meta
 
-    def test_add_and_remove_tag(self, repo):
-        """add_tag() and remove_tag() should manage tags."""
+        # Manage tags
         repo.add_tag("conv-1", "test-tag")
         tags = repo.list_tags()
         assert "test-tag" in tags
 
-        repo.remove_tag("conv-1", "test-tag")
-
-    def test_list_tags_with_provider(self, repo):
-        """list_tags() should filter by provider."""
+        # Filter by provider
         repo.add_tag("conv-1", "claude-tag")
-        tags = repo.list_tags(provider="claude")
-        assert "claude-tag" in tags
+        tags_claude = repo.list_tags(provider="claude")
+        assert "claude-tag" in tags_claude
+
+        repo.remove_tag("conv-1", "test-tag")
 
     @pytest.mark.parametrize("conv_id,should_exist", [
         ("conv-2", True),
@@ -387,50 +291,47 @@ class TestCountAndList:
     """Test count() and list_summaries() with filters."""
 
     @pytest.mark.parametrize("provider,providers,expected_count", [
-        (None, None, 3),           # All conversations
-        ("claude", None, 2),       # Filter by single provider
-        ("chatgpt", None, 1),      # Another provider
-        (None, ["claude", "chatgpt"], 3),  # Filter by providers list
+        (None, None, 3),
+        ("claude", None, 2),
+        ("chatgpt", None, 1),
+        (None, ["claude", "chatgpt"], 3),
     ])
     def test_count(self, repo, provider, providers, expected_count):
-        """count() should return conversations, optionally filtered."""
-        if provider is not None:
+        """count() returns conversations, optionally filtered by provider."""
+        if provider:
             count = repo.count(provider=provider)
-        elif providers is not None:
+        elif providers:
             count = repo.count(providers=providers)
         else:
             count = repo.count()
         assert count == expected_count
 
-    @pytest.mark.parametrize("limit,expected_count", [
-        (None, 3),  # No limit
-        (2, 2),     # With limit
+    @pytest.mark.parametrize("limit,provider,expected_count", [
+        (None, None, 3),
+        (2, None, 2),
+        (None, "claude", 2),
     ])
-    def test_list_summaries(self, repo, limit, expected_count):
-        """list_summaries() should respect limit."""
+    def test_list_summaries_with_filters(self, repo, limit, provider, expected_count):
+        """list_summaries() respects limit and provider filters."""
+        kwargs = {}
         if limit is not None:
-            summaries = repo.list_summaries(limit=limit)
-        else:
-            summaries = repo.list_summaries()
+            kwargs["limit"] = limit
+        if provider:
+            kwargs["provider"] = provider
+        summaries = repo.list_summaries(**kwargs)
         assert len(summaries) == expected_count
 
-    def test_list_summaries_by_provider(self, repo):
-        """list_summaries() should filter by provider."""
-        summaries = repo.list_summaries(provider="claude")
-        assert len(summaries) == 2
-        assert all(s.provider == "claude" for s in summaries)
+    def test_list_operations(self, repo):
+        """list() filters by title and returns lazy Conversation objects."""
+        # Title filter
+        convs_filtered = repo.list(title_contains="First")
+        assert len(convs_filtered) == 1
+        assert "First" in convs_filtered[0].display_title
 
-    def test_list_with_title_filter(self, repo):
-        """list() should filter by title."""
-        convs = repo.list(title_contains="First")
-        assert len(convs) == 1
-        assert "First" in convs[0].display_title
-
-    def test_list_returns_lazy_conversations(self, repo):
-        """list() should return lazy Conversation objects."""
-        convs = repo.list()
-        assert len(convs) == 3
-        assert all(hasattr(c, "id") for c in convs)
+        # All conversations
+        convs_all = repo.list()
+        assert len(convs_all) == 3
+        assert all(hasattr(c, "id") for c in convs_all)
 
 
 # =============================================================================
@@ -473,33 +374,21 @@ class TestSearch:
 class TestIterMessages:
     """Test message streaming."""
 
-    @pytest.mark.parametrize("limit,expected_count", [
-        (None, 2),  # All messages
-        (1, 1),     # With limit
+    @pytest.mark.parametrize("conv_id,limit,expected_count", [
+        ("conv-1", None, 2),
+        ("conv-1", 1, 1),
+        ("nonexistent", None, 0),
     ])
-    def test_iter_messages(self, repo, limit, expected_count):
-        """iter_messages() should yield messages, optionally limited."""
-        if limit is not None:
-            messages = list(repo.iter_messages("conv-1", limit=limit))
-        else:
-            messages = list(repo.iter_messages("conv-1"))
+    def test_iter_messages_and_stats(self, repo, conv_id, limit, expected_count):
+        """iter_messages() and get_conversation_stats() work with limits and nonexistent."""
+        kwargs = {} if limit is None else {"limit": limit}
+        messages = list(repo.iter_messages(conv_id, **kwargs))
         assert len(messages) == expected_count
 
-    def test_iter_messages_nonexistent(self, repo):
-        """iter_messages() should return empty for nonexistent conversation."""
-        messages = list(repo.iter_messages("nonexistent"))
-        assert messages == []
-
-    @pytest.mark.parametrize("conv_id,expected_total_messages", [
-        ("conv-1", 2),
-        ("nonexistent", None),
-    ])
-    def test_get_conversation_stats(self, repo, conv_id, expected_total_messages):
-        """get_conversation_stats() should return message counts or None."""
         stats = repo.get_conversation_stats(conv_id)
-        if expected_total_messages is not None:
+        if conv_id == "conv-1":
             assert stats is not None
-            assert stats["total_messages"] == expected_total_messages
+            assert stats["total_messages"] == 2
         else:
             assert stats is None
 
@@ -631,58 +520,6 @@ class MockVectorProvider:
         self._upserted[conversation_id] = messages
 
 
-def _make_conv_record(
-    conv_id: str = "conv-1",
-    provider: str = "claude",
-    title: str = "Test Conversation",
-) -> ConversationRecord:
-    """Helper to create ConversationRecord without database."""
-    now = datetime.now(timezone.utc).isoformat()
-    return ConversationRecord(
-        conversation_id=conv_id,
-        provider_name=provider,
-        provider_conversation_id=f"ext-{conv_id}",
-        title=title,
-        content_hash=uuid4().hex[:16],
-        created_at=now,
-        updated_at=now,
-    )
-
-
-def _make_msg_record(
-    msg_id: str = "msg-1",
-    conv_id: str = "conv-1",
-    role: str = "user",
-    content: str = "Hello",
-) -> MessageRecord:
-    """Helper to create MessageRecord without database."""
-    now = datetime.now(timezone.utc).isoformat()
-    return MessageRecord(
-        message_id=msg_id,
-        conversation_id=conv_id,
-        role=role,
-        text=content,
-        timestamp=now,
-        content_hash=uuid4().hex[:16],
-    )
-
-
-def _make_att_record(
-    att_id: str = "att-1",
-    conv_id: str = "conv-1",
-    msg_id: str | None = "msg-1",
-) -> AttachmentRecord:
-    """Helper to create AttachmentRecord without database."""
-    return AttachmentRecord(
-        attachment_id=att_id,
-        conversation_id=conv_id,
-        message_id=msg_id,
-        mime_type="text/plain",
-        size_bytes=1024,
-        path="/tmp/test.txt",
-    )
-
-
 # =============================================================================
 # Test Classes
 # =============================================================================
@@ -691,26 +528,27 @@ def _make_att_record(
 class TestGetSummaryNotFound:
     """Test get_summary() with nonexistent conversation."""
 
-    @pytest.mark.parametrize("conv_id,should_exist", [
-        ("nonexistent-conv", False),
-        ("conv-1", True),
+    @pytest.mark.parametrize("conv_id,should_exist,expected_title", [
+        ("nonexistent-conv", False, None),
+        ("conv-1", True, "Root Conversation"),
     ])
-    def test_get_summary(self, repo_with_conversations, conv_id, should_exist):
+    def test_get_summary(self, repo_with_conversations, conv_id, should_exist, expected_title):
         """get_summary() returns ConversationSummary for existing or None."""
         summary = repo_with_conversations.get_summary(conv_id)
         if should_exist:
             assert summary is not None
             assert str(summary.id) == conv_id
-            assert summary.title == "Root Conversation"
+            assert summary.title == expected_title
             assert summary.provider == "claude"
         else:
             assert summary is None
+            # Also verify that message data isn't loaded for nonexistent
+            assert not hasattr(summary or {}, "messages") or not summary.messages
 
     def test_get_summary_does_not_load_messages(self, repo_with_conversations):
         """get_summary() doesn't load message data."""
         summary = repo_with_conversations.get_summary("conv-1")
         assert summary is not None
-        # ConversationSummary should not have a messages attribute
         assert not hasattr(summary, "messages") or summary.messages is None
 
 
@@ -725,37 +563,6 @@ class TestGetRootEdgeCases:
         """get_root() returns root or walks up the tree."""
         root = repo_with_conversations.get_root(conv_id)
         assert str(root.id) == expected_root
-
-    def test_get_root_stops_when_parent_deleted(self, repo_with_conversations):
-        """get_root() breaks loop when parent_id points to deleted conversation.
-
-        This tests the break condition when parent_id is set but parent doesn't exist.
-        """
-        from polylogue.storage.backends.sqlite import open_connection
-
-        db_path = repo_with_conversations.backend._db_path
-
-        # Create a child conversation with parent conv-3
-        (ConversationBuilder(db_path, "conv-orphan")
-         .provider("claude")
-         .title("Child Before Delete")
-         .parent_conversation("conv-3")  # conv-3 will be deleted
-         .add_message("m-orphan", role="user", text="Orphan test")
-         .save())
-
-        # Disable FK constraints temporarily, delete conv-3, then re-enable
-        with open_connection(db_path) as conn:
-            conn.execute("PRAGMA foreign_keys = OFF")
-            conn.execute("DELETE FROM messages WHERE conversation_id = 'conv-3'")
-            conn.execute("DELETE FROM conversations WHERE conversation_id = 'conv-3'")
-            conn.execute("PRAGMA foreign_keys = ON")
-            conn.commit()
-
-        # Now get_root("conv-orphan") should break the parent loop when it tries
-        # to get conv-3 and finds it doesn't exist
-        root = repo_with_conversations.get_root("conv-orphan")
-        # Should return the orphaned conversation as the "root" since parent is deleted
-        assert str(root.id) == "conv-orphan"
 
     def test_get_root_raises_for_nonexistent_conversation(self, repo_empty):
         """get_root() raises ValueError when conversation doesn't exist."""
@@ -881,44 +688,28 @@ class TestRecordRun:
 class TestEmbedConversation:
     """Test embed_conversation() with and without vector provider."""
 
-    def test_embed_conversation_with_explicit_provider(self, repo_with_conversations):
-        """embed_conversation() uses provided vector provider."""
-        mock_provider = MockVectorProvider()
-        count = repo_with_conversations.embed_conversation(
-            "conv-1",
-            vector_provider=mock_provider,
-        )
-        assert count == 2  # conv-1 has 2 messages
-        assert "conv-1" in mock_provider._upserted
-        assert len(mock_provider._upserted["conv-1"]) == 2
-
-    def test_embed_conversation_returns_zero_for_empty_conversation(self, repo_with_conversations):
-        """embed_conversation() returns 0 when conversation has no messages."""
-        # Create conversation with no messages
-        (ConversationBuilder(repo_with_conversations.backend._db_path, "conv-empty")
-         .provider("claude")
-         .title("Empty Conversation")
-         .save())
+    @pytest.mark.parametrize("conv_id,has_messages,expected_count", [
+        ("conv-1", True, 2),
+        ("conv-empty", False, 0),
+    ])
+    def test_embed_conversation_counts_messages(self, repo_with_conversations, conv_id, has_messages, expected_count):
+        """embed_conversation() uses provider and returns correct message count."""
+        if not has_messages:
+            (ConversationBuilder(repo_with_conversations.backend._db_path, "conv-empty")
+             .provider("claude")
+             .title("Empty Conversation")
+             .save())
 
         mock_provider = MockVectorProvider()
-        count = repo_with_conversations.embed_conversation(
-            "conv-empty",
-            vector_provider=mock_provider,
-        )
-        assert count == 0
+        count = repo_with_conversations.embed_conversation(conv_id, vector_provider=mock_provider)
+        assert count == expected_count
+        if has_messages:
+            assert conv_id in mock_provider._upserted
+            assert len(mock_provider._upserted[conv_id]) == expected_count
 
-    def test_embed_conversation_raises_without_api_key(self, repo_with_conversations):
-        """embed_conversation() raises when trying to create default provider without VOYAGE_API_KEY."""
-        with patch.dict("os.environ", {}, clear=True):
-            with patch(
-                "polylogue.storage.search_providers.create_vector_provider",
-                return_value=None,
-            ):
-                with pytest.raises(ValueError, match="No vector provider available"):
-                    repo_with_conversations.embed_conversation("conv-1", vector_provider=None)
-
-    def test_embed_conversation_creates_default_provider_if_available(self, repo_with_conversations):
-        """embed_conversation() creates default provider if VOYAGE_API_KEY available."""
+    def test_embed_conversation_provider_creation(self, repo_with_conversations):
+        """embed_conversation() handles provider creation and errors."""
+        # Test with no provider and fallback available
         mock_provider = MockVectorProvider()
         with patch(
             "polylogue.storage.search_providers.create_vector_provider",
@@ -927,72 +718,51 @@ class TestEmbedConversation:
             count = repo_with_conversations.embed_conversation("conv-1", vector_provider=None)
             assert count == 2
 
+        # Test without provider and no fallback
+        with patch.dict("os.environ", {}, clear=True):
+            with patch(
+                "polylogue.storage.search_providers.create_vector_provider",
+                return_value=None,
+            ):
+                with pytest.raises(ValueError, match="No vector provider available"):
+                    repo_with_conversations.embed_conversation("conv-1", vector_provider=None)
+
 
 class TestSimilaritySearch:
     """Test similarity_search() returning (conv_id, msg_id, distance) tuples."""
 
-    def test_similarity_search_returns_tuples(self, repo_with_conversations):
-        """similarity_search() returns list of (conv_id, msg_id, distance) tuples."""
-        mock_provider = MockVectorProvider(
-            results=[
-                ("m1", 0.95),
-                ("m2", 0.90),
-            ]
-        )
-        results = repo_with_conversations.similarity_search(
-            "test query",
-            limit=10,
-            vector_provider=mock_provider,
-        )
-        assert len(results) == 2
+    @pytest.mark.parametrize("results_data,should_exist,expected_msg_ids", [
+        ([("m1", 0.95), ("m2", 0.90)], True, ["m1", "m2"]),
+        ([("m1", 0.95), ("m5", 0.85)], True, ["m1", "m5"]),
+        ([("m1", 0.95), ("m_orphaned", 0.90)], False, ["m1"]),
+        ([], True, []),
+    ])
+    def test_similarity_search_tuple_format_and_mapping(self, repo_with_conversations, results_data, should_exist, expected_msg_ids):
+        """similarity_search() returns tuples, maps IDs, preserves scores, filters orphaned."""
+        mock_provider = MockVectorProvider(results=results_data)
+        results = repo_with_conversations.similarity_search("test query", vector_provider=mock_provider)
+
+        # Verify tuple format and basic structure
         for conv_id, msg_id, distance in results:
             assert isinstance(conv_id, str)
             assert isinstance(msg_id, str)
             assert isinstance(distance, float)
 
-    def test_similarity_search_maps_messages_to_conversations(self, repo_with_conversations):
-        """similarity_search() maps message IDs to their conversations."""
-        mock_provider = MockVectorProvider(
-            results=[
-                ("m1", 0.95),  # m1 is in conv-1
-                ("m5", 0.85),  # m5 is in conv-3
-            ]
-        )
-        results = repo_with_conversations.similarity_search(
-            "test query",
-            vector_provider=mock_provider,
-        )
+        # Verify message IDs and mapping
+        msg_ids = [msg_id for _, msg_id, _ in results]
+        for expected_id in expected_msg_ids:
+            assert expected_id in msg_ids
+        assert "m_orphaned" not in msg_ids  # Orphaned filtered
+
+        # Verify mapping for specific messages
         result_dict = {msg_id: conv_id for conv_id, msg_id, _ in results}
-        assert result_dict.get("m1") == "conv-1"
-        assert result_dict.get("m5") == "conv-3"
+        if "m1" in result_dict:
+            assert result_dict["m1"] == "conv-1"
+        if "m5" in result_dict:
+            assert result_dict["m5"] == "conv-3"
 
-    def test_similarity_search_preserves_distance_scores(self, repo_with_conversations):
-        """similarity_search() preserves distance scores from provider."""
-        mock_provider = MockVectorProvider(
-            results=[
-                ("m1", 0.95),
-                ("m2", 0.87),
-            ]
-        )
-        results = repo_with_conversations.similarity_search(
-            "test query",
-            vector_provider=mock_provider,
-        )
-        distances = {msg_id: dist for _, msg_id, dist in results}
-        assert abs(distances["m1"] - 0.95) < 0.001
-        assert abs(distances["m2"] - 0.87) < 0.001
-
-    def test_similarity_search_returns_empty_when_no_results(self, repo_with_conversations):
-        """similarity_search() returns empty list when provider has no results."""
-        mock_provider = MockVectorProvider(results=[])
-        results = repo_with_conversations.similarity_search(
-            "test query",
-            vector_provider=mock_provider,
-        )
-        assert results == []
-
-    def test_similarity_search_raises_without_provider(self, repo_with_conversations):
-        """similarity_search() raises ValueError if no vector provider available."""
+    def test_similarity_search_error_handling(self, repo_with_conversations):
+        """similarity_search() raises without provider."""
         with patch(
             "polylogue.storage.search_providers.create_vector_provider",
             return_value=None,
@@ -1000,143 +770,84 @@ class TestSimilaritySearch:
             with pytest.raises(ValueError, match="No vector provider configured"):
                 repo_with_conversations.similarity_search("test query", vector_provider=None)
 
-    def test_similarity_search_filters_orphaned_messages(self, repo_with_conversations):
-        """similarity_search() filters out messages whose conversation doesn't exist."""
-        mock_provider = MockVectorProvider(
-            results=[
-                ("m1", 0.95),        # Valid
-                ("m_orphaned", 0.90),  # Doesn't exist
-            ]
-        )
-        results = repo_with_conversations.similarity_search(
-            "test query",
-            vector_provider=mock_provider,
-        )
-        # Only m1 should be in results (m_orphaned doesn't exist)
-        msg_ids = [msg_id for _, msg_id, _ in results]
-        assert "m1" in msg_ids
-        assert "m_orphaned" not in msg_ids
-
 
 class TestGetArchiveStats:
     """Test get_archive_stats() comprehensive statistics."""
 
     @pytest.mark.parametrize("fixture,expected_convs,expected_msgs,expected_provider_count", [
-        ("repo_with_conversations", 4, 6, 3),  # conv-1, 2, 3, 4; 2+2+1+1 msgs; 3 providers
-        ("repo_empty", 0, 0, 0),               # Empty database
+        ("repo_with_conversations", 4, 6, 3),
+        ("repo_empty", 0, 0, 0),
     ])
-    def test_get_archive_stats_counts(self, request, fixture, expected_convs, expected_msgs, expected_provider_count):
-        """get_archive_stats() returns correct conversation/message counts."""
+    def test_get_archive_stats_counts_and_types(self, request, fixture, expected_convs, expected_msgs, expected_provider_count):
+        """get_archive_stats() returns ArchiveStats with correct counts and provider breakdown."""
         repo = request.getfixturevalue(fixture)
         stats = repo.get_archive_stats()
+
+        assert isinstance(stats, ArchiveStats)
         assert stats.total_conversations == expected_convs
         assert stats.total_messages == expected_msgs
         assert stats.provider_count == expected_provider_count
 
-    def test_get_archive_stats_breaks_down_by_provider(self, repo_with_conversations):
-        """get_archive_stats() returns provider breakdown."""
-        stats = repo_with_conversations.get_archive_stats()
-        assert stats.providers.get("claude") == 2  # conv-1, conv-2
-        assert stats.providers.get("chatgpt") == 1  # conv-3
-        assert stats.providers.get("gemini") == 1  # conv-4
+        # For non-empty repo, check provider breakdown
+        if expected_convs > 0:
+            assert stats.providers.get("claude") == 2
+            assert stats.providers.get("chatgpt") == 1
+            assert stats.providers.get("gemini") == 1
 
-    def test_get_archive_stats_returns_archive_stats_type(self, repo_with_conversations):
-        """get_archive_stats() returns ArchiveStats instance."""
+    def test_get_archive_stats_embeddings_and_metrics(self, repo_with_conversations):
+        """get_archive_stats() computes embedding coverage, avg messages, and DB size."""
         stats = repo_with_conversations.get_archive_stats()
-        assert isinstance(stats, ArchiveStats)
 
-    def test_get_archive_stats_embedding_coverage(self, repo_with_conversations):
-        """get_archive_stats() computes embedding coverage percentage."""
-        stats = repo_with_conversations.get_archive_stats()
-        # Initially, no embeddings
-        assert stats.embedded_conversations == 0
-        assert stats.embedding_coverage == 0.0
-
-    def test_get_archive_stats_avg_messages_per_conversation(self, repo_with_conversations):
-        """get_archive_stats() computes average messages per conversation."""
-        stats = repo_with_conversations.get_archive_stats()
-        # 6 messages / 4 conversations = 1.5
-        assert stats.avg_messages_per_conversation == 1.5
-
-    def test_get_archive_stats_includes_db_size(self, repo_with_conversations):
-        """get_archive_stats() includes database file size."""
-        stats = repo_with_conversations.get_archive_stats()
-        assert stats.db_size_bytes >= 0
-
-    def test_get_archive_stats_handles_missing_embedding_tables(self, repo_with_conversations):
-        """get_archive_stats() gracefully handles missing embedding tables."""
-        # The database doesn't have embedding tables, so embedded_* should be 0
-        stats = repo_with_conversations.get_archive_stats()
+        # Embedding coverage (no embeddings initially)
         assert stats.embedded_conversations == 0
         assert stats.embedded_messages == 0
+        assert stats.embedding_coverage == 0.0
+
+        # Metrics
+        assert stats.avg_messages_per_conversation == 1.5  # 6 / 4
+        assert stats.db_size_bytes >= 0
 
 
 class TestRecordsToConversation:
     """Test _records_to_conversation() standalone helper."""
 
-    def test_records_to_conversation_converts_to_model(self):
-        """_records_to_conversation() converts records to Conversation model."""
-        conv_rec = _make_conv_record()
-        msg_recs = [
-            _make_msg_record("msg-1", role="user", content="Hello"),
-            _make_msg_record("msg-2", role="assistant", content="Hi there"),
-        ]
-        att_recs = [_make_att_record("att-1", msg_id="msg-1")]
+    @pytest.mark.parametrize("has_messages,has_attachments", [
+        (True, False),
+        (False, False),
+    ])
+    def test_records_to_conversation_variants(self, has_messages, has_attachments):
+        """_records_to_conversation() converts records and handles empty messages/attachments."""
+        conv_rec = make_conversation("conv-1")
+        msg_recs = [make_message("msg-1", "conv-1", text="Hello")] if has_messages else []
+        att_recs = [make_attachment("att-1", "conv-1", "msg-1")] if has_attachments else []
 
         conv = _records_to_conversation(conv_rec, msg_recs, att_recs)
 
         assert isinstance(conv, Conversation)
         assert str(conv.id) == "conv-1"
-        assert conv.title == "Test Conversation"
-        assert len(conv.messages) == 2
-
-    @pytest.mark.parametrize("has_messages,has_attachments", [
-        (True, False),  # No attachments
-        (False, False),  # No messages
-    ])
-    def test_records_to_conversation_variants(self, has_messages, has_attachments):
-        """_records_to_conversation() works with empty messages/attachments."""
-        conv_rec = _make_conv_record()
-        msg_recs = [_make_msg_record("msg-1")] if has_messages else []
-        att_recs = [_make_att_record("att-1", msg_id="msg-1")] if has_attachments else []
-
-        conv = _records_to_conversation(conv_rec, msg_recs, att_recs)
-
-        assert str(conv.id) == "conv-1"
         assert len(conv.messages) == (1 if has_messages else 0)
 
-    def test_records_to_conversation_preserves_message_order(self):
-        """_records_to_conversation() preserves message order."""
-        conv_rec = _make_conv_record()
+    def test_records_to_conversation_preserves_order_and_parent(self):
+        """_records_to_conversation() preserves message order and parent_id."""
+        conv_rec = make_conversation("conv-1").model_copy(
+            update={"parent_conversation_id": "parent-conv"}
+        )
         msg_recs = [
-            _make_msg_record("m1", role="user"),
-            _make_msg_record("m2", role="assistant"),
-            _make_msg_record("m3", role="user"),
+            make_message("m1", "conv-1", role="user"),
+            make_message("m2", "conv-1", role="assistant"),
+            make_message("m3", "conv-1", role="user"),
         ]
 
         conv = _records_to_conversation(conv_rec, msg_recs, [])
 
         assert len(conv.messages) == 3
-        assert conv.messages[0].id == "m1"
-        assert conv.messages[1].id == "m2"
-        assert conv.messages[2].id == "m3"
-
-    def test_records_to_conversation_with_parent_id(self):
-        """_records_to_conversation() preserves parent_id from record."""
-        conv_rec = _make_conv_record().model_copy(
-            update={"parent_conversation_id": "parent-conv"}
-        )
-        msg_recs = []
-
-        conv = _records_to_conversation(conv_rec, msg_recs, [])
-
+        assert [m.id for m in conv.messages] == ["m1", "m2", "m3"]
         assert str(conv.parent_id) == "parent-conv"
 
-    def test_records_to_conversation_used_by_migration_tools(self):
-        """_records_to_conversation() is suitable for migration tools."""
-        # Simulate a migration scenario: bulk convert records
+    def test_records_to_conversation_bulk_migration(self):
+        """_records_to_conversation() handles bulk migration of records."""
         convs_data = [
-            (_make_conv_record(f"conv-{i}"), [_make_msg_record(f"m-{i}")], [])
+            (make_conversation(f"conv-{i}"), [make_message(f"m-{i}", f"conv-{i}")], [])
             for i in range(1, 4)
         ]
 

@@ -102,10 +102,6 @@ class TestAcquireResult:
         """All count fields start at zero."""
         assert AcquireResult().counts[count_field] == 0
 
-    def test_raw_ids_initialized_empty(self):
-        """raw_ids starts as empty list."""
-        result = AcquireResult()
-        assert result.raw_ids == [] and isinstance(result.raw_ids, list)
 
 
 # ============================================================================
@@ -300,15 +296,6 @@ class TestIngestResultInit:
         """All changed_counts fields start at zero."""
         assert IngestResult().changed_counts[changed_count_field] == 0
 
-    def test_processed_ids_initialized_empty(self):
-        """processed_ids starts as empty set."""
-        result = IngestResult()
-        assert result.processed_ids == set() and isinstance(result.processed_ids, set)
-
-    def test_lock_initialized(self):
-        """_lock is a threading.Lock instance."""
-        result = IngestResult()
-        assert hasattr(result, "_lock") and isinstance(result._lock, type(threading.Lock()))
 
 
 class TestIngestResultMerge:

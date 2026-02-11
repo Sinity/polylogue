@@ -635,53 +635,28 @@ class TestCodexParser:
     def test_codex_looks_like(self, payload, should_match, desc):
         """Parametrized test for Codex format detection."""
         from polylogue.sources.parsers.codex import looks_like
-
         assert looks_like(payload) == should_match
 
-    def test_codex_parse_with_tool_use_content(self):
-        """Line 72, 76-78: Parse message with text content."""
-        payload = [
-            {
-                "type": "message",
-                "role": "user",
-                "content": [
-                    {
-                        "type": "input_text",
-                        "text": "Hello from Codex",
-                    }
-                ],
-            }
-        ]
+    CODEX_PARSE_CASES = [
+        ("valid_message", [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello from Codex"}]}], "valid message with text"),
+        ("invalid_missing_role", [{"type": "message", "content": [{"type": "input_text", "text": "Invalid"}]}], "invalid missing role"),
+        ("envelope_invalid_payload", [{"type": "response_item", "payload": {"type": "message", "role": "user"}}], "envelope invalid payload"),
+    ]
+
+    def test_codex_parse_variants(self):
+        """Test parse_codex with various payloads."""
+        # Valid message
+        payload = [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Hello from Codex"}]}]
         result = parse_codex(payload, "fallback")
         assert result is not None
 
-    def test_codex_parse_with_invalid_record(self):
-        """Line 93-98: Skip invalid records during parsing."""
-        payload = [
-            {
-                "type": "message",
-                "role": "user",
-                "content": [{"type": "input_text", "text": "Valid"}],
-            },
-            {
-                "type": "message",
-                "content": [{"type": "input_text", "text": "Invalid"}],
-            },
-        ]
+        # Invalid missing role
+        payload = [{"type": "message", "content": [{"type": "input_text", "text": "Invalid"}]}]
         result = parse_codex(payload, "fallback")
-        assert len(result.messages) >= 0
+        assert result is not None  # Should handle gracefully
 
-    def test_codex_parse_envelope_with_invalid_payload(self):
-        """Line 111-113: Skip invalid envelope payloads."""
-        payload = [
-            {
-                "type": "response_item",
-                "payload": {
-                    "type": "message",
-                    "role": "user",
-                },
-            }
-        ]
+        # Envelope with invalid payload
+        payload = [{"type": "response_item", "payload": {"type": "message", "role": "user"}}]
         result = parse_codex(payload, "fallback")
         assert result is not None
 
@@ -694,102 +669,80 @@ class TestCodexParser:
 class TestDriveParser:
     """Test Drive parser edge cases."""
 
-    def test_extract_text_from_chunk_empty_chunk(self):
-        """Line 20: Extract text from empty chunk."""
+    DRIVE_PARSER_CASES = [
+        ("empty_chunk", {}, None, extract_text_from_chunk, "Extract text from empty chunk"),
+        ("with_parts", {"parts": ["Part 1", "Part 2"]}, "Part 1\nPart 2", extract_text_from_chunk, "Extract with parts"),
+    ]
+
+    COLLECT_DOCS_CASES = [
+        ("non_dict", "not a dict", [], "_collect_drive_docs: non-dict"),
+        ("nested", {"driveDocument": "doc1", "metadata": {"driveDocument": "doc2"}}, ["doc1", "doc2"], "_collect_drive_docs: nested"),
+    ]
+
+    ATTACHMENT_FROM_DOC_CASES = [
+        ("string_id", "doc-string-id", "msg-1", "doc-string-id", "string ID"),
+        ("non_dict_non_string", 123, "msg-1", None, "non-dict/non-string"),
+        ("missing_id", {"name": "file.pdf", "size": 1000}, "msg-1", None, "missing ID"),
+        ("size_as_string", {"id": "doc-1", "sizeBytes": "5000"}, "msg-1", "doc-1", "size as string"),
+    ]
+
+    def test_extract_text_from_chunk(self):
+        """Test extract_text_from_chunk with variants."""
         from polylogue.sources.parsers.drive import extract_text_from_chunk
 
-        chunk = {}
-        result = extract_text_from_chunk(chunk)
+        # Empty chunk
+        result = extract_text_from_chunk({})
         assert result is None
 
-    def test_extract_text_from_chunk_with_parts(self):
-        """Line 26: Extract from chunk with 'parts' field."""
-        from polylogue.sources.parsers.drive import extract_text_from_chunk
-
-        chunk = {"parts": ["Part 1", "Part 2"]}
-        result = extract_text_from_chunk(chunk)
+        # With parts
+        result = extract_text_from_chunk({"parts": ["Part 1", "Part 2"]})
         assert result == "Part 1\nPart 2"
 
-    def test_collect_drive_docs_non_dict_payload(self):
-        """Line 29: Handle non-dict payload in _collect_drive_docs."""
+    def test_collect_drive_docs(self):
+        """Test _collect_drive_docs with variants."""
         from polylogue.sources.parsers.drive import _collect_drive_docs
 
+        # Non-dict
         result = _collect_drive_docs("not a dict")
         assert result == []
 
-    def test_collect_drive_docs_nested_metadata(self):
-        """Line 35-37: Recursively collect from nested metadata."""
-        from polylogue.sources.parsers.drive import _collect_drive_docs
-
-        payload = {
-            "driveDocument": "doc1",
-            "metadata": {
-                "driveDocument": "doc2",
-            },
-        }
+        # Nested metadata
+        payload = {"driveDocument": "doc1", "metadata": {"driveDocument": "doc2"}}
         result = _collect_drive_docs(payload)
-        assert "doc1" in result
-        assert "doc2" in result
+        assert "doc1" in result and "doc2" in result
 
-    def test_attachment_from_doc_string_id(self):
-        """Line 47, 50: Attachment from string document ID."""
+    def test_attachment_from_doc(self):
+        """Test _attachment_from_doc with variants."""
         from polylogue.sources.parsers.drive import _attachment_from_doc
 
+        # String ID
         result = _attachment_from_doc("doc-string-id", "msg-1")
-        assert result is not None
-        assert result.provider_attachment_id == "doc-string-id"
+        assert result is not None and result.provider_attachment_id == "doc-string-id"
 
-    def test_attachment_from_doc_non_dict_non_string(self):
-        """Line 55-58: Return None for invalid doc type."""
-        from polylogue.sources.parsers.drive import _attachment_from_doc
-
+        # Non-dict/non-string
         result = _attachment_from_doc(123, "msg-1")
         assert result is None
 
-    def test_attachment_from_doc_missing_id(self):
-        """Line 91, 95: Handle doc without ID field."""
-        from polylogue.sources.parsers.drive import _attachment_from_doc
-
-        doc = {"name": "file.pdf", "size": 1000}
-        result = _attachment_from_doc(doc, "msg-1")
+        # Missing ID
+        result = _attachment_from_doc({"name": "file.pdf", "size": 1000}, "msg-1")
         assert result is None
 
-    def test_attachment_from_doc_size_as_string(self):
-        """Line 127-141: Parse size from string."""
-        from polylogue.sources.parsers.drive import _attachment_from_doc
+        # Size as string
+        result = _attachment_from_doc({"id": "doc-1", "sizeBytes": "5000"}, "msg-1")
+        assert result is not None and result.size_bytes == 5000
 
-        doc = {"id": "doc-1", "sizeBytes": "5000"}
-        result = _attachment_from_doc(doc, "msg-1")
-        assert result is not None
-        assert result.size_bytes == 5000
-
-    def test_parse_chunked_prompt_with_string_chunks(self):
-        """Parse chunked prompt with string elements."""
-        payload = {
-            "chunkedPrompt": {
-                "chunks": [
-                    "chunk text",
-                ]
-            },
-            "createTime": "2025-01-01T00:00:00Z",
-        }
+    def test_parse_chunked_prompt(self):
+        """Test parse_chunked_prompt variants."""
+        # String chunks
+        payload = {"chunkedPrompt": {"chunks": ["chunk text"]}, "createTime": "2025-01-01T00:00:00Z"}
         result = parse_chunked_prompt("gemini", payload, "fallback")
         assert len(result.messages) == 0
 
-    def test_parse_chunked_prompt_with_chunk_object(self):
-        """Parse chunked prompt with message objects."""
+        # Message objects
         payload = {
             "chunks": [
-                {
-                    "role": "user",
-                    "text": "User message",
-                    "id": "chunk-1",
-                },
-                {
-                    "role": "model",
-                    "text": "Model response",
-                    "id": "chunk-2",
-                },
+                {"role": "user", "text": "User message", "id": "chunk-1"},
+                {"role": "model", "text": "Model response", "id": "chunk-2"},
             ]
         }
         result = parse_chunked_prompt("gemini", payload, "fallback")
@@ -917,93 +870,90 @@ class TestVersionResolution:
 class TestUICreation:
     """Test UI creation and plain mode."""
 
-    def test_create_ui_plain_mode(self):
-        """Line 50: Create UI in plain mode."""
-        ui = create_ui(plain=True)
-        assert ui is not None
-        assert ui.plain is True
+    UI_MODE_CASES = [
+        (True, True, "plain mode"),
+        (False, False, "rich mode"),
+    ]
 
-    def test_create_ui_rich_mode(self):
-        """Create UI in rich mode."""
-        ui = create_ui(plain=False)
+    @pytest.mark.parametrize("plain,expected_plain,desc", UI_MODE_CASES)
+    def test_ui_create_modes(self, plain, expected_plain, desc):
+        """Test UI creation in plain and rich modes."""
+        ui = create_ui(plain=plain)
         assert ui is not None
-        assert ui.plain is False
+        assert ui.plain == expected_plain
 
-    def test_ui_confirm_plain_with_tty(self):
-        """Line 72: Confirm prompt in plain mode with TTY."""
+    UI_INTERACTION_CASES = [
+        ("confirm_with_tty_y", "confirm", True, True, "y", True, "Confirm y returns True"),
+        ("confirm_without_tty", "confirm", False, True, None, SystemExit, "Confirm no TTY aborts"),
+        ("choose_valid", "choose", True, True, "2", "Option 2", "Choose valid input"),
+        ("choose_invalid_then_valid", "choose", True, True, ["0", "1"], "A", "Choose invalid then valid"),
+        ("input_empty_default", "input", True, True, "", "default-val", "Input empty uses default"),
+        ("input_custom", "input", True, True, "custom", "custom", "Input custom value"),
+        ("confirm_eof", "confirm", True, True, EOFError, False, "Confirm EOF returns default"),
+        ("choose_eof", "choose", True, True, EOFError, None, "Choose EOF returns None"),
+        ("input_eof", "input", True, True, EOFError, "default", "Input EOF returns default"),
+    ]
+
+    def test_ui_interactions(self, plain=True):
+        """Test interactive UI operations."""
+        # Confirm with input "y"
         ui = create_ui(plain=True)
         with patch("sys.stdin.isatty", return_value=True):
             with patch("builtins.input", return_value="y"):
                 result = ui.confirm("Do you agree?")
                 assert result is True
 
-    def test_ui_confirm_plain_without_tty(self):
-        """Line 87: Confirm prompt without TTY should abort."""
-        ui = create_ui(plain=True)
+        # Confirm without TTY
         with patch("sys.stdin.isatty", return_value=False):
             with pytest.raises(SystemExit):
                 ui.confirm("Do you agree?")
 
-    def test_ui_choose_plain_valid_selection(self):
-        """Line 103, 108: Choose from menu in plain mode."""
-        ui = create_ui(plain=True)
+        # Choose with valid input
         options = ["Option 1", "Option 2", "Option 3"]
         with patch("sys.stdin.isatty", return_value=True):
             with patch("builtins.input", return_value="2"):
                 result = ui.choose("Select one:", options)
                 assert result == "Option 2"
 
-    def test_ui_choose_plain_invalid_then_valid(self):
-        """Choose with invalid then valid input."""
-        ui = create_ui(plain=True)
-        options = ["A", "B"]
+        # Choose with invalid then valid
         with patch("sys.stdin.isatty", return_value=True):
             with patch("builtins.input", side_effect=["0", "1"]):
-                result = ui.choose("Select:", options)
+                result = ui.choose("Select:", ["A", "B"])
                 assert result == "A"
 
-    def test_ui_input_plain_with_default(self):
-        """Line 119-134: Input prompt with default value."""
-        ui = create_ui(plain=True)
+        # Input with default
         with patch("sys.stdin.isatty", return_value=True):
             with patch("builtins.input", return_value=""):
                 result = ui.input("Enter value:", default="default-val")
                 assert result == "default-val"
 
-    def test_ui_input_plain_custom_value(self):
-        """Input with custom value."""
-        ui = create_ui(plain=True)
+        # Input with custom
         with patch("sys.stdin.isatty", return_value=True):
             with patch("builtins.input", return_value="custom"):
                 result = ui.input("Enter:", default="default")
                 assert result == "custom"
 
-    def test_ui_confirm_plain_eof_returns_default(self):
-        """Line 138-141: EOFError returns default."""
-        ui = create_ui(plain=True)
+        # Confirm EOF returns default
         with patch("sys.stdin.isatty", return_value=True):
             with patch("builtins.input", side_effect=EOFError):
                 result = ui.confirm("Confirm?", default=False)
                 assert result is False
 
-    def test_ui_choose_plain_eof_returns_none(self):
-        """Line 144-145: EOFError in choose returns None."""
-        ui = create_ui(plain=True)
+        # Choose EOF returns None
         with patch("sys.stdin.isatty", return_value=True):
             with patch("builtins.input", side_effect=EOFError):
                 result = ui.choose("Choose:", ["A", "B"])
                 assert result is None
 
-    def test_ui_input_plain_eof_returns_default(self):
-        """Line 151: EOFError in input returns default."""
-        ui = create_ui(plain=True)
+        # Input EOF returns default
         with patch("sys.stdin.isatty", return_value=True):
             with patch("builtins.input", side_effect=EOFError):
                 result = ui.input("Enter:", default="default")
                 assert result == "default"
 
-    def test_ui_progress_plain(self):
-        """Line 165-167: Progress tracker in plain mode."""
+    def test_ui_progress_modes(self):
+        """Test progress tracker in both modes."""
+        # Plain mode
         ui = create_ui(plain=True)
         with patch("sys.stdout"):
             tracker = ui.progress("Processing", total=10)
@@ -1011,65 +961,49 @@ class TestUICreation:
             tracker.advance(5)
             tracker.update(description="Updated")
 
-    def test_ui_progress_rich(self):
-        """Line 174: Progress tracker in rich mode."""
+        # Rich mode
         ui = create_ui(plain=False)
         tracker = ui.progress("Processing", total=10)
         assert tracker is not None
 
-    def test_plain_progress_tracker_coerce_int(self):
-        """Line 201-241: _PlainProgressTracker._coerce_int edge cases."""
+    PROGRESS_TRACKER_CASES = [
+        ("coerce_int_near_int", 5.0001, 5, "_coerce_int near whole"),
+        ("coerce_int_fractional", 5.5, None, "_coerce_int fractional"),
+        ("coerce_int_exact", 5, 5, "_coerce_int exact"),
+        ("format_value_int", 5, "5", "_format_value int"),
+        ("format_value_near_int", 5.0001, "5", "_format_value near int"),
+        ("advance_progress", 3, 3, "advance sets _completed"),
+        ("update_total", 20, 20, "update sets _total"),
+    ]
+
+    def test_progress_tracker_methods(self):
+        """Test _PlainProgressTracker methods."""
         from polylogue.ui import _PlainProgressTracker
 
         console = MagicMock()
+
+        # _coerce_int tests
         tracker = _PlainProgressTracker(console, "test", 10)
+        assert tracker._coerce_int(5.0001) == 5
+        assert tracker._coerce_int(5.5) is None
+        assert tracker._coerce_int(5) == 5
 
-        result = tracker._coerce_int(5.0001)
-        assert result == 5
-
-        result = tracker._coerce_int(5.5)
-        assert result is None
-
-        result = tracker._coerce_int(5)
-        assert result == 5
-
-    def test_plain_progress_tracker_format_value(self):
-        """Test _format_value for different number types."""
-        from polylogue.ui import _PlainProgressTracker
-
-        console = MagicMock()
+        # _format_value tests
         tracker = _PlainProgressTracker(console, "test", None)
-
         assert tracker._format_value(5) == "5"
         assert tracker._format_value(5.0001) == "5"
+        assert "5.5" in tracker._format_value(5.5)
 
-        result = tracker._format_value(5.5)
-        assert "5.5" in result
-
-    def test_plain_progress_tracker_advance(self):
-        """Test advancing progress."""
-        from polylogue.ui import _PlainProgressTracker
-
-        console = MagicMock()
+        # advance test
         tracker = _PlainProgressTracker(console, "test", 10)
         tracker.advance(3)
         assert tracker._completed == 3
 
-    def test_plain_progress_tracker_update_total(self):
-        """Test updating total."""
-        from polylogue.ui import _PlainProgressTracker
-
-        console = MagicMock()
-        tracker = _PlainProgressTracker(console, "test", 10)
+        # update test
         tracker.update(total=20)
         assert tracker._total == 20
 
-    def test_plain_progress_tracker_context_manager(self):
-        """Test progress tracker as context manager."""
-        from polylogue.ui import _PlainProgressTracker
-
-        console = MagicMock()
-        tracker = _PlainProgressTracker(console, "test", 10)
+        # context manager test
         with tracker as t:
             assert t is tracker
 
