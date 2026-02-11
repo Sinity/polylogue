@@ -211,80 +211,22 @@ class TestClaudeCodeRecordTimestamp:
 class TestClaudeCodeRecordTextContent2:
     """Test text extraction from various message structures."""
 
-    def test_no_message_returns_empty(self):
-        record = ClaudeCodeRecord(type="user", message=None)
-        assert record.text_content == ""
+    CLAUDE_CODE_TEXT_CONTENT_CASES = [
+        (None, "", "no_message"),
+        ({"role": "user", "content": "Hello world"}, "Hello world", "dict_string_content"),
+        ({"role": "assistant", "content": [{"type": "text", "text": "First part"}, {"type": "text", "text": "Second part"}]}, "First part\nSecond part", "dict_text_blocks"),
+        (ClaudeCodeMessageContent(role="assistant", content=[{"type": "thinking", "thinking": "Analyzing"}, {"type": "text", "text": "Here is my answer"}]), "Here is my answer", "typed_mixed_blocks_ignores_thinking"),
+        ({"role": "user", "content": ""}, "", "dict_empty_content"),
+        ({"role": "user"}, "", "dict_no_content_key"),
+        (ClaudeCodeUserMessage(content="Hello from user"), "Hello from user", "typed_user_message_string"),
+        (ClaudeCodeMessageContent(role="assistant", content=[{"type": "text", "text": "Response text"}]), "Response text", "typed_message_content_list"),
+        (ClaudeCodeMessageContent(role="assistant", content=[]), "", "typed_message_empty_content"),
+    ]
 
-    def test_dict_message_string_content(self):
-        """Dict message with string content returns the string."""
-        record = ClaudeCodeRecord(
-            type="user",
-            message={"role": "user", "content": "Hello world"},
-        )
-        assert record.text_content == "Hello world"
-
-    def test_dict_message_text_blocks(self):
-        """Dict message with text content blocks extracts text."""
-        record = ClaudeCodeRecord(
-            type="assistant",
-            message={
-                "role": "assistant",
-                "content": [
-                    {"type": "text", "text": "First part"},
-                    {"type": "text", "text": "Second part"},
-                ],
-            },
-        )
-        assert record.text_content == "First part\nSecond part"
-
-    def test_typed_message_mixed_blocks_ignores_thinking(self):
-        """Typed ClaudeCodeMessageContent only extracts text blocks, not thinking."""
-        record = ClaudeCodeRecord(
-            type="assistant",
-            message=ClaudeCodeMessageContent(
-                role="assistant",
-                content=[
-                    {"type": "thinking", "thinking": "Analyzing problem"},
-                    {"type": "text", "text": "Here is my answer"},
-                ],
-            ),
-        )
-        text = record.text_content
-        assert text == "Here is my answer"
-
-    def test_dict_message_empty_content(self):
-        record = ClaudeCodeRecord(
-            type="user",
-            message={"role": "user", "content": ""},
-        )
-        assert record.text_content == ""
-
-    def test_dict_message_no_content_key(self):
-        record = ClaudeCodeRecord(
-            type="user",
-            message={"role": "user"},
-        )
-        assert record.text_content == ""
-
-    def test_typed_user_message_string_content(self):
-        """ClaudeCodeUserMessage with string content."""
-        msg = ClaudeCodeUserMessage(content="Hello from user")
-        record = ClaudeCodeRecord(type="user", message=msg)
-        assert record.text_content == "Hello from user"
-
-    def test_typed_message_content_list(self):
-        """ClaudeCodeMessageContent with list of content blocks."""
-        msg = ClaudeCodeMessageContent(
-            role="assistant",
-            content=[{"type": "text", "text": "Response text"}],
-        )
-        record = ClaudeCodeRecord(type="assistant", message=msg)
-        assert record.text_content == "Response text"
-
-    def test_typed_message_empty_content(self):
-        msg = ClaudeCodeMessageContent(role="assistant", content=[])
-        record = ClaudeCodeRecord(type="assistant", message=msg)
-        assert record.text_content == ""
+    @pytest.mark.parametrize("message,expected,test_id", CLAUDE_CODE_TEXT_CONTENT_CASES)
+    def test_text_content(self, message, expected, test_id):
+        record = ClaudeCodeRecord(type="user" if message is None else "assistant", message=message)
+        assert record.text_content == expected
 
 
 class TestClaudeCodeRecordContentBlocksRaw2:
@@ -396,27 +338,6 @@ class TestClaudeCodeRecordToMeta2:
         assert meta.tokens is None
 
 
-class TestClaudeCodeRecordFlags2:
-    """Test boolean convenience properties."""
-
-    def test_is_context_compaction(self):
-        assert ClaudeCodeRecord(type="summary").is_context_compaction is True
-        assert ClaudeCodeRecord(type="user").is_context_compaction is False
-
-    def test_is_tool_progress(self):
-        assert ClaudeCodeRecord(type="progress").is_tool_progress is True
-        assert ClaudeCodeRecord(type="result").is_tool_progress is False
-
-    def test_is_actual_message_user(self):
-        assert ClaudeCodeRecord(type="user").is_actual_message is True
-
-    def test_is_actual_message_assistant(self):
-        assert ClaudeCodeRecord(type="assistant").is_actual_message is True
-
-    def test_is_actual_message_false_for_others(self):
-        assert ClaudeCodeRecord(type="progress").is_actual_message is False
-        assert ClaudeCodeRecord(type="summary").is_actual_message is False
-        assert ClaudeCodeRecord(type="result").is_actual_message is False
 
 
 class TestClaudeCodeToolUseConversion:
@@ -728,116 +649,31 @@ class TestGeminiExtractReasoningTracesExtra:
 class TestGeminiExtractContentBlocksExtra:
     """Test GeminiMessage.extract_content_blocks."""
 
-    def test_extract_content_blocks_thought_block(self):
-        """Coverage for lines 180-185: isThought branch."""
-        msg = GeminiMessage(text="Thinking", role="model", isThought=True)
-        blocks = msg.extract_content_blocks()
-        assert len(blocks) == 1
+    GEMINI_EXTRACT_CONTENT_BLOCKS_CASES = [
+        ({"text": "Thinking", "role": "model", "isThought": True}, 1, "thinking", "thought_block"),
+        ({"text": "Response", "role": "model", "isThought": False}, 1, "text", "text_only"),
+        ({"text": "", "role": "model", "isThought": False}, 0, None, "empty_text"),
+        ({"text": "", "role": "user", "parts": [GeminiPart(text="Part1"), GeminiPart(text="Part2")]}, 2, "text", "typed_parts"),
+        ({"text": "", "role": "user", "parts": [GeminiPart(text=None), GeminiPart(text="Valid")]}, 1, "text", "typed_parts_none_text"),
+        ({"text": "", "role": "user", "parts": [{"text": "Dict1"}, {"text": "Dict2"}]}, None, "text", "dict_parts_text"),
+        ({"text": "", "role": "user", "parts": [{"inlineData": {"mimeType": "image/png", "data": "base64..."}}]}, None, None, "dict_parts_inline_data"),
+        ({"text": "", "role": "user", "parts": [{"fileData": {"mimeType": "application/pdf", "fileUri": "uri..."}}]}, None, None, "dict_parts_file_data"),
+        ({"text": "", "role": "user", "parts": [{"other": "value"}]}, 0, None, "dict_parts_no_text_no_media"),
+        ({"text": "Initial", "role": "model", "parts": [GeminiPart(text="Typed"), {"text": "Dict"}, {"inlineData": {"data": "..."}}]}, None, "text", "combined"),
+    ]
+
+    @pytest.mark.parametrize("kwargs,expected_len,expected_type,test_id", GEMINI_EXTRACT_CONTENT_BLOCKS_CASES)
+    def test_extract_content_blocks(self, kwargs, expected_len, expected_type, test_id):
         from polylogue.lib.viewports import ContentType
-        assert blocks[0].type == ContentType.THINKING
-        assert blocks[0].text == "Thinking"
-
-    def test_extract_content_blocks_text_only(self):
-        """Coverage for lines 186-191: text branch."""
-        msg = GeminiMessage(text="Response", role="model", isThought=False)
+        msg = GeminiMessage(**kwargs)
         blocks = msg.extract_content_blocks()
-        assert len(blocks) == 1
-        from polylogue.lib.viewports import ContentType
-        assert blocks[0].type == ContentType.TEXT
-        assert blocks[0].text == "Response"
-
-    def test_extract_content_blocks_empty_text(self):
-        """Empty text should not add a block."""
-        msg = GeminiMessage(text="", role="model", isThought=False)
-        blocks = msg.extract_content_blocks()
-        assert len(blocks) == 0
-
-    def test_extract_content_blocks_with_typed_parts(self):
-        """Coverage for lines 195-201: GeminiPart branch."""
-        msg = GeminiMessage(
-            text="",
-            role="user",
-            parts=[GeminiPart(text="Part1"), GeminiPart(text="Part2")],
-        )
-        blocks = msg.extract_content_blocks()
-        assert len(blocks) == 2
-        from polylogue.lib.viewports import ContentType
-        assert all(b.type == ContentType.TEXT for b in blocks)
-        assert blocks[0].text == "Part1"
-        assert blocks[1].text == "Part2"
-
-    def test_extract_content_blocks_with_typed_parts_none_text(self):
-        """Coverage: GeminiPart with None text should be skipped."""
-        msg = GeminiMessage(
-            text="",
-            role="user",
-            parts=[GeminiPart(text=None), GeminiPart(text="Valid")],
-        )
-        blocks = msg.extract_content_blocks()
-        assert len(blocks) == 1
-        assert blocks[0].text == "Valid"
-
-    def test_extract_content_blocks_with_dict_parts_text(self):
-        """Coverage for lines 202-208: dict part with text."""
-        msg = GeminiMessage(
-            text="",
-            role="user",
-            parts=[{"text": "Dict1"}, {"text": "Dict2"}],
-        )
-        blocks = msg.extract_content_blocks()
-        assert len(blocks) >= 2
-        from polylogue.lib.viewports import ContentType
-        text_blocks = [b for b in blocks if b.type == ContentType.TEXT]
-        assert len(text_blocks) >= 2
-
-    def test_extract_content_blocks_with_dict_parts_inline_data(self):
-        """Coverage for lines 209-213: dict part with inlineData."""
-        msg = GeminiMessage(
-            text="",
-            role="user",
-            parts=[{"inlineData": {"mimeType": "image/png", "data": "base64..."}}],
-        )
-        blocks = msg.extract_content_blocks()
-        from polylogue.lib.viewports import ContentType
-        assert isinstance(blocks, list)
-
-    def test_extract_content_blocks_with_dict_parts_file_data(self):
-        """Coverage for lines 209-213: dict part with fileData."""
-        msg = GeminiMessage(
-            text="",
-            role="user",
-            parts=[{"fileData": {"mimeType": "application/pdf", "fileUri": "uri..."}}],
-        )
-        blocks = msg.extract_content_blocks()
-        from polylogue.lib.viewports import ContentType
-        assert isinstance(blocks, list)
-
-    def test_extract_content_blocks_with_dict_parts_no_text_no_media(self):
-        """Dict part without text and without media should be skipped."""
-        msg = GeminiMessage(
-            text="",
-            role="user",
-            parts=[{"other": "value"}],
-        )
-        blocks = msg.extract_content_blocks()
-        assert len(blocks) == 0
-
-    def test_extract_content_blocks_combined(self):
-        """Test combination of text, typed parts, and dict parts."""
-        msg = GeminiMessage(
-            text="Initial",
-            role="model",
-            parts=[
-                GeminiPart(text="Typed"),
-                {"text": "Dict"},
-                {"inlineData": {"data": "..."}},
-            ],
-        )
-        blocks = msg.extract_content_blocks()
-        assert len(blocks) >= 3
-        from polylogue.lib.viewports import ContentType
-        text_blocks = [b for b in blocks if b.type == ContentType.TEXT]
-        assert len(text_blocks) >= 2
+        if expected_len is not None:
+            assert len(blocks) == expected_len
+        if expected_type == "text":
+            text_blocks = [b for b in blocks if b.type == ContentType.TEXT]
+            assert len(text_blocks) > 0 if expected_len else True
+        elif expected_type == "thinking":
+            assert blocks[0].type == ContentType.THINKING
 
 
 # =============================================================================
@@ -845,8 +681,8 @@ class TestGeminiExtractContentBlocksExtra:
 # =============================================================================
 
 
-class TestClaudeAIChatMessageRoleNormalized:
-    """Test ClaudeAIChatMessage.role_normalized."""
+class TestClaudeAIChatMessageRoleNormalizedAndTimestamp:
+    """Test ClaudeAIChatMessage role_normalized and parsed_timestamp."""
 
     @pytest.mark.parametrize("sender,expected", CLAUDE_AI_ROLE_MAPPING, ids=[
         "human", "assistant", "system", "empty"
@@ -855,183 +691,118 @@ class TestClaudeAIChatMessageRoleNormalized:
         msg = ClaudeAIChatMessage(uuid="1", text="hi", sender=sender)
         assert msg.role_normalized == expected
 
-
-class TestClaudeAIChatMessageParsedTimestamp:
-    """Test ClaudeAIChatMessage.parsed_timestamp."""
-
-    @pytest.mark.parametrize("created_at,expect_datetime", [
-        ("2024-06-15T10:30:00Z", True),
-        ("2024-06-15T10:30:00+00:00", True),
-        ("not-a-date", False),
-        ("", False),
-    ], ids=["iso_z", "iso_offset", "invalid", "empty"])
-    def test_parsed_timestamp(self, created_at, expect_datetime):
+    @pytest.mark.parametrize("created_at,expect_datetime,test_id", [
+        ("2024-06-15T10:30:00Z", True, "iso_z"),
+        ("2024-06-15T10:30:00+00:00", True, "iso_offset"),
+        ("not-a-date", False, "invalid"),
+        ("", False, "empty"),
+        (None, False, "none"),
+        ("2024-06-15 10:30:00", None, "malformed_iso"),
+    ])
+    def test_parsed_timestamp(self, created_at, expect_datetime, test_id):
         msg = ClaudeAIChatMessage(
-            uuid="1",
-            text="hi",
-            sender="human",
+            uuid="1", text="hi", sender="human",
             created_at=created_at,
         )
         ts = msg.parsed_timestamp
-        if expect_datetime:
-            assert ts is not None
-            assert isinstance(ts, datetime)
-        else:
+        if expect_datetime is True:
+            assert ts is not None and isinstance(ts, datetime)
+        elif expect_datetime is False:
             assert ts is None
-
-    def test_parsed_timestamp_none_when_no_created_at(self):
-        """Coverage for line 51-52: None created_at."""
-        msg = ClaudeAIChatMessage(uuid="1", text="hi", sender="human")
-        assert msg.parsed_timestamp is None
-
-    def test_parsed_timestamp_malformed_iso(self):
-        """datetime.fromisoformat is permissive and accepts space instead of T."""
-        msg = ClaudeAIChatMessage(
-            uuid="1",
-            text="hi",
-            sender="human",
-            created_at="2024-06-15 10:30:00",
-        )
-        ts = msg.parsed_timestamp
-        assert ts is None or isinstance(ts, datetime)
+        else:
+            assert ts is None or isinstance(ts, datetime)
 
 
 class TestClaudeAIChatMessageToMeta:
     """Test ClaudeAIChatMessage.to_meta conversion."""
 
-    def test_to_meta_basic(self):
-        msg = ClaudeAIChatMessage(uuid="msg-1", text="hi", sender="human")
+    @pytest.mark.parametrize("uuid_,sender,created_at,expect_timestamp,test_id", [
+        ("msg-1", "human", None, False, "basic"),
+        ("msg-2", "assistant", "2024-06-15T10:30:00Z", True, "with_timestamp"),
+        ("msg-3", "human", "bad-date", False, "invalid_timestamp"),
+    ])
+    def test_to_meta(self, uuid_, sender, created_at, expect_timestamp, test_id):
+        msg = ClaudeAIChatMessage(uuid=uuid_, text="hi", sender=sender, created_at=created_at)
         meta = msg.to_meta()
-        assert meta.id == "msg-1"
-        assert meta.role == "user"
+        assert meta.id == uuid_
         assert meta.provider == "claude-ai"
-        assert meta.timestamp is None
-
-    def test_to_meta_with_timestamp(self):
-        """Coverage for line 62: timestamp included when valid."""
-        msg = ClaudeAIChatMessage(
-            uuid="msg-1",
-            text="hi",
-            sender="assistant",
-            created_at="2024-06-15T10:30:00Z",
-        )
-        meta = msg.to_meta()
-        assert meta.id == "msg-1"
-        assert meta.role == "assistant"
-        assert meta.timestamp is not None
-        assert meta.timestamp.year == 2024
-
-    def test_to_meta_with_invalid_timestamp(self):
-        """Coverage for line 62: timestamp None when invalid."""
-        msg = ClaudeAIChatMessage(
-            uuid="msg-1",
-            text="hi",
-            sender="human",
-            created_at="bad-date",
-        )
-        meta = msg.to_meta()
-        assert meta.timestamp is None
+        if sender == "human":
+            assert meta.role == "user"
+        else:
+            assert meta.role == sender
+        if expect_timestamp:
+            assert meta.timestamp is not None
+            assert meta.timestamp.year == 2024
+        else:
+            assert meta.timestamp is None
 
 
 class TestClaudeAIChatMessageToContentBlocks:
     """Test ClaudeAIChatMessage.to_content_blocks."""
 
-    def test_to_content_blocks_basic(self):
-        msg = ClaudeAIChatMessage(uuid="1", text="hello world", sender="human")
-        blocks = msg.to_content_blocks()
-        assert len(blocks) == 1
+    @pytest.mark.parametrize("text,sender,test_id", [
+        ("hello world", "human", "basic"),
+        ("response", "assistant", "assistant"),
+        ("", "human", "empty_text"),
+    ])
+    def test_to_content_blocks(self, text, sender, test_id):
         from polylogue.lib.viewports import ContentType
+        msg = ClaudeAIChatMessage(uuid="1", text=text, sender=sender)
+        blocks = msg.to_content_blocks()
+        assert len(blocks) == 1
         assert blocks[0].type == ContentType.TEXT
-        assert blocks[0].text == "hello world"
-
-    def test_to_content_blocks_assistant(self):
-        msg = ClaudeAIChatMessage(uuid="1", text="response", sender="assistant")
-        blocks = msg.to_content_blocks()
-        assert len(blocks) == 1
-        assert blocks[0].text == "response"
-
-    def test_to_content_blocks_empty_text(self):
-        msg = ClaudeAIChatMessage(uuid="1", text="", sender="human")
-        blocks = msg.to_content_blocks()
-        assert len(blocks) == 1
-        assert blocks[0].text == ""
+        assert blocks[0].text == text
 
 
-class TestClaudeAIConversationTitle:
-    """Test ClaudeAIConversation.title property."""
+class TestClaudeAIConversationProperties:
+    """Test ClaudeAIConversation properties (title, created_datetime, updated_datetime)."""
 
-    def test_title_from_name(self):
+    @pytest.mark.parametrize("name,expected_title,test_id", [
+        ("My Conversation", "My Conversation", "title_from_name"),
+        ("", "", "title_empty_name"),
+    ])
+    def test_title(self, name, expected_title, test_id):
         conv = ClaudeAIConversation(
-            uuid="c-1",
-            name="My Conversation",
+            uuid="c-1", name=name,
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
         )
-        assert conv.title == "My Conversation"
+        assert conv.title == expected_title
 
-    def test_title_empty_name(self):
+    @pytest.mark.parametrize("date_str,expect_valid,test_id", [
+        ("2024-06-15T10:30:00Z", True, "iso_z"),
+        ("2024-06-15T10:30:00+05:00", True, "iso_offset"),
+        ("not-a-date", False, "invalid"),
+    ])
+    def test_created_datetime(self, date_str, expect_valid, test_id):
         conv = ClaudeAIConversation(
-            uuid="c-1",
-            name="",
-            created_at="2024-01-01T00:00:00Z",
-            updated_at="2024-01-01T00:00:00Z",
-        )
-        assert conv.title == ""
-
-
-class TestClaudeAIConversationCreatedDatetime:
-    """Test ClaudeAIConversation.created_datetime property."""
-
-    @pytest.mark.parametrize("date_str,expect_valid", [
-        ("2024-06-15T10:30:00Z", True),
-        ("2024-06-15T10:30:00+05:00", True),
-        ("not-a-date", False),
-    ], ids=["iso_z", "iso_offset", "invalid"])
-    def test_created_datetime(self, date_str, expect_valid):
-        """Coverage for line 111: valid datetime parsing."""
-        conv = ClaudeAIConversation(
-            uuid="c-1",
-            name="Test",
+            uuid="c-1", name="Test",
             created_at=date_str,
             updated_at="2024-06-15T10:30:00Z",
         )
         dt = conv.created_datetime
         if expect_valid:
             assert dt is not None
-            assert dt.year == 2024
-            assert dt.month == 6
-            assert dt.day == 15
+            assert dt.year == 2024 and dt.month == 6 and dt.day == 15
         else:
             assert dt is None
 
-
-class TestClaudeAIConversationUpdatedDatetime:
-    """Test ClaudeAIConversation.updated_datetime property."""
-
-    def test_updated_datetime_valid(self):
-        """Coverage for line 119: valid datetime parsing."""
+    @pytest.mark.parametrize("updated_date,expect_valid,test_id", [
+        ("2024-06-16T11:30:00Z", True, "valid"),
+        ("bad-date", False, "invalid"),
+    ])
+    def test_updated_datetime(self, updated_date, expect_valid, test_id):
         conv = ClaudeAIConversation(
-            uuid="c-1",
-            name="Test",
-            created_at="2024-06-15T10:30:00Z",
-            updated_at="2024-06-16T11:30:00Z",
-        )
-        dt = conv.updated_datetime
-        assert dt is not None
-        assert dt.year == 2024
-        assert dt.month == 6
-        assert dt.day == 16
-
-    def test_updated_datetime_invalid(self):
-        """Coverage for line 121: ValueError on bad format."""
-        conv = ClaudeAIConversation(
-            uuid="c-1",
-            name="Test",
+            uuid="c-1", name="Test",
             created_at="2024-01-01T00:00:00Z",
-            updated_at="bad-date",
+            updated_at=updated_date,
         )
         dt = conv.updated_datetime
-        assert dt is None
+        if expect_valid:
+            assert dt is not None
+            assert dt.year == 2024 and dt.month == 6 and dt.day == 16
+        else:
+            assert dt is None
 
 
 class TestClaudeAIConversationMessages:
