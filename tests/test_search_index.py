@@ -46,7 +46,6 @@ from tests.helpers import ConversationBuilder, DbFactory, make_conversation, mak
 
 # test_db and test_conn fixtures are in conftest.py
 
-
 @pytest.fixture
 def archive_root(tmp_path):
     """Create an archive root directory with render subdirectory."""
@@ -1108,25 +1107,11 @@ class TestCreateVectorProvider:
                     provider = create_vector_provider()
                     assert provider is None
 
-    def test_uses_env_vars_when_no_config(self, monkeypatch):
-        """Uses environment variables when no config provided."""
-        monkeypatch.setenv("VOYAGE_API_KEY", "voyage-key")
-
-        with patch("polylogue.storage.search_providers.sqlite_vec", create=True):
-            from polylogue.storage.search_providers.sqlite_vec import SqliteVecProvider
-            with patch("polylogue.storage.search_providers.sqlite_vec.SqliteVecProvider") as mock_provider:
-                mock_provider.return_value = MagicMock()
-                # This test is tricky since we need sqlite_vec to be "installed"
-                # For now, just test that None is returned when not available
-                pass
-
-    def test_config_voyage_key_takes_priority(self, monkeypatch, tmp_path):
-        """Config voyage_api_key takes priority over environment variables."""
+    def test_config_priority_and_explicit_override(self, monkeypatch, tmp_path):
+        """Config voyage_api_key takes priority; explicit args override both config and env."""
         monkeypatch.setenv("VOYAGE_API_KEY", "env-voyage-key")
 
-        index_config = IndexConfig(
-            voyage_api_key="config-voyage-key",
-        )
+        index_config = IndexConfig(voyage_api_key="config-voyage-key")
         config = Config(
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
@@ -1134,24 +1119,10 @@ class TestCreateVectorProvider:
             index_config=index_config,
         )
 
-        # Just verify the config takes precedence
-        # Actual provider creation requires sqlite-vec
+        # Config takes priority over env
         assert config.index_config.voyage_api_key == "config-voyage-key"
 
-    def test_explicit_args_override_config(self, tmp_path):
-        """Explicit arguments override both config and env vars."""
-        index_config = IndexConfig(
-            voyage_api_key="config-voyage-key",
-        )
-        config = Config(
-            archive_root=tmp_path / "archive",
-            render_root=tmp_path / "render",
-            sources=[],
-            index_config=index_config,
-        )
-
-        # Since we can't easily test full provider creation without sqlite-vec,
-        # we just verify the priority logic would work
+        # Explicit args override config
         voyage_key = "explicit-voyage-key"
         if voyage_key is None and config and config.index_config:
             voyage_key = config.index_config.voyage_api_key
@@ -1389,12 +1360,11 @@ V9_MESSAGES_MIN_TABLE = """
 # File 1: polylogue/storage/backends/sqlite.py - Migrations
 # =============================================================================
 
-
 class TestMigrateV6ToV7:
     """Tests for _migrate_v6_to_v7 (conversation/message branching columns)."""
 
-    def test_migrate_v6_to_v7_adds_parent_conversation_id_column(self, tmp_path):
-        """Migration adds parent_conversation_id column to conversations."""
+    def test_migrate_v6_to_v7_adds_columns_and_enforces_constraints(self, tmp_path):
+        """Migration adds parent columns, indices, and enforces branch_type constraints."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -1403,24 +1373,18 @@ class TestMigrateV6ToV7:
         conn.execute(V6_MESSAGES_TABLE)
         conn.commit()
 
-        # Run migration
         _migrate_v6_to_v7(conn)
         conn.commit()
 
-        # Verify parent_conversation_id column exists
+        # Verify columns exist
         cursor = conn.execute("PRAGMA table_info(conversations)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "parent_conversation_id" in columns
-
-        # Verify branch_type column exists with correct constraint
         assert "branch_type" in columns
 
-        # Verify parent_message_id column exists
         cursor = conn.execute("PRAGMA table_info(messages)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "parent_message_id" in columns
-
-        # Verify branch_index column exists with default 0
         assert "branch_index" in columns
 
         # Verify indices were created
@@ -1431,22 +1395,7 @@ class TestMigrateV6ToV7:
         assert "idx_conversations_parent" in index_names
         assert "idx_messages_parent" in index_names
 
-        conn.close()
-
-    def test_migrate_v6_to_v7_branch_type_constraint(self, tmp_path):
-        """Migration enforces branch_type CHECK constraint."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-
-        conn.execute(V6_CONVERSATIONS_TABLE)
-        conn.execute(V6_MESSAGES_TABLE)
-        conn.commit()
-
-        _migrate_v6_to_v7(conn)
-        conn.commit()
-
-        # Insert a conversation with valid branch_type
+        # Verify branch_type constraint works - insert with valid type
         conn.execute(
             """
             INSERT INTO conversations
@@ -1457,7 +1406,6 @@ class TestMigrateV6ToV7:
         )
         conn.commit()
 
-        # Verify conversation was inserted
         row = conn.execute(
             "SELECT branch_type FROM conversations WHERE conversation_id = 'conv1'"
         ).fetchone()
@@ -1465,12 +1413,11 @@ class TestMigrateV6ToV7:
 
         conn.close()
 
-
 class TestMigrateV7ToV8:
     """Tests for _migrate_v7_to_v8 (raw storage with FK direction)."""
 
-    def test_migrate_v7_to_v8_creates_raw_conversations_table(self, tmp_path):
-        """Migration creates raw_conversations table with correct schema."""
+    def test_migrate_v7_to_v8_creates_and_accepts_inserts(self, tmp_path):
+        """Migration creates raw_conversations table with correct schema and accepts inserts."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -1482,13 +1429,12 @@ class TestMigrateV7ToV8:
         _migrate_v7_to_v8(conn)
         conn.commit()
 
-        # Verify raw_conversations table exists
+        # Verify raw_conversations table exists with correct columns
         exists = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='raw_conversations'"
         ).fetchone()
         assert exists is not None
 
-        # Verify columns
         cursor = conn.execute("PRAGMA table_info(raw_conversations)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "raw_id" in columns
@@ -1510,21 +1456,7 @@ class TestMigrateV7ToV8:
         assert "idx_raw_conv_provider" in index_names
         assert "idx_raw_conv_source" in index_names
 
-        conn.close()
-
-    def test_migrate_v7_to_v8_raw_conversations_insert(self, tmp_path):
-        """Raw conversations table accepts valid inserts."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-
-        conn.execute(V7_CONVERSATIONS_TABLE)
-        conn.commit()
-
-        _migrate_v7_to_v8(conn)
-        conn.commit()
-
-        # Insert a raw conversation record
+        # Test insertion works
         conn.execute(
             """
             INSERT INTO raw_conversations
@@ -1535,62 +1467,47 @@ class TestMigrateV7ToV8:
         )
         conn.commit()
 
-        # Verify insertion
         row = conn.execute("SELECT raw_id, provider_name FROM raw_conversations WHERE raw_id = 'raw1'").fetchone()
         assert row["raw_id"] == "raw1"
         assert row["provider_name"] == "claude"
 
         conn.close()
 
-
 class TestMigrateV8ToV9:
     """Tests for _migrate_v8_to_v9 (idempotent source_name addition)."""
 
-    def test_migrate_v8_to_v9_adds_source_name_column(self, tmp_path):
-        """Migration adds source_name column to raw_conversations."""
+    def test_migrate_v8_to_v9_adds_source_name_and_is_idempotent(self, tmp_path):
+        """Migration adds source_name column to raw_conversations and is idempotent."""
         db_path = tmp_path / "test.db"
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
 
+        # First test: adding to v8 schema (without source_name)
         conn.execute(V8_RAW_CONVERSATIONS_TABLE)
         conn.commit()
 
-        # Run migration
         _migrate_v8_to_v9(conn)
         conn.commit()
 
-        # Verify source_name column exists
         cursor = conn.execute("PRAGMA table_info(raw_conversations)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "source_name" in columns
 
-        conn.close()
-
-    def test_migrate_v8_to_v9_idempotent(self, tmp_path):
-        """Migration is idempotent (can be run multiple times)."""
-        db_path = tmp_path / "test.db"
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
+        # Second test: idempotency - recreate with v9 schema and run migration again
+        conn.execute("DROP TABLE raw_conversations")
+        conn.commit()
 
         conn.execute(V9_RAW_CONVERSATIONS_TABLE)
         conn.commit()
 
-        # Run migration (should not fail)
         _migrate_v8_to_v9(conn)
         conn.commit()
 
-        # Verify column still exists (and no duplicates)
         cursor = conn.execute("PRAGMA table_info(raw_conversations)")
         columns = {row[1] for row in cursor.fetchall()}
         assert "source_name" in columns
-        # Count how many source_name columns (should be 1)
-        count = sum(1 for row in cursor.fetchall() if row[1] == "source_name")
-        cursor = conn.execute("PRAGMA table_info(raw_conversations)")
-        count = sum(1 for row in cursor.fetchall() if row[1] == "source_name")
-        assert count == 1
 
         conn.close()
-
 
 class TestMigrateV9ToV10:
     """Tests for _migrate_v9_to_v10 (vec0 tables and embeddings)."""
@@ -1655,12 +1572,11 @@ class TestMigrateV9ToV10:
 
         conn.close()
 
-
 class TestEnsureVec0Table:
     """Tests for _ensure_vec0_table (idempotent vec0 creation)."""
 
-    def test_ensure_vec0_table_creates_when_missing(self, tmp_path):
-        """_ensure_vec0_table creates vec0 table if missing and sqlite-vec available."""
+    def test_ensure_vec0_table_idempotent_and_creates_when_missing(self, tmp_path):
+        """_ensure_vec0_table creates vec0 table if missing, is idempotent when called multiple times."""
         db_path = tmp_path / "test.db"
         with connection_context(db_path) as conn:
             # Verify vec_version is available (sqlite-vec loaded)
@@ -1671,35 +1587,26 @@ class TestEnsureVec0Table:
                 vec_available = False
 
             if vec_available:
-                # Delete the vec0 table if it exists
+                # Test creation when missing
                 conn.execute("DROP TABLE IF EXISTS message_embeddings")
                 conn.commit()
 
-                # Ensure it's gone
                 exists = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
                 ).fetchone()
                 assert exists is None
 
-                # Run ensure function
                 _ensure_vec0_table(conn)
 
-                # Verify table was created
                 exists = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name='message_embeddings'"
                 ).fetchone()
                 assert exists is not None
 
-    def test_ensure_vec0_table_idempotent(self, tmp_path):
-        """_ensure_vec0_table is safe to call multiple times."""
-        db_path = tmp_path / "test.db"
-        with connection_context(db_path) as conn:
-            # Call multiple times
+            # Test idempotency (call multiple times, should not raise)
             _ensure_vec0_table(conn)
             _ensure_vec0_table(conn)
             _ensure_vec0_table(conn)
-
-            # Should not raise
 
 
 class TestListConversationsByParent:
@@ -1978,6 +1885,11 @@ class TestAssetPath:
             lambda path: "assets" in path.parts and path.parent.parent.name == "assets",
             "creates_correct_structure",
         ),
+        (
+            "",
+            lambda path: "att-" in path.name,
+            "handles_empty_string",
+        ),
     ])
     def test_asset_path_behavior(self, tmp_path, asset_id, verify_fn, description):
         """Parametrized test for asset_path with various inputs and expectations."""
@@ -1998,44 +1910,27 @@ class TestWriteAsset:
         assert result_path.exists()
         assert result_path.read_bytes() == content
 
-    def test_write_asset_error_cleans_up_temp(self, tmp_path):
-        """write_asset cleans up temp file on error."""
-        asset_id = "test-asset"
-        content = b"test content"
-
-        # Mock os.write to succeed but os.replace to fail
-        original_replace = os.replace
-
+    def test_write_asset_error_cleans_up_on_failures(self, tmp_path):
+        """write_asset cleans up temp files on replace or write errors."""
         def mock_replace(src, dst):
             if os.path.exists(src):
                 os.unlink(src)
             raise OSError("Simulated replace error")
 
+        # Test replace error cleanup
         with patch("os.replace", side_effect=mock_replace):
             with pytest.raises(OSError):
-                write_asset(tmp_path, asset_id, content)
-
-        # Verify no temp files left behind
+                write_asset(tmp_path, "test-asset", b"test content")
         temp_files = list(tmp_path.glob(".test-asset.*"))
         assert len(temp_files) == 0
 
-    def test_write_asset_fd_cleanup_on_error(self, tmp_path):
-        """write_asset closes file descriptor on error during write."""
-        asset_id = "test-asset"
-        content = b"test content"
-
-        # Mock os.write to fail
-        original_write = os.write
-
+        # Test write error cleanup
         def mock_write(fd, data):
-            # Fail immediately to trigger error handling
             raise OSError("Write failed")
 
         with patch("os.write", side_effect=mock_write):
             with pytest.raises(OSError):
-                write_asset(tmp_path, asset_id, content)
-
-        # Verify no temp files left behind in asset directory
+                write_asset(tmp_path, "test-asset", b"test content")
         asset_dir = tmp_path / "assets"
         if asset_dir.exists():
             temp_files = list(asset_dir.glob("**/.test-asset.*"))
@@ -2043,18 +1938,16 @@ class TestWriteAsset:
 
     def test_write_asset_atomic_rename(self, tmp_path):
         """write_asset uses atomic rename (os.replace)."""
-        asset_id = "test-asset"
-        content = b"test content"
-
         with patch("os.replace") as mock_replace:
-            write_asset(tmp_path, asset_id, content)
-            # Verify os.replace was called (atomic rename)
+            write_asset(tmp_path, "test-asset", b"test content")
             assert mock_replace.called
 
-
-# =============================================================================
-# File 5: polylogue/cli/commands/mcp.py - MCP Command Errors
-# =============================================================================
+    def test_write_asset_creates_nested_dirs(self, tmp_path):
+        """write_asset creates all needed nested directories."""
+        result_path = write_asset(tmp_path, "very-long-asset-id-that-should-get-hashed", b"content")
+        assert result_path.parent.exists()
+        assert result_path.parent.parent.exists()
+        assert result_path.exists()
 
 
 class TestRawConversationEdgeCases:
@@ -2133,29 +2026,6 @@ class TestRawConversationEdgeCases:
         assert children[0].branch_type == "sidechain"
 
         backend.close()
-
-
-class TestAssetErrorHandling:
-    """Tests for asset handling error paths."""
-
-    def test_asset_path_with_empty_string(self, tmp_path):
-        """asset_path handles empty string IDs."""
-        # Empty string gets hashed
-        path = asset_path(tmp_path, "")
-        assert "att-" in path.name
-
-    def test_write_asset_creates_nested_dirs(self, tmp_path):
-        """write_asset creates all needed nested directories."""
-        # Use a deep nested ID
-        asset_id = "very-long-asset-id-that-should-get-hashed"
-        content = b"content"
-
-        result_path = write_asset(tmp_path, asset_id, content)
-
-        # Verify all intermediate directories exist
-        assert result_path.parent.exists()
-        assert result_path.parent.parent.exists()
-        assert result_path.exists()
 
 
 # --- Merged from test_supplementary_coverage.py ---
