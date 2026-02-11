@@ -38,46 +38,84 @@ from polylogue.sources.providers.claude_code import (
 )
 from polylogue.sources.providers.claude_ai import ClaudeAIChatMessage, ClaudeAIConversation
 
+# =============================================================================
+# Test Data Tables (module-level constants)
+# =============================================================================
+
+CHATGPT_ROLE_MAPPING = [
+    ("user", "user"),
+    ("assistant", "assistant"),
+    ("tool", "tool"),
+    ("custom", "unknown"),
+]
+
+GEMINI_ROLE_MAPPING = [
+    ("user", "user"),
+    ("model", "assistant"),
+    ("assistant", "assistant"),
+    ("custom", "unknown"),
+]
+
+GEMINI_ROLE_MAPPING_EXTRA = [
+    ("user", "user"),
+    ("USER", "user"),
+    ("model", "assistant"),
+    ("MODEL", "assistant"),
+    ("assistant", "assistant"),
+    ("system", "system"),
+    ("SYSTEM", "system"),
+    ("unknown_role", "unknown"),
+    ("", "unknown"),
+]
+
+CLAUDE_CODE_TYPE_ROLE_MAPPING = [
+    ("user", "user"),
+    ("assistant", "assistant"),
+    ("summary", "system"),
+    ("system", "system"),
+    ("file-history-snapshot", "system"),
+    ("queue-operation", "system"),
+    ("progress", "tool"),
+    ("result", "tool"),
+    ("init", "unknown"),
+    ("", "unknown"),
+]
+
+CLAUDE_CODE_TIMESTAMP_PARSING = [
+    (1700000000000, 2023, "unix_milliseconds"),
+    (1700000000, 2023, "unix_seconds"),
+    (1700000000000.5, 2023, "unix_float_milliseconds"),
+    ("2025-01-01T00:00:00Z", 2025, "iso_string_with_z"),
+    ("2025-06-15T12:30:00+05:00", 2025, "iso_string_with_timezone"),
+    (None, None, "none_timestamp"),
+    ("not-a-date", None, "invalid_string_returns_none"),
+    (0, 1970, "zero_timestamp"),
+]
+
+CLAUDE_AI_ROLE_MAPPING = [
+    ("human", "user"),
+    ("assistant", "assistant"),
+    ("system", "assistant"),
+    ("", "assistant"),
+]
+
 
 class TestChatGPTMessageTextContent:
     """Regression tests for ChatGPTMessage.text_content."""
 
-    def test_text_content_with_string_parts(self):
+    @pytest.mark.parametrize("parts,expected", [
+        (["Hello", "World"], "Hello\nWorld"),
+        ([None, "Valid"], "Valid"),
+        ([{"text": None}, {"text": "ok"}], "ok"),
+        ([{"text": "hello"}], "hello"),
+        ([], ""),
+    ], ids=["string_parts", "none_parts", "dict_none_text", "dict_valid_text", "empty_parts"])
+    def test_text_content_with_parts(self, parts, expected):
         msg = ChatGPTMessage(
             id="1", author=ChatGPTAuthor(role="user"),
-            content=ChatGPTContent(content_type="text", parts=["Hello", "World"]),
+            content=ChatGPTContent(content_type="text", parts=parts),
         )
-        assert msg.text_content == "Hello\nWorld"
-
-    def test_text_content_with_none_parts(self):
-        """Regression: parts list can contain None values."""
-        msg = ChatGPTMessage(
-            id="1", author=ChatGPTAuthor(role="user"),
-            content=ChatGPTContent(content_type="text", parts=[None, "Valid"]),
-        )
-        assert msg.text_content == "Valid"
-
-    def test_text_content_with_dict_none_text(self):
-        """Regression: dict part with 'text' key but None value must not crash join()."""
-        msg = ChatGPTMessage(
-            id="1", author=ChatGPTAuthor(role="user"),
-            content=ChatGPTContent(content_type="text", parts=[{"text": None}, {"text": "ok"}]),
-        )
-        assert msg.text_content == "ok"
-
-    def test_text_content_with_dict_valid_text(self):
-        msg = ChatGPTMessage(
-            id="1", author=ChatGPTAuthor(role="user"),
-            content=ChatGPTContent(content_type="text", parts=[{"text": "hello"}]),
-        )
-        assert msg.text_content == "hello"
-
-    def test_text_content_empty_parts(self):
-        msg = ChatGPTMessage(
-            id="1", author=ChatGPTAuthor(role="user"),
-            content=ChatGPTContent(content_type="text", parts=[]),
-        )
-        assert msg.text_content == ""
+        assert msg.text_content == expected
 
     def test_text_content_no_content(self):
         msg = ChatGPTMessage(id="1", author=ChatGPTAuthor(role="user"))
@@ -90,10 +128,10 @@ class TestChatGPTMessageTextContent:
         )
         assert msg.text_content == "Direct text"
 
-    def test_role_normalized(self):
-        for role_in, expected in [("user", "user"), ("assistant", "assistant"), ("tool", "tool"), ("custom", "unknown")]:
-            msg = ChatGPTMessage(id="1", author=ChatGPTAuthor(role=role_in))
-            assert msg.role_normalized == expected
+    @pytest.mark.parametrize("role_in,expected", CHATGPT_ROLE_MAPPING)
+    def test_role_normalized(self, role_in, expected):
+        msg = ChatGPTMessage(id="1", author=ChatGPTAuthor(role=role_in))
+        assert msg.role_normalized == expected
 
 
 class TestGeminiMessageTextContent:
@@ -113,10 +151,10 @@ class TestGeminiMessageTextContent:
         msg = GeminiMessage(text="", role="model", parts=[GeminiPart(text="typed")])
         assert msg.text_content == "typed"
 
-    def test_role_normalized(self):
-        for role_in, expected in [("user", "user"), ("model", "assistant"), ("assistant", "assistant"), ("custom", "unknown")]:
-            msg = GeminiMessage(text="x", role=role_in)
-            assert msg.role_normalized == expected
+    @pytest.mark.parametrize("role_in,expected", GEMINI_ROLE_MAPPING)
+    def test_role_normalized(self, role_in, expected):
+        msg = GeminiMessage(text="x", role=role_in)
+        assert msg.role_normalized == expected
 
     def test_extract_content_blocks_dict_none_text(self):
         """Regression: extract_content_blocks with None text in dict part must not crash."""
@@ -149,103 +187,25 @@ class TestGeminiMessageTextContent:
 class TestClaudeCodeRecordRole:
     """Test type→role mapping for all record types."""
 
-    def test_user_type_maps_to_user(self):
-        record = ClaudeCodeRecord(type="user")
-        assert record.role == "user"
-
-    def test_assistant_type_maps_to_assistant(self):
-        record = ClaudeCodeRecord(type="assistant")
-        assert record.role == "assistant"
-
-    def test_summary_type_maps_to_system(self):
-        record = ClaudeCodeRecord(type="summary")
-        assert record.role == "system"
-
-    def test_system_type_maps_to_system(self):
-        record = ClaudeCodeRecord(type="system")
-        assert record.role == "system"
-
-    def test_file_history_snapshot_maps_to_system(self):
-        record = ClaudeCodeRecord(type="file-history-snapshot")
-        assert record.role == "system"
-
-    def test_queue_operation_maps_to_system(self):
-        record = ClaudeCodeRecord(type="queue-operation")
-        assert record.role == "system"
-
-    def test_progress_type_maps_to_tool(self):
-        record = ClaudeCodeRecord(type="progress")
-        assert record.role == "tool"
-
-    def test_result_type_maps_to_tool(self):
-        record = ClaudeCodeRecord(type="result")
-        assert record.role == "tool"
-
-    def test_unknown_type_maps_to_unknown(self):
-        record = ClaudeCodeRecord(type="init")
-        assert record.role == "unknown"
-
-    def test_empty_type_maps_to_unknown(self):
-        record = ClaudeCodeRecord(type="")
-        assert record.role == "unknown"
+    @pytest.mark.parametrize("record_type,expected_role", CLAUDE_CODE_TYPE_ROLE_MAPPING)
+    def test_type_role_mapping(self, record_type, expected_role):
+        record = ClaudeCodeRecord(type=record_type)
+        assert record.role == expected_role
 
 
 class TestClaudeCodeRecordTimestamp:
     """Test timestamp parsing from various formats."""
 
-    def test_unix_milliseconds(self):
-        """Timestamps > 1e11 are treated as milliseconds."""
-        record = ClaudeCodeRecord(type="user", timestamp=1700000000000)
+    @pytest.mark.parametrize("timestamp,expected_year,test_id", CLAUDE_CODE_TIMESTAMP_PARSING)
+    def test_timestamp_parsing(self, timestamp, expected_year, test_id):
+        record = ClaudeCodeRecord(type="user", timestamp=timestamp)
         ts = record.parsed_timestamp
-        assert ts is not None
-        assert isinstance(ts, datetime)
-        assert ts.year == 2023
-
-    def test_unix_seconds(self):
-        """Timestamps <= 1e11 are treated as seconds."""
-        record = ClaudeCodeRecord(type="user", timestamp=1700000000)
-        ts = record.parsed_timestamp
-        assert ts is not None
-        assert ts.year == 2023
-
-    def test_unix_float_milliseconds(self):
-        """Float timestamps > 1e11 are milliseconds."""
-        record = ClaudeCodeRecord(type="user", timestamp=1700000000000.5)
-        ts = record.parsed_timestamp
-        assert ts is not None
-        assert ts.year == 2023
-
-    def test_iso_string_with_z(self):
-        """ISO strings with Z suffix are parsed."""
-        record = ClaudeCodeRecord(type="user", timestamp="2025-01-01T00:00:00Z")
-        ts = record.parsed_timestamp
-        assert ts is not None
-        assert ts.year == 2025
-        assert ts.month == 1
-
-    def test_iso_string_with_timezone(self):
-        """ISO strings with timezone offset are parsed."""
-        record = ClaudeCodeRecord(type="user", timestamp="2025-06-15T12:30:00+05:00")
-        ts = record.parsed_timestamp
-        assert ts is not None
-        assert ts.year == 2025
-
-    def test_none_timestamp(self):
-        """None timestamp returns None."""
-        record = ClaudeCodeRecord(type="user", timestamp=None)
-        assert record.parsed_timestamp is None
-
-    def test_invalid_string_returns_none(self):
-        """Invalid timestamp string returns None instead of crashing."""
-        record = ClaudeCodeRecord(type="user", timestamp="not-a-date")
-        assert record.parsed_timestamp is None
-
-    def test_zero_timestamp(self):
-        """Zero timestamp is epoch (valid)."""
-        record = ClaudeCodeRecord(type="user", timestamp=0)
-        ts = record.parsed_timestamp
-        assert ts is not None
-        assert ts.year == 1970
+        if expected_year is None:
+            assert ts is None
+        else:
+            assert ts is not None
+            assert isinstance(ts, datetime)
+            assert ts.year == expected_year
 
 
 class TestClaudeCodeRecordTextContent2:
@@ -604,17 +564,7 @@ class TestClaudeCodeRecordViewportMethods:
 class TestGeminiRoleNormalizedExtra:
     """Test GeminiMessage.role_normalized edge cases."""
 
-    @pytest.mark.parametrize("role,expected", [
-        ("user", "user"),
-        ("USER", "user"),
-        ("model", "assistant"),
-        ("MODEL", "assistant"),
-        ("assistant", "assistant"),
-        ("system", "system"),
-        ("SYSTEM", "system"),
-        ("unknown_role", "unknown"),
-        ("", "unknown"),
-    ], ids=[
+    @pytest.mark.parametrize("role,expected", GEMINI_ROLE_MAPPING_EXTRA, ids=[
         "user_lowercase", "user_uppercase", "model_lowercase", "model_uppercase",
         "assistant_lowercase", "system_lowercase", "system_uppercase",
         "unknown_role", "empty_string"
@@ -898,12 +848,9 @@ class TestGeminiExtractContentBlocksExtra:
 class TestClaudeAIChatMessageRoleNormalized:
     """Test ClaudeAIChatMessage.role_normalized."""
 
-    @pytest.mark.parametrize("sender,expected", [
-        ("human", "user"),
-        ("assistant", "assistant"),
-        ("system", "assistant"),
-        ("", "assistant"),
-    ], ids=["human", "assistant", "system", "empty"])
+    @pytest.mark.parametrize("sender,expected", CLAUDE_AI_ROLE_MAPPING, ids=[
+        "human", "assistant", "system", "empty"
+    ])
     def test_role_normalized(self, sender, expected):
         msg = ClaudeAIChatMessage(uuid="1", text="hi", sender=sender)
         assert msg.role_normalized == expected
