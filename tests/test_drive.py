@@ -1252,39 +1252,34 @@ class TestDownloadJsonPayload:
 # Tests for Exponential Backoff Behavior
 # ============================================================================
 
+BACKOFF_TEST_CASES = [
+    ((0.5, 0.5, 10), [1, 2, 3], "increases_exponentially"),
+    ((1, 1, 5), [10], "respects_max"),
+]
+
 
 class TestExponentialBackoff:
     """Tests for exponential backoff behavior."""
 
-    def test_backoff_increases_exponentially(self):
-        """Verify backoff timing increases exponentially."""
+    @pytest.mark.parametrize("config,attempts,test_id", BACKOFF_TEST_CASES)
+    def test_backoff_behavior(self, config, attempts, test_id):
+        """Test exponential backoff with various configurations (parametrized)."""
         from tenacity import wait_exponential
 
-        wait = wait_exponential(multiplier=0.5, min=0.5, max=10)
+        multiplier, min_wait, max_wait = config
+        wait = wait_exponential(multiplier=multiplier, min=min_wait, max=max_wait)
 
         class MockRetryState:
             def __init__(self, attempt):
                 self.attempt_number = attempt
 
-        wait_1 = wait(MockRetryState(1))
-        wait_2 = wait(MockRetryState(2))
-        wait_3 = wait(MockRetryState(3))
-
-        assert wait_2 >= wait_1
-        assert wait_3 >= wait_2
-
-    def test_backoff_respects_max(self):
-        """Verify backoff is capped at max value."""
-        from tenacity import wait_exponential
-
-        wait = wait_exponential(multiplier=1, min=1, max=5)
-
-        class MockRetryState:
-            def __init__(self, attempt):
-                self.attempt_number = attempt
-
-        wait_10 = wait(MockRetryState(10))
-        assert wait_10 <= 5
+        if test_id == "increases_exponentially":
+            waits = [wait(MockRetryState(a)) for a in attempts]
+            assert waits[1] >= waits[0]
+            assert waits[2] >= waits[1]
+        elif test_id == "respects_max":
+            wait_val = wait(MockRetryState(attempts[0]))
+            assert wait_val <= max_wait
 
 
 # ============================================================================
@@ -1311,26 +1306,23 @@ class TestHttpErrorRetries:
 # Tests for Drive Exception Types
 # ============================================================================
 
+EXCEPTION_TYPE_CASES = [
+    (DriveAuthError, "Auth failed", [DriveError, RuntimeError], "auth_error_is_drive_error"),
+    (DriveNotFoundError, "File not found", [DriveError, RuntimeError], "not_found_error_is_drive_error"),
+    (DriveError, "Test message", [RuntimeError], "drive_error_is_runtime_error"),
+]
+
 
 class TestDriveExceptionTypes:
     """Tests for Drive exception hierarchy."""
 
-    def test_auth_error_is_drive_error(self):
-        """DriveAuthError is a DriveError."""
-        exc = DriveAuthError("Auth failed")
-        assert isinstance(exc, DriveError)
-        assert isinstance(exc, RuntimeError)
-
-    def test_not_found_error_is_drive_error(self):
-        """DriveNotFoundError is a DriveError."""
-        exc = DriveNotFoundError("File not found")
-        assert isinstance(exc, DriveError)
-        assert isinstance(exc, RuntimeError)
-
-    def test_drive_error_message(self):
-        """DriveError preserves error message."""
-        exc = DriveError("Test message")
-        assert str(exc) == "Test message"
+    @pytest.mark.parametrize("exc_class,message,base_classes,test_id", EXCEPTION_TYPE_CASES)
+    def test_exception_hierarchy(self, exc_class, message, base_classes, test_id):
+        """Test Drive exception hierarchy (parametrized)."""
+        exc = exc_class(message)
+        assert str(exc) == message
+        for base_class in base_classes:
+            assert isinstance(exc, base_class), f"Failed for {test_id}"
 
     def test_auth_error_chaining(self):
         """DriveAuthError can chain from other exceptions."""
