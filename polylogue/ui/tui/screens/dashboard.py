@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
 from textual.containers import Container, Grid
@@ -10,6 +11,9 @@ from textual.widgets import Static
 
 from polylogue.config import Config
 from polylogue.ui.tui.widgets.stats import StatCard
+
+if TYPE_CHECKING:
+    from polylogue.storage.repository import ConversationRepository
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +79,21 @@ class Dashboard(Container):
     }
     """
 
-    def __init__(self, config: Config | None = None) -> None:
+    def __init__(
+        self,
+        config: Config | None = None,
+        repository: ConversationRepository | None = None,
+    ) -> None:
         super().__init__()
         self.config = config
+        self._repository = repository
+
+    def _get_repo(self) -> ConversationRepository:
+        """Get the repository, falling back to the service singleton."""
+        if self._repository is not None:
+            return self._repository
+        from polylogue.services import get_repository
+        return get_repository()
 
     def compose(self) -> ComposeResult:
         # Grid for stats
@@ -95,63 +111,35 @@ class Dashboard(Container):
 
     def on_mount(self) -> None:
         """Load data when screen mounts."""
-        self.run_worker(self.load_stats(), thread=True)
+        self.run_worker(self._fetch_stats(), thread=True)
 
-    async def load_stats(self) -> None:
-        """Fetch statistics from the repository."""
-        from polylogue.storage.backends.sqlite import connection_context
-
+    async def _fetch_stats(self) -> None:
+        """Fetch stats in a thread, then update DOM on the main thread."""
         try:
-            with connection_context(None) as conn:
-                # Count conversations
-                conv_count = conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
-
-                # Count messages
-                msg_count = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
-
-                # Count attachments and size
-                att_row = conn.execute("SELECT COUNT(*), SUM(size_bytes) FROM attachments").fetchone()
-                att_count = att_row[0]
-
-                # Get provider breakdown
-                provider_rows = conn.execute("""
-                    SELECT provider_name, COUNT(*) as count
-                    FROM conversations
-                    GROUP BY provider_name
-                    ORDER BY count DESC
-                """).fetchall()
-                providers = [(row["provider_name"], row["count"]) for row in provider_rows]
-
-                # Get embedding stats
-                embedded_msgs = 0
-                embedded_convs = 0
-                try:
-                    embedded_msgs = conn.execute(
-                        "SELECT COUNT(*) FROM message_embeddings"
-                    ).fetchone()[0]
-                    embedded_convs = conn.execute(
-                        "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0"
-                    ).fetchone()[0]
-                except Exception:
-                    logger.debug("Failed to query embedding stats")
-
-            # Update widgets
-            self.query_one("#stat-conversations", StatCard).value = str(conv_count)
-            self.query_one("#stat-messages", StatCard).value = str(msg_count)
-            self.query_one("#stat-attachments", StatCard).value = str(att_count)
-            self.query_one("#stat-embeddings", StatCard).value = str(embedded_msgs)
-
-            # Calculate coverage
-            coverage = (embedded_convs / conv_count * 100) if conv_count > 0 else 0
-            self.query_one("#stat-coverage", StatCard).value = f"{coverage:.1f}%"
-
-            # Update provider bars
-            bars_container = self.query_one("#provider-bars", Container)
-            max_count = providers[0][1] if providers else 1
-
-            for provider, count in providers[:10]:  # Top 10 providers
-                bar = ProviderBar(provider or "unknown", count, max_count)
-                bars_container.mount(bar)
-
+            repo = self._get_repo()
+            stats = repo.get_archive_stats()
         except Exception as e:
-            self.notify(f"Failed to load stats: {e}", severity="error")
+            self.app.call_from_thread(self.notify, f"Failed to load stats: {e}", severity="error")
+            return
+
+        # Schedule all DOM updates on the main thread
+        self.app.call_from_thread(self._apply_stats, stats)
+
+    def _apply_stats(self, stats) -> None:
+        """Apply fetched stats to DOM widgets (runs on main thread)."""
+        from polylogue.lib.stats import ArchiveStats
+
+        self.query_one("#stat-conversations", StatCard).value = str(stats.total_conversations)
+        self.query_one("#stat-messages", StatCard).value = str(stats.total_messages)
+        self.query_one("#stat-attachments", StatCard).value = str(stats.total_attachments)
+        self.query_one("#stat-embeddings", StatCard).value = str(stats.embedded_messages)
+        self.query_one("#stat-coverage", StatCard).value = f"{stats.embedding_coverage:.1f}%"
+
+        # Mount provider bars
+        bars_container = self.query_one("#provider-bars", Container)
+        sorted_providers = sorted(stats.providers.items(), key=lambda x: x[1], reverse=True)
+        max_count = sorted_providers[0][1] if sorted_providers else 1
+
+        for provider, count in sorted_providers[:10]:
+            bar = ProviderBar(provider or "unknown", count, max_count)
+            bars_container.mount(bar)

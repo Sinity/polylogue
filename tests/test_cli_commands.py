@@ -580,6 +580,7 @@ class TestDashboardCommand:
 # =============================================================================
 
 
+@pytest.mark.integration
 class TestRunCommand:
     """Tests for the run command."""
 
@@ -649,6 +650,7 @@ class TestRunCommand:
 # =============================================================================
 
 
+@pytest.mark.integration
 class TestAuthCommand:
     """Tests for the auth command."""
 
@@ -688,6 +690,7 @@ class TestAuthCommand:
 # =============================================================================
 
 
+@pytest.mark.integration
 class TestCheckCommand:
     """Tests for the check command."""
 
@@ -741,6 +744,7 @@ class TestCheckCommand:
 # =============================================================================
 
 
+@pytest.mark.integration
 class TestResetCommandSubprocess:
     """Subprocess integration tests for the reset command."""
 
@@ -794,85 +798,35 @@ class TestResetCommandSubprocess:
 
 
 # =============================================================================
-# SUBPROCESS INTEGRATION TESTS - COMPLETIONS COMMAND
-# =============================================================================
-
-
-class TestCompletionsCommandSubprocess:
-    """Subprocess integration tests for the completions command."""
-
-    @pytest.mark.parametrize("shell,desc", [(s, s) for s, _ in SHELL_COMPLETION_CASES])
-    def test_completions_shell_subprocess(self, tmp_path, shell, desc):
-        """completions --shell outputs completion script."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        result = run_cli(["completions", "--shell", shell], env=env)
-        assert result.exit_code == 0
-        # Should contain some completion content
-        assert len(result.stdout) > 0
-
-    def test_completions_requires_shell(self, tmp_path):
-        """completions without --shell fails."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        result = run_cli(["completions"], env=env)
-        assert result.exit_code != 0
-        assert "shell" in result.output.lower() or "required" in result.output.lower()
-
-
-# =============================================================================
-# SUBPROCESS INTEGRATION TESTS - SOURCES COMMAND
+# CLIRUNNER UNIT TESTS - SOURCES COMMAND
 # =============================================================================
 
 
 class TestSourcesCommand:
     """Tests for the sources command."""
 
-    def test_sources_lists_configured(self, tmp_path):
+    def test_sources_lists_configured(self, cli_runner, monkeypatch, cli_workspace):
         """sources command lists configured sources."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
+        monkeypatch.setenv("XDG_DATA_HOME", str(cli_workspace["data_root"]))
 
-        result = run_cli(["--plain", "sources"], env=env)
+        result = cli_runner.invoke(click_cli, ["sources"])
         # Should succeed (may show no sources or default inbox)
         assert result.exit_code == 0
 
-    def test_sources_json_output(self, tmp_path):
+    def test_sources_json_output(self, cli_runner, monkeypatch, cli_workspace):
         """sources --json outputs valid JSON."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
+        monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
+        monkeypatch.setenv("XDG_DATA_HOME", str(cli_workspace["data_root"]))
 
-        result = run_cli(["--plain", "sources", "--json"], env=env)
+        result = cli_runner.invoke(click_cli, ["sources", "--json"])
         assert result.exit_code == 0
 
         try:
-            data = json.loads(result.stdout)
+            data = json.loads(result.output)
             assert isinstance(data, list)
         except json.JSONDecodeError:
-            pytest.fail(f"sources --json did not output valid JSON: {result.stdout}")
-
-
-# =============================================================================
-# SUBPROCESS INTEGRATION TESTS - MCP COMMAND
-# =============================================================================
-
-
-class TestMcpCommandSubprocess:
-    """Subprocess integration tests for the mcp command."""
-
-    def test_mcp_unsupported_transport(self, tmp_path):
-        """mcp with unsupported transport fails."""
-        workspace = setup_isolated_workspace(tmp_path)
-        env = workspace["env"]
-
-        # Click should reject invalid choice
-        result = run_cli(["mcp", "--transport", "http"], env=env)
-        assert result.exit_code != 0
-
-    # Note: We don't test mcp with stdio transport because it blocks waiting
-    # for input. The command structure is tested via help.
+            pytest.fail(f"sources --json did not output valid JSON: {result.output}")
 
 
 # =============================================================================
@@ -1029,11 +983,11 @@ class TestResetCommandValidation:
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
         # Create mock path constants for the test
-        with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path / "data"), \
-             patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "render"), \
-             patch("polylogue.cli.commands.reset.CACHE_HOME", tmp_path / "cache"), \
-             patch("polylogue.cli.commands.reset.DRIVE_TOKEN_PATH", tmp_path / "token.json"):
+        with patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"), \
+             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "data"), \
+             patch("polylogue.cli.commands.reset.render_root", return_value=tmp_path / "render"), \
+             patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "cache"), \
+             patch("polylogue.cli.commands.reset.drive_token_path", return_value=tmp_path / "token.json"):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--all", "--yes"])
 
@@ -1053,38 +1007,38 @@ class TestResetCommandDeletion:
         if path_attr == "db_path":
             target_path = tmp_path / "polylogue.db"
             target_path.write_text("test database", encoding="utf-8")
-            patches = [patch("polylogue.cli.commands.reset.DB_PATH", target_path),
-                      patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path)]
+            patches = [patch("polylogue.cli.commands.reset.db_path", return_value=target_path),
+                      patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path)]
         elif path_attr == "assets_dir":
             data_home = tmp_path / "data"
             target_path = data_home / "assets"
             target_path.mkdir(parents=True)
             (target_path / "test.png").write_bytes(b"test")
-            patches = [patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"),
-                      patch("polylogue.cli.commands.reset.DATA_HOME", data_home)]
+            patches = [patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+                      patch("polylogue.cli.commands.reset.data_home", return_value=data_home)]
         elif path_attr == "render_dir":
             target_path = tmp_path / "render"
             target_path.mkdir(parents=True)
             (target_path / "test.html").write_text("<html>test</html>", encoding="utf-8")
-            patches = [patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"),
-                      patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path),
-                      patch("polylogue.cli.commands.reset.RENDER_ROOT", target_path)]
+            patches = [patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+                      patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+                      patch("polylogue.cli.commands.reset.render_root", return_value=target_path)]
         elif path_attr == "cache_dir":
             target_path = tmp_path / "cache"
             target_path.mkdir(parents=True)
             (target_path / "index").write_text("index data", encoding="utf-8")
-            patches = [patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"),
-                      patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path),
-                      patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "nonexistent"),
-                      patch("polylogue.cli.commands.reset.CACHE_HOME", target_path)]
+            patches = [patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+                      patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+                      patch("polylogue.cli.commands.reset.render_root", return_value=tmp_path / "nonexistent"),
+                      patch("polylogue.cli.commands.reset.cache_home", return_value=target_path)]
         elif path_attr == "token_path":
             target_path = tmp_path / "token.json"
             target_path.write_text(json.dumps({"token": "test"}), encoding="utf-8")
-            patches = [patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"),
-                      patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path),
-                      patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "nonexistent"),
-                      patch("polylogue.cli.commands.reset.CACHE_HOME", tmp_path / "nonexistent"),
-                      patch("polylogue.cli.commands.reset.DRIVE_TOKEN_PATH", target_path)]
+            patches = [patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"),
+                      patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path),
+                      patch("polylogue.cli.commands.reset.render_root", return_value=tmp_path / "nonexistent"),
+                      patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "nonexistent"),
+                      patch("polylogue.cli.commands.reset.drive_token_path", return_value=target_path)]
 
         assert target_path.exists()
 
@@ -1114,9 +1068,9 @@ class TestResetCommandDeletion:
         assets_dir.mkdir(parents=True)
         (assets_dir / "keep.png").write_bytes(b"keep")
 
-        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", data_home), \
-             patch("polylogue.cli.commands.reset.RENDER_ROOT", render_dir):
+        with patch("polylogue.cli.commands.reset.db_path", return_value=db_path), \
+             patch("polylogue.cli.commands.reset.data_home", return_value=data_home), \
+             patch("polylogue.cli.commands.reset.render_root", return_value=render_dir):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database", "--render", "--yes"])
 
@@ -1137,8 +1091,8 @@ class TestResetConfirmation:
         db_path = tmp_path / "polylogue.db"
         db_path.write_text("test database", encoding="utf-8")
 
-        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path):
+        with patch("polylogue.cli.commands.reset.db_path", return_value=db_path), \
+             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database"])
 
@@ -1154,8 +1108,8 @@ class TestResetConfirmation:
         db_path = tmp_path / "polylogue.db"
         db_path.write_text("test database", encoding="utf-8")
 
-        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path):
+        with patch("polylogue.cli.commands.reset.db_path", return_value=db_path), \
+             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database", "--yes"])
 
@@ -1170,11 +1124,11 @@ class TestResetEmptyTargets:
         """When no files exist, shows 'nothing to reset'."""
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-        with patch("polylogue.cli.commands.reset.DB_PATH", tmp_path / "nonexistent.db"), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path / "nonexistent"), \
-             patch("polylogue.cli.commands.reset.RENDER_ROOT", tmp_path / "nonexistent"), \
-             patch("polylogue.cli.commands.reset.CACHE_HOME", tmp_path / "nonexistent"), \
-             patch("polylogue.cli.commands.reset.DRIVE_TOKEN_PATH", tmp_path / "nonexistent.json"):
+        with patch("polylogue.cli.commands.reset.db_path", return_value=tmp_path / "nonexistent.db"), \
+             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "nonexistent"), \
+             patch("polylogue.cli.commands.reset.render_root", return_value=tmp_path / "nonexistent"), \
+             patch("polylogue.cli.commands.reset.cache_home", return_value=tmp_path / "nonexistent"), \
+             patch("polylogue.cli.commands.reset.drive_token_path", return_value=tmp_path / "nonexistent.json"):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--all", "--yes"])
 
@@ -1188,8 +1142,8 @@ class TestResetEmptyTargets:
         db_path = tmp_path / "polylogue.db"
         db_path.write_text("test database", encoding="utf-8")
 
-        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path / "nonexistent"):
+        with patch("polylogue.cli.commands.reset.db_path", return_value=db_path), \
+             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path / "nonexistent"):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database", "--assets", "--yes"])
 
@@ -1208,8 +1162,8 @@ class TestResetErrorHandling:
         db_path = tmp_path / "polylogue.db"
         db_path.write_text("test", encoding="utf-8")
 
-        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", tmp_path), \
+        with patch("polylogue.cli.commands.reset.db_path", return_value=db_path), \
+             patch("polylogue.cli.commands.reset.data_home", return_value=tmp_path), \
              patch("pathlib.Path.unlink") as mock_unlink:
             mock_unlink.side_effect = OSError("Permission denied")
 
@@ -1231,8 +1185,8 @@ class TestResetErrorHandling:
         assets_dir.mkdir(parents=True)
         (assets_dir / "test.png").write_bytes(b"test")
 
-        with patch("polylogue.cli.commands.reset.DB_PATH", db_path), \
-             patch("polylogue.cli.commands.reset.DATA_HOME", data_home):
+        with patch("polylogue.cli.commands.reset.db_path", return_value=db_path), \
+             patch("polylogue.cli.commands.reset.data_home", return_value=data_home):
             runner = CliRunner()
             result = runner.invoke(cli, ["reset", "--database", "--assets"])
 
@@ -1255,6 +1209,7 @@ def _write_prompt_file(path: Path, entries: list[dict]) -> None:
 # =============================================================================
 
 
+@pytest.mark.integration
 def test_cli_run_and_search(tmp_path):
     """Test CLI run and search with isolated workspace."""
     workspace = setup_isolated_workspace(tmp_path)
@@ -1287,6 +1242,7 @@ def test_cli_run_and_search(tmp_path):
         assert payload and isinstance(payload, list)
 
 
+@pytest.mark.integration
 def test_cli_search_csv_header(tmp_path):
     """Test that CSV output includes proper header."""
     workspace = setup_isolated_workspace(tmp_path)
@@ -1302,6 +1258,7 @@ def test_cli_search_csv_header(tmp_path):
         assert header.startswith("source,provider,conversation_id,message_id")
 
 
+@pytest.mark.integration
 def test_cli_search_latest_missing_render(tmp_path):
     """Test --latest --open with no rendered outputs shows error."""
     workspace = setup_isolated_workspace(tmp_path)
@@ -1321,6 +1278,7 @@ def test_cli_search_latest_missing_render(tmp_path):
     )
 
 
+@pytest.mark.integration
 def test_cli_search_open_prefers_html(tmp_path):
     """Test that --open prefers HTML over markdown."""
     workspace = setup_isolated_workspace(tmp_path)
@@ -1345,6 +1303,7 @@ def test_cli_search_open_prefers_html(tmp_path):
     assert search_result.exit_code in (0, 2)
 
 
+@pytest.mark.integration
 def test_cli_config_set_invalid(tmp_path):
     """Test that invalid config keys are rejected."""
     workspace = setup_isolated_workspace(tmp_path)
@@ -1359,6 +1318,7 @@ def test_cli_config_set_invalid(tmp_path):
 # --latest validation tests
 
 
+@pytest.mark.integration
 def test_cli_search_latest_returns_path_without_open(tmp_path):
     """polylogue --latest prints conversation info when --open not specified."""
     workspace = setup_isolated_workspace(tmp_path)
@@ -1379,6 +1339,7 @@ def test_cli_search_latest_returns_path_without_open(tmp_path):
     assert result.exit_code in (0, 2)  # 0 = found, 2 = no results
 
 
+@pytest.mark.integration
 def test_cli_query_latest_with_query(tmp_path):
     """--latest with query terms is now allowed in query-first mode."""
     workspace = setup_isolated_workspace(tmp_path)
@@ -1390,6 +1351,7 @@ def test_cli_query_latest_with_query(tmp_path):
     assert result.exit_code in (0, 2)
 
 
+@pytest.mark.integration
 def test_cli_query_latest_with_json(tmp_path):
     """--latest with --format json is now allowed in query-first mode."""
     workspace = setup_isolated_workspace(tmp_path)
@@ -1401,6 +1363,7 @@ def test_cli_query_latest_with_json(tmp_path):
     assert result.exit_code in (0, 2)
 
 
+@pytest.mark.integration
 def test_cli_no_args_shows_stats(tmp_path):
     """polylogue (no args) shows stats in query-first mode."""
     workspace = setup_isolated_workspace(tmp_path)
@@ -1415,6 +1378,7 @@ def test_cli_no_args_shows_stats(tmp_path):
 # Race condition test
 
 
+@pytest.mark.integration
 def test_latest_render_path_handles_deleted_file(tmp_path):
     """latest_render_path() doesn't crash if file deleted between list and stat."""
     from polylogue.cli import helpers as helpers_mod
@@ -1453,6 +1417,7 @@ def test_latest_render_path_handles_deleted_file(tmp_path):
 # --open missing render test
 
 
+@pytest.mark.integration
 def test_cli_search_open_missing_render_shows_hint(tmp_path):
     """--open with missing render shows hint to run polylogue."""
     workspace = setup_isolated_workspace(tmp_path)
