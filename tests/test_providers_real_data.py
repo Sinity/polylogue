@@ -23,7 +23,7 @@ from polylogue.sources.source import detect_provider, iter_source_conversations
 RAW_DATA_DIR = Path("/realm/data/exports/chatlog/raw")
 CHATGPT_ZIP = RAW_DATA_DIR / "chatgpt/chatgpt-data-2025-10-20-06-01-07.zip"
 CLAUDE_ZIP = RAW_DATA_DIR / "claude/claude-ai-data-2025-10-04-20-52-37-batch-0000.zip"
-CODY_JSON = Path(__file__).parent / "test-datasets/cody-attachments.json"
+CODY_JSON = Path(__file__).parent / "test_datasets/cody-attachments.json"
 
 
 @pytest.mark.slow
