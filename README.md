@@ -31,7 +31,7 @@ uv tool install polylogue
 pip install polylogue
 
 # From source
-git clone https://github.com/yourname/polylogue
+git clone https://github.com/sinity/polylogue
 cd polylogue
 uv sync
 ```
@@ -78,34 +78,21 @@ That's it. No config file needed.
 ```bash
 polylogue [QUERY...] [FILTERS...] [OUTPUT...]    # Query mode (default)
 polylogue run [OPTIONS...]                        # Run pipeline (ingest → render → index)
+polylogue embed [OPTIONS...]                      # Generate vector embeddings
+polylogue tags [OPTIONS...]                       # List tags with counts
+polylogue site [OPTIONS...]                       # Build static HTML archive
+polylogue sources [OPTIONS...]                    # List configured sources
+polylogue dashboard                               # Launch TUI dashboard
 polylogue mcp                                     # MCP server mode
 polylogue check                                   # Health check
 polylogue auth                                    # OAuth flow (Drive)
-polylogue reset                                   # Reset database
+polylogue reset                                   # Reset database/state
+polylogue completions --shell SHELL               # Generate shell completions
 ```
 
 ### Query Mode
 
-Query mode is the default. Running `polylogue` without arguments shows archive statistics:
-
-```
-polylogue v0.5.0
-
-Archive: 1,234 conversations (156 MB)
-  claude-code:   512 (41%)  │  ████████████
-  chatgpt:       398 (32%)  │  █████████
-  claude:        247 (20%)  │  ██████
-  gemini:         77 (6%)   │  ██
-
-Messages: 45,231 total, 12.4M words
-Tags: 23 unique, 156 tagged conversations
-Last sync: 2 hours ago
-
-Recent:
-  claude-code:a8f2c   today       "Polylogue CLI redesign"
-  chatgpt:b3d91       yesterday   "Python async patterns"
-  claude:c7e43        2024-01-20  "Debugging OAuth flow"
-```
+Query mode is the default. Running `polylogue` without arguments shows archive statistics.
 
 #### Query Syntax
 
@@ -113,8 +100,6 @@ Recent:
 polylogue "error"                    # FTS search (smartcase: lowercase=insensitive)
 polylogue "error" "python"           # AND: both terms required
 polylogue "Error"                    # Case-sensitive (has uppercase)
-polylogue --regex "err(or|ors)"      # Regex pattern
-polylogue --similar "best practices" # Rank by semantic similarity (embeddings)
 ```
 
 Positional arguments are implicit `--contains` (FTS). Multiple positional args are ANDed.
@@ -124,18 +109,14 @@ Positional arguments are implicit `--contains` (FTS). Multiple positional args a
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--contains TEXT` | `-c` | FTS term (repeatable = AND) |
-| `--no-contains TEXT` | `-C` | Exclude FTS term |
-| `--regex PATTERN` | | Regex match |
-| `--no-regex PATTERN` | | Exclude regex match |
+| `--exclude-text TEXT` | | Exclude FTS term (repeatable) |
 | `--provider NAME,...` | `-p` | Include providers (comma = OR) |
-| `--no-provider NAME,...` | `-P` | Exclude providers |
+| `--exclude-provider NAME,...` | | Exclude providers |
 | `--tag TAG,...` | `-t` | Include tags (comma = OR, supports `key:value`) |
-| `--no-tag TAG,...` | `-T` | Exclude tags |
+| `--exclude-tag TAG,...` | | Exclude tags |
 | `--title TEXT` | | Title contains |
-| `--has TYPE,...` | | Has: `thinking`, `tools`, `summary`, `comment`, `attachments` |
-| `--no-has TYPE,...` | | Missing types |
-| `--delete` | | Delete matched conversations (requires filter) |
-| `--since DATE` | | After date (`today`, `yesterday`, `"last week"`, `2024-01-01`) |
+| `--has TYPE,...` | | Has: `thinking`, `tools`, `summary`, `attachments` |
+| `--since DATE` | | After date (`today`, `yesterday`, `"last week"`, `2025-01-01`) |
 | `--until DATE` | | Before date |
 | `--id PREFIX` | `-i` | ID prefix match |
 | `--limit N` | `-n` | Max results |
@@ -143,25 +124,24 @@ Positional arguments are implicit `--contains` (FTS). Multiple positional args a
 | `--sort FIELD` | | Sort by: `date` (default), `tokens`, `messages`, `words`, `longest`, `random` |
 | `--reverse` | | Reverse sort order |
 | `--sample N` | | Random sample of N conversations |
-| `--similar TEXT` | | Rank by embedding similarity (mutually exclusive with `--sort`) |
-
-**Negation pattern**: Uppercase short flag = negation (`-p` include, `-P` exclude).
 
 **Comma = OR** for structured fields (provider, tag). Repeated flags = OR for same field, AND across fields.
 
 #### Output
 
-| Flag | Description |
-|------|-------------|
-| `--output DEST,...` | Output destinations: `browser`, `clipboard`, `stdout` (default: `stdout`) |
-| `--format FMT` | Format: `markdown` (default), `json`, `html`, `obsidian`, `org` |
-| `--fields FIELD,...` | Select fields for list/json: `id`, `title`, `provider`, `date`, `messages`, `tokens`, `tags`, `summary`, or any metadata key |
-| `--list` | Force list format (even for single result) |
-| `--stats` | Only statistics, no content (see below) |
-| `--pick` | Interactive picker (uses `fzf` if available) |
-| `--by-month` | Aggregate output: histogram by month |
-| `--by-provider` | Aggregate output: count by provider |
-| `--by-tag` | Aggregate output: count by tag |
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--output DEST,...` | `-o` | Output destinations: `browser`, `clipboard`, `stdout` (default: `stdout`) |
+| `--format FMT` | `-f` | Format: `markdown` (default), `json`, `html`, `obsidian`, `org`, `yaml`, `plaintext`, `csv` |
+| `--fields FIELD,...` | | Select fields for list/json: `id`, `title`, `provider`, `date`, `messages`, `words`, `tags`, `summary` |
+| `--list` | | Force list format (even for single result) |
+| `--stats` | | Only statistics, no content |
+| `--count` | | Print matched count and exit |
+| `--stats-by DIM` | | Aggregate statistics by dimension: `provider`, `month`, `year`, `day` |
+| `--open` | | Open result in browser/editor |
+| `--transform XFORM` | | Transform output: `strip-tools`, `strip-thinking`, `strip-all` |
+| `--stream` | | Stream output (low memory, requires `--latest` or `-i ID`) |
+| `--dialogue-only` | `-d` | Show only user/assistant messages |
 
 **Smart defaults**:
 
@@ -179,21 +159,37 @@ Positional arguments are implicit `--contains` (FTS). Multiple positional args a
 - Multiple conversations (with `--list` or when query returns many): Each conversation separated by `---` delimiter
 - Format respects `--format` flag (markdown default, or json)
 
-**`--pick` behavior**: Uses `fzf` if available in PATH. Falls back to numbered selection prompt (enter number to select). With `--pick`, after selection the chosen conversation is processed according to other flags.
-
 **`--stats` output** (for filtered results):
 
 ```
-Query: "error" -p claude --since "last week"
 Matched: 12 conversations
 
-Messages: 847 total (234 user, 421 assistant, 192 other)
-Words: 45,231 total (12,847 user, 31,204 assistant)
-Thinking: 89 traces (2,341 words)
+Messages: 847 total (234 user, 421 assistant)
+Words: 45,231
+Thinking: 89 traces
 Tool use: 156 calls
 Attachments: 23
-Date range: 2024-01-18 to 2024-01-24
+Date range: 2025-01-18 to 2025-01-24
 ```
+
+**`--stats-by` output** (replaces individual `--by-*` flags):
+
+```bash
+polylogue --stats-by month                        # Activity histogram by month
+polylogue -p claude --stats-by provider           # Provider breakdown for Claude
+polylogue --stats-by year                         # Year-by-year overview
+polylogue --since 2025-01 --stats-by day          # Daily breakdown
+```
+
+**`--stream` mode**: Streams messages to stdout one at a time for constant memory usage on large conversations. Supports `--dialogue-only` to filter to user/assistant messages. Output format is controlled via `--format` (plaintext, markdown, or json for JSON Lines).
+
+**`--transform` options**:
+
+| Transform | Effect |
+|-----------|--------|
+| `strip-tools` | Remove tool call/result messages |
+| `strip-thinking` | Remove thinking/reasoning traces |
+| `strip-all` | Remove both tools and thinking |
 
 #### Modifiers (Write Operations)
 
@@ -202,103 +198,135 @@ Date range: 2024-01-18 to 2024-01-24
 polylogue -i abc123 --set title "My Custom Title"
 polylogue -i abc123 --set summary "Brief description..."
 polylogue -i abc123 --set priority high            # Custom metadata key
-polylogue -i abc123 --unset priority               # Remove metadata key
 polylogue -i abc123 --add-tag important,project:foo
-polylogue -i abc123 --rm-tag archived
 polylogue -i abc123 --delete                       # Remove from archive
 
-# LLM annotation (batch operation on filtered results)
-polylogue -p claude --since "last month" --annotate "Focus on technical decisions. Suggest tags from: project:*, lang:*, topic:*"
+# Bulk operations with safety
+polylogue "urgent" --add-tag review --dry-run      # Preview changes
+polylogue -p old --delete --dry-run                # Preview deletions
+polylogue -p old --delete --force                  # Skip confirmation
 ```
 
 **Metadata**: Title, summary, and tags are stored as unified k:v metadata. Custom keys are allowed. Access via `--fields` or filter with `--has`.
 
-**`--annotate`**: LLM generates title, summary, and tags for all matched conversations. Shows cost estimate and asks for confirmation. For long conversations, uses progressive summarization. Provide a prompt to guide the LLM's focus and tag vocabulary.
-
 **`--delete` safety**: Requires at least one filter flag (`-i`, `-p`, `-t`, `--since`, etc.). Cannot delete entire archive without explicit filter.
+
+**`--dry-run`**: Shows what would be changed without executing. Works with `--add-tag`, `--set`, and `--delete`.
+
+**`--force`**: Skips confirmation prompts for bulk operations (more than 10 conversations).
 
 **List output format**:
 
 ```
   ID (24 chars)             DATE        [PROVIDER    ]  TITLE (MSG COUNT)
-  claude:a8f2c3d4e5f6...    2024-01-24  [claude-code ]  Debugging OAuth (42 msgs)
-  chatgpt:b9d8e7f6a5...     2024-01-23  [chatgpt     ]  Python patterns (18 msgs)
+  claude:a8f2c3d4e5f6...    2025-01-24  [claude-code ]  Debugging OAuth (42 msgs)
+  chatgpt:b9d8e7f6a5...     2025-01-23  [chatgpt     ]  Python patterns (18 msgs)
 ```
 
-**ID prefix matching**: Minimum 4 characters. If prefix is ambiguous (matches multiple), error with list of matches. Use longer prefix or `--pick` to disambiguate.
+**ID prefix matching**: If prefix is ambiguous (matches multiple), error with list of matches. Use longer prefix to disambiguate.
 
 ### Run Mode
 
 ```bash
-polylogue run                        # Run pipeline on all sources
-polylogue run --source claude        # Run only for claude source
-polylogue run --preview              # Preview counts without writing
-polylogue run --stage ingest         # Run only ingest stage
-polylogue run --stage all            # Run all stages (ingest → render → index)
-polylogue run --force-render         # Re-render all existing conversations
+polylogue run                             # Run pipeline on all sources
+polylogue run --source claude             # Run only for claude source
+polylogue run --preview                   # Preview counts, confirm before writing
+polylogue run --stage parse               # Run only parse stage
+polylogue run --stage all                 # Run all stages (default)
+polylogue run --format markdown           # Render as Markdown (default: html)
+polylogue run --watch                     # Watch sources and sync continuously
+polylogue run --watch --notify            # Desktop notification on new conversations
+polylogue run --watch --exec "echo new"   # Execute command on new conversations
+polylogue run --watch --webhook URL       # Call webhook on new conversations
 ```
 
-**Pipeline stages**: `ingest` → `render` → `index`. Default runs all stages. Use `--stage` to run specific stages.
+**Pipeline stages**: `acquire` → `parse` → `render` → `index` → `generate-schemas`. Default runs all stages. Use `--stage` to run specific stages.
 
-**Source scoping**: Use `--source NAME` (repeatable) to process only specific sources. Use `--source last` to reuse the previous interactive selection.
+**Source scoping**: Use `--source NAME` (repeatable) to process only specific sources. Use `polylogue sources` to list available sources.
 
 **Deduplication**: Conversations are identified by content hash (SHA-256 of normalized content). Re-importing the same conversation is a no-op. Modified conversations (same provider ID, different content) update the existing record.
 
 **Partial failures**: Pipeline continues on individual file failures, reports errors at end. Exit code 0 if any files succeeded, non-zero only if all failed.
 
-**Delete/prune**: To remove conversations from the archive:
+### Embed Mode
 
 ```bash
-polylogue -i abc123 --delete         # Delete specific conversation
-polylogue -P gemini --delete         # Delete all Gemini conversations
-polylogue --delete                   # ERROR: requires filter (safety)
+polylogue embed                           # Embed all unembedded conversations
+polylogue embed -c <id>                   # Embed specific conversation
+polylogue embed --model voyage-4-large    # Use larger model
+polylogue embed --rebuild                 # Re-embed everything
+polylogue embed --stats                   # Show embedding statistics
+polylogue embed -n 50                     # Limit to 50 conversations
 ```
 
-Deletion removes from DB and deletes render files. Original inbox files are NOT deleted.
+Generates vector embeddings using Voyage AI, stored in sqlite-vec for semantic search. Requires `VOYAGE_API_KEY` environment variable.
 
-**Title display**: `user_title` (if set) > `original_title` (from provider) > truncated ID. Set user title with `--title`, clear with `--title ""`.
+### Tags
+
+```bash
+polylogue tags                            # List all tags with counts
+polylogue tags -p claude                  # Tags for Claude conversations only
+polylogue tags --json                     # Machine-readable output
+polylogue tags -n 10                      # Top 10 tags
+```
+
+### Site
+
+```bash
+polylogue site                            # Build static HTML site
+polylogue site -o ./public                # Build to custom directory
+polylogue site --title "My Archive"       # Custom site title
+polylogue site --no-search                # Disable search index
+polylogue site --search-provider lunr     # Use lunr.js instead of pagefind
+polylogue site --no-dashboard             # Skip dashboard page
+```
+
+Generates a browsable static HTML site with index pages, per-provider views, dashboard with statistics, and client-side search.
+
+### Sources
+
+```bash
+polylogue sources                         # List configured sources
+polylogue sources --json                  # JSON output
+```
+
+### Dashboard
+
+```bash
+polylogue dashboard                       # Launch TUI dashboard
+```
+
+Opens the Textual-based TUI (Mission Control) for interactive browsing.
 
 ### Other Modes
 
 ```bash
-polylogue mcp                        # Start MCP server (stdio)
-polylogue check                      # Health check (DB, index, stats)
-polylogue check --repair             # Fix issues that can be auto-fixed
-polylogue check --vacuum             # Compact database, reclaim space
-polylogue auth                       # OAuth flow for Google Drive
-polylogue reset                      # Reset database (interactive confirmation)
-polylogue reset --confirm            # Non-interactive reset
-POLYLOGUE_FORCE=1 polylogue reset    # Automation escape hatch
+polylogue mcp                             # Start MCP server (stdio)
+polylogue check                           # Health check (DB, index, stats)
+polylogue check --verbose                 # Show breakdown by provider
+polylogue check --repair                  # Fix issues that can be auto-fixed
+polylogue check --repair --preview        # Preview what would be repaired
+polylogue check --repair --vacuum         # Compact database after repair
+polylogue check --deep                    # Run SQLite integrity check
+polylogue check --json                    # Machine-readable output
+polylogue auth                            # OAuth flow for Google Drive
+polylogue auth --refresh                  # Force token refresh
+polylogue auth --revoke                   # Revoke stored credentials
+polylogue reset --database                # Delete SQLite database
+polylogue reset --render                  # Delete rendered outputs
+polylogue reset --cache                   # Delete search indexes
+polylogue reset --auth                    # Delete OAuth tokens
+polylogue reset --all                     # Reset everything
+polylogue reset --all --yes               # Non-interactive reset
 ```
-
-**`polylogue check` output**:
-
-```
-Database: OK (156 MB, 1234 conversations)
-FTS Index: OK (45231 messages indexed)
-Inbox: OK (3 subdirs, 47 files)
-Renders: OK (1198 HTML, 1198 MD)
-Drive: Not configured
-
-Issues: None
-```
-
-Checks performed:
-
-- Database accessible and schema current
-- FTS index exists and row count matches
-- Inbox directory readable
-- Render directory writable
-- Drive credentials valid (if configured)
-- Orphaned records (messages without conversations)
-- Missing renders (conversations not yet rendered)
 
 ### Global Flags
 
 ```bash
-polylogue --version                  # Version
-polylogue --completions SHELL        # Generate completions (bash, zsh, fish)
-polylogue --help                     # Help
+polylogue --version                       # Version
+polylogue --plain                         # Force non-interactive plain output
+polylogue -v                              # Verbose output
+polylogue -h / --help                     # Help
 ```
 
 ### Shell Completions
@@ -307,21 +335,14 @@ Generate and install completions:
 
 ```bash
 # Fish
-polylogue --completions fish > ~/.config/fish/completions/polylogue.fish
+polylogue completions --shell fish > ~/.config/fish/completions/polylogue.fish
 
 # Zsh
-polylogue --completions zsh > ~/.zfunc/_polylogue
+polylogue completions --shell zsh > ~/.zfunc/_polylogue
 
 # Bash
-polylogue --completions bash > /etc/bash_completion.d/polylogue
+polylogue completions --shell bash > /etc/bash_completion.d/polylogue
 ```
-
-**Dynamic completions**: Completions query the database for:
-
-- `--provider` / `-p`: Available providers (from indexed conversations)
-- `--id` / `-i`: Recent conversation IDs (sorted by recency, shows title hint)
-- `--tag` / `-t`: Existing tags
-- `--since` / `--until`: Date suggestions (`today`, `yesterday`, `"last week"`, ISO format)
 
 ### Technical Details
 
@@ -331,13 +352,11 @@ polylogue --completions bash > /etc/bash_completion.d/polylogue
 - Smartcase: all-lowercase query → case-insensitive; contains uppercase → case-sensitive
 - Supports phrase queries with quotes: `"exact phrase"`
 
-**Regex**: Python `re` module syntax. Patterns are matched against message text.
-
 **Date parsing**: Uses `dateparser` library. Supports:
 
-- ISO format: `2024-01-15`, `2024-01-15T10:30:00`
+- ISO format: `2025-01-15`, `2025-01-15T10:30:00`
 - Relative: `today`, `yesterday`, `"last week"`, `"2 days ago"`, `"last month"`
-- Natural language: `"January 15"`, `"Jan 2024"`
+- Natural language: `"January 15"`, `"Jan 2025"`
 
 **Exit codes**:
 
@@ -351,8 +370,8 @@ polylogue --completions bash > /etc/bash_completion.d/polylogue
 **Terminal output**:
 
 - Colors enabled by default on TTY, respects `NO_COLOR` env var
-- Long output (>50 lines) paged via `$PAGER` (default: `less -R`)
-- Use `--no-pager` to disable, or pipe to disable automatically
+- Rich-formatted output (tables, panels) when interactive; plain text when piped
+- Set `POLYLOGUE_FORCE_PLAIN=1` to force plain output, or use `--plain`
 
 **Logging**: Set `POLYLOGUE_LOG=debug` for verbose logging to stderr. Levels: `error`, `warn`, `info`, `debug`.
 
@@ -365,12 +384,10 @@ polylogue
 # Search
 polylogue "OAuth bug"
 polylogue "error" "python" -p claude,chatgpt
-polylogue --regex "async.*await" --since "2024-01-01"
 
 # Filter and output
 polylogue -p claude --has thinking --output browser
 polylogue --latest --output browser,clipboard
-polylogue "auth" --pick --output browser
 
 # Sorting and sampling
 polylogue --sort tokens --reverse --limit 10     # Longest conversations
@@ -381,12 +398,23 @@ polylogue --sample 10                            # Random sample of 10
 polylogue -p claude --fields id,title,tokens --format json
 
 # Aggregation
-polylogue --by-month                             # Activity histogram
-polylogue -p claude --by-tag                     # Tag distribution for Claude
+polylogue --stats-by month                       # Activity by month
+polylogue -p claude --stats-by provider          # Provider breakdown
 
 # Exclusions
-polylogue "error" -C "warning" -P gemini
-polylogue -t important -T archived
+polylogue "error" --exclude-text "warning" --exclude-provider gemini
+polylogue -t important --exclude-tag archived
+
+# Transforms
+polylogue --latest --transform strip-tools       # Clean output without tool calls
+polylogue -i abc123 --dialogue-only              # Just the conversation
+
+# Streaming (memory-efficient for large conversations)
+polylogue --latest --stream                      # Stream most recent
+polylogue -i abc123 --stream -d                  # Stream dialogue only
+
+# Count
+polylogue -p claude --count                      # Quick count
 
 # Metadata
 polylogue -i abc123 --set title "The OAuth Fix"
@@ -394,16 +422,25 @@ polylogue -i abc123 --set summary "Fixed OAuth by..."
 polylogue -i abc123 --add-tag project:polylogue,important
 polylogue --tag project:polylogue --list
 
-# LLM annotation
-polylogue -p claude --since "last month" --annotate "Technical focus, suggest tags from: project:*, lang:*"
+# Bulk operations with safety
+polylogue -p claude --since "last month" --add-tag review --dry-run
+polylogue -p old --delete --dry-run
 
 # Run pipeline
 polylogue run
 polylogue run --source claude
 polylogue run --preview
+polylogue run --watch --notify
+
+# Embeddings
+polylogue embed
+polylogue embed --stats
+
+# Static site
+polylogue site -o ./public
 
 # Maintenance
-polylogue check --vacuum
+polylogue check --repair --vacuum
 ```
 
 ## Library API
@@ -413,101 +450,120 @@ Polylogue is designed library-first. The CLI wraps the Python API.
 ### Basic Usage
 
 ```python
-from polylogue import Polylogue
+from polylogue.lib.filters import ConversationFilter
+from polylogue.storage.repository import ConversationRepository
+from polylogue.storage.backends.sqlite import SQLiteBackend
 
-poly = Polylogue()  # Uses XDG defaults
-
-# Statistics
-stats = poly.stats()
-print(f"Total: {stats.conversation_count} conversations")
+backend = SQLiteBackend()
+repo = ConversationRepository(backend=backend)
 
 # Search
-results = poly.filter().contains("error").provider("claude").list()
+results = ConversationFilter(repo).contains("error").provider("claude").list()
 for conv in results:
-    print(f"{conv.id}: {conv.title}")
+    print(f"{conv.id}: {conv.display_title}")
 
 # Single conversation
-conv = poly.filter().id("abc123").first()
-print(conv.to_markdown())
+conv = ConversationFilter(repo).id("abc123").first()
 ```
 
 ### Filter Chain API
 
 ```python
 # Chainable, lazy evaluation
-results = (poly.filter()
+results = (ConversationFilter(repo)
     .contains("error")
-    .contains("python")          # AND
+    .contains("python")             # AND
     .provider("claude", "chatgpt")  # OR
-    .since("2024-01-01")
+    .since("2025-01-01")
     .has("thinking")
     .limit(10)
-    .list())                     # Terminal: list(), first(), count()
+    .list())                        # Terminal: list(), first(), count(), delete()
 
-# Negation
-results = (poly.filter()
+# Exclusion filters
+results = (ConversationFilter(repo)
     .contains("error")
     .no_contains("warning")
     .no_provider("gemini")
+    .no_tag("archived")
     .list())
 
-# Semantic ranking
-results = (poly.filter()
-    .similar("best practices for authentication")
-    .limit(5)
+# Lightweight summaries (no message loading)
+summaries = (ConversationFilter(repo)
+    .provider("claude")
+    .since("2025-01-01")
+    .list_summaries())              # Returns ConversationSummary (no messages)
+
+# Check if summaries are sufficient
+f = ConversationFilter(repo).provider("claude")
+if f.can_use_summaries():
+    results = f.list_summaries()    # Fast path
+else:
+    results = f.list()              # Loads full conversations
+
+# Custom predicates
+results = (ConversationFilter(repo)
+    .where(lambda c: len(c.messages) > 50)
     .list())
+
+# Sorting and sampling
+results = (ConversationFilter(repo)
+    .sort("tokens")
+    .reverse()
+    .sample(10)
+    .list())
+
+# Conversation structure filters
+roots = ConversationFilter(repo).is_root().list()
+continuations = ConversationFilter(repo).is_continuation().list()
 ```
 
-### Conversation Model
+### Available Filter Methods
 
-```python
-conv = poly.filter().latest().first()
+| Method | Description |
+|--------|-------------|
+| `.contains(text)` | FTS term (chainable = AND) |
+| `.no_contains(text)` | Exclude FTS term |
+| `.provider(*names)` | Include providers |
+| `.no_provider(*names)` | Exclude providers |
+| `.tag(*tags)` | Include tags |
+| `.no_tag(*tags)` | Exclude tags |
+| `.has(*types)` | Content types: `thinking`, `tools`, `summary`, `attachments` |
+| `.title(pattern)` | Title contains pattern |
+| `.id(prefix)` | ID prefix match |
+| `.since(date)` | After date (str or datetime) |
+| `.until(date)` | Before date (str or datetime) |
+| `.similar(text)` | Semantic similarity (requires vector index) |
+| `.sort(field)` | Sort: `date`, `tokens`, `messages`, `words`, `longest`, `random` |
+| `.reverse()` | Reverse sort order |
+| `.limit(n)` | Max results |
+| `.sample(n)` | Random sample |
+| `.where(predicate)` | Custom filter predicate |
+| `.is_root()` | Root conversations only |
+| `.is_continuation()` | Continuation conversations only |
+| `.is_sidechain()` | Sidechain conversations only |
+| `.has_branches()` | Conversations with branching messages |
+| `.parent(id)` | Children of a given parent |
 
-# Properties
-conv.id                    # "claude:abc123"
-conv.title                 # "Debugging OAuth"
-conv.provider              # "claude"
-conv.created_at            # datetime
-conv.updated_at            # datetime
-conv.message_count         # 42
-conv.word_count            # 3847
-conv.tags                  # ["important", "project:foo"]
-conv.summary               # "Manual or LLM summary"
+### Terminal Methods
 
-# Messages
-for msg in conv.messages:
-    print(f"[{msg.role}] {msg.text[:100]}...")
-
-# Semantic classification
-for msg in conv.messages:
-    if msg.is_substantive:     # Real dialogue
-        print(msg.text)
-    if msg.is_thinking:        # Reasoning trace
-        print(f"Thinking: {msg.text[:50]}...")
-    if msg.is_tool_use:        # Tool call/result
-        pass  # Skip
-
-# Projections
-clean = conv.substantive_only()    # Filter to substantive messages
-pairs = list(conv.iter_pairs())    # User/assistant dialogue pairs
-thinking = list(conv.iter_thinking())  # Thinking traces only
-
-# Output
-conv.to_markdown()         # Markdown string
-conv.to_json()             # Dict
-conv.open()                # Open in browser
-conv.copy()                # Copy to clipboard
-```
+| Method | Description |
+|--------|-------------|
+| `.list()` | Execute and return `list[Conversation]` |
+| `.list_summaries()` | Execute and return `list[ConversationSummary]` (lightweight, no messages) |
+| `.first()` | Execute and return first match or `None` |
+| `.count()` | Execute and return count (uses SQL fast path when possible) |
+| `.delete()` | Delete matching conversations (returns count deleted) |
+| `.pick()` | Interactive picker (TTY) or first match (non-TTY) |
+| `.can_use_summaries()` | Check if `list_summaries()` is valid for current filters |
 
 ### Pipeline (Run)
 
 ```python
-from polylogue.pipeline.runner import PipelineRunner
-from polylogue.config import Config
+from polylogue.pipeline.runner import run_sources
+from polylogue.services import get_service_config
 
-config = Config()
-runner = PipelineRunner(config)
-result = runner.run()  # Returns RunResult with counts
+config = get_service_config()
+result = run_sources(config=config, stage="all")
 ```
 
 ## Data Model
@@ -565,8 +621,6 @@ Conversations may have branching structure (e.g., ChatGPT "edit and regenerate")
 
 **Current behavior**: Messages are flattened to a list in creation order. Branch structure is preserved in `provider_meta` for future use.
 
-**Planned**: Branch-aware navigation and filtering (e.g., `--branch main`, `--all-branches`).
-
 ### Provider-Specific Metadata
 
 Some providers include additional metadata:
@@ -618,8 +672,6 @@ project:polylogue      # Namespaced
 status:wip             # Namespaced
 ```
 
-Future: Tag implication rules (e.g., `project:* → has-project`).
-
 ## File Layout
 
 Polylogue follows XDG Base Directory specification:
@@ -668,9 +720,11 @@ Optional environment variables for vector search and API keys:
 
 | Variable | Alternative | Description |
 |----------|-------------|-------------|
-| `POLYLOGUE_QDRANT_URL` | `QDRANT_URL` | Qdrant server URL for `--similar` vector search |
-| `POLYLOGUE_QDRANT_API_KEY` | `QDRANT_API_KEY` | Qdrant authentication token |
 | `POLYLOGUE_VOYAGE_API_KEY` | `VOYAGE_API_KEY` | Voyage AI API key for embeddings |
+| `POLYLOGUE_FORCE_PLAIN` | | Force non-interactive plain output |
+| `POLYLOGUE_LOG` | | Log level: `error`, `warn`, `info`, `debug` |
+| `POLYLOGUE_CREDENTIAL_PATH` | | Path to OAuth client JSON |
+| `POLYLOGUE_TOKEN_PATH` | | Path to OAuth token |
 
 ### Backup and Export
 
@@ -749,18 +803,26 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 | Tool | Description |
 |------|-------------|
-| `polylogue_find` | Search conversations |
-| `polylogue_get` | Get single conversation |
-| `polylogue_list` | List conversations with filters |
-| `polylogue_stats` | Archive statistics |
+| `search` | Search conversations by text query with optional provider/date filters |
+| `list_conversations` | List recent conversations, optionally filtered |
+| `get_conversation` | Get a single conversation by ID (supports prefix matching) |
+| `stats` | Archive statistics: totals, provider breakdown, database size |
 
 ### Available Resources
 
 | Resource | Description |
 |----------|-------------|
 | `polylogue://stats` | Archive statistics |
-| `polylogue://conversations` | List all conversations |
+| `polylogue://conversations` | List all conversations (up to 1000) |
 | `polylogue://conversation/{id}` | Single conversation content |
+
+### Available Prompts
+
+| Prompt | Description |
+|--------|-------------|
+| `analyze_errors` | Analyze error patterns and solutions across conversations |
+| `summarize_week` | Summarize key insights from the past week |
+| `extract_code` | Extract and organize code snippets by language |
 
 ## Architecture Notes
 
@@ -768,28 +830,28 @@ Add to `~/.config/claude/claude_desktop_config.json`:
 
 ```
 polylogue/
-├── cli/               # CLI commands (run, check, mcp, auth, reset, completions)
+├── cli/               # CLI commands (run, check, mcp, auth, reset, embed, tags, site, etc.)
 ├── sources/           # Source detection, provider parsers, Drive integration
 ├── pipeline/          # Ingestion → rendering → indexing orchestration
-├── storage/           # SQLite backend, async repository, FTS5/Qdrant search
+├── storage/           # SQLite backend, async repository, FTS5/sqlite-vec search
 ├── schemas/           # Unified schema, provider models, schema inference
 ├── lib/               # Core domain models, filters, projections, hashing
 ├── rendering/         # Markdown/HTML output renderers
 ├── ui/                # Terminal UI (Rich-based plain + Textual TUI)
+├── site/              # Static site generator
 └── mcp/               # Model Context Protocol server
 ```
 
 ### Key Abstractions
 
-- **SearchProvider**: Protocol for search (FTS5 local, Qdrant vector)
+- **SearchProvider**: Protocol for search (FTS5 local, sqlite-vec vector)
 - **VectorProvider**: Protocol for embedding-based similarity search
-- **Polylogue**: Main entry point, wraps storage + search + pipeline
+- **ConversationFilter**: Fluent filter builder for composable queries
+- **ConversationRepository**: Data access layer wrapping SQLite backend
 
 ### Schema and Migrations
 
 Database schema version is stored in DB. On startup, polylogue checks version and runs migrations automatically if needed. Migrations are forward-only (no downgrade). Backup before major version upgrades.
-
-Schema changes are backward compatible within minor versions. A v0.5 database can be read by v0.5.x but may not work with v0.6.
 
 ### Data Flow
 
@@ -818,17 +880,11 @@ See `ARCHITECTURE.md` for detailed documentation.
 
 **Encoding handling**: UTF-8 assumed. Fallback chain: UTF-8 → UTF-8-sig → UTF-16 → UTF-32 → UTF-8 with errors ignored. Null bytes stripped.
 
-**Stdin support**:
-
-```bash
-cat export.json | polylogue run --file -
-```
-
 ## Development
 
 ```bash
 # Clone and setup
-git clone https://github.com/yourname/polylogue
+git clone https://github.com/sinity/polylogue
 cd polylogue
 uv sync
 
@@ -842,22 +898,21 @@ uv run mypy polylogue/
 uv run ruff check polylogue/ tests/
 ```
 
-## Planned Features
+## Roadmap
 
-Features marked for future implementation:
+Features planned for future implementation:
 
-| Feature | Description | Status |
-|---------|-------------|--------|
-| `--similar` | Semantic similarity ranking via embeddings | Planned |
-| `--annotate` | LLM-generated titles, summaries, and tags (batch) | Planned |
-| Progressive summarization | Handle very long conversations | Planned |
-| Message-level annotation | Descriptions for individual messages | Considered |
-| Branch navigation | `--branch`, `--all-branches` for tree-structured conversations | Planned |
-| Fork detection | Auto-detect forked/edited conversations | Considered |
-| `--format obsidian` | Obsidian-compatible export | Planned |
-| `--format org` | Org-mode export | Planned |
-| Watch webhooks | `sync --watch --webhook` | Planned |
-| DuckDB backend | Alternative storage backend | Considered |
+| Feature | Description |
+|---------|-------------|
+| `--similar` CLI flag | Semantic similarity ranking via embeddings in query mode |
+| LLM annotation | Batch LLM-generated titles, summaries, and tags (`--annotate`) |
+| Interactive picker | `--pick` flag with `fzf` integration for query mode |
+| Branch navigation | `--branch`, `--all-branches` for tree-structured conversations |
+| Fork detection | Auto-detect forked/edited conversations |
+| Watch webhooks | `polylogue run --watch --webhook` integration |
+| DuckDB backend | Alternative storage backend |
+| Tag implication rules | e.g., `project:* → has-project` |
+| Progressive summarization | Handle very long conversations for annotation |
 
 ## License
 
@@ -865,6 +920,6 @@ MIT License. See `LICENSE` file.
 
 ---
 
-**Project Status**: Active development. Core query and sync functionality is the priority. Embedding and LLM features are planned for later.
+**Project Status**: Active development (v0.1.0). Core query and sync functionality is the priority.
 
-**Feedback**: Issues and PRs welcome at [github.com/yourname/polylogue](https://github.com/yourname/polylogue).
+**Feedback**: Issues and PRs welcome at [github.com/sinity/polylogue](https://github.com/sinity/polylogue).
