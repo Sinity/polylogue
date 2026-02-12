@@ -124,7 +124,7 @@ def parse_chunked_prompt(provider: str, payload: dict[str, object], fallback_id:
             if gem.thinkingBudget is not None:
                 meta["thinkingBudget"] = gem.thinkingBudget
             if gem.safetyRatings:
-                meta["safetyRatings"] = [r for r in gem.safetyRatings]
+                meta["safetyRatings"] = list(gem.safetyRatings)
             if gem.grounding:
                 meta["grounding"] = (
                     gem.grounding.model_dump() if hasattr(gem.grounding, "model_dump") else gem.grounding

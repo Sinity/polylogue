@@ -65,11 +65,11 @@ def site_command(
         polylogue site --title "My Archive"  # Custom site title
         polylogue site --no-search           # Disable search index
     """
-    from polylogue.paths import DATA_HOME
+    from polylogue.paths import data_home
     from polylogue.site import SiteBuilder, SiteConfig
 
     # Determine output path
-    output_path = output or (DATA_HOME / "site")
+    output_path = output or (data_home() / "site")
 
     config = SiteConfig(
         title=title,

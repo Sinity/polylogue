@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
 from polylogue.assets import asset_path
 from polylogue.storage.backends.sqlite import open_connection
+from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
 
 
 @dataclass
@@ -51,15 +52,17 @@ class ConversationFormatter:
         # Or convert to HTML in HTMLRenderer
     """
 
-    def __init__(self, archive_root: Path, db_path: Path | None = None):
+    def __init__(self, archive_root: Path, db_path: Path | None = None, backend: AsyncSQLiteBackend | None = None):
         """Initialize the formatter.
 
         Args:
             archive_root: Root directory for archived conversations
             db_path: Optional database path (defaults to standard location)
+            backend: Optional async SQLite backend instance
         """
         self.archive_root = archive_root
         self.db_path = db_path
+        self.backend = backend
 
     def format(self, conversation_id: str) -> FormattedConversation:
         """Format a conversation to structured output.
@@ -113,6 +116,96 @@ class ConversationFormatter:
                 """,
                 (conversation_id,),
             ).fetchall()
+
+        # Build attachments mapping
+        attachments_by_message: dict[str, list[Any]] = {}
+        for att in attachments:
+            attachments_by_message.setdefault(att["message_id"], []).append(att)
+
+        # Extract metadata
+        title = convo["title"] or conversation_id
+        provider = convo["provider_name"]
+
+        # Format to markdown
+        markdown_text = self._format_markdown(
+            title=title,
+            provider=provider,
+            conversation_id=conversation_id,
+            messages=messages,
+            attachments_by_message=attachments_by_message,
+        )
+
+        return FormattedConversation(
+            title=title,
+            provider=provider,
+            conversation_id=conversation_id,
+            markdown_text=markdown_text,
+            metadata={
+                "message_count": len(messages),
+                "attachment_count": len(attachments),
+                "created_at": convo["created_at"],
+                "updated_at": convo["updated_at"],
+            },
+        )
+
+    async def async_format(self, conversation_id: str) -> FormattedConversation:
+        """Format a conversation to structured output (async version).
+
+        Args:
+            conversation_id: ID of the conversation to format
+
+        Returns:
+            FormattedConversation with all formatted data
+
+        Raises:
+            ValueError: If conversation not found
+        """
+        # Use provided backend or create one
+        backend = self.backend or AsyncSQLiteBackend(db_path=self.db_path)
+
+        # Query database
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            convo = await cursor.fetchone()
+            if not convo:
+                raise ValueError(f"Conversation not found: {conversation_id}")
+
+            cursor = await conn.execute(
+                """
+                SELECT * FROM messages
+                WHERE conversation_id = ?
+                ORDER BY
+                    (timestamp IS NULL),
+                    CASE
+                        WHEN timestamp IS NULL THEN NULL
+                        WHEN timestamp GLOB '*[^0-9.]*' THEN CAST(strftime('%s', timestamp) AS INTEGER)
+                        ELSE CAST(timestamp AS REAL)
+                    END,
+                    message_id
+                """,
+                (conversation_id,),
+            )
+            messages = await cursor.fetchall()
+
+            cursor = await conn.execute(
+                """
+                SELECT
+                    attachment_refs.message_id,
+                    attachments.attachment_id,
+                    attachments.mime_type,
+                    attachments.size_bytes,
+                    attachments.path,
+                    attachments.provider_meta
+                FROM attachment_refs
+                JOIN attachments ON attachments.attachment_id = attachment_refs.attachment_id
+                WHERE attachment_refs.conversation_id = ?
+                """,
+                (conversation_id,),
+            )
+            attachments = await cursor.fetchall()
 
         # Build attachments mapping
         attachments_by_message: dict[str, list[Any]] = {}
@@ -290,4 +383,4 @@ def format_conversation_markdown(conv: Conversation) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-__all__ = ["ConversationFormatter", "FormattedConversation", "format_conversation_markdown"]
+__all__ = ["ConversationFormatter", "FormattedConversation", "format_conversation_markdown", "async_format"]

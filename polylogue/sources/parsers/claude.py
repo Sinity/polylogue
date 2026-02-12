@@ -1,4 +1,4 @@
-"""Claude importer using typed Pydantic models.
+"""Claude parser using typed Pydantic models.
 
 Uses ClaudeCodeRecord from polylogue.sources.providers.claude_code for type-safe parsing
 with automatic validation and normalized property access.
@@ -14,13 +14,12 @@ from typing import Any
 from pydantic import ValidationError
 
 from polylogue.lib.log import get_logger
-
-logger = get_logger(__name__)
-
 from polylogue.sources.providers.claude_ai import ClaudeAIConversation
 from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 
 from .base import ParsedAttachment, ParsedConversation, ParsedMessage, attachment_from_meta, normalize_role
+
+logger = get_logger(__name__)
 
 
 @dataclass
@@ -78,8 +77,7 @@ def parse_sessions_index(index_path: Path) -> dict[str, SessionIndexEntry]:
         }
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         # Log but don't fail - fall back to parsing JSONL files directly
-        import logging
-        logging.getLogger(__name__).debug("Failed to parse sessions-index.json: %s", exc)
+        logger.debug("Failed to parse sessions-index.json: %s", exc)
         return {}
 
 

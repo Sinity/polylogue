@@ -1,0 +1,22 @@
+{
+  "chunkedPrompt": {
+    "chunks": [
+      {
+        "text": "Can you explain neural networks in a way that helps me understand how they learn?",
+        "role": "user"
+      },
+      {
+        "text": "Neural networks are computational models inspired by biological neurons. They learn through a process called backpropagation: 1) Input flows forward through layers of neurons. 2) Each neuron applies a weighted sum followed by an activation function. 3) The output is compared to the target, creating an error. 4) This error is propagated backward, adjusting weights to minimize the error. This iterative process, repeated over many examples, allows the network to learn patterns.",
+        "role": "model"
+      },
+      {
+        "text": "What's the difference between supervised and unsupervised learning in neural networks?",
+        "role": "user"
+      },
+      {
+        "text": "Supervised learning uses labeled training data: the network learns to map inputs to specific outputs (like classifying emails as spam or not). Unsupervised learning works with unlabeled data: the network discovers hidden patterns or structures (like clustering similar customers). Supervised learning requires more labeled data but typically achieves higher accuracy on specific tasks. Unsupervised learning is useful for exploratory analysis when labels aren't available.",
+        "role": "model"
+      }
+    ]
+  }
+}

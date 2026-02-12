@@ -35,8 +35,7 @@
           '';
 
           build-system = with pkgs.python313Packages; [
-            setuptools
-            wheel
+            hatchling
           ];
 
           dependencies = with pkgs.python313Packages; [
@@ -85,6 +84,9 @@
             # Runtime dependencies (CLI helpers)
             bat
             glow
+
+            # Demo screencast recording
+            vhs
           ];
 
           shellHook = ''
@@ -131,12 +133,5 @@
               touch $out
             '';
       }
-    )
-    // {
-      nixosModules = {
-        polylogue = import ./nixos-modules/polylogue.nix { inherit self; };
-        sync = import ./nixos-modules/sync.nix;
-        default = self.nixosModules.polylogue;
-      };
-    };
+    );
 }
