@@ -10,7 +10,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from polylogue.lib.models import Conversation
 
 from polylogue.assets import asset_path
 from polylogue.storage.backends.sqlite import open_connection
@@ -233,4 +236,58 @@ class ConversationFormatter:
         return "\n".join(lines).strip() + "\n"
 
 
-__all__ = ["ConversationFormatter", "FormattedConversation"]
+def format_conversation_markdown(conv: Conversation) -> str:
+    """Format a loaded Conversation domain object to markdown.
+
+    Works with a Conversation that has messages already loaded (eager or lazy).
+    This avoids duplicating markdown formatting logic in multiple places
+    (TUI browser, CLI display, etc.)
+
+    Args:
+        conv: A Conversation domain object with .title, .provider, .messages
+
+    Returns:
+        Formatted markdown string
+    """
+    lines = [f"# {conv.title or 'Untitled'}", ""]
+
+    if hasattr(conv, "provider") and conv.provider:
+        lines.append(f"**Provider:** {conv.provider}")
+    if hasattr(conv, "created_at") and conv.created_at:
+        lines.append(f"**Date:** {conv.created_at}")
+    lines.append("")
+
+    for msg in conv.messages:
+        role = (msg.role.value if hasattr(msg.role, "value") else str(msg.role)) if msg.role else "unknown"
+        text = msg.text or ""
+
+        if not text.strip():
+            continue
+
+        lines.append(f"## {role}")
+        if hasattr(msg, "timestamp") and msg.timestamp:
+            lines.append(f"_{msg.timestamp}_")
+        lines.append("")
+
+        # Wrap raw JSON in code blocks
+        stripped = text.strip()
+        if (stripped.startswith("{") and stripped.endswith("}")) or (
+            stripped.startswith("[") and stripped.endswith("]")
+        ):
+            try:
+                parsed = json.loads(stripped)
+                text = f"```json\n{json.dumps(parsed, indent=2)}\n```"
+            except json.JSONDecodeError:
+                pass
+
+        lines.append(text)
+        lines.append("")
+
+        if hasattr(msg, "attachments") and msg.attachments:
+            lines.append(f"**Attachments:** {len(msg.attachments)}")
+            lines.append("")
+
+    return "\n".join(lines).strip() + "\n"
+
+
+__all__ = ["ConversationFormatter", "FormattedConversation", "format_conversation_markdown"]

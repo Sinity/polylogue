@@ -82,9 +82,6 @@ class SchemaValidator:
         self.strict = strict
         self._validator = Draft202012Validator(schema)
 
-        # Extract known property names for drift detection
-        self._known_properties = self._extract_known_properties(schema)
-
     @classmethod
     def for_provider(cls, provider: str, strict: bool = True) -> SchemaValidator:
         """Create a validator for a specific provider.
@@ -195,25 +192,6 @@ class SchemaValidator:
                                 warnings.extend(self._detect_drift(item, items_schema, f"{current_path}[{i}]"))
 
         return warnings
-
-    def _extract_known_properties(self, schema: dict[str, Any]) -> set[str]:
-        """Extract all known property names from schema (recursively)."""
-        props: set[str] = set()
-
-        if "properties" in schema:
-            props.update(schema["properties"].keys())
-            for prop_schema in schema["properties"].values():
-                if isinstance(prop_schema, dict):
-                    props.update(self._extract_known_properties(prop_schema))
-
-        if "items" in schema and isinstance(schema["items"], dict):
-            props.update(self._extract_known_properties(schema["items"]))
-
-        if "additionalProperties" in schema and isinstance(schema["additionalProperties"], dict):
-            props.update(self._extract_known_properties(schema["additionalProperties"]))
-
-        return props
-
 
 def validate_provider_export(
     data: Any,

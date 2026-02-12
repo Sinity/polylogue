@@ -6,8 +6,8 @@ let
   cfg = config.services.polylogue;
 
   packagesForSystem = lib.attrByPath [pkgs.system] (self.packages or {}) {};
-  defaultPackage = packagesForSystem.polylogue or (
-    throw "polylogue package not available for system ${pkgs.system}; make sure self.packages.${pkgs.system}.polylogue is defined"
+  defaultPackage = packagesForSystem.default or (
+    throw "polylogue package not available for system ${pkgs.system}; make sure self.packages.${pkgs.system}.default is defined"
   );
 
   configPath = cfg.configHome + "/config.json";
@@ -90,25 +90,6 @@ let
     chatgpt = inboxDir + "/chatgpt";
     claude = inboxDir + "/claude";
   };
-
-  mkWatchService = name: args:
-    let
-      cliArgs = args ++ lib.optionals (!cfg.ocr.enable) [ "--no-attachment-ocr" ];
-    in {
-      systemd.services."polylogue-watch-${name}" = {
-        description = "Polylogue ${name} watcher";
-        wantedBy = [ "multi-user.target" ];
-        after = [ "network-online.target" ];
-        path = cfg.helperPackages ++ [ cfg.package ];
-        environment = envVars;
-        serviceConfig = {
-          Type = "simple";
-          WorkingDirectory = cfg.workingDir;
-          ExecStart = lib.escapeShellArgs ([ "${cfg.package}/bin/polylogue" ] ++ cliArgs);
-          Restart = "always";
-        } // optionalAttrs (cfg.user != null) { User = cfg.user; };
-      };
-    };
 
   runArgs = [ "--plain" "run" ];
   runEnabled = cfg.run.enable || cfg.watch.gemini || cfg.watch.codex || cfg.watch.claudeCode || cfg.watch.chatgpt || cfg.watch.claude;

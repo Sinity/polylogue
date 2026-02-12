@@ -1,6 +1,9 @@
+"""Health checks, verification, and repair operations."""
+
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -380,7 +383,7 @@ def _run_repair(
     count_sql: str,
     action_sql: str | None,
     dry_run: bool,
-    conn: Any,
+    conn: sqlite3.Connection,
 ) -> RepairResult:
     """Generic repair framework for data cleanup operations.
 
@@ -404,7 +407,7 @@ def _run_repair(
                 name=name,
                 repaired_count=count,
                 success=True,
-                detail=f"Would: {count} rows affected" if count else f"Would: No issues found",
+                detail=f"Would: {count} rows affected" if count else "Would: No issues found",
             )
 
         # Execute repair

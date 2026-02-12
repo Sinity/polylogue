@@ -1,10 +1,16 @@
 # Gemini (Google AI Studio)
 
-Polylogue ingests Gemini chats through the Drive API.
+Polylogue ingests Gemini chats through the Drive API and direct file uploads.
 
 ## Supported Inputs
 
 - Drive folder containing AI Studio JSON exports (`chunkedPrompt.chunks`).
+- Local JSON/JSONL files with `chunkedPrompt` structure or direct chunk lists.
+
+## Provider Detection
+
+- **Path-based detection**: Filename or path containing "gemini" triggers Gemini parsing.
+- **Content-based detection** (v5+): Detects `chunkedPrompt` field or `chunks` arrays in payloads.
 
 ## Current Behavior
 
