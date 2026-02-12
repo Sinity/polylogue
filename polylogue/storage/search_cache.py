@@ -86,10 +86,10 @@ def invalidate_search_cache() -> None:
 
 
 def get_cache_stats() -> dict[str, int]:
-    """Get cache statistics.
+    """Get cache version for invalidation tracking.
 
     Returns:
-        Dictionary with cache_version and hit/miss stats
+        Dictionary with current cache_version counter.
     """
     with _cache_lock:
         return {

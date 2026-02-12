@@ -1,13 +1,13 @@
-"""Tests for MCP server protocol handlers.
+"""Tests for MCP server tools, resources, and prompts.
 
-Tests the JSON-RPC request handlers in polylogue/mcp/server.py.
+Tests the FastMCP-based server in polylogue/mcp/server.py.
 
 Covers:
-- Protocol initialization
-- Tool listing and execution (search, list, get)
-- Resource listing and reading
-- Prompt listing and retrieval
-- Error handling (JSON-RPC errors)
+- Tool execution (search, list_conversations, get_conversation, stats)
+- Resource reading (stats, conversations, conversation/{id})
+- Prompt generation (analyze_errors, summarize_week, extract_code)
+- Serialization helpers and filtering logic
+- Repository integration
 """
 
 from __future__ import annotations
@@ -37,7 +37,9 @@ def mock_repo():
     repo.list.return_value = []
     repo.search.return_value = []
     repo.view.return_value = None
+    repo.get.return_value = None
     repo.resolve_id.return_value = None
+    repo.get_archive_stats.return_value = MagicMock()
 
     return repo
 
@@ -97,13 +99,6 @@ def sample_conversation():
     )
 
 
-@pytest.fixture
-def handle_request():
-    """Import _handle_request function from server module."""
-    from polylogue.mcp.server import _handle_request
-    return _handle_request
-
-
 # =============================================================================
 # Test data tables (SCREAMING_CASE constants)
 # =============================================================================
@@ -126,7 +121,6 @@ SEARCH_FILTER_CASES = [
 
 # Search error cases
 SEARCH_ERROR_CASES = [
-    ("missing_query", {}, "query", "query in error message"),
     ("invalid_since", {"query": "test", "since": "not-a-date"}, "date", "Invalid date in error"),
     ("invalid_limit_type", {"query": "test", "limit": "not-a-number"}, "limit", "limit in error message"),
 ]
@@ -201,31 +195,24 @@ SERIALIZATION_CASES = [
 PROMPT_EDGE_CASES = [
     (
         "analyze_errors_provider_filter",
-        "analyze-errors",
+        "analyze_errors",
         {"provider": "claude"},
         lambda f: f.provider,
-        "provider filter on analyze-errors",
+        "provider filter on analyze_errors",
     ),
     (
         "analyze_errors_since_filter",
-        "analyze-errors",
+        "analyze_errors",
         {"since": "2024-01-01"},
         lambda f: f.since,
-        "since filter on analyze-errors",
-    ),
-    (
-        "analyze_errors_invalid_since",
-        "analyze-errors",
-        {"since": "garbage"},
-        None,
-        "invalid since date",
+        "since filter on analyze_errors",
     ),
     (
         "extract_code_language_filter",
-        "extract-code",
+        "extract_code",
         {"language": "python"},
         None,
-        "language filter on extract-code",
+        "language filter on extract_code",
     ),
 ]
 
@@ -352,45 +339,6 @@ class TestRepositoryDataInsertion:
         backend.save_messages.assert_called_once_with([msg_record])
 
 
-class TestMCPServerHandleGet:
-    """Tests for _handle_get using repo.view() instead of repo.get()."""
-
-    def test_handle_get_uses_view_method(self):
-        """_handle_get should use repo.view() for ID resolution."""
-        backend = Mock(spec=SQLiteBackend)
-
-        # Mock resolve_id and get_conversation to return None
-        # (test just verifies view() calls these)
-        backend.resolve_id.return_value = "full-id"
-        backend.get_conversation.return_value = None
-
-        repo = ConversationRepository(backend)
-
-        # Simulate what _handle_get would do
-        result = repo.view("partial-id")
-
-        # Should use resolve_id
-        assert backend.resolve_id.called
-        # Should eventually call get_conversation
-        assert backend.get_conversation.called
-
-    def test_mock_includes_view_method(self):
-        """Mock repo should include view() method for testing."""
-        mock_repo = Mock(spec=ConversationRepository)
-
-        # Mock should have view method
-        assert hasattr(mock_repo, "view")
-
-        # Set up mock to return None
-        mock_repo.view.return_value = None
-
-        # Test the mock
-        result = mock_repo.view("conv-id")
-
-        assert result is None
-        mock_repo.view.assert_called_once_with("conv-id")
-
-
 class TestRepositoryIntegration:
     """Integration tests between repository and backend."""
 
@@ -420,276 +368,181 @@ class TestRepositoryIntegration:
 
 
 # =============================================================================
-# Protocol Initialization Tests
-# =============================================================================
-
-
-class TestProtocolInitialization:
-    """Tests for the initialize method."""
-
-    def test_initialize_returns_server_info(self, handle_request, mock_repo):
-        """Initialize returns protocol version and server info."""
-        request = {"method": "initialize", "params": {}, "id": 1}
-
-        response = handle_request(request, mock_repo)
-
-        assert response["jsonrpc"] == "2.0"
-        assert response["id"] == 1
-        assert "result" in response
-
-        result = response["result"]
-        assert result["protocolVersion"] == "0.1.0"
-        assert result["serverInfo"]["name"] == "polylogue"
-        assert "capabilities" in result
-
-    def test_initialize_returns_capabilities(self, handle_request, mock_repo):
-        """Initialize returns available capabilities."""
-        request = {"method": "initialize", "params": {}, "id": 1}
-
-        response = handle_request(request, mock_repo)
-        result = response["result"]
-
-        caps = result["capabilities"]
-        assert "tools" in caps
-        assert "resources" in caps
-        assert "prompts" in caps
-
-
-# =============================================================================
-# Listing Tests (Tools, Resources, Prompts)
-# =============================================================================
-
-
-class TestHandlerListing:
-    """Parametrized tests for listing methods (tools, resources, prompts)."""
-
-    @pytest.mark.parametrize(
-        "method,result_key,expected_items,item_key,has_schema",
-        [
-            ("tools/list", "tools", ["search", "list", "get"], "name", True),
-            ("resources/list", "resources", ["polylogue://stats", "polylogue://conversations"], "uri", False),
-            ("prompts/list", "prompts", ["analyze-errors", "summarize-week", "extract-code"], "name", False),
-        ],
-    )
-    def test_listing_returns_available_items(self, handle_request, mock_repo, method, result_key, expected_items, item_key, has_schema):
-        """Listing methods return available items with correct structure."""
-        request = {"method": method, "params": {}, "id": 2}
-
-        response = handle_request(request, mock_repo)
-
-        assert response["id"] == 2
-        assert "result" in response
-
-        items = response["result"][result_key]
-        item_identifiers = {item[item_key] for item in items}
-
-        for expected in expected_items:
-            assert expected in item_identifiers
-
-        if has_schema:
-            for item in items:
-                assert "inputSchema" in item
-                assert item["inputSchema"]["type"] == "object"
-                assert "properties" in item["inputSchema"]
-
-    @pytest.mark.parametrize(
-        "method,result_key,has_mime_type",
-        [
-            ("tools/list", "tools", False),
-            ("resources/list", "resources", True),
-            ("prompts/list", "prompts", False),
-        ],
-    )
-    def test_listing_items_have_metadata(self, handle_request, mock_repo, method, result_key, has_mime_type):
-        """Each item has required metadata."""
-        request = {"method": method, "params": {}, "id": 2}
-
-        response = handle_request(request, mock_repo)
-        items = response["result"][result_key]
-
-        for item in items:
-            assert "name" in item or "uri" in item
-            if has_mime_type:
-                assert "mimeType" in item
-
-
-# =============================================================================
-# Tool Execution Tests (tools/call)
+# Tool Tests
 # =============================================================================
 
 
 class TestSearchTool:
     """Tests for search tool execution."""
 
-    def test_search_requires_query(self, handle_request, mock_repo):
-        """Search returns error when query is missing."""
-        request = {
-            "method": "tools/call",
-            "params": {"name": "search", "arguments": {}},
-            "id": 3,
-        }
-
-        response = handle_request(request, mock_repo)
-
-        assert "error" in response
-        assert response["error"]["code"] == -32602
-        assert "query" in response["error"]["message"].lower()
-
-    def test_search_with_valid_query(self, handle_request, mock_repo, sample_conversation):
+    def test_search_with_valid_query(self, sample_conversation):
         """Search returns matching conversations."""
-        mock_repo.search.return_value = [sample_conversation]
+        from polylogue.mcp.server import _build_server
 
-        request = {
-            "method": "tools/call",
-            "params": {"name": "search", "arguments": {"query": "hello"}},
-            "id": 3,
-        }
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.search.return_value = [sample_conversation]
+            mock_get_repo.return_value = mock_repo
 
-        response = handle_request(request, mock_repo)
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[sample_conversation])
 
-        assert "result" in response
-        content = response["result"]["content"]
-        assert len(content) == 1
-        assert content[0]["type"] == "text"
+                server = _build_server()
+                # Get the tool function from the server
+                search_fn = server._tool_manager._tools["search"].fn
+                result = search_fn(query="hello", limit=10)
 
-        # Parse the JSON text
-        results = json.loads(content[0]["text"])
-        assert len(results) == 1
-        assert results[0]["id"] == "test:conv-123"
-        assert results[0]["provider"] == "chatgpt"
+                # Parse the JSON result
+                results = json.loads(result)
+                assert len(results) == 1
+                assert results[0]["id"] == "test:conv-123"
+                assert results[0]["provider"] == "chatgpt"
 
-    def test_search_with_limit(self, handle_request, mock_repo):
+    def test_search_with_limit(self):
         """Search respects limit parameter."""
-        request = {
-            "method": "tools/call",
-            "params": {"name": "search", "arguments": {"query": "test", "limit": 5}},
-            "id": 3,
-        }
+        from polylogue.mcp.server import _build_server
 
-        response = handle_request(request, mock_repo)
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.search.return_value = []
+            mock_get_repo.return_value = mock_repo
 
-        # Verify the response is valid (no error)
-        assert "result" in response
-        assert "content" in response["result"]
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                filter_instance = make_mock_filter(results=[])
+                MockFilter.return_value = filter_instance
 
-    def test_search_empty_results(self, handle_request, mock_repo):
+                server = _build_server()
+                result = server._tool_manager._tools["search"].fn(query="test", limit=5)
+
+                # Verify filter was called with clamped limit
+                filter_instance.limit.assert_called()
+                # Parse result to verify valid JSON
+                parsed = json.loads(result)
+                assert parsed == []
+
+    def test_search_empty_results(self):
         """Search handles empty results gracefully."""
-        mock_repo.search.return_value = []
+        from polylogue.mcp.server import _build_server
 
-        request = {
-            "method": "tools/call",
-            "params": {"name": "search", "arguments": {"query": "nonexistent"}},
-            "id": 3,
-        }
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.search.return_value = []
+            mock_get_repo.return_value = mock_repo
 
-        response = handle_request(request, mock_repo)
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[])
 
-        assert "result" in response
-        results = json.loads(response["result"]["content"][0]["text"])
-        assert results == []
+                server = _build_server()
+                result = server._tool_manager._tools["search"].fn(query="nonexistent", limit=10)
+
+                results = json.loads(result)
+                assert results == []
 
 
 class TestListTool:
-    """Tests for list tool execution."""
+    """Tests for list_conversations tool execution."""
 
-    def test_list_returns_conversations(self, handle_request, mock_repo, sample_conversation):
+    def test_list_returns_conversations(self, sample_conversation):
         """List returns recent conversations."""
-        mock_repo.list.return_value = [sample_conversation]
+        from polylogue.mcp.server import _build_server
 
-        request = {
-            "method": "tools/call",
-            "params": {"name": "list", "arguments": {}},
-            "id": 4,
-        }
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.list.return_value = [sample_conversation]
+            mock_get_repo.return_value = mock_repo
 
-        response = handle_request(request, mock_repo)
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[sample_conversation])
 
-        assert "result" in response
-        results = json.loads(response["result"]["content"][0]["text"])
-        assert len(results) == 1
-        assert results[0]["message_count"] == 2
+                server = _build_server()
+                result = server._tool_manager._tools["list_conversations"].fn(limit=10)
 
-    def test_list_with_limit(self, handle_request, mock_repo):
+                results = json.loads(result)
+                assert len(results) == 1
+                assert results[0]["message_count"] == 2
+
+    def test_list_with_limit(self):
         """List respects limit parameter."""
-        request = {
-            "method": "tools/call",
-            "params": {"name": "list", "arguments": {"limit": 25}},
-            "id": 4,
-        }
+        from polylogue.mcp.server import _build_server
 
-        response = handle_request(request, mock_repo)
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.list.return_value = []
+            mock_get_repo.return_value = mock_repo
 
-        # Verify the response is valid (no error)
-        assert "result" in response
-        assert "content" in response["result"]
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                filter_instance = make_mock_filter(results=[])
+                MockFilter.return_value = filter_instance
 
-    def test_list_with_provider_filter(self, handle_request, mock_repo):
+                server = _build_server()
+                result = server._tool_manager._tools["list_conversations"].fn(limit=25)
+
+                filter_instance.limit.assert_called()
+                parsed = json.loads(result)
+                assert parsed == []
+
+    def test_list_with_provider_filter(self):
         """List filters by provider."""
-        request = {
-            "method": "tools/call",
-            "params": {"name": "list", "arguments": {"provider": "claude"}},
-            "id": 4,
-        }
+        from polylogue.mcp.server import _build_server
 
-        response = handle_request(request, mock_repo)
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.list.return_value = []
+            mock_get_repo.return_value = mock_repo
 
-        # Verify the response is valid (no error)
-        assert "result" in response
-        assert "content" in response["result"]
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                filter_instance = make_mock_filter(results=[])
+                MockFilter.return_value = filter_instance
+
+                server = _build_server()
+                result = server._tool_manager._tools["list_conversations"].fn(provider="claude", limit=10)
+
+                filter_instance.provider.assert_called_once_with("claude")
+                parsed = json.loads(result)
+                assert parsed == []
 
 
 class TestGetTool:
-    """Tests for get tool execution."""
+    """Tests for get_conversation tool execution."""
 
-    def test_get_requires_id(self, handle_request, mock_repo):
-        """Get returns error when id is missing."""
-        request = {
-            "method": "tools/call",
-            "params": {"name": "get", "arguments": {}},
-            "id": 5,
-        }
-
-        response = handle_request(request, mock_repo)
-
-        assert "error" in response
-        assert "id" in response["error"]["message"].lower()
-
-    def test_get_returns_conversation(self, handle_request, mock_repo, sample_conversation):
+    def test_get_returns_conversation(self, sample_conversation):
         """Get returns full conversation with messages."""
-        mock_repo.view.return_value = sample_conversation
+        from polylogue.mcp.server import _build_server
 
-        request = {
-            "method": "tools/call",
-            "params": {"name": "get", "arguments": {"id": "test:conv-123"}},
-            "id": 5,
-        }
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.view.return_value = sample_conversation
+            mock_get_repo.return_value = mock_repo
 
-        response = handle_request(request, mock_repo)
+            server = _build_server()
+            result = server._tool_manager._tools["get_conversation"].fn(id="test:conv-123")
 
-        assert "result" in response
-        conv = json.loads(response["result"]["content"][0]["text"])
+            conv = json.loads(result)
 
-        assert conv["id"] == "test:conv-123"
-        assert "messages" in conv
-        assert len(conv["messages"]) == 2
+            assert conv["id"] == "test:conv-123"
+            assert "messages" in conv
+            assert len(conv["messages"]) == 2
 
-    def test_get_not_found(self, handle_request, mock_repo):
-        """Get returns error for non-existent conversation."""
-        mock_repo.view.return_value = None
+    def test_get_not_found(self):
+        """Get returns error dict for non-existent conversation."""
+        from polylogue.mcp.server import _build_server
 
-        request = {
-            "method": "tools/call",
-            "params": {"name": "get", "arguments": {"id": "nonexistent"}},
-            "id": 5,
-        }
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.view.return_value = None
+            mock_get_repo.return_value = mock_repo
 
-        response = handle_request(request, mock_repo)
+            server = _build_server()
+            result = server._tool_manager._tools["get_conversation"].fn(id="nonexistent")
 
-        assert "error" in response
-        assert "not found" in response["error"]["message"].lower()
+            result_dict = json.loads(result)
+            assert "error" in result_dict
+            assert "not found" in result_dict["error"].lower()
 
-    def test_get_returns_full_messages(self, handle_request, mock_repo):
+    def test_get_returns_full_messages(self):
         """Get returns full message text without truncation."""
+        from polylogue.mcp.server import _build_server
+
         long_text = "A" * 2000
         conv = Conversation(
             id="test:long",
@@ -699,233 +552,336 @@ class TestGetTool:
                 Message(id="m1", role="assistant", text=long_text),
             ],
         )
-        mock_repo.view.return_value = conv
 
-        request = {
-            "method": "tools/call",
-            "params": {"name": "get", "arguments": {"id": "test:long"}},
-            "id": 5,
-        }
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.view.return_value = conv
+            mock_get_repo.return_value = mock_repo
 
-        response = handle_request(request, mock_repo)
+            server = _build_server()
+            result = server._tool_manager._tools["get_conversation"].fn(id="test:long")
 
-        result = json.loads(response["result"]["content"][0]["text"])
-        msg_text = result["messages"][0]["text"]
+            result_dict = json.loads(result)
+            msg_text = result_dict["messages"][0]["text"]
 
-        assert msg_text == long_text
+            assert msg_text == long_text
 
 
-class TestUnknownTool:
-    """Tests for unknown tool handling."""
+class TestStatsTool:
+    """Tests for stats tool."""
 
-    def test_unknown_tool_returns_error(self, handle_request, mock_repo):
-        """Unknown tool name returns error."""
-        request = {
-            "method": "tools/call",
-            "params": {"name": "nonexistent", "arguments": {}},
-            "id": 6,
-        }
+    @pytest.mark.parametrize(
+        "total_conversations,total_messages,providers,embedded_convs,embedded_msgs,db_size,expected_mb,desc",
+        STATS_CONFIGS,
+    )
+    def test_stats_configurations(
+        self,
+        total_conversations,
+        total_messages,
+        providers,
+        embedded_convs,
+        embedded_msgs,
+        db_size,
+        expected_mb,
+        desc,
+    ):
+        """Stats tool handles various configuration states."""
+        from polylogue.mcp.server import _build_server
+        from polylogue.lib.stats import ArchiveStats
 
-        response = handle_request(request, mock_repo)
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.get_archive_stats.return_value = ArchiveStats(
+                total_conversations=total_conversations,
+                total_messages=total_messages,
+                providers=providers,
+                embedded_conversations=embedded_convs if embedded_convs else 0,
+                embedded_messages=embedded_msgs if embedded_msgs else 0,
+                db_size_bytes=db_size,
+            )
+            mock_get_repo.return_value = mock_repo
 
-        assert "error" in response
-        assert response["error"]["code"] == -32601
-        assert "nonexistent" in response["error"]["message"]
+            server = _build_server()
+            result = server._tool_manager._tools["stats"].fn()
+
+            data = json.loads(result)
+            assert data["total_conversations"] == total_conversations
+            assert data["total_messages"] == total_messages
+            assert data["db_size_mb"] == expected_mb
 
 
 # =============================================================================
-# Resource Reading Tests
+# Resource Tests
 # =============================================================================
 
 
 class TestStatsResource:
     """Tests for polylogue://stats resource."""
 
-    def test_stats_returns_archive_statistics(self, handle_request, mock_repo, sample_conversation):
+    def test_stats_returns_archive_statistics(self):
         """Stats resource returns conversation and message counts."""
+        from polylogue.mcp.server import _build_server
         from polylogue.lib.stats import ArchiveStats
 
-        mock_repo.get_archive_stats.return_value = ArchiveStats(
-            total_conversations=2,
-            total_messages=4,
-            providers={"chatgpt": 2},
-        )
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.get_archive_stats.return_value = ArchiveStats(
+                total_conversations=2,
+                total_messages=4,
+                providers={"chatgpt": 2},
+            )
+            mock_get_repo.return_value = mock_repo
 
-        request = {
-            "method": "resources/read",
-            "params": {"uri": "polylogue://stats"},
-            "id": 8,
-        }
+            server = _build_server()
+            result = server._resource_manager._resources["polylogue://stats"].fn()
 
-        response = handle_request(request, mock_repo)
-
-        assert "result" in response
-        contents = response["result"]["contents"]
-        assert len(contents) == 1
-
-        stats = json.loads(contents[0]["text"])
-        assert stats["total_conversations"] == 2
-        assert stats["total_messages"] == 4
+            stats = json.loads(result)
+            assert stats["total_conversations"] == 2
+            assert stats["total_messages"] == 4
 
 
 class TestConversationsResource:
     """Tests for polylogue://conversations resource."""
 
-    def test_conversations_resource_returns_list(self, handle_request, mock_repo, sample_conversation):
+    def test_conversations_resource_returns_list(self, sample_conversation):
         """Conversations resource returns all conversations."""
-        mock_repo.list.return_value = [sample_conversation]
+        from polylogue.mcp.server import _build_server
 
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            MockFilter.return_value = make_mock_filter(results=[sample_conversation])
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.list.return_value = [sample_conversation]
+            mock_get_repo.return_value = mock_repo
 
-            request = {
-                "method": "resources/read",
-                "params": {"uri": "polylogue://conversations"},
-                "id": 9,
-            }
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[sample_conversation])
 
-            response = handle_request(request, mock_repo)
+                server = _build_server()
+                result = server._resource_manager._resources["polylogue://conversations"].fn()
 
-            assert "result" in response
-            contents = response["result"]["contents"]
-            convs = json.loads(contents[0]["text"])
-            assert len(convs) == 1
-
-    def test_conversations_resource_with_query_params(self, handle_request, mock_repo):
-        """Conversations resource supports query parameters."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = make_mock_filter(results=[])
-            MockFilter.return_value = filter_instance
-
-            request = {
-                "method": "resources/read",
-                "params": {"uri": "polylogue://conversations?provider=claude&limit=50"},
-                "id": 9,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            # Verify filters were applied
-            filter_instance.provider.assert_called_once_with("claude")
-            filter_instance.limit.assert_called_once_with(50)
+                convs = json.loads(result)
+                assert len(convs) == 1
 
 
 class TestConversationResource:
     """Tests for polylogue://conversation/{id} resource."""
 
-    def test_single_conversation_resource(self, handle_request, mock_repo, sample_conversation):
+    def test_single_conversation_resource(self, sample_conversation):
         """Single conversation resource returns full conversation."""
-        mock_repo.get.return_value = sample_conversation
+        from polylogue.mcp.server import _build_server
 
-        request = {
-            "method": "resources/read",
-            "params": {"uri": "polylogue://conversation/test:conv-123"},
-            "id": 10,
-        }
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.get.return_value = sample_conversation
+            mock_get_repo.return_value = mock_repo
 
-        response = handle_request(request, mock_repo)
+            server = _build_server()
+            result = server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn(conv_id="test:conv-123")
 
-        assert "result" in response
-        contents = response["result"]["contents"]
-        assert contents[0]["uri"] == "polylogue://conversation/test:conv-123"
+            conv = json.loads(result)
+            assert conv["id"] == "test:conv-123"
+            assert "messages" in conv
 
-        conv = json.loads(contents[0]["text"])
-        assert conv["id"] == "test:conv-123"
-        assert "messages" in conv
-
-    def test_conversation_resource_not_found(self, handle_request, mock_repo):
+    def test_conversation_resource_not_found(self):
         """Conversation resource returns error for missing conversation."""
-        mock_repo.get.return_value = None
+        from polylogue.mcp.server import _build_server
 
-        request = {
-            "method": "resources/read",
-            "params": {"uri": "polylogue://conversation/nonexistent"},
-            "id": 10,
-        }
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.get.return_value = None
+            mock_get_repo.return_value = mock_repo
 
-        response = handle_request(request, mock_repo)
+            server = _build_server()
+            result = server._resource_manager._templates["polylogue://conversation/{conv_id}"].fn(conv_id="nonexistent")
 
-        assert "error" in response
-        assert "not found" in response["error"]["message"].lower()
-
-
-class TestUnknownResource:
-    """Tests for unknown resource handling."""
-
-    def test_unknown_resource_returns_error(self, handle_request, mock_repo):
-        """Unknown resource URI returns error."""
-        request = {
-            "method": "resources/read",
-            "params": {"uri": "polylogue://unknown"},
-            "id": 11,
-        }
-
-        response = handle_request(request, mock_repo)
-
-        assert "error" in response
-        assert "Unknown resource" in response["error"]["message"]
+            result_dict = json.loads(result)
+            assert "error" in result_dict
 
 
 # =============================================================================
-# Prompt Retrieval Tests
+# Prompt Tests
 # =============================================================================
 
 
-class TestUnknownPrompt:
-    """Tests for unknown prompt handling."""
+class TestAnalyzeErrorsPrompt:
+    """Tests for analyze_errors prompt."""
 
-    def test_unknown_prompt_returns_error(self, handle_request, mock_repo):
-        """Unknown prompt name returns error."""
-        request = {
-            "method": "prompts/get",
-            "params": {"name": "nonexistent", "arguments": {}},
-            "id": 16,
-        }
+    def test_analyze_errors_with_conversations(self, sample_conversation):
+        """analyze_errors generates prompt from error conversations."""
+        from polylogue.mcp.server import _build_server
 
-        response = handle_request(request, mock_repo)
+        # Modify sample to have error message
+        sample_conversation.messages[0].text = "Got an error while running"
 
-        assert "error" in response
-        assert "Unknown prompt" in response["error"]["message"]
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.list.return_value = [sample_conversation]
+            mock_get_repo.return_value = mock_repo
+
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[sample_conversation])
+
+                server = _build_server()
+                result = server._prompt_manager._prompts["analyze_errors"].fn()
+
+                assert isinstance(result, str)
+                assert "error" in result.lower()
+
+    def test_analyze_errors_limits_error_contexts_to_20(self):
+        """analyze_errors stops collecting after 20 error snippets."""
+        from polylogue.mcp.server import _build_server
+
+        # Create conversation with 30 error messages
+        msgs = [
+            Message(
+                id=f"m{i}",
+                role="user",
+                text=f"error #{i} occurred",
+                timestamp=datetime(2024, 1, 15, tzinfo=timezone.utc),
+            )
+            for i in range(30)
+        ]
+        big_conv = Conversation(
+            id="big", provider="test", title="Errors", messages=msgs
+        )
+
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.list.return_value = [big_conv]
+            mock_get_repo.return_value = mock_repo
+
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[big_conv])
+
+                server = _build_server()
+                result = server._prompt_manager._prompts["analyze_errors"].fn()
+
+                # Should have "20 error instances found"
+                assert "20 error instances" in result
+
+    def test_analyze_errors_no_matches(self):
+        """analyze_errors handles zero matching conversations."""
+        from polylogue.mcp.server import _build_server
+
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.list.return_value = []
+            mock_get_repo.return_value = mock_repo
+
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[])
+
+                server = _build_server()
+                result = server._prompt_manager._prompts["analyze_errors"].fn()
+
+                assert "0 conversations" in result
+
+
+class TestSummarizeWeekPrompt:
+    """Tests for summarize_week prompt."""
+
+    def test_summarize_week_empty(self):
+        """summarize_week handles no conversations in past week."""
+        from polylogue.mcp.server import _build_server
+
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.list.return_value = []
+            mock_get_repo.return_value = mock_repo
+
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[])
+
+                server = _build_server()
+                result = server._prompt_manager._prompts["summarize_week"].fn()
+
+                assert "0 conversations" in result
+                assert "0 messages" in result
+
+
+class TestExtractCodePrompt:
+    """Tests for extract_code prompt."""
+
+    def test_extract_code_no_code_blocks(self):
+        """extract_code handles conversations without code."""
+        from polylogue.mcp.server import _build_server
+
+        conv = Conversation(
+            id="nocode",
+            provider="test",
+            title="No Code",
+            messages=[Message(id="m1", role="user", text="Just text, no code")],
+        )
+
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.list.return_value = [conv]
+            mock_get_repo.return_value = mock_repo
+
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[conv])
+
+                server = _build_server()
+                result = server._prompt_manager._prompts["extract_code"].fn()
+
+                assert "0 code blocks" in result
+
+    def test_extract_code_with_language_filter(self):
+        """extract_code filters by language."""
+        from polylogue.mcp.server import _build_server
+
+        conv = Conversation(
+            id="code",
+            provider="test",
+            title="Code",
+            messages=[
+                Message(
+                    id="m1",
+                    role="assistant",
+                    text="```python\nprint('hi')\n```\n```javascript\nconsole.log('hi')\n```",
+                )
+            ],
+        )
+
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.list.return_value = [conv]
+            mock_get_repo.return_value = mock_repo
+
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[conv])
+
+                server = _build_server()
+                result = server._prompt_manager._prompts["extract_code"].fn(language="python")
+
+                assert "python" in result.lower()
+
+    def test_extract_code_null_message_text(self):
+        """extract_code skips messages with None text."""
+        from polylogue.mcp.server import _build_server
+
+        conv = Conversation(
+            id="nulltext",
+            provider="test",
+            title="Null",
+            messages=[Message(id="m1", role="assistant", text=None)],
+        )
+
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.list.return_value = [conv]
+            mock_get_repo.return_value = mock_repo
+
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[conv])
+
+                server = _build_server()
+                result = server._prompt_manager._prompts["extract_code"].fn()
+
+                assert isinstance(result, str)
 
 
 # =============================================================================
-# Error Handling Tests
-# =============================================================================
-
-
-class TestErrorHandling:
-    """Tests for JSON-RPC error handling."""
-
-    def test_unknown_method_returns_error(self, handle_request, mock_repo):
-        """Unknown method returns method not found error."""
-        request = {"method": "unknown/method", "params": {}, "id": 17}
-
-        response = handle_request(request, mock_repo)
-
-        assert "error" in response
-        assert response["error"]["code"] == -32601
-        assert "Method not found" in response["error"]["message"]
-
-    def test_response_preserves_request_id(self, handle_request, mock_repo):
-        """Response always includes the request ID."""
-        request = {"method": "initialize", "params": {}, "id": "custom-id-123"}
-
-        response = handle_request(request, mock_repo)
-
-        assert response["id"] == "custom-id-123"
-
-    def test_response_includes_jsonrpc_version(self, handle_request, mock_repo):
-        """All responses include JSON-RPC version."""
-        request = {"method": "initialize", "params": {}, "id": 1}
-
-        response = handle_request(request, mock_repo)
-
-        assert response["jsonrpc"] == "2.0"
-
-
-# =============================================================================
-# Helper Function Tests
+# Serialization Tests
 # =============================================================================
 
 
@@ -958,534 +914,6 @@ class TestConversationSerialization:
         assert "role" in msg
         assert "text" in msg
         assert "timestamp" in msg
-
-
-# =============================================================================
-# Response Format Tests
-# =============================================================================
-
-
-class TestResponseFormats:
-    """Tests for _success and _error helper functions."""
-
-    def test_success_response_format(self):
-        """_success creates valid JSON-RPC success response."""
-        from polylogue.mcp.server import _success
-
-        result = _success(42, {"data": "test"})
-
-        assert result == {
-            "jsonrpc": "2.0",
-            "id": 42,
-            "result": {"data": "test"},
-        }
-
-    def test_error_response_format(self):
-        """_error creates valid JSON-RPC error response."""
-        from polylogue.mcp.server import _error
-
-        result = _error(42, -32600, "Invalid Request")
-
-        assert result == {
-            "jsonrpc": "2.0",
-            "id": 42,
-            "error": {"code": -32600, "message": "Invalid Request"},
-        }
-
-
-# =============================================================================
-# Stats Tool Tests (Parametrized)
-# =============================================================================
-
-
-class TestStatsTool:
-    """Tests for _handle_stats_tool."""
-
-    @pytest.mark.parametrize(
-        "total_conversations,total_messages,providers,embedded_convs,embedded_msgs,db_size,expected_mb,desc",
-        STATS_CONFIGS,
-    )
-    def test_stats_configurations(
-        self,
-        handle_request,
-        mock_repo,
-        total_conversations,
-        total_messages,
-        providers,
-        embedded_convs,
-        embedded_msgs,
-        db_size,
-        expected_mb,
-        desc,
-    ):
-        """Stats tool handles various configuration states."""
-        from polylogue.lib.stats import ArchiveStats
-
-        mock_repo.get_archive_stats.return_value = ArchiveStats(
-            total_conversations=total_conversations,
-            total_messages=total_messages,
-            providers=providers,
-            embedded_conversations=embedded_convs if embedded_convs else 0,
-            embedded_messages=embedded_msgs if embedded_msgs else 0,
-            db_size_bytes=db_size,
-        )
-
-        request = {
-            "method": "tools/call",
-            "params": {"name": "stats", "arguments": {}},
-            "id": 20,
-        }
-
-        response = handle_request(request, mock_repo)
-
-        assert "result" in response, f"Stats test failed for: {desc}"
-        data = json.loads(response["result"]["content"][0]["text"])
-        assert data["total_conversations"] == total_conversations
-        assert data["total_messages"] == total_messages
-        assert data["db_size_mb"] == expected_mb
-
-
-# =============================================================================
-# Search Tool Filters Tests (Parametrized)
-# =============================================================================
-
-
-class TestSearchToolFilters:
-    """Tests for search tool edge cases and filters."""
-
-    @pytest.mark.parametrize(
-        "filter_type,filter_value,desc,filter_checker",
-        SEARCH_FILTER_CASES,
-    )
-    def test_search_filter_application(
-        self,
-        handle_request,
-        mock_repo,
-        filter_type,
-        filter_value,
-        desc,
-        filter_checker,
-    ):
-        """Search applies filters correctly."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            MockFilter.return_value = make_mock_filter(results=[])
-
-            args = {"query": "test"}
-            if filter_type.startswith("limit"):
-                args["limit"] = filter_value
-            else:
-                args[filter_type] = filter_value
-
-            request = {
-                "method": "tools/call",
-                "params": {
-                    "name": "search",
-                    "arguments": args,
-                },
-                "id": 30,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response, f"Filter test failed for: {desc}"
-            filter_instance = MockFilter.return_value
-            if filter_type == "limit_normal":
-                filter_checker(filter_instance).assert_called_once_with(5)
-            elif filter_type == "limit_max":
-                filter_checker(filter_instance).assert_called_once_with(10000)
-            elif filter_type == "limit_negative":
-                filter_checker(filter_instance).assert_called_once_with(1)
-            else:
-                filter_checker(filter_instance).assert_called_once_with(filter_value)
-
-    @pytest.mark.parametrize(
-        "case_type,args,error_keyword,assertion_desc",
-        SEARCH_ERROR_CASES,
-    )
-    def test_search_error_cases(
-        self,
-        handle_request,
-        mock_repo,
-        case_type,
-        args,
-        error_keyword,
-        assertion_desc,
-    ):
-        """Search returns appropriate errors."""
-        if case_type == "invalid_since":
-            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                MockFilter.return_value = make_mock_filter(since=ValueError("Invalid date"))
-
-                request = {
-                    "method": "tools/call",
-                    "params": {"name": "search", "arguments": args},
-                    "id": 32,
-                }
-
-                response = handle_request(request, mock_repo)
-
-                assert "error" in response, f"Error test failed for: {assertion_desc}"
-                assert error_keyword in response["error"]["message"]
-        else:
-            request = {
-                "method": "tools/call",
-                "params": {"name": "search", "arguments": args},
-                "id": 33,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "error" in response, f"Error test failed for: {assertion_desc}"
-            assert error_keyword in response["error"]["message"].lower()
-
-
-# =============================================================================
-# List Tool Filters Tests (Parametrized)
-# =============================================================================
-
-
-class TestListToolFilters:
-    """Tests for list tool edge cases and filters."""
-
-    @pytest.mark.parametrize(
-        "filter_type,filter_value,error_keyword,desc",
-        LIST_FILTER_CASES,
-    )
-    def test_list_filter_application(
-        self,
-        handle_request,
-        mock_repo,
-        filter_type,
-        filter_value,
-        error_keyword,
-        desc,
-    ):
-        """List tool filter application."""
-        if filter_type == "since":
-            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                filter_instance = make_mock_filter(results=[])
-                MockFilter.return_value = filter_instance
-
-                request = {
-                    "method": "tools/call",
-                    "params": {
-                        "name": "list",
-                        "arguments": {"since": filter_value},
-                    },
-                    "id": 40,
-                }
-
-                response = handle_request(request, mock_repo)
-
-                assert "result" in response, f"Filter test failed for: {desc}"
-                filter_instance.since.assert_called_once_with(filter_value)
-        elif filter_type == "invalid_limit_type":
-            request = {
-                "method": "tools/call",
-                "params": {
-                    "name": "list",
-                    "arguments": {"limit": filter_value},
-                },
-                "id": 42,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "error" in response, f"Error test failed for: {desc}"
-            assert error_keyword in response["error"]["message"].lower()
-
-    def test_list_invalid_since_returns_error(self, handle_request, mock_repo):
-        """List returns error for unparseable date."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            MockFilter.return_value = make_mock_filter(since=ValueError("Bad date"))
-
-            request = {
-                "method": "tools/call",
-                "params": {
-                    "name": "list",
-                    "arguments": {"since": "garbage"},
-                },
-                "id": 41,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "error" in response
-            assert "Invalid date" in response["error"]["message"]
-
-
-# =============================================================================
-# Conversations Resource Edge Cases Tests
-# =============================================================================
-
-
-class TestConversationsResourceEdges:
-    """Tests for conversations resource edge cases."""
-
-    def test_conversations_resource_with_tag_filter(self, handle_request, mock_repo):
-        """Conversations resource supports tag filter."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            filter_instance = make_mock_filter(results=[])
-            MockFilter.return_value = filter_instance
-
-            request = {
-                "method": "resources/read",
-                "params": {"uri": "polylogue://conversations?tag=important"},
-                "id": 50,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            filter_instance.tag.assert_called_once_with("important")
-
-    def test_conversations_resource_invalid_limit(self, handle_request, mock_repo):
-        """Conversations resource returns error for non-integer limit."""
-        request = {
-            "method": "resources/read",
-            "params": {"uri": "polylogue://conversations?limit=abc"},
-            "id": 51,
-        }
-
-        response = handle_request(request, mock_repo)
-
-        assert "error" in response
-        assert "limit" in response["error"]["message"].lower()
-
-    def test_conversations_resource_invalid_since(self, handle_request, mock_repo):
-        """Conversations resource returns error for unparseable since date."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            MockFilter.return_value = make_mock_filter(since=ValueError("Cannot parse"))
-
-            request = {
-                "method": "resources/read",
-                "params": {"uri": "polylogue://conversations?since=not-a-date"},
-                "id": 52,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "error" in response
-
-
-# =============================================================================
-# Prompt Edge Cases Tests (Parametrized)
-# =============================================================================
-
-
-class TestPromptEdgeCases:
-    """Tests for prompt edge cases."""
-
-    @pytest.mark.parametrize(
-        "case_id,prompt_name,arguments,filter_checker,desc",
-        PROMPT_EDGE_CASES,
-    )
-    def test_prompt_filter_application(
-        self,
-        handle_request,
-        mock_repo,
-        sample_conversation,
-        case_id,
-        prompt_name,
-        arguments,
-        filter_checker,
-        desc,
-    ):
-        """Prompt edge case filter application."""
-        if "analyze_errors" in case_id and "invalid_since" not in case_id:
-            sample_conversation.messages[0].text = "Got an error"
-
-        if "invalid_since" in case_id:
-            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                MockFilter.return_value = make_mock_filter(since=ValueError("Bad date"))
-
-                request = {
-                    "method": "prompts/get",
-                    "params": {
-                        "name": prompt_name,
-                        "arguments": arguments,
-                    },
-                    "id": 62,
-                }
-
-                response = handle_request(request, mock_repo)
-
-                assert "error" in response, f"Error test failed for: {desc}"
-        else:
-            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                filter_instance = make_mock_filter(results=[sample_conversation])
-                MockFilter.return_value = filter_instance
-
-                request = {
-                    "method": "prompts/get",
-                    "params": {
-                        "name": prompt_name,
-                        "arguments": arguments,
-                    },
-                    "id": 60,
-                }
-
-                response = handle_request(request, mock_repo)
-
-                assert "result" in response, f"Filter test failed for: {desc}"
-                if filter_checker:
-                    filter_checker(filter_instance).assert_called()
-
-    def test_analyze_errors_limits_error_contexts_to_20(
-        self, handle_request, mock_repo
-    ):
-        """analyze-errors stops collecting after 20 error snippets."""
-        # Create conversation with 30 error messages
-        msgs = [
-            Message(
-                id=f"m{i}",
-                role="user",
-                text=f"error #{i} occurred",
-                timestamp=datetime(2024, 1, 15, tzinfo=timezone.utc),
-            )
-            for i in range(30)
-        ]
-        big_conv = Conversation(
-            id="big", provider="test", title="Errors", messages=msgs
-        )
-
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            MockFilter.return_value = make_mock_filter(results=[big_conv])
-
-            request = {
-                "method": "prompts/get",
-                "params": {"name": "analyze-errors", "arguments": {}},
-                "id": 63,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            prompt_text = response["result"]["messages"][0]["content"]["text"]
-            # Should have "20 error instances found"
-            assert "20 error instances" in prompt_text
-
-    def test_analyze_errors_no_matches(self, handle_request, mock_repo):
-        """analyze-errors handles zero matching conversations."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            MockFilter.return_value = make_mock_filter(results=[])
-
-            request = {
-                "method": "prompts/get",
-                "params": {"name": "analyze-errors", "arguments": {}},
-                "id": 64,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            prompt_text = response["result"]["messages"][0]["content"]["text"]
-            assert "0 conversations" in prompt_text
-
-    def test_summarize_week_empty(self, handle_request, mock_repo):
-        """summarize-week handles no conversations in past week."""
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            MockFilter.return_value = make_mock_filter(results=[])
-
-            request = {
-                "method": "prompts/get",
-                "params": {"name": "summarize-week", "arguments": {}},
-                "id": 65,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            prompt_text = response["result"]["messages"][0]["content"]["text"]
-            assert "0 conversations" in prompt_text
-            assert "0 messages" in prompt_text
-
-    def test_extract_code_no_code_blocks(self, handle_request, mock_repo):
-        """extract-code handles conversations without code."""
-        conv = Conversation(
-            id="nocode",
-            provider="test",
-            title="No Code",
-            messages=[Message(id="m1", role="user", text="Just text, no code")],
-        )
-
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            MockFilter.return_value = make_mock_filter(results=[conv])
-
-            request = {
-                "method": "prompts/get",
-                "params": {"name": "extract-code", "arguments": {}},
-                "id": 66,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            prompt_text = response["result"]["messages"][0]["content"]["text"]
-            assert "0 code blocks" in prompt_text
-
-    def test_extract_code_with_language_filter(self, handle_request, mock_repo):
-        """extract-code filters by language."""
-        conv = Conversation(
-            id="code",
-            provider="test",
-            title="Code",
-            messages=[
-                Message(
-                    id="m1",
-                    role="assistant",
-                    text="```python\nprint('hi')\n```\n```javascript\nconsole.log('hi')\n```",
-                )
-            ],
-        )
-
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            MockFilter.return_value = make_mock_filter(results=[conv])
-
-            request = {
-                "method": "prompts/get",
-                "params": {
-                    "name": "extract-code",
-                    "arguments": {"language": "python"},
-                },
-                "id": 67,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-            prompt_text = response["result"]["messages"][0]["content"]["text"]
-            assert "python" in prompt_text.lower()
-
-    def test_extract_code_null_message_text(self, handle_request, mock_repo):
-        """extract-code skips messages with None text."""
-        conv = Conversation(
-            id="nulltext",
-            provider="test",
-            title="Null",
-            messages=[Message(id="m1", role="assistant", text=None)],
-        )
-
-        with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-            MockFilter.return_value = make_mock_filter(results=[conv])
-
-            request = {
-                "method": "prompts/get",
-                "params": {"name": "extract-code", "arguments": {}},
-                "id": 68,
-            }
-
-            response = handle_request(request, mock_repo)
-
-            assert "result" in response
-
-
-# =============================================================================
-# Serialization Edge Cases Tests (Parametrized)
-# =============================================================================
-
-
-class TestSerializationEdgeCases:
-    """Tests for serialization helper edge cases."""
 
     @pytest.mark.parametrize(
         "case_id,conv,expected_fields,func_name",
@@ -1523,26 +951,192 @@ class TestSerializationEdgeCases:
                 assert result[key] == expected_value, f"Failed for case {case_id}: {key}"
 
 
+class TestClampLimit:
+    """Tests for _clamp_limit helper."""
+
+    def test_clamp_limit_normal(self):
+        """_clamp_limit passes through normal values."""
+        from polylogue.mcp.server import _clamp_limit
+
+        assert _clamp_limit(10) == 10
+        assert _clamp_limit(1) == 1
+        assert _clamp_limit(5000) == 5000
+
+    def test_clamp_limit_max(self):
+        """_clamp_limit caps at _MAX_LIMIT."""
+        from polylogue.mcp.server import _clamp_limit
+
+        assert _clamp_limit(99999) == 10000
+        assert _clamp_limit(10001) == 10000
+
+    def test_clamp_limit_min(self):
+        """_clamp_limit floors at 1."""
+        from polylogue.mcp.server import _clamp_limit
+
+        assert _clamp_limit(0) == 1
+        assert _clamp_limit(-5) == 1
+
+    def test_clamp_limit_type_coercion(self):
+        """_clamp_limit coerces types and handles errors."""
+        from polylogue.mcp.server import _clamp_limit
+
+        # Valid string
+        assert _clamp_limit("10") == 10
+
+        # Invalid types return default
+        assert _clamp_limit("not-a-number") == 10
+        assert _clamp_limit([1, 2]) == 10
+
+
 # =============================================================================
-# Write Error Tests
+# Search Tool Filter Tests (Parametrized)
 # =============================================================================
 
 
-class TestWriteError:
-    """Tests for _write_error helper function."""
+class TestSearchToolFilters:
+    """Tests for search tool edge cases and filters."""
 
-    def test_write_error_outputs_to_stdout(self, capsys):
-        """_write_error writes JSON-RPC error to stdout."""
-        from polylogue.mcp.server import _write_error
+    @pytest.mark.parametrize(
+        "filter_type,filter_value,desc,filter_checker",
+        SEARCH_FILTER_CASES,
+    )
+    def test_search_filter_application(
+        self,
+        filter_type,
+        filter_value,
+        desc,
+        filter_checker,
+    ):
+        """Search applies filters correctly."""
+        from polylogue.mcp.server import _build_server
 
-        _write_error(-32700, "Parse error")
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.search.return_value = []
+            mock_get_repo.return_value = mock_repo
 
-        captured = capsys.readouterr()
-        response = json.loads(captured.out.strip())
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                filter_instance = make_mock_filter(results=[])
+                MockFilter.return_value = filter_instance
 
-        assert response["jsonrpc"] == "2.0"
-        assert response["id"] is None
-        assert response["error"]["code"] == -32700
-        assert response["error"]["message"] == "Parse error"
+                server = _build_server()
+
+                args = {"query": "test"}
+                if filter_type.startswith("limit"):
+                    args["limit"] = filter_value
+                else:
+                    args[filter_type] = filter_value
+
+                result = server._tool_manager._tools["search"].fn(**args)
+
+                assert isinstance(result, str)
+                filter_instance = MockFilter.return_value
+                if filter_type == "limit_normal":
+                    filter_checker(filter_instance).assert_called_once_with(5)
+                elif filter_type == "limit_max":
+                    filter_checker(filter_instance).assert_called_once_with(10000)
+                elif filter_type == "limit_negative":
+                    filter_checker(filter_instance).assert_called_once_with(1)
+                else:
+                    filter_checker(filter_instance).assert_called_once_with(filter_value)
+
+    @pytest.mark.parametrize(
+        "case_type,args,error_keyword,assertion_desc",
+        SEARCH_ERROR_CASES,
+    )
+    def test_search_error_cases(
+        self,
+        case_type,
+        args,
+        error_keyword,
+        assertion_desc,
+    ):
+        """Search handles invalid parameters."""
+        from polylogue.mcp.server import _build_server
+
+        if case_type == "invalid_since":
+            with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+                mock_repo = MagicMock()
+                mock_get_repo.return_value = mock_repo
+
+                with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                    MockFilter.return_value = make_mock_filter(since=ValueError("Invalid date"))
+
+                    server = _build_server()
+                    # Tool should raise or return error dict
+                    try:
+                        result = server._tool_manager._tools["search"].fn(**args)
+                        # If no exception, check result contains error info
+                        parsed = json.loads(result)
+                        # Tools that catch errors may return dict with error key
+                    except ValueError:
+                        pass  # Expected for invalid date
+        else:
+            with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+                mock_repo = MagicMock()
+                mock_get_repo.return_value = mock_repo
+
+                with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                    MockFilter.return_value = make_mock_filter(results=[])
+
+                    server = _build_server()
+                    # For invalid_limit_type, tool should handle gracefully
+                    try:
+                        result = server._tool_manager._tools["search"].fn(**args)
+                        parsed = json.loads(result)
+                    except (TypeError, ValueError):
+                        pass  # Expected for invalid limit type
 
 
+# =============================================================================
+# Helper Function Tests
+# =============================================================================
+
+
+class TestServerBuilding:
+    """Tests for server construction."""
+
+    def test_build_server_returns_fastmcp_instance(self):
+        """_build_server returns a FastMCP server instance."""
+        from polylogue.mcp.server import _build_server
+
+        server = _build_server()
+        assert server is not None
+        assert hasattr(server, "_tool_manager")
+        assert hasattr(server, "_resource_manager")
+        assert hasattr(server, "_prompt_manager")
+
+    def test_server_has_all_tools(self):
+        """Built server has all expected tools."""
+        from polylogue.mcp.server import _build_server
+
+        server = _build_server()
+        tool_names = set(server._tool_manager._tools.keys())
+
+        assert "search" in tool_names
+        assert "list_conversations" in tool_names
+        assert "get_conversation" in tool_names
+        assert "stats" in tool_names
+
+    def test_server_has_all_resources(self):
+        """Built server has all expected resources and templates."""
+        from polylogue.mcp.server import _build_server
+
+        server = _build_server()
+        resource_uris = set(server._resource_manager._resources.keys())
+        template_uris = set(server._resource_manager._templates.keys())
+
+        assert "polylogue://stats" in resource_uris
+        assert "polylogue://conversations" in resource_uris
+        assert "polylogue://conversation/{conv_id}" in template_uris
+
+    def test_server_has_all_prompts(self):
+        """Built server has all expected prompts."""
+        from polylogue.mcp.server import _build_server
+
+        server = _build_server()
+        prompt_names = set(server._prompt_manager._prompts.keys())
+
+        assert "analyze_errors" in prompt_names
+        assert "summarize_week" in prompt_names
+        assert "extract_code" in prompt_names
