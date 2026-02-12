@@ -6,6 +6,7 @@ from textual.widgets import Markdown as MarkdownWidget
 from textual.widgets import Tree
 
 from polylogue.config import Config
+from polylogue.rendering.core import format_conversation_markdown
 from polylogue.services import get_repository
 
 
@@ -73,20 +74,5 @@ class Browser(Container):
             self.query_one("#markdown-viewer", MarkdownWidget).update(f"Error: Could not load {conversation_id}")
             return
 
-        # Render to Markdown
-        # We can use our existing render logic or just simple dump for now.
-        # A simple formatting:
-
-        md_lines = [f"# {conv.title or 'Untitled'}", f"*{conv.created_at}*", ""]
-
-        for msg in conv.messages:
-            role_icon = "👤" if msg.role == "user" else "🤖"
-            md_lines.append(f"### {role_icon} {(msg.role or 'unknown').upper()}")
-            md_lines.append(msg.text or "*[No content]*")
-            md_lines.append("")
-
-            if msg.attachments:
-                md_lines.append(f"**Attachments:** {len(msg.attachments)}")
-                md_lines.append("")
-
-        self.query_one("#markdown-viewer", MarkdownWidget).update("\n".join(md_lines))
+        md_text = format_conversation_markdown(conv)
+        self.query_one("#markdown-viewer", MarkdownWidget).update(md_text)

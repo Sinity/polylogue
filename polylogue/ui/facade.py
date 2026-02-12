@@ -322,7 +322,7 @@ class PlainConsoleFacade(ConsoleFacade):
 
     def __post_init__(self) -> None:
         self.plain = True
-        self.console = PlainConsole()
+        super().__post_init__()
 
 
 def create_console_facade(plain: bool) -> ConsoleFacade:

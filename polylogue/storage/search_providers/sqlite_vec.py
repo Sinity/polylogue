@@ -92,6 +92,7 @@ class SqliteVecProvider:
         self.model = model
         self.dimension = dimension
         self._vec_available: bool | None = None
+        self._tables_ensured: bool = False
 
     def _get_connection(self) -> sqlite3.Connection:
         """Get connection with sqlite-vec extension loaded if available."""
@@ -142,6 +143,65 @@ class SqliteVecProvider:
             raise SqliteVecError(
                 "sqlite-vec extension not available. Install with: pip install sqlite-vec"
             )
+
+    def _ensure_tables(self) -> None:
+        """Create required tables if they don't exist.
+
+        Idempotent — safe to call multiple times. Creates:
+        - message_embeddings (vec0 virtual table)
+        - embeddings_meta (embedding provenance tracking)
+        - embedding_status (per-conversation embedding state)
+        """
+        if self._tables_ensured:
+            return
+
+        conn = self._get_connection()
+        try:
+            # vec0 virtual table for vector storage
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS message_embeddings USING vec0(
+                    message_id TEXT PRIMARY KEY,
+                    embedding float[1024],
+                    +provider_name TEXT,
+                    +conversation_id TEXT
+                )
+            """)
+
+            # Embedding provenance metadata
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS embeddings_meta (
+                    target_id TEXT PRIMARY KEY,
+                    target_type TEXT NOT NULL CHECK (target_type IN ('message', 'conversation')),
+                    model TEXT NOT NULL,
+                    dimension INTEGER NOT NULL,
+                    embedded_at TEXT NOT NULL,
+                    content_hash TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_embeddings_meta_type
+                ON embeddings_meta(target_type)
+            """)
+
+            # Per-conversation embedding status
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS embedding_status (
+                    conversation_id TEXT PRIMARY KEY,
+                    message_count_embedded INTEGER DEFAULT 0,
+                    last_embedded_at TEXT,
+                    needs_reindex INTEGER DEFAULT 0,
+                    error_message TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_embedding_status_needs
+                ON embedding_status(needs_reindex) WHERE needs_reindex = 1
+            """)
+
+            conn.commit()
+            self._tables_ensured = True
+        finally:
+            conn.close()
 
     def _get_embeddings(
         self,
@@ -256,6 +316,7 @@ class SqliteVecProvider:
             return
 
         self._ensure_vec_available()
+        self._ensure_tables()
 
         # Filter to embeddable messages
         embeddable = [msg for msg in messages if self._should_embed_message(msg)]
@@ -348,6 +409,7 @@ class SqliteVecProvider:
             SqliteVecError: If search fails
         """
         self._ensure_vec_available()
+        self._ensure_tables()
 
         # Generate query embedding
         embeddings = self._get_embeddings([text], input_type="query")
