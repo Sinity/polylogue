@@ -66,6 +66,8 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
     session_id = fallback_id
     session_timestamp: str | None = None
     session_metas_seen: list[str] = []  # Collect all session_meta IDs for parent tracking
+    session_git: dict[str, object] | None = None  # Git context from session metadata
+    session_instructions: str | None = None  # System instructions from session metadata
 
     for idx, item in enumerate(payload, start=1):
         if not isinstance(item, dict):
@@ -82,10 +84,16 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             meta_id = record.payload.get("id")
             if meta_id and meta_id not in session_metas_seen:
                 session_metas_seen.append(meta_id)
-                # First session_meta sets the conversation ID
+                # First session_meta sets the conversation ID and captures session-level data
                 if len(session_metas_seen) == 1:
                     session_id = str(meta_id)
                     session_timestamp = record.payload.get("timestamp")
+            # Capture git/instructions from envelope payload (may appear in inner record)
+            inner = CodexRecord.model_validate(record.payload) if isinstance(record.payload, dict) else None
+            if inner and inner.git and not session_git:
+                session_git = inner.git.model_dump(exclude_none=True) or None
+            if inner and inner.instructions and not session_instructions:
+                session_instructions = inner.instructions
             continue
 
         # Handle session metadata (intermediate format - first line with id+timestamp)
@@ -95,6 +103,11 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
                 if len(session_metas_seen) == 1:
                     session_id = record.id
                     session_timestamp = record.timestamp
+            # Capture git/instructions from top-level record
+            if record.git and not session_git:
+                session_git = record.git.model_dump(exclude_none=True) or None
+            if record.instructions and not session_instructions:
+                session_instructions = record.instructions
             continue
 
         # Skip state markers
@@ -124,19 +137,37 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
             # Get message ID from the record
             msg_id = record.id or f"msg-{idx}"
 
+            # Build provider_meta with raw data and structured metadata
+            msg_meta: dict[str, object] = {"raw": item}
+            if record.git:
+                git_info = record.git.model_dump(exclude_none=True)
+                if git_info:
+                    msg_meta["git"] = git_info
+            if record.instructions:
+                msg_meta["instructions"] = record.instructions
+
             messages.append(
                 ParsedMessage(
                     provider_message_id=msg_id,
                     role=role,
                     text=text,
                     timestamp=record.timestamp,
-                    provider_meta={"raw": item},  # Preserve original for re-parsing
+                    provider_meta=msg_meta,
                 )
             )
 
     # Second session_meta ID (if present) is the parent session
     parent_id = session_metas_seen[1] if len(session_metas_seen) > 1 else None
     branch_type = "continuation" if parent_id else None
+
+    # Build conversation-level provider_meta with session context
+    conv_meta: dict[str, object] | None = None
+    if session_git or session_instructions:
+        conv_meta = {}
+        if session_git:
+            conv_meta["git"] = session_git
+        if session_instructions:
+            conv_meta["instructions"] = session_instructions
 
     return ParsedConversation(
         provider_name="codex",
@@ -145,6 +176,7 @@ def parse(payload: list[object], fallback_id: str) -> ParsedConversation:
         created_at=session_timestamp,
         updated_at=None,
         messages=messages,
+        provider_meta=conv_meta,
         parent_conversation_provider_id=parent_id,
         branch_type=branch_type,
     )

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
-
 from jinja2 import DictLoader, Environment, FileSystemLoader, select_autoescape
 from markdown_it import MarkdownIt
 from pygments import highlight
@@ -15,9 +13,6 @@ from pygments.util import ClassNotFound
 
 from polylogue.render_paths import render_root
 from polylogue.rendering.core import ConversationFormatter
-
-if TYPE_CHECKING:
-    pass
 
 
 class PygmentsHighlighter:
