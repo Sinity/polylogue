@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+
 from textual.app import ComposeResult
 from textual.containers import Container, Grid
 from textual.widgets import Static
 
 from polylogue.config import Config
 from polylogue.ui.tui.widgets.stats import StatCard
+
+logger = logging.getLogger(__name__)
 
 
 class ProviderBar(Static):
@@ -129,7 +133,7 @@ class Dashboard(Container):
                         "SELECT COUNT(*) FROM embedding_status WHERE needs_reindex = 0"
                     ).fetchone()[0]
                 except Exception:
-                    pass
+                    logger.debug("Failed to query embedding stats")
 
             # Update widgets
             self.query_one("#stat-conversations", StatCard).value = str(conv_count)

@@ -31,6 +31,7 @@ dependencies = [
   "aiosqlite>=0.19.0",  # Async SQLite support
   "pydantic-settings",
   "glom>=24.7.0",  # Declarative data extraction
+  "mcp>=1.0.0",  # Model Context Protocol SDK
 ]
 
 [project.optional-dependencies]
@@ -65,7 +66,7 @@ where = ["."]
 include = ["polylogue", "polylogue.*"]
 
 [tool.setuptools.package-data]
-polylogue = ["templates/*.html"]
+polylogue = ["templates/*.html", "schemas/providers/*.schema.json.gz"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
