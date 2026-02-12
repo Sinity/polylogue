@@ -40,22 +40,22 @@ build/
 # Local tool state
 .claude/
 
-# Local test datasets (real data, review before committing)
+# Local test datasets (real data, not committed)
 tests/datasets/
+tests/test_datasets/*.json
+tests/test_datasets/*.jsonl
+tests/test_datasets/*.md
+tests/test_datasets/*.txt
 
 # Local shell env files
 .env
 
-# not project code
+# Not project code
 data
 sinex_md/
 polylogue.egg-info/
 
-# Test datasets (review before committing)
-tests/test-datasets/*.json
-tests/test-datasets/*.jsonl
-tests/test-datasets/*.md
-tests/test-datasets/*.txt
+# Mutation testing
 mutants/
 coverage_baseline.json
 

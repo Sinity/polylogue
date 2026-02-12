@@ -95,26 +95,6 @@ def db_without_fts(tmp_path):
     return db_path
 
 
-@pytest.fixture
-def uppercase_json_inbox(tmp_path):
-    """Inbox directory with uppercase extension files."""
-    import json
-
-    inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-
-    # Create files with various case combinations
-    payload = {
-        "id": "upper-conv",
-        "messages": [{"id": "m1", "role": "user", "text": "uppercase test"}],
-    }
-
-    (inbox / "CHATGPT.JSON").write_text(json.dumps(payload), encoding="utf-8")
-    (inbox / "Export.JSONL").write_text(json.dumps(payload) + "\n", encoding="utf-8")
-    (inbox / "data.jsonl.txt").write_text(json.dumps(payload) + "\n", encoding="utf-8")
-
-    return inbox
-
 
 @pytest.fixture
 def storage_repository(workspace_env):
@@ -607,16 +587,3 @@ def raw_db_samples():
     return samples
 
 
-@pytest.fixture
-def raw_backend(tmp_path):
-    """SQLite backend for raw conversation testing.
-
-    Use this for tests that need to save/read raw conversation records.
-    """
-    from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
-
-    db_path = tmp_path / "raw.db"
-    with open_connection(db_path):
-        pass
-
-    return SQLiteBackend(db_path=db_path)
