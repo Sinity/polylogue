@@ -52,6 +52,7 @@ def mock_provider(tmp_path, provider_cls):
     provider.model = "voyage-4"
     provider.dimension = 1024
     provider._vec_available = None
+    provider._tables_ensured = True
     return provider
 
 
