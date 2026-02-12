@@ -1331,7 +1331,9 @@ def _open_result(
     try:
         config = load_effective_config(env)
     except Exception as exc:
-        LOGGER.debug("Config load failed, falling back to defaults: %s", exc)
+        LOGGER.warning(
+            "Config load failed, falling back to defaults: %s", exc
+        )
         config = None
 
     render_root = None
@@ -1347,7 +1349,7 @@ def _open_result(
 
     if not render_root or not render_root.exists():
         click.echo("No rendered outputs found.", err=True)
-        click.echo("Run 'polylogue sync' first to render conversations.", err=True)
+        click.echo("Run 'polylogue run' first to render conversations.", err=True)
         raise SystemExit(1)
 
     # Search for rendered file matching this conversation ID
@@ -1369,7 +1371,7 @@ def _open_result(
 
     if not render_file:
         click.echo("No rendered output found for this conversation.", err=True)
-        click.echo("Run 'polylogue sync' to render conversations.", err=True)
+        click.echo("Run 'polylogue run' to render conversations.", err=True)
         raise SystemExit(1)
 
     # Open in browser

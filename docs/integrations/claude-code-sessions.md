@@ -95,16 +95,13 @@ Current limitations (from `docs/providers/claude-code.md`):
 
 ### Recommended Configuration
 
-Add to `$XDG_CONFIG_HOME/polylogue/config.toml` (or set via `POLYLOGUE_*` env vars):
+Configure via `POLYLOGUE_*` environment variables:
 
-```toml
-[sources.claude-code]
-type = "jsonl"
-path = "~/.claude/projects/*/*.jsonl"
-role_field = "type"
-content_field = "content"
-timestamp_field = "timestamp"
+```bash
+export POLYLOGUE_CLAUDE_CODE_SOURCE="~/.claude/projects/*/*.jsonl"
 ```
+
+Or configure the source directly in your archive setup.
 
 ### Future Improvements Needed
 
