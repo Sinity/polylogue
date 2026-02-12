@@ -658,7 +658,7 @@ class TestPlainModeProgress:
         def track_progress(amount, desc=None):
             progress_items.append((amount, desc))
 
-        with patch("polylogue.pipeline.runner.run_sources") as mock_run:
+        with patch("polylogue.cli.commands.run.run_sources") as mock_run:
             mock_run.return_value = mock_run_result
             mock_config = MagicMock()
 

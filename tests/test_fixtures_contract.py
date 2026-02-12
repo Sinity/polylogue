@@ -38,6 +38,7 @@ def parse_raw_content(sample: RawConversationRecord) -> tuple[list | dict, str]:
     return json.loads(content), provider
 
 
+@pytest.mark.slow
 class TestParserExtractsFromRealData:
     """Each parser must extract meaningful data from real exports."""
 
@@ -114,6 +115,7 @@ class TestParserExtractsFromRealData:
             pytest.fail(msg)
 
 
+@pytest.mark.slow
 class TestEdgeCaseHandling:
     """Verify parsers handle known edge cases in real data."""
 

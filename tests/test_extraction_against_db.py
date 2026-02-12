@@ -94,6 +94,7 @@ def iter_provider_messages(
 # =============================================================================
 
 
+@pytest.mark.slow
 class TestExtractionValidation:
     """Validate extraction works on seeded fixture data."""
 
@@ -146,6 +147,7 @@ class TestExtractionValidation:
 # =============================================================================
 
 
+@pytest.mark.slow
 class TestViewportValidation:
     """Validate viewport extraction produces sensible results."""
 
@@ -208,6 +210,7 @@ class TestViewportValidation:
 # =============================================================================
 
 
+@pytest.mark.slow
 class TestDataIntegrity:
     """Validate raw data integrity in seeded database."""
 
@@ -269,6 +272,7 @@ class TestDataIntegrity:
 # =============================================================================
 
 
+@pytest.mark.slow
 class TestRegeneration:
     """Test that we can regenerate from raw data."""
 
@@ -337,6 +341,7 @@ def get_raw_conversation_count(conn: sqlite3.Connection, provider: str) -> int:
     return cur.fetchone()[0]
 
 
+@pytest.mark.slow
 class TestRawConversationParsing:
     """Validate provider parsers against raw_conversations table.
 
@@ -466,6 +471,7 @@ class TestRawConversationParsing:
         assert len(issues) == 0, f"Message structure issues: {issues[:10]}"
 
 
+@pytest.mark.slow
 class TestRawConversationCoverage:
     """Coverage and statistics for raw conversation parsing."""
 
