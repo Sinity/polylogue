@@ -17,6 +17,7 @@ import json
 import re
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -31,8 +32,6 @@ except ImportError:
 import contextlib
 
 from polylogue.storage.backends.sqlite import default_db_path
-
-DEFAULT_DB_PATH = default_db_path()
 
 # UUID pattern for detecting dynamic keys
 UUID_PATTERN = re.compile(
@@ -170,7 +169,7 @@ def _merge_schemas(schemas: list[dict[str, Any]]) -> dict[str, Any]:
 
 def load_samples_from_db(
     provider_name: str,
-    db_path: Path = DEFAULT_DB_PATH,
+    db_path: Path | None = None,
     max_samples: int | None = None,
 ) -> list[dict[str, Any]]:
     """Load raw samples from polylogue database.
@@ -183,6 +182,8 @@ def load_samples_from_db(
     Returns:
         List of raw message dicts
     """
+    if db_path is None:
+        db_path = default_db_path()
     if not db_path.exists():
         return []
 
@@ -267,9 +268,11 @@ def load_samples_from_sessions(
 
 def get_sample_count_from_db(
     provider_name: str,
-    db_path: Path = DEFAULT_DB_PATH,
+    db_path: Path | None = None,
 ) -> int:
     """Get total message count for a provider in database."""
+    if db_path is None:
+        db_path = default_db_path()
     if not db_path.exists():
         return 0
 
@@ -361,7 +364,7 @@ def generate_schema_from_samples(samples: list[dict[str, Any]]) -> dict[str, Any
 
 def generate_provider_schema(
     provider: str,
-    db_path: Path = DEFAULT_DB_PATH,
+    db_path: Path | None = None,
     max_samples: int | None = None,
 ) -> GenerationResult:
     """Generate schema for a provider.
@@ -374,6 +377,8 @@ def generate_provider_schema(
     Returns:
         GenerationResult with schema or error
     """
+    if db_path is None:
+        db_path = default_db_path()
     if not GENSON_AVAILABLE:
         return GenerationResult(
             provider=provider,
@@ -419,6 +424,13 @@ def generate_provider_schema(
         schema["title"] = f"{provider} export format"
         schema["description"] = config.description
 
+        # Version metadata for drift detection and schema registry
+        schema["$id"] = f"polylogue://schemas/{provider}/v1"
+        schema["x-polylogue-version"] = 1
+        schema["x-polylogue-generated-at"] = datetime.now(tz=timezone.utc).isoformat()
+        schema["x-polylogue-sample-count"] = len(samples)
+        schema["x-polylogue-generator"] = "polylogue.schemas.schema_inference"
+
         return GenerationResult(
             provider=provider,
             schema=schema,
@@ -435,7 +447,7 @@ def generate_provider_schema(
 
 def generate_all_schemas(
     output_dir: Path,
-    db_path: Path = DEFAULT_DB_PATH,
+    db_path: Path | None = None,
     providers: list[str] | None = None,
 ) -> list[GenerationResult]:
     """Generate schemas for all (or specified) providers.
@@ -448,6 +460,8 @@ def generate_all_schemas(
     Returns:
         List of GenerationResults
     """
+    if db_path is None:
+        db_path = default_db_path()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     provider_list = providers or list(PROVIDERS.keys())
@@ -501,8 +515,8 @@ def cli_main(args: list[str] | None = None) -> int:
     parser.add_argument(
         "--db-path",
         type=Path,
-        default=DEFAULT_DB_PATH,
-        help="Path to polylogue database",
+        default=None,
+        help="Path to polylogue database (default: XDG data home)",
     )
 
     parsed = parser.parse_args(args)

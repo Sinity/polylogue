@@ -26,21 +26,20 @@ class TestRenderFailureTracking:
     """Tests for tracking render failures in pipeline."""
 
     def test_render_failure_tracked_in_result(self, tmp_path: Path):
-        """Render failures should be tracked in RunResult.
-
-        This test SHOULD FAIL until failure tracking is implemented.
-        """
+        """Render failures should be tracked in RunResult."""
         from polylogue.config import Config
         from polylogue.pipeline.runner import run_sources
+        from polylogue.storage.backends.sqlite import SQLiteBackend
         from polylogue.storage.store import RunResult
 
-        # Create a minimal config
+        # Create a minimal config with isolated DB
         config = Config(
             sources=[],
             archive_root=tmp_path / "archive",
             render_root=tmp_path / "render",
         )
         config.archive_root.mkdir(parents=True, exist_ok=True)
+        test_backend = SQLiteBackend(tmp_path / "test.db")
 
         # Mock render_conversation to fail for specific conversation
         with patch("polylogue.rendering.renderers.html.HTMLRenderer.render") as mock_render:
@@ -53,7 +52,8 @@ class TestRenderFailureTracking:
             mock_render.side_effect = render_side_effect
 
             # Mock _all_conversation_ids to return test data
-            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids:
+            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids, \
+                 patch("polylogue.storage.backends.sqlite.create_default_backend", return_value=test_backend):
                 mock_ids.return_value = ["test:success-conv", "test:fail-conv"]
 
                 # Run pipeline in render stage
@@ -81,6 +81,7 @@ class TestRenderFailureTracking:
         """Pipeline should continue rendering other conversations after one fails."""
         from polylogue.config import Config
         from polylogue.pipeline.runner import run_sources
+        from polylogue.storage.backends.sqlite import SQLiteBackend
 
         config = Config(
             sources=[],
@@ -88,6 +89,7 @@ class TestRenderFailureTracking:
             render_root=tmp_path / "render",
         )
         config.archive_root.mkdir(parents=True, exist_ok=True)
+        test_backend = SQLiteBackend(tmp_path / "test.db")
 
         render_attempts = []
 
@@ -101,7 +103,8 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids:
+            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids, \
+                 patch("polylogue.storage.backends.sqlite.create_default_backend", return_value=test_backend):
                 mock_ids.return_value = ["test:first", "test:second", "test:third"]
 
                 run_sources(
@@ -121,6 +124,7 @@ class TestRenderFailureTracking:
         """Pipeline should include render_failures count in result.counts."""
         from polylogue.config import Config
         from polylogue.pipeline.runner import run_sources
+        from polylogue.storage.backends.sqlite import SQLiteBackend
 
         config = Config(
             sources=[],
@@ -128,6 +132,7 @@ class TestRenderFailureTracking:
             render_root=tmp_path / "render",
         )
         config.archive_root.mkdir(parents=True, exist_ok=True)
+        test_backend = SQLiteBackend(tmp_path / "test.db")
 
         with patch("polylogue.rendering.renderers.html.HTMLRenderer.render") as mock_render:
 
@@ -138,7 +143,8 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids:
+            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids, \
+                 patch("polylogue.storage.backends.sqlite.create_default_backend", return_value=test_backend):
                 mock_ids.return_value = ["test:success", "test:fail1", "test:fail2"]
 
                 result = run_sources(

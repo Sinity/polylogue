@@ -287,6 +287,58 @@ def run_health(config: Config, *, deep: bool = False) -> HealthReport:
                     HealthCheck(f"source:{source.name}", VerifyStatus.WARNING, detail=f"missing path: {source.path}")
                 )
 
+    # 6. Schema Health
+    try:
+        from .schemas.registry import SchemaRegistry
+
+        registry = SchemaRegistry()
+        known_providers = ["chatgpt", "claude-ai", "claude-code", "codex", "gemini"]
+        available = registry.list_providers()
+        missing = [p for p in known_providers if p not in available]
+
+        if missing:
+            checks.append(
+                HealthCheck(
+                    "schemas_missing",
+                    VerifyStatus.WARNING,
+                    count=len(missing),
+                    detail=f"Missing schemas for: {', '.join(missing)}",
+                )
+            )
+        else:
+            checks.append(
+                HealthCheck(
+                    "schemas_coverage",
+                    VerifyStatus.OK,
+                    count=len(available),
+                    detail=f"All {len(available)} provider schemas present",
+                )
+            )
+
+        # Check schema age (warn if >30 days)
+        stale_providers = []
+        for provider in available:
+            age = registry.get_schema_age_days(provider)
+            if age is not None and age > 30:
+                stale_providers.append(f"{provider} ({age}d)")
+        if stale_providers:
+            checks.append(
+                HealthCheck(
+                    "schemas_freshness",
+                    VerifyStatus.WARNING,
+                    count=len(stale_providers),
+                    detail=f"Stale schemas (>30d): {', '.join(stale_providers)}",
+                )
+            )
+        else:
+            checks.append(
+                HealthCheck("schemas_freshness", VerifyStatus.OK, detail="All schemas current")
+            )
+    except Exception as exc:
+        checks.append(
+            HealthCheck("schemas", VerifyStatus.WARNING, detail=f"Schema check failed: {exc}")
+        )
+
     # Build summary
     summary = {"ok": 0, "warning": 0, "error": 0}
     for check in checks:

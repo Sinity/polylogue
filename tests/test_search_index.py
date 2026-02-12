@@ -779,7 +779,7 @@ def test_search_messages_escaping_integration(query, should_find, tmp_path):
     ("test OR anything", False),  # "OR" in middle - passes through unquoted
     ("NOT this", True),  # "NOT" at start - should be quoted
     ("NEAR that", True),  # "NEAR" at start - should be quoted
-    ("' OR '1'='1", False),  # No special FTS5 chars, passes through (single quotes aren't FTS5 special)
+    ("' OR '1'='1", True),  # Single quotes and = are FTS5-problematic, should be quoted
     ("test; DROP TABLE messages--", True),  # Contains special chars (semicolon, etc.), should be quoted
 ])
 def test_escape_fts5_injection_prevention(special_query, should_quote):

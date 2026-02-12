@@ -500,6 +500,10 @@ class ConversationRepository:
             "SELECT COUNT(*) FROM messages"
         ).fetchone()[0]
 
+        att_count = conn.execute(
+            "SELECT COUNT(*) FROM attachments"
+        ).fetchone()[0]
+
         provider_rows = conn.execute(
             """
             SELECT provider_name, COUNT(*) as count
@@ -533,6 +537,7 @@ class ConversationRepository:
         return ArchiveStats(
             total_conversations=conv_count,
             total_messages=msg_count,
+            total_attachments=att_count,
             providers=providers,
             embedded_conversations=embedded_convs,
             embedded_messages=embedded_msgs,

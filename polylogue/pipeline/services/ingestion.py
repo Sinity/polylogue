@@ -51,6 +51,7 @@ class IngestResult:
         }
         self.processed_ids: set[str] = set()
         self.parse_failures: int = 0
+        self.drift_counts: dict[str, int] = {}  # provider -> drift warning count
         self._lock = threading.Lock()
 
     def merge_result(
@@ -108,6 +109,9 @@ class IngestionService:
         self.archive_root = archive_root
         self.config = config
         self.drive_client_factory = drive_client_factory
+        # Per-run drift tracking (reset each ingest_from_raw call)
+        self._drift_counts: dict[str, int] = {}
+        self._drift_lock = threading.Lock()
 
     def ingest_sources(
         self,
@@ -210,6 +214,10 @@ class IngestionService:
         """
         result = IngestResult()
 
+        # Reset per-run drift tracking
+        with self._drift_lock:
+            self._drift_counts.clear()
+
         # Use the repository's backend - same connection management
         backend = self.repository._backend
         if backend is None:
@@ -231,6 +239,10 @@ class IngestionService:
         if result.processed_ids:
             invalidate_search_cache()
             logger.debug("Search cache invalidated after parsing %d conversations", len(result.processed_ids))
+
+        # Copy per-run drift counts to result and check regeneration threshold
+        result.drift_counts = dict(self._drift_counts)
+        self._maybe_regenerate_schemas(result.drift_counts)
 
         return result
 
@@ -419,9 +431,64 @@ class IngestionService:
                     raw_id=raw_id,
                     drift=result.drift_warnings[:10],
                 )
+                with self._drift_lock:
+                    self._drift_counts[provider_name] = (
+                        self._drift_counts.get(provider_name, 0) + 1
+                    )
         except Exception as exc:
             logger.debug(
                 "Schema validation skipped for %s: %s",
                 provider_name,
                 exc,
             )
+
+    # Drift threshold: auto-regenerate schema if a provider exceeds this
+    # many drift warnings in a single ingestion run.
+    DRIFT_REGEN_THRESHOLD = 5
+
+    def _maybe_regenerate_schemas(self, drift_counts: dict[str, int]) -> None:
+        """Auto-regenerate schemas for providers with excessive drift.
+
+        If a provider accumulated more than DRIFT_REGEN_THRESHOLD drift
+        warnings during this ingestion run, regenerate its schema from the
+        current database samples and register it as a new version.
+        """
+        from polylogue.schemas.registry import SchemaRegistry
+        from polylogue.schemas.schema_inference import generate_provider_schema
+
+        providers_to_regen = [
+            p for p, count in drift_counts.items()
+            if count > self.DRIFT_REGEN_THRESHOLD
+        ]
+
+        if not providers_to_regen:
+            return
+
+        backend = self.repository._backend
+        db_path = backend._db_path if backend else None
+
+        registry = SchemaRegistry()
+
+        for provider in providers_to_regen:
+            try:
+                gen_result = generate_provider_schema(provider, db_path=db_path)
+                if gen_result.success and gen_result.schema:
+                    version = registry.register_schema(provider, gen_result.schema)
+                    logger.info(
+                        "Auto-regenerated schema for %s as %s (drift=%d)",
+                        provider,
+                        version,
+                        drift_counts[provider],
+                    )
+                else:
+                    logger.warning(
+                        "Schema regeneration failed for %s: %s",
+                        provider,
+                        gen_result.error,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Schema regeneration error for %s: %s",
+                    provider,
+                    exc,
+                )

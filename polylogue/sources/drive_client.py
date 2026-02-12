@@ -20,7 +20,7 @@ from tenacity import (
     wait_exponential,
 )
 
-from ..paths import DRIVE_CREDENTIALS_PATH, DRIVE_TOKEN_PATH
+from ..paths import drive_credentials_path, drive_token_path
 
 T = TypeVar("T")
 
@@ -62,7 +62,7 @@ def default_credentials_path(config: object | None = None) -> Path:
         cred_path = getattr(config, "credentials_path", None)
         if cred_path:
             return Path(cred_path)
-    return DRIVE_CREDENTIALS_PATH
+    return drive_credentials_path()
 
 
 def default_token_path(config: object | None = None) -> Path:
@@ -71,7 +71,7 @@ def default_token_path(config: object | None = None) -> Path:
         token_path = getattr(config, "token_path", None)
         if token_path:
             return Path(token_path)
-    return DRIVE_TOKEN_PATH
+    return drive_token_path()
 
 
 def _import_module(name: str) -> Any:

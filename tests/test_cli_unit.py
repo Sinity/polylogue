@@ -73,13 +73,6 @@ def helpers_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_dir))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 
-    # Reload paths module
-    import importlib
-
-    import polylogue.paths
-
-    importlib.reload(polylogue.paths)
-
     return {
         "data_dir": data_dir,
         "state_dir": state_dir,
@@ -473,15 +466,6 @@ def auth_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("POLYLOGUE_CREDENTIAL_PATH", str(creds_path))
     monkeypatch.setenv("POLYLOGUE_TOKEN_PATH", str(token_path))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
-
-    # Reload modules to pick up new environment
-    import importlib
-
-    import polylogue.config
-    import polylogue.paths
-
-    importlib.reload(polylogue.paths)
-    importlib.reload(polylogue.config)
 
     return {
         "creds_path": creds_path,

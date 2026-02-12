@@ -8,7 +8,7 @@ import click
 
 from polylogue.cli.helpers import fail
 from polylogue.cli.types import AppEnv
-from polylogue.paths import CACHE_HOME, DATA_HOME, DB_PATH, DRIVE_TOKEN_PATH, RENDER_ROOT, STATE_HOME
+from polylogue.paths import cache_home, data_home, db_path, drive_token_path, render_root, state_home
 
 
 @click.command("reset")
@@ -45,32 +45,33 @@ def reset_command(
         )
 
     targets = []
-    if database and DB_PATH.exists():
-        targets.append(("database", DB_PATH))
+    _db = db_path()
+    if database and _db.exists():
+        targets.append(("database", _db))
         # Also clean up WAL/SHM files and health cache alongside the database
         for suffix in (".db-wal", ".db-shm"):
-            wal_path = DB_PATH.with_suffix(suffix)
+            wal_path = _db.with_suffix(suffix)
             if wal_path.exists():
                 targets.append((f"database {suffix}", wal_path))
-        health_path = DATA_HOME / "health.json"
+        health_path = data_home() / "health.json"
         if health_path.exists():
             targets.append(("health cache", health_path))
     if assets:
-        assets_dir = DATA_HOME / "assets"
+        assets_dir = data_home() / "assets"
         if assets_dir.exists():
             targets.append(("assets", assets_dir))
-    if render and RENDER_ROOT.exists():
-        targets.append(("render results", RENDER_ROOT))
-    if cache and CACHE_HOME.exists():
-        targets.append(("cache/indexes", CACHE_HOME))
-    if auth and DRIVE_TOKEN_PATH.exists():
-        targets.append(("OAuth token", DRIVE_TOKEN_PATH))
+    if render and render_root().exists():
+        targets.append(("render results", render_root()))
+    if cache and cache_home().exists():
+        targets.append(("cache/indexes", cache_home()))
+    if auth and drive_token_path().exists():
+        targets.append(("OAuth token", drive_token_path()))
     if reset_all:
         # Clean up run history and last-source state
-        runs_dir = DATA_HOME / "runs"
+        runs_dir = data_home() / "runs"
         if runs_dir.exists():
             targets.append(("run history", runs_dir))
-        last_source = STATE_HOME / "last-source.json"
+        last_source = state_home() / "last-source.json"
         if last_source.exists():
             targets.append(("last-source state", last_source))
 

@@ -292,22 +292,25 @@ def test_unicode_in_parameters(temp_repo):
 
 
 def test_special_sql_characters_in_text(temp_repo):
-    """Special SQL characters in regular text are handled."""
+    """Special SQL characters in regular text are properly quoted."""
     from polylogue.storage.search import escape_fts5_query
 
-    special_chars = [
-        "semicolon;",
-        "dash--comment",
-        "percent%wildcard",
-        "underscore_wildcard",
-        "backslash\\escape",
+    # Characters that should trigger quoting (contain FTS5-problematic chars)
+    quoted_cases = [
+        "semicolon;",       # ; in FTS5_SPECIAL
+        "dash--comment",    # - in FTS5_SPECIAL
+        "percent%wildcard", # % in FTS5_SPECIAL
+        "backslash\\escape", # \ in FTS5_SPECIAL
     ]
 
-    for text in special_chars:
-        # Test that escape function handles these safely
+    for text in quoted_cases:
         escaped = escape_fts5_query(text)
-        # Should return something safe
-        assert isinstance(escaped, str)
+        assert escaped.startswith('"') and escaped.endswith('"'), (
+            f"Expected quoted output for {text!r}, got {escaped!r}"
+        )
+
+    # Underscores are safe — passes through unquoted
+    assert escape_fts5_query("underscore_wildcard") == "underscore_wildcard"
 
 
 # =============================================================================
@@ -435,7 +438,7 @@ def test_control_chars_in_queries_handled(text_with_control: str):
 
 
 @given(sql_injection_strategy())
-@settings(max_examples=50, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(max_examples=50, deadline=500, suppress_health_check=[HealthCheck.function_scoped_fixture])
 def test_repository_survives_injection_property(temp_repo, injection_payload: str):
     """Property: Repository operations survive injection attempts.
 

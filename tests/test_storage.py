@@ -322,6 +322,7 @@ def test_upsert_attachment_duplicate_ref_skipped(test_conn):
     assert row["ref_count"] == 1
 
 
+@pytest.mark.slow
 def test_write_lock_prevents_concurrent_writes(test_db):
     """_WRITE_LOCK prevents concurrent store_records() calls from corrupting data."""
     results = []
@@ -470,6 +471,7 @@ def test_prune_attachment_refs_transactional_rollback(test_conn):
     assert actual_refs == 1  # Consistent!
 
 
+@pytest.mark.slow
 def test_concurrent_upsert_same_attachment_ref_count_correct(test_db):
     """Test for concurrent attachment ref_count race condition.
 
@@ -855,6 +857,7 @@ def test_migrate_v3_to_v4_adds_source_name_column(tmp_path):
     conn.close()
 
 
+@pytest.mark.slow
 def test_open_connection_thread_isolation(tmp_path):
     """open_connection() maintains separate connections per thread."""
     from threading import Barrier
@@ -1116,6 +1119,7 @@ class TestConnectionCommitAndRollback:
                 assert row["conversation_id"] == "c1"
 
 
+@pytest.mark.slow
 class TestThreadSafety:
     """Test thread-local connection safety."""
 

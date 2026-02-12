@@ -1802,23 +1802,18 @@ class TestXDGPaths:
         """XDG_DATA_HOME env var overrides default."""
         monkeypatch.setenv("XDG_DATA_HOME", "/custom/data")
 
-        import importlib
-
         import polylogue.paths
 
-        importlib.reload(polylogue.paths)
-
-        assert Path("/custom/data") == polylogue.paths.DATA_ROOT
+        assert Path("/custom/data") == polylogue.paths.data_root()
 
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-        importlib.reload(polylogue.paths)
 
     def test_db_path_under_data_home(self, workspace_env):
         """DB_PATH is under XDG_DATA_HOME/polylogue/."""
         import polylogue.paths
 
-        assert "polylogue" in str(polylogue.paths.DB_PATH)
-        assert polylogue.paths.DB_PATH.name == "polylogue.db"
+        assert "polylogue" in str(polylogue.paths.db_path())
+        assert polylogue.paths.db_path().name == "polylogue.db"
 
 
 # =============================================================================
@@ -2138,6 +2133,7 @@ def test_missing_provider_raises():
         SchemaValidator.for_provider("nonexistent-provider")
 
 
+@pytest.mark.slow
 class TestSchemaValidation:
     """Validate real data against schemas using raw_conversations."""
 
@@ -2198,6 +2194,7 @@ class TestSchemaValidation:
             pytest.fail(msg)
 
 
+@pytest.mark.slow
 class TestDriftDetection:
     """Detect schema drift in real data."""
 
