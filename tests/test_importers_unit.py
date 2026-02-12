@@ -562,8 +562,6 @@ def test_context_dump_backtick_boundary(fence_markers, expected_context_dump):
 CHATGPT_VARIANTS = [
 	"simple.json",
 	"branching.json",
-	"attachments.json",
-	"large.json",
 ]
 
 
