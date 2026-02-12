@@ -11,11 +11,14 @@ Supporting modules:
 """
 
 # Re-export main types for convenience
+from polylogue.schemas.registry import SchemaDiff, SchemaRegistry
 from polylogue.schemas.unified import HarmonizedMessage
 from polylogue.schemas.validator import SchemaValidator, ValidationResult, validate_provider_export
 
 __all__ = [
     "HarmonizedMessage",
+    "SchemaDiff",
+    "SchemaRegistry",
     "SchemaValidator",
     "ValidationResult",
     "validate_provider_export",

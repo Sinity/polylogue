@@ -30,7 +30,7 @@ def default_db_path() -> Path:
 
     Reads from polylogue.paths at call time for test isolation.
     """
-    return _paths.DATA_HOME / "polylogue.db"
+    return _paths.data_home() / "polylogue.db"
 
 
 class AsyncSQLiteBackend:

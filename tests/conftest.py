@@ -5,8 +5,16 @@ import os
 from pathlib import Path
 
 import pytest
+from hypothesis import HealthCheck, settings
 
 from polylogue.lib.messages import MessageCollection
+
+# ---------------------------------------------------------------------------
+# Hypothesis profiles: `--hypothesis-profile ci` uses fewer examples for speed
+# ---------------------------------------------------------------------------
+settings.register_profile("ci", max_examples=30, suppress_health_check=[HealthCheck.too_slow])
+settings.register_profile("default", max_examples=100)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 
 @pytest.fixture(autouse=True)
@@ -57,23 +65,8 @@ def workspace_env(tmp_path, monkeypatch):
     monkeypatch.delenv("QDRANT_URL", raising=False)
     monkeypatch.delenv("QDRANT_API_KEY", raising=False)
 
-    # Reload paths module and dependent modules to pick up new XDG_DATA_HOME
-    # Order matters: paths first, then modules that import from paths
-    import importlib
-
-    import polylogue.config
-    import polylogue.paths
-    import polylogue.services
-    import polylogue.storage.backends.sqlite
-    import polylogue.storage.search
-
-    importlib.reload(polylogue.paths)
-    importlib.reload(polylogue.config)  # Depends on paths
-    importlib.reload(polylogue.services)  # Depends on config
-    importlib.reload(polylogue.storage.backends.sqlite)
-    importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
-
-    # Reset services singleton to use fresh config
+    # No importlib.reload() needed — paths.py uses lazy evaluation (functions, not constants).
+    # Just reset the service singletons so they pick up fresh env vars.
     from polylogue.services import reset
 
     reset()
@@ -192,25 +185,12 @@ def cli_workspace(tmp_path, monkeypatch):
     monkeypatch.delenv("QDRANT_URL", raising=False)
     monkeypatch.delenv("QDRANT_API_KEY", raising=False)
 
-    # Reload paths module and dependent modules to pick up new XDG_DATA_HOME
-    # Order matters: paths first, then modules that import from paths
-    import importlib
+    # No importlib.reload() needed — paths.py uses lazy evaluation (functions, not constants).
+    # Just reset the service singletons so they pick up fresh env vars.
+    from polylogue.storage.backends.sqlite import _ensure_schema, connection_context
 
-    import polylogue.config
-    import polylogue.paths
-    import polylogue.services
-    import polylogue.storage.backends.sqlite
-    import polylogue.storage.search
-
-    importlib.reload(polylogue.paths)
-    importlib.reload(polylogue.config)  # Depends on paths
-    importlib.reload(polylogue.services)  # Depends on config
-    importlib.reload(polylogue.storage.backends.sqlite)
-    importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
-
-    # Ensure schema exists before tests run
-    with polylogue.storage.backends.sqlite.connection_context(db_path) as conn:
-        polylogue.storage.backends.sqlite._ensure_schema(conn)
+    with connection_context(db_path) as conn:
+        _ensure_schema(conn)
 
     from polylogue.services import reset
 

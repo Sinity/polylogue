@@ -61,6 +61,7 @@ def mock_provider(tmp_path, provider_cls):
 # =============================================================================
 
 
+@pytest.mark.slow
 class TestGetEmbeddings:
     """Test Voyage API interaction logic."""
 

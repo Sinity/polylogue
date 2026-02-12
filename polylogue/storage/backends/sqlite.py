@@ -267,7 +267,7 @@ def default_db_path() -> Path:
     Reads from polylogue.paths at call time (not import time) so that
     tests can reload the paths module with monkeypatched XDG_DATA_HOME.
     """
-    return _paths.DATA_HOME / "polylogue.db"
+    return _paths.data_home() / "polylogue.db"
 
 
 # Core DDL shared between sync and async backends (single source of truth).
