@@ -320,6 +320,11 @@ def _remove_nested_required(schema: dict[str, Any], depth: int = 0) -> dict[str,
         for key, prop in schema["properties"].items():
             schema["properties"][key] = _remove_nested_required(prop, depth + 1)
 
+    # Recurse into additionalProperties (e.g. mapping's UUID-keyed nodes)
+    ap = schema.get("additionalProperties")
+    if isinstance(ap, dict):
+        schema["additionalProperties"] = _remove_nested_required(ap, depth + 1)
+
     # Recurse into items (arrays)
     if "items" in schema:
         schema["items"] = _remove_nested_required(schema["items"], depth + 1)

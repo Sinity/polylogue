@@ -341,6 +341,32 @@ def get_raw_conversation_count(conn: sqlite3.Connection, provider: str) -> int:
     return cur.fetchone()[0]
 
 
+def parse_raw_content(raw_content: bytes, provider: str) -> list | dict:
+    """Parse raw_content bytes into JSON data, handling both JSON and JSONL.
+
+    JSONL providers (claude-code, codex, gemini) store entire files as raw_content,
+    which may contain multiple JSON objects on separate lines. JSON providers
+    (chatgpt) store a single JSON object.
+    """
+    content = raw_content.decode("utf-8") if isinstance(raw_content, bytes) else raw_content
+
+    if provider in ("claude-code", "codex", "gemini"):
+        # Try single JSON first (e.g. one-line JSONL files)
+        try:
+            data = json.loads(content)
+            return [data] if isinstance(data, dict) else data
+        except json.JSONDecodeError:
+            pass
+        # Fall back to line-by-line JSONL parsing
+        items = []
+        for line in content.strip().split("\n"):
+            if line.strip():
+                items.append(json.loads(line))
+        return items
+
+    return json.loads(content)
+
+
 @pytest.mark.slow
 class TestRawConversationParsing:
     """Validate provider parsers against raw_conversations table.
@@ -378,16 +404,15 @@ class TestRawConversationParsing:
 
         for raw_id, raw_content, _source_path in raw_convos:
             try:
-                data = json.loads(raw_content)
+                data = parse_raw_content(raw_content, provider)
 
                 # Parse based on provider
                 if provider == "chatgpt":
                     result = chatgpt_parse(data, raw_id)
                 elif provider == "claude-code":
-                    # Claude Code stores as a single JSON object, not JSONL
-                    result = claude_code_parse([data] if isinstance(data, dict) else data, raw_id)
+                    result = claude_code_parse(data if isinstance(data, list) else [data], raw_id)
                 elif provider == "codex":
-                    result = codex_parse([data] if isinstance(data, dict) else data, raw_id)
+                    result = codex_parse(data if isinstance(data, list) else [data], raw_id)
                 else:
                     continue
 
@@ -441,14 +466,14 @@ class TestRawConversationParsing:
 
         for raw_id, raw_content, _ in raw_convos[:20]:  # Check first 20
             try:
-                data = json.loads(raw_content)
+                data = parse_raw_content(raw_content, provider)
 
                 if provider == "chatgpt":
                     result = chatgpt_parse(data, raw_id)
                 elif provider == "claude-code":
-                    result = claude_code_parse([data] if isinstance(data, dict) else data, raw_id)
+                    result = claude_code_parse(data if isinstance(data, list) else [data], raw_id)
                 elif provider == "codex":
-                    result = codex_parse([data] if isinstance(data, dict) else data, raw_id)
+                    result = codex_parse(data if isinstance(data, list) else [data], raw_id)
                 else:
                     continue
 

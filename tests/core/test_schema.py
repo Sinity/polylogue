@@ -1,4 +1,7 @@
-"""Tests for schema generation module."""
+"""Tests for schema validation and schema inference.
+
+Consolidated from test_validation.py and test_schema_inference.py.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
+from polylogue.schemas import ValidationResult, validate_provider_export as validate_provider_export_fn
 from polylogue.schemas.schema_inference import (
     PROVIDERS,
     GenerationResult,
@@ -23,6 +27,254 @@ from polylogue.schemas.schema_inference import (
     get_sample_count_from_db,
     load_samples_from_sessions,
 )
+from polylogue.schemas.validator import SchemaValidator, validate_provider_export
+from polylogue.storage.store import RawConversationRecord
+
+
+@patch("polylogue.schemas.validator.SCHEMA_DIR")
+def test_schema_validator_loads_provider(mock_path_attr, mock_schema_dir):
+    """SchemaValidator.for_provider loads correct schema."""
+    with patch("polylogue.schemas.validator.SCHEMA_DIR", mock_schema_dir):
+        validator = SchemaValidator.for_provider("test-provider")
+        assert validator.schema["required"] == ["id"]
+
+        with pytest.raises(FileNotFoundError):
+            SchemaValidator.for_provider("nonexistent")
+
+
+@patch("polylogue.schemas.validator.SCHEMA_DIR")
+def test_validate_valid_data(mock_path_attr, mock_schema_dir):
+    """Validate returns is_valid=True for valid data."""
+    with patch("polylogue.schemas.validator.SCHEMA_DIR", mock_schema_dir):
+        validator = SchemaValidator.for_provider("test-provider")
+
+        data = {"id": "123", "count": 10, "meta": {"source": "test"}}
+        result = validator.validate(data)
+
+        assert result.is_valid
+        assert not result.errors
+        assert not result.drift_warnings
+
+
+@patch("polylogue.schemas.validator.SCHEMA_DIR")
+def test_validate_detects_errors(mock_path_attr, mock_schema_dir):
+    """Validate detects schema errors."""
+    with patch("polylogue.schemas.validator.SCHEMA_DIR", mock_schema_dir):
+        validator = SchemaValidator.for_provider("test-provider")
+
+        result = validator.validate({"count": 10})
+        assert not result.is_valid
+        assert any("id" in e for e in result.errors)
+
+        result = validator.validate({"id": 123})
+        assert not result.is_valid
+        assert any("123" in e for e in result.errors)
+
+
+@patch("polylogue.schemas.validator.SCHEMA_DIR")
+def test_validate_detects_drift(mock_path_attr, mock_schema_dir):
+    """Validate detects drift (unexpected fields) in strict mode."""
+    with patch("polylogue.schemas.validator.SCHEMA_DIR", mock_schema_dir):
+        validator = SchemaValidator.for_provider("open-provider", strict=True)
+
+        data = {"id": "123", "extra": "drift"}
+        result = validator.validate(data)
+
+        assert result.is_valid
+        assert result.has_drift
+        assert "extra" in result.drift_warnings[0]
+
+
+def test_available_providers(mock_schema_dir):
+    """available_providers lists schema files."""
+    with patch("polylogue.schemas.validator.SCHEMA_DIR", mock_schema_dir):
+        providers = SchemaValidator.available_providers()
+        assert "test-provider" in providers
+        assert "open-provider" in providers
+        assert "nonexistent" not in providers
+
+
+def test_validate_helper(mock_schema_dir):
+    """validate_provider_export helper works."""
+    with patch("polylogue.schemas.validator.SCHEMA_DIR", mock_schema_dir):
+        result = validate_provider_export({"id": "123"}, "test-provider")
+        assert result.is_valid
+
+
+def test_schema_validator_creation():
+    """Test that missing provider raises FileNotFoundError."""
+    with pytest.raises(FileNotFoundError, match="No schema found"):
+        SchemaValidator.for_provider("nonexistent-provider")
+
+
+def test_missing_provider_raises():
+    """Test that missing provider raises FileNotFoundError."""
+    with pytest.raises(FileNotFoundError, match="No schema found"):
+        SchemaValidator.for_provider("nonexistent-provider")
+
+
+@pytest.mark.slow
+class TestSchemaValidation:
+    """Validate real data against schemas using raw_conversations."""
+
+    def test_all_samples_validate(self, raw_db_samples: list[RawConversationRecord]) -> None:
+        """All raw samples must validate against their provider schemas."""
+        if not raw_db_samples:
+            pytest.skip("No raw conversations (run: polylogue run --stage acquire)")
+
+        provider_to_schema = {
+            "chatgpt": "chatgpt",
+            "claude": "claude-ai",
+            "claude-ai": "claude-ai",
+            "claude-code": "claude-code",
+            "codex": "codex",
+            "gemini": "gemini",
+        }
+
+        available = set(SchemaValidator.available_providers())
+        failures = []
+        skipped_providers = set()
+
+        for sample in raw_db_samples:
+            schema_name = provider_to_schema.get(sample.provider_name, sample.provider_name)
+
+            if schema_name not in available:
+                skipped_providers.add(sample.provider_name)
+                continue
+
+            try:
+                validator = SchemaValidator.for_provider(schema_name, strict=False)
+                content = sample.raw_content.decode("utf-8")
+
+                if sample.provider_name in ("claude-code", "codex", "gemini"):
+                    for line in content.strip().split("\n"):
+                        if line.strip():
+                            data = json.loads(line)
+                            break
+                    else:
+                        failures.append((sample.raw_id[:16], sample.provider_name, "Empty JSONL"))
+                        continue
+                else:
+                    data = json.loads(content)
+
+                result = validator.validate(data)
+                if not result.is_valid:
+                    failures.append((sample.raw_id[:16], sample.provider_name, result.errors[0][:80]))
+
+            except json.JSONDecodeError as e:
+                failures.append((sample.raw_id[:16], sample.provider_name, f"Invalid JSON: {e}"))
+            except Exception as e:
+                failures.append((sample.raw_id[:16], sample.provider_name, str(e)[:80]))
+
+        if failures:
+            msg = f"{len(failures)}/{len(raw_db_samples)} failed validation:\n"
+            for raw_id, provider, error in failures[:10]:
+                msg += f"  {provider}:{raw_id}: {error}\n"
+            msg += "\nRun: polylogue run --stage generate-schemas"
+            pytest.fail(msg)
+
+
+@pytest.mark.slow
+class TestDriftDetection:
+    """Detect schema drift in real data."""
+
+    def test_drift_warnings(self, raw_db_samples: list[RawConversationRecord]) -> None:
+        """Report drift warnings (new fields not in schema)."""
+        if not raw_db_samples:
+            pytest.skip("No raw conversations")
+
+        provider_to_schema = {
+            "chatgpt": "chatgpt",
+            "claude": "claude-ai",
+            "claude-ai": "claude-ai",
+            "claude-code": "claude-code",
+            "codex": "codex",
+            "gemini": "gemini",
+        }
+
+        available = set(SchemaValidator.available_providers())
+        drift_by_provider: dict[str, list[str]] = {}
+
+        for sample in raw_db_samples[:100]:
+            schema_name = provider_to_schema.get(sample.provider_name, sample.provider_name)
+            if schema_name not in available:
+                continue
+
+            try:
+                content = sample.raw_content.decode("utf-8")
+                if sample.provider_name in ("claude-code", "codex", "gemini"):
+                    for line in content.strip().split("\n"):
+                        if line.strip():
+                            data = json.loads(line)
+                            break
+                    else:
+                        continue
+                else:
+                    data = json.loads(content)
+
+                result = validate_provider_export(data, schema_name, strict=True)
+                if result.drift_warnings:
+                    if sample.provider_name not in drift_by_provider:
+                        drift_by_provider[sample.provider_name] = []
+                    drift_by_provider[sample.provider_name].extend(result.drift_warnings[:3])
+
+            except Exception:
+                pass
+
+        if drift_by_provider:
+            print(f"\nDrift detected in {len(drift_by_provider)} providers:")
+            for provider, warnings in drift_by_provider.items():
+                unique_warnings = list(set(warnings))[:5]
+                print(f"  {provider}: {len(unique_warnings)} unique warnings")
+                for w in unique_warnings[:3]:
+                    print(f"    - {w}")
+
+
+def test_chatgpt_rejects_missing_mapping():
+    """Test that ChatGPT schema rejects exports without mapping."""
+    if "chatgpt" not in SchemaValidator.available_providers():
+        pytest.skip("ChatGPT schema not available")
+
+    invalid = {"id": "test", "title": "Test"}
+    result = validate_provider_export(invalid, "chatgpt")
+    assert isinstance(result, ValidationResult)
+
+
+def test_drift_new_field():
+    """Test that new fields are detected as drift."""
+    if "chatgpt" not in SchemaValidator.available_providers():
+        pytest.skip("ChatGPT schema not available")
+
+    data = {
+        "id": "test-123",
+        "mapping": {},
+        "brand_new_field": "unexpected",
+    }
+
+    result = validate_provider_export(data, "chatgpt", strict=True)
+    assert isinstance(result, ValidationResult)
+
+
+def test_validation_result_properties():
+    """Test ValidationResult properties."""
+    valid = ValidationResult(is_valid=True)
+    assert valid.is_valid
+    assert not valid.has_drift
+    valid.raise_if_invalid()
+
+    invalid = ValidationResult(is_valid=False, errors=["missing field"])
+    assert not invalid.is_valid
+    with pytest.raises(ValueError, match="missing field"):
+        invalid.raise_if_invalid()
+
+    with_drift = ValidationResult(is_valid=True, drift_warnings=["new field: foo"])
+    assert with_drift.is_valid
+    assert with_drift.has_drift
+
+
+# =============================================================================
+# SCHEMA INFERENCE TESTS (merged from test_schema_inference.py)
+# =============================================================================
 
 
 class TestDynamicKeyDetection:

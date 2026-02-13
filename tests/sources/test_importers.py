@@ -292,7 +292,7 @@ This is not JSON at all, should be skipped
 
 def discover_real_exports():
 	"""Discover all real export samples in fixtures/real/."""
-	fixtures_dir = Path(__file__).parent / "fixtures" / "real"
+	fixtures_dir = Path(__file__).parent.parent / "fixtures" / "real"
 	if not fixtures_dir.exists():
 		return []
 
@@ -573,7 +573,7 @@ def test_chatgpt_format_variants(variant):
 	"""
 	import json
 
-	fixture_path = Path(__file__).parent / "fixtures" / "real" / "chatgpt" / variant
+	fixture_path = Path(__file__).parent.parent / "fixtures" / "real" / "chatgpt" / variant
 
 	if not fixture_path.exists():
 		pytest.skip(f"Variant not available: {variant}")
@@ -944,12 +944,12 @@ def test_parse_conversation(parse_fn, conv_data, check_type, desc):
 
 
 @pytest.mark.skipif(
-    not Path(__file__).parent.joinpath("fixtures/real/chatgpt/simple.json").exists(),
+    not Path(__file__).parent.parent.joinpath("fixtures/real/chatgpt/simple.json").exists(),
     reason="Real ChatGPT sample not available"
 )
 def test_chatgpt_parse_real_simple():
     """Parse real ChatGPT simple export."""
-    sample_path = Path(__file__).parent / "fixtures" / "real" / "chatgpt" / "simple.json"
+    sample_path = Path(__file__).parent.parent / "fixtures" / "real" / "chatgpt" / "simple.json"
     with open(sample_path) as f:
         data = json.load(f)
 
@@ -962,12 +962,12 @@ def test_chatgpt_parse_real_simple():
 
 
 @pytest.mark.skipif(
-    not Path(__file__).parent.joinpath("fixtures/real/chatgpt/branching.json").exists(),
+    not Path(__file__).parent.parent.joinpath("fixtures/real/chatgpt/branching.json").exists(),
     reason="Real ChatGPT sample not available"
 )
 def test_chatgpt_parse_real_branching():
     """Parse real ChatGPT branching conversation."""
-    sample_path = Path(__file__).parent / "fixtures" / "real" / "chatgpt" / "branching.json"
+    sample_path = Path(__file__).parent.parent / "fixtures" / "real" / "chatgpt" / "branching.json"
     with open(sample_path) as f:
         data = json.load(f)
 

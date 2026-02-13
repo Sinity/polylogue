@@ -30,7 +30,7 @@ from polylogue.sources.parsers.drive import (
 @pytest.fixture
 def gemini_sample_file():
     """Path to real Gemini export sample (101KB)."""
-    return Path(__file__).parent / "fixtures" / "real" / "gemini" / "sample-with-tools.jsonl"
+    return Path(__file__).parent.parent / "fixtures" / "real" / "gemini" / "sample-with-tools.jsonl"
 
 
 @pytest.fixture
@@ -329,7 +329,7 @@ def test_parse_skips_chunks_without_text():
 
 
 @pytest.mark.skipif(
-    not Path(__file__).parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
+    not Path(__file__).parent.parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
     reason="Real Gemini sample not available"
 )
 def test_parse_real_gemini_sample(gemini_sample_file):
@@ -359,7 +359,7 @@ def test_parse_real_gemini_sample(gemini_sample_file):
 
 
 @pytest.mark.skipif(
-    not Path(__file__).parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
+    not Path(__file__).parent.parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
     reason="Real Gemini sample not available"
 )
 def test_real_sample_has_thinking_blocks(gemini_sample_file):
@@ -379,7 +379,7 @@ def test_real_sample_has_thinking_blocks(gemini_sample_file):
 
 
 @pytest.mark.skipif(
-    not Path(__file__).parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
+    not Path(__file__).parent.parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
     reason="Real Gemini sample not available"
 )
 def test_real_sample_has_tool_references(gemini_sample_file):
@@ -406,7 +406,7 @@ def test_real_sample_has_tool_references(gemini_sample_file):
 
 
 @pytest.mark.skipif(
-    not Path(__file__).parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
+    not Path(__file__).parent.parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
     reason="Real Gemini sample not available"
 )
 def test_real_sample_preserves_metadata(gemini_sample_file):
@@ -424,7 +424,7 @@ def test_real_sample_preserves_metadata(gemini_sample_file):
 
 
 @pytest.mark.skipif(
-    not Path(__file__).parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
+    not Path(__file__).parent.parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
     reason="Real Gemini sample not available"
 )
 def test_real_sample_messages_not_empty(gemini_sample_file):
