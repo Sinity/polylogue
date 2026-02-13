@@ -63,7 +63,7 @@ def temp_config_and_repo(tmp_path):
 @pytest.fixture
 def chatgpt_sample_source():
     """Source pointing to real ChatGPT sample."""
-    sample_path = Path(__file__).parent / "fixtures" / "real" / "chatgpt" / "simple.json"
+    sample_path = Path(__file__).parent.parent / "fixtures" / "real" / "chatgpt" / "simple.json"
     if sample_path.exists():
         return Source(name="chatgpt-test", path=sample_path)
     return None
@@ -72,7 +72,7 @@ def chatgpt_sample_source():
 @pytest.fixture
 def gemini_sample_source():
     """Source pointing to real Gemini sample."""
-    sample_path = Path(__file__).parent / "fixtures" / "real" / "gemini" / "sample-with-tools.jsonl"
+    sample_path = Path(__file__).parent.parent / "fixtures" / "real" / "gemini" / "sample-with-tools.jsonl"
     if sample_path.exists():
         return Source(name="gemini-test", path=sample_path)
     return None
@@ -88,12 +88,12 @@ def gemini_sample_source():
     [
         ("chatgpt", "simple.json"),
         ("chatgpt", "branching.json"),
-        pytest.param("claude", "basic.jsonl", marks=pytest.mark.skip(reason="No Claude samples extracted")),
+        ("claude", "simple.json"),
         pytest.param(
             "gemini",
             "sample-with-tools.jsonl",
             marks=pytest.mark.skipif(
-                not Path(__file__).parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
+                not Path(__file__).parent.parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
                 reason="Gemini sample not available",
             ),
         ),
@@ -107,7 +107,7 @@ def test_full_workflow_per_provider(provider, sample_name, temp_config_and_repo)
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
     # Setup source
-    sample_path = Path(__file__).parent / "fixtures" / "real" / provider / sample_name
+    sample_path = Path(__file__).parent.parent / "fixtures" / "real" / provider / sample_name
     if not sample_path.exists():
         pytest.skip(f"Sample not available: {sample_path}")
 
@@ -593,13 +593,17 @@ def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_source
     all_convs = conv_repo.list()
     assert len(all_convs) > 0
 
-    # Pick first conversation's first words
+    # Find a message with enough words for a meaningful search query
     target_conv = all_convs[0]
-    first_message = target_conv.messages[0]
-    words = first_message.text.split()[:5]
+    words = []
+    for msg in target_conv.messages:
+        if msg.text:
+            words = msg.text.split()[:5]
+            if len(words) >= 3:
+                break
 
     if len(words) < 3:
-        pytest.skip("Message too short for meaningful search test")
+        pytest.skip("No message with 3+ words for meaningful search test")
 
     # Search for these words
     search_term = " ".join(words[:3])

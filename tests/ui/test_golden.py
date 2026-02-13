@@ -16,7 +16,7 @@ from polylogue.rendering.renderers.markdown import MarkdownRenderer
 from tests.helpers import DbFactory
 
 # Golden files directory
-GOLDEN_DIR = Path(__file__).parent / "golden"
+GOLDEN_DIR = Path(__file__).parent.parent / "fixtures" / "golden"
 
 
 def normalize_markdown(text: str) -> str:
