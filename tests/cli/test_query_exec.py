@@ -1061,7 +1061,7 @@ class TestSendOutput:
 # =============================================================================
 
 
-class TestOpenInBrowser:
+class TestQueryOpenInBrowser:
     def _fn(self, env: AppEnv, content: str, output_format: str, conv=None):
         from polylogue.cli.query import _open_in_browser
 
