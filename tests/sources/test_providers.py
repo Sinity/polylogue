@@ -978,7 +978,7 @@ class TestSourceIterationEdgeCases:
         conversations = list(iter_source_conversations(source, cursor_state=cursor_state))
         assert len(conversations) >= 1
 
-    def test_has_ingest_extension_case_insensitive(self, tmp_path: Path):
+    def test_has_supported_extension_case_insensitive(self, tmp_path: Path):
         """Extension checking should be case-insensitive (line 303)."""
         json_file = tmp_path / "CONV.JSON"
         json_file.write_text('{"mapping": {}}')
@@ -1205,7 +1205,7 @@ class TestParseJsonPayloadRecursion:
         assert result[0].title == "Generic"
 
 
-class TestZipIngestion:
+class TestZipParsing:
     """Tests for ZIP file processing in iter_source_conversations."""
 
     def test_zip_with_json(self, tmp_path):
@@ -1259,13 +1259,13 @@ class TestProviderZipBombProtection:
 
         # We can't easily create a truly oversized file, but we can test
         # that the constant is reasonable
-        assert MAX_UNCOMPRESSED_SIZE == 500 * 1024 * 1024  # 500MB
+        assert MAX_UNCOMPRESSED_SIZE == 10 * 1024 * 1024 * 1024  # 10GB
 
     def test_compression_ratio_constant(self):
-        """MAX_COMPRESSION_RATIO is set to 100."""
+        """MAX_COMPRESSION_RATIO is set to 1000."""
         from polylogue.sources.source import MAX_COMPRESSION_RATIO
 
-        assert MAX_COMPRESSION_RATIO == 100
+        assert MAX_COMPRESSION_RATIO == 1000
 
     def test_highly_compressed_file_flagged(self, tmp_path):
         """Files with excessive compression ratio are skipped."""

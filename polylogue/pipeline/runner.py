@@ -158,13 +158,13 @@ def run_sources(
     """
     start = time.perf_counter()
 
-    from polylogue.pipeline.services.ingestion import IngestionService
+    from polylogue.pipeline.services.parsing import ParsingService
     from polylogue.storage.backends.sqlite import create_default_backend
     from polylogue.storage.repository import ConversationRepository
 
     backend = create_default_backend()
     repository = ConversationRepository(backend=backend)
-    ingestion_service = IngestionService(
+    parsing_service = ParsingService(
         repository=repository,
         archive_root=config.archive_root,
         config=config,
@@ -202,9 +202,9 @@ def run_sources(
             counts["skipped"] = acquire_result.counts["skipped"]
 
         # Parse stage (acquire + parse, replaces old "ingest")
-        elif stage in {"parse", "ingest", "all"}:
+        elif stage in {"parse", "all"}:
             sources = _select_sources(config, source_names)
-            ingest_result = ingestion_service.ingest_sources(
+            parse_result = parsing_service.parse_sources(
                 sources,
                 ui=ui,
                 download_assets=True,
@@ -212,12 +212,12 @@ def run_sources(
             )
 
             # Merge results
-            for key, value in ingest_result.counts.items():
+            for key, value in parse_result.counts.items():
                 counts[key] = value
-            if ingest_result.parse_failures:
-                counts["parse_failures"] = ingest_result.parse_failures
-            changed_counts.update(ingest_result.changed_counts)
-            processed_ids = ingest_result.processed_ids
+            if parse_result.parse_failures:
+                counts["parse_failures"] = parse_result.parse_failures
+            changed_counts.update(parse_result.changed_counts)
+            processed_ids = parse_result.processed_ids
 
         # Schema generation stage
         if stage == "generate-schemas":

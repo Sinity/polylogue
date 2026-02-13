@@ -37,13 +37,13 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 
-class IngestBundle(BaseModel):
+class RecordBundle(BaseModel):
     conversation: ConversationRecord
     messages: list[MessageRecord]
     attachments: list[AttachmentRecord]
 
 
-class IngestResult(BaseModel):
+class SaveResult(BaseModel):
     conversations: int
     messages: int
     attachments: int
@@ -52,22 +52,22 @@ class IngestResult(BaseModel):
     skipped_attachments: int
 
 
-def ingest_bundle(bundle: IngestBundle, repository: ConversationRepository) -> IngestResult:
-    """Ingest a bundle of records into the repository.
+def save_bundle(bundle: RecordBundle, repository: ConversationRepository) -> SaveResult:
+    """Save a bundle of records into the repository.
 
     Args:
         bundle: Bundle containing conversation, messages, and attachments
         repository: Storage repository to safe records to
 
     Returns:
-        IngestResult with counts of imported/skipped items
+        SaveResult with counts of imported/skipped items
     """
     counts = repository.save_conversation(
         conversation=bundle.conversation,
         messages=bundle.messages,
         attachments=bundle.attachments,
     )
-    return IngestResult(**counts)
+    return SaveResult(**counts)
 
 
 _ENCODING_GUESSES: tuple[str, ...] = (
@@ -82,8 +82,8 @@ _ENCODING_GUESSES: tuple[str, ...] = (
 )
 
 # ZIP bomb protection constants
-MAX_COMPRESSION_RATIO = 100  # Reject if uncompressed/compressed > 100x
-MAX_UNCOMPRESSED_SIZE = 500 * 1024 * 1024  # 500MB limit per file
+MAX_COMPRESSION_RATIO = 1000  # 1000x — JSON/JSONL compresses extremely well (100-500x typical)
+MAX_UNCOMPRESSED_SIZE = 10 * 1024 * 1024 * 1024  # 10GB — multi-year chat archives can be large
 
 
 def _decode_json_bytes(blob: bytes) -> str | None:
@@ -302,23 +302,23 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
             yield data
 
 
-_INGEST_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
-_INGEST_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
+_SUPPORTED_EXTENSIONS = frozenset({".json", ".jsonl", ".ndjson", ".zip"})
+_SUPPORTED_DOUBLE_EXTENSIONS = frozenset({".jsonl.txt"})
 
-# Directories to skip during source ingestion.
+# Directories to skip during source parsing.
 # These contain derived/analysis artifacts, not raw conversation data.
 _SKIP_DIRS = frozenset({"analysis", "__pycache__", ".git", "node_modules"})
 
 
-def _has_ingest_extension(path: Path) -> bool:
-    """Check if path has a supported ingest extension (case-insensitive)."""
+def _has_supported_extension(path: Path) -> bool:
+    """Check if path has a supported file extension (case-insensitive)."""
     name_lower = path.name.lower()
     # Check double extensions first (e.g., .jsonl.txt)
-    for ext in _INGEST_DOUBLE_EXTENSIONS:
+    for ext in _SUPPORTED_DOUBLE_EXTENSIONS:
         if name_lower.endswith(ext):
             return True
     # Check single extensions
-    return path.suffix.lower() in _INGEST_EXTENSIONS
+    return path.suffix.lower() in _SUPPORTED_EXTENSIONS
 
 
 def iter_source_conversations(
@@ -367,7 +367,7 @@ def iter_source_conversations_with_raw(
             dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
             for filename in files:
                 file_path = Path(root) / filename
-                if _has_ingest_extension(file_path):
+                if _has_supported_extension(file_path):
                     paths.append(file_path)
         paths = sorted(paths)
     elif base.is_file():

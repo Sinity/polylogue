@@ -1,7 +1,7 @@
 """Service factories — the honest replacement for DI container.
 
 Module-level singletons for backend and repository, with a reset()
-function for test isolation. Service construction (IngestionService,
+function for test isolation. Service construction (ParsingService,
 IndexService, etc.) stays in the CLI commands where they're instantiated.
 """
 
