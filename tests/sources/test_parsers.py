@@ -42,14 +42,14 @@ from tests.helpers import make_chatgpt_node, make_claude_chat_message
 
 # Additional imports for test_ingestion_jsonl
 from polylogue.config import Config
-from polylogue.pipeline.services.ingestion import IngestionService
+from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import RawConversationRecord
 
 
 class TestParseRawRecordJsonl:
-	"""Tests for IngestionService._parse_raw_record with JSONL and JSON inputs."""
+	"""Tests for ParsingService._parse_raw_record with JSONL and JSON inputs."""
 
 	@pytest.fixture
 	def backend(self, tmp_path: Path) -> SQLiteBackend:
@@ -63,16 +63,16 @@ class TestParseRawRecordJsonl:
 		return ConversationRepository(backend=backend)
 
 	@pytest.fixture
-	def ingestion_service(
+	def parsing_service(
 		self, tmp_path: Path, repository: ConversationRepository
-	) -> IngestionService:
-		"""Create an IngestionService for testing."""
+	) -> ParsingService:
+		"""Create a ParsingService for testing."""
 		config = Config(
 			sources=[],
 			archive_root=tmp_path / "archive",
 			render_root=tmp_path / "render",
 		)
-		return IngestionService(
+		return ParsingService(
 			repository=repository,
 			archive_root=tmp_path / "archive",
 			config=config,
@@ -80,7 +80,7 @@ class TestParseRawRecordJsonl:
 		)
 
 	def test_parse_raw_record_single_json(
-		self, ingestion_service: IngestionService
+		self, parsing_service: ParsingService
 	) -> None:
 		"""Single JSON document (ChatGPT format) parses correctly."""
 		# ChatGPT export format: single JSON with title and mapping
@@ -122,7 +122,7 @@ class TestParseRawRecordJsonl:
 		)
 
 		# Should parse without error and return a conversation
-		parsed = ingestion_service._parse_raw_record(raw_record)
+		parsed = parsing_service._parse_raw_record(raw_record)
 
 		assert len(parsed) > 0
 		assert parsed[0].provider_name == "chatgpt"
@@ -130,7 +130,7 @@ class TestParseRawRecordJsonl:
 		# ChatGPT parser extracts messages from the mapping
 		assert len(parsed[0].messages) == 2
 
-	def test_parse_raw_record_jsonl(self, ingestion_service: IngestionService) -> None:
+	def test_parse_raw_record_jsonl(self, parsing_service: ParsingService) -> None:
 		"""Multi-line JSONL (claude-code format) parses correctly and produces messages."""
 		# Claude Code format: JSONL with messages as separate lines
 		raw_content = b"""{"parentUuid":null,"isSidechain":false,"cwd":"/","sessionId":"test-session-1","version":"1.0.30","type":"user","message":{"role":"user","content":"Hello world"},"uuid":"msg-1","timestamp":"2025-06-20T11:34:16.232Z"}
@@ -147,7 +147,7 @@ class TestParseRawRecordJsonl:
 		)
 
 		# Should parse without error and return a conversation
-		parsed = ingestion_service._parse_raw_record(raw_record)
+		parsed = parsing_service._parse_raw_record(raw_record)
 
 		assert len(parsed) > 0
 		assert parsed[0].provider_name == "claude-code"
@@ -161,7 +161,7 @@ class TestParseRawRecordJsonl:
 		assert parsed[0].messages[1].role == "assistant"
 
 	def test_parse_raw_record_jsonl_with_invalid_lines(
-		self, ingestion_service: IngestionService
+		self, parsing_service: ParsingService
 	) -> None:
 		"""JSONL with some invalid lines skips them gracefully."""
 		# Mix of valid and invalid JSON lines
@@ -182,7 +182,7 @@ This is not JSON at all, should be skipped
 		)
 
 		# Should parse without error, skipping invalid lines
-		parsed = ingestion_service._parse_raw_record(raw_record)
+		parsed = parsing_service._parse_raw_record(raw_record)
 
 		assert len(parsed) > 0
 		# Should have extracted the 3 valid lines (invalid ones skipped)
@@ -196,7 +196,7 @@ This is not JSON at all, should be skipped
 	) -> None:
 		"""Raw records without conversations are detected and re-parsed.
 
-		This tests the orphaned raw records scenario from ingest_sources():
+		This tests the orphaned raw records scenario from parse_sources():
 		When a raw record exists but the corresponding conversation was deleted
 		or never parsed, it should be re-parsed.
 		"""
@@ -205,7 +205,7 @@ This is not JSON at all, should be skipped
 			archive_root=tmp_path / "archive",
 			render_root=tmp_path / "render",
 		)
-		ingestion_service = IngestionService(
+		parsing_service = ParsingService(
 			repository=repository,
 			archive_root=tmp_path / "archive",
 			config=config,
@@ -235,7 +235,7 @@ This is not JSON at all, should be skipped
 		assert stored_raw.provider_name == "claude-code"
 
 		# Query for orphaned raw records (without conversations)
-		# This is the pattern from ingest_sources()
+		# This is the pattern from parse_sources()
 		conn = backend._get_connection()
 		orphaned_rows = conn.execute(
 			"""
@@ -250,8 +250,8 @@ This is not JSON at all, should be skipped
 		orphaned_ids = [row["raw_id"] for row in orphaned_rows]
 		assert "orphaned-raw-001" in orphaned_ids
 
-		# Now parse it using ingest_from_raw with the orphaned ID
-		result = ingestion_service.ingest_from_raw(raw_ids=["orphaned-raw-001"])
+		# Now parse it using parse_from_raw with the orphaned ID
+		result = parsing_service.parse_from_raw(raw_ids=["orphaned-raw-001"])
 
 		# Should successfully parse and create a conversation
 		assert result.counts["conversations"] > 0 or result.counts["messages"] > 0

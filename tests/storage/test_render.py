@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 
 from polylogue.rendering.renderers import HTMLRenderer
-from polylogue.sources import IngestBundle, ingest_bundle
+from polylogue.sources import RecordBundle, save_bundle
 from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
 from polylogue.storage.repository import ConversationRepository
 from tests.helpers import DbFactory, make_attachment, make_conversation, make_message
@@ -354,7 +354,7 @@ def test_render_conversation_markdown_has_structure(workspace_env, storage_repos
     """render_conversation() produces valid markdown with title and role headers."""
     archive_root = workspace_env["archive_root"]
 
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation("c-md", title="My Conversation"),
         messages=[
             make_message("m1", "c-md", text="Hello, assistant!"),
@@ -362,7 +362,7 @@ def test_render_conversation_markdown_has_structure(workspace_env, storage_repos
         ],
         attachments=[],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -383,12 +383,12 @@ def test_render_conversation_markdown_includes_provider(workspace_env, storage_r
     """render_conversation() markdown includes provider information."""
     archive_root = workspace_env["archive_root"]
 
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation("c-prov", provider_name="claude"),
         messages=[],
         attachments=[],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -405,7 +405,7 @@ def test_render_conversation_markdown_messages_separated(workspace_env, storage_
     """render_conversation() separates messages with blank lines."""
     archive_root = workspace_env["archive_root"]
 
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation("c-sep"),
         messages=[
             make_message("m1", "c-sep", text="First message"),
@@ -413,7 +413,7 @@ def test_render_conversation_markdown_messages_separated(workspace_env, storage_
         ],
         attachments=[],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -432,12 +432,12 @@ def test_render_conversation_markdown_with_timestamp(workspace_env, storage_repo
     """render_conversation() includes timestamps when present."""
     archive_root = workspace_env["archive_root"]
 
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation("c-ts"),
         messages=[make_message("m1", "c-ts", text="Hello", timestamp="2024-01-15T10:30:00")],
         attachments=[],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -458,7 +458,7 @@ def test_render_conversation_html_valid(workspace_env, storage_repository):
     """render_conversation() produces valid HTML with proper structure."""
     archive_root = workspace_env["archive_root"]
 
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation("c-html", title="HTML Test"),
         messages=[
             make_message("m1", "c-html", text="Question?"),
@@ -466,7 +466,7 @@ def test_render_conversation_html_valid(workspace_env, storage_repository):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -485,12 +485,12 @@ def test_render_conversation_html_escapes_content(workspace_env, storage_reposit
     """render_conversation() escapes HTML special characters."""
     archive_root = workspace_env["archive_root"]
 
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation("c-esc", title="<script>alert('xss')</script>"),
         messages=[make_message("m1", "c-esc", text="<img src=x onerror='alert(1)'>")],
         attachments=[],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -510,12 +510,12 @@ def test_render_conversation_html_includes_content(workspace_env, storage_reposi
     """render_conversation() HTML includes conversation content."""
     archive_root = workspace_env["archive_root"]
 
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation("c-con", title="Content Test"),
         messages=[make_message("m1", "c-con", text="Important content here")],
         attachments=[],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -535,12 +535,12 @@ def test_render_conversation_with_message_attachments(workspace_env, storage_rep
     """render_conversation() includes attachments associated with messages."""
     archive_root = workspace_env["archive_root"]
 
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation("c-att-msg", title="With Attachments"),
         messages=[make_message("m1", "c-att-msg", text="Check this file")],
         attachments=[make_attachment("att-1", "c-att-msg", "m1", mime_type="application/pdf", provider_meta={"name": "document.pdf"})],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -557,7 +557,7 @@ def test_render_conversation_with_orphan_attachments(workspace_env, storage_repo
     """render_conversation() includes attachments not linked to messages."""
     archive_root = workspace_env["archive_root"]
 
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation("c-orphan", title="With Orphan Attachments"),
         messages=[make_message("m1", "c-orphan", text="Some text")],
         attachments=[
@@ -566,7 +566,7 @@ def test_render_conversation_with_orphan_attachments(workspace_env, storage_repo
         ],
     )
 
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -588,12 +588,12 @@ def test_render_conversation_writes_markdown_file(workspace_env, storage_reposit
     """render_conversation() writes markdown file to expected location."""
     archive_root = workspace_env["archive_root"]
 
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation("c-file", title="File Test"),
         messages=[],
         attachments=[],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -609,12 +609,12 @@ def test_render_conversation_writes_html_file(workspace_env, storage_repository)
     """render_conversation() writes HTML file to expected location."""
     archive_root = workspace_env["archive_root"]
 
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation("c-html-file", title="HTML File Test"),
         messages=[],
         attachments=[],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"

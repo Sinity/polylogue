@@ -1,4 +1,4 @@
-"""Ingestion service for pipeline operations.
+"""Parsing service for pipeline operations.
 
 This service implements the PARSE stage of the pipeline:
 - Reads from raw_conversations (DB)
@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from polylogue.lib.log import get_logger
-from polylogue.pipeline.ingest import prepare_ingest
+from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources.source import _parse_json_payload
 from polylogue.storage.search_cache import invalidate_search_cache
 from polylogue.storage.store import RawConversationRecord
@@ -32,8 +32,8 @@ logger = get_logger(__name__)
 _ProcessResult: TypeAlias = tuple[str, dict[str, int], bool]
 
 
-class IngestResult:
-    """Result of an ingestion operation."""
+class ParseResult:
+    """Result of a parsing operation."""
 
     def __init__(self) -> None:
         self.counts: dict[str, int] = {
@@ -64,7 +64,7 @@ class IngestResult:
 
         Args:
             conversation_id: ID of the processed conversation
-            result_counts: Count dictionary from prepare_ingest
+            result_counts: Count dictionary from prepare_records
             content_changed: Whether content hash changed
         """
         ingest_changed = (result_counts["conversations"] + result_counts["messages"] + result_counts["attachments"]) > 0
@@ -83,8 +83,8 @@ class IngestResult:
                     self.counts[key] += value
 
 
-class IngestionService:
-    """Service for ingesting conversations from sources.
+class ParsingService:
+    """Service for parsing conversations from sources.
 
     This service implements the PARSE stage of the pipeline.
     It does NOT handle raw storage - use AcquisitionService for that.
@@ -97,7 +97,7 @@ class IngestionService:
         config: Config,
         drive_client_factory: Any | None = None,
     ):
-        """Initialize the ingestion service.
+        """Initialize the parsing service.
 
         Args:
             repository: Storage repository for database operations
@@ -109,19 +109,19 @@ class IngestionService:
         self.archive_root = archive_root
         self.config = config
         self.drive_client_factory = drive_client_factory
-        # Per-run drift tracking (reset each ingest_from_raw call)
+        # Per-run drift tracking (reset each parse_from_raw call)
         self._drift_counts: dict[str, int] = {}
         self._drift_lock = threading.Lock()
 
-    def ingest_sources(
+    def parse_sources(
         self,
         sources: list[Source],
         *,
         ui: object | None = None,
         download_assets: bool = True,
         progress_callback: Any | None = None,
-    ) -> IngestResult:
-        """Ingest conversations from sources via acquire → parse flow.
+    ) -> ParseResult:
+        """Parse conversations from sources via acquire → parse flow.
 
         This is a convenience method that runs both stages:
         1. ACQUIRE: Store raw bytes to raw_conversations
@@ -134,7 +134,7 @@ class IngestionService:
             progress_callback: Optional callback for progress updates
 
         Returns:
-            IngestResult with counts and processed conversation IDs
+            ParseResult with counts and processed conversation IDs
         """
         from polylogue.pipeline.services.acquisition import AcquisitionService
 
@@ -175,26 +175,26 @@ class IngestionService:
 
         # Stage 2: PARSE - parse raw_conversations into conversations
         if all_raw_ids:
-            return self.ingest_from_raw(
+            return self.parse_from_raw(
                 raw_ids=all_raw_ids,
                 progress_callback=progress_callback,
             )
         else:
             # Nothing to process
-            return IngestResult()
+            return ParseResult()
 
     # Batch size for processing raw records to limit memory usage.
     # Each raw record may contain multi-MB JSONL content; loading thousands
     # at once caused OOM kills on archives with >3000 conversations.
     RAW_BATCH_SIZE = 200
 
-    def ingest_from_raw(
+    def parse_from_raw(
         self,
         *,
         raw_ids: list[str] | None = None,
         provider: str | None = None,
         progress_callback: Any | None = None,
-    ) -> IngestResult:
+    ) -> ParseResult:
         """Parse raw_conversations from DB into conversations.
 
         This is the proper PARSE stage: reads from raw_conversations table
@@ -210,9 +210,9 @@ class IngestionService:
             progress_callback: Optional callback for progress updates
 
         Returns:
-            IngestResult with counts and processed conversation IDs
+            ParseResult with counts and processed conversation IDs
         """
-        result = IngestResult()
+        result = ParseResult()
 
         # Reset per-run drift tracking
         with self._drift_lock:
@@ -250,7 +250,7 @@ class IngestionService:
         self,
         backend: Any,
         batch_ids: list[str],
-        result: IngestResult,
+        result: ParseResult,
         progress_callback: Any | None,
     ) -> None:
         """Process a batch of raw conversation IDs."""
@@ -293,7 +293,7 @@ class IngestionService:
                 raw_id: str,
             ) -> _ProcessResult:
                 thread_conn = backend._get_connection()
-                convo_id, counts, changed = prepare_ingest(
+                convo_id, counts, changed = prepare_records(
                     convo_item,
                     source_name_item,
                     archive_root=self.archive_root,
@@ -443,14 +443,14 @@ class IngestionService:
             )
 
     # Drift threshold: auto-regenerate schema if a provider exceeds this
-    # many drift warnings in a single ingestion run.
+    # many drift warnings in a single parsing run.
     DRIFT_REGEN_THRESHOLD = 5
 
     def _maybe_regenerate_schemas(self, drift_counts: dict[str, int]) -> None:
         """Auto-regenerate schemas for providers with excessive drift.
 
         If a provider accumulated more than DRIFT_REGEN_THRESHOLD drift
-        warnings during this ingestion run, regenerate its schema from the
+        warnings during this parsing run, regenerate its schema from the
         current database samples and register it as a new version.
         """
         from polylogue.schemas.registry import SchemaRegistry
