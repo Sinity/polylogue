@@ -505,34 +505,9 @@ def seeded_db(tmp_path_factory):
         "gemini": list(fixtures_dir.glob("gemini/*.jsonl")),
     }
 
-    # Ingest each fixture through the full pipeline
-    with open_connection(db_path) as conn:
-        for provider, files in fixture_files.items():
-            for fixture_path in files:
-                if not fixture_path.exists():
-                    continue
-
-                try:
-                    source = Source(name=provider, path=fixture_path)
-                    for convo in iter_source_conversations(source):
-                        archive_root = tmp_dir / "archive"
-                        archive_root.mkdir(exist_ok=True)
-                        prepare_ingest(
-                            convo,
-                            source_name=provider,
-                            archive_root=archive_root,
-                            conn=conn,
-                            repository=repository,  # Pass our repository!
-                        )
-                except Exception as e:
-                    # Log but don't fail - some fixtures may have format issues
-                    import warnings
-
-                    warnings.warn(f"Failed to ingest {fixture_path}: {e}", stacklevel=2)
-
-    # Also populate raw_conversations table so database-driven tests
-    # (TestRawConversationParsing, TestRawConversationCoverage) have data.
-    # This mirrors what AcquisitionService._store_raw() does in the real pipeline.
+    # Step 1: Store raw conversations (acquire stage).
+    # Must happen BEFORE open_connection() context to avoid nested transaction conflicts.
+    raw_ids: dict[str, str] = {}  # fixture_path → raw_id
     for provider, files in fixture_files.items():
         for fixture_path in files:
             if not fixture_path.exists():
@@ -549,13 +524,38 @@ def seeded_db(tmp_path_factory):
                     acquired_at=datetime.now(timezone.utc).isoformat(),
                 )
                 backend.save_raw_conversation(record)
+                raw_ids[str(fixture_path)] = raw_id
             except Exception as e:
                 import warnings
-
                 warnings.warn(f"Failed to store raw {fixture_path}: {e}", stacklevel=2)
 
-    # Commit raw_conversations so they're visible to other connections
+    # Commit raw_conversations before opening the ingest connection
     backend._get_connection().commit()
+
+    # Step 2: Parse and ingest with raw_id links (parse stage).
+    with open_connection(db_path) as conn:
+        for provider, files in fixture_files.items():
+            for fixture_path in files:
+                if not fixture_path.exists():
+                    continue
+
+                try:
+                    source = Source(name=provider, path=fixture_path)
+                    raw_id = raw_ids.get(str(fixture_path))
+                    for convo in iter_source_conversations(source):
+                        archive_root = tmp_dir / "archive"
+                        archive_root.mkdir(exist_ok=True)
+                        prepare_ingest(
+                            convo,
+                            source_name=provider,
+                            archive_root=archive_root,
+                            conn=conn,
+                            repository=repository,
+                            raw_id=raw_id,
+                        )
+                except Exception as e:
+                    import warnings
+                    warnings.warn(f"Failed to ingest {fixture_path}: {e}", stacklevel=2)
 
     return db_path
 
