@@ -1,6 +1,6 @@
 """Polylogue - AI Conversation Archive Library.
 
-This library provides tools for ingesting, storing, and querying AI conversation
+This library provides tools for parsing, storing, and querying AI conversation
 exports from ChatGPT, Claude, Codex, Gemini, and other AI assistants.
 
 Example:
@@ -9,8 +9,8 @@ Example:
     # Initialize
     archive = Polylogue(archive_root="~/.polylogue")
 
-    # Ingest files
-    result = archive.ingest_file("chatgpt_export.json")
+    # Parse files
+    result = archive.parse_file("chatgpt_export.json")
     print(f"Imported {result.counts['conversations']} conversations")
 
     # Query conversations

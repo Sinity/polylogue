@@ -1,4 +1,4 @@
-"""Ingest preparation logic."""
+"""Parse preparation logic."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from polylogue.pipeline.ids import (
 from polylogue.pipeline.ids import (
     message_id as make_message_id,
 )
-from polylogue.sources import IngestBundle, ParsedConversation, ingest_bundle
+from polylogue.sources import RecordBundle, ParsedConversation, save_bundle
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, ExistingConversation, MessageRecord
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
 
-def prepare_ingest(
+def prepare_records(
     convo: ParsedConversation,
     source_name: str,
     *,
@@ -167,8 +167,8 @@ def prepare_ingest(
             )
         )
 
-    result = ingest_bundle(
-        IngestBundle(
+    result = save_bundle(
+        RecordBundle(
             conversation=conversation_record,
             messages=messages,
             attachments=attachments,

@@ -194,7 +194,7 @@ class TestPolylogueInitialization:
         assert "archive" in repr_str
 
 
-class TestPolylogueIngest:
+class TestPolylogue_Parsing:
     """Test ingestion functionality."""
 
     def test_ingest_chatgpt_file(self, workspace_env, sample_chatgpt_file):
@@ -204,7 +204,7 @@ class TestPolylogueIngest:
             db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
-        result = archive.ingest_file(sample_chatgpt_file)
+        result = archive.parse_file(sample_chatgpt_file)
 
         # Verify counts
         assert result.counts["conversations"] > 0
@@ -222,7 +222,7 @@ class TestPolylogueIngest:
             db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
-        result = archive.ingest_file(sample_claude_file)
+        result = archive.parse_file(sample_claude_file)
 
         # Verify counts
         assert result.counts["conversations"] > 0
@@ -245,12 +245,12 @@ class TestPolylogueIngest:
         )
 
         # First ingest
-        result1 = archive.ingest_file(sample_chatgpt_file)
+        result1 = archive.parse_file(sample_chatgpt_file)
         first_count = result1.counts["conversations"]
         assert first_count > 0
 
         # Second ingest (acquire stage skips duplicate raw_id)
-        result2 = archive.ingest_file(sample_chatgpt_file)
+        result2 = archive.parse_file(sample_chatgpt_file)
         # With stage architecture, no parsing happens when acquire skips
         assert result2.counts["conversations"] == 0
 
@@ -265,10 +265,10 @@ class TestPolylogueIngest:
             db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
-        result = archive.ingest_file(sample_chatgpt_file, source_name="my_custom_source")
+        result = archive.parse_file(sample_chatgpt_file, source_name="my_custom_source")
         assert result.counts["conversations"] > 0
 
-    def test_ingest_sources(self, workspace_env, sample_chatgpt_file, sample_claude_file):
+    def test_parse_sources(self, workspace_env, sample_chatgpt_file, sample_claude_file):
         """Test ingesting multiple sources."""
         db_path = workspace_env["data_root"] / "polylogue.db"
 
@@ -287,7 +287,7 @@ class TestPolylogueIngest:
             Source(name="claude", path=sample_claude_file),
         ]
 
-        result = archive.ingest_sources(sources=sources, download_assets=False)
+        result = archive.parse_sources(sources=sources, download_assets=False)
 
         # Verify both sources were ingested
         assert result.counts["conversations"] >= 2
@@ -310,7 +310,7 @@ class TestPolylogueQuery:
         )
 
         # Ingest and get conversation ID
-        archive.ingest_file(sample_chatgpt_file)
+        archive.parse_file(sample_chatgpt_file)
         conversations = archive.list_conversations(provider="chatgpt")
         conv_id = conversations[0].id
 
@@ -328,7 +328,7 @@ class TestPolylogueQuery:
         )
 
         # Ingest and get conversation ID
-        archive.ingest_file(sample_chatgpt_file)
+        archive.parse_file(sample_chatgpt_file)
         conversations = archive.list_conversations(provider="chatgpt")
         conv_id = conversations[0].id
 
@@ -356,8 +356,8 @@ class TestPolylogueQuery:
         )
 
         # Ingest both files
-        archive.ingest_file(sample_chatgpt_file)
-        archive.ingest_file(sample_claude_file)
+        archive.parse_file(sample_chatgpt_file)
+        archive.parse_file(sample_claude_file)
 
         # List all
         all_convs = archive.list_conversations()
@@ -371,8 +371,8 @@ class TestPolylogueQuery:
         )
 
         # Ingest both files
-        archive.ingest_file(sample_chatgpt_file)
-        archive.ingest_file(sample_claude_file)
+        archive.parse_file(sample_chatgpt_file)
+        archive.parse_file(sample_claude_file)
 
         # Filter by provider
         chatgpt_convs = archive.list_conversations(provider="chatgpt")
@@ -390,7 +390,7 @@ class TestPolylogueQuery:
             db_path=workspace_env["data_root"] / "polylogue.db",
         )
 
-        archive.ingest_file(sample_chatgpt_file)
+        archive.parse_file(sample_chatgpt_file)
 
         # List with limit
         convs = archive.list_conversations(limit=1)
@@ -408,7 +408,7 @@ class TestPolylogueSemanticProjections:
         )
 
         # Ingest
-        archive.ingest_file(sample_chatgpt_file)
+        archive.parse_file(sample_chatgpt_file)
         conversations = archive.list_conversations()
         conv = conversations[0]
 
@@ -426,7 +426,7 @@ class TestPolylogueSemanticProjections:
         )
 
         # Ingest
-        archive.ingest_file(sample_chatgpt_file)
+        archive.parse_file(sample_chatgpt_file)
         conversations = archive.list_conversations()
         conv = conversations[0]
 
@@ -445,7 +445,7 @@ class TestPolylogueSemanticProjections:
         )
 
         # Ingest
-        archive.ingest_file(sample_chatgpt_file)
+        archive.parse_file(sample_chatgpt_file)
         conversations = archive.list_conversations()
         conv = conversations[0]
 
@@ -465,7 +465,7 @@ class TestPolylogueSearch:
         )
 
         # Ingest
-        archive.ingest_file(sample_chatgpt_file)
+        archive.parse_file(sample_chatgpt_file)
 
         # Rebuild index to ensure search works
         archive.rebuild_index()
@@ -483,7 +483,7 @@ class TestPolylogueSearch:
         )
 
         # Ingest
-        archive.ingest_file(sample_chatgpt_file)
+        archive.parse_file(sample_chatgpt_file)
 
         # Rebuild index
         archive.rebuild_index()
@@ -522,7 +522,7 @@ class TestPolylogueEdgeCases:
         nonexistent = tmp_path / "does_not_exist.json"
 
         # Should handle gracefully with empty counts
-        result = archive.ingest_file(nonexistent)
+        result = archive.parse_file(nonexistent)
         assert result.counts["conversations"] == 0
         assert result.counts["messages"] == 0
 
@@ -1293,18 +1293,18 @@ class TestLatestRenderPath:
 # ============================================================================
 
 
-class TestPolylogueIngestFile:
+class TestPolylogueParseFile:
     """Test file ingestion."""
 
-    def test_ingest_file_method_exists(self, tmp_path):
-        """Test that ingest_file method exists and is callable."""
+    def test_parse_file_method_exists(self, tmp_path):
+        """Test that parse_file method exists and is callable."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        assert hasattr(archive, "ingest_file")
-        assert callable(archive.ingest_file)
+        assert hasattr(archive, "parse_file")
+        assert callable(archive.parse_file)
 
-    def test_ingest_file_with_nonexistent_file(self, tmp_path):
-        """Test ingest_file with non-existent file."""
+    def test_parse_file_with_nonexistent_file(self, tmp_path):
+        """Test parse_file with non-existent file."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
 
@@ -1312,7 +1312,7 @@ class TestPolylogueIngestFile:
         # Ingestion should handle gracefully (empty result or exception)
         # Most implementations skip missing files silently
         try:
-            result = archive.ingest_file(nonexistent)
+            result = archive.parse_file(nonexistent)
             # If no exception, verify result structure
             assert hasattr(result, "counts")
         except Exception:
@@ -1320,12 +1320,12 @@ class TestPolylogueIngestFile:
             pass
 
 
-class TestPolylogueIngestSources:
+class TestPolylogue_ParseSources:
     """Test sources ingestion."""
 
-    def test_ingest_sources_method_exists(self, tmp_path):
-        """Test that ingest_sources method exists and is callable."""
+    def test_parse_sources_method_exists(self, tmp_path):
+        """Test that parse_sources method exists and is callable."""
         db_path = tmp_path / "test.db"
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
-        assert hasattr(archive, "ingest_sources")
-        assert callable(archive.ingest_sources)
+        assert hasattr(archive, "parse_sources")
+        assert callable(archive.parse_sources)

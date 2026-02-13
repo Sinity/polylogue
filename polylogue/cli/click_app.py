@@ -312,7 +312,7 @@ def cli(
 
     \b
     Subcommands:
-        polylogue run       Ingest/render/index pipeline
+        polylogue run       Parse/render/index pipeline
         polylogue check     Health check and repair
         polylogue embed     Generate vector embeddings
         polylogue tags      List tags with counts

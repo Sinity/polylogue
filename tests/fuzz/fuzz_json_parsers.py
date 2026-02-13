@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""Fuzz the importer parse functions with malformed JSON.
+"""Fuzz the parser parse functions with malformed JSON.
 
-Target: Crashes and unexpected exceptions in importer parsing.
+Target: Crashes and unexpected exceptions in parser parsing.
 
 Security properties tested:
 - No crashes on malformed JSON

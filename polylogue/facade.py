@@ -10,8 +10,8 @@ Example:
     # Initialize
     archive = Polylogue(archive_root="~/.polylogue")
 
-    # Ingest files
-    result = archive.ingest_file("chatgpt_export.json")
+    # Parse files
+    result = archive.parse_file("chatgpt_export.json")
     print(f"Imported {result.counts['conversations']} conversations")
 
     # Query with semantic projections
@@ -45,7 +45,7 @@ from polylogue.storage.search import SearchResult, search_messages
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.pipeline.services.indexing import IndexService
-    from polylogue.pipeline.services.ingestion import IngestionService, IngestResult
+    from polylogue.pipeline.services.parsing import ParsingService, ParseResult
 
 
 class ArchiveStats:
@@ -99,7 +99,7 @@ class Polylogue:
 
     Example:
         archive = Polylogue()  # Uses XDG defaults
-        result = archive.ingest_file("chatgpt.json")
+        result = archive.parse_file("chatgpt.json")
         conv = archive.get_conversation("claude:abc123")
     """
 
@@ -129,7 +129,7 @@ class Polylogue:
         self._repository = ConversationRepository(backend=self._backend)
 
         # Services (lazy-initialized)
-        self._ingestion_service: IngestionService | None = None
+        self._parsing_service: ParsingService | None = None
         self._indexing_service: IndexService | None = None
 
     @property
@@ -221,34 +221,34 @@ class Polylogue:
             since=since,
         )
 
-    def ingest_file(
+    def parse_file(
         self,
         path: str | Path,
         *,
         source_name: str | None = None,
-    ) -> IngestResult:
-        """Ingest a single file containing AI conversations.
+    ) -> ParseResult:
+        """Parse a single file containing AI conversations.
 
         The provider (ChatGPT, Claude, Codex, etc.) is automatically detected
         from the file structure.
 
         Args:
-            path: Path to the file to ingest (.json, .jsonl, .zip)
+            path: Path to the file to parse (.json, .jsonl, .zip)
             source_name: Optional source name for tracking (defaults to filename)
 
         Returns:
-            IngestResult with counts of imported items
+            ParseResult with counts of imported items
 
         Example:
-            result = archive.ingest_file("chatgpt_export.json")
+            result = archive.parse_file("chatgpt_export.json")
             print(f"Imported {result.counts['conversations']} conversations")
             print(f"Skipped {result.counts['skipped_conversations']} duplicates")
         """
-        # Lazy-initialize ingestion service
-        if self._ingestion_service is None:
-            from polylogue.pipeline.services.ingestion import IngestionService
+        # Lazy-initialize parsing service
+        if self._parsing_service is None:
+            from polylogue.pipeline.services.parsing import ParsingService
 
-            self._ingestion_service = IngestionService(
+            self._parsing_service = ParsingService(
                 repository=self._repository,
                 archive_root=self._config.archive_root,
                 config=self._config,
@@ -263,42 +263,42 @@ class Polylogue:
 
         source = Source(name=source_name, path=file_path)
 
-        # Ingest
-        return self._ingestion_service.ingest_sources(
+        # Parse
+        return self._parsing_service.parse_sources(
             sources=[source],
             ui=None,
             download_assets=False,
         )
 
-    def ingest_sources(
+    def parse_sources(
         self,
         sources: list[Source] | None = None,
         *,
         download_assets: bool = True,
-    ) -> IngestResult:
-        """Ingest conversations from configured sources.
+    ) -> ParseResult:
+        """Parse conversations from configured sources.
 
         Args:
-            sources: List of sources to ingest. If None, uses all configured sources.
+            sources: List of sources to parse. If None, uses all configured sources.
             download_assets: Whether to download attachments from Google Drive (default: True)
 
         Returns:
-            IngestResult with counts of imported items
+            ParseResult with counts of imported items
 
         Example:
-            # Ingest all configured sources
-            result = archive.ingest_sources()
+            # Parse all configured sources
+            result = archive.parse_sources()
 
-            # Ingest specific sources
+            # Parse specific sources
             from polylogue.config import Source
             sources = [Source(name="chatgpt", path="/path/to/export.json")]
-            result = archive.ingest_sources(sources=sources)
+            result = archive.parse_sources(sources=sources)
         """
-        # Lazy-initialize ingestion service
-        if self._ingestion_service is None:
-            from polylogue.pipeline.services.ingestion import IngestionService
+        # Lazy-initialize parsing service
+        if self._parsing_service is None:
+            from polylogue.pipeline.services.parsing import ParsingService
 
-            self._ingestion_service = IngestionService(
+            self._parsing_service = ParsingService(
                 repository=self._repository,
                 archive_root=self._config.archive_root,
                 config=self._config,
@@ -308,7 +308,7 @@ class Polylogue:
         if sources is None:
             sources = self._config.sources
 
-        return self._ingestion_service.ingest_sources(
+        return self._parsing_service.parse_sources(
             sources=sources,
             ui=None,
             download_assets=download_assets,

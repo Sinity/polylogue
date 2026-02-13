@@ -26,7 +26,7 @@ from polylogue.pipeline.enrichment import (
     enrich_message_metadata,
 )
 from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
-from polylogue.pipeline.services.ingestion import IngestionService
+from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedConversation,
@@ -76,7 +76,7 @@ def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
 @pytest.mark.parametrize(
     "setup_type,stage,expected_conv_count,check_render",
     [
-        ("multi_source_filter", "ingest", 1, False),
+        ("multi_source_filter", "parse", 1, False),
         ("single_source_chatgpt", "render", 0, True),
     ],
 )
@@ -100,7 +100,7 @@ def test_run_sources_filtered_by_stage(workspace_env, tmp_path, setup_type, stag
         source_file = ChatGPTExportBuilder("conv-chatgpt").add_node("user", "hello").write_to(inbox / "conversation.json")
         config = get_config()
         config.sources = [Source(name="inbox", path=source_file)]
-        run_sources(config=config, stage="ingest", source_names=["inbox"])
+        run_sources(config=config, stage="parse", source_names=["inbox"])
         result = run_sources(config=config, stage=stage, source_names=["inbox"])
 
     assert result.counts["conversations"] == expected_conv_count
@@ -177,7 +177,7 @@ def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch
         Source(name="source-b", path=inbox / "b.json"),
     ]
 
-    run_sources(config=config, stage="ingest")
+    run_sources(config=config, stage="parse")
 
     id_by_source = {}
     with open_connection(None) as conn:
@@ -412,7 +412,6 @@ class TestDisplayResultComprehensive:
         [
             ("render", ["inbox"], True, 1, [], None),
             ("acquire", ["inbox"], False, 1, [], None),
-            ("ingest", ["inbox"], False, 1, [], None),
             ("parse", ["inbox"], False, 1, [], None),
             ("all", None, True, 1, [], None),
             ("all", None, True, 0, [], None),
@@ -573,26 +572,26 @@ def test_sources_command_output(runner, cli_workspace, args, expect_json):
 
 
 # =============================================================================
-# TEST CLASS: IngestionService (Coverage: lines 164-165, 216, 222, 262-269)
+# TEST CLASS: ParsingService (Coverage: lines 164-165, 216, 222, 262-269)
 # =============================================================================
 
 
-class TestIngestionService:
-    """Test IngestionService parsing and batching."""
+class TestParsingService:
+    """Test ParsingService parsing and batching."""
 
     @pytest.mark.parametrize("backend_initialized,provider", [(False, None), (True, "claude")])
-    def test_ingest_from_raw(self, mock_backend, backend_initialized, provider):
-        """ingest_from_raw validates backend and filters by provider."""
+    def test_parse_from_raw(self, mock_backend, backend_initialized, provider):
+        """parse_from_raw validates backend and filters by provider."""
         repo = MagicMock()
         repo._backend = mock_backend if backend_initialized else None
-        service = IngestionService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
+        service = ParsingService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
         if not backend_initialized:
             with pytest.raises(RuntimeError, match="backend is not initialized"):
-                service.ingest_from_raw(raw_ids=["raw-1"])
+                service.parse_from_raw(raw_ids=["raw-1"])
         else:
             mock_backend.iter_raw_conversations.return_value = [MagicMock(raw_id=f"raw-{i}", provider_name=p) for i, p in enumerate(["claude", "chatgpt"])]
             with patch.object(service, "_process_raw_batch"):
-                service.ingest_from_raw(provider=provider)
+                service.parse_from_raw(provider=provider)
                 assert mock_backend.iter_raw_conversations.call_args[1]["provider"] == provider
 
     @pytest.mark.parametrize(
@@ -607,12 +606,12 @@ class TestIngestionService:
         """_parse_raw_record handles JSONL, JSON, and string content."""
         repo = MagicMock()
         repo._backend = mock_backend
-        service = IngestionService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
+        service = ParsingService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
         raw_record = MagicMock()
         raw_record.raw_content = content.encode("utf-8") if is_bytes else content
         raw_record.provider_name = provider
         raw_record.raw_id = "raw-123"
-        with patch("polylogue.pipeline.services.ingestion._parse_json_payload") as mock_parse:
+        with patch("polylogue.pipeline.services.parsing._parse_json_payload") as mock_parse:
             mock_parse.return_value = [] if format_type == "string" else [ParsedConversation(provider_name=provider, provider_conversation_id=f"conv-{format_type}", messages=[])]
             service._parse_raw_record(raw_record)
             mock_parse.assert_called_once()
@@ -1301,7 +1300,7 @@ __all__ = [
     "TestDisplayResultComprehensive",
     "TestRunCommandWatch",
     "TestWatchModeCallbacks",
-    "TestIngestionService",
+    "TestParsingService",
     "TestParsedAttachmentSanitization",
     "TestAttachmentFromMeta",
     "TestExtractMessagesFromList",

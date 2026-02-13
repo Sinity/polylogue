@@ -311,8 +311,8 @@ def test_zip_bomb_compression_ratio_blocked(tmp_path):
 
 def test_zip_oversized_file_limit_constant(tmp_path):
     """ZIP max size limit constant is reasonable."""
-    # Verify the constant exists and is reasonable (500MB)
-    assert MAX_UNCOMPRESSED_SIZE == 500 * 1024 * 1024  # 500MB
+    # Verify the constant exists and is reasonable (10GB)
+    assert MAX_UNCOMPRESSED_SIZE == 10 * 1024 * 1024 * 1024  # 10GB
 
     # Can't practically test 500MB+ files in unit tests, but the constant
     # being defined and checked in iter_source_conversations protects

@@ -135,7 +135,7 @@ def test_iter_source_conversations_finds_mixed_case_jsonl(tmp_path):
     assert conversations[0].messages[0].text == "mixed case test"
 
 
-def test_has_ingest_extension_handles_double_extensions(tmp_path):
+def test_has_supported_extension_handles_double_extensions(tmp_path):
     """Files like data.jsonl.txt are recognized."""
     payload = (GenericConversationBuilder("double-ext-conv")
                .add_message("user", "double extension test", text="double extension test")
@@ -350,7 +350,7 @@ def test_iter_source_conversations_jsonl_with_null_bytes(tmp_path):
     assert conversations[0].provider_conversation_id == "null-test"
 
 
-class TestIngestIterConversations:
+class TestSourceIterConversations:
     """Tests for iter_source_conversations function."""
 
     def test_tracks_file_count_in_cursor_state(self, tmp_path):
@@ -438,7 +438,7 @@ class TestZipBombProtection:
             uncompressed_size = zf.infolist()[0].file_size
 
         ratio = uncompressed_size / zip_size
-        assert ratio > 100, f"Test setup: ratio {ratio} should be > 100"
+        assert ratio > 1000, f"Test setup: ratio {ratio} should be > 1000"
 
         source = Source(name="test", path=tmp_path)
 

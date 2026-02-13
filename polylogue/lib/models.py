@@ -252,7 +252,7 @@ class Message(BaseModel):
     @property
     def is_tool_use(self) -> bool:
         """Message contains tool/function calls or results."""
-        # Check structured content_blocks (populated at ingest time)
+        # Check structured content_blocks (populated at parse time)
         if self.provider_meta:
             blocks = self.provider_meta.get("content_blocks", [])
             if isinstance(blocks, list) and any(
@@ -275,7 +275,7 @@ class Message(BaseModel):
     @property
     def is_thinking(self) -> bool:
         """Message contains reasoning/thinking traces."""
-        # Check structured content_blocks (populated at ingest time)
+        # Check structured content_blocks (populated at parse time)
         if self.provider_meta:
             blocks = self.provider_meta.get("content_blocks", [])
             if isinstance(blocks, list) and any(isinstance(b, dict) and b.get("type") == "thinking" for b in blocks):

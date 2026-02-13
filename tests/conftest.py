@@ -476,7 +476,7 @@ def seeded_db(tmp_path_factory):
     from pathlib import Path
 
     from polylogue.config import Source
-    from polylogue.pipeline.ingest import prepare_ingest
+    from polylogue.pipeline.prepare import prepare_records
     from polylogue.sources import iter_source_conversations
     from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
     from polylogue.storage.repository import ConversationRepository
@@ -545,7 +545,7 @@ def seeded_db(tmp_path_factory):
                     for convo in iter_source_conversations(source):
                         archive_root = tmp_dir / "archive"
                         archive_root.mkdir(exist_ok=True)
-                        prepare_ingest(
+                        prepare_records(
                             convo,
                             source_name=provider,
                             archive_root=archive_root,

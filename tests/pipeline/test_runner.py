@@ -596,8 +596,8 @@ class TestLatestRun:
 class TestRunSourcesIntegration:
     """Integration tests for run_sources function."""
 
-    def test_ingest_stage_only(self, workspace_env, tmp_path: Path):
-        """Only ingestion runs when stage='ingest'."""
+    def test_parse_stage_only(self, workspace_env, tmp_path: Path):
+        """Only parsing runs when stage='parse'."""
         # Create test data
         inbox = tmp_path / "inbox"
         inbox.mkdir()
@@ -631,10 +631,10 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = run_sources(config=config, stage="ingest")
+        result = run_sources(config=config, stage="parse")
 
         assert result.counts["conversations"] >= 1
-        # Render count should be 0 (only ingest ran)
+        # Render count should be 0 (only parse ran)
         assert result.counts.get("rendered", 0) == 0
 
     def test_render_stage_only(self, workspace_env, tmp_path: Path):
@@ -725,7 +725,7 @@ class TestRunSourcesIntegration:
             cursors={},
         )
 
-        result = run_sources(config=config, stage="ingest", plan=plan)
+        result = run_sources(config=config, stage="parse", plan=plan)
 
         # With 0 actual, drift should show removed items
         assert "new" in result.drift
@@ -766,7 +766,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = run_sources(config=config, stage="ingest", plan=None)
+        result = run_sources(config=config, stage="parse", plan=None)
 
         # All should be counted as new
         assert result.drift["new"]["conversations"] == result.counts["conversations"]
@@ -779,7 +779,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = run_sources(config=config, stage="ingest")
+        result = run_sources(config=config, stage="parse")
 
         runs_dir = workspace_env["archive_root"] / "runs"
         assert runs_dir.exists()

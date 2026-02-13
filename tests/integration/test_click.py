@@ -695,10 +695,10 @@ class TestFormatCounts:
 class TestFormatIndexStatus:
     """Tests for format_index_status()."""
 
-    def test_ingest_stage_skipped(self):
+    def test_parse_stage_skipped(self):
         from polylogue.cli.formatting import format_index_status
 
-        assert format_index_status("ingest", False, None) == "Index: skipped"
+        assert format_index_status("parse", False, None) == "Index: skipped"
 
     def test_render_stage_skipped(self):
         from polylogue.cli.formatting import format_index_status

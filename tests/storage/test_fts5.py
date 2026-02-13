@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue.config import Config, IndexConfig
-from polylogue.sources import IngestBundle, ingest_bundle
+from polylogue.sources import RecordBundle, save_bundle
 from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.index import ensure_index, rebuild_index, update_index_for_conversations
 from polylogue.storage.search import escape_fts5_query, search_messages
@@ -56,7 +56,7 @@ def test_search_basic_results(workspace_env, storage_repository, num_convs, sear
 
         conv = make_conversation(f"conv{i}", title=f"Conv {i}")
         msg = make_message(f"msg{i}", f"conv{i}", text=text)
-        ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+        save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
 
     rebuild_index()
 
@@ -69,7 +69,7 @@ def test_search_respects_limit(workspace_env, storage_repository):
     for i in range(10):
         conv = make_conversation(f"conv{i}", title=f"Conv {i}")
         msg = make_message(f"msg{i}", f"conv{i}", text="search limit")
-        ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+        save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
 
     rebuild_index()
 
@@ -82,7 +82,7 @@ def test_search_includes_snippet(workspace_env, storage_repository):
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="The quick brown fox jumps over the lazy dog")
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("quick", archive_root=workspace_env["archive_root"], limit=10)
@@ -100,7 +100,7 @@ def test_search_includes_conversation_metadata(workspace_env, storage_repository
     )
     msg = make_message("msg1", "conv1", text="search query", timestamp="2024-01-01T10:30:00Z")
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("search", archive_root=workspace_env["archive_root"], limit=10)
@@ -135,7 +135,7 @@ def test_search_with_special_text(workspace_env, storage_repository, text, searc
     conv = make_conversation("conv1", title=f"Test {description}")
     msg = make_message("msg1", "conv1", text=text)
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages(search_term, archive_root=workspace_env["archive_root"], limit=10)
@@ -171,7 +171,7 @@ def test_search_returns_searchresult_object(workspace_env, storage_repository):
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="search result")
 
-    ingest_bundle(IngestBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("search", archive_root=workspace_env["archive_root"], limit=10)
@@ -304,8 +304,8 @@ def test_batch_index_search_returns_correct_provider(workspace_env, storage_repo
     messages1 = [make_message(f"msg1-{i}", "conv1", text=f"claude text {i}") for i in range(5)]
     messages2 = [make_message(f"msg2-{i}", "conv2", text=f"chatgpt text {i}") for i in range(5)]
 
-    ingest_bundle(IngestBundle(conversation=conv1, messages=messages1, attachments=[]), repository=storage_repository)
-    ingest_bundle(IngestBundle(conversation=conv2, messages=messages2, attachments=[]), repository=storage_repository)
+    save_bundle(RecordBundle(conversation=conv1, messages=messages1, attachments=[]), repository=storage_repository)
+    save_bundle(RecordBundle(conversation=conv2, messages=messages2, attachments=[]), repository=storage_repository)
 
     rebuild_index()
 
@@ -751,8 +751,8 @@ class TestSearchProviderInit:
 
 def _seed_conversation(storage_repository):
     """Helper to seed a test conversation."""
-    ingest_bundle(
-        IngestBundle(
+    save_bundle(
+        RecordBundle(
             conversation=make_conversation("conv:hash", provider_name="codex", title="Demo"),
             messages=[make_message("msg:hash", "conv:hash", text="hello world")],
             attachments=[],
@@ -822,12 +822,12 @@ def test_search_prefers_legacy_render_when_present(workspace_env, storage_reposi
     archive_root = workspace_env["archive_root"]
     provider_name = "legacy-provider"
     conversation_id = "conv-one"
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation(conversation_id, provider_name=provider_name, title="Legacy"),
         messages=[make_message("msg:legacy", conversation_id, text="hello legacy")],
         attachments=[],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     # Create a legacy-style render path
@@ -856,7 +856,7 @@ SEARCH_SINCE_VALID_CASES = [
 def test_search_since_filters(workspace_env, storage_repository, conv_id, old_ts, new_ts, search_term, since_date, expected_msg_id, description):
     """--since filters messages by timestamp (ISO and numeric formats)."""
     archive_root = workspace_env["archive_root"]
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation(conv_id, title=f"Test {description}"),
         messages=[
             make_message(f"{conv_id}:old", conv_id, text=f"old message {description}", timestamp=old_ts),
@@ -864,7 +864,7 @@ def test_search_since_filters(workspace_env, storage_repository, conv_id, old_ts
         ],
         attachments=[],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     results = search_messages(search_term, archive_root=archive_root, since=since_date, limit=10)
@@ -877,7 +877,7 @@ def test_search_since_handles_mixed_timestamp_formats(workspace_env, storage_rep
     archive_root = workspace_env["archive_root"]
 
     # Create conversation with ISO timestamp (after cutoff)
-    bundle_iso = IngestBundle(
+    bundle_iso = RecordBundle(
         conversation=make_conversation("conv:iso-new", title="ISO Test"),
         messages=[
             make_message("msg:iso-new", "conv:iso-new", text="mixedformat gamma", timestamp="2024-01-25T12:00:00")
@@ -886,22 +886,22 @@ def test_search_since_handles_mixed_timestamp_formats(workspace_env, storage_rep
     )
 
     # Create conversation with numeric timestamp (after cutoff)
-    bundle_num = IngestBundle(
+    bundle_num = RecordBundle(
         conversation=make_conversation("conv:num-new", title="Numeric Test"),
         messages=[make_message("msg:num-new", "conv:num-new", text="mixedformat delta", timestamp="1706400000.0")],
         attachments=[],
     )
 
     # Create conversation with old ISO timestamp (before cutoff)
-    bundle_old = IngestBundle(
+    bundle_old = RecordBundle(
         conversation=make_conversation("conv:old", title="Old Test"),
         messages=[make_message("msg:iso-old", "conv:old", text="mixedformat alpha", timestamp="2024-01-05T12:00:00")],
         attachments=[],
     )
 
-    ingest_bundle(bundle_iso, repository=storage_repository)
-    ingest_bundle(bundle_num, repository=storage_repository)
-    ingest_bundle(bundle_old, repository=storage_repository)
+    save_bundle(bundle_iso, repository=storage_repository)
+    save_bundle(bundle_num, repository=storage_repository)
+    save_bundle(bundle_old, repository=storage_repository)
     rebuild_index()
 
     results = search_messages(
@@ -942,7 +942,7 @@ def test_search_since_invalid_date_raises_error(workspace_env, storage_repositor
 def test_search_since_boundary_condition(workspace_env, storage_repository):
     """Messages at or after --since timestamp are included, earlier ones excluded."""
     archive_root = workspace_env["archive_root"]
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=make_conversation("conv:boundary", title="Boundary Test"),
         messages=[
             make_message(
@@ -954,7 +954,7 @@ def test_search_since_boundary_condition(workspace_env, storage_repository):
         ],
         attachments=[],
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     results = search_messages(
