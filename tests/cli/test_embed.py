@@ -469,7 +469,7 @@ class TestDisplayResult:
 class TestNotifyNewConversations:
     """Test _notify_new_conversations function."""
 
-    @pytest.mark.parametrize("num_conversations", [0, 1, 3, 999])
+    @pytest.mark.parametrize("num_conversations", [1, 3, 999])
     def test_notify_new_conversations_variants(self, num_conversations):
         """_notify_new_conversations calls notify-send with various conversation counts."""
         with patch("subprocess.run") as mock_run:
@@ -479,6 +479,12 @@ class TestNotifyNewConversations:
             call_args = mock_run.call_args[0][0]
             assert "notify-send" in call_args
             assert str(num_conversations) in str(call_args)
+
+    def test_notify_zero_is_noop(self):
+        """_notify_new_conversations does nothing for 0 new conversations."""
+        with patch("subprocess.run") as mock_run:
+            _notify_new_conversations(0)
+            mock_run.assert_not_called()
 
     def test_notify_new_conversations_not_found(self):
         """_notify_new_conversations silently ignores FileNotFoundError."""

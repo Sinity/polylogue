@@ -145,48 +145,37 @@ def _display_result(
 
 
 def _notify_new_conversations(count: int) -> None:
-    """Send desktop notification for new conversations."""
-    try:
-        import subprocess
+    """Send desktop notification for new conversations.
 
-        subprocess.run(
-            ["notify-send", "Polylogue", f"Synced {count} new conversation(s)"],
-            capture_output=True,
-            check=False,
-        )
-    except FileNotFoundError:
-        pass  # notify-send not available
+    Thin wrapper around :class:`~polylogue.pipeline.events.NotificationHandler`
+    kept for backward compatibility with existing callers and tests.
+    """
+    from polylogue.pipeline.events import NotificationHandler, SyncEvent
+
+    handler = NotificationHandler()
+    handler.on_sync(SyncEvent(new_conversations=count, run_result=None))  # type: ignore[arg-type]
 
 
 def _exec_on_new(exec_cmd: str, count: int) -> None:
-    """Execute command when new conversations are synced."""
-    import os
-    import subprocess
+    """Execute command when new conversations are synced.
 
-    env = os.environ.copy()
-    env["POLYLOGUE_NEW_COUNT"] = str(count)
-    subprocess.run(exec_cmd, shell=True, env=env, check=False)
+    Thin wrapper around :class:`~polylogue.pipeline.events.ExecHandler`.
+    """
+    from polylogue.pipeline.events import ExecHandler, SyncEvent
+
+    handler = ExecHandler(exec_cmd)
+    handler.on_sync(SyncEvent(new_conversations=count, run_result=None))  # type: ignore[arg-type]
 
 
 def _webhook_on_new(webhook_url: str, count: int) -> None:
-    """Call webhook URL when new conversations are synced."""
-    import logging
+    """Call webhook URL when new conversations are synced.
 
-    _logger = logging.getLogger(__name__)
-    try:
-        import json as json_lib
-        import urllib.request
+    Thin wrapper around :class:`~polylogue.pipeline.events.WebhookHandler`.
+    """
+    from polylogue.pipeline.events import SyncEvent, WebhookHandler
 
-        data = json_lib.dumps({"event": "sync", "new_conversations": count}).encode()
-        req = urllib.request.Request(
-            webhook_url,
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=10)
-    except Exception as exc:
-        _logger.warning("Webhook failed for %s: %s", webhook_url, exc)
+    handler = WebhookHandler(webhook_url)
+    handler.on_sync(SyncEvent(new_conversations=count, run_result=None))  # type: ignore[arg-type]
 
 
 @click.command("run")
@@ -267,31 +256,58 @@ def run_command(
 
     # Watch mode
     if watch:
+        from polylogue.pipeline.events import (
+            CompositeSyncHandler,
+            ExecHandler,
+            NotificationHandler,
+            SyncEvent,
+            WebhookHandler,
+        )
+        from polylogue.pipeline.watch import WatchRunner
+
+        # Build event handlers from CLI flags
+        handlers: list[object] = []
+
+        # Always display results when new conversations arrive
+        class _DisplayHandler:
+            def on_sync(self, event: SyncEvent) -> None:
+                if event.new_conversations > 0 and event.run_result is not None:
+                    _display_result(env, cfg, event.run_result, stage, selected_sources)
+
+        handlers.append(_DisplayHandler())
+
+        if notify:
+            handlers.append(NotificationHandler())
+        if exec_cmd:
+            handlers.append(ExecHandler(exec_cmd))
+        if webhook:
+            handlers.append(WebhookHandler(webhook))
+
+        composite = CompositeSyncHandler(handlers)  # type: ignore[arg-type]
+
+        def _sync_once() -> RunResult:
+            return _run_sync_once(cfg, env, stage, selected_sources, render_format)
+
+        def _on_idle(result: RunResult) -> None:
+            click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
+
+        def _on_error(exc: Exception) -> None:
+            if isinstance(exc, DriveError):
+                click.echo(f"Sync error: {exc}", err=True)
+            else:
+                click.echo(f"Unexpected error during sync: {exc}", err=True)
+
         env.ui.console.print("Watch mode: syncing every 60 seconds. Press Ctrl+C to stop.")
-        poll_interval = 60
-        try:
-            while True:
-                try:
-                    result = _run_sync_once(cfg, env, stage, selected_sources, render_format)
-                    new_count = result.counts.get("conversations", 0)
-                    if new_count > 0:
-                        _display_result(env, cfg, result, stage, selected_sources)
-                        if notify:
-                            _notify_new_conversations(new_count)
-                        if exec_cmd:
-                            _exec_on_new(exec_cmd, new_count)
-                        if webhook:
-                            _webhook_on_new(webhook, new_count)
-                    else:
-                        click.echo(f"No new conversations at {time.strftime('%H:%M:%S')}")
-                except DriveError as exc:
-                    click.echo(f"Sync error: {exc}", err=True)
-                except Exception as exc:
-                    click.echo(f"Unexpected error during sync: {exc}", err=True)
-                time.sleep(poll_interval)
-        except KeyboardInterrupt:
-            env.ui.console.print("\nWatch mode stopped.")
-            return
+        runner = WatchRunner(
+            sync_fn=_sync_once,
+            handler=composite,
+            interval=60,
+            on_idle=_on_idle,
+            on_error=_on_error,
+        )
+        runner.run()
+        env.ui.console.print("\nWatch mode stopped.")
+        return
     else:
         # Single sync run
         try:
