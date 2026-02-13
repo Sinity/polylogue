@@ -10,7 +10,6 @@ This module handles the execution of query-mode operations including:
 
 from __future__ import annotations
 
-import contextlib
 import json
 import sys
 from pathlib import Path
