@@ -768,7 +768,7 @@ class TestTagsCommand:
         assert "--add-tag" in result.output
 
 
-class TestEmbedCommand:
+class TestRunEmbedCommand:
     """Tests for the polylogue embed subcommand."""
 
     def test_embed_no_api_key(self, runner, cli_workspace):
