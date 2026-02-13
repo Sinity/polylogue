@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from polylogue.pipeline.events import SyncEvent, SyncEventHandler
 from polylogue.sources import DriveError
