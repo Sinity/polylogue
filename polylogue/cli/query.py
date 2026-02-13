@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import re
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -951,66 +950,13 @@ def _render_conversation_rich(env: AppEnv, conv: Conversation) -> None:
 def _conv_to_html(conv: Conversation) -> str:
     """Convert conversation to HTML with Pygments syntax highlighting.
 
-    Uses the rendering subsystem's MarkdownRenderer for proper code highlighting
-    and the HTMLRenderer's styled template for polished output.
+    Delegates to the shared ``render_conversation_html`` function which
+    uses the same Jinja2 template and Pygments highlighting as the
+    rendering subsystem's ``HTMLRenderer``.
     """
-    from html import escape as html_escape
+    from polylogue.rendering.renderers.html import render_conversation_html
 
-    from polylogue.lib.theme import DARK_THEME, role_color
-    from polylogue.rendering.renderers.html import MarkdownRenderer as HtmlMarkdownRenderer
-    from polylogue.rendering.renderers.html import PygmentsHighlighter
-
-    highlighter = PygmentsHighlighter(style="monokai")
-    md_renderer = HtmlMarkdownRenderer(highlighter)
-
-    title = conv.display_title or conv.id
-    title_safe = html_escape(title)
-    messages_html = []
-    for msg in conv.messages:
-        if not msg.text:
-            continue
-        role = msg.role or "message"
-        role_safe = html_escape(role, quote=True)
-        # CSS class names: only allow lowercase alphanumeric and hyphens
-        role_class = "message-" + re.sub(r"[^a-z0-9-]", "-", role.lower())
-        html_content = md_renderer.render(msg.text)
-        messages_html.append(
-            f'<div class="{role_class}"><strong>{role_safe}:</strong>{html_content}</div>'
-        )
-
-    highlight_css = highlighter.get_css()
-
-    # Build role CSS from shared theme
-    role_css_lines = []
-    for role_name in ("user", "assistant", "system", "tool"):
-        rc = role_color(role_name)
-        role_css_lines.append(
-            f"        .message-{role_name} {{ background: {rc.css_bg(0.1)}; "
-            f"border-left: 3px solid {rc.css_border(0.5)}; "
-            f"padding: 12px 16px; margin: 12px 0; border-radius: 8px; }}"
-        )
-    role_css = "\n".join(role_css_lines)
-
-    return f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8">
-    <title>{title_safe} | Polylogue</title>
-    <style>
-        body {{ font-family: system-ui, -apple-system, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: {DARK_THEME['bg_primary']}; color: {DARK_THEME['text_primary']}; }}
-        h1 {{ border-bottom: 1px solid {DARK_THEME['border']}; padding-bottom: 12px; }}
-{role_css}
-        pre {{ background: #282c34; padding: 12px; border-radius: 6px; overflow-x: auto; }}
-        code {{ font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: 0.9em; }}
-        strong {{ color: {DARK_THEME['text_secondary']}; text-transform: capitalize; }}
-        {highlight_css}
-    </style>
-</head>
-<body>
-    <h1>{title_safe}</h1>
-    {"".join(messages_html)}
-</body>
-</html>"""
+    return render_conversation_html(conv)
 
 
 def _yaml_safe(value: str) -> str:

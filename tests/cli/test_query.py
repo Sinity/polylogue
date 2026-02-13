@@ -120,7 +120,7 @@ class TestFormatHelpers:
         "formatter,assertion",
         [
             (query._conv_to_markdown, lambda r: "# First Conversation" in r),
-            (query._conv_to_html, lambda r: "<!DOCTYPE html>" in r and "<html>" in r),
+            (query._conv_to_html, lambda r: "<!DOCTYPE html>" in r and "<html" in r),
             (query._conv_to_obsidian, lambda r: r.startswith("---")),
             (query._conv_to_org, lambda r: "#+TITLE:" in r),
         ],

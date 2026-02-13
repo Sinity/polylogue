@@ -274,7 +274,7 @@ class TestConvToHtml:
     def test_has_closing_tags(self) -> None:
         conv = _make_conv()
         result = self._fn(conv)
-        assert result.count("<html>") == result.count("</html>")
+        assert result.count("</html>") == 1
         assert result.count("<body>") == result.count("</body>")
 
 

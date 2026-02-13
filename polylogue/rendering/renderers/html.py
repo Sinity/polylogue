@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
+
 from jinja2 import DictLoader, Environment, FileSystemLoader, select_autoescape
 from markdown_it import MarkdownIt
 from pygments import highlight
@@ -13,6 +15,9 @@ from pygments.util import ClassNotFound
 
 from polylogue.render_paths import render_root
 from polylogue.rendering.core import ConversationFormatter
+
+if TYPE_CHECKING:
+    from polylogue.lib.models import Conversation
 
 
 class PygmentsHighlighter:
@@ -129,6 +134,13 @@ class MarkdownRenderer:
 
 DEFAULT_HTML_TEMPLATE = (Path(__file__).parent.parent / "templates" / "conversation.html").read_text()
 
+_ROLE_CLASS_RE = re.compile(r"[^a-z0-9-]")
+
+
+def _role_css_class(role: str) -> str:
+    """Convert a role name to a CSS-safe class like ``message-tool-use``."""
+    return "message-" + _ROLE_CLASS_RE.sub("-", role.lower())
+
 
 class HTMLRenderer:
     """Enhanced HTML renderer with syntax highlighting and polished styling.
@@ -206,10 +218,12 @@ class HTMLRenderer:
                 text = row["text"] or ""
                 if not text:
                     continue
+                role = row["role"] or "message"
                 html_content = self.md_renderer.render(text)
                 messages.append({
                     "id": row["message_id"],
-                    "role": row["role"] or "message",
+                    "role": role,
+                    "role_class": _role_css_class(role),
                     "text": text,
                     "html_content": html_content,
                     "timestamp": row["timestamp"],
@@ -275,4 +289,57 @@ class HTMLRenderer:
         return html_path
 
 
-__all__ = ["HTMLRenderer", "PygmentsHighlighter", "MarkdownRenderer"]
+def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
+    """Render an in-memory Conversation to a standalone HTML string.
+
+    Uses the same Jinja2 template and Pygments highlighting as
+    :class:`HTMLRenderer`, but works directly from a ``Conversation``
+    object rather than querying the database.
+
+    Args:
+        conv: Conversation with messages to render.
+        theme: ``"dark"`` or ``"light"``.
+
+    Returns:
+        Complete HTML document as a string.
+    """
+    style = "monokai" if theme == "dark" else "default"
+    highlighter = PygmentsHighlighter(style=style)
+    md_renderer = MarkdownRenderer(highlighter)
+
+    messages: list[dict[str, str | None]] = []
+    for msg in conv.messages:
+        if not msg.text:
+            continue
+        role = msg.role or "message"
+        html_content = md_renderer.render(msg.text)
+        messages.append({
+            "id": msg.id,
+            "role": role,
+            "role_class": _role_css_class(role),
+            "text": msg.text,
+            "html_content": html_content,
+            "timestamp": str(msg.timestamp) if msg.timestamp else None,
+        })
+
+    title = conv.display_title or str(conv.id)
+
+    env = Environment(
+        loader=DictLoader({"conversation.html": DEFAULT_HTML_TEMPLATE}),
+        autoescape=select_autoescape(["html", "xml"]),
+    )
+    template = env.get_template("conversation.html")
+
+    return template.render(
+        title=title,
+        provider=conv.provider,
+        conversation_id=str(conv.id),
+        messages=messages,
+        message_count=len(messages),
+        created_at=str(conv.created_at) if conv.created_at else None,
+        highlight_css=highlighter.get_css(),
+        theme=theme,
+    )
+
+
+__all__ = ["HTMLRenderer", "PygmentsHighlighter", "MarkdownRenderer", "render_conversation_html"]

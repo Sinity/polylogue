@@ -322,7 +322,7 @@
 
         <div class="messages">
             {% for msg in messages %}
-            <article class="message message-{{ msg.role or 'unknown' }}" id="msg-{{ loop.index }}">
+            <article class="message {{ msg.role_class or 'message-unknown' }}" id="msg-{{ loop.index }}">
                 <div class="message-avatar">
                     <span class="avatar-icon">{{ (msg.role or 'msg')[:2] | upper }}</span>
                 </div>
