@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -470,6 +471,8 @@ def seeded_db(tmp_path_factory):
     Returns:
         Path to the seeded database file
     """
+    import hashlib
+    from datetime import datetime, timezone
     from pathlib import Path
 
     from polylogue.config import Source
@@ -477,6 +480,7 @@ def seeded_db(tmp_path_factory):
     from polylogue.sources import iter_source_conversations
     from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.store import RawConversationRecord
 
     # Create session-scoped temp directory
     tmp_dir = tmp_path_factory.mktemp("seeded_db")
@@ -526,6 +530,33 @@ def seeded_db(tmp_path_factory):
 
                     warnings.warn(f"Failed to ingest {fixture_path}: {e}", stacklevel=2)
 
+    # Also populate raw_conversations table so database-driven tests
+    # (TestRawConversationParsing, TestRawConversationCoverage) have data.
+    # This mirrors what AcquisitionService._store_raw() does in the real pipeline.
+    for provider, files in fixture_files.items():
+        for fixture_path in files:
+            if not fixture_path.exists():
+                continue
+            try:
+                raw_bytes = fixture_path.read_bytes()
+                raw_id = hashlib.sha256(raw_bytes).hexdigest()
+                record = RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name=provider,
+                    source_name=provider,
+                    source_path=str(fixture_path),
+                    raw_content=raw_bytes,
+                    acquired_at=datetime.now(timezone.utc).isoformat(),
+                )
+                backend.save_raw_conversation(record)
+            except Exception as e:
+                import warnings
+
+                warnings.warn(f"Failed to store raw {fixture_path}: {e}", stacklevel=2)
+
+    # Commit raw_conversations so they're visible to other connections
+    backend._get_connection().commit()
+
     return db_path
 
 
@@ -560,8 +591,11 @@ def raw_db_samples():
     This enables honest, database-driven testing by using REAL data
     that was acquired via `polylogue run --stage acquire`.
 
+    Uses stratified sampling: takes up to N samples per provider to ensure
+    all providers are represented regardless of acquisition order.
+
     Control sample count via POLYLOGUE_TEST_SAMPLES environment variable:
-    - POLYLOGUE_TEST_SAMPLES=100 (default) - Fast CI, limited samples
+    - POLYLOGUE_TEST_SAMPLES=25 (default) - 25 per provider, fast CI
     - POLYLOGUE_TEST_SAMPLES=0 - Exhaustive mode, ALL raw conversations
 
     Returns:
@@ -571,9 +605,9 @@ def raw_db_samples():
 
     from polylogue.storage.backends.sqlite import SQLiteBackend
 
-    # Get sample limit from environment (use original env, not test-modified)
-    limit_str = os.environ.get("POLYLOGUE_TEST_SAMPLES", "100")
-    limit = int(limit_str) if limit_str != "0" else None
+    # Get per-provider sample limit from environment
+    limit_str = os.environ.get("POLYLOGUE_TEST_SAMPLES", "25")
+    per_provider = int(limit_str) if limit_str != "0" else None
 
     # Use pre-computed path that bypasses test env modifications
     if not _REAL_DB_PATH.exists():
@@ -581,9 +615,46 @@ def raw_db_samples():
 
     backend = SQLiteBackend(db_path=_REAL_DB_PATH)
 
-    # Load samples from raw_conversations table
-    samples = list(backend.iter_raw_conversations(limit=limit))
+    if per_provider is None:
+        # Exhaustive mode: all conversations
+        return list(backend.iter_raw_conversations())
+
+    # Stratified random sampling: N random records per provider.
+    # Random order avoids recency bias (e.g. most-recent chatgpt records
+    # being profile metadata rather than conversations).
+    from polylogue.storage.store import RawConversationRecord
+
+    conn = backend._get_connection()
+    providers = [
+        row[0] for row in conn.execute(
+            "SELECT DISTINCT provider_name FROM raw_conversations"
+        ).fetchall()
+    ]
+
+    samples = []
+    for provider in providers:
+        rows = conn.execute(
+            "SELECT * FROM raw_conversations WHERE provider_name = ? ORDER BY RANDOM() LIMIT ?",
+            (provider, per_provider),
+        ).fetchall()
+        samples.extend(_row_to_raw_record(row) for row in rows)
 
     return samples
+
+
+def _row_to_raw_record(row: sqlite3.Row) -> "RawConversationRecord":
+    """Convert a sqlite3.Row to RawConversationRecord."""
+    from polylogue.storage.store import RawConversationRecord
+
+    return RawConversationRecord(
+        raw_id=row["raw_id"],
+        provider_name=row["provider_name"],
+        source_name=row["source_name"],
+        source_path=row["source_path"],
+        source_index=row["source_index"],
+        raw_content=row["raw_content"],
+        acquired_at=row["acquired_at"],
+        file_mtime=row["file_mtime"],
+    )
 
 
