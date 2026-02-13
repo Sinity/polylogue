@@ -134,7 +134,7 @@ class TestDescribeFilters:
 
 class TestYamlSafe:
     def _fn(self, value: str) -> str:
-        from polylogue.cli.query import _yaml_safe
+        from polylogue.lib.formatting import _yaml_safe
 
         return _yaml_safe(value)
 
@@ -180,7 +180,7 @@ class TestYamlSafe:
 
 class TestConvToMarkdown:
     def _fn(self, conv: Conversation) -> str:
-        from polylogue.cli.query import _conv_to_markdown
+        from polylogue.lib.formatting import _conv_to_markdown
 
         return _conv_to_markdown(conv)
 
@@ -232,7 +232,7 @@ class TestConvToMarkdown:
 
 class TestConvToHtml:
     def _fn(self, conv: Conversation) -> str:
-        from polylogue.cli.query import _conv_to_html
+        from polylogue.lib.formatting import _conv_to_html
 
         return _conv_to_html(conv)
 
@@ -285,7 +285,7 @@ class TestConvToHtml:
 
 class TestConvToJson:
     def _fn(self, conv: Conversation, fields: str | None = None) -> str:
-        from polylogue.cli.query import _conv_to_json
+        from polylogue.lib.formatting import _conv_to_json
 
         return _conv_to_json(conv, fields)
 
@@ -324,7 +324,7 @@ class TestConvToJson:
 
 class TestConvToPlaintext:
     def _fn(self, conv: Conversation) -> str:
-        from polylogue.cli.query import _conv_to_plaintext
+        from polylogue.lib.formatting import _conv_to_plaintext
 
         return _conv_to_plaintext(conv)
 
@@ -359,7 +359,7 @@ class TestConvToPlaintext:
 
 class TestConvToCsvMessages:
     def _fn(self, conv: Conversation) -> str:
-        from polylogue.cli.query import _conv_to_csv_messages
+        from polylogue.lib.formatting import _conv_to_csv_messages
 
         return _conv_to_csv_messages(conv)
 
@@ -395,7 +395,7 @@ class TestConvToCsvMessages:
 
 class TestConvToObsidian:
     def _fn(self, conv: Conversation) -> str:
-        from polylogue.cli.query import _conv_to_obsidian
+        from polylogue.lib.formatting import _conv_to_obsidian
 
         return _conv_to_obsidian(conv)
 
@@ -431,7 +431,7 @@ class TestConvToObsidian:
 
 class TestConvToOrg:
     def _fn(self, conv: Conversation) -> str:
-        from polylogue.cli.query import _conv_to_org
+        from polylogue.lib.formatting import _conv_to_org
 
         return _conv_to_org(conv)
 
@@ -463,7 +463,7 @@ class TestConvToOrg:
 
 class TestConvToDict:
     def _fn(self, conv: Conversation, fields: str | None = None) -> dict:
-        from polylogue.cli.query import _conv_to_dict
+        from polylogue.lib.formatting import _conv_to_dict
 
         return _conv_to_dict(conv, fields)
 
@@ -526,7 +526,7 @@ class TestConvToCsv:
 
 class TestConvToYaml:
     def _fn(self, conv: Conversation, fields: str | None = None) -> str:
-        from polylogue.cli.query import _conv_to_yaml
+        from polylogue.lib.formatting import _conv_to_yaml
 
         return _conv_to_yaml(conv, fields)
 
@@ -564,9 +564,9 @@ class TestConvToYaml:
 
 class TestFormatConversation:
     def _fn(self, conv: Conversation, fmt: str, fields: str | None = None) -> str:
-        from polylogue.cli.query import _format_conversation
+        from polylogue.lib.formatting import format_conversation
 
-        return _format_conversation(conv, fmt, fields)
+        return format_conversation(conv, fmt, fields)
 
     @pytest.mark.parametrize(
         "fmt,expected_content",

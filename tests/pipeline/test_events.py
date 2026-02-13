@@ -43,37 +43,45 @@ class TestNotificationHandler:
 
 
 class TestWebhookHandler:
+    """Test WebhookHandler with mocked DNS to avoid network access in tests."""
+
+    _FAKE_ADDRINFO = [(2, 1, 6, "", ("93.184.216.34", 80))]
+
     def test_posts_to_url(self):
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            handler = WebhookHandler("http://example.com/hook")
-            handler.on_sync(_make_event(7))
-            mock_urlopen.assert_called_once()
-            req = mock_urlopen.call_args[0][0]
-            assert req.get_full_url() == "http://example.com/hook"
-            assert req.get_method() == "POST"
+        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=self._FAKE_ADDRINFO):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                handler = WebhookHandler("http://example.com/hook")
+                handler.on_sync(_make_event(7))
+                mock_urlopen.assert_called_once()
+                req = mock_urlopen.call_args[0][0]
+                assert req.get_full_url() == "http://example.com/hook"
+                assert req.get_method() == "POST"
 
     def test_payload_format(self):
         import json
 
-        with patch("urllib.request.urlopen"):
-            with patch("urllib.request.Request") as mock_req:
-                handler = WebhookHandler("http://example.com/hook")
-                handler.on_sync(_make_event(7))
-                call_kwargs = mock_req.call_args[1]
-                payload = json.loads(call_kwargs["data"].decode())
-                assert payload["event"] == "sync"
-                assert payload["new_conversations"] == 7
+        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=self._FAKE_ADDRINFO):
+            with patch("urllib.request.urlopen"):
+                with patch("urllib.request.Request") as mock_req:
+                    handler = WebhookHandler("http://example.com/hook")
+                    handler.on_sync(_make_event(7))
+                    call_kwargs = mock_req.call_args[1]
+                    payload = json.loads(call_kwargs["data"].decode())
+                    assert payload["event"] == "sync"
+                    assert payload["new_conversations"] == 7
 
     def test_skips_when_no_new(self):
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            handler = WebhookHandler("http://example.com/hook")
-            handler.on_sync(_make_event(0))
-            mock_urlopen.assert_not_called()
+        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=self._FAKE_ADDRINFO):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                handler = WebhookHandler("http://example.com/hook")
+                handler.on_sync(_make_event(0))
+                mock_urlopen.assert_not_called()
 
     def test_logs_on_failure(self):
-        with patch("urllib.request.urlopen", side_effect=ConnectionError("refused")):
-            handler = WebhookHandler("http://example.com/hook")
-            handler.on_sync(_make_event(1))  # Should not raise
+        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=self._FAKE_ADDRINFO):
+            with patch("urllib.request.urlopen", side_effect=ConnectionError("refused")):
+                handler = WebhookHandler("http://example.com/hook")
+                handler.on_sync(_make_event(1))  # Should not raise
 
 
 class TestExecHandler:
@@ -82,9 +90,11 @@ class TestExecHandler:
             handler = ExecHandler("echo hello")
             handler.on_sync(_make_event(3))
             mock_run.assert_called_once()
+            # Verify command is executed as argv list with shell=False (security)
+            call_args = mock_run.call_args[0]
+            assert call_args[0] == ["echo", "hello"]
             call_kwargs = mock_run.call_args[1]
             assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == "3"
-            assert call_kwargs["shell"] is True
 
     def test_skips_when_no_new(self):
         with patch("subprocess.run") as mock_run:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,11 +7,12 @@ from typing import Any
 
 from ..assets import asset_path
 from ..config import Source
+from ..lib.log import get_logger
 from ..paths import safe_path_component
 from .drive_client import DriveClient, _parse_modified_time
 from .source import ParsedConversation, parse_drive_payload
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 
 
 @dataclass

@@ -25,7 +25,7 @@ class TestExportConversationTool:
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            with patch("polylogue.cli.query._format_conversation") as mock_format:
+            with patch("polylogue.lib.formatting.format_conversation") as mock_format:
                 mock_repo = MagicMock()
                 mock_repo.view.return_value = sample_conversation
                 mock_get_repo.return_value = mock_repo
@@ -63,7 +63,7 @@ class TestExportConversationTool:
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
-            with patch("polylogue.cli.query._format_conversation") as mock_format:
+            with patch("polylogue.lib.formatting.format_conversation") as mock_format:
                 mock_repo = MagicMock()
                 mock_repo.view.return_value = sample_conversation
                 mock_get_repo.return_value = mock_repo

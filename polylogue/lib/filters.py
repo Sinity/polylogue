@@ -24,15 +24,15 @@ Example:
 from __future__ import annotations
 
 import builtins
-import logging
 import random
 from collections.abc import Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from polylogue.lib.dates import parse_date
+from polylogue.lib.log import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary

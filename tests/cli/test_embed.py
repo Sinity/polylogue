@@ -506,18 +506,33 @@ class TestExecOnNew:
     @pytest.mark.parametrize("command,num_conversations", [
         ("echo $POLYLOGUE_NEW_COUNT", 5),
         ("ls -la", 1),
-        ('echo "$POLYLOGUE_NEW_COUNT items"', 5),
-        ("echo 'Starting'\nsleep 1\necho 'Done'", 1),
+        ("my-script --count 5", 1),
     ])
     def test_exec_on_new_variants(self, command, num_conversations):
-        """_exec_on_new executes commands with correct environment and settings."""
+        """_exec_on_new executes commands with correct environment and settings.
+
+        Commands run with shell=False for security.  Shell metacharacters
+        like ;, &&, |, backticks, and $() are rejected at construction time.
+        """
         with patch("subprocess.run") as mock_run:
             _exec_on_new(command, num_conversations)
 
             mock_run.assert_called_once()
-            call_kwargs = mock_run.call_args[1]
-            assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == str(num_conversations)
-            assert call_kwargs["shell"] is True
+            call_kwargs = mock_run.call_args
+            # shell=False is the default when passing a list — verify no shell kwarg
+            assert call_kwargs[1].get("shell") is not True
+            assert call_kwargs[1]["env"]["POLYLOGUE_NEW_COUNT"] == str(num_conversations)
+
+    @pytest.mark.parametrize("dangerous_command", [
+        "echo hello; rm -rf /",
+        "echo hello && cat /etc/passwd",
+        "echo `whoami`",
+        "echo $(id)",
+    ])
+    def test_exec_on_new_rejects_dangerous_commands(self, dangerous_command):
+        """_exec_on_new rejects commands with shell metacharacters."""
+        with pytest.raises(ValueError, match="unsafe"):
+            _exec_on_new(dangerous_command, 1)
 
 
 # =============================================================================
@@ -535,18 +550,21 @@ class TestWebhookOnNew:
     ])
     def test_webhook_on_new_variants(self, url, num_conversations):
         """_webhook_on_new sends POST requests with correct payloads and timeouts."""
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            with patch("urllib.request.Request") as mock_request:
-                _webhook_on_new(url, num_conversations)
+        # Mock SSRF validation (DNS resolution unavailable in sandboxed tests)
+        fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 443))]
+        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                with patch("urllib.request.Request") as mock_request:
+                    _webhook_on_new(url, num_conversations)
 
-                mock_urlopen.assert_called_once()
-                call_kwargs = mock_urlopen.call_args[1]
-                assert call_kwargs.get("timeout") == 10
+                    mock_urlopen.assert_called_once()
+                    call_kwargs = mock_urlopen.call_args[1]
+                    assert call_kwargs.get("timeout") == 10
 
-                # Check request details
-                mock_request.assert_called_once()
-                call_args = mock_request.call_args[0]
-                assert url in str(call_args)
+                    # Check request details
+                    mock_request.assert_called_once()
+                    call_args = mock_request.call_args[0]
+                    assert url in str(call_args)
 
                 # Check payload
                 call_kwargs = mock_request.call_args[1]
@@ -556,11 +574,13 @@ class TestWebhookOnNew:
 
     def test_webhook_on_new_exception_logged(self):
         """_webhook_on_new logs exceptions without raising."""
-        with patch("urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = ValueError("Connection failed")
+        fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
+        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                mock_urlopen.side_effect = ConnectionError("Connection failed")
 
-            # Should not raise
-            _webhook_on_new("http://example.com/webhook", 1)
+                # Should not raise
+                _webhook_on_new("http://example.com/webhook", 1)
 
 
 # =============================================================================
