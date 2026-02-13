@@ -184,14 +184,18 @@ class TestRepositoryIntegration:
     """Integration tests between repository and backend."""
 
     def test_repository_wraps_backend_operations(self):
-        """Repository should wrap backend for thread-safe operations."""
+        """Repository should wrap backend for thread-safe operations.
+
+        Write safety is provided by SQLite's BEGIN IMMEDIATE transactions
+        in the backend layer, not by a Python-level lock.
+        """
         backend = Mock(spec=SQLiteBackend)
 
         repo = ConversationRepository(backend)
 
         # Repository should have reference to backend
         assert repo.backend == backend
-        assert hasattr(repo, "_write_lock")
+        assert hasattr(repo, "_backend")
 
     def test_repository_methods_exist(self):
         """Repository should have the documented methods."""

@@ -68,6 +68,9 @@ class HybridSearchProvider:
     - FTS5: Exact keyword matching, phrase search, boolean operators
     - Vector: Semantic similarity, synonym handling, concept matching
 
+    Conforms to the ``SearchProvider`` protocol (``search()`` returns ``list[str]``).
+    Use ``search_scored()`` when RRF scores are needed.
+
     Attributes:
         fts_provider: FTS5 provider for full-text search
         vector_provider: Vector provider for semantic search (SqliteVecProvider)
@@ -92,7 +95,29 @@ class HybridSearchProvider:
         self.vector_provider = vector_provider
         self.rrf_k = rrf_k
 
-    def search(self, query: str, limit: int = 20) -> list[tuple[str, float]]:
+    def index(self, messages: list) -> None:
+        """Index messages via the underlying FTS5 provider.
+
+        Delegates to the FTS5 provider's index method, conforming to
+        the SearchProvider protocol.
+        """
+        self.fts_provider.index(messages)
+
+    def search(self, query: str) -> list[str]:
+        """Execute hybrid search conforming to SearchProvider protocol.
+
+        Returns message IDs without scores. For scored results, use
+        ``search_scored()``.
+
+        Args:
+            query: Search query string
+
+        Returns:
+            List of message IDs, ordered by descending RRF score.
+        """
+        return [msg_id for msg_id, _score in self.search_scored(query)]
+
+    def search_scored(self, query: str, limit: int = 20) -> list[tuple[str, float]]:
         """Execute hybrid search combining FTS5 and vector search.
 
         Runs both search methods and combines results using RRF fusion.
@@ -142,8 +167,8 @@ class HybridSearchProvider:
         """
         from polylogue.storage.backends.sqlite import open_connection
 
-        # Get message-level results
-        message_results = self.search(query, limit=limit * 3)
+        # Get message-level results (scored for ranking)
+        message_results = self.search_scored(query, limit=limit * 3)
 
         if not message_results:
             return []

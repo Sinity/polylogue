@@ -25,6 +25,12 @@ def _clear_polylogue_env(monkeypatch):
 
     reset()
 
+    # Close any cached SQLite connections to prevent WAL sidecar corruption
+    # when tests create/move/delete temp database files.
+    from polylogue.storage.backends.connection import _clear_connection_cache
+
+    _clear_connection_cache()
+
     # Clear search cache (LRU cache) to prevent cross-test pollution
     import sys
 

@@ -113,7 +113,7 @@ class TestHybridSearchProvider:
         provider = HybridSearchProvider(fts_provider=fts_mock, vector_provider=vec_mock)
 
         # Should return results from vector search when FTS is empty
-        result = provider.search("test", limit=10)
+        result = provider.search_scored("test", limit=10)
         assert len(result) > 0
 
     def test_hybrid_search_with_provider_filter(self, tmp_path):
@@ -300,7 +300,7 @@ class TestHybridSearchProviderRRF:
             ("msg1", 0.75),
         ]
 
-        results = hybrid_provider.search("test query", limit=10)
+        results = hybrid_provider.search_scored("test query", limit=10)
 
         # Should have items from both sources
         ids = [item_id for item_id, _ in results]
@@ -322,7 +322,7 @@ class TestHybridSearchProviderRRF:
             ("msg2", 0.85),
         ]
 
-        results = hybrid_provider.search("test query", limit=10)
+        results = hybrid_provider.search_scored("test query", limit=10)
 
         # Should have vector results only
         ids = [item_id for item_id, _ in results]
@@ -333,7 +333,7 @@ class TestHybridSearchProviderRRF:
         mock_fts_provider.search.return_value = ["msg1", "msg2"]
         mock_vector_provider.query.return_value = []
 
-        results = hybrid_provider.search("test query", limit=10)
+        results = hybrid_provider.search_scored("test query", limit=10)
 
         # Should have FTS results only
         ids = [item_id for item_id, _ in results]
@@ -345,7 +345,7 @@ class TestHybridSearchProviderRRF:
         mock_fts_provider.search.return_value = []
         mock_vector_provider.query.return_value = []
 
-        results = hybrid_provider.search("test query", limit=10)
+        results = hybrid_provider.search_scored("test query", limit=10)
         assert results == []
 
     def test_search_respects_limit(self, hybrid_provider, mock_fts_provider, mock_vector_provider):
@@ -353,7 +353,7 @@ class TestHybridSearchProviderRRF:
         mock_fts_provider.search.return_value = [f"msg{i}" for i in range(20)]
         mock_vector_provider.query.return_value = [(f"vec{i}", 0.9) for i in range(20)]
 
-        results = hybrid_provider.search("test query", limit=5)
+        results = hybrid_provider.search_scored("test query", limit=5)
         assert len(results) == 5
 
     def test_search_conversations_deduplicates(self, hybrid_provider, mock_fts_provider, mock_vector_provider):

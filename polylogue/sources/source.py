@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import zipfile
 from collections.abc import Iterable
@@ -18,6 +17,7 @@ from pydantic import BaseModel
 
 from polylogue.config import Source
 from polylogue.lib.json import dumps as json_dumps
+from polylogue.lib.log import get_logger
 
 from ..storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 from .parsers import chatgpt, claude, codex, drive
@@ -37,7 +37,7 @@ from .parsers.claude import (
 if TYPE_CHECKING:
     from ..storage.repository import ConversationRepository
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 
 
 class RecordBundle(BaseModel):
@@ -144,6 +144,29 @@ _MAX_PARSE_DEPTH = 10
 
 
 def _parse_json_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
+    """Dispatch parsed payload to the appropriate provider parser.
+
+    This function is the central routing point for all conversation parsing.
+    Each provider has different wire formats:
+    - ChatGPT: nested mapping with node IDs (``parse``)
+    - Claude AI: ``{"conversations": [{"chat_messages": [...]}]}`` (``parse_ai``)
+    - Claude Code: JSONL entries with ``sessionId`` (``parse_code``)
+    - Codex: flat ``[{role, content}]`` message lists (``parse``)
+    - Gemini/Drive: ``{"chunkedPrompt": {"chunks": [...]}}`` (``parse_chunked_prompt``)
+
+    Signatures differ across providers because wire formats vary significantly.
+    Unifying them would require an abstraction layer that adds complexity
+    without value — the dispatch here IS the abstraction.
+
+    Args:
+        provider: Detected provider name (e.g. "chatgpt", "claude", "gemini")
+        payload: Deserialized JSON content (dict or list depending on format)
+        fallback_id: ID to use if the payload lacks an explicit conversation ID
+        _depth: Recursion guard for nested structures (max: _MAX_PARSE_DEPTH)
+
+    Returns:
+        List of ParsedConversation objects extracted from the payload
+    """
     if _depth > _MAX_PARSE_DEPTH:
         LOGGER.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
         return []
@@ -689,6 +712,7 @@ def iter_source_conversations_with_raw(
                 pass
 
     # Phase 2: Process each file
+    failed_count = 0
     for path in paths:
         try:
             provider_hint = detect_provider(None, path) or source.name
@@ -726,14 +750,27 @@ def iter_source_conversations_with_raw(
                     with path.open("rb") as handle:
                         yield from emitter.emit(handle, path.name)
         except FileNotFoundError as exc:
+            failed_count += 1
             LOGGER.warning("File disappeared during processing (TOCTOU race): %s", path)
             _record_cursor_failure(cursor_state, str(path), f"File not found (may have been deleted): {exc}")
         except (json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
+            failed_count += 1
             LOGGER.warning("Failed to parse %s: %s", path, exc)
             _record_cursor_failure(cursor_state, str(path), str(exc))
         except Exception as exc:
+            failed_count += 1
             LOGGER.error("Unexpected error processing %s: %s", path, exc)
             _record_cursor_failure(cursor_state, str(path), str(exc))
+
+    # Emit a prominent summary if any files were skipped
+    if failed_count > 0:
+        LOGGER.warning(
+            "Skipped %d of %d files from source %r due to parse/read errors. "
+            "Run with --verbose for details.",
+            failed_count,
+            len(paths),
+            source.name,
+        )
 
 
 __all__ = [

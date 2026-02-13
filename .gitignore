@@ -65,3 +65,6 @@ result
 # Test artifacts
 test.zip
 test-manual-verification/
+
+# Demo output (regenerated via demos/generate.sh)
+demos/output/

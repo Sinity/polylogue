@@ -1,0 +1,60 @@
+name: Generate Demos
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "demos/tapes/**"
+      - "polylogue/cli/**"
+      - "polylogue/ui/**"
+      - "scripts/seed_demo.py"
+      - "scripts/fixtures/**"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Seed demo database
+        run: |
+          eval $(uv run python scripts/seed_demo.py --synthetic --env-only)
+          echo "XDG_DATA_HOME=$XDG_DATA_HOME" >> $GITHUB_ENV
+          echo "XDG_STATE_HOME=$XDG_STATE_HOME" >> $GITHUB_ENV
+          echo "POLYLOGUE_ARCHIVE_ROOT=$POLYLOGUE_ARCHIVE_ROOT" >> $GITHUB_ENV
+          echo "POLYLOGUE_RENDER_ROOT=$POLYLOGUE_RENDER_ROOT" >> $GITHUB_ENV
+          echo "POLYLOGUE_FORCE_PLAIN=1" >> $GITHUB_ENV
+
+      - name: Record tapes
+        uses: charmbracelet/vhs-action@v2
+        with:
+          path: "demos/tapes/*.tape"
+
+      - name: Copy assets
+        run: |
+          mkdir -p docs/assets
+          [ -f demos/output/01-overview.gif ] && cp demos/output/01-overview.gif docs/assets/demo-overview.gif || true
+
+      - name: Generate static assets
+        run: uv run python scripts/generate_assets.py
+
+      - name: Auto-commit updated demos
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: regenerate demo screencasts"
+          file_pattern: "demos/output/*.gif docs/assets/*"

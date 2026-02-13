@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .errors import PolylogueError
 from .paths import (
     DriveConfig,
     IndexConfig,
@@ -23,8 +24,8 @@ from .paths import (
 )
 
 
-class ConfigError(RuntimeError):
-    """Configuration error (kept for backward compatibility with error handling)."""
+class ConfigError(PolylogueError):
+    """Configuration error."""
 
     pass
 

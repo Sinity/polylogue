@@ -15,10 +15,10 @@ Tools are organized into tiers:
 from __future__ import annotations
 
 import json
-import logging
-import traceback
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
+
+from polylogue.lib.log import get_logger
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
@@ -27,38 +27,16 @@ if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.storage.repository import ConversationRepository
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _MAX_LIMIT = 10000
 
 # ---------------------------------------------------------------------------
-# Lazy singletons
+# Singleton delegates (defer to polylogue.services)
 # ---------------------------------------------------------------------------
 
-_repo_instance: ConversationRepository | None = None
-_config_instance: Config | None = None
-
-
-def _get_repo() -> ConversationRepository:
-    """Lazily initialize and return the ConversationRepository singleton."""
-    global _repo_instance
-    if _repo_instance is None:
-        from polylogue.storage.backends.sqlite import create_default_backend
-        from polylogue.storage.repository import ConversationRepository
-
-        backend = create_default_backend()
-        _repo_instance = ConversationRepository(backend=backend)
-    return _repo_instance
-
-
-def _get_config() -> Config:
-    """Lazily initialize and return the Config singleton."""
-    global _config_instance
-    if _config_instance is None:
-        from polylogue.config import get_config
-
-        _config_instance = get_config()
-    return _config_instance
+from polylogue.services import get_repository as _get_repo
+from polylogue.services import get_service_config as _get_config
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +80,11 @@ def _clamp_limit(limit: int | Any) -> int:
 
 
 def _safe_call(fn_name: str, fn: Any) -> str:
-    """Call fn() and return its result, or a JSON error dict on exception."""
+    """Call fn() and return its result, or a JSON error dict on exception.
+
+    Tracebacks are logged server-side at ERROR level but never sent to
+    MCP clients, preventing leakage of internal paths and code structure.
+    """
     try:
         return fn()
     except Exception as exc:
@@ -110,7 +92,6 @@ def _safe_call(fn_name: str, fn: Any) -> str:
         return json.dumps({
             "error": str(exc),
             "tool": fn_name,
-            "traceback": traceback.format_exc(),
         })
 
 
@@ -514,7 +495,7 @@ def _build_server() -> FastMCP:
             format: Output format ('markdown', 'json', 'html', 'yaml', 'plaintext', 'csv', 'obsidian', 'org')
         """
         def _run() -> str:
-            from polylogue.cli.query import _format_conversation
+            from polylogue.lib.formatting import format_conversation
 
             repo = _get_repo()
             conv = repo.view(id)
@@ -523,7 +504,7 @@ def _build_server() -> FastMCP:
 
             valid_formats = {"markdown", "json", "html", "yaml", "plaintext", "csv", "obsidian", "org"}
             fmt = format if format in valid_formats else "markdown"
-            return _format_conversation(conv, fmt, None)
+            return format_conversation(conv, fmt, None)
         return _safe_call("export_conversation", _run)
 
     # ==================================================================

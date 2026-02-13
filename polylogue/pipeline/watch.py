@@ -6,18 +6,18 @@ so it can be reused by MCP servers, daemons, or batch jobs.
 
 from __future__ import annotations
 
-import logging
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from polylogue.lib.log import get_logger
 from polylogue.pipeline.events import SyncEvent, SyncEventHandler
 from polylogue.sources import DriveError
 
 if TYPE_CHECKING:
     from polylogue.storage.store import RunResult
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = get_logger(__name__)
 
 
 class WatchRunner:

@@ -350,6 +350,12 @@ def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeyp
 
     # Now import default_db_path AFTER reload
 
+    # Close cached connections before moving the DB file — otherwise
+    # WAL sidecar files (.db-wal, .db-shm) won't be checkpointed and
+    # the moved file will fail with "disk I/O error".
+    from polylogue.storage.backends.connection import _clear_connection_cache
+    _clear_connection_cache()
+
     default_path = default_db_path()
     default_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(test_db), str(default_path))

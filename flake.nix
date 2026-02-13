@@ -85,6 +85,9 @@
             # Runtime dependencies (CLI helpers)
             bat
             glow
+
+            # Demo screencast recording
+            vhs
           ];
 
           shellHook = ''

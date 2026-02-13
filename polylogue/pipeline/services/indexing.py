@@ -49,7 +49,7 @@ class IndexService:
             update_index_for_conversations(conversation_ids, self.conn)
             return True
         except Exception as exc:
-            logger.error("Failed to update index", error=str(exc))
+            logger.error("Failed to update index", error=str(exc), exc_info=True)
             return False
 
     def rebuild_index(self) -> bool:
@@ -62,7 +62,7 @@ class IndexService:
             rebuild_index(self.conn)
             return True
         except Exception as exc:
-            logger.error("Failed to rebuild index", error=str(exc))
+            logger.error("Failed to rebuild index", error=str(exc), exc_info=True)
             return False
 
     def ensure_index_exists(self) -> bool:
@@ -76,7 +76,7 @@ class IndexService:
                 ensure_index(self.conn)
             return True
         except Exception as exc:
-            logger.error("Failed to ensure index exists", error=str(exc))
+            logger.error("Failed to ensure index exists", error=str(exc), exc_info=True)
             return False
 
     def get_index_status(self) -> dict[str, object]:
@@ -88,5 +88,5 @@ class IndexService:
         try:
             return index_status(self.conn)
         except Exception as exc:
-            logger.error("Failed to get index status", error=str(exc))
+            logger.error("Failed to get index status", error=str(exc), exc_info=True)
             return {"exists": False, "count": 0}

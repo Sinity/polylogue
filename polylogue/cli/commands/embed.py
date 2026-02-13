@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 import click  # noqa: F401
 
-logger = logging.getLogger(__name__)
+from polylogue.lib.log import get_logger
+
+logger = get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv

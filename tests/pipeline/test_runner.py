@@ -23,25 +23,27 @@ from tests.helpers import make_conversation, store_records
 
 
 class TestRenderFailureTracking:
-    """Tests for tracking render failures in pipeline."""
+    """Tests for tracking render failures in pipeline.
 
-    def test_render_failure_tracked_in_result(self, tmp_path: Path):
+    Uses workspace_env fixture so XDG_DATA_HOME points to a temp dir,
+    ensuring run_sources() → get_backend() → create_default_backend()
+    all converge on the same database.
+    """
+
+    def test_render_failure_tracked_in_result(self, workspace_env):
         """Render failures should be tracked in RunResult."""
         from polylogue.config import Config
         from polylogue.pipeline.runner import run_sources
-        from polylogue.storage.backends.sqlite import SQLiteBackend
         from polylogue.storage.store import RunResult
 
-        # Create a minimal config with isolated DB
+        archive_root = workspace_env["archive_root"]
+        archive_root.mkdir(parents=True, exist_ok=True)
         config = Config(
             sources=[],
-            archive_root=tmp_path / "archive",
-            render_root=tmp_path / "render",
+            archive_root=archive_root,
+            render_root=archive_root / "render",
         )
-        config.archive_root.mkdir(parents=True, exist_ok=True)
-        test_backend = SQLiteBackend(tmp_path / "test.db")
 
-        # Mock render_conversation to fail for specific conversation
         with patch("polylogue.rendering.renderers.html.HTMLRenderer.render") as mock_render:
 
             def render_side_effect(conversation_id, output_path):
@@ -51,45 +53,37 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            # Mock _all_conversation_ids to return test data
-            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids, \
-                 patch("polylogue.storage.backends.sqlite.create_default_backend", return_value=test_backend):
+            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids:
                 mock_ids.return_value = ["test:success-conv", "test:fail-conv"]
 
-                # Run pipeline in render stage
                 result = run_sources(
                     config=config,
                     stage="render",
                     source_names=None,
                 )
 
-                # Result should be RunResult
                 assert isinstance(result, RunResult)
-
-                # Result should track render failures
                 assert hasattr(result, "render_failures"), "RunResult should have render_failures attribute"
                 assert isinstance(result.render_failures, list)
                 assert len(result.render_failures) > 0, "Should have tracked at least one render failure"
 
-                # Check failure details
                 failure = result.render_failures[0]
                 assert "conversation_id" in failure
                 assert failure["conversation_id"] == "test:fail-conv"
                 assert "error" in failure
 
-    def test_render_continues_after_failure(self, tmp_path: Path):
+    def test_render_continues_after_failure(self, workspace_env):
         """Pipeline should continue rendering other conversations after one fails."""
         from polylogue.config import Config
         from polylogue.pipeline.runner import run_sources
-        from polylogue.storage.backends.sqlite import SQLiteBackend
 
+        archive_root = workspace_env["archive_root"]
+        archive_root.mkdir(parents=True, exist_ok=True)
         config = Config(
             sources=[],
-            archive_root=tmp_path / "archive",
-            render_root=tmp_path / "render",
+            archive_root=archive_root,
+            render_root=archive_root / "render",
         )
-        config.archive_root.mkdir(parents=True, exist_ok=True)
-        test_backend = SQLiteBackend(tmp_path / "test.db")
 
         render_attempts = []
 
@@ -103,8 +97,7 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids, \
-                 patch("polylogue.storage.backends.sqlite.create_default_backend", return_value=test_backend):
+            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids:
                 mock_ids.return_value = ["test:first", "test:second", "test:third"]
 
                 run_sources(
@@ -112,27 +105,23 @@ class TestRenderFailureTracking:
                     stage="render",
                 )
 
-                # Should attempt all renders even if one fails
                 assert len(render_attempts) >= 3, f"Expected 3 render attempts, got {len(render_attempts)}"
-
-                # Verify we didn't stop at the failure
                 assert "test:first" in render_attempts
                 assert "test:second" in render_attempts
                 assert "test:third" in render_attempts
 
-    def test_render_failure_count_in_counts(self, tmp_path: Path):
+    def test_render_failure_count_in_counts(self, workspace_env):
         """Pipeline should include render_failures count in result.counts."""
         from polylogue.config import Config
         from polylogue.pipeline.runner import run_sources
-        from polylogue.storage.backends.sqlite import SQLiteBackend
 
+        archive_root = workspace_env["archive_root"]
+        archive_root.mkdir(parents=True, exist_ok=True)
         config = Config(
             sources=[],
-            archive_root=tmp_path / "archive",
-            render_root=tmp_path / "render",
+            archive_root=archive_root,
+            render_root=archive_root / "render",
         )
-        config.archive_root.mkdir(parents=True, exist_ok=True)
-        test_backend = SQLiteBackend(tmp_path / "test.db")
 
         with patch("polylogue.rendering.renderers.html.HTMLRenderer.render") as mock_render:
 
@@ -143,8 +132,7 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids, \
-                 patch("polylogue.storage.backends.sqlite.create_default_backend", return_value=test_backend):
+            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids:
                 mock_ids.return_value = ["test:success", "test:fail1", "test:fail2"]
 
                 result = run_sources(
@@ -152,7 +140,6 @@ class TestRenderFailureTracking:
                     stage="render",
                 )
 
-                # Check counts include render_failures
                 assert "render_failures" in result.counts
                 assert result.counts["render_failures"] == 2
                 assert result.counts["rendered"] == 1

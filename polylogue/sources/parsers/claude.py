@@ -78,8 +78,7 @@ def parse_sessions_index(index_path: Path) -> dict[str, SessionIndexEntry]:
         }
     except (json.JSONDecodeError, KeyError, TypeError) as exc:
         # Log but don't fail - fall back to parsing JSONL files directly
-        import logging
-        logging.getLogger(__name__).debug("Failed to parse sessions-index.json: %s", exc)
+        logger.debug("Failed to parse sessions-index.json: %s", exc)
         return {}
 
 

@@ -167,9 +167,9 @@ class IndexConfig:
             try:
                 dimension = int(dimension_str)
             except ValueError:
-                import logging
+                from polylogue.lib.log import get_logger
 
-                logging.getLogger(__name__).warning(
+                get_logger(__name__).warning(
                     "Invalid POLYLOGUE_VOYAGE_DIMENSION=%r, using model default", dimension_str
                 )
 

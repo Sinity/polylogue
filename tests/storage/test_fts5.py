@@ -973,9 +973,10 @@ def test_search_without_fts_table_raises_descriptive_error(workspace_env, db_wit
     archive_root = workspace_env["archive_root"]
 
     # Monkey-patch to use the db without FTS
-    from polylogue.storage.backends import sqlite as db
+    # Patch in connection module since that's where it's called from internally
+    from polylogue.storage.backends import connection
 
-    monkeypatch.setattr(db, "default_db_path", lambda: db_without_fts)
+    monkeypatch.setattr(connection, "default_db_path", lambda: db_without_fts)
 
     # Use type name check to handle module reload class identity issues
     with pytest.raises(Exception) as exc_info:
