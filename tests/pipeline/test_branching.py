@@ -6,7 +6,7 @@ These tests verify the unified branching model that works across all providers:
 - Message branches (ChatGPT edits)
 
 Also includes full-pipeline integration tests that exercise the REAL pipeline:
-raw JSON/JSONL → importer → prepare_ingest → database.
+raw JSON/JSONL → importer → prepare_records → database.
 
 This ensures branching metadata extraction and resolution actually works end-to-end.
 
@@ -23,7 +23,7 @@ from pathlib import Path
 
 from polylogue import Polylogue
 from polylogue.config import Source
-from polylogue.pipeline.ingest import prepare_ingest
+from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources import iter_source_conversations
 from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
 from polylogue.storage.repository import ConversationRepository
@@ -510,7 +510,7 @@ class TestCodexContinuationPipeline:
         assert len(parent_convos) == 1
 
         with open_connection(db_path) as conn:
-            parent_cid, _, _ = prepare_ingest(
+            parent_cid, _, _ = prepare_records(
                 parent_convos[0],
                 source_name="codex",
                 archive_root=tmp_path,
@@ -550,7 +550,7 @@ class TestCodexContinuationPipeline:
 
         # Ingest through full pipeline
         with open_connection(db_path) as conn:
-            child_cid, _, _ = prepare_ingest(
+            child_cid, _, _ = prepare_records(
                 child_parsed,
                 source_name="codex",
                 archive_root=tmp_path,
@@ -638,7 +638,7 @@ class TestClaudeCodeSidechainPipeline:
 
         # Ingest through full pipeline
         with open_connection(db_path) as conn:
-            cid, _, _ = prepare_ingest(
+            cid, _, _ = prepare_records(
                 parsed,
                 source_name="claude-code",
                 archive_root=tmp_path,
@@ -791,7 +791,7 @@ class TestChatGPTBranchingPipeline:
 
         # Ingest through full pipeline
         with open_connection(db_path) as conn:
-            cid, _, _ = prepare_ingest(
+            cid, _, _ = prepare_records(
                 parsed,
                 source_name="chatgpt",
                 archive_root=tmp_path,
@@ -828,8 +828,8 @@ class TestChatGPTBranchingPipeline:
         assert "Answer 2" not in str(mainline_texts)
 
 
-class TestPrepareIngestParentResolution:
-    """Test that prepare_ingest correctly resolves provider IDs to internal IDs."""
+class TestPrepareRecordsParentResolution:
+    """Test that prepare_records correctly resolves provider IDs to internal IDs."""
 
     def test_parent_conversation_id_resolved_to_internal_format(self, workspace_env: Path, tmp_path: Path):
         """parent_conversation_provider_id gets hashed to polylogue internal ID format."""
@@ -849,7 +849,7 @@ class TestPrepareIngestParentResolution:
         )
 
         with open_connection(db_path) as conn:
-            parent_cid, _, _ = prepare_ingest(
+            parent_cid, _, _ = prepare_records(
                 parent_parsed,
                 source_name="codex",
                 archive_root=tmp_path,
@@ -870,7 +870,7 @@ class TestPrepareIngestParentResolution:
         )
 
         with open_connection(db_path) as conn:
-            child_cid, _, _ = prepare_ingest(
+            child_cid, _, _ = prepare_records(
                 child_parsed,
                 source_name="codex",
                 archive_root=tmp_path,
@@ -923,7 +923,7 @@ class TestPrepareIngestParentResolution:
         )
 
         with open_connection(db_path) as conn:
-            cid, _, _ = prepare_ingest(
+            cid, _, _ = prepare_records(
                 parsed,
                 source_name="chatgpt",
                 archive_root=tmp_path,

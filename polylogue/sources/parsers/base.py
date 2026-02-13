@@ -81,7 +81,7 @@ class ParsedConversation(BaseModel):
 class RawConversationData(BaseModel):
     """Container for raw conversation bytes with metadata.
 
-    Used to pass raw data through the ingestion pipeline alongside
+    Used to pass raw data through the parsing pipeline alongside
     the parsed conversation, enabling honest database-driven testing.
     """
     raw_bytes: bytes

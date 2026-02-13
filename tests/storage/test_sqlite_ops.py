@@ -740,7 +740,7 @@ def test_prune_multiple_attachments_correctly(workspace_env, storage_repository)
     This exercises the N+1 query fix in _prune_attachment_refs which now
     uses a single UPDATE with IN clause instead of individual UPDATEs per attachment.
     """
-    from polylogue.sources import IngestBundle, ingest_bundle
+    from polylogue.sources import RecordBundle, save_bundle
 
     # Create initial conversation with 10 attachments
     attachments = [
@@ -748,12 +748,12 @@ def test_prune_multiple_attachments_correctly(workspace_env, storage_repository)
         for i in range(10)
     ]
 
-    bundle = IngestBundle(
+    bundle = RecordBundle(
         conversation=_conversation_record(),
         messages=[make_message("msg:perf", "conv:perf", text="hello", timestamp="1", content_hash="msg:perf", provider_meta=None)],
         attachments=attachments,
     )
-    ingest_bundle(bundle, repository=storage_repository)
+    save_bundle(bundle, repository=storage_repository)
 
     # Verify all 10 attachments were created
     with open_connection(None) as conn:
@@ -775,8 +775,8 @@ def test_prune_multiple_attachments_correctly(workspace_env, storage_repository)
         make_attachment("att-1", "conv:perf", "msg:perf", mime_type="text/plain", size_bytes=10, provider_meta=None),
     ]
 
-    ingest_bundle(
-        IngestBundle(
+    save_bundle(
+        RecordBundle(
             conversation=_conversation_record(),
             messages=[make_message("msg:perf", "conv:perf", text="hello", timestamp="1", content_hash="msg:perf", provider_meta=None)],
             attachments=new_attachments,

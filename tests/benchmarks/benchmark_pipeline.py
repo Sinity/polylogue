@@ -6,7 +6,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from polylogue.pipeline.ingest import prepare_ingest
+from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 from polylogue.storage.db import open_connection
 from polylogue.storage.repository import ConversationRepository
@@ -47,8 +47,8 @@ def create_synthetic_conversation(conv_id: str, message_count: int = 50) -> Pars
     )
 
 
-def benchmark_prepare_ingest():
-    """Benchmark prepare_ingest function."""
+def benchmark_prepare_records():
+    """Benchmark prepare_records function."""
     # Create temp database
     tmpfile = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
     db_path = Path(tmpfile.name)
@@ -69,10 +69,10 @@ def benchmark_prepare_ingest():
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     start = time.perf_counter()
-    prepare_ingest(conversation, "test_source", archive_root=archive_root, conn=conn, repository=repository)
+    prepare_records(conversation, "test_source", archive_root=archive_root, conn=conn, repository=repository)
     elapsed = time.perf_counter() - start
     conn.close()
-    results["prepare_ingest_cold"] = {
+    results["prepare_records_cold"] = {
         "time_ms": elapsed * 1000,
     }
 
@@ -80,10 +80,10 @@ def benchmark_prepare_ingest():
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     start = time.perf_counter()
-    prepare_ingest(conversation, "test_source", archive_root=archive_root, conn=conn, repository=repository)
+    prepare_records(conversation, "test_source", archive_root=archive_root, conn=conn, repository=repository)
     elapsed = time.perf_counter() - start
     conn.close()
-    results["prepare_ingest_warm_skip"] = {
+    results["prepare_records_warm_skip"] = {
         "time_ms": elapsed * 1000,
     }
 
@@ -117,7 +117,7 @@ def benchmark_parallel_ingestion():
     for conv in conversations:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        prepare_ingest(conv, "test_source", archive_root=archive_root, conn=conn, repository=repository)
+        prepare_records(conv, "test_source", archive_root=archive_root, conn=conn, repository=repository)
         conn.close()
     elapsed_sequential = time.perf_counter() - start
 
@@ -137,7 +137,7 @@ def benchmark_parallel_ingestion():
     def process_one(conv):
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        result = prepare_ingest(conv, "test_source", archive_root=archive_root, conn=conn, repository=repository)
+        result = prepare_records(conv, "test_source", archive_root=archive_root, conn=conn, repository=repository)
         conn.close()
         return result
 
@@ -178,7 +178,7 @@ def benchmark_bounded_submission():
     def process_one(conv):
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
-        result = prepare_ingest(conv, "test_source", archive_root=archive_root, conn=conn, repository=repository)
+        result = prepare_records(conv, "test_source", archive_root=archive_root, conn=conn, repository=repository)
         conn.close()
         return result
 
@@ -250,7 +250,7 @@ def run_all():
     print("=" * 80)
 
     print("\n--- Prepare Ingest ---")
-    ingest_results = benchmark_prepare_ingest()
+    ingest_results = benchmark_prepare_records()
     for name, data in ingest_results.items():
         print(f"{name}: {data['time_ms']:.2f}ms")
 

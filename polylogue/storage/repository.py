@@ -53,7 +53,7 @@ class ConversationRepository:
     def __init__(self, backend: SQLiteBackend) -> None:
         self._backend = backend
         self._write_lock = threading.Lock()
-        # Store db_path for thread workers in IngestionService
+        # Store db_path for thread workers in ParsingService
         self._db_path = getattr(backend, "_db_path", None)
 
     @property

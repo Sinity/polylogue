@@ -3,7 +3,7 @@
 Consolidated from:
 - test_pipeline_services.py (service initialization tests)
 - test_pipeline_services_acquisition.py (AcquisitionService tests)
-- test_pipeline_services_ingestion.py (IngestionService tests)
+- test_pipeline_services_parsing.py (ParsingService tests)
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import pytest
 from polylogue.config import Config, Source
 from polylogue.pipeline.services import IndexService, RenderService
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
-from polylogue.pipeline.services.ingestion import IngestionService, IngestResult
+from polylogue.pipeline.services.parsing import ParsingService, ParseResult
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -279,27 +279,27 @@ class TestAcquisitionServiceIntegration:
 
 
 # ============================================================================
-# IngestResult Tests
+# ParseResult Tests
 # ============================================================================
 
 
-class TestIngestResultInit:
-    """Tests for IngestResult initialization."""
+class TestParseResultInit:
+    """Tests for ParseResult initialization."""
 
     @pytest.mark.parametrize("count_field", ["conversations", "messages", "attachments", "skipped_conversations", "skipped_messages", "skipped_attachments"])
     def test_counts_initialized_to_zero(self, count_field):
         """All count fields start at zero."""
-        assert IngestResult().counts[count_field] == 0
+        assert ParseResult().counts[count_field] == 0
 
     @pytest.mark.parametrize("changed_count_field", ["conversations", "messages", "attachments"])
     def test_changed_counts_initialized_to_zero(self, changed_count_field):
         """All changed_counts fields start at zero."""
-        assert IngestResult().changed_counts[changed_count_field] == 0
+        assert ParseResult().changed_counts[changed_count_field] == 0
 
 
 
-class TestIngestResultMerge:
-    """Tests for IngestResult.merge_result method."""
+class TestParseResultMerge:
+    """Tests for ParseResult.merge_result method."""
 
     @pytest.mark.parametrize("conv_id,result_counts,content_changed,exp_c,exp_m,exp_a,exp_s,in_p", [
         ("conv1", {"conversations": 1, "messages": 5, "attachments": 2, "skipped_conversations": 0, "skipped_messages": 1, "skipped_attachments": 0}, True, 1, 5, 2, 1, True),
@@ -311,7 +311,7 @@ class TestIngestResultMerge:
     ])
     def test_merge_result_scenarios(self, conv_id: str, result_counts: dict, content_changed: bool, exp_c: int, exp_m: int, exp_a: int, exp_s: int, in_p: bool):
         """Parametrized merge scenarios."""
-        result = IngestResult()
+        result = ParseResult()
         result.merge_result(conversation_id=conv_id, result_counts=result_counts, content_changed=content_changed)
         assert result.counts["conversations"] == exp_c and result.counts["messages"] == exp_m
         assert result.counts["attachments"] == exp_a and result.counts["skipped_messages"] == exp_s
@@ -319,7 +319,7 @@ class TestIngestResultMerge:
 
     def test_merge_multiple_conversations(self):
         """Multiple merges accumulate correctly."""
-        result = IngestResult()
+        result = ParseResult()
         result.merge_result(
             "conv1",
             {
@@ -351,7 +351,7 @@ class TestIngestResultMerge:
 
     def test_merge_thread_safe(self):
         """Concurrent merges don't cause race conditions."""
-        result = IngestResult()
+        result = ParseResult()
         errors: list[Exception] = []
 
         def merge_batch(start_id: int) -> None:
@@ -386,12 +386,12 @@ class TestIngestResultMerge:
 
 
 # ============================================================================
-# IngestionService Tests
+# ParsingService Tests
 # ============================================================================
 
 
-class TestIngestionServiceInit:
-    """Tests for IngestionService initialization."""
+class TestParsingServiceInit:
+    """Tests for ParsingService initialization."""
 
     @pytest.mark.parametrize(
         "attr_name",
@@ -403,7 +403,7 @@ class TestIngestionServiceInit:
         mock_config = MagicMock(spec=Config)
         archive_path = Path("/tmp/archive")
 
-        service = IngestionService(
+        service = ParsingService(
             repository=mock_repo,
             archive_root=archive_path,
             config=mock_config,
@@ -417,24 +417,24 @@ class TestIngestionServiceInit:
             assert service.config is mock_config
 
 
-class TestIngestionServiceIngestSources:
-    """Tests for IngestionService.ingest_sources method.
+class TestParsingServiceParseSources:
+    """Tests for ParsingService.parse_sources method.
 
-    ingest_sources() orchestrates:
+    parse_sources() orchestrates:
     1. ACQUIRE stage via AcquisitionService.acquire_sources()
-    2. PARSE stage via self.ingest_from_raw()
+    2. PARSE stage via self.parse_from_raw()
 
     These tests mock the stage boundaries to verify orchestration logic.
     """
 
     def test_ingest_empty_sources_returns_empty_result(self):
-        """Empty sources list returns empty IngestResult (no acquisition needed)."""
+        """Empty sources list returns empty ParseResult (no acquisition needed)."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
         mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
-        service = IngestionService(
+        service = ParsingService(
             repository=mock_repo,
             archive_root=Path("/tmp/archive"),
             config=mock_config,
@@ -447,20 +447,20 @@ class TestIngestionServiceIngestSources:
             mock_acquire_cls.return_value = mock_acquire_service
             mock_acquire_service.acquire_sources.return_value = AcquireResult()
 
-            result = service.ingest_sources([])
+            result = service.parse_sources([])
 
         assert result.counts["conversations"] == 0
         assert result.counts["messages"] == 0
         assert len(result.processed_ids) == 0
 
     def test_ingest_calls_acquire_then_parse(self):
-        """ingest_sources calls acquire stage, then parse stage with returned raw_ids."""
+        """parse_sources calls acquire stage, then parse stage with returned raw_ids."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
         mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
-        service = IngestionService(
+        service = ParsingService(
             repository=mock_repo,
             archive_root=Path("/tmp/archive"),
             config=mock_config,
@@ -477,15 +477,15 @@ class TestIngestionServiceIngestSources:
             acquire_result.counts["acquired"] = 2
             mock_acquire_service.acquire_sources.return_value = acquire_result
 
-            mock_ingest_result = IngestResult()
-            mock_ingest_result.counts["conversations"] = 2
-            mock_ingest_result.counts["messages"] = 5
-            mock_ingest_result.processed_ids = {"conv-1", "conv-2"}
+            mock_parse_result = ParseResult()
+            mock_parse_result.counts["conversations"] = 2
+            mock_parse_result.counts["messages"] = 5
+            mock_parse_result.processed_ids = {"conv-1", "conv-2"}
             with patch.object(
-                service, "ingest_from_raw", return_value=mock_ingest_result
+                service, "parse_from_raw", return_value=mock_parse_result
             ) as mock_parse:
                 source = Source(name="test-source", path=Path("/tmp/inbox"))
-                result = service.ingest_sources([source])
+                result = service.parse_sources([source])
 
                 mock_acquire_service.acquire_sources.assert_called_once()
                 mock_parse.assert_called_once_with(
@@ -504,7 +504,7 @@ class TestIngestionServiceIngestSources:
         mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
-        service = IngestionService(
+        service = ParsingService(
             repository=mock_repo,
             archive_root=Path("/tmp/archive"),
             config=mock_config,
@@ -520,9 +520,9 @@ class TestIngestionServiceIngestSources:
             acquire_result.counts["skipped"] = 5
             mock_acquire_service.acquire_sources.return_value = acquire_result
 
-            with patch.object(service, "ingest_from_raw") as mock_parse:
+            with patch.object(service, "parse_from_raw") as mock_parse:
                 source = Source(name="test-source", path=Path("/tmp/inbox"))
-                result = service.ingest_sources([source])
+                result = service.parse_sources([source])
 
                 mock_parse.assert_not_called()
 
@@ -535,7 +535,7 @@ class TestIngestionServiceIngestSources:
         mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
 
-        service = IngestionService(
+        service = ParsingService(
             repository=mock_repo,
             archive_root=Path("/tmp/archive"),
             config=mock_config,
@@ -553,12 +553,12 @@ class TestIngestionServiceIngestSources:
             acquire_result.raw_ids = ["raw-1"]
             mock_acquire_service.acquire_sources.return_value = acquire_result
 
-            mock_ingest_result = IngestResult()
+            mock_parse_result = ParseResult()
             with patch.object(
-                service, "ingest_from_raw", return_value=mock_ingest_result
+                service, "parse_from_raw", return_value=mock_parse_result
             ) as mock_parse:
                 source = Source(name="test-source", path=Path("/tmp/inbox"))
-                service.ingest_sources([source], progress_callback=callback)
+                service.parse_sources([source], progress_callback=callback)
 
                 mock_acquire_service.acquire_sources.assert_called_once_with(
                     [source],
@@ -576,7 +576,7 @@ class TestIngestionServiceIngestSources:
         mock_repo._backend = None
         mock_config = MagicMock(spec=Config)
 
-        service = IngestionService(
+        service = ParsingService(
             repository=mock_repo,
             archive_root=Path("/tmp/archive"),
             config=mock_config,
@@ -585,16 +585,16 @@ class TestIngestionServiceIngestSources:
         source = Source(name="test-source", path=Path("/tmp/inbox"))
 
         with pytest.raises(RuntimeError, match="backend is not initialized"):
-            service.ingest_sources([source])
+            service.parse_sources([source])
 
 
 # ============================================================================
-# IngestionService Integration Tests
+# ParsingService Integration Tests
 # ============================================================================
 
 
-class TestIngestionServiceIntegration:
-    """Integration tests for IngestionService with real database."""
+class TestParsingServiceIntegration:
+    """Integration tests for ParsingService with real database."""
 
     def _conv_json(self, cid: str, title: str, msg: str) -> dict:
         return {"id": cid, "title": title, "create_time": 1700000000, "update_time": 1700000100,
@@ -610,11 +610,11 @@ class TestIngestionServiceIntegration:
         backend = SQLiteBackend(db_path=cli_workspace["db_path"])
         config = Config(archive_root=cli_workspace["archive_root"], render_root=cli_workspace["render_root"],
                        sources=[Source(name="test-inbox", path=inbox)])
-        result = IngestionService(repository=ConversationRepository(backend=backend),
-                                 archive_root=cli_workspace["archive_root"], config=config).ingest_sources(config.sources)
+        result = ParsingService(repository=ConversationRepository(backend=backend),
+                                 archive_root=cli_workspace["archive_root"], config=config).parse_sources(config.sources)
         assert result.counts["conversations"] >= 1 and len(result.processed_ids) >= 1
 
-    def test_ingest_from_raw_parses_stored_conversations(self, cli_workspace, tmp_path):
+    def test_parse_from_raw_parses_stored_conversations(self, cli_workspace, tmp_path):
         """Full acquire → parse flow using database-driven testing."""
         inbox = cli_workspace["inbox_dir"]
         (inbox / "conversations.json").write_text(json.dumps([self._conv_json("test-conv-raw", "Test Raw Conversation", "Hello from raw!")]))
@@ -623,8 +623,8 @@ class TestIngestionServiceIntegration:
                        sources=[Source(name="test-inbox", path=inbox)])
         raw_ids = AcquisitionService(backend=backend).acquire_sources(config.sources).raw_ids
         assert len(raw_ids) == 1
-        parse_result = IngestionService(repository=ConversationRepository(backend=backend),
-                                       archive_root=cli_workspace["archive_root"], config=config).ingest_from_raw(raw_ids=raw_ids)
+        parse_result = ParsingService(repository=ConversationRepository(backend=backend),
+                                       archive_root=cli_workspace["archive_root"], config=config).parse_from_raw(raw_ids=raw_ids)
         assert parse_result.counts["conversations"] >= 1 and len(parse_result.processed_ids) >= 1
         with backend._get_connection() as conn:
             row = conn.execute("SELECT raw_id FROM conversations WHERE conversation_id = ?",

@@ -2,7 +2,7 @@
 
 Note: Most hashing property tests have been moved to test_properties.py, which
 provides systematic coverage via Hypothesis. This file retains edge case tests,
-validation tests, and integration tests for prepare_ingest.
+validation tests, and integration tests for prepare_records.
 
 Consolidated from:
 - test_pipeline.py (original)
@@ -21,7 +21,7 @@ from polylogue.pipeline.ids import (
     message_content_hash,
     move_attachment_to_archive,
 )
-from polylogue.pipeline.ingest import prepare_ingest
+from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation, ParsedMessage
 
 # ============================================================================
@@ -248,7 +248,7 @@ def test_conversation_hash_timestamps_affect_hash():
 
 
 # ============================================================================
-# Test prepare_ingest
+# Test prepare_records
 # ============================================================================
 
 
@@ -264,8 +264,8 @@ def test_repository(test_db):
     return ConversationRepository(backend=backend)
 
 
-def test_prepare_ingest_new_conversation(test_conn, test_repository, tmp_path):
-    """prepare_ingest() marks new conversation for insertion."""
+def test_prepare_records_new_conversation(test_conn, test_repository, tmp_path):
+    """prepare_records() marks new conversation for insertion."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="new-conv-1",
@@ -283,7 +283,7 @@ def test_prepare_ingest_new_conversation(test_conn, test_repository, tmp_path):
         attachments=[],
     )
 
-    cid, counts, changed = prepare_ingest(
+    cid, counts, changed = prepare_records(
         convo,
         "test-source",
         archive_root=tmp_path / "archive",
@@ -299,8 +299,8 @@ def test_prepare_ingest_new_conversation(test_conn, test_repository, tmp_path):
     assert cid == "test:new-conv-1"
 
 
-def test_prepare_ingest_unchanged_conversation_skips(test_conn, test_repository, tmp_path):
-    """prepare_ingest() skips conversation with unchanged content_hash."""
+def test_prepare_records_unchanged_conversation_skips(test_conn, test_repository, tmp_path):
+    """prepare_records() skips conversation with unchanged content_hash."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -322,7 +322,7 @@ def test_prepare_ingest_unchanged_conversation_skips(test_conn, test_repository,
     archive_root.mkdir()
 
     # First ingest
-    cid1, counts1, changed1 = prepare_ingest(
+    cid1, counts1, changed1 = prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
@@ -333,7 +333,7 @@ def test_prepare_ingest_unchanged_conversation_skips(test_conn, test_repository,
     assert counts1["conversations"] == 1
 
     # Re-ingest same conversation (same content)
-    cid2, counts2, changed2 = prepare_ingest(
+    cid2, counts2, changed2 = prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
@@ -348,8 +348,8 @@ def test_prepare_ingest_unchanged_conversation_skips(test_conn, test_repository,
     assert changed2 is False
 
 
-def test_prepare_ingest_detects_changed_content(test_conn, test_repository, tmp_path):
-    """prepare_ingest() marks conversation as changed when content differs."""
+def test_prepare_records_detects_changed_content(test_conn, test_repository, tmp_path):
+    """prepare_records() marks conversation as changed when content differs."""
     convo_v1 = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -371,7 +371,7 @@ def test_prepare_ingest_detects_changed_content(test_conn, test_repository, tmp_
     archive_root.mkdir()
 
     # First ingest
-    cid1, _, _ = prepare_ingest(
+    cid1, _, _ = prepare_records(
         convo_v1,
         "test-source",
         archive_root=archive_root,
@@ -398,7 +398,7 @@ def test_prepare_ingest_detects_changed_content(test_conn, test_repository, tmp_
     )
 
     # Re-ingest with different content
-    cid2, _, changed = prepare_ingest(
+    cid2, _, changed = prepare_records(
         convo_v2,
         "test-source",
         archive_root=archive_root,
@@ -411,8 +411,8 @@ def test_prepare_ingest_detects_changed_content(test_conn, test_repository, tmp_
     assert changed is True
 
 
-def test_prepare_ingest_creates_message_records(test_conn, test_repository, tmp_path):
-    """prepare_ingest() creates message records with proper IDs."""
+def test_prepare_records_creates_message_records(test_conn, test_repository, tmp_path):
+    """prepare_records() creates message records with proper IDs."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -439,7 +439,7 @@ def test_prepare_ingest_creates_message_records(test_conn, test_repository, tmp_
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    cid, counts, _ = prepare_ingest(
+    cid, counts, _ = prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
@@ -457,8 +457,8 @@ def test_prepare_ingest_creates_message_records(test_conn, test_repository, tmp_
     assert len(rows) == 2
 
 
-def test_prepare_ingest_handles_empty_provider_message_ids(test_conn, test_repository, tmp_path):
-    """prepare_ingest() generates IDs for messages with empty provider_message_id."""
+def test_prepare_records_handles_empty_provider_message_ids(test_conn, test_repository, tmp_path):
+    """prepare_records() generates IDs for messages with empty provider_message_id."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -485,7 +485,7 @@ def test_prepare_ingest_handles_empty_provider_message_ids(test_conn, test_repos
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    cid, counts, _ = prepare_ingest(
+    cid, counts, _ = prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
@@ -512,8 +512,8 @@ def test_prepare_ingest_handles_empty_provider_message_ids(test_conn, test_repos
     assert "msg-explicit" in provider_ids
 
 
-def test_prepare_ingest_stores_source_metadata(test_conn, test_repository, tmp_path):
-    """prepare_ingest() stores source name in provider_meta."""
+def test_prepare_records_stores_source_metadata(test_conn, test_repository, tmp_path):
+    """prepare_records() stores source name in provider_meta."""
     convo = ParsedConversation(
         provider_name="chatgpt",
         provider_conversation_id="ext-1",
@@ -534,7 +534,7 @@ def test_prepare_ingest_stores_source_metadata(test_conn, test_repository, tmp_p
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    cid, _, _ = prepare_ingest(
+    cid, _, _ = prepare_records(
         convo,
         "my-export",
         archive_root=archive_root,
@@ -554,8 +554,8 @@ def test_prepare_ingest_stores_source_metadata(test_conn, test_repository, tmp_p
     assert meta.get("source") == "my-export"
 
 
-def test_prepare_ingest_multiple_messages_get_unique_hashes(test_conn, test_repository, tmp_path):
-    """prepare_ingest() creates unique content hashes for each message."""
+def test_prepare_records_multiple_messages_get_unique_hashes(test_conn, test_repository, tmp_path):
+    """prepare_records() creates unique content hashes for each message."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -582,7 +582,7 @@ def test_prepare_ingest_multiple_messages_get_unique_hashes(test_conn, test_repo
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    cid, _, _ = prepare_ingest(
+    cid, _, _ = prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
@@ -599,8 +599,8 @@ def test_prepare_ingest_multiple_messages_get_unique_hashes(test_conn, test_repo
     assert rows[0]["content_hash"] != rows[1]["content_hash"]
 
 
-def test_prepare_ingest_with_attachments(test_conn, test_repository, tmp_path):
-    """prepare_ingest() creates attachment records."""
+def test_prepare_records_with_attachments(test_conn, test_repository, tmp_path):
+    """prepare_records() creates attachment records."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -629,7 +629,7 @@ def test_prepare_ingest_with_attachments(test_conn, test_repository, tmp_path):
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    cid, counts, _ = prepare_ingest(
+    cid, counts, _ = prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
@@ -649,8 +649,8 @@ def test_prepare_ingest_with_attachments(test_conn, test_repository, tmp_path):
     assert att_refs[0]["mime_type"] == "application/pdf"
 
 
-def test_prepare_ingest_returns_correct_tuple_structure(test_conn, test_repository, tmp_path):
-    """prepare_ingest() returns (conversation_id, counts_dict, changed_bool)."""
+def test_prepare_records_returns_correct_tuple_structure(test_conn, test_repository, tmp_path):
+    """prepare_records() returns (conversation_id, counts_dict, changed_bool)."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -671,7 +671,7 @@ def test_prepare_ingest_returns_correct_tuple_structure(test_conn, test_reposito
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    result = prepare_ingest(
+    result = prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,

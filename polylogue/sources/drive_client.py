@@ -511,7 +511,7 @@ class DriveClient:
 
         # Return the whole object but use ijson for potentially better memory handling
         # (though for standard json.load it won't matter much unless we refactor
-        # higher up to handle generators, which we will do in source_ingest).
+        # higher up to handle generators, which we will do in source_parsing).
         try:
             return json.load(handle)
         except json.JSONDecodeError:
