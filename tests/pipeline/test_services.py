@@ -64,7 +64,7 @@ class TestRenderService:
 # ============================================================================
 
 
-class TestIndexService:
+class TestPipelineIndexService:
     """Tests for IndexService."""
 
     def test_initialization(self, tmp_path: Path):

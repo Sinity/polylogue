@@ -525,7 +525,7 @@ def healthy_report():
     )
 
 
-class TestCheckCommand:
+class TestCheckCommandUnit:
     """Tests for the check command."""
 
     def test_check_displays_health_status(self, runner, mock_env, healthy_report):

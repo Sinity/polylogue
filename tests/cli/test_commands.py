@@ -192,7 +192,7 @@ class TestResolveSources:
             helpers.resolve_sources(config, ("last", "chatgpt"), "test_cmd")
 
 
-class TestLatestRenderPath:
+class TestCliLatestRenderPath:
     """Tests for latest_render_path() function."""
 
     def test_nonexistent_dir_returns_none(self, tmp_path):
@@ -318,7 +318,7 @@ class TestDashboardCommand:
 
 
 @pytest.mark.integration
-class TestRunCommand:
+class TestCliRunCommand:
     """Tests for the run command."""
 
     def test_run_preview_shows_plan(self, tmp_path):
@@ -388,7 +388,7 @@ class TestRunCommand:
 
 
 @pytest.mark.integration
-class TestCheckCommand:
+class TestCliCheckCommand:
     """Tests for the check command."""
 
     def test_check_basic(self, tmp_path):

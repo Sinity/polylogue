@@ -736,7 +736,7 @@ class TestSchemaAndMigration:
         assert db_path.parent.exists()
 
 
-class TestEdgeCases:
+class TestBackendEdgeCases:
     """Test edge cases and boundary conditions."""
 
     def test_store_records_with_null_optional_fields(self, tmp_path):
