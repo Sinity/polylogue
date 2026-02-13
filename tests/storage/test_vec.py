@@ -906,7 +906,7 @@ class TestSqliteVecProviderSerialization:
         assert result == b""
 
 
-class TestCreateVectorProvider:
+class TestVecProviderFactory:
     """Tests for create_vector_provider factory."""
 
     def test_returns_none_when_no_voyage_key(self):

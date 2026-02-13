@@ -562,7 +562,7 @@ class TestWebhookOnNew:
 # =============================================================================
 
 
-class TestRunCommand:
+class TestEmbedRunCommand:
     """Test run command via CliRunner."""
 
     def test_run_command_watch_without_flags_error(self, runner, cli_workspace):
@@ -588,7 +588,7 @@ class TestRunCommand:
 # =============================================================================
 
 
-class TestSourcesCommand:
+class TestEmbedSourcesCommand:
     """Test sources command via CliRunner."""
 
     def test_sources_command_help(self, runner, cli_workspace):

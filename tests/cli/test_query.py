@@ -83,7 +83,7 @@ def mock_env():
     return env
 
 
-class TestConvToDict:
+class TestQueryConvToDict:
     """Tests for _conv_to_dict helper."""
 
     @pytest.mark.parametrize(
@@ -173,7 +173,7 @@ class TestFormatHelpers:
         assert "* USER" in result and "* ASSISTANT" in result
 
 
-class TestOutputStats:
+class TestQueryOutputStats:
     """Tests for _output_stats aggregation."""
 
     @pytest.mark.parametrize(
@@ -205,7 +205,7 @@ class TestOutputStats:
         assert "no conversation" in output.lower()
 
 
-class TestFormatList:
+class TestQueryFormatList:
     """Tests for _format_list helper."""
 
     @pytest.mark.parametrize(
@@ -234,7 +234,7 @@ class TestFormatList:
         assert "First Conversation" in result
 
 
-class TestFormatConversation:
+class TestQueryFormatConversation:
     """Tests for _format_conversation helper."""
 
     @pytest.mark.parametrize(
@@ -264,7 +264,7 @@ class TestFormatConversation:
         assert assertion(result), f"Failed assertion for format {format_type}"
 
 
-class TestCopyToClipboard:
+class TestQueryCopyToClipboard:
     """Tests for _copy_to_clipboard helper."""
 
     def test_tries_clipboard_commands(self, mock_env):
@@ -299,7 +299,7 @@ class TestCopyToClipboard:
             assert "could not" in captured.err.lower() or "clipboard" in captured.err.lower()
 
 
-class TestSendOutput:
+class TestQuerySendOutput:
     """Tests for _send_output helper."""
 
     def test_stdout_prints(self, mock_env, sample_conversations, capsys):
@@ -488,7 +488,7 @@ class TestOperationReporting:
             assert "3" in captured.out
 
 
-class TestConvToJson:
+class TestQueryConvToJson:
     """Tests for _conv_to_json helper."""
 
     @pytest.mark.parametrize(
@@ -624,7 +624,7 @@ class TestConvToJson:
         assert "id" in parsed
 
 
-class TestConvToCsvMessages:
+class TestQueryConvToCsv:
     """Tests for _conv_to_csv_messages helper."""
 
     def test_csv_header_row_is_correct(self, sample_conversations):

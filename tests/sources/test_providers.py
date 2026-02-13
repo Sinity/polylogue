@@ -1250,7 +1250,7 @@ class TestZipIngestion:
         assert len(convos) == 0
 
 
-class TestZipBombProtection:
+class TestProviderZipBombProtection:
     """Tests for ZIP bomb detection."""
 
     def test_oversized_file_skipped(self, tmp_path):

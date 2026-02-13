@@ -152,7 +152,7 @@ class TestResolveIdAndView:
 # =============================================================================
 
 
-class TestTreeTraversal:
+class TestRepositoryTreeTraversal:
     """Test parent/child/root/tree operations."""
 
     @pytest.mark.parametrize("method,conv_id,expected_check", [

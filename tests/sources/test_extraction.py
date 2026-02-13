@@ -23,7 +23,7 @@ from polylogue.schemas.unified import (
 # =============================================================================
 
 
-class TestNormalizeRole:
+class TestUnifiedNormalizeRole:
     """Tests for role normalization."""
 
     def test_user_variants(self):

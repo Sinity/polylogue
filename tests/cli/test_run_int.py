@@ -679,7 +679,7 @@ class TestParsedAttachmentSanitization:
 # =============================================================================
 
 
-class TestAttachmentFromMeta:
+class TestRunIntAttachmentFromMeta:
     """Test attachment_from_meta helper function."""
 
     @pytest.mark.parametrize(
