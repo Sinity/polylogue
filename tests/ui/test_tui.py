@@ -32,19 +32,19 @@ async def _wait_workers(pilot, *, selector: str | None = None, reject: str = "Lo
     under heavy system load.
 
     If *selector* is given, poll until that StatCard's ``value`` no longer
-    equals *reject* (default ``"Loading..."``), up to ~5 s.
+    equals *reject* (default ``"Loading..."``), up to ~10 s.
     """
     import asyncio
 
     await pilot.app.workers.wait_for_complete()
     # call_from_thread() callbacks may take several event loop ticks to land.
-    for _ in range(6):
+    for _ in range(10):
         await pilot.pause()
 
     # Poll until a specific widget settles (handles system load jitter).
     # Under extreme load (4000+ tests), the event loop may need real time.
     if selector:
-        for _ in range(50):
+        for _ in range(100):
             widget = pilot.app.query_one(selector, StatCard)
             if widget.value != reject:
                 break
