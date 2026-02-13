@@ -76,6 +76,10 @@ markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
     "integration: marks integration tests (pipeline, CLI end-to-end)",
 ]
+filterwarnings = [
+    "ignore::ResourceWarning",           # Unclosed sqlite3 connections in thread-local backend
+    "ignore::DeprecationWarning:dateparser",  # dateparser strptime deprecation (external)
+]
 
 
 [tool.coverage.run]
