@@ -248,6 +248,45 @@
             border: none;
         }
 
+        /* Branch visualization */
+        .branches {
+            margin-top: 1rem;
+            border-left: 3px solid var(--accent);
+            padding-left: 1rem;
+        }
+
+        .branches summary {
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 600;
+            color: var(--accent);
+            padding: 0.25rem 0;
+            user-select: none;
+        }
+
+        .branches summary:hover {
+            color: var(--text-primary);
+        }
+
+        .branch-message {
+            display: flex;
+            gap: 1rem;
+            padding: 1rem;
+            margin-top: 0.75rem;
+            border-radius: 8px;
+            border: 1px dashed var(--border);
+            opacity: 0.9;
+        }
+
+        .branch-label {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--accent);
+            margin-bottom: 0.25rem;
+        }
+
         .toc {
             position: fixed;
             right: 2rem;
@@ -336,6 +375,27 @@
                     <div class="message-body">
                         {{ msg.html_content | safe }}
                     </div>
+                    {% if msg.branches %}
+                    <details class="branches">
+                        <summary>{{ msg.branches | length }} alternative{{ 's' if msg.branches | length > 1 else '' }}</summary>
+                        {% for branch in msg.branches %}
+                        <div class="branch-message {{ branch.role_class or 'message-unknown' }}">
+                            <div class="message-content">
+                                <div class="branch-label">Branch {{ branch.branch_index }}</div>
+                                <header class="message-header">
+                                    <span class="role-label">{{ branch.role or 'message' }}</span>
+                                    {% if branch.timestamp %}
+                                    <time class="timestamp">{{ branch.timestamp }}</time>
+                                    {% endif %}
+                                </header>
+                                <div class="message-body">
+                                    {{ branch.html_content | safe }}
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </details>
+                    {% endif %}
                 </div>
             </article>
             {% endfor %}

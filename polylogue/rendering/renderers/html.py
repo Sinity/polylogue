@@ -142,6 +142,55 @@ def _role_css_class(role: str) -> str:
     return "message-" + _ROLE_CLASS_RE.sub("-", role.lower())
 
 
+def _attach_branches(messages: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Group branch messages under their mainline siblings.
+
+    Mainline messages (``branch_index == 0``) are returned as the top-level
+    list.  Messages with ``branch_index > 0`` are attached as a ``branches``
+    list on the mainline message that shares the same ``parent_message_id``.
+
+    If no branching is present, the input is returned unchanged (all
+    messages have ``branch_index == 0`` and no ``branches`` key).
+    """
+    # Fast path: if no message has a non-zero branch_index, skip grouping
+    if not any(m.get("branch_index", 0) for m in messages):
+        return messages
+
+    # Index mainline messages by their id for parent lookups
+    mainline: list[dict[str, object]] = []
+    mainline_by_id: dict[str, dict[str, object]] = {}
+
+    for msg in messages:
+        if not msg.get("branch_index"):
+            mainline.append(msg)
+            mainline_by_id[str(msg["id"])] = msg
+
+    # Attach branch messages to the mainline sibling that shares the same parent
+    for msg in messages:
+        branch_idx = msg.get("branch_index", 0)
+        parent_id = msg.get("parent_message_id")
+        if not branch_idx or not parent_id:
+            continue
+
+        # Find the mainline sibling: the mainline message with the same parent_id
+        # This is the branch_index=0 message that shares the same parent
+        sibling = None
+        for m in mainline:
+            if m.get("parent_message_id") == parent_id and not m.get("branch_index"):
+                sibling = m
+                break
+
+        if sibling is not None:
+            branches = sibling.setdefault("branches", [])
+            assert isinstance(branches, list)
+            branches.append(msg)
+        else:
+            # No mainline sibling found — include as standalone
+            mainline.append(msg)
+
+    return mainline
+
+
 class HTMLRenderer:
     """Enhanced HTML renderer with syntax highlighting and polished styling.
 
@@ -184,25 +233,31 @@ class HTMLRenderer:
         """
         return "html"
 
-    def _prepare_messages(self, conversation_id: str) -> list[dict[str, str | None]]:
+    def _prepare_messages(self, conversation_id: str) -> list[dict[str, object]]:
         """Prepare messages for template rendering with HTML content.
+
+        Includes branch metadata so the template can render branch
+        points with collapsible ``<details>`` sections.
 
         Args:
             conversation_id: ID of the conversation
 
         Returns:
-            List of message dicts with html_content field
+            List of mainline message dicts.  Each dict may contain a
+            ``branches`` key holding a list of alternative branch dicts.
         """
         from polylogue.storage.backends.sqlite import open_connection
 
-        messages: list[dict[str, str | None]] = []
+        raw_messages: list[dict[str, object]] = []
         with open_connection(None) as conn:
             rows = conn.execute(
                 """
-                SELECT message_id, role, text, timestamp
+                SELECT message_id, role, text, timestamp,
+                       parent_message_id, branch_index
                 FROM messages
                 WHERE conversation_id = ?
                 ORDER BY
+                    branch_index,
                     (timestamp IS NULL),
                     CASE
                         WHEN timestamp IS NULL THEN NULL
@@ -220,16 +275,18 @@ class HTMLRenderer:
                     continue
                 role = row["role"] or "message"
                 html_content = self.md_renderer.render(text)
-                messages.append({
+                raw_messages.append({
                     "id": row["message_id"],
                     "role": role,
                     "role_class": _role_css_class(role),
                     "text": text,
                     "html_content": html_content,
                     "timestamp": row["timestamp"],
+                    "parent_message_id": row["parent_message_id"],
+                    "branch_index": row["branch_index"] or 0,
                 })
 
-        return messages
+        return _attach_branches(raw_messages)
 
     def render(self, conversation_id: str, output_path: Path) -> Path:
         """Render a conversation to enhanced HTML format.
@@ -307,21 +364,24 @@ def render_conversation_html(conv: Conversation, theme: str = "dark") -> str:
     highlighter = PygmentsHighlighter(style=style)
     md_renderer = MarkdownRenderer(highlighter)
 
-    messages: list[dict[str, str | None]] = []
+    raw_messages: list[dict[str, object]] = []
     for msg in conv.messages:
         if not msg.text:
             continue
         role = msg.role or "message"
         html_content = md_renderer.render(msg.text)
-        messages.append({
+        raw_messages.append({
             "id": msg.id,
             "role": role,
             "role_class": _role_css_class(role),
             "text": msg.text,
             "html_content": html_content,
             "timestamp": str(msg.timestamp) if msg.timestamp else None,
+            "parent_message_id": msg.parent_id,
+            "branch_index": msg.branch_index,
         })
 
+    messages = _attach_branches(raw_messages)
     title = conv.display_title or str(conv.id)
 
     env = Environment(
