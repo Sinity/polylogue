@@ -29,14 +29,14 @@ Example:
 
 from __future__ import annotations
 
-import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import Config, Source, get_config
+from polylogue.lib.log import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 from polylogue.lib.filters import ConversationFilter
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -499,7 +499,7 @@ class Polylogue:
                 if row and row[0]:
                     last_sync = row[0]
         except Exception as exc:
-            logger.debug("Last sync lookup failed: %s", exc)
+            logger.warning("Last sync lookup failed: %s", exc)
 
         return ArchiveStats(
             conversation_count=len(conversations),

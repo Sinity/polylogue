@@ -21,6 +21,7 @@ import pytest
 import yaml
 
 from polylogue.cli import query
+from polylogue.lib import formatting
 from polylogue.lib.models import Conversation, Message
 
 
@@ -98,7 +99,7 @@ class TestQueryConvToDict:
     def test_field_selection(self, sample_conversations, fields, should_include, should_exclude):
         """Tests _conv_to_dict field selection."""
         conv = sample_conversations[0]
-        result = query._conv_to_dict(conv, fields)
+        result = formatting._conv_to_dict(conv, fields)
 
         for field in should_include:
             assert field in result, f"Expected field '{field}' to be in result"
@@ -119,10 +120,10 @@ class TestFormatHelpers:
     @pytest.mark.parametrize(
         "formatter,assertion",
         [
-            (query._conv_to_markdown, lambda r: "# First Conversation" in r),
-            (query._conv_to_html, lambda r: "<!DOCTYPE html>" in r and "<html" in r),
-            (query._conv_to_obsidian, lambda r: r.startswith("---")),
-            (query._conv_to_org, lambda r: "#+TITLE:" in r),
+            (formatting._conv_to_markdown, lambda r: "# First Conversation" in r),
+            (formatting._conv_to_html, lambda r: "<!DOCTYPE html>" in r and "<html" in r),
+            (formatting._conv_to_obsidian, lambda r: r.startswith("---")),
+            (formatting._conv_to_org, lambda r: "#+TITLE:" in r),
         ],
         ids=["markdown", "html", "obsidian", "org"],
     )
@@ -135,13 +136,13 @@ class TestFormatHelpers:
     def test_markdown_includes_messages(self, sample_conversations):
         """Markdown includes all message content."""
         conv = sample_conversations[0]
-        result = query._conv_to_markdown(conv)
+        result = formatting._conv_to_markdown(conv)
         assert "Hello world" in result and "Hi there!" in result
 
     def test_markdown_includes_provider(self, sample_conversations):
         """Markdown includes provider info."""
         conv = sample_conversations[0]
-        result = query._conv_to_markdown(conv)
+        result = formatting._conv_to_markdown(conv)
         assert "chatgpt" in result.lower()
 
     def test_html_escapes_special_chars(self, sample_conversations):
@@ -151,25 +152,25 @@ class TestFormatHelpers:
             provider="test",
             messages=[Message(id="m1", role="user", text="<script>alert('xss')</script>")],
         )
-        result = query._conv_to_html(conv)
+        result = formatting._conv_to_html(conv)
         assert "<script>" not in result and "&lt;script&gt;" in result
 
     def test_html_includes_css(self, sample_conversations):
         """HTML includes CSS styles."""
         conv = sample_conversations[0]
-        result = query._conv_to_html(conv)
+        result = formatting._conv_to_html(conv)
         assert "<style>" in result and "message-user" in result
 
     def test_obsidian_includes_tags(self, sample_conversations):
         """Obsidian format includes tags in frontmatter."""
         conv = sample_conversations[0]
-        result = query._conv_to_obsidian(conv)
+        result = formatting._conv_to_obsidian(conv)
         assert "tags:" in result
 
     def test_org_uses_headings(self, sample_conversations):
         """Org-mode uses * for headings."""
         conv = sample_conversations[0]
-        result = query._conv_to_org(conv)
+        result = formatting._conv_to_org(conv)
         assert "* USER" in result and "* ASSISTANT" in result
 
 
@@ -259,7 +260,7 @@ class TestQueryFormatConversation:
     def test_format_conversation(self, sample_conversations, format_type, assertion):
         """Tests _format_conversation with various formats."""
         conv = sample_conversations[0]
-        result = query._format_conversation(conv, format_type, None)
+        result = formatting.format_conversation(conv, format_type, None)
 
         assert assertion(result), f"Failed assertion for format {format_type}"
 
@@ -507,7 +508,7 @@ class TestQueryConvToJson:
     def test_json_field_selection(self, sample_conversations, fields, has_messages, expected_id):
         """Tests _conv_to_json field selection."""
         conv = sample_conversations[0]
-        result = query._conv_to_json(conv, fields)
+        result = formatting._conv_to_json(conv, fields)
         parsed = json.loads(result)
 
         assert parsed["id"] == expected_id
@@ -530,7 +531,7 @@ class TestQueryConvToJson:
             messages=[],
             title="Empty",
         )
-        result = query._conv_to_json(conv, None)
+        result = formatting._conv_to_json(conv, None)
         parsed = json.loads(result)
 
         assert parsed["id"] == "empty-conv"
@@ -556,7 +557,7 @@ class TestQueryConvToJson:
             ],
             title="Test",
         )
-        result = query._conv_to_json(conv, None)
+        result = formatting._conv_to_json(conv, None)
         parsed = json.loads(result)
 
         assert len(parsed["messages"]) == 2
@@ -569,7 +570,7 @@ class TestQueryConvToJson:
     def test_timestamps_are_iso_formatted(self, sample_conversations):
         """Timestamps are ISO formatted in JSON."""
         conv = sample_conversations[0]
-        result = query._conv_to_json(conv, None)
+        result = formatting._conv_to_json(conv, None)
         parsed = json.loads(result)
 
         ts = parsed["messages"][0]["timestamp"]
@@ -586,7 +587,7 @@ class TestQueryConvToJson:
             ],
             title="Test",
         )
-        result = query._conv_to_json(conv, None)
+        result = formatting._conv_to_json(conv, None)
         parsed = json.loads(result)
 
         assert parsed["messages"][0]["timestamp"] is None
@@ -594,7 +595,7 @@ class TestQueryConvToJson:
     def test_multiple_messages_with_full_content(self, sample_conversations):
         """Multiple messages all included with full content."""
         conv = sample_conversations[1]  # Has 3 messages
-        result = query._conv_to_json(conv, None)
+        result = formatting._conv_to_json(conv, None)
         parsed = json.loads(result)
 
         assert len(parsed["messages"]) == 3
@@ -605,7 +606,7 @@ class TestQueryConvToJson:
     def test_field_selection_with_spaces(self, sample_conversations):
         """Field selection handles spaces in field list."""
         conv = sample_conversations[0]
-        result = query._conv_to_json(conv, "id, title, messages")
+        result = formatting._conv_to_json(conv, "id, title, messages")
         parsed = json.loads(result)
 
         assert "id" in parsed
@@ -616,7 +617,7 @@ class TestQueryConvToJson:
     def test_json_is_valid_and_parseable(self, sample_conversations):
         """Generated JSON is valid and parseable."""
         conv = sample_conversations[0]
-        result = query._conv_to_json(conv, None)
+        result = formatting._conv_to_json(conv, None)
 
         # Should not raise
         parsed = json.loads(result)
@@ -630,7 +631,7 @@ class TestQueryConvToCsv:
     def test_csv_header_row_is_correct(self, sample_conversations):
         """CSV header row contains correct columns."""
         conv = sample_conversations[0]
-        result = query._conv_to_csv_messages(conv)
+        result = formatting._conv_to_csv_messages(conv)
         lines = result.strip().split("\n")
 
         assert lines[0].rstrip() == "conversation_id,message_id,role,timestamp,text"
@@ -638,7 +639,7 @@ class TestQueryConvToCsv:
     def test_messages_with_text_produce_csv_rows(self, sample_conversations):
         """Messages with text produce CSV rows."""
         conv = sample_conversations[0]
-        result = query._conv_to_csv_messages(conv)
+        result = formatting._conv_to_csv_messages(conv)
         lines = result.strip().split("\n")
 
         # Header + 2 messages
@@ -660,7 +661,7 @@ class TestQueryConvToCsv:
             ],
             title="Test",
         )
-        result = query._conv_to_csv_messages(conv)
+        result = formatting._conv_to_csv_messages(conv)
         lines = result.strip().split("\n")
 
         # Header + 2 messages (m1 and m4)
@@ -690,7 +691,7 @@ class TestQueryConvToCsv:
             ],
             title="Test",
         )
-        result = query._conv_to_csv_messages(conv)
+        result = formatting._conv_to_csv_messages(conv)
         lines = result.split("\n")
 
         # CSV writer should escape quotes and handle special chars
@@ -706,7 +707,7 @@ class TestQueryConvToCsv:
             messages=[],
             title="Empty",
         )
-        result = query._conv_to_csv_messages(conv)
+        result = formatting._conv_to_csv_messages(conv)
         lines = result.split("\n")
 
         # Should have exactly 1 line (header)
@@ -716,7 +717,7 @@ class TestQueryConvToCsv:
     def test_csv_has_correct_column_order(self, sample_conversations):
         """CSV columns appear in correct order."""
         conv = sample_conversations[0]
-        result = query._conv_to_csv_messages(conv)
+        result = formatting._conv_to_csv_messages(conv)
         lines = result.strip().split("\n")
 
         # Parse first data row
@@ -732,7 +733,7 @@ class TestQueryConvToCsv:
     def test_timestamps_iso_formatted_in_csv(self, sample_conversations):
         """Timestamps are ISO formatted in CSV."""
         conv = sample_conversations[0]
-        result = query._conv_to_csv_messages(conv)
+        result = formatting._conv_to_csv_messages(conv)
 
         reader = csv.reader(io.StringIO(result))
         next(reader)  # Skip header
@@ -751,7 +752,7 @@ class TestQueryConvToCsv:
             ],
             title="Test",
         )
-        result = query._conv_to_csv_messages(conv)
+        result = formatting._conv_to_csv_messages(conv)
 
         reader = csv.reader(io.StringIO(result))
         next(reader)  # Skip header
@@ -763,7 +764,7 @@ class TestQueryConvToCsv:
     def test_multiple_messages_all_in_csv(self, sample_conversations):
         """Multiple messages all appear in CSV output."""
         conv = sample_conversations[1]  # Has 3 messages
-        result = query._conv_to_csv_messages(conv)
+        result = formatting._conv_to_csv_messages(conv)
         lines = result.strip().split("\n")
 
         # Header + 3 messages
@@ -775,7 +776,7 @@ class TestQueryConvToCsv:
     def test_output_is_valid_csv(self, sample_conversations):
         """Output is valid CSV that can be parsed."""
         conv = sample_conversations[0]
-        result = query._conv_to_csv_messages(conv)
+        result = formatting._conv_to_csv_messages(conv)
 
         # Should not raise
         reader = csv.reader(io.StringIO(result))

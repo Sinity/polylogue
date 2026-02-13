@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue.config import Source
+from polylogue.errors import PolylogueError
 from polylogue.sources import (
     DriveAuthError,
     DriveClient,
@@ -33,9 +34,9 @@ BACKOFF_TEST_CASES = [
 ]
 
 EXCEPTION_TYPE_CASES = [
-    (DriveAuthError, "Auth failed", [DriveError, RuntimeError], "auth_error_is_drive_error"),
-    (DriveNotFoundError, "File not found", [DriveError, RuntimeError], "not_found_error_is_drive_error"),
-    (DriveError, "Test message", [RuntimeError], "drive_error_is_runtime_error"),
+    (DriveAuthError, "Auth failed", [DriveError, PolylogueError], "auth_error_is_drive_error"),
+    (DriveNotFoundError, "File not found", [DriveError, PolylogueError], "not_found_error_is_drive_error"),
+    (DriveError, "Test message", [PolylogueError], "drive_error_is_polylogue_error"),
 ]
 
 NETWORK_ERROR_CASES = [

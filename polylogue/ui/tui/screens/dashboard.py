@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from textual.app import ComposeResult
@@ -10,12 +9,13 @@ from textual.containers import Container, Grid
 from textual.widgets import Static
 
 from polylogue.config import Config
+from polylogue.lib.log import get_logger
 from polylogue.ui.tui.widgets.stats import StatCard
 
 if TYPE_CHECKING:
     from polylogue.storage.repository import ConversationRepository
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ProviderBar(Static):
