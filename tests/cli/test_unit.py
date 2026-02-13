@@ -402,19 +402,22 @@ def test_maybe_prompt_sources_returns_none_for_single_source(helpers_workspace, 
 
 
 def test_create_conversation_repository() -> None:
-    """Test creating conversation repository returns proper instance with write lock."""
+    """Test creating conversation repository returns proper instance.
+
+    Write safety is now provided by SQLite's BEGIN IMMEDIATE transactions
+    in the backend layer (not by a Python-level lock).
+    """
     backend = create_default_backend()
     repository = ConversationRepository(backend=backend)
 
     assert isinstance(repository, ConversationRepository)
-    assert hasattr(repository, "_write_lock")
+    assert hasattr(repository, "_backend")
 
-    # Verify independence: each instance is separate with own lock
+    # Verify independence: each instance is separate
     backend2 = create_default_backend()
     repo2 = ConversationRepository(backend=backend2)
 
     assert repo2 is not repository
-    assert repo2._write_lock is not repository._write_lock
 
 
 @pytest.fixture

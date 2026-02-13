@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -10,12 +9,13 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
+from polylogue.lib.log import get_logger
 from polylogue.render_paths import render_root
 
 from .backends.sqlite import DatabaseError, open_connection
 from .search_cache import SearchCacheKey
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # FTS5 special characters that need escaping or quoting.
 # Includes documented operators (" : * ^ ( ) { } [ ] | & ! + -) plus characters

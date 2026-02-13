@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from polylogue.cli.query import _yaml_safe
+from polylogue.lib.formatting import _yaml_safe
 from polylogue.sources.parsers.chatgpt import extract_messages_from_mapping, parse as chatgpt_parse
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.sources.parsers.codex import parse as codex_parse

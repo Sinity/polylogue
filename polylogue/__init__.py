@@ -29,6 +29,7 @@ Example:
 # High-level API
 # Core types for library users
 from polylogue.async_facade import AsyncPolylogue
+from polylogue.errors import PolylogueError
 from polylogue.facade import Polylogue
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, Message
@@ -49,5 +50,6 @@ __all__ = [
     "ConversationFilter",
     "Message",
     "Polylogue",
+    "PolylogueError",
     "SearchResult",
 ]

@@ -8,7 +8,6 @@ No external server required - vectors stored directly in SQLite.
 
 from __future__ import annotations
 
-import logging
 import struct
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,12 +20,14 @@ from tenacity import (
     wait_exponential,
 )
 
+from polylogue.lib.log import get_logger
+from polylogue.storage.backends.sqlite import DatabaseError
 from polylogue.storage.store import MessageRecord
 
 if TYPE_CHECKING:
     import sqlite3
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
 DEFAULT_MODEL = "voyage-4"
@@ -34,7 +35,7 @@ DEFAULT_DIMENSION = 1024
 BATCH_SIZE = 128  # Voyage API limit per request
 
 
-class SqliteVecError(RuntimeError):
+class SqliteVecError(DatabaseError):
     """Raised when sqlite-vec operations fail."""
 
     pass
