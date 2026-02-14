@@ -1,70 +1,48 @@
-# Local OAuth tokens and credentials
+# Credentials
 token.json
 credentials.json
+.env
 
-# Synced attachment folders
-*_attachments/
-*_attachment/
-
-# Common OS cruft
+# OS
 .DS_Store
 Thumbs.db
 
-# Local dev environment
-.direnv/
-.venv/
-venv/
-env/
-
-# Local scratch
-.tmp/
-
 # Python
 __pycache__
-.pytest_cache/
-.hypothesis/
-.coverage
-coverage.json
-coverage_report*.txt
-htmlcov/
-.mypy_cache/
-.ruff_cache/
 *.pyc
 *.pyo
-*.pyd
-.Python
 *.egg-info/
 dist/
 build/
 
-# Local tool state
+# Dev environment
+.direnv/
+.venv/
+venv/
+
+# Tool caches
+.pytest_cache/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
 .claude/
 
-# Local test datasets (real data, not committed)
-tests/datasets/
+# Coverage
+.coverage
+coverage.json
+htmlcov/
+
+# Test data (real exports, not committed)
 tests/test_datasets/*.json
 tests/test_datasets/*.jsonl
 tests/test_datasets/*.md
 tests/test_datasets/*.txt
 
-# Local shell env files
-.env
-
-# Not project code
-data
-sinex_md/
-polylogue.egg-info/
-
 # Mutation testing
 mutants/
-coverage_baseline.json
 
 # Nix build output
 result
 
-# Test artifacts
-test.zip
-test-manual-verification/
-
-# Demo output (regenerated via demos/generate.sh)
+# Demo output (regenerated via demos/)
 demos/output/
