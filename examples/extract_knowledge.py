@@ -14,11 +14,7 @@ from __future__ import annotations
 
 import argparse
 import re
-import sys
 from pathlib import Path
-
-# Add parent to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from polylogue import Polylogue
 
@@ -123,7 +119,7 @@ def export_to_markdown(code_blocks, thinking_traces, output_path: Path):
 
         for lang, blocks in sorted(lang_groups.items()):
             lines.append(f"### {lang.title()} ({len(blocks)} snippets)\n")
-            for i, block in enumerate(blocks[:10]):  # Limit to 10 per language
+            for block in blocks[:10]:  # Limit to 10 per language
                 lines.append(f"**Source**: {block['conversation_title']}\n")
                 lines.append(f"```{lang}")
                 lines.append(block["code"])

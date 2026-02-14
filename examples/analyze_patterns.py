@@ -16,11 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
-from pathlib import Path
-
-# Add parent to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from polylogue import Polylogue
 
@@ -106,7 +101,7 @@ def analyze_substantive_ratios(archive: Polylogue):
         provider_stats[conv.provider]["substantive_messages"] += len(substantive)
 
     # Calculate ratios
-    for provider, stats in provider_stats.items():
+    for _provider, stats in provider_stats.items():
         if stats["total_messages"] > 0:
             stats["substantive_ratio"] = stats["substantive_messages"] / stats["total_messages"]
         else:

@@ -134,12 +134,5 @@
               touch $out
             '';
       }
-    )
-    // {
-      nixosModules = {
-        polylogue = import ./nixos-modules/polylogue.nix { inherit self; };
-        sync = import ./nixos-modules/sync.nix;
-        default = self.nixosModules.polylogue;
-      };
-    };
+    );
 }

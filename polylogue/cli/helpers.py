@@ -19,13 +19,6 @@ def fail(command: str, message: str) -> NoReturn:
     raise SystemExit(f"{command}: {message}")
 
 
-def is_declarative() -> bool:
-    value = os.environ.get("POLYLOGUE_DECLARATIVE")
-    if not value:
-        return False
-    return value.lower() not in {"0", "false", "no"}
-
-
 def source_state_path() -> Path:
     raw_state_root = os.environ.get("XDG_STATE_HOME")
     state_root = Path(raw_state_root).expanduser() if raw_state_root else Path.home() / ".local/state"
