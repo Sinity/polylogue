@@ -1,0 +1,98 @@
+{
+  "uuid": "bbb00003-0003-4003-8003-000000000003",
+  "name": "Database Schema Review and Optimization",
+  "created_at": "2024-01-15T09:00:00Z",
+  "updated_at": "2024-01-15T10:30:00Z",
+  "chat_messages": [
+    {
+      "uuid": "msg00001-0003-4003-8003-000000000001",
+      "text": "I need feedback on this schema for a multi-tenant SaaS application. We have users, organizations, and documents. Should I use a shared database with tenant isolation or separate databases per tenant?",
+      "sender": "human",
+      "created_at": "2024-01-15T09:00:00Z",
+      "updated_at": "2024-01-15T09:00:00Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00002-0003-4003-8003-000000000001",
+      "text": "The choice depends on scale and isolation requirements. Here's a comparison:\n\n**Shared Database (Recommended for most SaaS):**\n- ✅ Lower ops complexity\n- ✅ Easier backups and migrations\n- ❌ Requires strict row-level security\n- ❌ Noisy neighbor effect possible\n\n**Separate Databases (Hyper-isolation):**\n- ✅ Perfect isolation, compliance-friendly\n- ❌ Higher operational overhead\n- ❌ Cross-tenant analytics harder\n\nFor most startups, go with **shared database + tenant_id on every table**. If you hit compliance walls later, shard by tenant.\n\nCan you share your draft schema?",
+      "sender": "assistant",
+      "created_at": "2024-01-15T09:00:45Z",
+      "updated_at": "2024-01-15T09:00:45Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00003-0003-4003-8003-000000000002",
+      "text": "Sure, here's what I have:\n\n```sql\nCREATE TABLE organizations (\n  id UUID PRIMARY KEY,\n  name VARCHAR(255) NOT NULL,\n  created_at TIMESTAMP DEFAULT NOW()\n);\n\nCREATE TABLE users (\n  id UUID PRIMARY KEY,\n  org_id UUID NOT NULL REFERENCES organizations(id),\n  email VARCHAR(255) NOT NULL,\n  password_hash TEXT NOT NULL,\n  created_at TIMESTAMP DEFAULT NOW()\n);\n\nCREATE TABLE documents (\n  id UUID PRIMARY KEY,\n  org_id UUID NOT NULL REFERENCES organizations(id),\n  user_id UUID NOT NULL REFERENCES users(id),\n  title VARCHAR(500) NOT NULL,\n  content TEXT,\n  created_at TIMESTAMP DEFAULT NOW(),\n  updated_at TIMESTAMP DEFAULT NOW()\n);\n```\n\nIs this a good starting point?",
+      "sender": "human",
+      "created_at": "2024-01-15T09:01:30Z",
+      "updated_at": "2024-01-15T09:01:30Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00004-0003-4003-8003-000000000002",
+      "text": "Good foundation! A few improvements:\n\n**1. Add indexes for common queries:**\n```sql\nCREATE INDEX idx_users_org_id ON users(org_id);\nCREATE INDEX idx_documents_org_id ON documents(org_id);\nCREATE INDEX idx_documents_user_id ON documents(user_id);\nCREATE INDEX idx_users_email ON users(email);  -- for login lookups\n```\n\n**2. Add unique constraint on email per org** (not globally):\n```sql\nALTER TABLE users ADD CONSTRAINT unique_email_per_org\n  UNIQUE(org_id, email);\n```\n\n**3. Add soft deletes:**\n```sql\nALTER TABLE users ADD COLUMN deleted_at TIMESTAMP DEFAULT NULL;\nALTER TABLE documents ADD COLUMN deleted_at TIMESTAMP DEFAULT NULL;\n```\n\nThis lets you preserve audit trails without violating FK constraints.\n\n**4. Consider status columns:**\n```sql\nALTER TABLE documents ADD COLUMN status VARCHAR(50)\n  DEFAULT 'draft' CHECK(status IN ('draft', 'published', 'archived'));\n```\n\nDo you need document versioning?",
+      "sender": "assistant",
+      "created_at": "2024-01-15T09:02:15Z",
+      "updated_at": "2024-01-15T09:02:15Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00005-0003-4003-8003-000000000003",
+      "text": "Yes, we need to track document versions. Should I create a separate versions table?",
+      "sender": "human",
+      "created_at": "2024-01-15T09:03:00Z",
+      "updated_at": "2024-01-15T09:03:00Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00006-0003-4003-8003-000000000003",
+      "text": "Definitely. Separate versioning table is the right call:\n\n```sql\nCREATE TABLE document_versions (\n  id UUID PRIMARY KEY,\n  document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,\n  org_id UUID NOT NULL REFERENCES organizations(id),\n  version_number INT NOT NULL,\n  content TEXT NOT NULL,\n  created_by UUID NOT NULL REFERENCES users(id),\n  created_at TIMESTAMP DEFAULT NOW(),\n  \n  UNIQUE(document_id, version_number)\n);\n```\n\n**Key design points:**\n- Include `org_id` here too (denormalization for query efficiency)\n- Cascade delete on document removal\n- Track who created each version\n- Version number auto-increment per document\n\n**In your app:**\n- On document save, insert a new row here\n- Query latest by `MAX(version_number)`\n- For \"diff\" features, compare adjacent versions\n\nThis pattern scales well and keeps history intact.",
+      "sender": "assistant",
+      "created_at": "2024-01-15T09:03:45Z",
+      "updated_at": "2024-01-15T09:03:45Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00007-0003-4003-8003-000000000004",
+      "text": "What about permissions? Users in an org should have different roles (admin, editor, viewer). Should that be a separate table too?",
+      "sender": "human",
+      "created_at": "2024-01-15T09:04:30Z",
+      "updated_at": "2024-01-15T09:04:30Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00008-0003-4003-8003-000000000004",
+      "text": "Yes, use a dedicated permissions/roles table:\n\n```sql\nCREATE TABLE org_members (\n  id UUID PRIMARY KEY,\n  org_id UUID NOT NULL REFERENCES organizations(id),\n  user_id UUID NOT NULL REFERENCES users(id),\n  role VARCHAR(50) NOT NULL\n    CHECK(role IN ('owner', 'admin', 'editor', 'viewer')),\n  created_at TIMESTAMP DEFAULT NOW(),\n  \n  UNIQUE(org_id, user_id)\n);\n\nCREATE INDEX idx_org_members_org_id ON org_members(org_id);\nCREATE INDEX idx_org_members_user_id ON org_members(user_id);\n```\n\n**Benefits:**\n- Explicit membership (not every user in the system is in every org)\n- Role-based access control (RBAC)\n- Easy to audit and modify roles\n\n**Document-level granularity:**\nIf you need per-document permissions (e.g., some editors can't edit certain docs), add:\n```sql\nCREATE TABLE document_permissions (\n  id UUID PRIMARY KEY,\n  document_id UUID NOT NULL REFERENCES documents(id),\n  org_member_id UUID NOT NULL REFERENCES org_members(id),\n  permission VARCHAR(50) NOT NULL\n    CHECK(permission IN ('read', 'edit', 'admin')),\n  UNIQUE(document_id, org_member_id)\n);\n```\n\nStart without this and add if you need fine-grained control.",
+      "sender": "assistant",
+      "created_at": "2024-01-15T09:05:15Z",
+      "updated_at": "2024-01-15T09:05:15Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00009-0003-4003-8003-000000000005",
+      "text": "One more thing — what about performance? With potentially millions of documents, should I partition the tables?",
+      "sender": "human",
+      "created_at": "2024-01-15T09:06:00Z",
+      "updated_at": "2024-01-15T09:06:00Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00010-0003-4003-8003-000000000005",
+      "text": "Don't partition prematurely. Here's the performance roadmap:\n\n**Phase 1 (Now):** Indexes + good queries\n- Indexes on `(org_id, created_at)` for list/filter\n- Query planner will handle millions fine with proper indexes\n- Monitor with `EXPLAIN ANALYZE`\n\n**Phase 2 (10M+ rows per table):** Partitioning\n- Partition `documents` by org_id (list partition)\n- Partition `document_versions` by `created_at` (range partition)\n- PostgreSQL handles partition elimination automatically\n\n**Phase 3 (100M+ rows): Sharding**\n- Shard by org_id across multiple databases\n- Distribute load horizontally\n\n**Immediate wins:**\n```sql\nCREATE INDEX idx_documents_org_created ON documents(org_id, created_at DESC);\nCREATE INDEX idx_versions_document_created ON document_versions(document_id, created_at DESC);\n```\n\nThese cover your common access patterns: \"list docs for org X\" and \"get history for doc Y\".\n\nStart here and scale when you hit real bottlenecks. Most SaaS apps do fine without sharding.",
+      "sender": "assistant",
+      "created_at": "2024-01-15T09:06:45Z",
+      "updated_at": "2024-01-15T09:06:45Z",
+      "attachments": [],
+      "files": []
+    }
+  ]
+}
