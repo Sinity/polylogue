@@ -61,21 +61,15 @@ def temp_config_and_repo(tmp_path):
 
 
 @pytest.fixture
-def chatgpt_sample_source():
-    """Source pointing to real ChatGPT sample."""
-    sample_path = Path(__file__).parent.parent / "fixtures" / "real" / "chatgpt" / "simple.json"
-    if sample_path.exists():
-        return Source(name="chatgpt-test", path=sample_path)
-    return None
+def chatgpt_sample_source(synthetic_source):
+    """Source with synthetic ChatGPT data."""
+    return synthetic_source("chatgpt")
 
 
 @pytest.fixture
-def gemini_sample_source():
-    """Source pointing to real Gemini sample."""
-    sample_path = Path(__file__).parent.parent / "fixtures" / "real" / "gemini" / "sample-with-tools.jsonl"
-    if sample_path.exists():
-        return Source(name="gemini-test", path=sample_path)
-    return None
+def gemini_sample_source(synthetic_source):
+    """Source with synthetic Gemini data."""
+    return synthetic_source("gemini")
 
 
 # =============================================================================
@@ -83,35 +77,12 @@ def gemini_sample_source():
 # =============================================================================
 
 
-@pytest.mark.parametrize(
-    "provider,sample_name",
-    [
-        ("chatgpt", "simple.json"),
-        ("chatgpt", "branching.json"),
-        ("claude", "simple.json"),
-        pytest.param(
-            "gemini",
-            "sample-with-tools.jsonl",
-            marks=pytest.mark.skipif(
-                not Path(__file__).parent.parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
-                reason="Gemini sample not available",
-            ),
-        ),
-    ],
-)
-def test_full_workflow_per_provider(provider, sample_name, temp_config_and_repo):
-    """Import → Store → Query → Render for each provider.
-
-    This is the CRITICAL workflow that must work for each provider.
-    """
+@pytest.mark.parametrize("provider", ["chatgpt", "claude-ai", "claude-code", "codex", "gemini"])
+def test_full_workflow_per_provider(provider, synthetic_source, temp_config_and_repo):
+    """Import → Store → Query → Render for each provider."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
-    # Setup source
-    sample_path = Path(__file__).parent.parent / "fixtures" / "real" / provider / sample_name
-    if not sample_path.exists():
-        pytest.skip(f"Sample not available: {sample_path}")
-
-    source = Source(name=f"{provider}-test", path=sample_path)
+    source = synthetic_source(provider, count=1, messages_per_conversation=range(4, 12))
 
     # 1. IMPORT: Run ingestion
     service = ParsingService(
@@ -130,24 +101,21 @@ def test_full_workflow_per_provider(provider, sample_name, temp_config_and_repo)
 
     # Verify import
     assert result.counts["conversations"] > 0, f"No conversations imported from {provider}"
-    # Some providers may not have messages in the sample format (e.g., Gemini)
-    if provider == "gemini" and result.counts["messages"] == 0:
-        pytest.skip("Gemini sample has no importable messages (format issue)")
     assert result.counts["messages"] > 0, f"No messages imported from {provider}"
 
     # 2. STORE: Query back from database
     from polylogue.storage.search import search_messages
 
     convs = conv_repo.list()
-    convs = [c for c in convs if c.provider == provider]
+    provider_names = {"claude-ai": "claude"}  # provider name mapping in parser
+    expected_provider = provider_names.get(provider, provider)
+    convs = [c for c in convs if c.provider == expected_provider]
     assert len(convs) > 0, f"No conversations found for {provider}"
 
     # 3. QUERY: Verify conversation structure
     conv = convs[0]
     assert conv.id is not None
-    assert conv.provider == provider
     assert len(conv.messages) > 0
-    # At least one message should have text (some may be empty)
     assert any(m.text for m in conv.messages), "All messages are empty"
 
     # 4. RENDER: Generate markdown output
@@ -157,7 +125,6 @@ def test_full_workflow_per_provider(provider, sample_name, temp_config_and_repo)
     formatted = formatter.format(str(conv.id))
     markdown = formatted.markdown_text
     assert len(markdown) > 0
-    # Check that at least one message text is in the markdown
     assert any(m.text in markdown for m in conv.messages if m.text), "No message text found in markdown"
 
     # 5. SEARCH: Full-text search works
@@ -168,7 +135,7 @@ def test_full_workflow_per_provider(provider, sample_name, temp_config_and_repo)
             search_term,
             archive_root=archive_root,
             render_root_path=config.render_root,
-            db_path=db_path,  # Use test database, not user's real database
+            db_path=db_path,
         )
         found_ids = {r.conversation_id for r in result.hits}
         assert conv.id in found_ids, f"Search failed for '{search_term}'"
@@ -182,9 +149,6 @@ def test_full_workflow_per_provider(provider, sample_name, temp_config_and_repo)
 @pytest.mark.parametrize("format", ["markdown", "html"])
 def test_render_formats(format, temp_config_and_repo, chatgpt_sample_source):
     """Verify each output format works end-to-end."""
-    if chatgpt_sample_source is None:
-        pytest.skip("ChatGPT sample not available")
-
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
     # Import data
@@ -226,9 +190,6 @@ def test_render_formats(format, temp_config_and_repo, chatgpt_sample_source):
 
 def test_incremental_sync_no_duplicates(temp_config_and_repo, chatgpt_sample_source):
     """Syncing same source twice doesn't create duplicates."""
-    if chatgpt_sample_source is None:
-        pytest.skip("ChatGPT sample not available")
-
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
     service = ParsingService(
@@ -393,14 +354,7 @@ def test_multi_source_concurrent_sync(temp_config_and_repo, chatgpt_sample_sourc
     """Multiple sources can sync concurrently."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
-    sources = []
-    if chatgpt_sample_source:
-        sources.append(chatgpt_sample_source)
-    if gemini_sample_source:
-        sources.append(gemini_sample_source)
-
-    if len(sources) < 2:
-        pytest.skip("Need at least 2 sources for this test")
+    sources = [chatgpt_sample_source, gemini_sample_source]
 
     # Sync all sources
     service = ParsingService(
@@ -536,9 +490,6 @@ def test_sync_with_missing_file_reports_error(temp_config_and_repo):
 
 def test_sync_partial_success_with_mixed_sources(temp_config_and_repo, chatgpt_sample_source):
     """If some sources fail, successful ones still sync."""
-    if chatgpt_sample_source is None:
-        pytest.skip("ChatGPT sample not available")
-
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
     # Mix good and bad sources
@@ -570,9 +521,6 @@ def test_sync_partial_success_with_mixed_sources(temp_config_and_repo, chatgpt_s
 
 def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_source):
     """Search returns correct conversations for basic queries."""
-    if chatgpt_sample_source is None:
-        pytest.skip("ChatGPT sample not available")
-
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
     service = ParsingService(
@@ -690,9 +638,6 @@ def test_search_with_special_characters(temp_config_and_repo):
 
 def test_pipeline_runner_e2e(workspace_env, chatgpt_sample_source):
     """run_sources orchestrates full workflow."""
-    if chatgpt_sample_source is None:
-        pytest.skip("ChatGPT sample not available")
-
     from polylogue.config import get_config
 
     config = get_config()
@@ -708,9 +653,6 @@ def test_pipeline_runner_e2e(workspace_env, chatgpt_sample_source):
 
 def test_pipeline_runner_with_preview_mode(workspace_env, chatgpt_sample_source):
     """run_sources with stage control."""
-    if chatgpt_sample_source is None:
-        pytest.skip("ChatGPT sample not available")
-
     from polylogue.config import get_config
 
     config = get_config()
