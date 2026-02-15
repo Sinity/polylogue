@@ -489,11 +489,13 @@ class ConversationBuilder:
 
     def build(self):
         """Save to database and return a full Conversation domain object."""
-        from polylogue import Polylogue
+        from polylogue.storage.backends.sqlite import SQLiteBackend
+        from polylogue.storage.repository import ConversationRepository
 
         self.save()
-        p = Polylogue(db_path=self.db_path)
-        return p.repository.get(self.conv.conversation_id)
+        backend = SQLiteBackend(db_path=self.db_path)
+        repo = ConversationRepository(backend=backend)
+        return repo.get(self.conv.conversation_id)
 
 
 # =============================================================================

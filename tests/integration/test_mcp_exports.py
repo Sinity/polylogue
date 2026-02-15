@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tests.integration.conftest import make_mock_filter
 
 # =============================================================================
@@ -150,7 +152,8 @@ class TestNewPrompts:
             assert "Conversation 1" in result
             assert "Conversation 2" in result
 
-    def test_extract_patterns_prompt(self, sample_conversation):
+    @pytest.mark.asyncio
+    async def test_extract_patterns_prompt(self, sample_conversation):
         """extract_patterns prompt returns pattern analysis text."""
         from polylogue.mcp.server import _build_server
 
@@ -161,7 +164,7 @@ class TestNewPrompts:
                 MockFilter.return_value = make_mock_filter(results=[sample_conversation])
 
                 server = _build_server()
-                result = server._prompt_manager._prompts["extract_patterns"].fn()
+                result = await server._prompt_manager._prompts["extract_patterns"].fn()
 
                 assert isinstance(result, str)
                 assert "patterns" in result.lower()
