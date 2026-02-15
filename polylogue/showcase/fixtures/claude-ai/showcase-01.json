@@ -1,0 +1,44 @@
+{
+  "uuid": "bbb00001-0001-4001-8001-000000000001",
+  "name": "Rust Ownership Explained",
+  "created_at": "2024-01-23T10:30:00Z",
+  "updated_at": "2024-01-23T10:45:00Z",
+  "chat_messages": [
+    {
+      "uuid": "msg00001-0001-4001-8001-000000000001",
+      "text": "Can you explain Rust's ownership system? I'm struggling with borrow checker errors.",
+      "sender": "human",
+      "created_at": "2024-01-23T10:30:00Z",
+      "updated_at": "2024-01-23T10:30:00Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00002-0001-4001-8001-000000000001",
+      "text": "Rust's ownership system is built on three key rules:\n\n1. **Each value has one owner** — When you create a variable, it owns that data\n2. **Transfer (move)** — Assigning to another variable transfers ownership\n3. **Borrowing** — Using `&` lets you refer without taking ownership\n\nExample:\n```rust\nlet s1 = String::from(\"hello\");\nlet s2 = s1;  // ownership moves to s2, s1 is invalid\n\nlet s3 = &s2;  // borrow s2, both s2 and s3 can be used\n```\n\nThe borrow checker prevents data races by enforcing these rules at compile time.",
+      "sender": "assistant",
+      "created_at": "2024-01-23T10:30:15Z",
+      "updated_at": "2024-01-23T10:30:15Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00003-0001-4001-8001-000000000002",
+      "text": "That helps. What about mutable references? When should I use `&mut`?",
+      "sender": "human",
+      "created_at": "2024-01-23T10:30:45Z",
+      "updated_at": "2024-01-23T10:30:45Z",
+      "attachments": [],
+      "files": []
+    },
+    {
+      "uuid": "msg00004-0001-4001-8001-000000000002",
+      "text": "Mutable references (`&mut`) let you modify borrowed data. Key constraint: **only one mutable reference** at a time (no aliasing).\n\n```rust\nlet mut v = vec![1, 2, 3];\nlet r1 = &mut v;  // mutable borrow\nr1.push(4);\n// let r2 = &mut v;  // ERROR: can't have 2 mutable borrows\n\nlet r3 = &v;  // OK: immutable borrow after mutable is done\n```\n\nThis prevents concurrent modification bugs. Use `&mut` when a function needs to modify its input; otherwise prefer immutable references.",
+      "sender": "assistant",
+      "created_at": "2024-01-23T10:31:00Z",
+      "updated_at": "2024-01-23T10:31:00Z",
+      "attachments": [],
+      "files": []
+    }
+  ]
+}
