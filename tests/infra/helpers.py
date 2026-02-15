@@ -4,7 +4,7 @@ These helpers reduce boilerplate in parametrized tests and provide consistent
 test data generation across the test suite.
 
 Usage:
-    from tests.helpers import ConversationBuilder, make_message, db_setup
+    from tests.infra.helpers import ConversationBuilder, make_message, db_setup
 
 Created during aggressive test consolidation to eliminate repeated patterns.
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from polylogue.storage.backends.sqlite import open_connection, connection_context
+from polylogue.storage.backends.sqlite import connection_context, open_connection
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
@@ -643,7 +643,7 @@ def make_chatgpt_node(
     metadata: dict | None = None,
     parent: str | None = None,
 ) -> dict[str, Any]:
-    """Generate ChatGPT mapping node for importer tests.
+    """Generate ChatGPT mapping node for parser tests.
 
     Usage:
         node = make_chatgpt_node("msg1", "user", ["Hello"], timestamp=1704067200)
@@ -757,7 +757,7 @@ def make_claude_chat_message(
     files: list[dict] | None = None,
     timestamp: str | None = None,
 ) -> dict[str, Any]:
-    """Generate Claude AI chat_messages entry for importer tests.
+    """Generate Claude AI chat_messages entry for parser tests.
 
     Usage:
         msg = make_claude_chat_message("u1", "human", "Hello")

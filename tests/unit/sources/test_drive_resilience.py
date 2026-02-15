@@ -5,10 +5,11 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
+import polylogue.sources.drive_client as drive_client
 from polylogue.config import Source
 from polylogue.errors import PolylogueError
 from polylogue.sources import (
@@ -17,12 +18,9 @@ from polylogue.sources import (
     DriveError,
     DriveFile,
     DriveNotFoundError,
-    download_drive_files,
     iter_drive_conversations,
 )
 from polylogue.sources.drive_client import _is_retryable_error
-import polylogue.sources.drive_client as drive_client
-
 
 # ============================================================================
 # Test Data Tables (Module-level constants for parametrization)
@@ -250,7 +248,7 @@ class TestDriveEdgeCases:
         """Mock service supports pagination."""
         service = mock_drive_service["service"]
 
-        from tests.mocks.drive_mocks import mock_drive_file
+        from tests.infra.drive_mocks import mock_drive_file
 
         many_files = {f"file{i}": mock_drive_file(file_id=f"file{i}", name=f"File {i}") for i in range(150)}
         service._files_resource.files.update(many_files)
@@ -293,7 +291,7 @@ class TestAPIOperations:
         """Iterate through JSON files in a folder."""
         client, mock_service = drive_client_with_service
 
-        from tests.mocks.drive_mocks import mock_drive_file
+        from tests.infra.drive_mocks import mock_drive_file
 
         json_file1 = mock_drive_file(
             file_id="json1",
@@ -360,7 +358,7 @@ class TestAPIOperations:
         """Download should handle encoding issues gracefully."""
         client, mock_service = drive_client_with_service
 
-        from tests.mocks.drive_mocks import mock_drive_file
+        from tests.infra.drive_mocks import mock_drive_file
 
         binary_file = mock_drive_file(
             file_id="binary1",
@@ -378,7 +376,7 @@ class TestAPIOperations:
         """Handle multiple folders with same name."""
         client, mock_service = drive_client_with_service
 
-        from tests.mocks.drive_mocks import mock_drive_file
+        from tests.infra.drive_mocks import mock_drive_file
 
         folder2 = mock_drive_file(
             file_id="folder2",
@@ -394,7 +392,7 @@ class TestAPIOperations:
         """Iterate through empty folder."""
         client, mock_service = drive_client_with_service
 
-        from tests.mocks.drive_mocks import mock_drive_file
+        from tests.infra.drive_mocks import mock_drive_file
 
         empty_folder = mock_drive_file(
             file_id="empty",

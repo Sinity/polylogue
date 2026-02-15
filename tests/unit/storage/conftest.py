@@ -7,12 +7,10 @@ fixtures used across storage test files.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
-from polylogue.sources.parsers.claude import SessionIndexEntry
 
 
 @pytest.fixture

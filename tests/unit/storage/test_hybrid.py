@@ -652,7 +652,7 @@ class TestSearchProviderSourceFiltering:
 
             def mock_execute(*args, **kwargs):
                 sql = args[0] if args else ""
-                params = args[1] if len(args) > 1 else []
+                args[1] if len(args) > 1 else []
 
                 result = MagicMock()
                 if "FROM messages WHERE message_id IN" in sql:
@@ -672,7 +672,7 @@ class TestSearchProviderSourceFiltering:
 
             mock_context.execute.side_effect = mock_execute
 
-            results = provider.search_conversations(
+            provider.search_conversations(
                 "test",
                 limit=10,
                 providers=["specific-source"]

@@ -13,10 +13,10 @@ Test patterns:
 from __future__ import annotations
 
 import json
-import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import MagicMock, patch
 
+import click
 import pytest
 from click.testing import CliRunner
 
@@ -25,7 +25,6 @@ from polylogue.cli.commands.embed import (
     _embed_batch,
     _embed_single,
     _show_embedding_stats,
-    embed_command,
 )
 from polylogue.cli.commands.run import (
     _display_result,
@@ -33,11 +32,8 @@ from polylogue.cli.commands.run import (
     _notify_new_conversations,
     _run_sync_once,
     _webhook_on_new,
-    run_command,
-    sources_command,
 )
 from polylogue.storage.store import PlanResult, RunResult
-
 
 # =============================================================================
 # FIXTURES
@@ -166,10 +162,7 @@ class TestShowEmbeddingStats:
             if "COUNT(*) FROM conversations" in args[0]:
                 result.fetchone.return_value = (100,)
             # embedding_status query fails
-            elif "embedding_status" in args[0]:
-                raise Exception("table does not exist")
-            # message_embeddings query fails
-            elif "message_embeddings" in args[0]:
+            elif "embedding_status" in args[0] or "message_embeddings" in args[0]:
                 raise Exception("table does not exist")
             # pending query fails
             else:
@@ -214,7 +207,7 @@ class TestEmbedSingle:
         mock_repository.get.return_value = None
         mock_vec_provider = MagicMock()
 
-        with pytest.raises(Exception):  # click.Abort
+        with pytest.raises(click.Abort):
             _embed_single(mock_env, mock_repository, mock_vec_provider, "nonexistent")
 
     def test_embed_single_no_messages(self, mock_env, mock_repository, mock_conversation, capsys):
@@ -235,7 +228,7 @@ class TestEmbedSingle:
         mock_vec_provider = MagicMock()
         mock_vec_provider.upsert.side_effect = ValueError("API error")
 
-        with pytest.raises(Exception):  # click.Abort
+        with pytest.raises(click.Abort):
             _embed_single(mock_env, mock_repository, mock_vec_provider, "conv-123")
 
 
@@ -688,7 +681,7 @@ class TestPlainModeProgress:
             mock_run.return_value = mock_run_result
             mock_config = MagicMock()
 
-            result = _run_sync_once(
+            _run_sync_once(
                 mock_config,
                 mock_env,
                 "all",

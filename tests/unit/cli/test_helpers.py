@@ -11,7 +11,6 @@ from polylogue.cli.helpers import print_summary
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 
-
 # ============================================================================
 # FIXTURES
 # ============================================================================

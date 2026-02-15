@@ -8,15 +8,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
+from polylogue.cli.click_app import cli as click_cli
 from polylogue.cli.commands.auth import (
     _drive_oauth_flow,
     _get_drive_paths,
     _refresh_drive_token,
     _revoke_drive_credentials,
-    auth_command,
 )
-from polylogue.cli.click_app import cli as click_cli
-
 
 # =============================================================================
 # AUTH COMMAND TESTS
@@ -245,7 +243,7 @@ class TestAuthCommand:
 
     def test_auth_unknown_service_fails(self, tmp_path):
         """auth --service unknown fails with error."""
-        from tests.cli_helpers.cli_subprocess import run_cli, setup_isolated_workspace
+        from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
@@ -256,7 +254,7 @@ class TestAuthCommand:
 
     def test_auth_revoke_no_token(self, tmp_path):
         """auth --revoke handles missing token gracefully."""
-        from tests.cli_helpers.cli_subprocess import run_cli, setup_isolated_workspace
+        from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]
@@ -268,7 +266,7 @@ class TestAuthCommand:
 
     def test_auth_missing_credentials(self, tmp_path):
         """auth fails gracefully when credentials file missing."""
-        from tests.cli_helpers.cli_subprocess import run_cli, setup_isolated_workspace
+        from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]

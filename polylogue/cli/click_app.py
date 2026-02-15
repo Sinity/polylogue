@@ -15,6 +15,7 @@ import click
 
 from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
+from polylogue.cli.commands.demo import demo_command
 from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.commands.embed import embed_command
@@ -23,9 +24,9 @@ from polylogue.cli.commands.reset import reset_command
 from polylogue.cli.commands.run import run_command, sources_command
 from polylogue.cli.commands.site import site_command
 from polylogue.cli.commands.tags import tags_command
-from polylogue.lib.log import configure_logging
 from polylogue.cli.formatting import announce_plain_mode, should_use_plain
 from polylogue.cli.types import AppEnv
+from polylogue.lib.log import configure_logging
 from polylogue.ui import create_ui
 from polylogue.version import POLYLOGUE_VERSION
 
@@ -349,6 +350,7 @@ cli.add_command(dashboard_command)
 cli.add_command(embed_command)
 cli.add_command(site_command)
 cli.add_command(tags_command)
+cli.add_command(demo_command)
 
 
 def main() -> None:

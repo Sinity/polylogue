@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import click  # noqa: F401
+import click
 
 from polylogue.lib.log import get_logger
 

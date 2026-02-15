@@ -566,7 +566,7 @@ from polylogue.pipeline.ids import (
     message_content_hash,
     message_id,
 )
-from tests.strategies import (
+from tests.infra.strategies import (
     parsed_conversation_model_strategy,
     parsed_message_model_strategy,
 )

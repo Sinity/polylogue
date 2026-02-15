@@ -12,25 +12,20 @@ similarity search, and archive statistics.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
-from unittest.mock import MagicMock, patch, PropertyMock
-from uuid import uuid4
+from unittest.mock import patch
 
 import pytest
 
-from polylogue.lib.models import Conversation, Message
+from polylogue.lib.models import Conversation
 from polylogue.lib.stats import ArchiveStats
 from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.repository import ConversationRepository, _records_to_conversation
 from polylogue.storage.store import (
-    AttachmentRecord,
-    ConversationRecord,
     MessageRecord,
     RunRecord,
 )
-from tests.helpers import ConversationBuilder, make_conversation, make_message, make_attachment, store_records
+from tests.infra.helpers import ConversationBuilder, make_attachment, make_conversation, make_message
 
 
 @pytest.fixture
@@ -432,7 +427,7 @@ def empty_db(tmp_path):
     """Create an empty database for tests."""
     db_path = tmp_path / "test.db"
     # Initialize the database by creating a connection
-    with open_connection(db_path) as conn:
+    with open_connection(db_path):
         pass  # Just open and close to initialize schema
     return db_path
 
