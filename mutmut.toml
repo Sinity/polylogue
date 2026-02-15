@@ -16,10 +16,10 @@
 [mutmut]
 # Paths containing code to mutate (security-critical modules)
 paths_to_mutate = [
-    "polylogue/importers/base.py",       # Path sanitization
+    "polylogue/sources/source.py",       # Path sanitization, encoding fallback, ZIP bomb protection
     "polylogue/storage/search.py",       # FTS5 escape
-    "polylogue/core/timestamps.py",      # Timestamp parsing
-    "polylogue/core/hashing.py",         # Content hashing
+    "polylogue/lib/timestamps.py",       # Timestamp parsing
+    "polylogue/lib/hashing.py",          # Content hashing
 ]
 
 # Tests to run for mutation detection

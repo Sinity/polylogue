@@ -2,19 +2,37 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 
 import pytest
+from hypothesis import HealthCheck, settings
 
 from polylogue.lib.messages import MessageCollection
+
+# ---------------------------------------------------------------------------
+# Hypothesis profiles: `--hypothesis-profile ci` uses fewer examples for speed
+# ---------------------------------------------------------------------------
+settings.register_profile("ci", max_examples=30, suppress_health_check=[HealthCheck.too_slow])
+settings.register_profile("default", max_examples=100)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 
 
 @pytest.fixture(autouse=True)
 def _clear_polylogue_env(monkeypatch):
     # Reset the container singleton to ensure clean state between tests
-    from polylogue.services import reset
+    from polylogue import services
 
-    reset()
+    services.reset()
+
+    # Also clear async singletons (without awaiting close — test isolation
+    # is more important than graceful connection shutdown here)
+    services._async_backend = None
+    services._async_repository = None
+
+    # Close any cached SQLite connections to prevent WAL sidecar corruption
+    # when tests create/move/delete temp database files.
+    from polylogue.storage.backends.connection import _clear_connection_cache
+
+    _clear_connection_cache()
 
     # Clear search cache (LRU cache) to prevent cross-test pollution
     import sys
@@ -54,26 +72,9 @@ def workspace_env(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(state_dir))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_RENDER_ROOT", str(archive_root / "render"))
-    monkeypatch.delenv("QDRANT_URL", raising=False)
-    monkeypatch.delenv("QDRANT_API_KEY", raising=False)
 
-    # Reload paths module and dependent modules to pick up new XDG_DATA_HOME
-    # Order matters: paths first, then modules that import from paths
-    import importlib
-
-    import polylogue.config
-    import polylogue.paths
-    import polylogue.services
-    import polylogue.storage.backends.sqlite
-    import polylogue.storage.search
-
-    importlib.reload(polylogue.paths)
-    importlib.reload(polylogue.config)  # Depends on paths
-    importlib.reload(polylogue.services)  # Depends on config
-    importlib.reload(polylogue.storage.backends.sqlite)
-    importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
-
-    # Reset services singleton to use fresh config
+    # No importlib.reload() needed — paths.py uses lazy evaluation (functions, not constants).
+    # Just reset the service singletons so they pick up fresh env vars.
     from polylogue.services import reset
 
     reset()
@@ -101,26 +102,6 @@ def db_without_fts(tmp_path):
         conn.commit()
     return db_path
 
-
-@pytest.fixture
-def uppercase_json_inbox(tmp_path):
-    """Inbox directory with uppercase extension files."""
-    import json
-
-    inbox = tmp_path / "inbox"
-    inbox.mkdir(parents=True, exist_ok=True)
-
-    # Create files with various case combinations
-    payload = {
-        "id": "upper-conv",
-        "messages": [{"id": "m1", "role": "user", "text": "uppercase test"}],
-    }
-
-    (inbox / "CHATGPT.JSON").write_text(json.dumps(payload), encoding="utf-8")
-    (inbox / "Export.JSONL").write_text(json.dumps(payload) + "\n", encoding="utf-8")
-    (inbox / "data.jsonl.txt").write_text(json.dumps(payload) + "\n", encoding="utf-8")
-
-    return inbox
 
 
 @pytest.fixture
@@ -189,28 +170,13 @@ def cli_workspace(tmp_path, monkeypatch):
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
     monkeypatch.setenv("POLYLOGUE_RENDER_ROOT", str(render_root))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")  # Plain output for tests
-    monkeypatch.delenv("QDRANT_URL", raising=False)
-    monkeypatch.delenv("QDRANT_API_KEY", raising=False)
 
-    # Reload paths module and dependent modules to pick up new XDG_DATA_HOME
-    # Order matters: paths first, then modules that import from paths
-    import importlib
+    # No importlib.reload() needed — paths.py uses lazy evaluation (functions, not constants).
+    # Just reset the service singletons so they pick up fresh env vars.
+    from polylogue.storage.backends.sqlite import _ensure_schema, connection_context
 
-    import polylogue.config
-    import polylogue.paths
-    import polylogue.services
-    import polylogue.storage.backends.sqlite
-    import polylogue.storage.search
-
-    importlib.reload(polylogue.paths)
-    importlib.reload(polylogue.config)  # Depends on paths
-    importlib.reload(polylogue.services)  # Depends on config
-    importlib.reload(polylogue.storage.backends.sqlite)
-    importlib.reload(polylogue.storage.search)  # Picks up new DatabaseError class
-
-    # Ensure schema exists before tests run
-    with polylogue.storage.backends.sqlite.connection_context(db_path) as conn:
-        polylogue.storage.backends.sqlite._ensure_schema(conn)
+    with connection_context(db_path) as conn:
+        _ensure_schema(conn)
 
     from polylogue.services import reset
 
@@ -238,7 +204,7 @@ def mock_drive_credentials(tmp_path, monkeypatch):
     Returns:
         dict with paths: credentials_path, token_path, and MockCredentials instance
     """
-    from tests.mocks.drive_mocks import MockCredentials
+    from tests.infra.drive_mocks import MockCredentials
 
     creds_dir = tmp_path / "drive_creds"
     creds_dir.mkdir(parents=True, exist_ok=True)
@@ -285,7 +251,7 @@ def mock_drive_service(monkeypatch):
     Returns:
         dict with: service (MockDriveService), files (dict), file_content (dict)
     """
-    from tests.mocks.drive_mocks import MockCredentials, MockDriveService, mock_drive_file
+    from tests.infra.drive_mocks import MockCredentials, MockDriveService, mock_drive_file
 
     # Sample file data
     files_data = {
@@ -341,7 +307,7 @@ def mock_media_downloader(monkeypatch):
     This fixture patches the lazy import mechanism in drive_client.py
     to return our MockMediaIoBaseDownload when MediaIoBaseDownload is requested.
     """
-    from tests.mocks.drive_mocks import MockMediaIoBaseDownload
+    from tests.infra.drive_mocks import MockMediaIoBaseDownload
 
     # Patch the _import_module function to return mock for MediaIoBaseDownload
 
@@ -378,7 +344,7 @@ def db_path(workspace_env):
         def test_something(db_path):
             builder = ConversationBuilder(db_path, "test-conv")
     """
-    from tests.helpers import db_setup
+    from tests.infra.helpers import db_setup
 
     return db_setup(workspace_env)
 
@@ -393,7 +359,7 @@ def conversation_builder(db_path):
                    .add_message("m1", text="Hello")
                    .save())
     """
-    from tests.helpers import ConversationBuilder
+    from tests.infra.helpers import ConversationBuilder
 
     def _builder(conversation_id: str = "test-conv"):
         return ConversationBuilder(db_path, conversation_id)
@@ -499,72 +465,98 @@ def cli_runner():
 
 @pytest.fixture(scope="session")
 def seeded_db(tmp_path_factory):
-    """Create a database seeded with real fixture data from all providers.
+    """Create a database seeded with synthetic data from all providers.
 
-    This fixture ingests actual provider data (ChatGPT, Claude Code, Codex, Gemini)
-    from tests/fixtures/real/ through the full pipeline. Use this instead of
-    hardcoding production database paths.
+    Uses SyntheticCorpus to generate schema-driven test data for each provider,
+    then ingests through the full pipeline. No fixture files required.
 
     Scope is 'session' for efficiency - the seeded DB is created once and reused.
 
     Returns:
         Path to the seeded database file
     """
-    from pathlib import Path
+    import hashlib
+    from datetime import datetime, timezone
 
-    from polylogue.config import Source
-    from polylogue.pipeline.ingest import prepare_ingest
+    from polylogue.paths import Source
+    from polylogue.pipeline.prepare import prepare_records
+    from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.sources import iter_source_conversations
     from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
     from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.store import RawConversationRecord
 
     # Create session-scoped temp directory
     tmp_dir = tmp_path_factory.mktemp("seeded_db")
     db_path = tmp_dir / "polylogue.db"
 
-    # Initialize schema by opening connection
+    # Initialize schema
     with open_connection(db_path):
         pass
 
-    # Create a repository that uses our temp database
     backend = SQLiteBackend(db_path=db_path)
     repository = ConversationRepository(backend=backend)
 
-    # Find fixtures directory
-    fixtures_dir = Path(__file__).parent / "fixtures" / "real"
+    # File extension per provider encoding
+    ext_map = {"chatgpt": ".json", "claude-ai": ".json", "gemini": ".json",
+               "claude-code": ".jsonl", "codex": ".jsonl"}
 
-    # Provider -> fixture paths mapping
-    fixture_files = {
-        "chatgpt": list(fixtures_dir.glob("chatgpt/*.json")),
-        "claude-code": list(fixtures_dir.glob("claude-code/*.jsonl")),
-        "codex": list(fixtures_dir.glob("codex/*.jsonl")),
-        "gemini": list(fixtures_dir.glob("gemini/*.jsonl")),
-    }
+    # Generate synthetic data and write to temp files
+    corpus_dir = tmp_dir / "corpus"
+    corpus_dir.mkdir()
 
-    # Ingest each fixture through the full pipeline
+    for provider in SyntheticCorpus.available_providers():
+        corpus = SyntheticCorpus.for_provider(provider)
+        raw_items = corpus.generate(count=3, messages_per_conversation=range(4, 12), seed=42)
+        provider_dir = corpus_dir / provider
+        provider_dir.mkdir()
+
+        for idx, raw_bytes in enumerate(raw_items):
+            ext = ext_map.get(provider, ".json")
+            file_path = provider_dir / f"synthetic-{idx:02d}{ext}"
+            file_path.write_bytes(raw_bytes)
+
+            # Step 1: Store as raw conversation (acquire stage)
+            try:
+                raw_id = hashlib.sha256(raw_bytes).hexdigest()
+                record = RawConversationRecord(
+                    raw_id=raw_id,
+                    provider_name=provider,
+                    source_name=provider,
+                    source_path=str(file_path),
+                    raw_content=raw_bytes,
+                    acquired_at=datetime.now(timezone.utc).isoformat(),
+                )
+                backend.save_raw_conversation(record)
+            except Exception as e:
+                import warnings
+                warnings.warn(f"Failed to store raw {provider}/{idx}: {e}", stacklevel=2)
+
+    backend._get_connection().commit()
+
+    # Step 2: Parse and ingest (parse stage)
+    archive_root = tmp_dir / "archive"
+    archive_root.mkdir()
+
     with open_connection(db_path) as conn:
-        for provider, files in fixture_files.items():
-            for fixture_path in files:
-                if not fixture_path.exists():
-                    continue
-
+        for provider_dir in sorted(corpus_dir.iterdir()):
+            provider = provider_dir.name
+            for file_path in sorted(provider_dir.iterdir()):
                 try:
-                    source = Source(name=provider, path=fixture_path)
+                    source = Source(name=provider, path=file_path)
+                    raw_id = hashlib.sha256(file_path.read_bytes()).hexdigest()
                     for convo in iter_source_conversations(source):
-                        archive_root = tmp_dir / "archive"
-                        archive_root.mkdir(exist_ok=True)
-                        prepare_ingest(
+                        prepare_records(
                             convo,
                             source_name=provider,
                             archive_root=archive_root,
                             conn=conn,
-                            repository=repository,  # Pass our repository!
+                            repository=repository,
+                            raw_id=raw_id,
                         )
                 except Exception as e:
-                    # Log but don't fail - some fixtures may have format issues
                     import warnings
-
-                    warnings.warn(f"Failed to ingest {fixture_path}: {e}", stacklevel=2)
+                    warnings.warn(f"Failed to ingest {file_path.name}: {e}", stacklevel=2)
 
     return db_path
 
@@ -582,61 +574,97 @@ def seeded_repository(seeded_db):
     return ConversationRepository(backend=backend)
 
 
-# =============================================================================
-# RAW CONVERSATION FIXTURES (for database-driven testing)
-# =============================================================================
 
-
-# Pre-compute the REAL database path at module load time, before any test
-# fixtures can modify environment variables. This ensures database-driven
-# tests always use the user's actual database, not a temp test database.
-_REAL_DB_PATH = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")) / "polylogue" / "polylogue.db"
+# =============================================================================
+# SYNTHETIC RAW SAMPLES (replaces the old raw_db_samples fixture)
+# =============================================================================
 
 
 @pytest.fixture(scope="session")
-def raw_db_samples():
-    """Load samples from user's actual raw_conversations table.
+def raw_synthetic_samples():
+    """Generate synthetic raw conversation records for all providers.
 
-    This enables honest, database-driven testing by using REAL data
-    that was acquired via `polylogue run --stage acquire`.
-
-    Control sample count via POLYLOGUE_TEST_SAMPLES environment variable:
-    - POLYLOGUE_TEST_SAMPLES=100 (default) - Fast CI, limited samples
-    - POLYLOGUE_TEST_SAMPLES=0 - Exhaustive mode, ALL raw conversations
+    Uses SyntheticCorpus to generate wire-format bytes, wrapped in
+    RawConversationRecord objects. This replaces the old raw_db_samples
+    fixture that required a real database with imported data.
 
     Returns:
-        List of RawConversationRecord objects from the user's database
+        List of RawConversationRecord objects (synthetic data, always available)
     """
-    import os
+    import hashlib
+    from datetime import datetime, timezone
 
-    from polylogue.storage.backends.sqlite import SQLiteBackend
+    from polylogue.schemas.synthetic import SyntheticCorpus
+    from polylogue.storage.store import RawConversationRecord
 
-    # Get sample limit from environment (use original env, not test-modified)
-    limit_str = os.environ.get("POLYLOGUE_TEST_SAMPLES", "100")
-    limit = int(limit_str) if limit_str != "0" else None
-
-    # Use pre-computed path that bypasses test env modifications
-    if not _REAL_DB_PATH.exists():
-        return []  # No database = no samples (skip in tests)
-
-    backend = SQLiteBackend(db_path=_REAL_DB_PATH)
-
-    # Load samples from raw_conversations table
-    samples = list(backend.iter_raw_conversations(limit=limit))
-
+    samples: list[RawConversationRecord] = []
+    for provider in SyntheticCorpus.available_providers():
+        corpus = SyntheticCorpus.for_provider(provider)
+        for idx, raw_bytes in enumerate(corpus.generate(count=5, seed=42)):
+            raw_id = hashlib.sha256(raw_bytes).hexdigest()
+            samples.append(RawConversationRecord(
+                raw_id=raw_id,
+                provider_name=provider,
+                source_name=provider,
+                source_path=f"<synthetic:{provider}:{idx}>",
+                raw_content=raw_bytes,
+                acquired_at=datetime.now(timezone.utc).isoformat(),
+            ))
     return samples
 
 
+# =============================================================================
+# SYNTHETIC SOURCE FIXTURE (replaces FIXTURES_DIR-based sources)
+# =============================================================================
+
+
 @pytest.fixture
-def raw_backend(tmp_path):
-    """SQLite backend for raw conversation testing.
+def synthetic_source(tmp_path):
+    """Factory fixture that generates synthetic Source objects for any provider.
 
-    Use this for tests that need to save/read raw conversation records.
+    Writes SyntheticCorpus output to temp files, returning Source objects that
+    can be fed through the full pipeline — just like the old fixture-based
+    sources, but always available and schema-driven.
+
+    Usage::
+
+        def test_something(synthetic_source):
+            source = synthetic_source("chatgpt")
+            for convo in iter_source_conversations(source):
+                ...
+
+            # Multiple files:
+            source = synthetic_source("claude-code", count=3)
     """
-    from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
+    from polylogue.paths import Source
+    from polylogue.schemas.synthetic import SyntheticCorpus
 
-    db_path = tmp_path / "raw.db"
-    with open_connection(db_path):
-        pass
+    def _factory(
+        provider: str,
+        count: int = 1,
+        messages_per_conversation: range = range(4, 12),
+        seed: int = 42,
+    ) -> Source:
+        corpus = SyntheticCorpus.for_provider(provider)
+        ext = ".json" if corpus.wire_format.encoding == "json" else ".jsonl"
+        raw_items = corpus.generate(
+            count=count,
+            messages_per_conversation=messages_per_conversation,
+            seed=seed,
+        )
 
-    return SQLiteBackend(db_path=db_path)
+        provider_dir = tmp_path / "synthetic" / provider
+        provider_dir.mkdir(parents=True, exist_ok=True)
+
+        for idx, raw_bytes in enumerate(raw_items):
+            (provider_dir / f"synth-{idx:02d}{ext}").write_bytes(raw_bytes)
+
+        if count == 1:
+            return Source(name=f"{provider}-test", path=provider_dir / f"synth-00{ext}")
+        # For multiple files, return Source pointing to first file
+        # (pipeline processes individual files, not directories)
+        return Source(name=f"{provider}-test", path=provider_dir / f"synth-00{ext}")
+
+    return _factory
+
+

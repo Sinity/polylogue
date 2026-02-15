@@ -24,7 +24,7 @@ This document describes Polylogue's architecture after the comprehensive refacto
 
 ## Overview
 
-Polylogue is a **local-first AI chat archive** that ingests exports from multiple providers (ChatGPT, Claude AI, Claude Code, Codex, Google Drive/Gemini) into SQLite with full-text search (FTS5) and optional vector search (Qdrant).
+Polylogue is a **local-first AI chat archive** that ingests exports from multiple providers (ChatGPT, Claude AI, Claude Code, Codex, Google Drive/Gemini) into SQLite with full-text search (FTS5) and sqlite-vec vector search.
 
 ### High-Level Architecture
 
@@ -81,8 +81,8 @@ Polylogue is a **local-first AI chat archive** that ingests exports from multipl
 
 All external dependencies are defined as **runtime-checkable protocols** (`polylogue/protocols.py`):
 
-- `SearchProvider`: Full-text search (FTS5, future: Elasticsearch)
-- `VectorProvider`: Semantic search (Qdrant, future: pgvector)
+- `SearchProvider`: Full-text search (FTS5, Hybrid)
+- `VectorProvider`: Semantic search (sqlite-vec + Voyage AI embeddings)
 
 This enables:
 
@@ -181,14 +181,17 @@ polylogue/
 │
 ├── pipeline/                 # Pipeline Layer
 │   ├── services/            # Service implementations
-│   │   ├── ingestion.py    # IngestionService (parallel, bounded)
-│   │   ├── indexing.py     # IndexService (FTS5/Qdrant)
+│   │   ├── parsing.py      # ParsingService (provider detection + parsing)
+│   │   ├── indexing.py     # IndexService (FTS5)
 │   │   ├── rendering.py    # RenderService (parallel output)
 │   │   └── acquisition.py  # Source acquisition
 │   ├── runner.py            # Pipeline orchestrator
-│   ├── ingest.py            # Ingest preparation
+│   ├── prepare.py           # Ingest preparation (hashing, dedup)
+│   ├── enrichment.py        # Post-ingest enrichment
 │   ├── ids.py               # Content hash generation
-│   └── models.py            # Pipeline result types
+│   ├── event_bus.py         # Pipeline event system
+│   ├── events.py            # Event type definitions
+│   └── watch.py             # File watching for continuous sync
 │
 ├── storage/                  # Storage Layer
 │   ├── backends/            # Backend implementations
@@ -196,7 +199,8 @@ polylogue/
 │   │   └── async_sqlite.py # AsyncSQLiteBackend
 │   ├── search_providers/    # Search implementations
 │   │   ├── fts5.py         # FTS5Provider
-│   │   └── qdrant.py       # QdrantProvider (vector search)
+│   │   ├── sqlite_vec.py   # sqlite-vec vector search
+│   │   └── hybrid.py       # HybridProvider (FTS5 + vector)
 │   ├── store.py             # Record types, _WRITE_LOCK
 │   ├── repository.py        # ConversationRepository (write coordination)
 │   ├── async_repository.py  # Async facade
@@ -205,8 +209,8 @@ polylogue/
 │
 ├── schemas/                  # Schema Layer
 │   ├── unified.py           # Unified schema with glom transforms
-│   ├── common.py            # Shared schema types
-│   ├── claude_code_records.py # Claude Code record schemas
+│   ├── code_detection.py    # Language/code block detection
+│   ├── registry.py          # Schema version registry
 │   ├── schema_inference.py  # JSON schema inference from samples
 │   └── validator.py         # Schema validation utilities
 │
@@ -244,11 +248,12 @@ polylogue/
 ├── facade.py                 # Polylogue — top-level library API
 ├── async_facade.py           # AsyncPolylogue — async library API
 ├── paths.py                  # XDG path resolution
-├── protocols.py              # SearchProvider, VectorProvider protocols
+├── protocols.py              # SearchProvider protocol
 ├── types.py                  # NewType definitions (ConversationId, MessageId, etc.)
-└── templates/                # Jinja2 Templates
-    ├── conversation.md.j2   # Markdown template
-    └── conversation.html.j2 # HTML template
+├── errors.py                 # PolylogueError hierarchy
+├── export.py                 # Export utilities
+├── health.py                 # System health checks
+└── version.py                # Version detection (git / importlib.metadata)
 ```
 
 ---

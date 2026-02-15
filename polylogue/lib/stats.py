@@ -15,6 +15,7 @@ class ArchiveStats:
 
     total_conversations: int
     total_messages: int
+    total_attachments: int = 0
     providers: dict[str, int] = field(default_factory=dict)
     embedded_conversations: int = 0
     embedded_messages: int = 0
@@ -44,6 +45,7 @@ class ArchiveStats:
         return {
             "total_conversations": self.total_conversations,
             "total_messages": self.total_messages,
+            "total_attachments": self.total_attachments,
             "provider_count": self.provider_count,
             "providers": self.providers,
             "embedded_conversations": self.embedded_conversations,

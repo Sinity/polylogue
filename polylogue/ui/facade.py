@@ -29,10 +29,11 @@ from rich.syntax import Syntax
 from rich.text import Text
 from rich.theme import Theme
 
+from polylogue.errors import PolylogueError
 from polylogue.lib.theme import rich_theme_styles
 
 
-class UIError(Exception):
+class UIError(PolylogueError):
     """UI-related errors (prompt stubs, user interaction)."""
 
 

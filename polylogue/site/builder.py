@@ -7,17 +7,17 @@ and client-side search support.
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from jinja2 import DictLoader, Environment, select_autoescape
 
+from polylogue.lib.log import get_logger
 from polylogue.paths import safe_path_component
 from polylogue.rendering.renderers.html import MarkdownRenderer, PygmentsHighlighter
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Default index page template
 INDEX_TEMPLATE = """<!DOCTYPE html>
