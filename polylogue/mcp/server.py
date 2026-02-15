@@ -19,6 +19,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
+from polylogue.services import get_async_repository as _get_async_repo
 from polylogue.services import get_repository as _get_repo
 from polylogue.services import get_service_config as _get_config
 
@@ -87,6 +88,18 @@ def _safe_call(fn_name: str, fn: Any) -> str:
         })
 
 
+async def _async_safe_call(fn_name: str, fn: Any) -> str:
+    """Async version of _safe_call for async tool handlers."""
+    try:
+        return await fn()
+    except Exception as exc:
+        logger.exception("MCP tool %s failed", fn_name)
+        return json.dumps({
+            "error": str(exc),
+            "tool": fn_name,
+        })
+
+
 def _error_json(message: str, **extra: Any) -> str:
     """Return a JSON-encoded error dict."""
     return json.dumps({"error": message, **extra})
@@ -116,7 +129,7 @@ def _build_server() -> FastMCP:
     # ==================================================================
 
     @mcp.tool()
-    def search(
+    async def search(
         query: str,
         limit: int = 10,
         provider: str | None = None,
@@ -130,10 +143,10 @@ def _build_server() -> FastMCP:
             provider: Filter by provider (claude, chatgpt, claude-code, etc.)
             since: Only conversations updated after this date (ISO format or natural language like 'last week')
         """
-        def _run() -> str:
+        async def _run() -> str:
             from polylogue.lib.filters import ConversationFilter
 
-            repo = _get_repo()
+            repo = _get_async_repo()
             clamped = _clamp_limit(limit)
 
             filter_chain = ConversationFilter(repo).contains(query).limit(clamped)
@@ -142,12 +155,12 @@ def _build_server() -> FastMCP:
             if since:
                 filter_chain = filter_chain.since(since)
 
-            results = filter_chain.list()
+            results = await filter_chain.list()
             return json.dumps([_conversation_to_dict(r) for r in results], indent=2)
-        return _safe_call("search", _run)
+        return await _async_safe_call("search", _run)
 
     @mcp.tool()
-    def list_conversations(
+    async def list_conversations(
         limit: int = 10,
         provider: str | None = None,
         since: str | None = None,
@@ -165,10 +178,10 @@ def _build_server() -> FastMCP:
             title: Filter by title substring
             sort: Sort order ('updated' or 'created', default: 'updated')
         """
-        def _run() -> str:
+        async def _run() -> str:
             from polylogue.lib.filters import ConversationFilter
 
-            repo = _get_repo()
+            repo = _get_async_repo()
             clamped = _clamp_limit(limit)
 
             filter_chain = ConversationFilter(repo).limit(clamped)
@@ -181,9 +194,9 @@ def _build_server() -> FastMCP:
             if title:
                 filter_chain = filter_chain.title(title)
 
-            conversations = filter_chain.list()
+            conversations = await filter_chain.list()
             return json.dumps([_conversation_to_dict(c) for c in conversations], indent=2)
-        return _safe_call("list_conversations", _run)
+        return await _async_safe_call("list_conversations", _run)
 
     @mcp.tool()
     def get_conversation(id: str) -> str:
@@ -518,12 +531,12 @@ def _build_server() -> FastMCP:
         )
 
     @mcp.resource("polylogue://conversations")
-    def conversations_resource() -> str:
+    async def conversations_resource() -> str:
         """List of all conversations in the archive (up to 1000)."""
         from polylogue.lib.filters import ConversationFilter
 
-        repo = _get_repo()
-        convs = ConversationFilter(repo).limit(1000).list()
+        repo = _get_async_repo()
+        convs = await ConversationFilter(repo).limit(1000).list()
         return json.dumps([_conversation_to_dict(c) for c in convs], indent=2)
 
     @mcp.resource("polylogue://conversation/{conv_id}")
@@ -565,7 +578,7 @@ def _build_server() -> FastMCP:
     # ==================================================================
 
     @mcp.prompt()
-    def analyze_errors(
+    async def analyze_errors(
         provider: str | None = None,
         since: str | None = None,
     ) -> str:
@@ -577,14 +590,14 @@ def _build_server() -> FastMCP:
         """
         from polylogue.lib.filters import ConversationFilter
 
-        repo = _get_repo()
+        repo = _get_async_repo()
         filter_chain = ConversationFilter(repo).contains("error")
         if provider:
             filter_chain = filter_chain.provider(provider)
         if since:
             filter_chain = filter_chain.since(since)
 
-        convs = filter_chain.limit(50).list()
+        convs = await filter_chain.limit(50).list()
 
         error_contexts = []
         for conv in convs:
@@ -618,13 +631,13 @@ Error contexts:
 """
 
     @mcp.prompt()
-    def summarize_week() -> str:
+    async def summarize_week() -> str:
         """Summarize key insights from the past week's conversations."""
         from polylogue.lib.filters import ConversationFilter
 
-        repo = _get_repo()
+        repo = _get_async_repo()
         week_ago = (datetime.now(tz=timezone.utc) - timedelta(days=7)).isoformat()
-        convs = ConversationFilter(repo).since(week_ago).limit(100).list()
+        convs = await ConversationFilter(repo).since(week_ago).limit(100).list()
 
         by_provider: dict[str, int] = {}
         total_messages = 0
@@ -649,7 +662,7 @@ Focus on actionable insights and patterns, not exhaustive summaries.
 """
 
     @mcp.prompt()
-    def extract_code(language: str = "") -> str:
+    async def extract_code(language: str = "") -> str:
         """Extract and organize code snippets from conversations.
 
         Args:
@@ -657,8 +670,8 @@ Focus on actionable insights and patterns, not exhaustive summaries.
         """
         from polylogue.lib.filters import ConversationFilter
 
-        repo = _get_repo()
-        convs = ConversationFilter(repo).limit(50).list()
+        repo = _get_async_repo()
+        convs = await ConversationFilter(repo).limit(50).list()
 
         code_snippets: list[dict[str, str]] = []
         for conv in convs:
@@ -739,7 +752,7 @@ Conversation 2:
 """
 
     @mcp.prompt()
-    def extract_patterns(
+    async def extract_patterns(
         provider: str | None = None,
         limit: int = 30,
     ) -> str:
@@ -751,13 +764,13 @@ Conversation 2:
         """
         from polylogue.lib.filters import ConversationFilter
 
-        repo = _get_repo()
+        repo = _get_async_repo()
         clamped = _clamp_limit(limit)
         filter_chain = ConversationFilter(repo).limit(clamped)
         if provider:
             filter_chain = filter_chain.provider(provider)
 
-        convs = filter_chain.list()
+        convs = await filter_chain.list()
 
         summaries = []
         for conv in convs:

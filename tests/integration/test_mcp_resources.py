@@ -124,7 +124,8 @@ class TestStatsResource:
 class TestConversationsResource:
     """Tests for polylogue://conversations resource."""
 
-    def test_conversations_resource_returns_list(self, sample_conversation):
+    @pytest.mark.asyncio
+    async def test_conversations_resource_returns_list(self, sample_conversation):
         """Conversations resource returns all conversations."""
         from polylogue.mcp.server import _build_server
 
@@ -137,7 +138,7 @@ class TestConversationsResource:
                 MockFilter.return_value = make_mock_filter(results=[sample_conversation])
 
                 server = _build_server()
-                result = server._resource_manager._resources["polylogue://conversations"].fn()
+                result = await server._resource_manager._resources["polylogue://conversations"].fn()
 
                 convs = json.loads(result)
                 assert len(convs) == 1
@@ -186,7 +187,8 @@ class TestConversationResource:
 class TestAnalyzeErrorsPrompt:
     """Tests for analyze_errors prompt."""
 
-    def test_analyze_errors_with_conversations(self, sample_conversation):
+    @pytest.mark.asyncio
+    async def test_analyze_errors_with_conversations(self, sample_conversation):
         """analyze_errors generates prompt from error conversations."""
         from polylogue.mcp.server import _build_server
 
@@ -202,12 +204,13 @@ class TestAnalyzeErrorsPrompt:
                 MockFilter.return_value = make_mock_filter(results=[sample_conversation])
 
                 server = _build_server()
-                result = server._prompt_manager._prompts["analyze_errors"].fn()
+                result = await server._prompt_manager._prompts["analyze_errors"].fn()
 
                 assert isinstance(result, str)
                 assert "error" in result.lower()
 
-    def test_analyze_errors_limits_error_contexts_to_20(self):
+    @pytest.mark.asyncio
+    async def test_analyze_errors_limits_error_contexts_to_20(self):
         """analyze_errors stops collecting after 20 error snippets."""
         from polylogue.mcp.server import _build_server
 
@@ -234,12 +237,13 @@ class TestAnalyzeErrorsPrompt:
                 MockFilter.return_value = make_mock_filter(results=[big_conv])
 
                 server = _build_server()
-                result = server._prompt_manager._prompts["analyze_errors"].fn()
+                result = await server._prompt_manager._prompts["analyze_errors"].fn()
 
                 # Should have "20 error instances found"
                 assert "20 error instances" in result
 
-    def test_analyze_errors_no_matches(self):
+    @pytest.mark.asyncio
+    async def test_analyze_errors_no_matches(self):
         """analyze_errors handles zero matching conversations."""
         from polylogue.mcp.server import _build_server
 
@@ -252,7 +256,7 @@ class TestAnalyzeErrorsPrompt:
                 MockFilter.return_value = make_mock_filter(results=[])
 
                 server = _build_server()
-                result = server._prompt_manager._prompts["analyze_errors"].fn()
+                result = await server._prompt_manager._prompts["analyze_errors"].fn()
 
                 assert "0 conversations" in result
 
@@ -260,7 +264,8 @@ class TestAnalyzeErrorsPrompt:
 class TestSummarizeWeekPrompt:
     """Tests for summarize_week prompt."""
 
-    def test_summarize_week_empty(self):
+    @pytest.mark.asyncio
+    async def test_summarize_week_empty(self):
         """summarize_week handles no conversations in past week."""
         from polylogue.mcp.server import _build_server
 
@@ -273,7 +278,7 @@ class TestSummarizeWeekPrompt:
                 MockFilter.return_value = make_mock_filter(results=[])
 
                 server = _build_server()
-                result = server._prompt_manager._prompts["summarize_week"].fn()
+                result = await server._prompt_manager._prompts["summarize_week"].fn()
 
                 assert "0 conversations" in result
                 assert "0 messages" in result
@@ -282,7 +287,8 @@ class TestSummarizeWeekPrompt:
 class TestExtractCodePrompt:
     """Tests for extract_code prompt."""
 
-    def test_extract_code_no_code_blocks(self):
+    @pytest.mark.asyncio
+    async def test_extract_code_no_code_blocks(self):
         """extract_code handles conversations without code."""
         from polylogue.mcp.server import _build_server
 
@@ -302,11 +308,12 @@ class TestExtractCodePrompt:
                 MockFilter.return_value = make_mock_filter(results=[conv])
 
                 server = _build_server()
-                result = server._prompt_manager._prompts["extract_code"].fn()
+                result = await server._prompt_manager._prompts["extract_code"].fn()
 
                 assert "0 code blocks" in result
 
-    def test_extract_code_with_language_filter(self):
+    @pytest.mark.asyncio
+    async def test_extract_code_with_language_filter(self):
         """extract_code filters by language."""
         from polylogue.mcp.server import _build_server
 
@@ -332,11 +339,12 @@ class TestExtractCodePrompt:
                 MockFilter.return_value = make_mock_filter(results=[conv])
 
                 server = _build_server()
-                result = server._prompt_manager._prompts["extract_code"].fn(language="python")
+                result = await server._prompt_manager._prompts["extract_code"].fn(language="python")
 
                 assert "python" in result.lower()
 
-    def test_extract_code_null_message_text(self):
+    @pytest.mark.asyncio
+    async def test_extract_code_null_message_text(self):
         """extract_code skips messages with None text."""
         from polylogue.mcp.server import _build_server
 
@@ -356,7 +364,7 @@ class TestExtractCodePrompt:
                 MockFilter.return_value = make_mock_filter(results=[conv])
 
                 server = _build_server()
-                result = server._prompt_manager._prompts["extract_code"].fn()
+                result = await server._prompt_manager._prompts["extract_code"].fn()
 
                 assert isinstance(result, str)
 
@@ -481,7 +489,8 @@ class TestSearchToolFilters:
         "filter_type,filter_value,desc,filter_checker",
         SEARCH_FILTER_CASES,
     )
-    def test_search_filter_application(
+    @pytest.mark.asyncio
+    async def test_search_filter_application(
         self,
         filter_type,
         filter_value,
@@ -508,7 +517,7 @@ class TestSearchToolFilters:
                 else:
                     args[filter_type] = filter_value
 
-                result = server._tool_manager._tools["search"].fn(**args)
+                result = await server._tool_manager._tools["search"].fn(**args)
 
                 assert isinstance(result, str)
                 filter_instance = MockFilter.return_value
@@ -525,7 +534,8 @@ class TestSearchToolFilters:
         "case_type,args,error_keyword,assertion_desc",
         SEARCH_ERROR_CASES,
     )
-    def test_search_error_cases(
+    @pytest.mark.asyncio
+    async def test_search_error_cases(
         self,
         case_type,
         args,
@@ -546,7 +556,7 @@ class TestSearchToolFilters:
                     server = _build_server()
                     # Tool should raise or return error dict
                     try:
-                        result = server._tool_manager._tools["search"].fn(**args)
+                        result = await server._tool_manager._tools["search"].fn(**args)
                         # If no exception, check result contains error info
                         json.loads(result)
                         # Tools that catch errors may return dict with error key
@@ -563,7 +573,7 @@ class TestSearchToolFilters:
                     server = _build_server()
                     # For invalid_limit_type, tool should handle gracefully
                     try:
-                        result = server._tool_manager._tools["search"].fn(**args)
+                        result = await server._tool_manager._tools["search"].fn(**args)
                         json.loads(result)
                     except (TypeError, ValueError):
                         pass  # Expected for invalid limit type
