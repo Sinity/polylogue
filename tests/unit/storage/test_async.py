@@ -36,8 +36,8 @@ async def test_async_backend_basic():
 
             # Stats should work
             stats = await archive.stats()
-            assert stats["conversation_count"] == 0
-            assert stats["message_count"] == 0
+            assert stats.conversation_count == 0
+            assert stats.message_count == 0
 
 
 @pytest.mark.asyncio
@@ -57,7 +57,7 @@ async def test_async_concurrent_reads():
             convs, stats, missing = results
 
             assert len(convs) == 0
-            assert stats["conversation_count"] == 0
+            assert stats.conversation_count == 0
             assert missing is None
 
 

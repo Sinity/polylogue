@@ -1,21 +1,26 @@
-"""Tests for polylogue.pipeline.runner module."""
+"""Tests for polylogue.pipeline.async_runner module.
+
+Migrated from sync runner.py tests to exercise async_runner equivalents.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from polylogue.config import Config, Source
-from polylogue.pipeline.runner import (
+from polylogue.pipeline.async_runner import (
     _all_conversation_ids,
-    _iter_source_conversations_safe,
     _select_sources,
     _write_run_json,
-    latest_run,
+    async_latest_run,
+    async_run_sources,
     plan_sources,
-    run_sources,
 )
 from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.store import PlanResult
@@ -23,17 +28,15 @@ from tests.infra.helpers import make_conversation, store_records
 
 
 class TestRenderFailureTracking:
-    """Tests for tracking render failures in pipeline.
+    """Tests for tracking render failures in async pipeline.
 
     Uses workspace_env fixture so XDG_DATA_HOME points to a temp dir,
-    ensuring run_sources() → get_backend() → create_default_backend()
+    ensuring async_run_sources() → get_async_backend() → create backend
     all converge on the same database.
     """
 
     def test_render_failure_tracked_in_result(self, workspace_env):
         """Render failures should be tracked in RunResult."""
-        from polylogue.config import Config
-        from polylogue.pipeline.runner import run_sources
         from polylogue.storage.store import RunResult
 
         archive_root = workspace_env["archive_root"]
@@ -53,13 +56,15 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids:
+            with patch("polylogue.pipeline.async_runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
                 mock_ids.return_value = ["test:success-conv", "test:fail-conv"]
 
-                result = run_sources(
-                    config=config,
-                    stage="render",
-                    source_names=None,
+                result = asyncio.run(
+                    async_run_sources(
+                        config=config,
+                        stage="render",
+                        source_names=None,
+                    )
                 )
 
                 assert isinstance(result, RunResult)
@@ -74,9 +79,6 @@ class TestRenderFailureTracking:
 
     def test_render_continues_after_failure(self, workspace_env):
         """Pipeline should continue rendering other conversations after one fails."""
-        from polylogue.config import Config
-        from polylogue.pipeline.runner import run_sources
-
         archive_root = workspace_env["archive_root"]
         archive_root.mkdir(parents=True, exist_ok=True)
         config = Config(
@@ -97,12 +99,14 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids:
+            with patch("polylogue.pipeline.async_runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
                 mock_ids.return_value = ["test:first", "test:second", "test:third"]
 
-                run_sources(
-                    config=config,
-                    stage="render",
+                asyncio.run(
+                    async_run_sources(
+                        config=config,
+                        stage="render",
+                    )
                 )
 
                 assert len(render_attempts) >= 3, f"Expected 3 render attempts, got {len(render_attempts)}"
@@ -112,9 +116,6 @@ class TestRenderFailureTracking:
 
     def test_render_failure_count_in_counts(self, workspace_env):
         """Pipeline should include render_failures count in result.counts."""
-        from polylogue.config import Config
-        from polylogue.pipeline.runner import run_sources
-
         archive_root = workspace_env["archive_root"]
         archive_root.mkdir(parents=True, exist_ok=True)
         config = Config(
@@ -132,12 +133,14 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids:
+            with patch("polylogue.pipeline.async_runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
                 mock_ids.return_value = ["test:success", "test:fail1", "test:fail2"]
 
-                result = run_sources(
-                    config=config,
-                    stage="render",
+                result = asyncio.run(
+                    async_run_sources(
+                        config=config,
+                        stage="render",
+                    )
                 )
 
                 assert "render_failures" in result.counts
@@ -201,105 +204,6 @@ class TestSelectSources:
 
         result = _select_sources(config, ["nonexistent-source"])
         assert result == []
-
-
-class TestIterSourceConversationsSafe:
-    """Tests for _iter_source_conversations_safe function."""
-
-    def test_file_source_yields_conversations(self, tmp_path: Path):
-        """Non-Drive file sources yield from iter_source_conversations."""
-        # Create a source file
-        inbox = tmp_path / "inbox"
-        inbox.mkdir()
-        conv_file = inbox / "conversations.json"
-        conv_data = {
-            "id": "conv-1",
-            "title": "Test Conversation",
-            "create_time": 1704067200,
-            "update_time": 1704067200,
-            "mapping": {
-                "root": {
-                    "id": "root",
-                    "message": None,
-                    "children": ["msg-1"],
-                },
-                "msg-1": {
-                    "id": "msg-1",
-                    "message": {
-                        "id": "msg-1",
-                        "author": {"role": "user"},
-                        "content": {"parts": ["Hello"]},
-                        "create_time": 1704067200,
-                    },
-                    "parent": "root",
-                    "children": [],
-                },
-            },
-        }
-        conv_file.write_text(json.dumps([conv_data]), encoding="utf-8")
-
-        source = Source(name="test-inbox", path=inbox)
-
-        conversations = list(
-            _iter_source_conversations_safe(
-                source=source,
-                archive_root=tmp_path / "archive",
-                ui=None,
-                download_assets=False,
-            )
-        )
-
-        assert len(conversations) >= 1
-
-    def test_drive_auth_error_logged_and_skipped(self, tmp_path: Path):
-        """DriveAuthError from Drive source is logged and source is skipped."""
-        from polylogue.sources import DriveAuthError
-
-        # Source with only folder (Drive source)
-        source = Source(name="drive-source", folder="folder-id-123")
-        cursor_state: dict = {}
-
-        with patch("polylogue.pipeline.runner.iter_drive_conversations") as mock_drive:
-            mock_drive.side_effect = DriveAuthError("Token expired")
-
-            conversations = list(
-                _iter_source_conversations_safe(
-                    source=source,
-                    archive_root=tmp_path / "archive",
-                    ui=None,
-                    download_assets=False,
-                    cursor_state=cursor_state,
-                )
-            )
-
-            assert len(conversations) == 0
-            assert cursor_state.get("error_count") == 1
-            assert "Token expired" in cursor_state.get("latest_error", "")
-
-    def test_cursor_state_updated_on_error(self, tmp_path: Path):
-        """cursor_state tracks error information when Drive fails."""
-        from polylogue.sources import DriveAuthError
-
-        # Source with only folder (Drive source)
-        source = Source(name="my-drive", folder="folder-id")
-        cursor_state: dict = {"existing_key": "value"}
-
-        with patch("polylogue.pipeline.runner.iter_drive_conversations") as mock_drive:
-            mock_drive.side_effect = DriveAuthError("Authentication failed")
-
-            list(
-                _iter_source_conversations_safe(
-                    source=source,
-                    archive_root=tmp_path,
-                    ui=None,
-                    download_assets=False,
-                    cursor_state=cursor_state,
-                )
-            )
-
-            assert cursor_state["existing_key"] == "value"  # Preserved
-            assert cursor_state["error_count"] == 1
-            assert cursor_state["latest_error_source"] == "my-drive"
 
 
 class TestPlanSources:
@@ -374,7 +278,7 @@ class TestPlanSources:
 
 
 class TestAllConversationIds:
-    """Tests for _all_conversation_ids function."""
+    """Tests for async _all_conversation_ids function."""
 
     def test_all_ids_no_filter(self, workspace_env):
         """Returns all conversation_ids when no filter provided."""
@@ -387,7 +291,10 @@ class TestAllConversationIds:
                 conv = make_conversation(f"conv-{i}", title=f"Conversation {i}")
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        ids = _all_conversation_ids()
+        from polylogue.services import get_async_backend
+
+        backend = get_async_backend()
+        ids = asyncio.run(_all_conversation_ids(backend))
 
         assert len(ids) == 3
         assert set(ids) == {"conv-0", "conv-1", "conv-2"}
@@ -403,7 +310,10 @@ class TestAllConversationIds:
                 conv = make_conversation(conv_id, provider_name=provider, title=f"Conv {conv_id}")
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        ids = _all_conversation_ids(source_names=["chatgpt"])
+        from polylogue.services import get_async_backend
+
+        backend = get_async_backend()
+        ids = asyncio.run(_all_conversation_ids(backend, source_names=["chatgpt"]))
 
         assert len(ids) == 2
         assert set(ids) == {"chatgpt-1", "chatgpt-2"}
@@ -419,7 +329,10 @@ class TestAllConversationIds:
                 conv = make_conversation(conv_id, provider_name="chatgpt", title=f"Conv {conv_id}", provider_meta={"source": source})
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        ids = _all_conversation_ids(source_names=["export-a"])
+        from polylogue.services import get_async_backend
+
+        backend = get_async_backend()
+        ids = asyncio.run(_all_conversation_ids(backend, source_names=["export-a"]))
 
         assert len(ids) == 2
         assert set(ids) == {"a-1", "a-2"}
@@ -442,8 +355,11 @@ class TestAllConversationIds:
             conv_empty = make_conversation("empty-meta-1", title="Empty Meta", provider_meta={})
             store_records(conversation=conv_empty, messages=[], attachments=[], conn=conn)
 
+        from polylogue.services import get_async_backend
+
+        backend = get_async_backend()
         # Should not raise and filter correctly
-        ids = _all_conversation_ids(source_names=["my-source"])
+        ids = asyncio.run(_all_conversation_ids(backend, source_names=["my-source"]))
         assert "valid-1" in ids
         assert "null-meta-1" not in ids  # Skipped due to null meta
         assert "empty-meta-1" not in ids  # Skipped due to no source in meta
@@ -503,7 +419,7 @@ class TestWriteRunJson:
 
 
 class TestLatestRun:
-    """Tests for latest_run function."""
+    """Tests for async_latest_run function."""
 
     def test_no_runs_returns_none(self, workspace_env):
         """Empty table returns None."""
@@ -514,7 +430,7 @@ class TestLatestRun:
         with open_connection(db_path):
             pass
 
-        result = latest_run()
+        result = asyncio.run(async_latest_run())
 
         assert result is None
 
@@ -544,7 +460,7 @@ class TestLatestRun:
                 )
             conn.commit()
 
-        result = latest_run()
+        result = asyncio.run(async_latest_run())
 
         assert result is not None
         assert result.run_id == "run-1"  # timestamp 3000 is latest
@@ -570,7 +486,7 @@ class TestLatestRun:
             )
             conn.commit()
 
-        result = latest_run()
+        result = asyncio.run(async_latest_run())
 
         assert result is not None
         assert result.plan_snapshot == plan
@@ -581,7 +497,7 @@ class TestLatestRun:
 
 
 class TestRunSourcesIntegration:
-    """Integration tests for run_sources function."""
+    """Integration tests for async_run_sources function."""
 
     def test_parse_stage_only(self, workspace_env, tmp_path: Path):
         """Only parsing runs when stage='parse'."""
@@ -618,7 +534,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = run_sources(config=config, stage="parse")
+        result = asyncio.run(async_run_sources(config=config, stage="parse"))
 
         assert result.counts["conversations"] >= 1
         # Render count should be 0 (only parse ran)
@@ -632,10 +548,10 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        with patch("polylogue.pipeline.runner._all_conversation_ids") as mock_ids:
+        with patch("polylogue.pipeline.async_runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
             mock_ids.return_value = []  # No conversations to render
 
-            result = run_sources(config=config, stage="render")
+            result = asyncio.run(async_run_sources(config=config, stage="render"))
 
             # Ingest counts should be 0
             assert result.counts["conversations"] == 0
@@ -649,7 +565,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = run_sources(config=config, stage="index")
+        result = asyncio.run(async_run_sources(config=config, stage="index"))
 
         # Should have indexed flag set
         assert result.indexed in (True, False)  # Either works for empty DB
@@ -689,7 +605,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = run_sources(config=config, stage="all")
+        result = asyncio.run(async_run_sources(config=config, stage="all"))
 
         # All stages should have run
         assert result.counts["conversations"] >= 1
@@ -712,7 +628,7 @@ class TestRunSourcesIntegration:
             cursors={},
         )
 
-        result = run_sources(config=config, stage="parse", plan=plan)
+        result = asyncio.run(async_run_sources(config=config, stage="parse", plan=plan))
 
         # With 0 actual, drift should show removed items
         assert "new" in result.drift
@@ -753,7 +669,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = run_sources(config=config, stage="parse", plan=None)
+        result = asyncio.run(async_run_sources(config=config, stage="parse", plan=None))
 
         # All should be counted as new
         assert result.drift["new"]["conversations"] == result.counts["conversations"]
@@ -766,7 +682,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = run_sources(config=config, stage="parse")
+        result = asyncio.run(async_run_sources(config=config, stage="parse"))
 
         runs_dir = workspace_env["archive_root"] / "runs"
         assert runs_dir.exists()
@@ -787,10 +703,10 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        with patch("polylogue.pipeline.services.indexing.IndexService.rebuild_index") as mock_rebuild:
+        with patch("polylogue.pipeline.services.async_indexing.AsyncIndexService.rebuild_index", new_callable=AsyncMock) as mock_rebuild:
             mock_rebuild.side_effect = Exception("Index rebuild failed")
 
-            result = run_sources(config=config, stage="index")
+            result = asyncio.run(async_run_sources(config=config, stage="index"))
 
             assert result.indexed is False
             assert result.index_error is not None
