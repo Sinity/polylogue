@@ -15,9 +15,9 @@ import click
 
 from polylogue.cli.commands.auth import auth_command
 from polylogue.cli.commands.check import check_command
-from polylogue.cli.commands.demo import demo_command
 from polylogue.cli.commands.completions import completions_command
 from polylogue.cli.commands.dashboard import dashboard_command
+from polylogue.cli.commands.demo import demo_command
 from polylogue.cli.commands.embed import embed_command
 from polylogue.cli.commands.mcp import mcp_command
 from polylogue.cli.commands.reset import reset_command

@@ -540,6 +540,7 @@ class TestCliMetadata:
             "auth",
             "completions",
             "dashboard",
+            "demo",
             "embed",
             "site",
             "tags",

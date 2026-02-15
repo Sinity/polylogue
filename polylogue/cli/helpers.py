@@ -12,7 +12,7 @@ from polylogue.cli.types import AppEnv
 from polylogue.config import Config, get_config
 from polylogue.health import cached_health_summary, get_health
 from polylogue.lib.theme import provider_color
-from polylogue.pipeline.runner import latest_run
+from polylogue.pipeline.async_runner import async_latest_run
 
 
 def fail(command: str, message: str) -> NoReturn:
@@ -99,7 +99,9 @@ def resolve_sources(config: Config, sources: tuple[str, ...], command: str) -> l
 def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     ui = env.ui
     config = load_effective_config(env)
-    last_run_data = latest_run()
+    import asyncio
+
+    last_run_data = asyncio.run(async_latest_run())
     last_line = "Last run: none"
     if last_run_data:
         last_line = f"Last run: {last_run_data.run_id} ({last_run_data.timestamp})"

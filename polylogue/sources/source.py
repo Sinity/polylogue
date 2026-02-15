@@ -35,6 +35,7 @@ from .parsers.claude import (
 )
 
 if TYPE_CHECKING:
+    from ..storage.async_repository import AsyncConversationRepository
     from ..storage.repository import ConversationRepository
 
 LOGGER = get_logger(__name__)
@@ -56,16 +57,34 @@ class SaveResult(BaseModel):
 
 
 def save_bundle(bundle: RecordBundle, repository: ConversationRepository) -> SaveResult:
-    """Save a bundle of records into the repository.
+    """Save a bundle of records into the repository (sync).
 
     Args:
         bundle: Bundle containing conversation, messages, and attachments
-        repository: Storage repository to safe records to
+        repository: Storage repository to save records to
 
     Returns:
         SaveResult with counts of imported/skipped items
     """
     counts = repository.save_conversation(
+        conversation=bundle.conversation,
+        messages=bundle.messages,
+        attachments=bundle.attachments,
+    )
+    return SaveResult(**counts)
+
+
+async def async_save_bundle(bundle: RecordBundle, repository: AsyncConversationRepository) -> SaveResult:
+    """Save a bundle of records into the repository (async).
+
+    Args:
+        bundle: Bundle containing conversation, messages, and attachments
+        repository: Async storage repository to save records to
+
+    Returns:
+        SaveResult with counts of imported/skipped items
+    """
+    counts = await repository.save_conversation(
         conversation=bundle.conversation,
         messages=bundle.messages,
         attachments=bundle.attachments,

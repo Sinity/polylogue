@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 
 import pytest
 from hypothesis import HealthCheck, settings
@@ -20,9 +19,14 @@ settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "default"))
 @pytest.fixture(autouse=True)
 def _clear_polylogue_env(monkeypatch):
     # Reset the container singleton to ensure clean state between tests
-    from polylogue.services import reset
+    from polylogue import services
 
-    reset()
+    services.reset()
+
+    # Also clear async singletons (without awaiting close — test isolation
+    # is more important than graceful connection shutdown here)
+    services._async_backend = None
+    services._async_repository = None
 
     # Close any cached SQLite connections to prevent WAL sidecar corruption
     # when tests create/move/delete temp database files.

@@ -5,7 +5,7 @@ import json
 import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -371,7 +371,7 @@ class TestRunSyncOncePlainProgress:
         """_run_sync_once handles plain and rich mode progress."""
         env = request.getfixturevalue(env_fixture)
 
-        with patch("polylogue.cli.commands.run.run_sources") as mock_run:
+        with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = mock_run_result
             mock_config = MagicMock()
 

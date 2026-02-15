@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import click
 import pytest
@@ -354,7 +354,7 @@ class TestRunSyncOnce:
         """_run_sync_once handles different UI modes, formats, and plan configurations."""
         env = request.getfixturevalue(ui_env)
 
-        with patch("polylogue.cli.commands.run.run_sources") as mock_run:
+        with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = mock_run_result
             mock_config = MagicMock()
 
@@ -677,7 +677,7 @@ class TestPlainModeProgress:
         def track_progress(amount, desc=None):
             progress_items.append((amount, desc))
 
-        with patch("polylogue.cli.commands.run.run_sources") as mock_run:
+        with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = mock_run_result
             mock_config = MagicMock()
 
