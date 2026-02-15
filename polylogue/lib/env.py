@@ -15,7 +15,7 @@ def get_env(key: str, default: str | None = None) -> str | None:
     Checks POLYLOGUE_{KEY} first, then {KEY}, then returns default.
 
     This allows project-specific configuration without affecting global tools.
-    For example, POLYLOGUE_QDRANT_URL will be used instead of QDRANT_URL if set.
+    For example, POLYLOGUE_VOYAGE_API_KEY will be used instead of VOYAGE_API_KEY if set.
 
     Args:
         key: Environment variable name (without POLYLOGUE_ prefix)
@@ -25,13 +25,13 @@ def get_env(key: str, default: str | None = None) -> str | None:
         Value from POLYLOGUE_{KEY}, {KEY}, or default (in that order)
 
     Examples:
-        >>> os.environ["QDRANT_URL"] = "http://global:6333"
-        >>> get_env("QDRANT_URL")
-        'http://global:6333'
+        >>> os.environ["VOYAGE_API_KEY"] = "global-key"
+        >>> get_env("VOYAGE_API_KEY")
+        'global-key'
 
-        >>> os.environ["POLYLOGUE_QDRANT_URL"] = "http://local:6333"
-        >>> get_env("QDRANT_URL")
-        'http://local:6333'
+        >>> os.environ["POLYLOGUE_VOYAGE_API_KEY"] = "local-key"
+        >>> get_env("VOYAGE_API_KEY")
+        'local-key'
 
         >>> get_env("MISSING_VAR", "fallback")
         'fallback'

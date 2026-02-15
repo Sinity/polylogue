@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -10,15 +9,18 @@ from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 
+from polylogue.lib.log import get_logger
 from polylogue.render_paths import render_root
 
 from .backends.sqlite import DatabaseError, open_connection
 from .search_cache import SearchCacheKey
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
-# FTS5 special characters that need escaping or quoting (+ is inclusion operator)
-_FTS5_SPECIAL = re.compile(r'[":*^(){}[\]|&!+\-]')
+# FTS5 special characters that need escaping or quoting.
+# Includes documented operators (" : * ^ ( ) { } [ ] | & ! + -) plus characters
+# that are syntactically problematic in FTS5 queries (' \ ; % =).
+_FTS5_SPECIAL = re.compile(r'''['":*^(){}\[\]|&!+\-\\;%=,]''')
 # FTS5 boolean/special operators that should be treated as literals when alone
 _FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 # Pattern to detect queries that are only asterisks (dangerous wildcard-only)
@@ -98,6 +100,11 @@ def escape_fts5_query(query: str) -> str:
         return '""'  # Empty query -> empty phrase
 
     query = query.strip()
+
+    # Strip control characters (U+0000-U+001F, U+007F) — never useful in searches
+    query = re.sub(r'[\x00-\x1f\x7f]', '', query)
+    if not query:
+        return '""'  # Only contained control characters
 
     # Check for asterisk-only queries (dangerous wildcard-only pattern)
     if _ASTERISK_ONLY.match(query):
@@ -276,7 +283,7 @@ def search_messages(
     """Search for messages using FTS5 full-text search.
 
     This function uses an LRU cache for repeated queries. The cache is
-    automatically invalidated when conversations are re-ingested.
+    automatically invalidated when conversations are re-parsed.
 
     Args:
         query: Search query string (automatically escaped for FTS5)
