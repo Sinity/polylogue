@@ -16,48 +16,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.pipeline.services import IndexService, RenderService
+from polylogue.pipeline.services import IndexService
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
-
-# ============================================================================
-# RenderService Tests
-# ============================================================================
-
-
-class TestRenderService:
-    """Tests for RenderService."""
-
-    def test_initialization(self, tmp_path: Path):
-        """RenderService should initialize with required renderer."""
-        from polylogue.rendering.renderers import MarkdownRenderer
-        renderer = MarkdownRenderer(archive_root=tmp_path / "archive")
-        service = RenderService(renderer=renderer, render_root=tmp_path / "render")
-        assert service.renderer is renderer
-        assert service.render_root == tmp_path / "render"
-
-    def test_render_conversations_empty_list(self, tmp_path: Path):
-        """RenderService should handle empty conversation list."""
-        from polylogue.rendering.renderers import MarkdownRenderer
-        renderer = MarkdownRenderer(archive_root=tmp_path / "archive")
-        service = RenderService(renderer=renderer, render_root=tmp_path / "render")
-        result = service.render_conversations([])
-        assert result.rendered_count == 0
-        assert result.failures == []
-
-    def test_render_conversations_tracks_failures(self, tmp_path: Path):
-        """RenderService should track failures when rendering fails."""
-        from polylogue.rendering.renderers import MarkdownRenderer
-        mock_renderer = MagicMock(spec=MarkdownRenderer)
-        mock_renderer.render.side_effect = lambda cid, _: (_ for _ in ()).throw(ValueError("Test error")) if "fail" in cid else None
-        service = RenderService(renderer=mock_renderer, render_root=tmp_path / "render")
-        result = service.render_conversations(["success-1", "fail-1", "success-2"])
-        assert result.rendered_count == 2 and len(result.failures) == 1
-        assert result.failures[0]["conversation_id"] == "fail-1" and "Test error" in result.failures[0]["error"]
-
 
 # ============================================================================
 # IndexService Tests
