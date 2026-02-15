@@ -16,18 +16,8 @@ from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 
 # Claude imports
-from polylogue.sources.parsers.claude import (
-	looks_like_ai,
-	looks_like_code,
-	parse_ai,
-	parse_code,
-)
-
 # Codex imports
-from polylogue.sources.parsers.codex import parse as codex_parse
-
 # Drive imports (for parse_chunked_prompt)
-from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import RawConversationRecord
@@ -282,9 +272,8 @@ SYNTHETIC_PROVIDERS = discover_synthetic_exports()
 @pytest.mark.parametrize("provider", SYNTHETIC_PROVIDERS)
 def test_parse_synthetic_export_produces_valid_conversation(provider, tmp_path):
 	"""Parse synthetic export for each provider and validate structure."""
-	import json
-	from polylogue.schemas.synthetic import SyntheticCorpus
 	from polylogue.paths import Source
+	from polylogue.schemas.synthetic import SyntheticCorpus
 	from polylogue.sources import iter_source_conversations
 
 	corpus = SyntheticCorpus.for_provider(provider)
@@ -312,9 +301,8 @@ def test_synthetic_export_messages_have_roles(provider, tmp_path):
 
 	Parametrized across all synthetic providers.
 	"""
-	import json
-	from polylogue.schemas.synthetic import SyntheticCorpus
 	from polylogue.paths import Source
+	from polylogue.schemas.synthetic import SyntheticCorpus
 	from polylogue.sources import iter_source_conversations
 
 	corpus = SyntheticCorpus.for_provider(provider)
@@ -342,9 +330,8 @@ def test_synthetic_export_preserves_metadata(provider, tmp_path):
 
 	Parametrized across all synthetic providers.
 	"""
-	import json
-	from polylogue.schemas.synthetic import SyntheticCorpus
 	from polylogue.paths import Source
+	from polylogue.schemas.synthetic import SyntheticCorpus
 	from polylogue.sources import iter_source_conversations
 
 	corpus = SyntheticCorpus.for_provider(provider)
@@ -429,9 +416,8 @@ def test_chatgpt_format_variants(variant, tmp_path):
 	Parametrized to automatically test all discovered variants.
 	"""
 	import json
+
 	from polylogue.schemas.synthetic import SyntheticCorpus
-	from polylogue.paths import Source
-	from polylogue.sources import iter_source_conversations
 
 	corpus = SyntheticCorpus.for_provider("chatgpt")
 

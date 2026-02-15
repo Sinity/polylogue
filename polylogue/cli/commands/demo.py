@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 import tempfile
 from pathlib import Path
 
@@ -109,8 +108,10 @@ def _do_seed(
     env_only: bool,
 ) -> None:
     """Seed a full demo database via the pipeline."""
+    import asyncio
+
     from polylogue.config import Config, Source
-    from polylogue.pipeline.runner import run_sources
+    from polylogue.pipeline.async_runner import async_run_sources
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-demo-"))
@@ -153,13 +154,13 @@ def _do_seed(
         sources=sources,
     )
 
-    result = run_sources(
+    result = asyncio.run(async_run_sources(
         config=config,
         stage="all",
         plan=None,
         ui=None,
         source_names=None,
-    )
+    ))
 
     env_vars = {
         "XDG_DATA_HOME": str(data_home),

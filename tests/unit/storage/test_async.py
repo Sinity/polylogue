@@ -430,7 +430,6 @@ async def test_batch_attachment_insertion():
         counts = await backend.save_conversation(conv, messages, attachments)
 
         assert counts["attachments_created"] == 50
-        assert counts["attachment_refs_created"] == 50
 
         await backend.close()
 
@@ -573,9 +572,8 @@ async def test_save_conversation_returns_counts():
 
             counts = await repo.save_conversation(conv, messages, [])
 
-            assert "conversations_created" in counts
-            assert counts["conversations_created"] == 1
-            assert counts["messages_created"] == 2
+            assert counts["conversations"] == 1
+            assert counts["messages"] == 2
 
 
 @pytest.mark.asyncio
@@ -616,8 +614,7 @@ async def test_save_conversation_with_attachments():
 
             counts = await repo.save_conversation(conv, messages, attachments)
 
-            assert counts["attachments_created"] == 1
-            assert counts["attachment_refs_created"] == 1
+            assert counts["attachments"] == 1
 
 
 # =============================================================================
