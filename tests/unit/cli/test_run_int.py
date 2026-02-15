@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
 import json
 import threading
@@ -24,7 +25,7 @@ from polylogue.pipeline.enrichment import (
     enrich_content_blocks,
     enrich_message_metadata,
 )
-from polylogue.pipeline.runner import latest_run, plan_sources, run_sources
+from polylogue.pipeline.async_runner import async_latest_run, async_run_sources, plan_sources
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -62,9 +63,9 @@ def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
     if with_plan:
         plan = plan_sources(config)
         assert plan.counts["conversations"] == 1
-        result = run_sources(config=config, stage="all", plan=plan)
+        result = asyncio.run(async_run_sources(config=config, stage="all", plan=plan))
     else:
-        result = run_sources(config=config, stage="all")
+        result = asyncio.run(async_run_sources(config=config, stage="all"))
 
     assert result.counts["conversations"] == 1
     run_dir = config.archive_root / "runs"
@@ -92,14 +93,14 @@ def test_run_sources_filtered_by_stage(workspace_env, tmp_path, setup_type, stag
             Source(name="source-a", path=inbox / "a.json"),
             Source(name="source-b", path=inbox / "b.json"),
         ]
-        result = run_sources(config=config, stage=stage, source_names=["source-a"])
+        result = asyncio.run(async_run_sources(config=config, stage=stage, source_names=["source-a"]))
     else:  # single_source_chatgpt
         inbox = tmp_path / "inbox"
         source_file = ChatGPTExportBuilder("conv-chatgpt").add_node("user", "hello").write_to(inbox / "conversation.json")
         config = get_config()
         config.sources = [Source(name="inbox", path=source_file)]
-        run_sources(config=config, stage="parse", source_names=["inbox"])
-        result = run_sources(config=config, stage=stage, source_names=["inbox"])
+        asyncio.run(async_run_sources(config=config, stage="parse", source_names=["inbox"]))
+        result = asyncio.run(async_run_sources(config=config, stage=stage, source_names=["inbox"]))
 
     assert result.counts["conversations"] == expected_conv_count
     if check_render:
@@ -127,7 +128,7 @@ def test_run_rerenders_based_on_changes(workspace_env, tmp_path, scenario, title
     config = get_config()
     config.sources = [Source(name="inbox", path=source_file)]
 
-    run_sources(config=config, stage="all")
+    asyncio.run(async_run_sources(config=config, stage="all"))
     convo_path = next(config.render_root.rglob("conversation.md"))
     first_mtime = convo_path.stat().st_mtime
     original = convo_path.read_text(encoding="utf-8") if check_title else ""
@@ -142,7 +143,7 @@ def test_run_rerenders_based_on_changes(workspace_env, tmp_path, scenario, title
     if expect_mtime_diff:
         time.sleep(0.01)
 
-    run_sources(config=config, stage="all")
+    asyncio.run(async_run_sources(config=config, stage="all"))
     second_mtime = convo_path.stat().st_mtime
 
     if expect_mtime_diff:
@@ -175,7 +176,7 @@ def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch
         Source(name="source-b", path=inbox / "b.json"),
     ]
 
-    run_sources(config=config, stage="parse")
+    asyncio.run(async_run_sources(config=config, stage="parse"))
 
     id_by_source = {}
     with open_connection(None) as conn:
@@ -187,14 +188,14 @@ def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch
             id_by_source[name] = row["conversation_id"]
 
     update_calls = []
-    from polylogue.pipeline.services.indexing import IndexService
+    from polylogue.pipeline.services.async_indexing import AsyncIndexService
 
-    def fake_update_method(self, ids):
+    async def fake_update_method(self, ids):
         update_calls.append(list(ids))
         return True
 
-    monkeypatch.setattr(IndexService, "update_index", fake_update_method)
-    run_sources(config=config, stage="index", source_names=["source-b"])
+    monkeypatch.setattr(AsyncIndexService, "update_index", fake_update_method)
+    asyncio.run(async_run_sources(config=config, stage="index", source_names=["source-b"]))
     assert update_calls == [[id_by_source["source-b"]]]
 
 
@@ -208,21 +209,21 @@ def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypatch):
     config = get_config()
     config.sources = [Source(name="inbox", path=source_file)]
 
-    import polylogue.pipeline.runner as runner_mod
+    import polylogue.pipeline.async_runner as runner_mod
 
     fixed_time = 1_700_000_000
     monkeypatch.setattr(runner_mod.time, "time", lambda: fixed_time)
     monkeypatch.setattr(runner_mod.time, "perf_counter", lambda: 0.0)
 
-    run_sources(config=config, stage="all")
-    run_sources(config=config, stage="all")
+    asyncio.run(async_run_sources(config=config, stage="all"))
+    asyncio.run(async_run_sources(config=config, stage="all"))
 
     run_dir = config.archive_root / "runs"
     runs = list(run_dir.glob(f"run-{fixed_time}-*.json"))
     assert len(runs) == 2
 
 
-# latest_run() tests
+# async_latest_run() tests
 
 
 @pytest.mark.parametrize(
@@ -230,13 +231,13 @@ def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypatch):
     ["parsed_json", "null_columns"],
 )
 def test_latest_run_parsing(workspace_env, tmp_path, setup_type):
-    """latest_run() parses JSON and handles NULL columns."""
+    """async_latest_run() parses JSON and handles NULL columns."""
     if setup_type == "parsed_json":
         inbox = tmp_path / "inbox"
         (GenericConversationBuilder("conv-latest-run").add_user("test").write_to(inbox / "conversation.json"))
         config = get_config()
         config.sources = [Source(name="inbox", path=inbox)]
-        run_sources(config=config, stage="all")
+        asyncio.run(async_run_sources(config=config, stage="all"))
     else:  # null_columns
         with open_connection(None) as conn:
             conn.execute(
@@ -248,7 +249,7 @@ def test_latest_run_parsing(workspace_env, tmp_path, setup_type):
             )
             conn.commit()
 
-    result = latest_run()
+    result = asyncio.run(async_latest_run())
     assert result is not None
 
     if setup_type == "parsed_json":

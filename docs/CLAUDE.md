@@ -28,15 +28,17 @@ uv run polylogue mcp                          # MCP server (stdio)
 
 **Library API**:
 ```python
+# Sync
 with Polylogue() as archive:
-    # Batch operations
     convs = archive.get_conversations(["id1", "id2", "id3"])
-
-    # Semantic search (uses sqlite-vec)
-    results = archive.filter().similar("error patterns").list()
-
-    # Full-text search
     results = archive.filter().contains("python").provider("claude").list()
+
+# Async (full parity)
+async with AsyncPolylogue() as archive:
+    stats = await archive.stats()  # Returns ArchiveStats
+    convs = await archive.get_conversations(["id1", "id2"])
+    results = await archive.search("error handling")
+    await archive.rebuild_index()
 ```
 
 ---
@@ -45,11 +47,12 @@ with Polylogue() as archive:
 
 | Aspect | Implementation | Behavior |
 |--------|----------------|----------|
-| **Storage** | `SQLiteBackend` (only backend) | Thread-local connections, no protocol abstraction |
+| **Storage** | `SQLiteBackend` + `AsyncSQLiteBackend` | Thread-local (sync), aiosqlite (async) |
 | **Search** | `SearchProvider` protocol | FTS5 (local), sqlite-vec (vector), LRU cache |
 | **Rendering** | Markdown/HTML renderers | Via `--format` flag |
 | **Services** | `polylogue.services` module | Singleton factories for backend + repository |
-| **Thread safety** | `_WRITE_LOCK` + thread-local | Lock in `store.py`, max 16 parallel ingests, 4 render workers |
+| **Pipeline** | `async_run_sources` (async-first) | Acquire → Parse → Render → Index |
+| **Thread safety** | `_WRITE_LOCK` + thread-local (sync), `asyncio.Lock` (async) | Write serialization |
 | **Deduplication** | SHA-256 + NFC normalization | Same content → same hash → skip |
 
 **Data Flow**:
@@ -80,7 +83,8 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 | `lib/models.py` | Message/Conversation with `is_thinking`, `is_tool_use`, `is_substantive` |
 | `lib/projections.py` | Fluent API: `conv.project().substantive().min_words(50).execute()` |
 | `lib/filters.py` | Conversation filter chain: `p.filter().provider("claude").list()` |
-| `facade.py` | `Polylogue` — top-level library API |
+| `facade.py` | `Polylogue` — sync library API |
+| `async_facade.py` | `AsyncPolylogue` — async library API (full parity) |
 | `services.py` | Singleton factories: `get_backend()`, `get_repository()` |
 | `protocols.py` | SearchProvider, VectorProvider (storage protocol deleted) |
 | `types.py` | NewType IDs: ConversationId, MessageId, AttachmentId |
@@ -107,10 +111,14 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 ### Pipeline
 | File | Purpose |
 |------|---------|
-| `pipeline/runner.py` | Orchestrates ingest → render → index |
-| `pipeline/services/ingestion.py` | IngestionService (parallel, bounded) |
-| `pipeline/services/indexing.py` | IndexService (FTS5 management) |
-| `pipeline/services/rendering.py` | RenderService (parallel output) |
+| `pipeline/async_runner.py` | Orchestrates acquire → parse → render → index (async-first) |
+| `pipeline/async_prepare.py` | Async record preparation and dedup |
+| `pipeline/services/async_acquisition.py` | AsyncAcquisitionService (raw data storage) |
+| `pipeline/services/async_parsing.py` | AsyncParsingService (raw → typed records) |
+| `pipeline/services/async_indexing.py` | AsyncIndexService (FTS5 management) |
+| `pipeline/services/async_rendering.py` | AsyncRenderService (concurrent render) |
+| `pipeline/services/indexing.py` | IndexService (sync, used by facade) |
+| `pipeline/services/rendering.py` | RenderService (sync fallback) |
 
 ### CLI
 | File | Purpose |
@@ -281,6 +289,18 @@ polylogue://conversations?provider=claude&tag=important&limit=50
   }
 }
 ```
+
+---
+
+## Demo & Synthetic Data
+
+```bash
+polylogue demo --seed                    # Full demo environment
+polylogue demo --seed --env-only         # Shell-friendly (eval $(...))
+polylogue demo --corpus -p chatgpt -n 5  # Raw fixture files
+```
+
+Uses `SyntheticCorpus` from `polylogue.sources.synthetic`. Shared with test fixtures (`seeded_db`, `synthetic_source`, `raw_synthetic_samples`). See [docs/demo.md](demo.md).
 
 ---
 

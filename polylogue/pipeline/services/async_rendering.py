@@ -10,6 +10,8 @@ from polylogue.protocols import OutputRenderer
 
 logger = get_logger(__name__)
 
+__all__ = ["AsyncRenderService", "RenderResult"]
+
 
 class RenderResult:
     """Result of a rendering operation."""

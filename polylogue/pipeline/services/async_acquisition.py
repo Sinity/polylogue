@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+__all__ = ["AsyncAcquisitionService", "AcquireResult"]
+
 
 class AcquireResult:
     """Result of an acquisition operation."""

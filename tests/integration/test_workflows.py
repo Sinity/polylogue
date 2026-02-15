@@ -11,6 +11,7 @@ Tests cover complete workflows:
 - Format conversion workflows
 """
 
+import asyncio
 import json
 import tempfile
 from pathlib import Path
@@ -18,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.pipeline.runner import run_sources
+from polylogue.pipeline.async_runner import async_run_sources
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -637,14 +638,14 @@ def test_search_with_special_characters(temp_config_and_repo):
 
 
 def test_pipeline_runner_e2e(workspace_env, chatgpt_sample_source):
-    """run_sources orchestrates full workflow."""
+    """async_run_sources orchestrates full workflow."""
     from polylogue.config import get_config
 
     config = get_config()
     config.sources = [chatgpt_sample_source]
 
-    # Use run_sources function
-    result = run_sources(config=config, source_names=[chatgpt_sample_source.name])
+    # Use async_run_sources function
+    result = asyncio.run(async_run_sources(config=config, source_names=[chatgpt_sample_source.name]))
 
     # Verify data was processed
     assert result is not None
@@ -652,14 +653,14 @@ def test_pipeline_runner_e2e(workspace_env, chatgpt_sample_source):
 
 
 def test_pipeline_runner_with_preview_mode(workspace_env, chatgpt_sample_source):
-    """run_sources with stage control."""
+    """async_run_sources with stage control."""
     from polylogue.config import get_config
 
     config = get_config()
     config.sources = [chatgpt_sample_source]
 
     # Run parse stage
-    result = run_sources(config=config, stage="parse", source_names=[chatgpt_sample_source.name])
+    result = asyncio.run(async_run_sources(config=config, stage="parse", source_names=[chatgpt_sample_source.name]))
 
     # Should report results
     assert result is not None

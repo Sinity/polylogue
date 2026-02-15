@@ -22,9 +22,9 @@
 
 Polylogue archives AI conversations from **ChatGPT, Claude, Claude Code, Gemini, and Codex** into a unified, searchable local database. Drop your exports in a folder, run one command, and get instant full-text search across every conversation you've ever had.
 
-- **Zero-config**: Drop exports in `~/...polylogue/inbox/`, run `polylogue run`, done
+- **Zero-config**: Drop exports in `~/.local/share/polylogue/inbox/`, run `polylogue run`, done
 - **Sub-second search**: FTS5-powered full-text search with smartcase matching
-- **Library-first**: Clean Python API with composable filter chains — CLI is a thin wrapper
+- **Library-first**: Clean Python API (sync + async) with composable filter chains — CLI is a thin wrapper
 - **Local-first**: All data stays on your machine, always
 
 ## Feature Highlights
@@ -87,6 +87,32 @@ Browsable HTML archive with per-provider views, statistics dashboard, and client
 
 </td>
 </tr>
+<tr>
+<td width="50%">
+
+### Try It First
+
+```bash
+polylogue demo --seed
+```
+
+Generate a synthetic archive with realistic conversations from all providers. Explore the UI, search, and API without importing your own data.
+
+</td>
+<td width="50%">
+
+### Async Library API
+
+```python
+async with AsyncPolylogue() as archive:
+    stats = await archive.stats()
+    convs = await archive.filter().provider("claude").list()
+```
+
+Full async/await support with concurrent queries and parallel batch operations.
+
+</td>
+</tr>
 </table>
 
 ## Quick Start
@@ -132,6 +158,17 @@ polylogue --latest --output browser
 
 No config file needed. That's it.
 
+### Try It First (No Data Needed)
+
+```bash
+# Generate a demo environment with synthetic conversations
+eval $(polylogue demo --seed --env-only)
+
+# Now explore — search, filter, dashboard all work
+polylogue "error handling"
+polylogue dashboard
+```
+
 ## Supported Providers
 
 | Provider | Format | Auto-detected By | Normalized Name |
@@ -154,6 +191,7 @@ ZIP archives are supported (nested ZIPs too, with bomb protection). Provider det
 | [Configuration](docs/configuration.md) | XDG paths, environment variables, Drive setup, backup |
 | [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server for Claude Desktop/Code |
 | [Architecture](docs/architecture.md) | System design, component overview, data flow |
+| [Demo & Synthetic Data](docs/demo.md) | Demo command, synthetic corpus, test fixtures |
 
 ## MCP Integration
 
@@ -171,16 +209,6 @@ Use polylogue as an MCP server for **Claude Desktop** or **Claude Code** — sea
 ```
 
 Tools: `search`, `list_conversations`, `get_conversation`, `stats`. [Full MCP docs →](docs/mcp-integration.md)
-
-## Roadmap
-
-| Feature | Description |
-|---------|-------------|
-| `--similar` CLI flag | Surface the existing semantic search in CLI (library API ready) |
-| LLM annotation | Batch-generated titles, summaries, and tags |
-| Branch navigation | Tree-structured conversation browsing |
-| Fork detection | Auto-detect edited/regenerated conversations |
-| DuckDB backend | Alternative high-performance storage |
 
 ## Development
 

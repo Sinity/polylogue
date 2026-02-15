@@ -24,20 +24,27 @@ Example:
 
 from __future__ import annotations
 
+import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from polylogue.config import Config
+from polylogue.config import Config, Source
 from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
 
 if TYPE_CHECKING:
+    from polylogue.facade import ArchiveStats
+    from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation
+    from polylogue.pipeline.services.parsing import ParseResult
+    from polylogue.storage.search import SearchResult
 
 
 class AsyncPolylogue:
     """Async high-level facade for Polylogue library.
 
-    Provides async/await API for concurrent operations.
+    Provides async/await API for concurrent operations with full parity
+    to the sync ``Polylogue`` facade.
 
     Args:
         archive_root: Path to the archive directory
@@ -46,7 +53,7 @@ class AsyncPolylogue:
     Example:
         # Context manager (recommended)
         async with AsyncPolylogue() as archive:
-            convs = await archive.filter().provider("claude").list()
+            convs = await archive.filter().list()
 
         # Manual lifecycle
         archive = AsyncPolylogue()
@@ -97,6 +104,16 @@ class AsyncPolylogue:
         """Close database connections and release resources."""
         await self._backend.close()
 
+    @property
+    def config(self) -> Config:
+        """Get the current configuration."""
+        return self._config
+
+    @property
+    def archive_root(self) -> Path:
+        """Get the archive root directory."""
+        return self._config.archive_root
+
     async def get_conversation(self, conversation_id: str) -> Conversation | None:
         """Get a conversation by ID.
 
@@ -133,29 +150,22 @@ class AsyncPolylogue:
             List of Conversation objects (may be fewer than requested)
 
         Example:
-            import asyncio
             ids = ["id1", "id2", "id3", "id4", "id5"]
             convs = await archive.get_conversations(ids)
         """
-        import asyncio
+        import logging
 
         # Fetch all conversations concurrently
         tasks = [self.get_conversation(cid) for cid in conversation_ids]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Filter out None and exceptions
-        conversations: list[Conversation] = []
+        conversations = []
         for result in results:
             if isinstance(result, Exception):
-                # Log error but don't fail the whole batch
-                import logging
-
                 logging.warning(f"Failed to fetch conversation: {result}")
             elif result is not None:
-                # Safe because we filtered Exceptions and None
-                from typing import cast
-
-                conversations.append(cast(Conversation, result))
+                conversations.append(result)
 
         return conversations
 
@@ -181,12 +191,7 @@ class AsyncPolylogue:
             limit=limit,
         )
 
-        # Fetch messages for each conversation in parallel
-        import asyncio
-
         from polylogue.storage.repository import _records_to_conversation
-
-        # Define helper with explicit types
         from polylogue.storage.store import ConversationRecord
 
         async def _fetch_with_messages(conv_record: ConversationRecord) -> Conversation:
@@ -197,32 +202,221 @@ class AsyncPolylogue:
         results = await asyncio.gather(*tasks)
         return list(results)
 
-    async def stats(self) -> dict[str, object]:
-        """Get archive statistics.
+    async def search(
+        self,
+        query: str,
+        *,
+        limit: int = 100,
+        source: str | None = None,
+        since: str | None = None,
+    ) -> SearchResult:
+        """Search conversations using full-text search.
+
+        Args:
+            query: Search query string
+            limit: Maximum number of results to return (default: 100)
+            source: Optional source/provider filter
+            since: Optional timestamp filter (ISO format)
 
         Returns:
-            Dictionary with conversation count, message count, providers, etc.
+            SearchResult with matching conversations
+
+        Example:
+            results = await archive.search("python error handling", limit=20)
+            for hit in results.hits:
+                print(f"{hit.title}: {hit.snippet}")
+        """
+        from polylogue.storage.search import search_messages
+
+        return await asyncio.to_thread(
+            search_messages,
+            query=query,
+            archive_root=self._config.archive_root,
+            render_root_path=self._config.render_root,
+            limit=limit,
+            source=source,
+            since=since,
+        )
+
+    async def parse_file(
+        self,
+        path: str | Path,
+        *,
+        source_name: str | None = None,
+    ) -> ParseResult:
+        """Parse a single file containing AI conversations.
+
+        The provider (ChatGPT, Claude, Codex, etc.) is automatically detected
+        from the file structure.
+
+        Args:
+            path: Path to the file to parse (.json, .jsonl, .zip)
+            source_name: Optional source name for tracking (defaults to filename)
+
+        Returns:
+            ParseResult with counts of imported items
+
+        Example:
+            result = await archive.parse_file("chatgpt_export.json")
+            print(f"Imported {result.counts['conversations']} conversations")
+        """
+        from polylogue.pipeline.services.async_parsing import AsyncParsingService
+        from polylogue.storage.async_repository import AsyncConversationRepository
+
+        repository = AsyncConversationRepository(backend=self._backend)
+        parsing_service = AsyncParsingService(
+            repository=repository,
+            archive_root=self._config.archive_root,
+            config=self._config,
+        )
+
+        file_path = Path(path).expanduser().resolve()
+        if source_name is None:
+            source_name = file_path.stem
+
+        source = Source(name=source_name, path=file_path)
+        return await parsing_service.parse_sources(
+            sources=[source],
+            ui=None,
+            download_assets=False,
+        )
+
+    async def parse_sources(
+        self,
+        sources: list[Source] | None = None,
+        *,
+        download_assets: bool = True,
+    ) -> ParseResult:
+        """Parse conversations from configured sources.
+
+        Args:
+            sources: List of sources to parse. If None, uses all configured sources.
+            download_assets: Whether to download attachments from Google Drive (default: True)
+
+        Returns:
+            ParseResult with counts of imported items
+
+        Example:
+            result = await archive.parse_sources()
+        """
+        from polylogue.pipeline.services.async_parsing import AsyncParsingService
+        from polylogue.storage.async_repository import AsyncConversationRepository
+
+        repository = AsyncConversationRepository(backend=self._backend)
+        parsing_service = AsyncParsingService(
+            repository=repository,
+            archive_root=self._config.archive_root,
+            config=self._config,
+        )
+
+        if sources is None:
+            sources = self._config.sources
+
+        return await parsing_service.parse_sources(
+            sources=sources,
+            ui=None,
+            download_assets=download_assets,
+        )
+
+    async def rebuild_index(self) -> bool:
+        """Rebuild the full-text search index.
+
+        Returns:
+            True if rebuild succeeded, False otherwise
+
+        Example:
+            success = await archive.rebuild_index()
+        """
+        from polylogue.pipeline.services.async_indexing import AsyncIndexService
+
+        index_service = AsyncIndexService(config=self._config, backend=self._backend)
+        return await index_service.rebuild_index()
+
+    def filter(self) -> ConversationFilter:
+        """Create a fluent filter builder for querying conversations.
+
+        Note: ConversationFilter uses synchronous database access internally.
+        This is fine for filter building and execution since the underlying
+        queries are fast.
+
+        Returns:
+            ConversationFilter for building queries
+
+        Example:
+            convs = archive.filter().provider("claude").contains("error").limit(10).list()
+        """
+        from polylogue.lib.filters import ConversationFilter
+        from polylogue.storage.backends.sqlite import SQLiteBackend
+        from polylogue.storage.repository import ConversationRepository
+
+        # Create sync backend pointing at same database for filter execution
+        sync_backend = SQLiteBackend(db_path=self._db_path)
+        repository = ConversationRepository(backend=sync_backend)
+
+        vector_provider = None
+        try:
+            from polylogue.storage.search_providers import create_vector_provider
+
+            vector_provider = create_vector_provider(self._config)
+        except (ValueError, ImportError):
+            pass
+
+        return ConversationFilter(repository, vector_provider=vector_provider)
+
+    async def stats(self) -> ArchiveStats:
+        """Get statistics about the archive.
+
+        Returns:
+            ArchiveStats with conversation count, message count, provider breakdown, etc.
 
         Example:
             stats = await archive.stats()
-            print(f"Total: {stats['conversation_count']} conversations")
+            print(f"Total: {stats.conversation_count} conversations")
+            for provider, count in stats.providers.items():
+                print(f"  {provider}: {count}")
         """
-        # Get all conversations
+        from polylogue.facade import ArchiveStats
+
         conversations = await self.list_conversations(limit=10000)
 
-        # Calculate stats
         providers: dict[str, int] = {}
+        tags: dict[str, int] = {}
         total_messages = 0
+        total_words = 0
 
         for conv in conversations:
             providers[conv.provider] = providers.get(conv.provider, 0) + 1
+            for tag in conv.tags:
+                tags[tag] = tags.get(tag, 0) + 1
             total_messages += len(conv.messages)
+            total_words += sum(m.word_count for m in conv.messages)
 
-        return {
-            "conversation_count": len(conversations),
-            "message_count": total_messages,
-            "providers": providers,
-        }
+        _epoch = datetime.min.replace(tzinfo=timezone.utc)
+        recent = sorted(
+            conversations,
+            key=lambda c: c.updated_at or c.created_at or _epoch,
+            reverse=True,
+        )[:5]
+
+        last_sync = None
+        try:
+            async with self._backend._get_connection() as conn:
+                cursor = await conn.execute("SELECT MAX(timestamp) as last FROM runs")
+                row = await cursor.fetchone()
+                if row and row["last"]:
+                    last_sync = row["last"]
+        except Exception:
+            pass
+
+        return ArchiveStats(
+            conversation_count=len(conversations),
+            message_count=total_messages,
+            word_count=total_words,
+            providers=providers,
+            tags=tags,
+            last_sync=last_sync,
+            recent=recent,
+        )
 
     def __repr__(self) -> str:
         """Return string representation."""

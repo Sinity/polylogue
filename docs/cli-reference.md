@@ -227,6 +227,34 @@ polylogue dashboard                       # Launch TUI dashboard
 
 Opens the Textual-based TUI (Mission Control) for interactive browsing.
 
+## Demo
+
+Generate synthetic conversations for testing and exploration:
+
+```bash
+polylogue demo --seed                       # Seed demo DB, print env vars
+polylogue demo --seed --env-only            # Shell-friendly (for eval)
+polylogue demo --corpus                     # Write raw provider-format files
+polylogue demo --corpus -p chatgpt -n 5     # ChatGPT only, 5 conversations
+polylogue demo --corpus -o /tmp/corpus      # Custom output directory
+```
+
+**Two modes:**
+
+- `--seed`: Creates a full demo environment (database + rendered files) and prints environment variables (`POLYLOGUE_ARCHIVE_ROOT`, etc.) to point your shell at the demo data. Use `eval $(polylogue demo --seed --env-only)` for seamless shell integration.
+- `--corpus`: Writes raw provider-format files (JSON, JSONL) to disk for inspection. Useful for understanding wire formats or testing parsers.
+
+**Options:**
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--seed` | | Create full demo environment |
+| `--corpus` | | Generate raw fixture files |
+| `--provider NAME` | `-p` | Providers to include (repeatable, default: all) |
+| `--count N` | `-n` | Conversations per provider (default: 3) |
+| `--output-dir PATH` | `-o` | Output directory |
+| `--env-only` | | Print export statements only (for eval) |
+
 ## Other Modes
 
 ```bash
