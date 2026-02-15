@@ -382,6 +382,75 @@ def _collect_field_stats(
     return all_stats
 
 
+_SAFE_ENUM_MAX_LEN = 50  # structural enums are short tokens, not content
+
+_FILE_EXTENSIONS = frozenset({
+    ".pdf", ".txt", ".json", ".jpg", ".jpeg", ".png", ".gif",
+    ".md", ".html", ".csv", ".tsv", ".doc", ".docx",
+    ".xls", ".xlsx", ".zip", ".gz", ".tar", ".py", ".js", ".ts",
+})
+
+_TIMESTAMP_RE = re.compile(r"\d{4}-\d{2}-\d{2}[T ]")
+
+# Field names whose values are always user content, never structural enums.
+# This complements the value-level filter to catch content that *looks* like
+# technical identifiers (e.g. snake_case user titles, domain-like page titles).
+_CONTENT_FIELD_NAMES = frozenset({
+    "title", "text", "url", "description", "address", "phone",
+    "location", "query", "prompt", "summary", "instructions",
+    "breadcrumbs", "display_title", "page_title", "leaf_description",
+    "clicked_from_title", "clicked_from_url", "content_url", "image_url",
+    "website_url", "provider_url", "request_query", "featured_tag",
+    "merchants", "price", "evidence_text", "attribution",
+    "async_task_title", "serialization_title",
+    "branching_from_conversation_title", "branching_from_conversation_owner",
+    "country", "owner", "state", "subtitles",
+})
+
+
+def _is_content_field(path: str) -> bool:
+    """Return True if a schema path points to a known content field."""
+    # Extract terminal field name from dotted path
+    terminal = path.rsplit(".", 1)[-1] if "." in path else path
+    # Strip array markers like "[*]"
+    terminal = terminal.split("[")[0]
+    return terminal in _CONTENT_FIELD_NAMES
+
+
+def _is_safe_enum_value(value: str) -> bool:
+    """Return True if a string value is safe to include in schema annotations.
+
+    Uses a conservative allowlist approach: only values that look like
+    technical identifiers (roles, content types, status codes, MIME types)
+    pass through. Anything that could be user content — URLs, filenames,
+    natural language text, timestamps, locations — is rejected.
+
+    The goal is to preserve structural enum metadata in committed schemas
+    without leaking personal data from conversations.
+    """
+    if not value or len(value) > _SAFE_ENUM_MAX_LEN:
+        return False
+    if not value.isascii():
+        return False
+    if " " in value or "\n" in value:
+        return False
+    if "://" in value:
+        return False
+    if "@" in value:
+        return False
+    if value.startswith(("+", "/")):
+        return False
+    lower = value.lower()
+    if any(lower.endswith(ext) for ext in _FILE_EXTENSIONS):
+        return False
+    if _TIMESTAMP_RE.match(value):
+        return False
+    # Block domain-name-like values (contain dots with known TLDs)
+    if "." in value and re.search(r"\.(com|org|net|pl|io|de|uk|ru|fr|co)\b", lower):
+        return False
+    return True
+
+
 def _annotate_schema(
     schema: dict[str, Any],
     stats: dict[str, FieldStats],
@@ -417,14 +486,20 @@ def _annotate_schema(
         if fmt:
             schema["x-polylogue-format"] = fmt
 
-        # String enum values (skip if format indicates generated/unique values)
+        # String enum values (skip if format indicates generated/unique values,
+        # or if the field is known to contain user content)
         _id_formats = {"uuid4", "uuid", "hex-id", "base64"}
         if (field_stats.is_enum_like
                 and field_stats.observed_values
-                and fmt not in _id_formats):
-            # Top values by frequency — cap output to keep schema size bounded
-            sorted_vals = [v for v, _ in field_stats.observed_values.most_common(_ENUM_OUTPUT_CAP)]
-            schema["x-polylogue-values"] = sorted_vals
+                and fmt not in _id_formats
+                and not _is_content_field(path)):
+            # Top values by frequency — cap output, filter out content/PII
+            sorted_vals = [
+                v for v, _ in field_stats.observed_values.most_common(_ENUM_OUTPUT_CAP)
+                if not isinstance(v, str) or _is_safe_enum_value(v)
+            ]
+            if sorted_vals:
+                schema["x-polylogue-values"] = sorted_vals
 
         # Numeric range
         if field_stats.num_min is not None and field_stats.num_max is not None:

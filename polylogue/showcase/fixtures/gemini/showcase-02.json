@@ -1,0 +1,30 @@
+{
+  "chunkedPrompt": {
+    "chunks": [
+      {
+        "text": "How can I optimize Python code for better performance? I have a function that processes large datasets.",
+        "role": "user"
+      },
+      {
+        "text": "Here are key optimization techniques: 1) Use list comprehensions instead of loops—they're faster in Python. 2) Use NumPy for numerical operations instead of pure Python. 3) Consider caching results with functools.lru_cache for expensive computations. 4) Profile your code with cProfile to identify bottlenecks before optimizing. 5) Avoid repeated function calls in tight loops. 6) Use generator expressions for memory efficiency on large datasets.",
+        "role": "model"
+      },
+      {
+        "text": "Can you give me a concrete example of optimizing a data filtering operation?",
+        "role": "user"
+      },
+      {
+        "text": "Sure. Instead of: `filtered = [x for x in data if x > threshold and x < max_val]`, if data is a NumPy array, use: `filtered = data[(data > threshold) & (data < max_val)]`. The NumPy version is 100x faster on large datasets because it operates at C level instead of Python level. For even better performance, apply filters in order of most selective first.",
+        "role": "model"
+      },
+      {
+        "text": "What about memory optimization for handling very large files?",
+        "role": "user"
+      },
+      {
+        "text": "Use generators and streaming approaches: 1) Read files in chunks instead of loading entire files into memory. 2) Use context managers (with statements) to ensure cleanup. 3) Process data line-by-line or in fixed-size batches. 4) Consider memory-mapped files with NumPy's memmap for very large files. 5) Use iterators instead of materializing full lists. This keeps memory usage constant regardless of file size.",
+        "role": "model"
+      }
+    ]
+  }
+}

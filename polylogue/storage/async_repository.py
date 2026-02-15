@@ -684,8 +684,7 @@ class AsyncConversationRepository:
         if backend is None:
             raise RuntimeError("Backend is not initialized")
 
-        await backend.begin()
-        try:
+        async with backend.transaction():
             # Check existing conversation
             existing = await backend.get_conversation(conversation.conversation_id)
             await backend.save_conversation_record(conversation)
@@ -724,11 +723,6 @@ class AsyncConversationRepository:
 
             if attachments:
                 await backend.save_attachments(attachments)
-
-            await backend.commit()
-        except Exception:
-            await backend.rollback()
-            raise
 
         return counts
 

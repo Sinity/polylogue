@@ -683,6 +683,11 @@ def _output_summary_list(
         ids = [str(s.id) for s in summaries]
         msg_counts = repo.backend.get_message_counts_batch(ids)
 
+    fields = params.get("fields")
+    selected: set[str] | None = None
+    if fields:
+        selected = {f.strip() for f in fields.split(",")}
+
     if output_format == "json":
         data = [
             {
@@ -696,6 +701,8 @@ def _output_summary_list(
             }
             for s in summaries
         ]
+        if selected:
+            data = [{k: v for k, v in d.items() if k in selected} for d in data]
         click.echo(json.dumps(data, indent=2))
     elif output_format == "yaml":
         import yaml
@@ -711,6 +718,8 @@ def _output_summary_list(
             }
             for s in summaries
         ]
+        if selected:
+            data = [{k: v for k, v in d.items() if k in selected} for d in data]
         click.echo(yaml.dump(data, default_flow_style=False, allow_unicode=True))
     elif output_format == "csv":
         import csv
@@ -733,7 +742,18 @@ def _output_summary_list(
             ])
         click.echo(buf.getvalue().rstrip())
     else:
-        # Rich table format (default)
+        # Default table format
+        if env.ui.plain:
+            # Plain text table (no Rich markup — safe for piping and non-TTY)
+            for s in summaries:
+                date = s.display_date.strftime("%Y-%m-%d") if s.display_date else ""
+                raw_title = s.display_title or str(s.id)[:20]
+                title = (raw_title[:47] + "...") if len(raw_title) > 50 else raw_title
+                count = msg_counts.get(str(s.id), 0)
+                click.echo(f"{str(s.id)[:24]:24s}  {date:10s}  {s.provider:12s}  {title} ({count} msgs)")
+            return
+
+        # Rich table format (interactive terminals)
         from rich.table import Table
         from rich.text import Text
 
