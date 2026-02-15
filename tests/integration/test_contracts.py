@@ -196,9 +196,9 @@ class TestEdgeCaseHandling:
 
                 mapping = data.get("mapping", {})
 
-                def _has_parseable_content(node_id: str) -> bool:
+                def _has_parseable_content(node_id: str, _mapping: dict = mapping) -> bool:
                     """Check if a mapping node has a message with non-empty text."""
-                    n = mapping.get(node_id, {})
+                    n = _mapping.get(node_id, {})
                     if not isinstance(n, dict):
                         return False
                     m = n.get("message")
