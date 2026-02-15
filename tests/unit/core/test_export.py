@@ -8,8 +8,6 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-import pytest
-
 from polylogue.export import export_jsonl
 from polylogue.storage.backends.sqlite import connection_context, open_connection
 
@@ -48,7 +46,7 @@ class TestExportJsonl:
 
     def test_export_jsonl_with_conversation(self, workspace_env, db_path):
         """Exports conversation with messages and attachments."""
-        from tests.helpers import ConversationBuilder
+        from tests.infra.helpers import ConversationBuilder
 
         (
             ConversationBuilder(db_path, "test-conv")

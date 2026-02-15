@@ -3,14 +3,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from polylogue.lib.models import Conversation, Message
 from tests.integration.conftest import make_mock_filter
-
 
 # =============================================================================
 # Tier 5: Export Tool Tests
@@ -70,7 +65,7 @@ class TestExportConversationTool:
                 mock_format.return_value = "# Content"
 
                 server = _build_server()
-                result = server._tool_manager._tools["export_conversation"].fn(
+                server._tool_manager._tools["export_conversation"].fn(
                     id="test:conv-123", format="invalid_format"
                 )
 

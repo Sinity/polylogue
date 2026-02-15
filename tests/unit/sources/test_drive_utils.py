@@ -2,42 +2,29 @@
 
 from __future__ import annotations
 
-import importlib
-import io
-import json
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock
 
 import pytest
 
-from polylogue.config import Source
 from polylogue.sources import (
     DriveAuthError,
-    DriveClient,
     DriveError,
-    DriveFile,
     DriveNotFoundError,
-    download_drive_files,
-    iter_drive_conversations,
 )
-from polylogue.sources.drive import _apply_drive_attachments, DriveDownloadResult
 from polylogue.sources.drive_client import (
     _is_retryable_error,
     _looks_like_id,
     _parse_modified_time,
     _parse_size,
     _resolve_credentials_path,
-    _resolve_retry_base,
     _resolve_retries,
+    _resolve_retry_base,
     _resolve_token_path,
     default_credentials_path,
     default_token_path,
 )
-import polylogue.sources.drive_client as drive_client
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation
-
 
 # ============================================================================
 # Test Data Tables (Module-level constants for parametrization)

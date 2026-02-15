@@ -6,29 +6,26 @@ Consolidated from test_validation.py and test_schema_inference.py.
 from __future__ import annotations
 
 import json
-import sqlite3
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from polylogue.schemas import ValidationResult, validate_provider_export as validate_provider_export_fn
+from polylogue.schemas import ValidationResult
 from polylogue.schemas.schema_inference import (
     PROVIDERS,
     GenerationResult,
+    _remove_nested_required,
+    cli_main,
     collapse_dynamic_keys,
     generate_all_schemas,
     generate_provider_schema,
     generate_schema_from_samples,
+    get_sample_count_from_db,
     is_dynamic_key,
     load_samples_from_db,
-    _remove_nested_required,
-    cli_main,
-    get_sample_count_from_db,
     load_samples_from_sessions,
 )
 from polylogue.schemas.validator import SchemaValidator, validate_provider_export
-from polylogue.storage.store import RawConversationRecord
 
 
 @patch("polylogue.schemas.validator.SCHEMA_DIR")
@@ -113,121 +110,26 @@ def test_missing_provider_raises():
         SchemaValidator.for_provider("nonexistent-provider")
 
 
-@pytest.mark.slow
-class TestSchemaValidation:
-    """Validate real data against schemas using raw_conversations."""
+class TestSyntheticRoundTrip:
+    """Verify synthetic data round-trips through parsers for all providers.
 
-    def test_all_samples_validate(self, raw_db_samples: list[RawConversationRecord]) -> None:
-        """All raw samples must validate against their provider schemas."""
-        if not raw_db_samples:
-            pytest.skip("No raw conversations (run: polylogue run --stage acquire)")
+    Replaces the old TestSchemaValidation (which validated real data against
+    schemas — circular with synthetic data) and TestDriftDetection (drift is
+    only meaningful for real data). Instead, this tests the end-to-end contract:
+    schema → generate → parse → valid conversations.
+    """
 
-        provider_to_schema = {
-            "chatgpt": "chatgpt",
-            "claude": "claude-ai",
-            "claude-ai": "claude-ai",
-            "claude-code": "claude-code",
-            "codex": "codex",
-            "gemini": "gemini",
-        }
+    @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex", "gemini"])
+    def test_synthetic_parses_successfully(self, provider: str, synthetic_source) -> None:
+        """Synthetic data for each provider parses into valid conversations."""
+        from polylogue.sources import iter_source_conversations
 
-        available = set(SchemaValidator.available_providers())
-        failures = []
-        skipped_providers = set()
-
-        for sample in raw_db_samples:
-            schema_name = provider_to_schema.get(sample.provider_name, sample.provider_name)
-
-            if schema_name not in available:
-                skipped_providers.add(sample.provider_name)
-                continue
-
-            try:
-                validator = SchemaValidator.for_provider(schema_name, strict=False)
-                content = sample.raw_content.decode("utf-8")
-
-                if sample.provider_name in ("claude-code", "codex", "gemini"):
-                    for line in content.strip().split("\n"):
-                        if line.strip():
-                            data = json.loads(line)
-                            break
-                    else:
-                        failures.append((sample.raw_id[:16], sample.provider_name, "Empty JSONL"))
-                        continue
-                else:
-                    data = json.loads(content)
-
-                result = validator.validate(data)
-                if not result.is_valid:
-                    failures.append((sample.raw_id[:16], sample.provider_name, result.errors[0][:80]))
-
-            except json.JSONDecodeError as e:
-                failures.append((sample.raw_id[:16], sample.provider_name, f"Invalid JSON: {e}"))
-            except Exception as e:
-                failures.append((sample.raw_id[:16], sample.provider_name, str(e)[:80]))
-
-        if failures:
-            msg = f"{len(failures)}/{len(raw_db_samples)} failed validation:\n"
-            for raw_id, provider, error in failures[:10]:
-                msg += f"  {provider}:{raw_id}: {error}\n"
-            msg += "\nRun: polylogue run --stage generate-schemas"
-            pytest.fail(msg)
-
-
-@pytest.mark.slow
-class TestDriftDetection:
-    """Detect schema drift in real data."""
-
-    def test_drift_warnings(self, raw_db_samples: list[RawConversationRecord]) -> None:
-        """Report drift warnings (new fields not in schema)."""
-        if not raw_db_samples:
-            pytest.skip("No raw conversations")
-
-        provider_to_schema = {
-            "chatgpt": "chatgpt",
-            "claude": "claude-ai",
-            "claude-ai": "claude-ai",
-            "claude-code": "claude-code",
-            "codex": "codex",
-            "gemini": "gemini",
-        }
-
-        available = set(SchemaValidator.available_providers())
-        drift_by_provider: dict[str, list[str]] = {}
-
-        for sample in raw_db_samples[:100]:
-            schema_name = provider_to_schema.get(sample.provider_name, sample.provider_name)
-            if schema_name not in available:
-                continue
-
-            try:
-                content = sample.raw_content.decode("utf-8")
-                if sample.provider_name in ("claude-code", "codex", "gemini"):
-                    for line in content.strip().split("\n"):
-                        if line.strip():
-                            data = json.loads(line)
-                            break
-                    else:
-                        continue
-                else:
-                    data = json.loads(content)
-
-                result = validate_provider_export(data, schema_name, strict=True)
-                if result.drift_warnings:
-                    if sample.provider_name not in drift_by_provider:
-                        drift_by_provider[sample.provider_name] = []
-                    drift_by_provider[sample.provider_name].extend(result.drift_warnings[:3])
-
-            except Exception:
-                pass
-
-        if drift_by_provider:
-            print(f"\nDrift detected in {len(drift_by_provider)} providers:")
-            for provider, warnings in drift_by_provider.items():
-                unique_warnings = list(set(warnings))[:5]
-                print(f"  {provider}: {len(unique_warnings)} unique warnings")
-                for w in unique_warnings[:3]:
-                    print(f"    - {w}")
+        source = synthetic_source(provider, count=3, seed=42)
+        convos = list(iter_source_conversations(source))
+        assert len(convos) > 0, f"No conversations parsed for {provider}"
+        for conv in convos:
+            assert len(conv.messages) > 0, f"Empty conversation for {provider}"
+            assert any(m.text for m in conv.messages), f"No message text for {provider}"
 
 
 def test_chatgpt_rejects_missing_mapping():
@@ -781,3 +683,244 @@ class TestCliMain:
         ])
         # May succeed (0 samples) or fail depending on implementation
         assert isinstance(exit_code, int)
+
+
+# =============================================================================
+# SCHEMA ANNOTATION QUALITY TESTS
+# =============================================================================
+
+
+def _load_schema(provider: str) -> dict | None:
+    """Load a provider schema, returning None if not available."""
+    try:
+        import gzip as _gzip
+        from pathlib import Path as _Path
+
+        schema_dir = _Path(__file__).resolve().parents[3] / "polylogue" / "schemas" / "providers"
+        path = schema_dir / f"{provider}.schema.json.gz"
+        if not path.exists():
+            return None
+        return json.loads(_gzip.decompress(path.read_bytes()))
+    except Exception:
+        return None
+
+
+def _find_annotations(schema: dict, prefix: str = "x-polylogue-") -> dict[str, list[tuple[str, Any]]]:
+    """Walk schema tree and collect all x-polylogue-* annotations by annotation key.
+
+    Returns: {annotation_key: [(json_path, value), ...]}
+    """
+    result: dict[str, list[tuple[str, Any]]] = {}
+
+    def _walk(obj: Any, path: str) -> None:
+        if not isinstance(obj, dict):
+            return
+        for k, v in obj.items():
+            if k.startswith(prefix):
+                result.setdefault(k, []).append((path, v))
+            if isinstance(v, dict):
+                _walk(v, f"{path}.{k}")
+            elif isinstance(v, list):
+                for i, item in enumerate(v):
+                    if isinstance(item, dict):
+                        _walk(item, f"{path}.{k}[{i}]")
+
+    _walk(schema, "$")
+    return result
+
+
+def _get_nested(schema: dict, dotpath: str) -> dict | None:
+    """Navigate a schema by dot-separated property path.
+
+    Example: "mapping.additionalProperties.message" navigates through
+    properties → mapping → additionalProperties → properties → message.
+    """
+    current = schema
+    for part in dotpath.split("."):
+        if part == "additionalProperties":
+            current = current.get("additionalProperties", {})
+        else:
+            current = current.get("properties", {}).get(part, {})
+        if not current:
+            return None
+        # Unwrap anyOf to find the object variant
+        if "anyOf" in current:
+            for variant in current["anyOf"]:
+                if variant.get("type") == "object" and "properties" in variant:
+                    current = variant
+                    break
+    return current or None
+
+
+class TestSchemaAnnotations:
+    """Verify that generated schemas contain correct x-polylogue-* annotations.
+
+    These tests validate the annotation pipeline: field statistics collection →
+    annotation post-processing → schema output. They load real (regenerated)
+    schemas and check for expected annotations on known fields.
+    """
+
+    # ── ChatGPT ────────────────────────────────────────────────────────
+
+    def test_chatgpt_role_enum(self):
+        """ChatGPT role field should have x-polylogue-values with user/assistant."""
+        schema = _load_schema("chatgpt")
+        if schema is None:
+            pytest.skip("ChatGPT schema not available")
+
+        role_schema = _get_nested(schema, "mapping.additionalProperties.message.author.role")
+        assert role_schema is not None, "Could not navigate to mapping→message→author→role"
+
+        values = role_schema.get("x-polylogue-values", [])
+        assert "user" in values, f"'user' not in role values: {values}"
+        assert "assistant" in values, f"'assistant' not in role values: {values}"
+
+    def test_chatgpt_uuid_format(self):
+        """ChatGPT UUID fields should have x-polylogue-format = uuid4."""
+        schema = _load_schema("chatgpt")
+        if schema is None:
+            pytest.skip("ChatGPT schema not available")
+
+        # current_node is a UUID referencing a mapping key
+        assert schema["properties"]["current_node"].get("x-polylogue-format") == "uuid4"
+
+        # Node IDs in the mapping should also be UUID
+        node_id = _get_nested(schema, "mapping.additionalProperties.id")
+        assert node_id is not None
+        assert node_id.get("x-polylogue-format") == "uuid4"
+
+    def test_chatgpt_timestamp_format(self):
+        """ChatGPT create_time should be detected as unix-epoch."""
+        schema = _load_schema("chatgpt")
+        if schema is None:
+            pytest.skip("ChatGPT schema not available")
+
+        create_time = schema["properties"].get("create_time", {})
+        # create_time may be number or anyOf; check annotation
+        fmt = create_time.get("x-polylogue-format")
+        r = create_time.get("x-polylogue-range")
+        assert fmt == "unix-epoch" or r is not None, (
+            f"create_time has neither format nor range: {create_time.keys()}"
+        )
+
+    def test_chatgpt_reference_detection(self):
+        """ChatGPT current_node should reference $.mapping."""
+        schema = _load_schema("chatgpt")
+        if schema is None:
+            pytest.skip("ChatGPT schema not available")
+
+        ref = schema["properties"]["current_node"].get("x-polylogue-ref")
+        assert ref == "$.mapping", f"current_node ref should be $.mapping, got: {ref}"
+
+    # ── Claude Code ────────────────────────────────────────────────────
+
+    def test_claude_code_has_annotations(self):
+        """Claude Code schema should have substantial annotations."""
+        schema = _load_schema("claude-code")
+        if schema is None:
+            pytest.skip("Claude Code schema not available")
+
+        annotations = _find_annotations(schema)
+        total = sum(len(v) for v in annotations.values())
+        assert total > 100, f"Claude Code has only {total} annotations (expected >100)"
+
+        # Should have format, values, and frequency annotations
+        assert "x-polylogue-format" in annotations, "Missing format annotations"
+        assert "x-polylogue-values" in annotations, "Missing values annotations"
+        assert "x-polylogue-frequency" in annotations, "Missing frequency annotations"
+
+    def test_claude_code_type_enum(self):
+        """Claude Code type field should have recognized values."""
+        schema = _load_schema("claude-code")
+        if schema is None:
+            pytest.skip("Claude Code schema not available")
+
+        type_values = schema.get("properties", {}).get("type", {}).get("x-polylogue-values", [])
+        # The parser uses type field to distinguish message types
+        assert any(v in type_values for v in ("user", "assistant", "human")), (
+            f"type enum missing expected roles: {type_values}"
+        )
+
+    # ── Claude AI ──────────────────────────────────────────────────────
+
+    def test_claude_ai_sender_enum(self):
+        """Claude AI sender field should have human/assistant."""
+        schema = _load_schema("claude-ai")
+        if schema is None:
+            pytest.skip("Claude AI schema not available")
+
+        # chat_messages items should have sender
+        msgs = schema.get("properties", {}).get("chat_messages", {})
+        item = msgs.get("items", {})
+        if "anyOf" in item:
+            for variant in item["anyOf"]:
+                sender = variant.get("properties", {}).get("sender", {})
+                if "x-polylogue-values" in sender:
+                    values = sender["x-polylogue-values"]
+                    assert "human" in values, f"'human' not in sender: {values}"
+                    assert "assistant" in values, f"'assistant' not in sender: {values}"
+                    return
+        sender = item.get("properties", {}).get("sender", {})
+        values = sender.get("x-polylogue-values", [])
+        assert "human" in values, f"'human' not in sender: {values}"
+
+    # ── Cross-provider invariants ──────────────────────────────────────
+
+    @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
+    def test_frequency_values_in_range(self, provider):
+        """All x-polylogue-frequency values should be in (0, 1)."""
+        schema = _load_schema(provider)
+        if schema is None:
+            pytest.skip(f"{provider} schema not available")
+
+        annotations = _find_annotations(schema)
+        for path, freq in annotations.get("x-polylogue-frequency", []):
+            assert 0.0 < freq < 1.0, (
+                f"{provider} {path}: frequency {freq} not in (0, 1)"
+            )
+
+    @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
+    def test_numeric_ranges_plausible(self, provider):
+        """All x-polylogue-range values should have min < max."""
+        schema = _load_schema(provider)
+        if schema is None:
+            pytest.skip(f"{provider} schema not available")
+
+        annotations = _find_annotations(schema)
+        for path, r in annotations.get("x-polylogue-range", []):
+            assert isinstance(r, list) and len(r) == 2, (
+                f"{provider} {path}: range should be [min, max], got: {r}"
+            )
+            lo, hi = r
+            assert lo <= hi, f"{provider} {path}: range inverted: {lo} > {hi}"
+
+    @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
+    def test_format_values_are_known(self, provider):
+        """All x-polylogue-format values should be from the known set."""
+        schema = _load_schema(provider)
+        if schema is None:
+            pytest.skip(f"{provider} schema not available")
+
+        known_formats = {
+            "uuid4", "uuid", "hex-id", "iso8601", "unix-epoch",
+            "unix-epoch-str", "base64", "url", "email", "mime-type",
+        }
+        annotations = _find_annotations(schema)
+        for path, fmt in annotations.get("x-polylogue-format", []):
+            assert fmt in known_formats, (
+                f"{provider} {path}: unknown format '{fmt}' (known: {known_formats})"
+            )
+
+    @pytest.mark.parametrize("provider", ["chatgpt", "claude-code", "claude-ai", "codex"])
+    def test_values_are_nonempty_lists(self, provider):
+        """All x-polylogue-values should be non-empty string lists."""
+        schema = _load_schema(provider)
+        if schema is None:
+            pytest.skip(f"{provider} schema not available")
+
+        annotations = _find_annotations(schema)
+        for path, values in annotations.get("x-polylogue-values", []):
+            assert isinstance(values, list), f"{provider} {path}: values not a list"
+            assert len(values) > 0, f"{provider} {path}: empty values list"
+            for v in values:
+                assert isinstance(v, str), f"{provider} {path}: non-string value: {v!r}"

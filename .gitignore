@@ -32,12 +32,6 @@ venv/
 coverage.json
 htmlcov/
 
-# Test data (real exports, not committed)
-tests/test_datasets/*.json
-tests/test_datasets/*.jsonl
-tests/test_datasets/*.md
-tests/test_datasets/*.txt
-
 # Mutation testing
 mutants/
 
@@ -46,3 +40,5 @@ result
 
 # Demo output (regenerated via demos/)
 demos/output/
+
+.scratch

@@ -371,7 +371,7 @@ def parse_raw_content(raw_content: bytes, provider: str) -> list | dict:
 class TestRawConversationParsing:
     """Validate provider parsers against raw_conversations table.
 
-    This is the SYSTEMATIC test for importers - instead of crafting test cases,
+    This is the SYSTEMATIC test for parsers - instead of crafting test cases,
     we run parsers against real stored data to ensure 100% success rate.
     """
 
@@ -379,7 +379,7 @@ class TestRawConversationParsing:
     def test_provider_parses_all_raw_conversations(self, seeded_db, provider):
         """Every raw_conversation for this provider parses without error.
 
-        This test replaces many spot checks in test_importers_unit.py by:
+        This test replaces many spot checks in test_parsers_unit.py by:
         1. Testing against REAL provider data (not synthetic)
         2. Testing ALL stored conversations (not cherry-picked examples)
         3. Ensuring parsers work on edge cases naturally in the data

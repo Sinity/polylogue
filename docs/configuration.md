@@ -56,6 +56,10 @@ Optional environment variables for vector search and API keys:
 | `POLYLOGUE_CREDENTIAL_PATH` | | Path to OAuth client JSON |
 | `POLYLOGUE_TOKEN_PATH` | | Path to OAuth token |
 
+## Run Ledger
+
+Every `polylogue run` writes a JSON record to `archive_root/runs/run-<timestamp>-<run_id>.json` and to the `runs` table in the database. This enables automation to consume run results without scraping terminal output.
+
 ## Backup and Export
 
 The database is a single SQLite file. To backup:

@@ -194,7 +194,7 @@ See [CLAUDE.md](CLAUDE.md) for development guidelines and [demos/](demos/) for s
 
 ## License
 
-MIT License. See [LICENSE](LICENSE).
+MIT License.
 
 ---
 

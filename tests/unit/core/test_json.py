@@ -13,33 +13,22 @@ Consolidated from:
 from __future__ import annotations
 
 import json
-import unicodedata
 from datetime import datetime, timezone
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from polylogue.config import Config, ConfigError, get_config
-from polylogue.export import export_jsonl
 from polylogue.lib import json as core_json
-from polylogue.lib.hashing import hash_file, hash_payload, hash_text, hash_text_short
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.timestamps import format_timestamp, parse_timestamp
-from polylogue.paths import DriveConfig, IndexConfig, Source, is_within_root, safe_path_component
-from polylogue.schemas import ValidationResult, validate_provider_export as validate_provider_export_fn
-from polylogue.schemas.validator import SchemaValidator, validate_provider_export
 from polylogue.services import get_backend, get_repository, get_service_config, reset
-from polylogue.storage.backends.sqlite import SQLiteBackend, connection_context, open_connection
+from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
-from polylogue.storage.store import RawConversationRecord
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
-from tests.helpers import ConversationBuilder
 
 # =============================================================================
 # JSON DUMPS - PARAMETRIZED
@@ -404,8 +393,8 @@ def test_encoder_fallback_comprehensive(scenario, desc):
 
 
 GET_ENV_CASES = [
-    ("prefixed_precedence", "QDRANT_URL", {"POLYLOGUE_QDRANT_URL": "http://local:6333", "QDRANT_URL": "http://global:6333"}, "http://local:6333", None, "POLYLOGUE_* variable takes precedence over unprefixed"),
-    ("unprefixed_fallback", "QDRANT_URL", {"QDRANT_URL": "http://global:6333"}, "http://global:6333", None, "Falls back to unprefixed when prefixed not set"),
+    ("prefixed_precedence", "VOYAGE_API_KEY", {"POLYLOGUE_VOYAGE_API_KEY": "local-key", "VOYAGE_API_KEY": "global-key"}, "local-key", None, "POLYLOGUE_* variable takes precedence over unprefixed"),
+    ("unprefixed_fallback", "VOYAGE_API_KEY", {"VOYAGE_API_KEY": "global-key"}, "global-key", None, "Falls back to unprefixed when prefixed not set"),
     ("default_value", "MISSING_VAR", {}, "fallback", "fallback", "Returns default when neither variable is set"),
     ("none_without_default", "TOTALLY_MISSING", {}, None, None, "Returns None when neither variable is set and no default given"),
     ("empty_string_fallback", "EMPTY", {"POLYLOGUE_EMPTY": "", "EMPTY": "real_value"}, "real_value", None, "Empty string values are treated as falsy (falls through)"),
@@ -420,10 +409,7 @@ def test_get_env_comprehensive(scenario, var_name, env_vars, expected, default_v
     for key, value in env_vars.items():
         monkeypatch.setenv(key, value)
 
-    if default_val is not None:
-        result = get_env(var_name, default_val)
-    else:
-        result = get_env(var_name)
+    result = get_env(var_name, default_val) if default_val is not None else get_env(var_name)
 
     assert result == expected, f"Failed {desc}"
 
@@ -445,10 +431,7 @@ def test_get_env_multi_comprehensive(scenario, var_names, env_vars, expected, de
     for key, value in env_vars.items():
         monkeypatch.setenv(key, value)
 
-    if default_val is not None:
-        result = get_env_multi(*var_names, default=default_val)
-    else:
-        result = get_env_multi(*var_names)
+    result = get_env_multi(*var_names, default=default_val) if default_val is not None else get_env_multi(*var_names)
 
     assert result == expected, f"Failed {desc}"
 
@@ -544,10 +527,7 @@ def test_version_info_comprehensive(version, commit, dirty, exp_full, exp_short,
     """Comprehensive VersionInfo tests."""
     from polylogue.version import VersionInfo
 
-    if commit is None:
-        info = VersionInfo(version=version)
-    else:
-        info = VersionInfo(version=version, commit=commit, dirty=dirty)
+    info = VersionInfo(version=version) if commit is None else VersionInfo(version=version, commit=commit, dirty=dirty)
 
     assert str(info) == exp_full
     assert info.full == exp_full
@@ -621,7 +601,7 @@ def test_repository(test_db):
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
 
-    from tests.helpers import DbFactory
+    from tests.infra.helpers import DbFactory
 
     factory = DbFactory(test_db)
     factory.create_conversation(
@@ -643,7 +623,7 @@ def test_repository(test_db):
 
 def test_repository_get_includes_attachment_conversation_id(test_db):
     """ConversationRepository.get_eager() returns attachments with conversation_id field."""
-    from tests.helpers import DbFactory
+    from tests.infra.helpers import DbFactory
 
     factory = DbFactory(test_db)
     factory.create_conversation(
@@ -681,7 +661,7 @@ def test_repository_get_includes_attachment_conversation_id(test_db):
 
 def test_repository_get_with_multiple_attachments(test_db):
     """get_eager() correctly groups multiple attachments per message."""
-    from tests.helpers import DbFactory
+    from tests.infra.helpers import DbFactory
 
     factory = DbFactory(test_db)
     factory.create_conversation(
@@ -727,7 +707,7 @@ def test_repository_get_with_multiple_attachments(test_db):
 
 def test_repository_get_attachment_metadata_decoded(test_db):
     """Attachment provider_meta JSON is properly decoded."""
-    from tests.helpers import DbFactory
+    from tests.infra.helpers import DbFactory
 
     factory = DbFactory(test_db)
     meta = {"original_name": "photo.png", "source": "upload"}

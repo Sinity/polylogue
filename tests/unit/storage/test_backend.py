@@ -9,58 +9,41 @@ This module contains tests for:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 import threading
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from polylogue.schemas.unified import (
     extract_harmonized_message,
-    is_message_record,
-)
-from polylogue.schemas.unified import (
-    normalize_role as new_normalize_role,
 )
 from polylogue.sources.parsers.base import normalize_role as old_normalize_role
 from polylogue.sources.parsers.claude import (
     extract_text_from_segments as old_extract_segments,
 )
-from polylogue.storage.backends import SQLiteBackend
 from polylogue.storage.backends.sqlite import (
     SCHEMA_VERSION,
     SQLiteBackend,
-    DatabaseError,
-    _apply_schema,
     _ensure_schema,
     _json_or_none,
     _run_migrations,
     connection_context,
-    default_db_path,
     open_connection,
 )
 from polylogue.storage.store import (
-    MAX_ATTACHMENT_SIZE,
-    AttachmentRecord,
     ConversationRecord,
     MessageRecord,
 )
-from tests.helpers import (
+from tests.infra.helpers import (
     _make_ref_id,
-    _prune_attachment_refs,
     make_attachment,
     make_conversation,
     make_message,
     store_records,
-    upsert_attachment,
-    upsert_conversation,
-    upsert_message,
 )
 
 # test_db and test_conn fixtures are in conftest.py
@@ -1127,6 +1110,7 @@ def test_default_db_path(tmp_path, monkeypatch):
 
     # Reimport to pick up new env
     import importlib
+
     import polylogue.storage.backends.sqlite as sqlite_module
     importlib.reload(sqlite_module)
 
@@ -1259,7 +1243,7 @@ class TestSQLiteBackendInit:
     def test_init_creates_parent_directory(self, tmp_path):
         """Test that SQLiteBackend creates parent directories."""
         nested_path = tmp_path / "x" / "y" / "z" / "test.db"
-        backend = SQLiteBackend(db_path=nested_path)
+        SQLiteBackend(db_path=nested_path)
         assert nested_path.parent.exists()
 
     def test_init_thread_local_storage(self, tmp_path):

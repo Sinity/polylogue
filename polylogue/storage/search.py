@@ -20,7 +20,7 @@ logger = get_logger(__name__)
 # FTS5 special characters that need escaping or quoting.
 # Includes documented operators (" : * ^ ( ) { } [ ] | & ! + -) plus characters
 # that are syntactically problematic in FTS5 queries (' \ ; % =).
-_FTS5_SPECIAL = re.compile(r'''['":*^(){}\[\]|&!+\-\\;%=]''')
+_FTS5_SPECIAL = re.compile(r'''['":*^(){}\[\]|&!+\-\\;%=,]''')
 # FTS5 boolean/special operators that should be treated as literals when alone
 _FTS5_OPERATORS = {"AND", "OR", "NOT", "NEAR"}
 # Pattern to detect queries that are only asterisks (dangerous wildcard-only)

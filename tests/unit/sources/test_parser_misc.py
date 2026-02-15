@@ -12,10 +12,8 @@ Targets uncovered lines in:
 
 from __future__ import annotations
 
-import json
-import logging
 import sys
-from datetime import datetime, timezone
+from datetime import timezone
 from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -25,20 +23,23 @@ import pytest
 from polylogue.lib.dates import parse_date
 from polylogue.lib.log import configure_logging, get_logger
 from polylogue.sources.parsers.claude import (
-    extract_text_from_segments,
-    extract_tool_invocations,
-    extract_thinking_traces,
+    _extract_message_text,
     extract_file_changes,
     extract_subagent_spawns,
-    parse_code as parse_claude_code,
-    parse_ai as parse_claude_ai,
-    _extract_message_text,
+    extract_text_from_segments,
+    extract_thinking_traces,
+    extract_tool_invocations,
     parse_git_operation,
+)
+from polylogue.sources.parsers.claude import (
+    parse_ai as parse_claude_ai,
+)
+from polylogue.sources.parsers.claude import (
+    parse_code as parse_claude_code,
 )
 from polylogue.sources.parsers.codex import parse as parse_codex
 from polylogue.sources.parsers.drive import parse_chunked_prompt
 from polylogue.ui import create_ui
-
 
 # =============================================================================
 # Test Data Constants - Parametrization Tables
@@ -828,8 +829,9 @@ class TestVersionResolution:
 
     def test_version_git_info_timeout(self):
         """Handle git timeout."""
-        from polylogue.version import _get_git_info
         import subprocess
+
+        from polylogue.version import _get_git_info
 
         with patch("subprocess.run") as mock_run:
             mock_run.side_effect = subprocess.TimeoutExpired("git", 2)

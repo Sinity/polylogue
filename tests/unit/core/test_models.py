@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock
 
 import pytest
-from pydantic_core import core_schema
 
 from polylogue.lib.messages import MessageCollection, MessageSource
 from polylogue.lib.models import (
@@ -18,7 +16,6 @@ from polylogue.lib.models import (
     ToolInvocation,
 )
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord
-
 
 # Test data for parametrized tests
 TOOLINV_FILE_OPS = [("Read", True), ("Write", True), ("Edit", True), ("NotebookEdit", True), ("Bash", False)]

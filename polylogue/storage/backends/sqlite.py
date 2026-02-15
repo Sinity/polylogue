@@ -12,6 +12,25 @@ from typing import Any
 from polylogue.errors import PolylogueError
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.log import get_logger
+from polylogue.storage.backends.connection import (
+    _load_sqlite_vec,
+    connection_context,
+    create_default_backend,
+    default_db_path,
+    open_connection,
+)
+
+# Re-export from submodules for backward compatibility
+from polylogue.storage.backends.schema import (
+    _MIGRATIONS,
+    _VEC0_DDL,
+    SCHEMA_DDL,
+    SCHEMA_VERSION,
+    _apply_schema,
+    _ensure_schema,
+    _ensure_vec0_table,
+    _run_migrations,
+)
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
@@ -21,27 +40,6 @@ from polylogue.storage.store import (
     _json_or_none,
 )
 from polylogue.types import ConversationId
-
-# Re-export from submodules for backward compatibility
-from polylogue.storage.backends.schema import (
-    SCHEMA_VERSION,
-    SCHEMA_DDL,
-    _VEC0_DDL,
-    _apply_schema,
-    _MIGRATIONS,
-    _run_migrations,
-    _ensure_schema,
-    _ensure_vec0_table,
-)
-from polylogue.storage.backends.connection import (
-    connection_context,
-    open_connection,
-    _load_sqlite_vec,
-    _clear_connection_cache,
-    default_db_path,
-    create_default_backend,
-)
-
 
 LOGGER = get_logger(__name__)
 
@@ -187,8 +185,6 @@ def _build_conversation_filters(
 
 class DatabaseError(PolylogueError):
     """Base class for database errors."""
-
-    pass
 
 
 class SQLiteBackend:

@@ -352,10 +352,7 @@ class ParsingService:
             List of parsed conversations (usually 1, but could be more for bundles)
         """
         content = raw_record.raw_content
-        if isinstance(content, bytes):
-            text = content.decode("utf-8")
-        else:
-            text = str(content)
+        text = content.decode("utf-8") if isinstance(content, bytes) else str(content)
 
         # Try single JSON first (fast path for chatgpt, claude-ai)
         try:

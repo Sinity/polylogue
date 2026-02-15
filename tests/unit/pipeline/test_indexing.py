@@ -5,7 +5,7 @@ from __future__ import annotations
 from polylogue.config import Config
 from polylogue.pipeline.services.indexing import IndexService
 from polylogue.storage.backends.sqlite import open_connection
-from tests.helpers import make_conversation, make_message
+from tests.infra.helpers import make_conversation, make_message
 
 
 class TestIndexService:

@@ -24,29 +24,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from polylogue.cli import cli, helpers
+from polylogue.cli import helpers
 from polylogue.cli.click_app import cli as click_cli
-from polylogue.cli.commands.completions import completions_command
-from polylogue.cli.commands.dashboard import dashboard_command
 from polylogue.cli.commands.mcp import mcp_command
-from tests.cli_helpers.cli_subprocess import run_cli, setup_isolated_workspace
-from tests.helpers import GenericConversationBuilder
+from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
+from tests.infra.helpers import GenericConversationBuilder
 
 # =============================================================================
 # TEST DATA TABLES (module-level constants)
 # =============================================================================
-
-IS_DECLARATIVE_CASES = [
-    (None, False, "unset"),
-    ("1", True, "set to 1"),
-    ("yes", True, "set to yes"),
-    ("true", True, "set to true"),
-    ("false", False, "set to false"),
-    ("no", False, "set to no"),
-    ("0", False, "set to 0"),
-    ("YES", True, "case insensitive YES"),
-    ("FALSE", False, "case insensitive FALSE"),
-]
 
 RESOLVE_SOURCES_VALID_CASES = [
     (("chatgpt",), ["chatgpt"], "single valid source"),
@@ -91,19 +77,6 @@ class TestFail:
         with pytest.raises(SystemExit) as exc_info:
             helpers.fail("test_cmd", "")
         assert "test_cmd:" in str(exc_info.value)
-
-
-class TestIsDeclarative:
-    """Tests for is_declarative() environment flag."""
-
-    @pytest.mark.parametrize("env_val,expected,desc", IS_DECLARATIVE_CASES)
-    def test_is_declarative(self, monkeypatch, env_val, expected, desc):
-        """is_declarative() respects POLYLOGUE_DECLARATIVE env var."""
-        if env_val is None:
-            monkeypatch.delenv("POLYLOGUE_DECLARATIVE", raising=False)
-        else:
-            monkeypatch.setenv("POLYLOGUE_DECLARATIVE", env_val)
-        assert helpers.is_declarative() is expected
 
 
 class TestSourceStatePath:
@@ -173,7 +146,6 @@ class TestResolveSources:
 
     def test_special_last_without_saved_fails(self, tmp_path, monkeypatch):
         """resolve_sources should fail with 'last' if no saved source."""
-        from polylogue.config import Source
 
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
         config = MagicMock()
@@ -292,7 +264,7 @@ class TestDashboardCommand:
             mock_app_cls.return_value = mock_app
             mock_app.run.side_effect = Exception("Test exit")
 
-            result = runner.invoke(click_cli, ["dashboard", "--plain"])
+            runner.invoke(click_cli, ["dashboard", "--plain"])
             # If we got to the exception, the command ran and created the app
             # Verify app was created with config
             if mock_app_cls.called:

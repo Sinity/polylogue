@@ -27,8 +27,6 @@ from .paths import (
 class ConfigError(PolylogueError):
     """Configuration error."""
 
-    pass
-
 
 @dataclass
 class Config:

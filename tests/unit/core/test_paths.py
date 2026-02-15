@@ -5,10 +5,6 @@ Consolidated from test_paths.py.
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
 from polylogue.paths import is_within_root, safe_path_component
 
 

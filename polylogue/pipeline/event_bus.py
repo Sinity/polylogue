@@ -30,9 +30,11 @@ a handler are logged but do not prevent subsequent handlers from running.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 
 from polylogue.lib.log import get_logger
 
@@ -194,10 +196,8 @@ class EventBus:
         """
         handlers = self._handlers.get(event_type)
         if handlers:
-            try:
+            with suppress(ValueError):
                 handlers.remove(handler)
-            except ValueError:
-                pass
 
     def emit(self, event: PipelineEvent) -> None:
         """Dispatch an event to all matching handlers.

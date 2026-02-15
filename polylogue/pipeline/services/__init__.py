@@ -9,7 +9,7 @@ This package contains focused service classes that handle specific pipeline oper
 from __future__ import annotations
 
 from .indexing import IndexService
-from .parsing import ParsingService, ParseResult
+from .parsing import ParseResult, ParsingService
 from .rendering import RenderResult, RenderService
 
 __all__ = [
