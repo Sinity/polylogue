@@ -237,12 +237,17 @@ polylogue demo --seed --env-only            # Shell-friendly (for eval)
 polylogue demo --corpus                     # Write raw provider-format files
 polylogue demo --corpus -p chatgpt -n 5     # ChatGPT only, 5 conversations
 polylogue demo --corpus -o /tmp/corpus      # Custom output directory
+polylogue demo --showcase                   # Full CLI surface-area validation
+polylogue demo --showcase --live            # Read-only against real data
+polylogue demo --showcase --json            # Machine-readable report
+polylogue demo --showcase --verbose         # Print each exercise output
 ```
 
-**Two modes:**
+**Three modes:**
 
 - `--seed`: Creates a full demo environment (database + rendered files) and prints environment variables (`POLYLOGUE_ARCHIVE_ROOT`, etc.) to point your shell at the demo data. Use `eval $(polylogue demo --seed --env-only)` for seamless shell integration.
 - `--corpus`: Writes raw provider-format files (JSON, JSONL) to disk for inspection. Useful for understanding wire formats or testing parsers.
+- `--showcase`: Exercises the entire CLI surface area (58 exercises across 7 groups) and generates verification reports — a summary, JSON results, and a markdown cookbook of all commands with output.
 
 **Options:**
 
@@ -250,10 +255,15 @@ polylogue demo --corpus -o /tmp/corpus      # Custom output directory
 |------|-------|-------------|
 | `--seed` | | Create full demo environment |
 | `--corpus` | | Generate raw fixture files |
+| `--showcase` | | Exercise all CLI commands and generate reports |
 | `--provider NAME` | `-p` | Providers to include (repeatable, default: all) |
 | `--count N` | `-n` | Conversations per provider (default: 3) |
 | `--output-dir PATH` | `-o` | Output directory |
 | `--env-only` | | Print export statements only (for eval) |
+| `--live` | | Run showcase against real data (read-only) |
+| `--fail-fast` | | Stop showcase on first failure |
+| `--json` | | Output showcase results as JSON |
+| `--verbose` | | Print each exercise output |
 
 ## Other Modes
 
@@ -331,6 +341,50 @@ polylogue completions --shell bash > /etc/bash_completion.d/polylogue
 - Set `POLYLOGUE_FORCE_PLAIN=1` to force plain output, or use `--plain`
 
 **Logging**: Set `POLYLOGUE_LOG=debug` for verbose logging to stderr. Levels: `error`, `warn`, `info`, `debug`.
+
+## Tips & Recipes
+
+Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. Use `--interactive` on a TTY to force prompts, or set `POLYLOGUE_FORCE_PLAIN=1` in CI.
+
+### Drive Auth
+
+- Provide an OAuth client JSON at `~/.config/polylogue/polylogue-credentials.json` or set `POLYLOGUE_CREDENTIAL_PATH`.
+- Tokens are stored at `~/.config/polylogue/token.json` (or `POLYLOGUE_TOKEN_PATH`).
+- Drive auth requires `--interactive` for the browser authorization code.
+- Run `polylogue auth` to initiate the OAuth flow.
+
+### Source Scoping
+
+- Use `--source NAME` (repeatable) on `run` to avoid reprocessing everything.
+- Use `--source last` to reuse the previous interactive selection.
+- Example: `polylogue run --source gemini --stage ingest`.
+
+### Preview Mode
+
+- Use `polylogue run --preview` to preview counts without writing.
+
+### Search Defaults
+
+- Interactive runs open a picker when multiple results are returned, then open the selection.
+- Omitting the query opens the latest render in interactive mode and prints the path in plain mode.
+- Use `--list` to force the full list output (no picker or auto-open).
+- Use `--open` to open the newest render without searching.
+- Use `--verbose` to include snippets in list output.
+
+### Index Rebuild
+
+- Search automatically rebuilds the index if it is missing.
+
+### Path Debugging
+
+- Use `polylogue run --preview` to confirm resolved sources and output paths.
+- Use `POLYLOGUE_RENDER_ROOT` to override render output without editing config.
+
+### Health Checks
+
+- `polylogue check` verifies database integrity, FTS index, and render files.
+- `polylogue check --repair` fixes issues that can be auto-fixed.
+- `polylogue check --vacuum` compacts the database and reclaims space.
 
 ## Examples
 

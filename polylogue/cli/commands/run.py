@@ -21,7 +21,7 @@ from polylogue.cli.helpers import (
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config
 from polylogue.lib.timestamps import format_timestamp
-from polylogue.pipeline.async_runner import async_run_sources, plan_sources
+from polylogue.pipeline.runner import run_sources, plan_sources
 from polylogue.sources import DriveError
 from polylogue.storage.store import PlanResult, RunResult
 
@@ -40,14 +40,20 @@ def _run_sync_once(
         last_update = [time.time()]
         processed = [0]
 
+        last_desc = [""]
+
         def plain_progress(amount: int, desc: str | None = None) -> None:
             processed[0] += amount
             now = time.time()
-            if now - last_update[0] >= 1:
+            # Always print on stage transitions (new desc), rate-limit otherwise
+            is_stage_change = desc is not None and desc != last_desc[0]
+            if is_stage_change:
+                last_desc[0] = desc
+            if is_stage_change or now - last_update[0] >= 1:
                 print(f"  {desc or 'Processing'}: {processed[0]:,} items...", flush=True)
                 last_update[0] = now
 
-        return asyncio.run(async_run_sources(
+        return asyncio.run(run_sources(
             config=cfg,
             stage=stage,
             plan=plan_snapshot,
@@ -75,7 +81,7 @@ def _run_sync_once(
                     progress.update(task_id, description=desc)
                 progress.update(task_id, advance=amount)
 
-            return asyncio.run(async_run_sources(
+            return asyncio.run(run_sources(
                 config=cfg,
                 stage=stage,
                 plan=plan_snapshot,
@@ -145,40 +151,6 @@ def _display_result(
         click.echo(hint_line, err=True)
 
 
-def _notify_new_conversations(count: int) -> None:
-    """Send desktop notification for new conversations.
-
-    Thin wrapper around :class:`~polylogue.pipeline.events.NotificationHandler`
-    kept for backward compatibility with existing callers and tests.
-    """
-    from polylogue.pipeline.events import NotificationHandler, SyncEvent
-
-    handler = NotificationHandler()
-    handler.on_sync(SyncEvent(new_conversations=count, run_result=None))  # type: ignore[arg-type]
-
-
-def _exec_on_new(exec_cmd: str, count: int) -> None:
-    """Execute command when new conversations are synced.
-
-    Thin wrapper around :class:`~polylogue.pipeline.events.ExecHandler`.
-    """
-    from polylogue.pipeline.events import ExecHandler, SyncEvent
-
-    handler = ExecHandler(exec_cmd)
-    handler.on_sync(SyncEvent(new_conversations=count, run_result=None))  # type: ignore[arg-type]
-
-
-def _webhook_on_new(webhook_url: str, count: int) -> None:
-    """Call webhook URL when new conversations are synced.
-
-    Thin wrapper around :class:`~polylogue.pipeline.events.WebhookHandler`.
-    """
-    from polylogue.pipeline.events import SyncEvent, WebhookHandler
-
-    handler = WebhookHandler(webhook_url)
-    handler.on_sync(SyncEvent(new_conversations=count, run_result=None))  # type: ignore[arg-type]
-
-
 @click.command("run")
 @click.option("--preview", is_flag=True, help="Preview work without writing")
 @click.option(
@@ -186,13 +158,13 @@ def _webhook_on_new(webhook_url: str, count: int) -> None:
     type=click.Choice(["acquire", "parse", "render", "index", "generate-schemas", "all"]),
     default="all",
     show_default=True,
-    help="Pipeline stage: acquire (store raw), parse (raw→conversations), render, index, or all",
+    help="Pipeline stage: acquire (store raw), parse (extract conversations), render (output), index (search), generate-schemas, or all",
 )
 @click.option(
     "--source",
     "sources",
     multiple=True,
-    help="Limit to source name (repeatable, or 'last'). Use `polylogue sources` to list.",
+    help="Limit to source name (repeatable). 'last' = previously synced source. List with: polylogue sources",
 )
 @click.option(
     "--format",

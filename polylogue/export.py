@@ -5,7 +5,7 @@ from collections import defaultdict
 from contextlib import suppress
 from pathlib import Path
 
-from .storage.backends.sqlite import open_connection
+from .storage.backends.connection import open_connection
 
 # Columns stored as JSON TEXT that need parsing to avoid double-encoding
 _JSON_COLUMNS = frozenset({"provider_meta", "metadata", "ref_meta"})
@@ -22,6 +22,19 @@ def _row_to_dict(row: object) -> dict[str, object]:
 
 
 def export_jsonl(*, archive_root: Path, output_path: Path | None = None) -> Path:
+    """Export all conversations to newline-delimited JSON.
+
+    Each line is a JSON object with keys ``conversation``, ``messages``,
+    and ``attachments``, suitable for bulk processing or backup.
+
+    Args:
+        archive_root: Root directory of the Polylogue archive.
+        output_path: Destination file. Defaults to
+            ``archive_root/exports/conversations.jsonl``.
+
+    Returns:
+        Path to the created JSONL file.
+    """
     target = output_path or (archive_root / "exports" / "conversations.jsonl")
     target.parent.mkdir(parents=True, exist_ok=True)
     with open_connection(None) as conn, target.open("w", encoding="utf-8") as handle:

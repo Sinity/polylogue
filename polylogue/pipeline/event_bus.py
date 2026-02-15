@@ -1,9 +1,7 @@
 """Structured event bus for the pipeline lifecycle.
 
 Provides typed event classes for each pipeline stage and a central
-``EventBus`` for subscription and dispatch.  The existing
-``SyncEventHandler`` protocol in ``events.py`` is preserved as a
-backward-compatible adapter.
+``EventBus`` for subscription and dispatch.
 
 Event hierarchy (all frozen dataclasses):
 
@@ -38,7 +36,7 @@ from typing import Any, TypeVar
 
 from polylogue.lib.log import get_logger
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Event types
@@ -213,7 +211,7 @@ class EventBus:
             try:
                 handler(event)
             except Exception:
-                LOGGER.exception(
+                logger.exception(
                     "Event handler %s failed for %s",
                     getattr(handler, "__name__", repr(handler)),
                     event_type.__name__,
@@ -225,7 +223,7 @@ class EventBus:
                 try:
                     handler(event)
                 except Exception:
-                    LOGGER.exception(
+                    logger.exception(
                         "Wildcard handler %s failed for %s",
                         getattr(handler, "__name__", repr(handler)),
                         event_type.__name__,
@@ -235,34 +233,6 @@ class EventBus:
     def handler_count(self) -> int:
         """Total number of registered handlers across all event types."""
         return sum(len(h) for h in self._handlers.values())
-
-
-# ---------------------------------------------------------------------------
-# Adapter: bridge legacy SyncEventHandler to EventBus
-# ---------------------------------------------------------------------------
-
-
-def bridge_sync_handler(bus: EventBus, legacy_handler: Any) -> None:
-    """Subscribe a legacy ``SyncEventHandler`` to the event bus.
-
-    Adapts the old ``on_sync(SyncEvent)`` protocol to the new
-    ``SyncCompleted`` event type.
-
-    Args:
-        bus: The event bus to subscribe to.
-        legacy_handler: Object with an ``on_sync(event)`` method.
-    """
-    from polylogue.pipeline.events import SyncEvent
-
-    def _adapter(event: SyncCompleted) -> None:
-        # Build a legacy SyncEvent from the new SyncCompleted event
-        legacy_event = SyncEvent(
-            new_conversations=event.new_conversations,
-            run_result=event.counts,  # type: ignore[arg-type]
-        )
-        legacy_handler.on_sync(legacy_event)
-
-    bus.subscribe(SyncCompleted, _adapter)
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +268,6 @@ __all__ = [
     "SyncCompleted",
     "EventBus",
     "EventHandler",
-    "bridge_sync_handler",
     "get_event_bus",
     "reset_event_bus",
 ]

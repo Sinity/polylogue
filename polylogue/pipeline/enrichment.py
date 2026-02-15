@@ -35,7 +35,7 @@ def enrich_content_blocks(content_blocks: list[dict[str, Any]]) -> list[dict[str
 
     for block in content_blocks:
         block_type = block.get("type")
-        text = block.get("text", "")
+        text = block.get("text") or ""
 
         # Extract code blocks from fenced text
         if block_type == "text" and "```" in text:

@@ -21,11 +21,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from polylogue import Polylogue
 from polylogue.config import Source
 from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources import iter_source_conversations
-from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
+import pytest
+
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.helpers import ConversationBuilder, db_setup
 
@@ -39,12 +41,13 @@ def _make_test_repository(db_path: Path) -> ConversationRepository:
 class TestClaudeCodeSidechain:
     """Test Claude Code sidechain detection."""
 
-    def test_sidechain_detected_from_branch_type(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_sidechain_detected_from_branch_type(self, workspace_env: Path) -> None:
         """Conversations with branch_type='sidechain' should have is_sidechain=True."""
         db_path = db_setup(workspace_env)
 
         # Create a sidechain conversation (as would be detected during import)
-        conv = (
+        conv = await (
             ConversationBuilder(db_path, "sidechain-test")
             .provider("claude-code")
             .title("Sidechain Test")
@@ -59,11 +62,12 @@ class TestClaudeCodeSidechain:
         assert conv.is_continuation is False
         assert conv.is_root is True  # No parent
 
-    def test_non_sidechain_has_no_branch_type(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_non_sidechain_has_no_branch_type(self, workspace_env: Path) -> None:
         """Normal conversations should have no branch_type."""
         db_path = db_setup(workspace_env)
 
-        conv = (
+        conv = await (
             ConversationBuilder(db_path, "normal-test")
             .provider("claude-code")
             .title("Normal Test")
@@ -80,12 +84,13 @@ class TestClaudeCodeSidechain:
 class TestChatGPTBranching:
     """Test ChatGPT message branching (edit branches)."""
 
-    def test_branch_index_extracted(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_branch_index_extracted(self, workspace_env: Path) -> None:
         """Messages should have correct branch_index based on position in parent's children."""
         db_path = db_setup(workspace_env)
 
         # Create conversation with branching messages
-        conv = (
+        conv = await (
             ConversationBuilder(db_path, "branch-test")
             .provider("chatgpt")
             .title("Branch Test")
@@ -109,11 +114,12 @@ class TestChatGPTBranching:
         assert m3.branch_index == 1
         assert m3.is_branch is True  # branch
 
-    def test_mainline_messages_filters_branches(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_mainline_messages_filters_branches(self, workspace_env: Path) -> None:
         """mainline_messages() should return only branch_index=0 messages."""
         db_path = db_setup(workspace_env)
 
-        conv = (
+        conv = await (
             ConversationBuilder(db_path, "mainline-test")
             .provider("chatgpt")
             .title("Mainline Test")
@@ -132,12 +138,13 @@ class TestChatGPTBranching:
 class TestCodexContinuation:
     """Test Codex session continuation detection."""
 
-    def test_continuation_with_parent_session(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_continuation_with_parent_session(self, workspace_env: Path) -> None:
         """Child sessions should have parent_id and branch_type='continuation'."""
         db_path = db_setup(workspace_env)
 
         # Create parent session
-        parent = (
+        parent = await (
             ConversationBuilder(db_path, "parent-session")
             .provider("codex")
             .title("Parent Session")
@@ -146,7 +153,7 @@ class TestCodexContinuation:
         )
 
         # Create child session with parent reference
-        child = (
+        child = await (
             ConversationBuilder(db_path, "child-session")
             .provider("codex")
             .title("Child Session")
@@ -165,18 +172,18 @@ class TestCodexContinuation:
 class TestTreeTraversal:
     """Test session tree traversal methods."""
 
-    def test_get_parent(self, workspace_env: Path) -> None:
+    async def test_get_parent(self, workspace_env: Path) -> None:
         """get_parent should return the parent conversation."""
         db_path = db_setup(workspace_env)
 
-        parent = (
+        parent = await (
             ConversationBuilder(db_path, "parent")
             .provider("codex")
             .add_message("m1", role="user", text="Start")
             .build()
         )
 
-        child = (
+        child = await (
             ConversationBuilder(db_path, "child")
             .provider("codex")
             .parent_conversation(str(parent.id))
@@ -185,26 +192,25 @@ class TestTreeTraversal:
             .build()
         )
 
-        from polylogue import Polylogue
-
-        p = Polylogue(db_path=db_path)
-        found_parent = p.repository.get_parent(str(child.id))
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
+        found_parent = await _repo.get_parent(str(child.id))
 
         assert found_parent is not None
         assert found_parent.id == parent.id
 
-    def test_get_children(self, workspace_env: Path) -> None:
+    async def test_get_children(self, workspace_env: Path) -> None:
         """get_children should return all direct children."""
         db_path = db_setup(workspace_env)
 
-        parent = (
+        parent = await (
             ConversationBuilder(db_path, "parent")
             .provider("codex")
             .add_message("m1", role="user", text="Start")
             .build()
         )
 
-        child1 = (
+        child1 = await (
             ConversationBuilder(db_path, "child1")
             .provider("codex")
             .parent_conversation(str(parent.id))
@@ -213,7 +219,7 @@ class TestTreeTraversal:
             .build()
         )
 
-        child2 = (
+        child2 = await (
             ConversationBuilder(db_path, "child2")
             .provider("codex")
             .parent_conversation(str(parent.id))
@@ -222,28 +228,27 @@ class TestTreeTraversal:
             .build()
         )
 
-        from polylogue import Polylogue
-
-        p = Polylogue(db_path=db_path)
-        children = p.repository.get_children(str(parent.id))
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
+        children = await _repo.get_children(str(parent.id))
 
         assert len(children) == 2
         child_ids = {c.id for c in children}
         assert child1.id in child_ids
         assert child2.id in child_ids
 
-    def test_get_root(self, workspace_env: Path) -> None:
+    async def test_get_root(self, workspace_env: Path) -> None:
         """get_root should walk up to find the root conversation."""
         db_path = db_setup(workspace_env)
 
-        root = (
+        root = await (
             ConversationBuilder(db_path, "root")
             .provider("codex")
             .add_message("m1", role="user", text="Root")
             .build()
         )
 
-        middle = (
+        middle = await (
             ConversationBuilder(db_path, "middle")
             .provider("codex")
             .parent_conversation(str(root.id))
@@ -252,7 +257,7 @@ class TestTreeTraversal:
             .build()
         )
 
-        leaf = (
+        leaf = await (
             ConversationBuilder(db_path, "leaf")
             .provider("codex")
             .parent_conversation(str(middle.id))
@@ -261,32 +266,31 @@ class TestTreeTraversal:
             .build()
         )
 
-        from polylogue import Polylogue
-
-        p = Polylogue(db_path=db_path)
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
 
         # From leaf, should find root
-        found_root = p.repository.get_root(str(leaf.id))
+        found_root = await _repo.get_root(str(leaf.id))
         assert found_root is not None
         assert found_root.id == root.id
 
         # From root, should return itself
-        found_root2 = p.repository.get_root(str(root.id))
+        found_root2 = await _repo.get_root(str(root.id))
         assert found_root2 is not None
         assert found_root2.id == root.id
 
-    def test_get_session_tree(self, workspace_env: Path) -> None:
+    async def test_get_session_tree(self, workspace_env: Path) -> None:
         """get_session_tree should return all conversations in the tree."""
         db_path = db_setup(workspace_env)
 
-        root = (
+        root = await (
             ConversationBuilder(db_path, "root")
             .provider("codex")
             .add_message("m1", role="user", text="Root")
             .build()
         )
 
-        child1 = (
+        child1 = await (
             ConversationBuilder(db_path, "child1")
             .provider("codex")
             .parent_conversation(str(root.id))
@@ -295,7 +299,7 @@ class TestTreeTraversal:
             .build()
         )
 
-        child2 = (
+        child2 = await (
             ConversationBuilder(db_path, "child2")
             .provider("codex")
             .parent_conversation(str(root.id))
@@ -304,7 +308,7 @@ class TestTreeTraversal:
             .build()
         )
 
-        grandchild = (
+        grandchild = await (
             ConversationBuilder(db_path, "grandchild")
             .provider("codex")
             .parent_conversation(str(child1.id))
@@ -313,12 +317,11 @@ class TestTreeTraversal:
             .build()
         )
 
-        from polylogue import Polylogue
-
-        p = Polylogue(db_path=db_path)
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
 
         # Get tree from any node
-        tree = p.repository.get_session_tree(str(grandchild.id))
+        tree = await _repo.get_session_tree(str(grandchild.id))
 
         assert len(tree) == 4
         tree_ids = {c.id for c in tree}
@@ -331,18 +334,19 @@ class TestTreeTraversal:
 class TestBranchingFilters:
     """Test branching filter methods."""
 
-    def test_filter_is_continuation(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_filter_is_continuation(self, workspace_env: Path) -> None:
         """is_continuation filter should find continuation conversations."""
         db_path = db_setup(workspace_env)
 
-        root = (
+        root = await (
             ConversationBuilder(db_path, "root")
             .provider("codex")
             .add_message("m1", role="user", text="Root")
             .build()
         )
 
-        cont = (
+        cont = await (
             ConversationBuilder(db_path, "continuation")
             .provider("codex")
             .parent_conversation(str(root.id))
@@ -351,20 +355,20 @@ class TestBranchingFilters:
             .build()
         )
 
-        from polylogue import Polylogue
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
 
-        p = Polylogue(db_path=db_path)
-
-        continuations = p.filter().is_continuation().list()
+        continuations = await _repo.filter().is_continuation().list()
         assert len(continuations) == 1
         assert continuations[0].id == cont.id
 
-    def test_filter_is_sidechain(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_filter_is_sidechain(self, workspace_env: Path) -> None:
         """is_sidechain filter should find sidechain conversations."""
         db_path = db_setup(workspace_env)
 
         # Normal conversation
-        (
+        await (
             ConversationBuilder(db_path, "normal")
             .provider("claude-code")
             .add_message("m1", role="user", text="Normal")
@@ -372,7 +376,7 @@ class TestBranchingFilters:
         )
 
         # Sidechain conversation
-        sidechain = (
+        sidechain = await (
             ConversationBuilder(db_path, "sidechain")
             .provider("claude-code")
             .branch_type("sidechain")
@@ -380,26 +384,26 @@ class TestBranchingFilters:
             .build()
         )
 
-        from polylogue import Polylogue
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
 
-        p = Polylogue(db_path=db_path)
-
-        sidechains = p.filter().is_sidechain().list()
+        sidechains = await _repo.filter().is_sidechain().list()
         assert len(sidechains) == 1
         assert sidechains[0].id == sidechain.id
 
-    def test_filter_is_root(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_filter_is_root(self, workspace_env: Path) -> None:
         """is_root filter should find root conversations only."""
         db_path = db_setup(workspace_env)
 
-        root = (
+        root = await (
             ConversationBuilder(db_path, "root")
             .provider("codex")
             .add_message("m1", role="user", text="Root")
             .build()
         )
 
-        (
+        await (
             ConversationBuilder(db_path, "child")
             .provider("codex")
             .parent_conversation(str(root.id))
@@ -408,20 +412,20 @@ class TestBranchingFilters:
             .build()
         )
 
-        from polylogue import Polylogue
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
 
-        p = Polylogue(db_path=db_path)
-
-        roots = p.filter().is_root().list()
+        roots = await _repo.filter().is_root().list()
         assert len(roots) == 1
         assert roots[0].id == root.id
 
-    def test_filter_has_branches(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_filter_has_branches(self, workspace_env: Path) -> None:
         """has_branches filter should find conversations with branching messages."""
         db_path = db_setup(workspace_env)
 
         # Conversation without branches
-        (
+        await (
             ConversationBuilder(db_path, "linear")
             .provider("chatgpt")
             .add_message("m1", role="user", text="Q", branch_index=0)
@@ -430,7 +434,7 @@ class TestBranchingFilters:
         )
 
         # Conversation with branches
-        branching = (
+        branching = await (
             ConversationBuilder(db_path, "branching")
             .provider("chatgpt")
             .add_message("m3", role="user", text="Q", branch_index=0)
@@ -439,11 +443,10 @@ class TestBranchingFilters:
             .build()
         )
 
-        from polylogue import Polylogue
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
 
-        p = Polylogue(db_path=db_path)
-
-        with_branches = p.filter().has_branches().list()
+        with_branches = await _repo.filter().has_branches().list()
         assert len(with_branches) == 1
         assert with_branches[0].id == branching.id
 
@@ -482,7 +485,7 @@ class TestCodexContinuationPipeline:
         assert convo.parent_conversation_provider_id == "parent-session-uuid"
         assert convo.branch_type == "continuation"
 
-    def test_codex_continuation_persisted_to_database(self, workspace_env: Path, tmp_path: Path):
+    async def test_codex_continuation_persisted_to_database(self, workspace_env: Path, tmp_path: Path):
         """Full pipeline: Codex child session → correct parent_conversation_id in DB."""
         db_path = db_setup(workspace_env)
         repository = _make_test_repository(db_path)
@@ -509,14 +512,13 @@ class TestCodexContinuationPipeline:
         parent_convos = list(iter_source_conversations(source))
         assert len(parent_convos) == 1
 
-        with open_connection(db_path) as conn:
-            parent_cid, _, _ = prepare_records(
-                parent_convos[0],
-                source_name="codex",
-                archive_root=tmp_path,
-                conn=conn,
-                repository=repository,
-            )
+        parent_cid, _, _ = await prepare_records(
+            parent_convos[0],
+            source_name="codex",
+            archive_root=tmp_path,
+            backend=repository.backend,
+            repository=repository,
+        )
 
         # Now create and ingest the child session (continuation)
         child_payload = [
@@ -549,18 +551,18 @@ class TestCodexContinuationPipeline:
         assert child_parsed.branch_type == "continuation"
 
         # Ingest through full pipeline
-        with open_connection(db_path) as conn:
-            child_cid, _, _ = prepare_records(
-                child_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
-                conn=conn,
-                repository=repository,
-            )
+        child_cid, _, _ = await prepare_records(
+            child_parsed,
+            source_name="codex",
+            archive_root=tmp_path,
+            backend=repository.backend,
+            repository=repository,
+        )
 
         # Verify via domain model
-        p = Polylogue(db_path=db_path)
-        child_conv = p.repository.get(child_cid)
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
+        child_conv = await _repo.get(child_cid)
 
         assert child_conv is not None
         assert child_conv.parent_id == parent_cid  # Resolved to internal ID
@@ -604,7 +606,7 @@ class TestClaudeCodeSidechainPipeline:
         # Verify parser detected sidechain
         assert convo.branch_type == "sidechain"
 
-    def test_claude_code_sidechain_persisted_to_database(self, workspace_env: Path, tmp_path: Path):
+    async def test_claude_code_sidechain_persisted_to_database(self, workspace_env: Path, tmp_path: Path):
         """Full pipeline: Claude Code sidechain → branch_type stored in DB."""
         db_path = db_setup(workspace_env)
         repository = _make_test_repository(db_path)
@@ -637,18 +639,18 @@ class TestClaudeCodeSidechainPipeline:
         assert parsed.branch_type == "sidechain"
 
         # Ingest through full pipeline
-        with open_connection(db_path) as conn:
-            cid, _, _ = prepare_records(
-                parsed,
-                source_name="claude-code",
-                archive_root=tmp_path,
-                conn=conn,
-                repository=repository,
-            )
+        cid, _, _ = await prepare_records(
+            parsed,
+            source_name="claude-code",
+            archive_root=tmp_path,
+            backend=repository.backend,
+            repository=repository,
+        )
 
         # Verify via domain model
-        p = Polylogue(db_path=db_path)
-        conv = p.repository.get(cid)
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
+        conv = await _repo.get(cid)
 
         assert conv is not None
         assert conv.branch_type == "sidechain"
@@ -735,7 +737,7 @@ class TestChatGPTBranchingPipeline:
         assert asst2.parent_message_provider_id == "user-q"
         assert asst2.branch_index == 1
 
-    def test_chatgpt_branching_persisted_to_database(self, workspace_env: Path, tmp_path: Path):
+    async def test_chatgpt_branching_persisted_to_database(self, workspace_env: Path, tmp_path: Path):
         """Full pipeline: ChatGPT branches → parent_message_id and branch_index stored."""
         db_path = db_setup(workspace_env)
         repository = _make_test_repository(db_path)
@@ -790,18 +792,18 @@ class TestChatGPTBranchingPipeline:
         parsed = conversations[0]
 
         # Ingest through full pipeline
-        with open_connection(db_path) as conn:
-            cid, _, _ = prepare_records(
-                parsed,
-                source_name="chatgpt",
-                archive_root=tmp_path,
-                conn=conn,
-                repository=repository,
-            )
+        cid, _, _ = await prepare_records(
+            parsed,
+            source_name="chatgpt",
+            archive_root=tmp_path,
+            backend=repository.backend,
+            repository=repository,
+        )
 
         # Verify via domain model
-        p = Polylogue(db_path=db_path)
-        conv = p.repository.get(cid)
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
+        conv = await _repo.get(cid)
 
         assert conv is not None
         messages = conv.messages
@@ -831,7 +833,7 @@ class TestChatGPTBranchingPipeline:
 class TestPrepareRecordsParentResolution:
     """Test that prepare_records correctly resolves provider IDs to internal IDs."""
 
-    def test_parent_conversation_id_resolved_to_internal_format(self, workspace_env: Path, tmp_path: Path):
+    async def test_parent_conversation_id_resolved_to_internal_format(self, workspace_env: Path, tmp_path: Path):
         """parent_conversation_provider_id gets hashed to polylogue internal ID format."""
         db_path = db_setup(workspace_env)
         repository = _make_test_repository(db_path)
@@ -848,14 +850,13 @@ class TestPrepareRecordsParentResolution:
             ],
         )
 
-        with open_connection(db_path) as conn:
-            parent_cid, _, _ = prepare_records(
-                parent_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
-                conn=conn,
-                repository=repository,
-            )
+        parent_cid, _, _ = await prepare_records(
+            parent_parsed,
+            source_name="codex",
+            archive_root=tmp_path,
+            backend=repository.backend,
+            repository=repository,
+        )
 
         # Now create a child ParsedConversation with parent reference
         child_parsed = ParsedConversation(
@@ -869,14 +870,13 @@ class TestPrepareRecordsParentResolution:
             branch_type="continuation",
         )
 
-        with open_connection(db_path) as conn:
-            child_cid, _, _ = prepare_records(
-                child_parsed,
-                source_name="codex",
-                archive_root=tmp_path,
-                conn=conn,
-                repository=repository,
-            )
+        child_cid, _, _ = await prepare_records(
+            child_parsed,
+            source_name="codex",
+            archive_root=tmp_path,
+            backend=repository.backend,
+            repository=repository,
+        )
 
         # Query database directly to check parent_conversation_id format
         with open_connection(db_path) as conn:
@@ -891,7 +891,7 @@ class TestPrepareRecordsParentResolution:
         assert row["parent_conversation_id"] == parent_cid  # Should match actual parent
         assert row["branch_type"] == "continuation"
 
-    def test_parent_message_id_resolved_within_conversation(self, workspace_env: Path, tmp_path: Path):
+    async def test_parent_message_id_resolved_within_conversation(self, workspace_env: Path, tmp_path: Path):
         """parent_message_provider_id gets resolved to internal message ID."""
         db_path = db_setup(workspace_env)
         repository = _make_test_repository(db_path)
@@ -922,14 +922,13 @@ class TestPrepareRecordsParentResolution:
             ],
         )
 
-        with open_connection(db_path) as conn:
-            cid, _, _ = prepare_records(
-                parsed,
-                source_name="chatgpt",
-                archive_root=tmp_path,
-                conn=conn,
-                repository=repository,
-            )
+        cid, _, _ = await prepare_records(
+            parsed,
+            source_name="chatgpt",
+            archive_root=tmp_path,
+            backend=repository.backend,
+            repository=repository,
+        )
 
         # Query database directly
         with open_connection(db_path) as conn:

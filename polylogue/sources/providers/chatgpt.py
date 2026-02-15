@@ -18,6 +18,7 @@ from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
     MessageMeta,
+    ReasoningTrace,
 )
 
 
@@ -119,6 +120,11 @@ class ChatGPTMessage(BaseModel):
         return parse_timestamp(self.create_time)
 
     @property
+    def parsed_timestamp(self) -> datetime | None:
+        """Get message timestamp as datetime (viewport interface alias for timestamp)."""
+        return self.timestamp
+
+    @property
     def role_normalized(self) -> str:
         """Normalize role to standard values."""
         role = self.author.role if self.author.role else "unknown"
@@ -173,6 +179,14 @@ class ChatGPTMessage(BaseModel):
             ))
 
         return blocks
+
+    def extract_content_blocks(self) -> list[ContentBlock]:
+        """Extract harmonized content blocks (viewport interface alias for to_content_blocks)."""
+        return self.to_content_blocks()
+
+    def extract_reasoning_traces(self) -> list[ReasoningTrace]:
+        """Extract reasoning traces (ChatGPT does not expose reasoning; returns empty list)."""
+        return []
 
 
 class ChatGPTNode(BaseModel):
