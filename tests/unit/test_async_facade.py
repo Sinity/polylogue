@@ -274,7 +274,7 @@ class TestStats:
     @pytest.mark.asyncio
     async def test_empty_stats(self):
         """Stats on empty DB returns zeros."""
-        from polylogue.facade import ArchiveStats
+        from polylogue.async_facade import ArchiveStats
 
         with tempfile.TemporaryDirectory() as tmpdir:
             async with AsyncPolylogue(db_path=Path(tmpdir) / "test.db") as archive:
@@ -288,7 +288,7 @@ class TestStats:
     @pytest.mark.asyncio
     async def test_stats_with_data(self):
         """Stats counts conversations, messages, words."""
-        from polylogue.facade import ArchiveStats
+        from polylogue.async_facade import ArchiveStats
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
@@ -375,7 +375,7 @@ class TestFilter:
         """filter().list() returns empty list on empty DB."""
         with tempfile.TemporaryDirectory() as tmpdir:
             async with AsyncPolylogue(db_path=Path(tmpdir) / "test.db") as archive:
-                convs = archive.filter().list()
+                convs = await archive.filter().list()
                 assert convs == []
 
 

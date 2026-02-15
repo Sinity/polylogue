@@ -21,7 +21,7 @@ import tempfile
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -235,6 +235,7 @@ class TestExecuteQueryCount:
         ],
     )
     @patch("polylogue.cli.helpers.load_effective_config")
+    @patch("polylogue.services.get_async_repository")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
@@ -245,6 +246,7 @@ class TestExecuteQueryCount:
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
+        mock_get_async_repo,
         mock_load_config,
         use_summaries,
         result_count,
@@ -254,15 +256,17 @@ class TestExecuteQueryCount:
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
+        mock_async_repo = MagicMock()
+        mock_get_async_repo.return_value = mock_async_repo
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
         mock_filter.can_use_summaries.return_value = use_summaries
 
         if use_summaries:
-            mock_filter.list_summaries.return_value = [_make_summary(), _make_summary()]
+            mock_filter.list_summaries = AsyncMock(return_value=[_make_summary(), _make_summary()])
         else:
-            mock_filter.list.return_value = [_make_conv() for _ in range(result_count)]
+            mock_filter.list = AsyncMock(return_value=[_make_conv() for _ in range(result_count)])
 
         env = _make_env()
         params = _make_params(count_only=True)
@@ -288,6 +292,7 @@ class TestExecuteQueryBasic:
         ],
     )
     @patch("polylogue.cli.helpers.load_effective_config")
+    @patch("polylogue.services.get_async_repository")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
@@ -300,6 +305,7 @@ class TestExecuteQueryBasic:
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
+        mock_get_async_repo,
         mock_load_config,
         has_summaries,
     ) -> None:
@@ -308,13 +314,15 @@ class TestExecuteQueryBasic:
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
+        mock_async_repo = MagicMock()
+        mock_get_async_repo.return_value = mock_async_repo
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
         mock_filter.can_use_summaries.return_value = True
 
         result_summaries = [_make_summary(), _make_summary()] if has_summaries else []
-        mock_filter.list_summaries.return_value = result_summaries
+        mock_filter.list_summaries = AsyncMock(return_value=result_summaries)
 
         if not has_summaries:
             mock_no_results.side_effect = SystemExit(2)
@@ -340,6 +348,7 @@ class TestExecuteQueryBasic:
         ],
     )
     @patch("polylogue.cli.helpers.load_effective_config")
+    @patch("polylogue.services.get_async_repository")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
@@ -352,6 +361,7 @@ class TestExecuteQueryBasic:
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
+        mock_get_async_repo,
         mock_load_config,
         stats_key,
         stats_value,
@@ -362,11 +372,13 @@ class TestExecuteQueryBasic:
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
+        mock_async_repo = MagicMock()
+        mock_get_async_repo.return_value = mock_async_repo
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
         convs = [_make_conv()]
-        mock_filter.list.return_value = convs
+        mock_filter.list = AsyncMock(return_value=convs)
 
         env = _make_env()
         params = _make_params(**{stats_key: stats_value})
@@ -396,6 +408,7 @@ class TestExecuteQueryStream:
         STREAM_TARGET_TEST_CASES,
     )
     @patch("polylogue.cli.helpers.load_effective_config")
+    @patch("polylogue.services.get_async_repository")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
@@ -408,6 +421,7 @@ class TestExecuteQueryStream:
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
+        mock_get_async_repo,
         mock_load_config,
         param_overrides,
         resolves_id,
@@ -418,15 +432,18 @@ class TestExecuteQueryStream:
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
+        mock_async_repo = MagicMock()
+        mock_get_async_repo.return_value = mock_async_repo
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
 
         if "latest" in param_overrides:
             summary = _make_summary(id="latest-conv-id")
-            mock_filter.sort.return_value.limit.return_value.list_summaries.return_value = [summary]
+            mock_filter.sort.return_value.limit.return_value.list_summaries = AsyncMock(return_value=[summary])
         elif "conv_id" in param_overrides:
             mock_repo.resolve_id.return_value = "full-conv-id-12345"
+            mock_async_repo.resolve_id = AsyncMock(return_value="full-conv-id-12345")
 
         env = _make_env()
         params = _make_params(stream=True, **param_overrides)
@@ -449,6 +466,7 @@ class TestExecuteQueryStream:
         ],
     )
     @patch("polylogue.cli.helpers.load_effective_config")
+    @patch("polylogue.services.get_async_repository")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
@@ -461,6 +479,7 @@ class TestExecuteQueryStream:
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
+        mock_get_async_repo,
         mock_load_config,
         param_overrides,
     ) -> None:
@@ -469,12 +488,13 @@ class TestExecuteQueryStream:
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
+        mock_async_repo = MagicMock()
+        mock_get_async_repo.return_value = mock_async_repo
 
         summary = _make_summary(id="conv-id")
-        mock_repo.list_summaries.return_value = [summary]
-
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
+        mock_filter.sort.return_value.limit.return_value.list_summaries = AsyncMock(return_value=[summary])
 
         env = _make_env()
         params = _make_params(stream=True, **param_overrides)
@@ -502,6 +522,7 @@ class TestExecuteQueryActions:
         ],
     )
     @patch("polylogue.cli.helpers.load_effective_config")
+    @patch("polylogue.services.get_async_repository")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
@@ -512,6 +533,7 @@ class TestExecuteQueryActions:
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
+        mock_get_async_repo,
         mock_load_config,
         param_key,
         param_value,
@@ -521,11 +543,13 @@ class TestExecuteQueryActions:
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
+        mock_async_repo = MagicMock()
+        mock_get_async_repo.return_value = mock_async_repo
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
         convs = [_make_conv()]
-        mock_filter.list.return_value = convs
+        mock_filter.list = AsyncMock(return_value=convs)
 
         env = _make_env()
         params = _make_params(**{param_key: param_value})
@@ -536,6 +560,7 @@ class TestExecuteQueryActions:
         assert mock_apply.call_args[0][1] == convs
 
     @patch("polylogue.cli.helpers.load_effective_config")
+    @patch("polylogue.services.get_async_repository")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
@@ -546,6 +571,7 @@ class TestExecuteQueryActions:
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
+        mock_get_async_repo,
         mock_load_config,
     ) -> None:
         """delete_matched with a filter triggers _delete_conversations."""
@@ -553,13 +579,15 @@ class TestExecuteQueryActions:
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
+        mock_async_repo = MagicMock()
+        mock_get_async_repo.return_value = mock_async_repo
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
         convs = [_make_conv(), _make_conv()]
         # Chain calls return the same mock so .provider().list() resolves correctly
         mock_filter.provider.return_value = mock_filter
-        mock_filter.list.return_value = convs
+        mock_filter.list = AsyncMock(return_value=convs)
 
         env = _make_env()
         # --delete requires at least one filter to prevent accidental full wipe
@@ -586,6 +614,7 @@ class TestExecuteQueryFlags:
         ],
     )
     @patch("polylogue.cli.helpers.load_effective_config")
+    @patch("polylogue.services.get_async_repository")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
@@ -596,6 +625,7 @@ class TestExecuteQueryFlags:
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
+        mock_get_async_repo,
         mock_load_config,
         flag_param,
         flag_value,
@@ -605,11 +635,13 @@ class TestExecuteQueryFlags:
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
+        mock_async_repo = MagicMock()
+        mock_get_async_repo.return_value = mock_async_repo
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
         conv = _make_conv()
-        mock_filter.list.return_value = [conv]
+        mock_filter.list = AsyncMock(return_value=[conv])
 
         env = _make_env()
         params = _make_params(**{flag_param: flag_value})
@@ -619,6 +651,7 @@ class TestExecuteQueryFlags:
         mock_output.assert_called_once()
 
     @patch("polylogue.cli.helpers.load_effective_config")
+    @patch("polylogue.services.get_async_repository")
     @patch("polylogue.services.get_repository")
     @patch("polylogue.storage.search_providers.create_vector_provider")
     @patch("polylogue.lib.filters.ConversationFilter")
@@ -631,6 +664,7 @@ class TestExecuteQueryFlags:
         MockFilter,
         mock_vector_provider,
         mock_get_repo,
+        mock_get_async_repo,
         mock_load_config,
     ) -> None:
         """transform flag applies transformation."""
@@ -638,11 +672,13 @@ class TestExecuteQueryFlags:
         mock_vector_provider.return_value = None
         mock_repo = MagicMock()
         mock_get_repo.return_value = mock_repo
+        mock_async_repo = MagicMock()
+        mock_get_async_repo.return_value = mock_async_repo
 
         mock_filter = MagicMock()
         MockFilter.return_value = mock_filter
         convs = [_make_conv()]
-        mock_filter.list.return_value = convs
+        mock_filter.list = AsyncMock(return_value=convs)
         mock_transform.return_value = convs
 
         env = _make_env()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -36,7 +36,7 @@ def make_mock_filter(results=None, **method_overrides):
     f = MagicMock()
     for method in ("provider", "contains", "after", "before", "tags", "title", "since", "limit", "tag"):
         getattr(f, method).return_value = f
-    f.list.return_value = results or []
+    f.list = AsyncMock(return_value=results or [])
     for method_name, override_value in method_overrides.items():
         method = getattr(f, method_name)
         if isinstance(override_value, Exception):

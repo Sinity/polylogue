@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import builtins
 import random
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import VectorProvider
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.async_repository import AsyncConversationRepository
 
 # Sort field options
 SortField = Literal["date", "tokens", "messages", "words", "longest", "random"]
@@ -57,13 +57,13 @@ class ConversationFilter:
 
     def __init__(
         self,
-        repository: ConversationRepository,
+        repository: AsyncConversationRepository,
         vector_provider: VectorProvider | None = None,
     ) -> None:
         """Initialize filter with repository.
 
         Args:
-            repository: ConversationRepository for executing queries
+            repository: AsyncConversationRepository for executing queries
             vector_provider: Optional VectorProvider for semantic search
         """
         self._repo = repository
@@ -402,11 +402,11 @@ class ConversationFilter:
         # Simple case: limit is the only constraint, with small safety margin
         return max(self._limit_count * 2, 50)
 
-    def _fetch_generic(
+    async def _fetch_generic(
         self,
-        get_by_id: Callable[[str], _T | None],
-        search: Callable[[str, int, builtins.list[str] | None], builtins.list[_T]],
-        list_all: Callable[..., builtins.list[_T]],
+        get_by_id: Callable[[str], Awaitable[_T | None]],
+        search: Callable[[str, int, builtins.list[str] | None], Awaitable[builtins.list[_T]]],
+        list_all: Callable[..., Awaitable[builtins.list[_T]]],
     ) -> builtins.list[_T]:
         """Fetch candidate items from repository using provided accessors.
 
@@ -415,9 +415,9 @@ class ConversationFilter:
         repository methods as callbacks.
         """
         if self._id_prefix and not self._fts_terms:
-            resolved_id = self._repo.resolve_id(self._id_prefix)
+            resolved_id = await self._repo.resolve_id(self._id_prefix)
             if resolved_id:
-                item = get_by_id(str(resolved_id))
+                item = await get_by_id(str(resolved_id))
                 return [item] if item else []
 
         fetch_limit = self._effective_fetch_limit()
@@ -426,16 +426,16 @@ class ConversationFilter:
             query = " ".join(self._fts_terms)
             try:
                 search_limit = max(fetch_limit, 100) if fetch_limit is not None else 10000
-                return search(query, search_limit, self._providers or None)
+                return await search(query, search_limit, self._providers or None)
             except Exception as exc:
                 logger.debug("FTS search failed, falling back to list: %s", exc)
 
         sql_params = self._sql_pushdown_params()
-        return list_all(limit=fetch_limit, **sql_params)
+        return await list_all(limit=fetch_limit, **sql_params)
 
-    def _fetch_candidates(self) -> builtins.list[Conversation]:
+    async def _fetch_candidates(self) -> builtins.list[Conversation]:
         """Fetch candidate conversations from repository."""
-        return self._fetch_generic(
+        return await self._fetch_generic(
             self._repo.get,
             lambda q, lim, provs: self._repo.search(q, limit=lim, providers=provs),
             self._repo.list,
@@ -458,33 +458,34 @@ class ConversationFilter:
             sorted_results = sorted_results[: self._limit_count]
         return sorted_results
 
-    def list(self) -> builtins.list[Conversation]:
+    async def list(self) -> builtins.list[Conversation]:
         """Execute query and return matching conversations."""
         # Semantic search has its own fetch path
         if self._similar_text:
-            candidates = self._repo.search_similar(
+            candidates = await self._repo.search_similar(
                 self._similar_text,
                 limit=self._limit_count or 10,
                 vector_provider=self._vector_provider,
             )
             return self._apply_filters(candidates)
 
+        candidates = await self._fetch_candidates()
         return self._execute_pipeline(
-            self._fetch_candidates(),
+            candidates,
             lambda items, pushed: self._apply_filters(items, sql_pushed=pushed),
             self._apply_sort,
         )
 
-    def first(self) -> Conversation | None:
+    async def first(self) -> Conversation | None:
         """Execute query and return first matching conversation.
 
         Returns:
             First matching Conversation or None if no matches
         """
-        results = self.limit(1).list()
+        results = await self.limit(1).list()
         return results[0] if results else None
 
-    def count(self) -> int:
+    async def count(self) -> int:
         """Execute query and return count of matching conversations.
 
         When possible, uses SQL COUNT(*) directly for O(1) performance.
@@ -505,14 +506,14 @@ class ConversationFilter:
             and not self._tags
             and not self._excluded_tags
         ):
-            return self._repo.count(**self._sql_pushdown_params())
+            return await self._repo.count(**self._sql_pushdown_params())
 
         # Medium path: use summaries (lightweight) if possible
         if self.can_use_summaries():
             saved_limit = self._limit_count
             self._limit_count = None
             try:
-                results = self.list_summaries()
+                results = await self.list_summaries()
             finally:
                 self._limit_count = saved_limit
             return len(results)
@@ -521,12 +522,12 @@ class ConversationFilter:
         saved_limit = self._limit_count
         self._limit_count = None
         try:
-            results = self.list()
+            results = await self.list()
         finally:
             self._limit_count = saved_limit
         return len(results)
 
-    def delete(self) -> int:
+    async def delete(self) -> int:
         """Delete matching conversations.
 
         WARNING: This permanently deletes conversations. Use with caution.
@@ -535,17 +536,17 @@ class ConversationFilter:
             Number of conversations deleted
         """
         # Get all matching conversations
-        results = self.list()
+        results = await self.list()
         deleted_count = 0
 
         for conv in results:
             # Access the backend through the repository
-            if self._repo.backend.delete_conversation(str(conv.id)):
+            if await self._repo.backend.delete_conversation(str(conv.id)):
                 deleted_count += 1
 
         return deleted_count
 
-    def pick(self) -> Conversation | None:
+    async def pick(self) -> Conversation | None:
         """Interactive picker for matching conversations.
 
         If running in a TTY, presents a menu to select from matches.
@@ -556,7 +557,7 @@ class ConversationFilter:
         """
         import sys
 
-        results = self.list()
+        results = await self.list()
         if not results:
             return None
 
@@ -611,9 +612,9 @@ class ConversationFilter:
         # Sort by messages/words/longest/tokens needs message data
         return self._sort_field in ("messages", "words", "longest", "tokens")
 
-    def _fetch_summary_candidates(self) -> builtins.list[ConversationSummary]:
+    async def _fetch_summary_candidates(self) -> builtins.list[ConversationSummary]:
         """Fetch candidate conversation summaries (lightweight, no messages)."""
-        return self._fetch_generic(
+        return await self._fetch_generic(
             self._repo.get_summary,
             lambda q, lim, provs: self._repo.search_summaries(q, limit=lim, providers=provs),
             self._repo.list_summaries,
@@ -635,7 +636,7 @@ class ConversationFilter:
         dt_min = datetime.min.replace(tzinfo=timezone.utc)
         return self._apply_sort_generic(summaries, lambda s: s.updated_at or dt_min)
 
-    def list_summaries(self) -> builtins.list[ConversationSummary]:
+    async def list_summaries(self) -> builtins.list[ConversationSummary]:
         """Execute query and return lightweight summaries (no messages loaded).
 
         Memory-efficient alternative to list() for cases where you don't need
@@ -647,8 +648,9 @@ class ConversationFilter:
                 "(regex, has:thinking, has:tools, etc.). Use list() instead."
             )
 
+        candidates = await self._fetch_summary_candidates()
         return self._execute_pipeline(
-            self._fetch_summary_candidates(),
+            candidates,
             lambda items, pushed: self._apply_summary_filters(items, sql_pushed=pushed),
             self._apply_summary_sort,
         )

@@ -27,9 +27,10 @@ from polylogue.schemas.validator import (
     ValidationResult,
     validate_provider_export,
 )
-from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
+from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+from polylogue.storage.backends.sqlite import open_connection
+from polylogue.storage.async_repository import AsyncConversationRepository
 from polylogue.storage.index import rebuild_index
-from polylogue.storage.repository import ConversationRepository
 from tests.infra.helpers import ConversationBuilder
 
 # =============================================================================
@@ -190,8 +191,8 @@ def filter_db(tmp_path):
 @pytest.fixture
 def filter_repo(filter_db):
     """Create repository for filter tests."""
-    backend = SQLiteBackend(db_path=filter_db)
-    return ConversationRepository(backend=backend)
+    backend = AsyncSQLiteBackend(db_path=filter_db)
+    return AsyncConversationRepository(backend=backend)
 
 
 class TestConversationFilterChaining:
@@ -204,9 +205,10 @@ class TestConversationFilterChaining:
         assert f.since("2024-01-01") is f
         assert f.limit(10) is f
 
-    def test_filter_chain_multiple_methods(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_chain_multiple_methods(self, filter_repo):
         """Multiple filter methods can be chained."""
-        result = (
+        result = await (
             ConversationFilter(filter_repo)
             .provider("claude")
             .limit(5)
@@ -235,9 +237,10 @@ class TestConversationFilterMethods:
     ]
 
     @pytest.mark.parametrize("method_name,filter_fn,expected_count,check_type,description", FILTER_METHOD_CASES)
-    def test_filter_method(self, filter_repo, method_name, filter_fn, expected_count, check_type, description):
+    @pytest.mark.asyncio
+    async def test_filter_method(self, filter_repo, method_name, filter_fn, expected_count, check_type, description):
         """Test individual filter methods."""
-        result = filter_fn(ConversationFilter(filter_repo)).list()
+        result = await filter_fn(ConversationFilter(filter_repo)).list()
 
         if expected_count is not None:
             assert len(result) == expected_count, f"Failed {description}: expected {expected_count}, got {len(result)}"
@@ -260,36 +263,41 @@ class TestConversationFilterMethods:
 class TestConversationFilterTerminal:
     """Tests for terminal methods."""
 
-    def test_filter_first(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_first(self, filter_repo):
         """first() returns single conversation."""
-        result = ConversationFilter(filter_repo).first()
+        result = await ConversationFilter(filter_repo).first()
         assert result is not None
         assert hasattr(result, "id")
 
-    def test_filter_first_empty(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_first_empty(self, filter_repo):
         """first() returns None when no matches."""
-        result = ConversationFilter(filter_repo).provider("nonexistent").first()
+        result = await ConversationFilter(filter_repo).provider("nonexistent").first()
         assert result is None
 
-    def test_filter_count(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_count(self, filter_repo):
         """count() returns number of matches."""
-        count = ConversationFilter(filter_repo).count()
+        count = await ConversationFilter(filter_repo).count()
         assert count == 3
 
-    def test_filter_count_with_filter(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_count_with_filter(self, filter_repo):
         """count() respects filters."""
-        count = ConversationFilter(filter_repo).provider("claude").count()
+        count = await ConversationFilter(filter_repo).provider("claude").count()
         assert count == 2
 
-    def test_filter_delete_removes_conversations(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_delete_removes_conversations(self, filter_repo):
         """delete() removes matched conversations."""
-        initial_count = ConversationFilter(filter_repo).count()
+        initial_count = await ConversationFilter(filter_repo).count()
         assert initial_count > 0
 
-        deleted = ConversationFilter(filter_repo).limit(1).delete()
+        deleted = await ConversationFilter(filter_repo).limit(1).delete()
         assert deleted == 1
 
-        final_count = ConversationFilter(filter_repo).count()
+        final_count = await ConversationFilter(filter_repo).count()
         assert final_count == initial_count - 1
 
 
@@ -297,15 +305,17 @@ class TestConversationFilterSort:
     """Tests for sorting."""
 
     @pytest.mark.parametrize("sort_key,description", SORT_OPERATION_CASES)
-    def test_filter_sort(self, filter_repo, sort_key, description):
+    @pytest.mark.asyncio
+    async def test_filter_sort(self, filter_repo, sort_key, description):
         """Test sorting by various keys."""
-        result = ConversationFilter(filter_repo).sort(sort_key).list()
+        result = await ConversationFilter(filter_repo).sort(sort_key).list()
         assert len(result) > 0
 
-    def test_filter_sort_reverse(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_sort_reverse(self, filter_repo):
         """Reverse sort order."""
-        normal = ConversationFilter(filter_repo).sort("date").list()
-        reversed_list = ConversationFilter(filter_repo).sort("date").reverse().list()
+        normal = await ConversationFilter(filter_repo).sort("date").list()
+        reversed_list = await ConversationFilter(filter_repo).sort("date").reverse().list()
         if len(normal) > 1:
             assert normal[0].id == reversed_list[-1].id
             assert normal[-1].id == reversed_list[0].id
@@ -314,9 +324,10 @@ class TestConversationFilterSort:
 class TestConversationFilterCustom:
     """Tests for custom predicates."""
 
-    def test_filter_where_predicate(self, filter_repo):
+    @pytest.mark.asyncio
+    async def test_filter_where_predicate(self, filter_repo):
         """Filter with custom predicate."""
-        result = (
+        result = await (
             ConversationFilter(filter_repo)
             .where(lambda c: len(c.messages) >= 2)
             .list()
@@ -362,9 +373,10 @@ class TestFtsWithProviderFilter:
     """Tests for combined FTS search + provider filter."""
 
     @pytest.mark.parametrize("search_term,provider,should_find,description", FTS_PROVIDER_CASES)
-    def test_fts_with_provider(self, filter_repo, search_term, provider, should_find, description):
+    @pytest.mark.asyncio
+    async def test_fts_with_provider(self, filter_repo, search_term, provider, should_find, description):
         """Test FTS search combined with provider filter."""
-        result = ConversationFilter(filter_repo).contains(search_term).provider(provider).list()
+        result = await ConversationFilter(filter_repo).contains(search_term).provider(provider).list()
         if should_find:
             assert len(result) > 0, f"Should find '{search_term}' in {provider} conversations"
             assert all(c.provider == provider for c in result)
@@ -393,8 +405,8 @@ class TestFiltersDateTimeHandling:
          .provider("claude")
          .created_at(now.isoformat())
          .save())
-        backend = SQLiteBackend(db_path)
-        return ConversationRepository(backend)
+        backend = AsyncSQLiteBackend(db_path)
+        return AsyncConversationRepository(backend)
 
     def test_since_with_datetime_object(self, filter_repo):
         """Test .since() with datetime object instead of string."""
@@ -449,8 +461,8 @@ class TestFiltersSimilarAndBranches:
          .add_message("m3", role="assistant", text="resp2", branch_index=1)
          .save())
 
-        backend = SQLiteBackend(db_path)
-        return ConversationRepository(backend)
+        backend = AsyncSQLiteBackend(db_path)
+        return AsyncConversationRepository(backend)
 
     def test_similar_text(self, filter_repo):
         """Test .similar() stores text for vector search."""
@@ -494,20 +506,22 @@ class TestFiltersApplyFiltersLogic:
          .add_message("m2", text="data " * 15)
          .save())
 
-        backend = SQLiteBackend(db_path)
-        return ConversationRepository(backend)
+        backend = AsyncSQLiteBackend(db_path)
+        return AsyncConversationRepository(backend)
 
-    def test_excluded_providers_filter(self, filter_repo_populated):
+    @pytest.mark.asyncio
+    async def test_excluded_providers_filter(self, filter_repo_populated):
         """Test filtering out specific providers."""
-        results = (ConversationFilter(filter_repo_populated)
+        results = await (ConversationFilter(filter_repo_populated)
                    .no_provider("chatgpt")
                    .list())
         assert all(c.provider != "chatgpt" for c in results)
 
     @pytest.mark.parametrize("sort_key,description", SORT_VARIANTS_CASES)
-    def test_sort_by_variant(self, filter_repo_populated, sort_key, description):
+    @pytest.mark.asyncio
+    async def test_sort_by_variant(self, filter_repo_populated, sort_key, description):
         """Test sorting by various metrics."""
-        results = (ConversationFilter(filter_repo_populated)
+        results = await (ConversationFilter(filter_repo_populated)
                    .sort(sort_key)
                    .list())
         assert len(results) >= 0
@@ -526,22 +540,24 @@ class TestFiltersIDPrefixResolution:
          .provider("claude")
          .save())
 
-        backend = SQLiteBackend(db_path)
-        return ConversationRepository(backend)
+        backend = AsyncSQLiteBackend(db_path)
+        return AsyncConversationRepository(backend)
 
-    def test_id_prefix_exact_match_fast_path(self, filter_repo_with_id):
+    @pytest.mark.asyncio
+    async def test_id_prefix_exact_match_fast_path(self, filter_repo_with_id):
         """Test ID prefix fast path when prefix resolves to single conversation."""
-        results = (ConversationFilter(filter_repo_with_id)
+        results = await (ConversationFilter(filter_repo_with_id)
                    .id("abc123")
                    .list())
         assert isinstance(results, list)
 
-    def test_fts_search_exception_handling(self, filter_repo_with_id):
+    @pytest.mark.asyncio
+    async def test_fts_search_exception_handling(self, filter_repo_with_id):
         """Test FTS search fallback on exception."""
         filter_obj = ConversationFilter(filter_repo_with_id)
         filter_obj.contains("test")
         with patch.object(filter_repo_with_id, 'search', side_effect=Exception("FTS error")):
-            results = filter_obj.list()
+            results = await filter_obj.list()
             assert isinstance(results, list)
 
 
@@ -565,34 +581,38 @@ class TestFiltersListSummariesPaths:
          .add_message("m1", text="Message")
          .save())
 
-        backend = SQLiteBackend(db_path)
-        return ConversationRepository(backend)
+        backend = AsyncSQLiteBackend(db_path)
+        return AsyncConversationRepository(backend)
 
-    def test_list_summaries_with_provider_filter(self, filter_repo_summaries):
+    @pytest.mark.asyncio
+    async def test_list_summaries_with_provider_filter(self, filter_repo_summaries):
         """Test list_summaries with provider filter."""
-        results = (ConversationFilter(filter_repo_summaries)
+        results = await (ConversationFilter(filter_repo_summaries)
                    .provider("claude")
                    .list_summaries())
         assert all(isinstance(s, ConversationSummary) for s in results)
 
-    def test_list_summaries_with_tag_filter(self, filter_repo_summaries):
+    @pytest.mark.asyncio
+    async def test_list_summaries_with_tag_filter(self, filter_repo_summaries):
         """Test list_summaries with tag filter."""
-        results = (ConversationFilter(filter_repo_summaries)
+        results = await (ConversationFilter(filter_repo_summaries)
                    .tag("mytag")
                    .list_summaries())
         assert isinstance(results, list)
 
-    def test_list_summaries_with_summary_has_type(self, filter_repo_summaries):
+    @pytest.mark.asyncio
+    async def test_list_summaries_with_summary_has_type(self, filter_repo_summaries):
         """Test list_summaries with has('summary') filter."""
-        results = (ConversationFilter(filter_repo_summaries)
+        results = await (ConversationFilter(filter_repo_summaries)
                    .has("summary")
                    .list_summaries())
         assert all(s.summary for s in results)
 
-    def test_list_summaries_cannot_use_content_filters(self, filter_repo_summaries):
+    @pytest.mark.asyncio
+    async def test_list_summaries_cannot_use_content_filters(self, filter_repo_summaries):
         """Test that list_summaries rejects content-dependent filters."""
         with pytest.raises(ValueError, match="content-dependent filters"):
-            (ConversationFilter(filter_repo_summaries)
+            await (ConversationFilter(filter_repo_summaries)
              .has("thinking")
              .list_summaries())
 
@@ -620,12 +640,13 @@ class TestFiltersPick:
              .title(f"Conversation {i}")
              .save())
 
-        backend = SQLiteBackend(db_path)
-        return ConversationRepository(backend)
+        backend = AsyncSQLiteBackend(db_path)
+        return AsyncConversationRepository(backend)
 
-    def test_pick_no_results(self, filter_repo_pick):
+    @pytest.mark.asyncio
+    async def test_pick_no_results(self, filter_repo_pick):
         """Test pick() with no matching conversations."""
-        result = (ConversationFilter(filter_repo_pick)
+        result = await (ConversationFilter(filter_repo_pick)
                   .provider("nonexistent")
                   .pick())
         assert result is None
@@ -639,10 +660,11 @@ class TestFiltersPick:
         (True, True, "builtins.input", "EOF", "EOFError handling"),
         (True, True, "builtins.input", "INTERRUPT", "KeyboardInterrupt handling"),
     ])
-    def test_pick_outcomes(self, filter_repo_pick, has_results, is_tty, patch_target, input_value, description):
+    @pytest.mark.asyncio
+    async def test_pick_outcomes(self, filter_repo_pick, has_results, is_tty, patch_target, input_value, description):
         """Test pick() with various input scenarios."""
         if not has_results:
-            result = (ConversationFilter(filter_repo_pick)
+            result = await (ConversationFilter(filter_repo_pick)
                       .provider("nonexistent")
                       .pick())
             assert result is None
@@ -651,21 +673,21 @@ class TestFiltersPick:
                 if patch_target:
                     if input_value == "EOF":
                         with patch(patch_target, side_effect=EOFError):
-                            result = ConversationFilter(filter_repo_pick).pick()
+                            result = await ConversationFilter(filter_repo_pick).pick()
                             assert result is None
                     elif input_value == "INTERRUPT":
                         with patch(patch_target, side_effect=KeyboardInterrupt):
-                            result = ConversationFilter(filter_repo_pick).pick()
+                            result = await ConversationFilter(filter_repo_pick).pick()
                             assert result is None
                     else:
                         with patch(patch_target, return_value=input_value):
-                            result = ConversationFilter(filter_repo_pick).pick()
+                            result = await ConversationFilter(filter_repo_pick).pick()
                             if input_value == "" or input_value == "1":
                                 assert result is not None
                             elif input_value == "999" or input_value == "not a number":
                                 assert result is None
                 else:
-                    result = ConversationFilter(filter_repo_pick).pick()
+                    result = await ConversationFilter(filter_repo_pick).pick()
                     assert result is not None
 
 
@@ -688,12 +710,13 @@ class TestFiltersNegativeFTSLogic:
          .add_message("m1", text="working perfectly")
          .save())
 
-        backend = SQLiteBackend(db_path)
-        return ConversationRepository(backend)
+        backend = AsyncSQLiteBackend(db_path)
+        return AsyncConversationRepository(backend)
 
-    def test_negative_fts_excludes_conversations(self, filter_repo_fts):
+    @pytest.mark.asyncio
+    async def test_negative_fts_excludes_conversations(self, filter_repo_fts):
         """Test no_contains() excludes conversations with term."""
-        results = (ConversationFilter(filter_repo_fts)
+        results = await (ConversationFilter(filter_repo_fts)
                    .no_contains("error")
                    .list())
         assert not any("error" in c.display_title or any("error" in (m.text or "").lower() for m in c.messages) for c in results)

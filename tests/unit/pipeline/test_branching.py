@@ -21,11 +21,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from polylogue import Polylogue
 from polylogue.config import Source
 from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources import iter_source_conversations
+import pytest
+
+from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
 from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
+from polylogue.storage.async_repository import AsyncConversationRepository
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.helpers import ConversationBuilder, db_setup
 
@@ -185,10 +188,9 @@ class TestTreeTraversal:
             .build()
         )
 
-        from polylogue import Polylogue
-
-        p = Polylogue(db_path=db_path)
-        found_parent = p.repository.get_parent(str(child.id))
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
+        found_parent = _repo.get_parent(str(child.id))
 
         assert found_parent is not None
         assert found_parent.id == parent.id
@@ -222,10 +224,9 @@ class TestTreeTraversal:
             .build()
         )
 
-        from polylogue import Polylogue
-
-        p = Polylogue(db_path=db_path)
-        children = p.repository.get_children(str(parent.id))
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
+        children = _repo.get_children(str(parent.id))
 
         assert len(children) == 2
         child_ids = {c.id for c in children}
@@ -261,17 +262,16 @@ class TestTreeTraversal:
             .build()
         )
 
-        from polylogue import Polylogue
-
-        p = Polylogue(db_path=db_path)
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
 
         # From leaf, should find root
-        found_root = p.repository.get_root(str(leaf.id))
+        found_root = _repo.get_root(str(leaf.id))
         assert found_root is not None
         assert found_root.id == root.id
 
         # From root, should return itself
-        found_root2 = p.repository.get_root(str(root.id))
+        found_root2 = _repo.get_root(str(root.id))
         assert found_root2 is not None
         assert found_root2.id == root.id
 
@@ -313,12 +313,11 @@ class TestTreeTraversal:
             .build()
         )
 
-        from polylogue import Polylogue
-
-        p = Polylogue(db_path=db_path)
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
 
         # Get tree from any node
-        tree = p.repository.get_session_tree(str(grandchild.id))
+        tree = _repo.get_session_tree(str(grandchild.id))
 
         assert len(tree) == 4
         tree_ids = {c.id for c in tree}
@@ -331,7 +330,8 @@ class TestTreeTraversal:
 class TestBranchingFilters:
     """Test branching filter methods."""
 
-    def test_filter_is_continuation(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_filter_is_continuation(self, workspace_env: Path) -> None:
         """is_continuation filter should find continuation conversations."""
         db_path = db_setup(workspace_env)
 
@@ -351,15 +351,15 @@ class TestBranchingFilters:
             .build()
         )
 
-        from polylogue import Polylogue
+        _backend = AsyncSQLiteBackend(db_path=db_path)
+        _repo = AsyncConversationRepository(backend=_backend)
 
-        p = Polylogue(db_path=db_path)
-
-        continuations = p.filter().is_continuation().list()
+        continuations = await _repo.filter().is_continuation().list()
         assert len(continuations) == 1
         assert continuations[0].id == cont.id
 
-    def test_filter_is_sidechain(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_filter_is_sidechain(self, workspace_env: Path) -> None:
         """is_sidechain filter should find sidechain conversations."""
         db_path = db_setup(workspace_env)
 
@@ -380,15 +380,15 @@ class TestBranchingFilters:
             .build()
         )
 
-        from polylogue import Polylogue
+        _backend = AsyncSQLiteBackend(db_path=db_path)
+        _repo = AsyncConversationRepository(backend=_backend)
 
-        p = Polylogue(db_path=db_path)
-
-        sidechains = p.filter().is_sidechain().list()
+        sidechains = await _repo.filter().is_sidechain().list()
         assert len(sidechains) == 1
         assert sidechains[0].id == sidechain.id
 
-    def test_filter_is_root(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_filter_is_root(self, workspace_env: Path) -> None:
         """is_root filter should find root conversations only."""
         db_path = db_setup(workspace_env)
 
@@ -408,15 +408,15 @@ class TestBranchingFilters:
             .build()
         )
 
-        from polylogue import Polylogue
+        _backend = AsyncSQLiteBackend(db_path=db_path)
+        _repo = AsyncConversationRepository(backend=_backend)
 
-        p = Polylogue(db_path=db_path)
-
-        roots = p.filter().is_root().list()
+        roots = await _repo.filter().is_root().list()
         assert len(roots) == 1
         assert roots[0].id == root.id
 
-    def test_filter_has_branches(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_filter_has_branches(self, workspace_env: Path) -> None:
         """has_branches filter should find conversations with branching messages."""
         db_path = db_setup(workspace_env)
 
@@ -439,11 +439,10 @@ class TestBranchingFilters:
             .build()
         )
 
-        from polylogue import Polylogue
+        _backend = AsyncSQLiteBackend(db_path=db_path)
+        _repo = AsyncConversationRepository(backend=_backend)
 
-        p = Polylogue(db_path=db_path)
-
-        with_branches = p.filter().has_branches().list()
+        with_branches = await _repo.filter().has_branches().list()
         assert len(with_branches) == 1
         assert with_branches[0].id == branching.id
 
@@ -559,8 +558,9 @@ class TestCodexContinuationPipeline:
             )
 
         # Verify via domain model
-        p = Polylogue(db_path=db_path)
-        child_conv = p.repository.get(child_cid)
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
+        child_conv = _repo.get(child_cid)
 
         assert child_conv is not None
         assert child_conv.parent_id == parent_cid  # Resolved to internal ID
@@ -647,8 +647,9 @@ class TestClaudeCodeSidechainPipeline:
             )
 
         # Verify via domain model
-        p = Polylogue(db_path=db_path)
-        conv = p.repository.get(cid)
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
+        conv = _repo.get(cid)
 
         assert conv is not None
         assert conv.branch_type == "sidechain"
@@ -800,8 +801,9 @@ class TestChatGPTBranchingPipeline:
             )
 
         # Verify via domain model
-        p = Polylogue(db_path=db_path)
-        conv = p.repository.get(cid)
+        _backend = SQLiteBackend(db_path=db_path)
+        _repo = ConversationRepository(backend=_backend)
+        conv = _repo.get(cid)
 
         assert conv is not None
         messages = conv.messages

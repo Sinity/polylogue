@@ -20,7 +20,6 @@ from .store import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.lib import filters
     from polylogue.lib.stats import ArchiveStats
     from polylogue.protocols import VectorProvider
 
@@ -293,12 +292,6 @@ class ConversationRepository:
             query = f"SELECT message_id, conversation_id FROM messages WHERE message_id IN ({placeholders})"
             rows = conn.execute(query, message_ids).fetchall()
         return {row["message_id"]: row["conversation_id"] for row in rows}
-
-    def filter(self) -> filters.ConversationFilter:
-        """Create a filter builder for chainable queries."""
-        from polylogue.lib import filters
-
-        return filters.ConversationFilter(self)
 
     # --- Write Methods ---
 

@@ -218,7 +218,8 @@ class TestRepositoryIntegration:
 class TestSearchTool:
     """Tests for search tool execution."""
 
-    def test_search_with_valid_query(self, sample_conversation):
+    @pytest.mark.asyncio
+    async def test_search_with_valid_query(self, sample_conversation):
         """Search returns matching conversations."""
         from polylogue.mcp.server import _build_server
 
@@ -233,7 +234,7 @@ class TestSearchTool:
                 server = _build_server()
                 # Get the tool function from the server
                 search_fn = server._tool_manager._tools["search"].fn
-                result = search_fn(query="hello", limit=10)
+                result = await search_fn(query="hello", limit=10)
 
                 # Parse the JSON result
                 results = json.loads(result)
@@ -241,7 +242,8 @@ class TestSearchTool:
                 assert results[0]["id"] == "test:conv-123"
                 assert results[0]["provider"] == "chatgpt"
 
-    def test_search_with_limit(self):
+    @pytest.mark.asyncio
+    async def test_search_with_limit(self):
         """Search respects limit parameter."""
         from polylogue.mcp.server import _build_server
 
@@ -255,7 +257,7 @@ class TestSearchTool:
                 MockFilter.return_value = filter_instance
 
                 server = _build_server()
-                result = server._tool_manager._tools["search"].fn(query="test", limit=5)
+                result = await server._tool_manager._tools["search"].fn(query="test", limit=5)
 
                 # Verify filter was called with clamped limit
                 filter_instance.limit.assert_called()
@@ -263,7 +265,8 @@ class TestSearchTool:
                 parsed = json.loads(result)
                 assert parsed == []
 
-    def test_search_empty_results(self):
+    @pytest.mark.asyncio
+    async def test_search_empty_results(self):
         """Search handles empty results gracefully."""
         from polylogue.mcp.server import _build_server
 
@@ -276,7 +279,7 @@ class TestSearchTool:
                 MockFilter.return_value = make_mock_filter(results=[])
 
                 server = _build_server()
-                result = server._tool_manager._tools["search"].fn(query="nonexistent", limit=10)
+                result = await server._tool_manager._tools["search"].fn(query="nonexistent", limit=10)
 
                 results = json.loads(result)
                 assert results == []
@@ -285,7 +288,8 @@ class TestSearchTool:
 class TestListTool:
     """Tests for list_conversations tool execution."""
 
-    def test_list_returns_conversations(self, sample_conversation):
+    @pytest.mark.asyncio
+    async def test_list_returns_conversations(self, sample_conversation):
         """List returns recent conversations."""
         from polylogue.mcp.server import _build_server
 
@@ -298,13 +302,14 @@ class TestListTool:
                 MockFilter.return_value = make_mock_filter(results=[sample_conversation])
 
                 server = _build_server()
-                result = server._tool_manager._tools["list_conversations"].fn(limit=10)
+                result = await server._tool_manager._tools["list_conversations"].fn(limit=10)
 
                 results = json.loads(result)
                 assert len(results) == 1
                 assert results[0]["message_count"] == 2
 
-    def test_list_with_limit(self):
+    @pytest.mark.asyncio
+    async def test_list_with_limit(self):
         """List respects limit parameter."""
         from polylogue.mcp.server import _build_server
 
@@ -318,13 +323,14 @@ class TestListTool:
                 MockFilter.return_value = filter_instance
 
                 server = _build_server()
-                result = server._tool_manager._tools["list_conversations"].fn(limit=25)
+                result = await server._tool_manager._tools["list_conversations"].fn(limit=25)
 
                 filter_instance.limit.assert_called()
                 parsed = json.loads(result)
                 assert parsed == []
 
-    def test_list_with_provider_filter(self):
+    @pytest.mark.asyncio
+    async def test_list_with_provider_filter(self):
         """List filters by provider."""
         from polylogue.mcp.server import _build_server
 
@@ -338,7 +344,7 @@ class TestListTool:
                 MockFilter.return_value = filter_instance
 
                 server = _build_server()
-                result = server._tool_manager._tools["list_conversations"].fn(provider="claude", limit=10)
+                result = await server._tool_manager._tools["list_conversations"].fn(provider="claude", limit=10)
 
                 filter_instance.provider.assert_called_once_with("claude")
                 parsed = json.loads(result)

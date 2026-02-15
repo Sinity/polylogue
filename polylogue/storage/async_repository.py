@@ -572,18 +572,14 @@ class AsyncConversationRepository:
     def filter(self) -> filters.ConversationFilter:
         """Create a filter builder for chainable queries.
 
-        Note: ConversationFilter currently only supports sync operations.
-        For async filtering, use query methods directly (list, search, etc.).
+        Terminal methods (list, first, count, etc.) are async and must be awaited.
 
         Returns:
             ConversationFilter instance
         """
         from polylogue.lib import filters
 
-        # Note: filters module only supports sync operations via sync repository
-        # For now, return a filter that wraps self, but document that filter()
-        # is a sync-only interface. This will be addressed in a future refactor.
-        return filters.ConversationFilter(self)  # type: ignore
+        return filters.ConversationFilter(self)
 
     # --- Write Methods ---
 

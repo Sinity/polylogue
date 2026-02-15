@@ -33,11 +33,48 @@ from polylogue.config import Config, Source
 from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
 
 if TYPE_CHECKING:
-    from polylogue.facade import ArchiveStats
     from polylogue.lib.filters import ConversationFilter
     from polylogue.lib.models import Conversation
     from polylogue.pipeline.services.parsing import ParseResult
     from polylogue.storage.search import SearchResult
+
+
+class ArchiveStats:
+    """Statistics about the archive (facade-level).
+
+    Attributes:
+        conversation_count: Total number of conversations
+        message_count: Total number of messages
+        word_count: Total word count across all messages
+        providers: Provider name -> count mapping
+        tags: Tag name -> count mapping
+        last_sync: Timestamp of last sync operation
+        recent: List of 5 most recent conversations
+    """
+
+    def __init__(
+        self,
+        conversation_count: int,
+        message_count: int,
+        word_count: int,
+        providers: dict[str, int],
+        tags: dict[str, int],
+        last_sync: str | None,
+        recent: list[Conversation],
+    ):
+        self.conversation_count = conversation_count
+        self.message_count = message_count
+        self.word_count = word_count
+        self.providers = providers
+        self.tags = tags
+        self.last_sync = last_sync
+        self.recent = recent
+
+    def __repr__(self) -> str:
+        return (
+            f"ArchiveStats(conversations={self.conversation_count}, "
+            f"messages={self.message_count}, providers={list(self.providers.keys())})"
+        )
 
 
 class AsyncPolylogue:
@@ -335,23 +372,18 @@ class AsyncPolylogue:
     def filter(self) -> ConversationFilter:
         """Create a fluent filter builder for querying conversations.
 
-        Note: ConversationFilter uses synchronous database access internally.
-        This is fine for filter building and execution since the underlying
-        queries are fast.
+        Terminal methods (list, first, count, etc.) are async and must be awaited.
 
         Returns:
             ConversationFilter for building queries
 
         Example:
-            convs = archive.filter().provider("claude").contains("error").limit(10).list()
+            convs = await archive.filter().provider("claude").contains("error").limit(10).list()
         """
         from polylogue.lib.filters import ConversationFilter
-        from polylogue.storage.backends.sqlite import SQLiteBackend
-        from polylogue.storage.repository import ConversationRepository
+        from polylogue.storage.async_repository import AsyncConversationRepository
 
-        # Create sync backend pointing at same database for filter execution
-        sync_backend = SQLiteBackend(db_path=self._db_path)
-        repository = ConversationRepository(backend=sync_backend)
+        repository = AsyncConversationRepository(backend=self._backend)
 
         vector_provider = None
         try:
@@ -375,8 +407,6 @@ class AsyncPolylogue:
             for provider, count in stats.providers.items():
                 print(f"  {provider}: {count}")
         """
-        from polylogue.facade import ArchiveStats
-
         conversations = await self.list_conversations(limit=10000)
 
         providers: dict[str, int] = {}

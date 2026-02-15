@@ -393,23 +393,34 @@ class TestIterMessages:
 
 
 class TestFilterFactory:
-    """Test that filter() creates a working ConversationFilter."""
+    """Test that filter() creates a working ConversationFilter via async repo."""
 
-    def test_filter_returns_filter_object(self, repo):
+    @pytest.fixture
+    def async_repo(self, repo_db):
+        """Create AsyncConversationRepository for filter tests."""
+        from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+        from polylogue.storage.async_repository import AsyncConversationRepository
+
+        backend = AsyncSQLiteBackend(db_path=repo_db)
+        return AsyncConversationRepository(backend=backend)
+
+    def test_filter_returns_filter_object(self, async_repo):
         """filter() should return ConversationFilter."""
         from polylogue.lib.filters import ConversationFilter
-        f = repo.filter()
+        f = async_repo.filter()
         assert isinstance(f, ConversationFilter)
 
-    def test_filter_chains_work(self, repo):
+    @pytest.mark.asyncio
+    async def test_filter_chains_work(self, async_repo):
         """filter() chains should work."""
-        result = repo.filter().provider("claude").limit(1).list()
+        result = await async_repo.filter().provider("claude").limit(1).list()
         assert len(result) == 1
         assert result[0].provider == "claude"
 
-    def test_filter_count(self, repo):
+    @pytest.mark.asyncio
+    async def test_filter_count(self, async_repo):
         """filter() should allow count() chain."""
-        count = repo.filter().provider("chatgpt").count()
+        count = await async_repo.filter().provider("chatgpt").count()
         assert count == 1
 
 

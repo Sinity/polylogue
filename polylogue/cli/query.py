@@ -25,6 +25,7 @@ LOGGER = get_logger(__name__)
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary, Message
+    from polylogue.storage.async_repository import AsyncConversationRepository
     from polylogue.storage.repository import ConversationRepository
 
 
@@ -76,9 +77,21 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         env: Application environment with UI and config
         params: Parsed CLI parameters
     """
+    import asyncio
+
+    asyncio.run(_async_execute_query(env, params))
+
+
+async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
+    """Async core of execute_query.
+
+    Args:
+        env: Application environment with UI and config
+        params: Parsed CLI parameters
+    """
     from polylogue.cli.helpers import fail, load_effective_config
     from polylogue.config import ConfigError
-    from polylogue.services import get_repository
+    from polylogue.services import get_async_repository, get_repository
     from polylogue.storage.search_providers import create_vector_provider
 
     # Load config
@@ -87,8 +100,9 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     except ConfigError as exc:
         fail("query", str(exc))
 
-    # Build repository and vector provider
-    conv_repo = get_repository()
+    # Build repositories: async for filter chain, sync for streaming + modifiers
+    async_repo = get_async_repository()
+    sync_repo = get_repository()
 
     # Get vector provider (may be None if not configured)
     vector_provider = None
@@ -99,10 +113,10 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     except Exception as exc:
         LOGGER.warning("Vector search setup failed: %s", exc)
 
-    # Create filter chain with vector provider
+    # Create filter chain with async repository
     from polylogue.lib.filters import ConversationFilter
 
-    filter_chain = ConversationFilter(conv_repo, vector_provider=vector_provider)
+    filter_chain = ConversationFilter(async_repo, vector_provider=vector_provider)
 
     # Apply --id (exact conversation ID or prefix match)
     if params.get("conv_id"):
@@ -189,7 +203,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     # Handle --count (lightweight: just count, no loading)
     if params.get("count_only"):
-        n = len(filter_chain.list_summaries()) if filter_chain.can_use_summaries() else len(filter_chain.list())
+        n = len(await filter_chain.list_summaries()) if filter_chain.can_use_summaries() else len(await filter_chain.list())
         click.echo(n)
         return
 
@@ -208,10 +222,10 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     )
 
     if use_summaries:
-        summary_results = filter_chain.list_summaries()
+        summary_results = await filter_chain.list_summaries()
         if not summary_results:
             _no_results(env, params)
-        _output_summary_list(env, summary_results, params, conv_repo)
+        _output_summary_list(env, summary_results, params, sync_repo)
         return
 
     # Streaming path
@@ -219,27 +233,27 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         # Use the filter chain to resolve the conversation ID, so that filters
         # (--provider, --since, --tag, etc.) are respected even in streaming mode.
         if params.get("conv_id"):
-            resolved = conv_repo.resolve_id(params["conv_id"])
+            resolved = await async_repo.resolve_id(params["conv_id"])
             if not resolved:
                 click.echo(f"No conversation found matching: {params['conv_id']}", err=True)
                 raise SystemExit(2)
             full_id = str(resolved)
         elif params.get("latest"):
             # filter_chain already has .sort("date").limit(1) from line 172-173
-            summaries = filter_chain.list_summaries()
+            summaries = await filter_chain.list_summaries()
             if not summaries:
                 _no_results(env, params)
             full_id = str(summaries[0].id)
         elif _describe_filters(params):
             # Filters active but no --latest: pick most recent match
-            summaries = filter_chain.sort("date").limit(1).list_summaries()
+            summaries = await filter_chain.sort("date").limit(1).list_summaries()
             if not summaries:
                 _no_results(env, params)
             full_id = str(summaries[0].id)
         else:
             # Try to resolve first query term as ID
             if query_terms:
-                resolved = conv_repo.resolve_id(query_terms[0])
+                resolved = await async_repo.resolve_id(query_terms[0])
                 if not resolved:
                     click.echo(f"No conversation found matching: {query_terms[0]}", err=True)
                     click.echo("Hint: use --list to browse conversations, or --latest for most recent", err=True)
@@ -263,7 +277,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
         stream_conversation(
             env,
-            conv_repo,
+            sync_repo,
             full_id,
             output_format=stream_format,
             dialogue_only=params.get("dialogue_only", False),
@@ -271,7 +285,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         )
         return
 
-    results = filter_chain.list()
+    results = await filter_chain.list()
 
     # Handle modifiers (write operations)
     if params.get("set_meta") or params.get("add_tag"):
