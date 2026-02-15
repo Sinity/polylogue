@@ -24,7 +24,7 @@ from polylogue.rendering.renderers import (
     list_formats,
 )
 from polylogue.storage.backends.sqlite import open_connection
-from tests.helpers import (
+from tests.infra.helpers import (
     ConversationBuilder,
     assert_contains_all,
     assert_messages_ordered,

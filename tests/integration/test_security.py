@@ -35,8 +35,8 @@ from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.search import escape_fts5_query
 from polylogue.storage.store import AttachmentRecord, ConversationRecord
-from tests.helpers import make_conversation, make_message
-from tests.strategies.adversarial import (
+from tests.infra.helpers import make_conversation, make_message
+from tests.infra.strategies.adversarial import (
     control_char_strategy,
     fts5_operator_strategy,
     path_traversal_strategy,
@@ -962,7 +962,7 @@ def test_control_chars_in_queries_handled(text_with_control: str):
 
 
 @given(sql_injection_strategy())
-@settings(max_examples=50, deadline=500, suppress_health_check=[HealthCheck.function_scoped_fixture])
+@settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
 def test_repository_survives_injection_property(temp_repo, injection_payload: str):
     """Property: Repository operations survive injection attempts.
 

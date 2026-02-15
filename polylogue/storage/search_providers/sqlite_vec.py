@@ -38,8 +38,6 @@ BATCH_SIZE = 128  # Voyage API limit per request
 class SqliteVecError(DatabaseError):
     """Raised when sqlite-vec operations fail."""
 
-    pass
-
 
 def _serialize_f32(vector: list[float]) -> bytes:
     """Serialize float vector to binary format for sqlite-vec.

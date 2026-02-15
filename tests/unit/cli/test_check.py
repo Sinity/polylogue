@@ -10,7 +10,7 @@ from click.testing import CliRunner
 from polylogue.cli import cli
 from polylogue.health import HealthCheck, HealthReport, VerifyStatus
 from polylogue.storage.backends.sqlite import open_connection
-from tests.helpers import DbFactory
+from tests.infra.helpers import DbFactory
 
 
 @pytest.fixture

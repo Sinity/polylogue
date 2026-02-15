@@ -6,7 +6,7 @@ These tests verify the unified branching model that works across all providers:
 - Message branches (ChatGPT edits)
 
 Also includes full-pipeline integration tests that exercise the REAL pipeline:
-raw JSON/JSONL → importer → prepare_records → database.
+raw JSON/JSONL → parser → prepare_records → database.
 
 This ensures branching metadata extraction and resolution actually works end-to-end.
 
@@ -27,7 +27,7 @@ from polylogue.pipeline.prepare import prepare_records
 from polylogue.sources import iter_source_conversations
 from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
 from polylogue.storage.repository import ConversationRepository
-from tests.helpers import ConversationBuilder, db_setup
+from tests.infra.helpers import ConversationBuilder, db_setup
 
 
 def _make_test_repository(db_path: Path) -> ConversationRepository:
@@ -48,7 +48,7 @@ class TestClaudeCodeSidechain:
             ConversationBuilder(db_path, "sidechain-test")
             .provider("claude-code")
             .title("Sidechain Test")
-            .branch_type("sidechain")  # Set by importer when isSidechain detected
+            .branch_type("sidechain")  # Set by parser when isSidechain detected
             .add_message("m1", role="user", text="Hello")
             .add_message("m2", role="assistant", text="Hi", provider_meta={"isSidechain": True})
             .build()
@@ -477,7 +477,7 @@ class TestCodexContinuationPipeline:
         assert len(conversations) == 1
         convo = conversations[0]
 
-        # Verify importer extracted branching fields
+        # Verify parser extracted branching fields
         assert convo.provider_conversation_id == "child-session-uuid"
         assert convo.parent_conversation_provider_id == "parent-session-uuid"
         assert convo.branch_type == "continuation"
@@ -543,7 +543,7 @@ class TestCodexContinuationPipeline:
         child_convos = list(iter_source_conversations(source))
         assert len(child_convos) == 1
 
-        # Verify importer extracted parent reference
+        # Verify parser extracted parent reference
         child_parsed = child_convos[0]
         assert child_parsed.parent_conversation_provider_id == "parent-uuid"
         assert child_parsed.branch_type == "continuation"
@@ -601,7 +601,7 @@ class TestClaudeCodeSidechainPipeline:
         assert len(conversations) == 1
         convo = conversations[0]
 
-        # Verify importer detected sidechain
+        # Verify parser detected sidechain
         assert convo.branch_type == "sidechain"
 
     def test_claude_code_sidechain_persisted_to_database(self, workspace_env: Path, tmp_path: Path):

@@ -8,13 +8,17 @@ Targets the lowest-coverage provider code paths:
 from __future__ import annotations
 
 import pytest
-from polylogue.sources.providers.chatgpt import (
-    ChatGPTAuthor, ChatGPTContent, ChatGPTConversation, ChatGPTMessage, ChatGPTNode,
-)
-from polylogue.sources.providers.codex import CodexContentBlock, CodexRecord
-from polylogue.sources.providers.claude_code import ClaudeCodeRecord
-from polylogue.lib.viewports import ContentType
 
+from polylogue.lib.viewports import ContentType
+from polylogue.sources.providers.chatgpt import (
+    ChatGPTAuthor,
+    ChatGPTContent,
+    ChatGPTConversation,
+    ChatGPTMessage,
+    ChatGPTNode,
+)
+from polylogue.sources.providers.claude_code import ClaudeCodeRecord
+from polylogue.sources.providers.codex import CodexContentBlock, CodexRecord
 
 # =============================================================================
 # ChatGPT Provider Tests

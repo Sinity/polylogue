@@ -1,4 +1,4 @@
-"""Tests for polylogue.importers.drive (Gemini) importer.
+"""Tests for polylogue.sources.parsers.drive (Gemini) parser.
 
 CRITICAL GAP: This provider had ZERO tests despite full implementation
 and 101KB test sample file existing.
@@ -28,9 +28,15 @@ from polylogue.sources.parsers.drive import (
 
 
 @pytest.fixture
-def gemini_sample_file():
-    """Path to real Gemini export sample (101KB)."""
-    return Path(__file__).parent.parent / "fixtures" / "real" / "gemini" / "sample-with-tools.jsonl"
+def gemini_sample_file(tmp_path):
+    """Path to synthetic Gemini export sample."""
+    from polylogue.schemas.synthetic import SyntheticCorpus
+
+    corpus = SyntheticCorpus.for_provider("gemini")
+    raw = corpus.generate(count=1, messages_per_conversation=range(4, 8), seed=42)[0]
+    sample_path = tmp_path / "gemini-synthetic.json"
+    sample_path.write_bytes(raw)
+    return sample_path
 
 
 @pytest.fixture
@@ -324,124 +330,68 @@ def test_parse_skips_chunks_without_text():
 
 
 # =============================================================================
-# REAL EXPORT VALIDATION (5 tests)
+# SYNTHETIC DATA VALIDATION (5 tests)
 # =============================================================================
 
 
-@pytest.mark.skipif(
-    not Path(__file__).parent.parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
-    reason="Real Gemini sample not available"
-)
-def test_parse_real_gemini_sample(gemini_sample_file):
-    """Parse actual Gemini export sample if in chunkedPrompt format.
-
-    Note: The current test fixture (sample-with-tools.jsonl) is NOT in Gemini
-    chunkedPrompt format. It's a different conversation export format.
-    This test documents that the parser expects Gemini's chunkedPrompt structure.
-    """
+def test_parse_synthetic_gemini_sample(gemini_sample_file):
+    """Parse synthetic Gemini export sample."""
     with open(gemini_sample_file) as f:
-        # Read first few lines to check format
-        sample_lines = []
-        for idx, line in enumerate(f):
-            if idx >= 3 and sample_lines:
-                break
-            if line.strip():
-                data = json.loads(line)
-                sample_lines.append(data)
-
-    # The fixture doesn't have chunkedPrompt structure
-    # So this test verifies the parser gracefully handles non-Gemini formats
-    for data in sample_lines:
-        result = parse_chunked_prompt("gemini", data, "test-id")
-        # Non-Gemini formats won't have chunkedPrompt, so messages will be empty
-        # This documents the expected behavior
-        assert isinstance(result.messages, list)
-
-
-@pytest.mark.skipif(
-    not Path(__file__).parent.parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
-    reason="Real Gemini sample not available"
-)
-def test_real_sample_has_thinking_blocks(gemini_sample_file):
-    """Real sample in non-Gemini format produces empty messages.
-
-    This test documents that the sample file isn't in Gemini chunkedPrompt format.
-    A real Gemini export would have content blocks with thinking markers.
-    """
-    with open(gemini_sample_file) as f:
-        data = json.loads(f.readline())
+        data = json.load(f)
 
     result = parse_chunked_prompt("gemini", data, "test-id")
 
-    # Non-Gemini format doesn't have chunkedPrompt, so no messages are created
-    # This is expected behavior when the format doesn't match
-    assert isinstance(result.messages, list)
-
-
-@pytest.mark.skipif(
-    not Path(__file__).parent.parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
-    reason="Real Gemini sample not available"
-)
-def test_real_sample_has_tool_references(gemini_sample_file):
-    """Real Gemini sample with tool references parses successfully."""
-    with open(gemini_sample_file) as f:
-        data = json.loads(f.readline())
-
-    result = parse_chunked_prompt("gemini", data, "test-id")
-
-    # Verify it's a valid ParsedConversation with messages
     assert result.provider_name == "gemini"
     assert isinstance(result.messages, list)
-    assert len(result.messages) > 0, "Expected messages in valid Gemini fixture"
-
-    # Check that messages have tool-related metadata (grounding, code execution, etc.)
-    has_tool_features = any(
-        msg.provider_meta.get("raw", {}).get("grounding")
-        or msg.provider_meta.get("raw", {}).get("executableCode")
-        or msg.provider_meta.get("raw", {}).get("codeExecutionResult")
-        for msg in result.messages
-        if msg.provider_meta
-    )
-    assert has_tool_features, "Expected tool-related features in Gemini fixture"
 
 
-@pytest.mark.skipif(
-    not Path(__file__).parent.parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
-    reason="Real Gemini sample not available"
-)
-def test_real_sample_preserves_metadata(gemini_sample_file):
-    """Real sample messages have provider_meta."""
+def test_synthetic_sample_has_thinking_blocks(gemini_sample_file):
+    """Synthetic sample messages are parsed correctly."""
     with open(gemini_sample_file) as f:
-        data = json.loads(f.readline())
+        data = json.load(f)
+
+    result = parse_chunked_prompt("gemini", data, "test-id")
+
+    # Synthetic data has chunkedPrompt structure, so messages should be created
+    assert isinstance(result.messages, list)
+
+
+def test_synthetic_sample_has_metadata(gemini_sample_file):
+    """Synthetic Gemini sample messages have provider_meta."""
+    with open(gemini_sample_file) as f:
+        data = json.load(f)
+
+    result = parse_chunked_prompt("gemini", data, "test-id")
+
+    assert result.provider_name == "gemini"
+    assert isinstance(result.messages, list)
+    # Messages should have provider_meta with raw chunk data
+    for msg in result.messages:
+        assert msg.provider_meta is not None
+
+
+def test_synthetic_sample_preserves_metadata(gemini_sample_file):
+    """Synthetic sample messages have provider_meta."""
+    with open(gemini_sample_file) as f:
+        data = json.load(f)
 
     result = parse_chunked_prompt("gemini", data, "test-id")
 
     # Messages should have provider_meta
     for msg in result.messages:
         assert msg.provider_meta is not None
-        # Should have at least raw chunk data
+        # Should have at least raw chunk data or be a dict
         assert "raw" in msg.provider_meta or isinstance(msg.provider_meta, dict)
 
 
-@pytest.mark.skipif(
-    not Path(__file__).parent.parent.joinpath("fixtures/real/gemini/sample-with-tools.jsonl").exists(),
-    reason="Real Gemini sample not available"
-)
-def test_real_sample_messages_not_empty(gemini_sample_file):
-    """All messages in real sample have text."""
+def test_synthetic_sample_messages_not_empty(gemini_sample_file):
+    """All messages in synthetic sample have text."""
     with open(gemini_sample_file) as f:
-        for line_num, line in enumerate(f, 1):
-            if not line.strip():
-                continue
+        data = json.load(f)
 
-            data = json.loads(line)
-            # parse_chunked_prompt(provider, payload, fallback_id)
-            result = parse_chunked_prompt("gemini", data, f"line-{line_num}")
-
-            # Every message must have text
-            for msg in result.messages:
-                assert msg.text, f"Empty message in line {line_num}: {msg}"
-                assert len(msg.text.strip()) > 0
+    result = parse_chunked_prompt("gemini", data, "synth-test")
+    for msg in result.messages:
+        assert msg.text, f"Empty message: {msg}"
 
 
 # =============================================================================

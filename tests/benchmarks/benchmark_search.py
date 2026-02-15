@@ -9,7 +9,7 @@ from polylogue.storage.db import open_connection
 from polylogue.storage.index import ensure_index, update_index_for_conversations
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.store import ConversationRecord, MessageRecord
-from tests.helpers import upsert_conversation, upsert_message
+from tests.infra.helpers import upsert_conversation, upsert_message
 
 
 def create_test_database(message_count: int = 1000) -> Path:

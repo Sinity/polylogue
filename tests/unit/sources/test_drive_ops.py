@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -15,9 +13,8 @@ from polylogue.sources import (
     download_drive_files,
     iter_drive_conversations,
 )
-from polylogue.sources.drive import _apply_drive_attachments, DriveDownloadResult
+from polylogue.sources.drive import DriveDownloadResult, _apply_drive_attachments
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedConversation
-
 
 # ============================================================================
 # Test Data Tables (Module-level constants for parametrization)
@@ -631,7 +628,7 @@ class TestIterDriveConversations:
 
         mock_client.download_json_payload.side_effect = mock_download
 
-        result = list(
+        list(
             iter_drive_conversations(
                 source=source,
                 archive_root=tmp_path,

@@ -26,8 +26,6 @@ def auth_command(env: AppEnv, service: str, refresh: bool, revoke: bool) -> None
         polylogue auth --refresh # Force token refresh
         polylogue auth --revoke  # Revoke stored credentials
     """
-    ui = env.ui
-
     if service != "drive":
         click.echo(f"Unknown auth service: {service}", err=True)
         click.echo("Available services: drive", err=True)

@@ -5,7 +5,7 @@ that matches the structure of provider exports and internal models.
 
 Usage:
     from hypothesis import given
-    from tests.strategies import chatgpt_message, conversation_strategy
+    from tests.infra.strategies import chatgpt_message, conversation_strategy
 
     @given(chatgpt_message())
     def test_message_parsing(msg):
@@ -18,17 +18,17 @@ Strategies are organized by domain:
 - adversarial: Malformed/attack data for security testing
 """
 
-from tests.strategies.adversarial import (
+from tests.infra.strategies.adversarial import (
     malformed_json_strategy,
     path_traversal_strategy,
     sql_injection_strategy,
 )
-from tests.strategies.filters import (
+from tests.infra.strategies.filters import (
     filter_arg_strategy,
     filter_chain_strategy,
     filter_type_strategy,
 )
-from tests.strategies.messages import (
+from tests.infra.strategies.messages import (
     content_block_strategy,
     conversation_strategy,
     message_strategy,
@@ -40,12 +40,13 @@ from tests.strategies.messages import (
     thinking_block_strategy,
     tool_use_block_strategy,
 )
-from tests.strategies.providers import (
+from tests.infra.strategies.providers import (
     chatgpt_export_strategy,
     chatgpt_message_node_strategy,
     claude_ai_export_strategy,
     claude_code_message_strategy,
     codex_message_strategy,
+    provider_export_strategy,
 )
 
 __all__ = [
@@ -66,6 +67,7 @@ __all__ = [
     "claude_ai_export_strategy",
     "claude_code_message_strategy",
     "codex_message_strategy",
+    "provider_export_strategy",
     # Filters
     "filter_arg_strategy",
     "filter_chain_strategy",

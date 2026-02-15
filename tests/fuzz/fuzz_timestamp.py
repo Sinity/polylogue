@@ -64,7 +64,7 @@ def fuzz_parse_timestamp(data: bytes) -> None:
 
 
 def fuzz_normalize_timestamp(data: bytes) -> None:
-    """Fuzz the normalize_timestamp function from claude importer."""
+    """Fuzz the normalize_timestamp function from claude parser."""
     from polylogue.sources.parsers.claude import normalize_timestamp
 
     try:

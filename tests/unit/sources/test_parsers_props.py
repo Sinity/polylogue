@@ -1,6 +1,6 @@
-"""Property-based tests for importer modules.
+"""Property-based tests for parser modules.
 
-These tests verify critical invariants that importers must maintain
+These tests verify critical invariants that parsers must maintain
 regardless of input variations.
 
 Key properties tested:
@@ -22,7 +22,7 @@ from polylogue.sources.parsers.base import (
     extract_messages_from_list,
     normalize_role,
 )
-from tests.strategies import (
+from tests.infra.strategies import (
     chatgpt_export_strategy,
     chatgpt_message_node_strategy,
     claude_ai_export_strategy,
@@ -30,7 +30,7 @@ from tests.strategies import (
     codex_message_strategy,
     message_strategy,
 )
-from tests.strategies.providers import (
+from tests.infra.strategies.providers import (
     claude_code_session_strategy,
     codex_session_strategy,
 )
@@ -74,7 +74,7 @@ def test_normalize_role_canonical_mappings(input_output: tuple[str, str]):
 
 
 # =============================================================================
-# ChatGPT Importer Properties
+# ChatGPT Parser Properties
 # =============================================================================
 
 
@@ -134,7 +134,7 @@ def test_chatgpt_node_roles_normalized(node: dict):
 
 
 # =============================================================================
-# Claude AI Importer Properties
+# Claude AI Parser Properties
 # =============================================================================
 
 
@@ -191,7 +191,7 @@ def test_claude_ai_text_preserved(export: dict):
 
 
 # =============================================================================
-# Claude Code Importer Properties
+# Claude Code Parser Properties
 # =============================================================================
 
 
@@ -245,7 +245,7 @@ def test_claude_code_extracts_metadata(session: list[dict]):
 
 
 # =============================================================================
-# Codex Importer Properties
+# Codex Parser Properties
 # =============================================================================
 
 

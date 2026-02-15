@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import json
 
-import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from tests.helpers import DbFactory
+from tests.infra.helpers import DbFactory
 
 # =============================================================================
 # TEST DATA TABLES (module-level constants)

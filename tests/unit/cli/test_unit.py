@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from click.testing import CliRunner
 
-from polylogue.cli import cli, helpers
+from polylogue.cli import helpers
 from polylogue.cli.commands.check import check_command
 from polylogue.cli.editor import validate_command
 from polylogue.cli.formatting import (
@@ -50,7 +50,6 @@ from polylogue.health import (
     run_all_repairs,
 )
 from polylogue.storage.backends.sqlite import create_default_backend
-
 from polylogue.storage.repository import ConversationRepository
 
 # ============================================================================
@@ -156,17 +155,6 @@ FORMAT_SOURCES_SUMMARY_CASES = [
         ("inbox", "no_drive_tag"),  # Special marker: no "(drive)"
     ),
     ([Source(name="gemini", folder="folder-id")], ("gemini (drive)",)),
-]
-
-# TestIsDeclarative env var cases
-IS_DECLARATIVE_CASES = [
-    (None, False, "unset returns False"),
-    ("", False, "empty returns False"),
-    ("0", False, "zero returns False"),
-    ("false", False, "'false' returns False"),
-    ("no", False, "'no' returns False"),
-    ("1", True, "one returns True"),
-    ("true", True, "'true' returns True"),
 ]
 
 # TestShouldUsePlain cases
@@ -632,7 +620,7 @@ class TestRepairFunctions:
         """repair_orphaned_messages deletes orphaned messages."""
         from polylogue.config import Config
         from polylogue.storage.backends.sqlite import open_connection
-        from tests.helpers import db_setup
+        from tests.infra.helpers import db_setup
 
         db_path = db_setup(workspace_env)
 
@@ -661,7 +649,7 @@ class TestRepairFunctions:
         """repair_empty_conversations deletes empty conversations."""
         from polylogue.config import Config
         from polylogue.storage.backends.sqlite import open_connection
-        from tests.helpers import db_setup
+        from tests.infra.helpers import db_setup
 
         db_path = db_setup(workspace_env)
 
@@ -690,7 +678,7 @@ class TestRepairFunctions:
         """repair_dangling_fts handles missing FTS table gracefully."""
         from polylogue.config import Config
         from polylogue.storage.backends.sqlite import open_connection
-        from tests.helpers import db_setup
+        from tests.infra.helpers import db_setup
 
         db_path = db_setup(workspace_env)
 
@@ -709,7 +697,7 @@ class TestRepairFunctions:
         """repair_orphaned_attachments cleans up orphaned attachments."""
         from polylogue.config import Config
         from polylogue.storage.backends.sqlite import open_connection
-        from tests.helpers import db_setup
+        from tests.infra.helpers import db_setup
 
         db_path = db_setup(workspace_env)
 

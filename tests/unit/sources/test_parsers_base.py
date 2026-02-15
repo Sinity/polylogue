@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
 from polylogue.lib.models import DialoguePair, Message
@@ -21,11 +18,10 @@ from polylogue.sources.parsers.claude import (
 )
 from polylogue.sources.parsers.codex import looks_like as codex_looks_like
 from polylogue.sources.parsers.codex import parse as codex_parse
-from tests.helpers import make_claude_chat_message
-
+from tests.infra.helpers import make_claude_chat_message
 
 # =============================================================================
-# CLAUDE IMPORTER TESTS
+# CLAUDE PARSER TESTS
 # =============================================================================
 
 CLAUDE_SEGMENT_CASES = [
@@ -150,9 +146,8 @@ def test_parse_code_variants(messages, expected, desc):
     result = parse_code(messages, "fallback-id")
     if isinstance(expected, int):
         assert len(result.messages) == expected, f"Failed {desc}"
-    elif isinstance(expected, str):
-        if result.messages:
-            assert result.messages[0].role == expected, f"Failed {desc}"
+    elif isinstance(expected, str) and result.messages:
+        assert result.messages[0].role == expected, f"Failed {desc}"
 
 
 # =============================================================================
@@ -301,7 +296,7 @@ def test_parse_code_mixed_content_blocks_all_preserved():
 
 
 # =============================================================================
-# CODEX IMPORTER TESTS
+# CODEX PARSER TESTS
 # =============================================================================
 
 
@@ -413,7 +408,7 @@ def test_codex_parse_intermediate_format():
 
 
 # =============================================================================
-# IMPORTERS.BASE MODULE TESTS
+# PARSERS.BASE MODULE TESTS
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -596,7 +591,7 @@ class TestAttachmentFromMeta:
 # =============================================================================
 
 
-class TestImporterDialoguePairValidation:
+class TestParserDialoguePairValidation:
     """Tests for DialoguePair validation."""
 
     def test_dialogue_pair_valid(self):

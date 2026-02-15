@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import struct
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -623,7 +622,6 @@ class TestQueryExecutionPaths:
 
     def test_query_by_provider_filters_by_provider(self, mock_provider):
         """query_by_provider should filter results by provider name."""
-        import sqlite3
 
         mock_provider._ensure_vec_available = MagicMock()
         mock_provider._get_embeddings = MagicMock(return_value=[[0.1, 0.2]])

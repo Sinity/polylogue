@@ -7,6 +7,7 @@ Provides a protocol for token persistence with two implementations:
 
 from __future__ import annotations
 
+from contextlib import suppress
 from pathlib import Path
 from typing import Protocol
 
@@ -106,10 +107,8 @@ class KeyringTokenStore:
 
     def delete(self, key: str) -> None:
         if self._keyring is not None:
-            try:
+            with suppress(Exception):
                 self._keyring.delete_password(self._SERVICE_NAME, key)  # type: ignore[attr-defined]
-            except Exception:
-                pass  # May not exist in keyring
         self._fallback.delete(key)
 
 

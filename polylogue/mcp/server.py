@@ -19,25 +19,17 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
+from polylogue.services import get_repository as _get_repo
+from polylogue.services import get_service_config as _get_config
 
 if TYPE_CHECKING:
     from mcp.server.fastmcp import FastMCP
 
-    from polylogue.config import Config
     from polylogue.lib.models import Conversation
-    from polylogue.storage.repository import ConversationRepository
 
 logger = get_logger(__name__)
 
 _MAX_LIMIT = 10000
-
-# ---------------------------------------------------------------------------
-# Singleton delegates (defer to polylogue.services)
-# ---------------------------------------------------------------------------
-
-from polylogue.services import get_repository as _get_repo
-from polylogue.services import get_service_config as _get_config
-
 
 # ---------------------------------------------------------------------------
 # Serialization helpers

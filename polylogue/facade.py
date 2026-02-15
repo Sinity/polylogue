@@ -34,10 +34,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import Config, Source, get_config
-from polylogue.lib.log import get_logger
-
-logger = get_logger(__name__)
 from polylogue.lib.filters import ConversationFilter
+from polylogue.lib.log import get_logger
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.search import SearchResult, search_messages
@@ -45,7 +43,9 @@ from polylogue.storage.search import SearchResult, search_messages
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation
     from polylogue.pipeline.services.indexing import IndexService
-    from polylogue.pipeline.services.parsing import ParsingService, ParseResult
+    from polylogue.pipeline.services.parsing import ParseResult, ParsingService
+
+logger = get_logger(__name__)
 
 
 class ArchiveStats:

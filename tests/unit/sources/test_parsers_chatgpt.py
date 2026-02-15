@@ -1,7 +1,8 @@
-"""ChatGPT importer tests — format detection, message extraction, parent/branch, metadata, parsing, real exports."""
+"""ChatGPT parser tests — format detection, message extraction, parent/branch, metadata, parsing, real exports."""
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 
@@ -11,11 +12,10 @@ from polylogue.sources.parsers.chatgpt import _coerce_float, extract_messages_fr
 from polylogue.sources.parsers.chatgpt import looks_like as chatgpt_looks_like
 from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 from polylogue.sources.parsers.claude import looks_like_ai, looks_like_code
-from tests.helpers import make_chatgpt_node
-
+from tests.infra.helpers import make_chatgpt_node
 
 # =============================================================================
-# CHATGPT IMPORTER TESTS
+# CHATGPT PARSER TESTS
 # =============================================================================
 
 
@@ -310,40 +310,34 @@ def test_parse_conversation(parse_fn, conv_data, check_type, desc):
 
 
 # -----------------------------------------------------------------------------
-# REAL EXPORT INTEGRATION
+# SYNTHETIC DATA INTEGRATION
 # -----------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(
-    not Path(__file__).parent.parent.joinpath("fixtures/real/chatgpt/simple.json").exists(),
-    reason="Real ChatGPT sample not available"
-)
-def test_chatgpt_parse_real_simple():
-    """Parse real ChatGPT simple export."""
-    sample_path = Path(__file__).parent.parent / "fixtures" / "real" / "chatgpt" / "simple.json"
-    with open(sample_path) as f:
-        data = json.load(f)
+def test_chatgpt_parse_synthetic_simple():
+    """Parse synthetic ChatGPT export."""
+    from polylogue.schemas.synthetic import SyntheticCorpus
+
+    corpus = SyntheticCorpus.for_provider("chatgpt")
+    raw = corpus.generate(count=1, messages_per_conversation=range(3, 6), seed=42)[0]
+    data = json.loads(raw) if isinstance(raw, bytes) else raw
 
     result = chatgpt_parse(data, "simple-test")
 
     assert result.provider_name == "chatgpt"
     assert len(result.messages) > 0
-    # Some messages may have empty text (system messages, etc)
     assert all(m.text is not None for m in result.messages)
 
 
-@pytest.mark.skipif(
-    not Path(__file__).parent.parent.joinpath("fixtures/real/chatgpt/branching.json").exists(),
-    reason="Real ChatGPT sample not available"
-)
-def test_chatgpt_parse_real_branching():
-    """Parse real ChatGPT branching conversation."""
-    sample_path = Path(__file__).parent.parent / "fixtures" / "real" / "chatgpt" / "branching.json"
-    with open(sample_path) as f:
-        data = json.load(f)
+def test_chatgpt_parse_synthetic_branching():
+    """Parse synthetic ChatGPT conversation with many messages (branching structure)."""
+    from polylogue.schemas.synthetic import SyntheticCorpus
+
+    corpus = SyntheticCorpus.for_provider("chatgpt")
+    raw = corpus.generate(count=1, messages_per_conversation=range(12, 20), seed=99)[0]
+    data = json.loads(raw) if isinstance(raw, bytes) else raw
 
     result = chatgpt_parse(data, "branching-test")
 
     assert result.provider_name == "chatgpt"
-    assert len(result.messages) > 10  # Branching conversations are larger
-    # Branching structure is handled internally, no provider_meta on conversation
+    assert len(result.messages) > 10  # Multiple messages like branching conversations

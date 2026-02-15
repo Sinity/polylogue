@@ -4,29 +4,62 @@ These tests verify that polylogue's rendered output (markdown files, HTML, etc.)
 matches expected "golden" reference files. This catches regressions in rendering
 logic and documents expected output format.
 
-Golden files are stored in tests/golden/<test-case>/expected/
+Golden files are stored in tests/data/golden/<name>.md
+
+To regenerate golden files after intentional rendering changes:
+    UPDATE_GOLDEN=1 pytest tests/unit/ui/test_golden.py
 """
 
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
+
+import pytest
 
 from polylogue.rendering.core import ConversationFormatter
 from polylogue.rendering.renderers.markdown import MarkdownRenderer
-from tests.helpers import DbFactory
-
-# Golden files directory
-GOLDEN_DIR = Path(__file__).parent.parent / "fixtures" / "golden"
+from tests.infra import GOLDEN_DIR
+from tests.infra.helpers import DbFactory
 
 
 def normalize_markdown(text: str) -> str:
     """Normalize markdown for comparison (handle whitespace differences)."""
-    # Normalize line endings
     text = text.replace("\r\n", "\n")
-    # Remove trailing whitespace from lines
+    # Normalize tmp_path references (pytest temp dirs change between runs)
+    # Handle both direct /tmp/pytest-of-* and nix-shell wrapped /tmp/nix-shell.*/pytest-of-*
+    text = re.sub(r"/tmp/(?:nix-shell\.[^/]+/)?pytest-of-[^)>\s]+", "$TMPDIR", text)
     lines = [line.rstrip() for line in text.split("\n")]
-    # Ensure single trailing newline
     return "\n".join(lines).strip() + "\n"
+
+
+def assert_golden(name: str, actual: str) -> None:
+    """Compare rendered output against a golden reference file.
+
+    If UPDATE_GOLDEN=1 is set, overwrites the golden file instead of comparing.
+    If the golden file doesn't exist and UPDATE_GOLDEN is not set, fails with
+    instructions to generate it.
+    """
+    golden_path = GOLDEN_DIR / f"{name}.md"
+    normalized = normalize_markdown(actual)
+
+    if os.environ.get("UPDATE_GOLDEN"):
+        golden_path.parent.mkdir(parents=True, exist_ok=True)
+        golden_path.write_text(normalized)
+        return
+
+    if not golden_path.exists():
+        pytest.fail(
+            f"Golden file not found: {golden_path}\n"
+            "Run with UPDATE_GOLDEN=1 to generate golden files."
+        )
+
+    expected = normalize_markdown(golden_path.read_text())
+    assert normalized == expected, (
+        f"Rendered output differs from golden file: {golden_path}\n"
+        "Run with UPDATE_GOLDEN=1 to regenerate after intentional changes."
+    )
 
 
 class TestGoldenMarkdownRendering:
@@ -85,6 +118,9 @@ class TestGoldenMarkdownRendering:
         # Check timestamps are formatted
         assert "_Timestamp: 2024-01-01T12:00:00Z_" in formatted.markdown_text
 
+        # Golden file comparison
+        assert_golden("chatgpt-simple", formatted.markdown_text)
+
     def test_claude_with_thinking_blocks(self, tmp_path, workspace_env, db_path):
         """Claude conversation with thinking blocks should preserve XML tags."""
         factory = DbFactory(db_path)
@@ -100,11 +136,13 @@ class TestGoldenMarkdownRendering:
                     "id": "msg1",
                     "role": "user",
                     "text": "What is 2+2?",
+                    "timestamp": "2024-01-15T10:00:00Z",
                 },
                 {
                     "id": "msg2",
                     "role": "assistant",
                     "text": "<thinking>\nThis is a simple arithmetic question. 2+2 equals 4.\n</thinking>\n\nThe answer is 4.",
+                    "timestamp": "2024-01-15T10:00:05Z",
                 },
             ],
         )
@@ -118,6 +156,9 @@ class TestGoldenMarkdownRendering:
         assert "</thinking>" in formatted.markdown_text
         assert "This is a simple arithmetic question" in formatted.markdown_text
         assert "The answer is 4" in formatted.markdown_text
+
+        # Golden file comparison
+        assert_golden("claude-thinking", formatted.markdown_text)
 
     def test_json_tool_use_formatted(self, tmp_path, workspace_env, db_path):
         """JSON tool use should be formatted as code blocks."""
@@ -134,11 +175,13 @@ class TestGoldenMarkdownRendering:
                     "id": "msg1",
                     "role": "user",
                     "text": "List files in current directory",
+                    "timestamp": "2024-02-01T09:00:00Z",
                 },
                 {
                     "id": "msg2",
                     "role": "assistant",
                     "text": '{"tool": "bash", "command": "ls -la"}',
+                    "timestamp": "2024-02-01T09:00:03Z",
                 },
             ],
         )
@@ -151,6 +194,9 @@ class TestGoldenMarkdownRendering:
         assert "```json" in formatted.markdown_text
         assert '"tool": "bash"' in formatted.markdown_text
         assert "```" in formatted.markdown_text
+
+        # Golden file comparison
+        assert_golden("tool-use-json", formatted.markdown_text)
 
     def test_empty_messages_skipped(self, tmp_path, workspace_env, db_path):
         """Empty messages without attachments should be skipped."""
@@ -167,21 +213,25 @@ class TestGoldenMarkdownRendering:
                     "id": "msg1",
                     "role": "user",
                     "text": "Hello",
+                    "timestamp": "2024-03-01T14:00:00Z",
                 },
                 {
                     "id": "msg2",
                     "role": "assistant",
                     "text": "",  # Empty message
+                    "timestamp": "2024-03-01T14:00:01Z",
                 },
                 {
                     "id": "msg3",
                     "role": "user",
                     "text": "Are you there?",
+                    "timestamp": "2024-03-01T14:00:10Z",
                 },
                 {
                     "id": "msg4",
                     "role": "assistant",
                     "text": "Yes, I'm here!",
+                    "timestamp": "2024-03-01T14:00:15Z",
                 },
             ],
         )
@@ -194,6 +244,9 @@ class TestGoldenMarkdownRendering:
         # Count occurrences of "## assistant" - should be 1, not 2
         assistant_count = formatted.markdown_text.count("## assistant")
         assert assistant_count == 1, f"Expected 1 assistant section, got {assistant_count}"
+
+        # Golden file comparison
+        assert_golden("empty-messages", formatted.markdown_text)
 
     def test_unicode_content_preserved(self, tmp_path, workspace_env, db_path):
         """Unicode characters should be preserved in output."""
@@ -210,16 +263,19 @@ class TestGoldenMarkdownRendering:
                     "id": "msg1",
                     "role": "user",
                     "text": "Hello in Chinese: 你好",
+                    "timestamp": "2024-04-01T08:00:00Z",
                 },
                 {
                     "id": "msg2",
                     "role": "assistant",
                     "text": "你好! That means 'hello' in Chinese. 🇨🇳",
+                    "timestamp": "2024-04-01T08:00:05Z",
                 },
                 {
                     "id": "msg3",
                     "role": "user",
                     "text": "Math symbols: ∑, ∫, √, π, ∞",
+                    "timestamp": "2024-04-01T08:00:15Z",
                 },
             ],
         )
@@ -233,6 +289,9 @@ class TestGoldenMarkdownRendering:
         assert "你好" in formatted.markdown_text
         assert "🇨🇳" in formatted.markdown_text
         assert "∑, ∫, √, π, ∞" in formatted.markdown_text
+
+        # Golden file comparison
+        assert_golden("unicode", formatted.markdown_text)
 
     def test_attachments_formatted_as_links(self, tmp_path, workspace_env, db_path):
         """Attachments should be formatted as markdown list items."""
@@ -249,6 +308,7 @@ class TestGoldenMarkdownRendering:
                     "id": "msg1",
                     "role": "user",
                     "text": "Here's a screenshot",
+                    "timestamp": "2024-05-01T11:00:00Z",
                     "attachments": [
                         {
                             "id": "att1",
@@ -270,6 +330,9 @@ class TestGoldenMarkdownRendering:
         # Should contain either the name or the attachment ID
         has_name_or_id = "screenshot.png" in formatted.markdown_text or "att1" in formatted.markdown_text
         assert has_name_or_id, "Attachment reference not found in output"
+
+        # Golden file comparison
+        assert_golden("attachments", formatted.markdown_text)
 
     def test_message_ordering_by_timestamp(self, tmp_path, workspace_env, db_path):
         """Messages should be ordered by timestamp."""
@@ -314,6 +377,9 @@ class TestGoldenMarkdownRendering:
 
         # Verify ordering
         assert first_pos < second_pos < third_pos, "Messages should be ordered by timestamp"
+
+        # Golden file comparison
+        assert_golden("ordering", formatted.markdown_text)
 
 
 class TestGoldenFileStructure:
@@ -422,7 +488,7 @@ class TestGoldenEdgeCases:
             provider="chatgpt",
             title="Markdown Chars Test",
             messages=[
-                {"id": "msg1", "role": "user", "text": text_with_markdown},
+                {"id": "msg1", "role": "user", "text": text_with_markdown, "timestamp": "2024-06-01T16:00:00Z"},
             ],
         )
 
@@ -436,6 +502,9 @@ class TestGoldenEdgeCases:
         assert "`code`" in formatted.markdown_text
         assert "[links](url)" in formatted.markdown_text
         assert "# headers" in formatted.markdown_text
+
+        # Golden file comparison
+        assert_golden("markdown-chars", formatted.markdown_text)
 
     def test_messages_with_timestamps_rendered(self, tmp_path, workspace_env, db_path):
         """Messages with timestamps should render timestamp line."""
@@ -458,3 +527,6 @@ class TestGoldenEdgeCases:
 
         # Should have _Timestamp:_ line
         assert "_Timestamp: 2024-01-01T12:00:00Z_" in formatted.markdown_text
+
+        # Golden file comparison
+        assert_golden("timestamp", formatted.markdown_text)

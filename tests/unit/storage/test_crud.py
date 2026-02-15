@@ -24,10 +24,12 @@ from polylogue.sources.parsers.claude import (
 )
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.store import (
-    AttachmentRecord, ConversationRecord, MessageRecord,
+    ConversationRecord,
 )
-from tests.helpers import (
-    make_attachment, make_conversation, make_message,
+from tests.infra.helpers import (
+    make_attachment,
+    make_conversation,
+    make_message,
 )
 
 

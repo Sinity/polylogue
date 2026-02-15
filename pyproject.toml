@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "polylogue"
@@ -96,12 +96,8 @@ Documentation = "https://github.com/sinity/polylogue#readme"
 [project.scripts]
 polylogue = "polylogue.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["polylogue", "polylogue.*"]
-
-[tool.setuptools.package-data]
-polylogue = ["templates/*.html", "schemas/providers/*.schema.json.gz"]
+[tool.hatch.build.targets.wheel]
+packages = ["polylogue"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
@@ -187,7 +183,6 @@ ignore = [
     "SIM117", # nested with-statements with comments between context managers
 ]
 "polylogue/sources/providers/**" = ["N815"]  # Pydantic alias fields match provider JSON schemas
-"tests/scripts/**" = ["E402"]  # scripts manipulate sys.path before imports
 
 [tool.ruff.lint.isort]
 known-first-party = ["polylogue"]

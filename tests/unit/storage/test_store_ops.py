@@ -2,27 +2,13 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-import sqlite3
-import threading
-from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
-from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from polylogue.storage.backends.sqlite import (
-    SCHEMA_VERSION,
     SQLiteBackend,
-    DatabaseError,
-    _apply_schema,
-    _ensure_schema,
-    _json_or_none,
-    _run_migrations,
-    connection_context,
     default_db_path,
     open_connection,
 )
@@ -30,9 +16,8 @@ from polylogue.storage.store import (
     MAX_ATTACHMENT_SIZE,
     AttachmentRecord,
     ConversationRecord,
-    MessageRecord,
 )
-from tests.helpers import (
+from tests.infra.helpers import (
     _make_ref_id,
     _prune_attachment_refs,
     make_attachment,

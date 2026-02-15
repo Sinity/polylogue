@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -21,7 +21,7 @@ from polylogue.storage.index import ensure_index, rebuild_index, update_index_fo
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider
 from polylogue.storage.search_providers.fts5 import FTS5Provider
-from tests.helpers import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
+from tests.infra.helpers import ConversationBuilder, DbFactory, make_conversation, make_message, store_records
 
 
 def make_hash(s: str) -> str:
@@ -359,6 +359,9 @@ FTS5_ESCAPE_CASES = [
     # Plus
     ('+required', 'starts_and_ends_with_quotes', "plus operator"),
 
+    # Comma (NEAR separator in FTS5)
+    ('After reviewing, I', 'starts_and_ends_with_quotes', "comma in text"),
+
     # Multiple operators
     ('test AND query', 'test AND query', "embedded AND - passes through unquoted"),
     ('OR query', 'starts_and_ends_with_quotes', "leading OR - quoted for safety"),
@@ -548,7 +551,7 @@ class TestCreateVectorProvider:
         monkeypatch.setenv("VOYAGE_API_KEY", "voyage-key")
 
         with patch.dict("sys.modules", {"sqlite_vec": None}):
-            with patch("polylogue.storage.search_providers.logger") as mock_logger:
+            with patch("polylogue.storage.search_providers.logger"):
                 # Force ImportError
                 import builtins
                 original_import = builtins.__import__

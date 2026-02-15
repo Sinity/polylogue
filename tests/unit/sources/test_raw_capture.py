@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import zipfile
 from io import BytesIO
-from pathlib import Path
 
 import pytest
 
@@ -22,7 +21,6 @@ from polylogue.sources.source import (
     iter_source_conversations_with_raw,
     parse_drive_payload,
 )
-
 
 # =============================================================================
 # _iter_json_stream strategies
@@ -135,7 +133,7 @@ class TestRawCaptureBasic:
         ("empty_directory", True, None),
     ])
     def test_raw_capture_file_states(self, tmp_path, state_desc, capture_raw, expect_raw):
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         # Setup based on state description
         if state_desc == "json_file_captures_raw":
@@ -265,7 +263,7 @@ class TestRawCaptureZip:
 
     def test_zip_json_captures_raw(self, tmp_path):
         """ZIP with JSON: raw bytes captured per conversation."""
-        from tests.helpers import ChatGPTExportBuilder
+        from tests.infra.helpers import ChatGPTExportBuilder
 
         conv = ChatGPTExportBuilder("zip-raw").add_node("user", "Zip test").build()
         zip_path = tmp_path / "export.zip"
@@ -320,7 +318,7 @@ class TestRawCaptureZip:
 
     def test_zip_claude_filter_only_conversations_json(self, tmp_path):
         """Claude AI ZIP only processes conversations.json."""
-        from tests.helpers import ClaudeExportBuilder
+        from tests.infra.helpers import ClaudeExportBuilder
 
         conv = ClaudeExportBuilder("c1").add_human("Hello").build()
         zip_path = tmp_path / "claude-export.zip"
@@ -380,7 +378,7 @@ class TestRawCaptureCursorState:
         ("capture_raw_false", False),
     ])
     def test_cursor_state_variations(self, tmp_path, state_desc, capture_raw):
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         # Setup based on state description
         if state_desc == "file_count":
@@ -422,7 +420,7 @@ class TestRawCaptureCursorState:
 
     def test_cursor_state_accumulated_from_multiple_calls(self, tmp_path):
         """Cursor state can be reused across multiple calls."""
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         (GenericConversationBuilder("c1")
          .write_to(tmp_path / "conv1.json"))
@@ -430,7 +428,7 @@ class TestRawCaptureCursorState:
         source = Source(name="test", path=tmp_path)
         cursor_state: dict = {}
         list(iter_source_conversations_with_raw(source, cursor_state=cursor_state))
-        first_count = cursor_state["file_count"]
+        cursor_state["file_count"]
 
         (GenericConversationBuilder("c2")
          .write_to(tmp_path / "conv2.json"))
@@ -450,7 +448,7 @@ class TestRawCaptureErrorHandling:
     """Tests for error handling in raw capture."""
 
     def test_continues_after_json_decode_error(self, tmp_path):
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         (GenericConversationBuilder("good")
          .add_message("user", "valid", text="valid")
@@ -467,7 +465,7 @@ class TestRawCaptureErrorHandling:
 
     def test_file_not_found_tracked(self, tmp_path):
         """File disappearing during iteration is tracked."""
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         (GenericConversationBuilder("disappear")
          .write_to(tmp_path / "vanish.json"))
@@ -489,7 +487,7 @@ class TestRawCaptureErrorHandling:
     ])
     def test_skip_dirs_respected(self, tmp_path, skip_dir_type, skip_check):
         """_SKIP_DIRS and __pycache__ are pruned."""
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         skip_check(tmp_path)
         skip_dir = tmp_path / skip_dir_type
@@ -598,7 +596,7 @@ class TestParseDrivePayload:
 
     def test_dict_detects_chatgpt(self):
         """Dict payload triggers detect_provider for chatgpt."""
-        from tests.helpers import ChatGPTExportBuilder
+        from tests.infra.helpers import ChatGPTExportBuilder
 
         payload = ChatGPTExportBuilder("drive-chatgpt").add_node("user", "Hi").build()
         results = parse_drive_payload("drive", payload, "auto-detect")
@@ -620,9 +618,9 @@ class TestRawCaptureFormats:
 
     def test_chatgpt_export_raw_capture(self, tmp_path):
         """ChatGPT export format with raw capture."""
-        from tests.helpers import ChatGPTExportBuilder
+        from tests.infra.helpers import ChatGPTExportBuilder
 
-        export = (ChatGPTExportBuilder("chat1")
+        (ChatGPTExportBuilder("chat1")
                   .title("Test Chat")
                   .add_node("user", "What is 2+2?")
                   .add_node("assistant", "4")
@@ -638,9 +636,9 @@ class TestRawCaptureFormats:
 
     def test_claude_export_raw_capture(self, tmp_path):
         """Claude export format with raw capture."""
-        from tests.helpers import ClaudeExportBuilder
+        from tests.infra.helpers import ClaudeExportBuilder
 
-        export = (ClaudeExportBuilder("claude1")
+        (ClaudeExportBuilder("claude1")
                   .name("Claude Test")
                   .add_human("Hello Claude")
                   .add_assistant("Hi there!")
@@ -654,7 +652,7 @@ class TestRawCaptureFormats:
 
     def test_multiple_files_each_indexed(self, tmp_path):
         """Multiple conversation files each tracked with index."""
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         for i in range(3):
             (GenericConversationBuilder(f"conv{i}")
@@ -667,7 +665,7 @@ class TestRawCaptureFormats:
 
     def test_raw_bytes_valid_json(self, tmp_path):
         """Raw bytes are valid JSON that can be re-parsed."""
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         (GenericConversationBuilder("json-round-trip")
          .add_message("user", "test", text="test")
@@ -695,7 +693,7 @@ class TestRawCaptureMixedFiles:
 
     def test_mixed_json_and_jsonl(self, tmp_path):
         """Directory with both .json and .jsonl files."""
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         (GenericConversationBuilder("json-conv")
          .write_to(tmp_path / "conv.json"))
@@ -714,7 +712,7 @@ class TestRawCaptureMixedFiles:
 
     def test_nested_directory_traversal(self, tmp_path):
         """Nested directories are traversed."""
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         subdir = tmp_path / "subdir"
         subdir.mkdir()
@@ -727,7 +725,7 @@ class TestRawCaptureMixedFiles:
 
     def test_symlinked_directory_traversal(self, tmp_path):
         """Symlinked directories are followed."""
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         subdir = tmp_path / "subdir"
         subdir.mkdir()
@@ -748,7 +746,7 @@ class TestRawCaptureMixedFiles:
 
     def test_file_as_source_path(self, tmp_path):
         """Source path can be a single file."""
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         file_path = tmp_path / "single.json"
         (GenericConversationBuilder("single")
@@ -771,7 +769,7 @@ class TestRawCaptureMtimeTracking:
 
     def test_file_mtime_recorded(self, tmp_path):
         """File modification time is recorded in raw data."""
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         (GenericConversationBuilder("mtime-test")
          .write_to(tmp_path / "conv.json"))
@@ -788,7 +786,7 @@ class TestRawCaptureMtimeTracking:
 
     def test_zip_mtime_recorded(self, tmp_path):
         """ZIP file mtime is recorded."""
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         conv = GenericConversationBuilder("zip-mtime").build()
         zip_path = tmp_path / "test.zip"

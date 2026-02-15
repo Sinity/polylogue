@@ -10,15 +10,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
 
-from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.messages import MessageCollection
-
+from polylogue.lib.models import Conversation, ConversationSummary, Message
 
 # =============================================================================
 # Fixtures
@@ -567,8 +565,8 @@ class TestSiteCommand:
             mock_repo_class.return_value = mock_repo
             mock_repo.list_summaries.return_value = []
 
-            from polylogue.ui import UI
             from polylogue.cli.types import AppEnv
+            from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
@@ -619,8 +617,8 @@ class TestSiteCommand:
             mock_repo_class.return_value = mock_repo
             mock_repo.list_summaries.return_value = []
 
-            from polylogue.ui import UI
             from polylogue.cli.types import AppEnv
+            from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
@@ -654,8 +652,8 @@ class TestSiteCommand:
             mock_repo_class.return_value = mock_repo
             mock_repo.list_summaries.return_value = []
 
-            from polylogue.ui import UI
             from polylogue.cli.types import AppEnv
+            from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
@@ -681,8 +679,8 @@ class TestSiteCommand:
         ) as mock_backend_class:
             mock_backend_class.side_effect = RuntimeError("Database error")
 
-            from polylogue.ui import UI
             from polylogue.cli.types import AppEnv
+            from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True
@@ -725,8 +723,8 @@ class TestSiteCommand:
             mock_repo_class.return_value = mock_repo
             mock_repo.list_summaries.return_value = [test_summary]
 
-            from polylogue.ui import UI
             from polylogue.cli.types import AppEnv
+            from polylogue.ui import UI
 
             mock_ui = MagicMock(spec=UI)
             mock_ui.plain = True

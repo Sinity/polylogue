@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 
 import polylogue.paths as _paths
@@ -94,10 +94,8 @@ def _clear_connection_cache() -> None:
     """
     cache: dict[str, sqlite3.Connection] = getattr(_connection_cache, "conns", {})
     for conn in cache.values():
-        try:
+        with suppress(Exception):
             conn.close()
-        except Exception:
-            pass
     _connection_cache.conns = {}
 
 

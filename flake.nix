@@ -35,8 +35,7 @@
           '';
 
           build-system = with pkgs.python313Packages; [
-            setuptools
-            wheel
+            hatchling
           ];
 
           dependencies = with pkgs.python313Packages; [

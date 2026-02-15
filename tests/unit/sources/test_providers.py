@@ -23,31 +23,25 @@ Targets:
 from __future__ import annotations
 
 import json
-import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import patch
 from zipfile import ZipFile, ZipInfo
 
 import pytest
 
 from polylogue.config import Source
-from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
 from polylogue.sources.providers.claude_code import (
     ClaudeCodeMessageContent,
     ClaudeCodeRecord,
-    ClaudeCodeTextBlock,
     ClaudeCodeThinkingBlock,
-    ClaudeCodeToolResult,
     ClaudeCodeToolUse,
-    ClaudeCodeUserMessage,
     ClaudeCodeUsage,
+    ClaudeCodeUserMessage,
 )
 from polylogue.sources.source import (
-    MAX_COMPRESSION_RATIO,
     MAX_UNCOMPRESSED_SIZE,
-    _SKIP_DIRS,
     _decode_json_bytes,
     _iter_json_stream,
     _parse_json_payload,
@@ -55,7 +49,6 @@ from polylogue.sources.source import (
     iter_source_conversations,
     iter_source_conversations_with_raw,
 )
-
 
 # =============================================================================
 # Fixtures
@@ -335,7 +328,7 @@ class TestIterSourceConversationsZip:
             zf.writestr(info, repetitive)
 
         source = Source(name="test", path=zip_path)
-        conversations = list(iter_source_conversations(source, cursor_state=cursor_state))
+        list(iter_source_conversations(source, cursor_state=cursor_state))
         assert isinstance(cursor_state.get("failed_count"), int)
 
     def test_zip_uncompressed_size_exceeded(self, tmp_path: Path, cursor_state: dict):
@@ -348,7 +341,7 @@ class TestIterSourceConversationsZip:
             zf.writestr(info, "test")
 
         source = Source(name="test", path=zip_path)
-        conversations = list(iter_source_conversations(source, cursor_state=cursor_state))
+        list(iter_source_conversations(source, cursor_state=cursor_state))
         assert cursor_state.get("failed_count", 0) > 0
 
     def test_zip_exception_logged_and_raised(self, tmp_path: Path):
@@ -359,7 +352,7 @@ class TestIterSourceConversationsZip:
 
         source = Source(name="test", path=zip_path)
         with patch("polylogue.sources.source._parse_json_payload", side_effect=ValueError("test")):
-            conversations = list(iter_source_conversations(source))
+            list(iter_source_conversations(source))
 
 
 # =============================================================================
@@ -389,7 +382,7 @@ class TestIterSourceConversationsWithRaw:
             json_file.write_text('{"mapping": {}}')
 
         source = Source(name=provider, path=json_file)
-        for raw_data, conv in iter_source_conversations_with_raw(source, capture_raw=capture_enabled):
+        for raw_data, _conv in iter_source_conversations_with_raw(source, capture_raw=capture_enabled):
             if has_raw_expected is False:
                 assert raw_data is None
             elif has_raw_expected is True:
@@ -402,7 +395,7 @@ class TestIterSourceConversationsWithRaw:
         json_file.write_text('{"mapping": {}}')
 
         source = Source(name="test", path=json_file)
-        for raw_data, conv in iter_source_conversations_with_raw(source, capture_raw=True):
+        for raw_data, _conv in iter_source_conversations_with_raw(source, capture_raw=True):
             assert raw_data is not None
             assert raw_data.file_mtime is not None
             datetime.fromisoformat(raw_data.file_mtime)
@@ -415,8 +408,7 @@ class TestIterSourceConversationsWithRaw:
         source = Source(name="test", path=json_file)
         with patch.object(Path, "stat", side_effect=OSError("no stat")):
             try:
-                results = list(iter_source_conversations_with_raw(source, capture_raw=True))
-                assert results or True
+                list(iter_source_conversations_with_raw(source, capture_raw=True))
             except OSError:
                 pass
 
@@ -427,7 +419,7 @@ class TestIterSourceConversationsWithRaw:
             zf.writestr("claude-code.jsonl", '{"type": "user"}\n{"type": "assistant"}\n')
 
         source = Source(name="test", path=zip_path)
-        for raw_data, conv in iter_source_conversations_with_raw(source, capture_raw=True):
+        for raw_data, _conv in iter_source_conversations_with_raw(source, capture_raw=True):
             assert raw_data is not None
             assert raw_data.raw_bytes is not None
 
@@ -440,7 +432,7 @@ class TestIterSourceConversationsWithRaw:
         source = Source(name="test", path=zip_path)
         items = list(iter_source_conversations_with_raw(source, capture_raw=True))
         assert len(items) >= 1
-        for raw_data, conv in items:
+        for raw_data, _conv in items:
             assert raw_data is not None
             assert raw_data.source_index is not None
 
@@ -470,11 +462,11 @@ class TestIterSourceConversationsErrorHandling:
             json_file.write_text('{"mapping": {}}')
             source = Source(name="test", path=json_file)
             with patch("polylogue.sources.source.Path.open", side_effect=FileNotFoundError("deleted")):
-                conversations = list(iter_source_conversations(source, cursor_state=cursor_state))
+                list(iter_source_conversations(source, cursor_state=cursor_state))
         else:
             setup_fn(json_file)
             source = Source(name="test", path=json_file)
-            conversations = list(iter_source_conversations(source, cursor_state=cursor_state))
+            list(iter_source_conversations(source, cursor_state=cursor_state))
 
         assert cursor_state.get("failed_count", 0) > 0
 
@@ -485,7 +477,7 @@ class TestIterSourceConversationsErrorHandling:
 
         source = Source(name="test", path=json_file)
         with patch("polylogue.sources.source._parse_json_payload", side_effect=RuntimeError("unexpected")):
-            conversations = list(iter_source_conversations(source, cursor_state=cursor_state))
+            list(iter_source_conversations(source, cursor_state=cursor_state))
             assert cursor_state.get("failed_count", 0) >= 0
 
 
@@ -954,7 +946,7 @@ class TestCursorStateLatestMtimeOsError:
             return original_stat(self, **kwargs)
 
         with patch.object(Path, "stat", mock_stat_error):
-            conversations = list(iter_source_conversations(source, cursor_state=cursor_state))
+            list(iter_source_conversations(source, cursor_state=cursor_state))
             assert cursor_state.get("file_count", 0) >= 0
 
 
@@ -1221,8 +1213,9 @@ class TestZipParsing:
 
     def test_zip_directories_skipped(self, tmp_path):
         """Directory entries in ZIP are skipped."""
-        from polylogue.sources.source import iter_source_conversations
         import zipfile
+
+        from polylogue.sources.source import iter_source_conversations
 
         conv = _make_chatgpt_conv("zip-conv")
         zip_path = tmp_path / "test.zip"
@@ -1269,8 +1262,9 @@ class TestProviderZipBombProtection:
 
     def test_highly_compressed_file_flagged(self, tmp_path):
         """Files with excessive compression ratio are skipped."""
-        from polylogue.sources.source import iter_source_conversations, MAX_COMPRESSION_RATIO
         import zipfile
+
+        from polylogue.sources.source import MAX_COMPRESSION_RATIO, iter_source_conversations
 
         zip_path = tmp_path / "bomb.zip"
         # Create data that compresses very well (null bytes)

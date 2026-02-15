@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from polylogue.lib.models import Conversation, ConversationSummary, Message
+from polylogue.lib.models import Conversation, Message
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import ConversationRecord, MessageRecord
 from tests.integration.conftest import make_mock_filter
-
 
 # =============================================================================
 # Test data tables (SCREAMING_CASE constants)
@@ -81,7 +79,7 @@ class TestRepositoryViewMethod:
         repo = ConversationRepository(backend)
 
         # Test view with partial ID
-        result = repo.view("12345")
+        repo.view("12345")
 
         # Should call resolve_id first
         backend.resolve_id.assert_called_once_with("12345")
@@ -100,7 +98,7 @@ class TestRepositoryViewMethod:
         repo = ConversationRepository(backend)
 
         # Test with ID that won't resolve
-        result = repo.view("nonexistent")
+        repo.view("nonexistent")
 
         # Should try resolve
         backend.resolve_id.assert_called_once_with("nonexistent")
@@ -431,8 +429,8 @@ class TestStatsTool:
         desc,
     ):
         """Stats tool handles various configuration states."""
-        from polylogue.mcp.server import _build_server
         from polylogue.lib.stats import ArchiveStats
+        from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()

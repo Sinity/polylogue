@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
-import subprocess
 import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
@@ -30,13 +29,12 @@ from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedConversation,
-    ParsedMessage,
     attachment_from_meta,
     extract_messages_from_list,
 )
 from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.store import PlanResult, RunResult
-from tests.helpers import (
+from tests.infra.helpers import (
     ChatGPTExportBuilder,
     GenericConversationBuilder,
     InboxBuilder,
@@ -1181,7 +1179,7 @@ def test_attachment_content_id_returns_tuple_not_mutates(tmp_path: Path):
 
 def test_store_records_commits_within_lock(tmp_path: Path):
 	"""Verify store_records commits inside the lock scope."""
-	from tests.helpers import make_conversation, make_message, store_records
+	from tests.infra.helpers import make_conversation, make_message, store_records
 
 	# Create a test database
 	db_path = tmp_path / "test.db"
@@ -1218,7 +1216,7 @@ def test_store_records_commits_within_lock(tmp_path: Path):
 def test_concurrent_store_records_no_deadlock(workspace_env):
 	"""Verify concurrent store_records calls don't deadlock."""
 	from polylogue.storage.backends.sqlite import open_connection
-	from tests.helpers import make_conversation, make_message, store_records
+	from tests.infra.helpers import make_conversation, make_message, store_records
 
 	# Initialize the database using workspace_env fixture (sets up proper env vars)
 	with open_connection(None):
@@ -1308,7 +1306,6 @@ __all__ = [
     "TestWatchModeCallbacks",
     "TestParsingService",
     "TestParsedAttachmentSanitization",
-    "TestAttachmentFromMeta",
     "TestExtractMessagesFromList",
     "TestEnrichContentBlocks",
     "TestEnrichMessageMetadata",

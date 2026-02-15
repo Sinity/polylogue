@@ -1,6 +1,6 @@
 """Hypothesis strategies for message and conversation generation.
 
-These strategies generate valid message structures for testing importers
+These strategies generate valid message structures for testing parsers
 and the semantic models.
 """
 

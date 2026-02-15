@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from contextlib import suppress
 from pathlib import Path
 
 from .storage.backends.sqlite import open_connection
@@ -15,10 +16,8 @@ def _row_to_dict(row: object) -> dict[str, object]:
     d = dict(row)  # type: ignore[arg-type]
     for col in _JSON_COLUMNS:
         if col in d and isinstance(d[col], str):
-            try:
+            with suppress(json.JSONDecodeError, ValueError):
                 d[col] = json.loads(d[col])
-            except (json.JSONDecodeError, ValueError):
-                pass  # Keep as string if not valid JSON
     return d
 
 

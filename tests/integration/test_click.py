@@ -15,7 +15,6 @@ CONSOLIDATED: This file merges tests from:
 
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -270,7 +269,7 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query") as mock_execute:
-            result = runner.invoke(cli, ["hello", "world", "--plain"], catch_exceptions=False)
+            runner.invoke(cli, ["hello", "world", "--plain"], catch_exceptions=False)
             if mock_execute.called:
                 _, params = mock_execute.call_args[0]
                 assert "hello" in params.get("query", ())
@@ -281,7 +280,7 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query") as mock_execute:
-            result = runner.invoke(
+            runner.invoke(
                 cli, ["-p", "claude", "search_term", "--plain"], catch_exceptions=False
             )
             if mock_execute.called:
@@ -294,7 +293,7 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query") as mock_execute:
-            result = runner.invoke(
+            runner.invoke(
                 cli,
                 ["error", "-p", "claude", "handling", "--latest", "--plain"],
                 catch_exceptions=False,
@@ -311,7 +310,7 @@ class TestQueryFirstGroupParseArgs:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.click_app._show_stats") as mock_stats:
-            result = runner.invoke(cli, ["--plain"], catch_exceptions=False)
+            runner.invoke(cli, ["--plain"], catch_exceptions=False)
             mock_stats.assert_called_once()
 
     def test_help_flag(self, runner):
@@ -348,7 +347,7 @@ class TestQueryFirstGroupInvoke:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.click_app._show_stats") as mock_stats:
-            result = runner.invoke(cli, ["--plain"], catch_exceptions=False)
+            runner.invoke(cli, ["--plain"], catch_exceptions=False)
             mock_stats.assert_called_once()
 
     def test_query_mode_with_positional_args(self, runner):
@@ -356,7 +355,7 @@ class TestQueryFirstGroupInvoke:
         from polylogue.cli.click_app import cli
 
         with patch("polylogue.cli.query.execute_query") as mock_exec:
-            result = runner.invoke(cli, ["hello", "--plain"], catch_exceptions=False)
+            runner.invoke(cli, ["hello", "--plain"], catch_exceptions=False)
             mock_exec.assert_called_once()
 
 

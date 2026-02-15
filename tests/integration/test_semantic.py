@@ -14,7 +14,7 @@ import pytest
 
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
-from tests.helpers import assert_contains_all, assert_not_contains_any
+from tests.infra.helpers import assert_contains_all, assert_not_contains_any
 
 # =============================================================================
 # FIXTURES

@@ -5,11 +5,11 @@ Animated terminal screencasts for polylogue documentation and README.
 ## Quick Start
 
 ```bash
-# Generate demos with synthetic data (no real exports needed)
-./demos/generate.sh --synthetic
-
-# Generate demos with real fixture data
+# Generate all demos (uses synthetic data — no real exports needed)
 ./demos/generate.sh
+
+# Generate demos verbosely
+./demos/generate.sh --verbose
 ```
 
 ## Prerequisites
@@ -17,23 +17,10 @@ Animated terminal screencasts for polylogue documentation and README.
 - **VHS**: Terminal recorder from Charmbracelet. Available in the Nix devshell (`nix develop`), or install via `brew install vhs` / `go install github.com/charmbracelet/vhs@latest`.
 - **Python environment**: `uv sync` or `nix develop` for polylogue dependencies.
 
-## Using Real Fixtures
+## How It Works
 
-The demo system uses the same `tests/fixtures/real/` directory as the test suite. Symlink your actual provider exports there for richer demos:
-
-```bash
-# ChatGPT export
-ln -s ~/Downloads/conversations.json tests/fixtures/real/chatgpt/
-
-# Claude web export
-ln -s ~/Downloads/claude-export.json tests/fixtures/real/claude/
-
-# Claude Code sessions
-ln -s ~/.claude/projects tests/fixtures/real/claude-code/
-
-# Regenerate demos with real data
-./demos/generate.sh
-```
+The demo pipeline uses `SyntheticCorpus` (from `polylogue/schemas/synthetic.py`) to generate
+realistic conversations for all supported providers. No real chat exports are needed.
 
 ## Tape Files
 
@@ -49,7 +36,7 @@ ln -s ~/.claude/projects tests/fixtures/real/claude-code/
 
 ```
 generate.sh
-  ├── 1. seeds demo database (scripts/seed_demo.py)
+  ├── 1. seeds demo database (demos/seed_demo.py → SyntheticCorpus)
   ├── 2. exports env vars for isolation
   ├── 3. runs each .tape file via vhs
   └── 4. copies key GIFs to docs/assets/
@@ -64,4 +51,4 @@ generate.sh
 
 ## CI
 
-The GitHub Actions workflow (`.github/workflows/demos.yml`) runs with `--synthetic` since CI doesn't have real exports. Updated GIFs are auto-committed.
+The GitHub Actions workflow (`.github/workflows/demos.yml`) generates demos automatically. Updated GIFs are auto-committed.

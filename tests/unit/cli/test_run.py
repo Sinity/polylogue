@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock
-from datetime import datetime
 
 import pytest
 from click.testing import CliRunner
@@ -553,7 +553,6 @@ class TestDeleteConversationPreview:
 
     def test_delete_dry_run_shows_provider_breakdown(self, capsys):
         """Dry-run deletion shows provider breakdown."""
-        from unittest.mock import patch
 
         from polylogue.cli.query import _delete_conversations
 
@@ -677,8 +676,8 @@ class TestTagsCommand:
 
     def test_tags_json_output(self, runner, cli_workspace):
         """Tags --json outputs valid JSON dict."""
-        from unittest.mock import patch
         import json
+        from unittest.mock import patch
 
         with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
@@ -972,7 +971,7 @@ class TestRunEmbedCommand:
         with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
-                    with patch("polylogue.cli.commands.embed._embed_batch") as mock_batch:
+                    with patch("polylogue.cli.commands.embed._embed_batch"):
                         mock_backend = MagicMock()
                         mock_backend_class.return_value = mock_backend
                         mock_repo = MagicMock()
@@ -997,7 +996,7 @@ class TestRunEmbedCommand:
         with patch("polylogue.storage.backends.sqlite.SQLiteBackend") as mock_backend_class:
             with patch("polylogue.storage.repository.ConversationRepository") as mock_repo_class:
                 with patch("polylogue.storage.search_providers.create_vector_provider") as mock_create:
-                    with patch("polylogue.cli.commands.embed._embed_batch") as mock_batch:
+                    with patch("polylogue.cli.commands.embed._embed_batch"):
                         mock_backend = MagicMock()
                         mock_backend_class.return_value = mock_backend
                         mock_repo = MagicMock()

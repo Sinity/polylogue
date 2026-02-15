@@ -1004,8 +1004,8 @@ class TestParserRoleMappings:
 
     def test_claude_code_parser_normalizes_message_types(self):
         """Claude Code parser should handle all message types."""
-        from polylogue.sources.providers.claude_code import ClaudeCodeRecord
         from polylogue.lib.roles import normalize_role
+        from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 
         test_records = [
             {
@@ -1058,7 +1058,7 @@ class TestParserRoleMappings:
 
     def test_unknown_role_detection(self):
         """Messages with truly unknown roles should be detected as such."""
-        from polylogue.lib.roles import normalize_role, Role
+        from polylogue.lib.roles import Role, normalize_role
 
         weird_role = "custom_ai_role"
         normalized = normalize_role(weird_role)
@@ -1194,7 +1194,7 @@ class TestRoleValidationInPipeline:
         from polylogue.lib.stats import ArchiveStats
 
         # Simulate stats with high unknown role count
-        stats = ArchiveStats(
+        ArchiveStats(
             total_conversations=1000,
             total_messages=1_000_000,
             providers={"chatgpt": 500, "claude": 500},

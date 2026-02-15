@@ -6,7 +6,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -15,18 +15,15 @@ from polylogue.cli.helpers import (
     latest_render_path,
     load_last_source,
     maybe_prompt_sources,
-    print_summary,
     save_last_source,
     source_state_path,
 )
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config, Source
 from polylogue.facade import ArchiveStats
-from polylogue.lib.models import Conversation, Message
 from polylogue.lib.messages import MessageCollection
-from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.lib.models import Conversation, Message
 from polylogue.storage.store import ConversationRecord, MessageRecord
-
 
 # ============================================================================
 # PARAMETRIZATION TABLES
@@ -194,7 +191,7 @@ class TestPolylogueInitialization:
         assert "archive" in repr_str
 
 
-class TestPolylogue_Parsing:
+class TestPolylogueParsing:
     """Test ingestion functionality."""
 
     def test_ingest_chatgpt_file(self, workspace_env, sample_chatgpt_file):
@@ -603,10 +600,7 @@ class TestPolylogueInit:
     )
     def test_polylogue_init_properties(self, tmp_path, db_path_type, property_name):
         """Test Polylogue initialization with various db_path types and property access."""
-        if db_path_type == "file.db":
-            db_path = tmp_path / "test.db"
-        else:
-            db_path = db_path_type
+        db_path = tmp_path / "test.db" if db_path_type == "file.db" else db_path_type
 
         archive = Polylogue(archive_root=tmp_path, db_path=db_path)
 
@@ -1320,7 +1314,7 @@ class TestPolylogueParseFile:
             pass
 
 
-class TestPolylogue_ParseSources:
+class TestPolylogueParseSources:
     """Test sources ingestion."""
 
     def test_parse_sources_method_exists(self, tmp_path):

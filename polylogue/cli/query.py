@@ -189,10 +189,7 @@ def execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     # Handle --count (lightweight: just count, no loading)
     if params.get("count_only"):
-        if filter_chain.can_use_summaries():
-            n = len(filter_chain.list_summaries())
-        else:
-            n = len(filter_chain.list())
+        n = len(filter_chain.list_summaries()) if filter_chain.can_use_summaries() else len(filter_chain.list())
         click.echo(n)
         return
 

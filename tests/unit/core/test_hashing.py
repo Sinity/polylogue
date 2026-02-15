@@ -14,7 +14,6 @@ from hypothesis import strategies as st
 
 from polylogue.lib.hashing import hash_file, hash_payload, hash_text, hash_text_short
 
-
 HASH_TEXT_CASES = [
     ("hello world", 64, "length is 64 chars"),
     ("deterministic test", "deterministic", "same input → same output"),

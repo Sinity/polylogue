@@ -10,8 +10,7 @@ import pytest
 from click.testing import CliRunner
 
 from polylogue.cli import cli
-from polylogue.cli.click_app import cli as click_cli
-from tests.cli_helpers.cli_subprocess import run_cli, setup_isolated_workspace
+from tests.infra.cli_subprocess import run_cli, setup_isolated_workspace
 
 # =============================================================================
 # TEST DATA TABLE
@@ -57,7 +56,7 @@ class TestResetCommandSubprocess:
 
     def test_reset_force_database(self, tmp_path):
         """reset --database --yes deletes database."""
-        from tests.helpers import GenericConversationBuilder
+        from tests.infra.helpers import GenericConversationBuilder
 
         workspace = setup_isolated_workspace(tmp_path)
         env = workspace["env"]

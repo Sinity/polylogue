@@ -16,6 +16,6 @@ Usage:
 Targets:
     1. Path sanitizer - path traversal attacks
     2. escape_fts5_query() - FTS injection
-    3. Importer parse() functions - malformed JSON
+    3. Parser parse() functions - malformed JSON
     4. Timestamp parsing - DoS via slow regex
 """

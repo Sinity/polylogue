@@ -10,14 +10,12 @@ These tests target specific edge cases that were previously crashing:
 
 from __future__ import annotations
 
-import pytest
-
 from polylogue.lib.formatting import _yaml_safe
-from polylogue.sources.parsers.chatgpt import extract_messages_from_mapping, parse as chatgpt_parse
+from polylogue.sources.parsers.chatgpt import extract_messages_from_mapping
+from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 from polylogue.sources.parsers.claude import parse_code
 from polylogue.sources.parsers.codex import parse as codex_parse
 from polylogue.sources.source import _parse_json_payload
-
 
 # =============================================================================
 # 1. CHATGPT AUTHOR FIELD CRASH

@@ -2,17 +2,10 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
-import sqlite3
-from dataclasses import dataclass
-from pathlib import Path
-
 import pytest
 
 from polylogue.storage.backends.sqlite import (
     SQLiteBackend,
-    DatabaseError,
     open_connection,
 )
 from polylogue.storage.store import (
@@ -20,13 +13,12 @@ from polylogue.storage.store import (
     ConversationRecord,
     MessageRecord,
 )
-from tests.helpers import (
+from tests.infra.helpers import (
     make_attachment,
     make_conversation,
     make_message,
     store_records,
 )
-
 
 # =============================================================================
 # METADATA OPERATIONS (update, delete, add_tag, remove_tag, RMW atomicity)

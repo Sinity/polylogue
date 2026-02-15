@@ -6,7 +6,6 @@ from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.rendering.renderers.html import (
     _attach_branches,
-    _role_css_class,
     render_conversation_html,
 )
 

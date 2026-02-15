@@ -17,19 +17,17 @@ Covers uncovered areas of polylogue/cli/query.py:
 from __future__ import annotations
 
 import json
-import sys
 import tempfile
 from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from polylogue.cli.types import AppEnv
-from polylogue.lib.models import Conversation, ConversationSummary, Message
 from polylogue.lib.messages import MessageCollection
-
+from polylogue.lib.models import Conversation, ConversationSummary, Message
 
 # =============================================================================
 # Test Helpers for Building Test Data
@@ -200,14 +198,7 @@ class TestNoResults:
         from contextlib import redirect_stderr
 
         env = _make_env()
-        if has_filters:
-            params = _make_params(
-                provider="claude",
-                tag="important",
-                query=("error",),
-            )
-        else:
-            params = _make_params()
+        params = _make_params(provider="claude", tag="important", query=("error",)) if has_filters else _make_params()
 
         kwargs = {"exit_code": 1} if has_custom_exit_code else {}
 
@@ -810,7 +801,7 @@ class TestDeleteConversations:
         self._fn(env, convs, params)
 
         # Check for dry-run message
-        calls = [str(c) for c in env.ui.console.print.call_args_list]
+        [str(c) for c in env.ui.console.print.call_args_list]
         # Repository delete should not be called
         mock_get_repo.return_value.delete_conversation.assert_not_called()
 

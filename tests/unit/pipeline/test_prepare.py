@@ -7,7 +7,7 @@ from polylogue.paths import is_within_root
 from polylogue.rendering.renderers import HTMLRenderer
 from polylogue.sources import RecordBundle, save_bundle
 from polylogue.storage.backends.sqlite import open_connection
-from tests.helpers import make_attachment, make_conversation, make_message
+from tests.infra.helpers import make_attachment, make_conversation, make_message
 
 
 def _conversation_record():

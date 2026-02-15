@@ -6,11 +6,7 @@ import json
 from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from polylogue.lib.models import Conversation, ConversationSummary, Message
-from tests.integration.conftest import make_mock_filter
-
+from polylogue.lib.models import ConversationSummary
 
 # =============================================================================
 # Helper Function Tests

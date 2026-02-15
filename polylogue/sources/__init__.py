@@ -1,6 +1,5 @@
 """Sources package — unified parsing from all AI providers.
 
-Merges the former importers/, ingestion/, and providers/ packages.
 - sources/parsers/: JSON → ParsedConversation for each provider
 - sources/providers/: Pydantic models for provider export formats
 - sources/source.py: File/Drive reading → RecordBundle
@@ -21,14 +20,14 @@ from .drive_client import (
 
 # Core parsing
 from .source import (
-    RecordBundle,
-    SaveResult,
     ParsedAttachment,
     ParsedConversation,
     ParsedMessage,
-    save_bundle,
+    RecordBundle,
+    SaveResult,
     iter_source_conversations,
     parse_drive_payload,
+    save_bundle,
 )
 
 __all__ = [

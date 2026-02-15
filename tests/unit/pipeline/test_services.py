@@ -18,7 +18,7 @@ import pytest
 from polylogue.config import Config, Source
 from polylogue.pipeline.services import IndexService, RenderService
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
-from polylogue.pipeline.services.parsing import ParsingService, ParseResult
+from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.sources.parsers.base import RawConversationData
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -124,7 +124,7 @@ class TestAcquisitionServiceAcquireSources:
     def test_acquire_empty_sources(self, backend: SQLiteBackend):
         """Empty sources list returns empty result."""
         result = AcquisitionService(backend=backend).acquire_sources([])
-        assert all([result.counts[k] == 0 for k in ["acquired", "skipped", "errors"]]) and result.raw_ids == []
+        assert all(result.counts[k] == 0 for k in ["acquired", "skipped", "errors"]) and result.raw_ids == []
 
     @pytest.mark.parametrize(
         "num_convos,expected_acquired,expected_skipped,raw_content",
