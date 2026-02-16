@@ -337,7 +337,7 @@ class SQLiteBackend:
 
         Args:
             source: Filter by source name
-            provider: Filter by single provider name (for backwards compat)
+            provider: Filter by single provider name
             providers: Filter by multiple provider names (OR match, also matches source_name)
             parent_id: Filter by parent conversation ID
             since: Filter to conversations updated on/after this ISO date string
@@ -1241,8 +1241,8 @@ class SQLiteBackend:
     async def close(self) -> None:
         """Close database connections.
 
-        Note: Connections are managed per-context, so this is mostly a no-op.
-        Kept for API compatibility with sync backend.
+        Note: Connections are managed per-context, so this only closes
+        active transaction connections.
         """
         if self._txn_conn is not None:
             await self._txn_conn.close()

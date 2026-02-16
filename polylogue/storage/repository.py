@@ -67,7 +67,7 @@ class ConversationRepository:
         else:
             self._backend = SQLiteBackend(db_path=db_path)
 
-        # Store db_path for compatibility with sync repository (used by message mapping)
+        # Expose db_path for schema inference (generate_provider_schema needs it)
         self._db_path = getattr(self._backend, "_db_path", None)
 
     async def __aenter__(self) -> ConversationRepository:
@@ -152,7 +152,7 @@ class ConversationRepository:
         return await self.get(conversation_id)
 
     async def get_conversation(self, conversation_id: str) -> ConversationRecord | None:
-        """Get conversation record by ID (backend method exposed for compatibility).
+        """Get conversation record by ID.
 
         Args:
             conversation_id: Full conversation ID
@@ -203,7 +203,7 @@ class ConversationRepository:
         Args:
             limit: Maximum number of results
             offset: Number of results to skip
-            provider: Filter by single provider (backwards compat)
+            provider: Filter by single provider name
             providers: Filter by multiple providers
             source: Filter by source name
             since: Filter to conversations updated on/after this ISO date
@@ -240,7 +240,7 @@ class ConversationRepository:
         Args:
             limit: Maximum number of results
             offset: Number of results to skip
-            provider: Filter by single provider (backwards compat)
+            provider: Filter by single provider name
             providers: Filter by multiple providers
             since: Filter to conversations updated on/after this ISO date
             until: Filter to conversations updated on/before this ISO date
