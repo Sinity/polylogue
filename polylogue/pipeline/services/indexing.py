@@ -1,37 +1,44 @@
-"""Indexing service for pipeline operations."""
+"""Async indexing service for pipeline operations."""
 
 from __future__ import annotations
 
-import sqlite3
 from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
-from polylogue.storage.index import ensure_index, index_status, rebuild_index, update_index_for_conversations
+from polylogue.storage.async_index import (
+    async_ensure_index,
+    async_index_status,
+    async_rebuild_index,
+    async_update_index_for_conversations,
+)
 
 if TYPE_CHECKING:
     from polylogue.config import Config
+    from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
 
 logger = get_logger(__name__)
 
+__all__ = ["AsyncIndexService"]
 
-class IndexService:
-    """Service for managing full-text and vector search indices."""
+
+class AsyncIndexService:
+    """Service for managing full-text and vector search indices (async version)."""
 
     def __init__(
         self,
         config: Config,
-        conn: sqlite3.Connection | None = None,
+        backend: AsyncSQLiteBackend | None = None,
     ):
-        """Initialize the indexing service.
+        """Initialize the async indexing service.
 
         Args:
             config: Application configuration
-            conn: Optional database connection to use
+            backend: Optional async database backend to use
         """
         self.config = config
-        self.conn = conn
+        self.backend = backend
 
-    def update_index(self, conversation_ids: list[str]) -> bool:
+    async def update_index(self, conversation_ids: list[str]) -> bool:
         """Update the search index for specific conversations.
 
         Args:
@@ -41,52 +48,68 @@ class IndexService:
             True if indexing succeeded, False otherwise
         """
         if not conversation_ids:
-            if self.conn is not None:
-                ensure_index(self.conn)
+            if self.backend is not None:
+                try:
+                    await async_ensure_index(self.backend)
+                except Exception as exc:
+                    logger.error("Failed to ensure index", error=str(exc), exc_info=True)
+                    return False
             return True
 
+        if self.backend is None:
+            logger.error("Cannot update index without a backend")
+            return False
+
         try:
-            update_index_for_conversations(conversation_ids, self.conn)
+            await async_update_index_for_conversations(conversation_ids, self.backend)
             return True
         except Exception as exc:
             logger.error("Failed to update index", error=str(exc), exc_info=True)
             return False
 
-    def rebuild_index(self) -> bool:
+    async def rebuild_index(self) -> bool:
         """Rebuild the entire search index from scratch.
 
         Returns:
             True if rebuild succeeded, False otherwise
         """
+        if self.backend is None:
+            logger.error("Cannot rebuild index without a backend")
+            return False
+
         try:
-            rebuild_index(self.conn)
+            await async_rebuild_index(self.backend)
             return True
         except Exception as exc:
             logger.error("Failed to rebuild index", error=str(exc), exc_info=True)
             return False
 
-    def ensure_index_exists(self) -> bool:
+    async def ensure_index_exists(self) -> bool:
         """Ensure the FTS5 index table exists.
 
         Returns:
             True if index exists or was created, False on error
         """
         try:
-            if self.conn is not None:
-                ensure_index(self.conn)
+            if self.backend is not None:
+                await async_ensure_index(self.backend)
             return True
         except Exception as exc:
             logger.error("Failed to ensure index exists", error=str(exc), exc_info=True)
             return False
 
-    def get_index_status(self) -> dict[str, object]:
+    async def get_index_status(self) -> dict[str, object]:
         """Get the current status of the search index.
 
         Returns:
             Dictionary with 'exists' (bool) and 'count' (int) keys
         """
+        if self.backend is None:
+            logger.error("Cannot get index status without a backend")
+            return {"exists": False, "count": 0}
+
         try:
-            return index_status(self.conn)
+            return await async_index_status(self.backend)
         except Exception as exc:
             logger.error("Failed to get index status", error=str(exc), exc_info=True)
             return {"exists": False, "count": 0}
