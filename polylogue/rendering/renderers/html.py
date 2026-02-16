@@ -233,7 +233,7 @@ class HTMLRenderer:
         """
         return "html"
 
-    def _prepare_messages(self, conversation_id: str) -> list[dict[str, object]]:
+    async def _prepare_messages(self, conversation_id: str) -> list[dict[str, object]]:
         """Prepare messages for template rendering with HTML content.
 
         Includes branch metadata so the template can render branch
@@ -246,11 +246,13 @@ class HTMLRenderer:
             List of mainline message dicts.  Each dict may contain a
             ``branches`` key holding a list of alternative branch dicts.
         """
-        from polylogue.storage.backends.sqlite import open_connection
+        from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
+        backend = self.formatter.backend or SQLiteBackend(db_path=self.formatter.db_path)
         raw_messages: list[dict[str, object]] = []
-        with open_connection(None) as conn:
-            rows = conn.execute(
+
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute(
                 """
                 SELECT message_id, role, text, timestamp,
                        parent_message_id, branch_index
@@ -267,7 +269,8 @@ class HTMLRenderer:
                     message_id
                 """,
                 (conversation_id,),
-            ).fetchall()
+            )
+            rows = await cursor.fetchall()
 
             for row in rows:
                 text = row["text"] or ""
@@ -288,7 +291,7 @@ class HTMLRenderer:
 
         return _attach_branches(raw_messages)
 
-    def render(self, conversation_id: str, output_path: Path) -> Path:
+    async def render(self, conversation_id: str, output_path: Path) -> Path:
         """Render a conversation to enhanced HTML format.
 
         Args:
@@ -303,7 +306,7 @@ class HTMLRenderer:
             IOError: If output path is invalid or write fails
         """
         # Use shared formatter to get metadata
-        formatted = self.formatter.format(conversation_id)
+        formatted = await self.formatter.format(conversation_id)
 
         # Determine output path
         render_root_path = render_root(output_path, formatted.provider, conversation_id)
@@ -314,7 +317,7 @@ class HTMLRenderer:
         md_path.write_text(formatted.markdown_text, encoding="utf-8")
 
         # Prepare messages with HTML content
-        messages = self._prepare_messages(conversation_id)
+        messages = await self._prepare_messages(conversation_id)
 
         # Set up template
         loader: FileSystemLoader | DictLoader

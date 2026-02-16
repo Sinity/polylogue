@@ -64,7 +64,8 @@ def assert_golden(name: str, actual: str) -> None:
 class TestGoldenMarkdownRendering:
     """Test markdown rendering against golden reference files."""
 
-    def test_chatgpt_simple_conversation(self, tmp_path, workspace_env, db_path):
+    @pytest.mark.asyncio
+    async def test_chatgpt_simple_conversation(self, tmp_path, workspace_env, db_path):
         """Simple ChatGPT conversation should match golden markdown."""
         factory = DbFactory(db_path)
 
@@ -104,7 +105,7 @@ class TestGoldenMarkdownRendering:
 
         # Render
         formatter = ConversationFormatter(workspace_env["archive_root"])
-        formatted = formatter.format(conv_id)
+        formatted = await formatter.format(conv_id)
 
         # Verify structure
         assert "# Simple ChatGPT Conversation" in formatted.markdown_text
@@ -120,7 +121,8 @@ class TestGoldenMarkdownRendering:
         # Golden file comparison
         assert_golden("chatgpt-simple", formatted.markdown_text)
 
-    def test_claude_with_thinking_blocks(self, tmp_path, workspace_env, db_path):
+    @pytest.mark.asyncio
+    async def test_claude_with_thinking_blocks(self, tmp_path, workspace_env, db_path):
         """Claude conversation with thinking blocks should preserve XML tags."""
         factory = DbFactory(db_path)
 
@@ -148,7 +150,7 @@ class TestGoldenMarkdownRendering:
 
         # Render
         formatter = ConversationFormatter(workspace_env["archive_root"])
-        formatted = formatter.format(conv_id)
+        formatted = await formatter.format(conv_id)
 
         # Verify thinking blocks are preserved
         assert "<thinking>" in formatted.markdown_text
@@ -159,7 +161,8 @@ class TestGoldenMarkdownRendering:
         # Golden file comparison
         assert_golden("claude-thinking", formatted.markdown_text)
 
-    def test_json_tool_use_formatted(self, tmp_path, workspace_env, db_path):
+    @pytest.mark.asyncio
+    async def test_json_tool_use_formatted(self, tmp_path, workspace_env, db_path):
         """JSON tool use should be formatted as code blocks."""
         factory = DbFactory(db_path)
 
@@ -187,7 +190,7 @@ class TestGoldenMarkdownRendering:
 
         # Render
         formatter = ConversationFormatter(workspace_env["archive_root"])
-        formatted = formatter.format(conv_id)
+        formatted = await formatter.format(conv_id)
 
         # JSON should be in code block
         assert "```json" in formatted.markdown_text
@@ -197,7 +200,8 @@ class TestGoldenMarkdownRendering:
         # Golden file comparison
         assert_golden("tool-use-json", formatted.markdown_text)
 
-    def test_empty_messages_skipped(self, tmp_path, workspace_env, db_path):
+    @pytest.mark.asyncio
+    async def test_empty_messages_skipped(self, tmp_path, workspace_env, db_path):
         """Empty messages without attachments should be skipped."""
         factory = DbFactory(db_path)
 
@@ -237,7 +241,7 @@ class TestGoldenMarkdownRendering:
 
         # Render
         formatter = ConversationFormatter(workspace_env["archive_root"])
-        formatted = formatter.format(conv_id)
+        formatted = await formatter.format(conv_id)
 
         # Empty message should not appear
         # Count occurrences of "## assistant" - should be 1, not 2
@@ -247,7 +251,8 @@ class TestGoldenMarkdownRendering:
         # Golden file comparison
         assert_golden("empty-messages", formatted.markdown_text)
 
-    def test_unicode_content_preserved(self, tmp_path, workspace_env, db_path):
+    @pytest.mark.asyncio
+    async def test_unicode_content_preserved(self, tmp_path, workspace_env, db_path):
         """Unicode characters should be preserved in output."""
         factory = DbFactory(db_path)
 
@@ -281,7 +286,7 @@ class TestGoldenMarkdownRendering:
 
         # Render
         formatter = ConversationFormatter(workspace_env["archive_root"])
-        formatted = formatter.format(conv_id)
+        formatted = await formatter.format(conv_id)
 
         # Unicode should be preserved
         assert "你好世界 🌍" in formatted.markdown_text
@@ -292,7 +297,8 @@ class TestGoldenMarkdownRendering:
         # Golden file comparison
         assert_golden("unicode", formatted.markdown_text)
 
-    def test_attachments_formatted_as_links(self, tmp_path, workspace_env, db_path):
+    @pytest.mark.asyncio
+    async def test_attachments_formatted_as_links(self, tmp_path, workspace_env, db_path):
         """Attachments should be formatted as markdown list items."""
         factory = DbFactory(db_path)
 
@@ -322,7 +328,7 @@ class TestGoldenMarkdownRendering:
 
         # Render
         formatter = ConversationFormatter(workspace_env["archive_root"])
-        formatted = formatter.format(conv_id)
+        formatted = await formatter.format(conv_id)
 
         # Attachment should appear as list item
         assert "- Attachment:" in formatted.markdown_text
@@ -333,7 +339,8 @@ class TestGoldenMarkdownRendering:
         # Golden file comparison
         assert_golden("attachments", formatted.markdown_text)
 
-    def test_message_ordering_by_timestamp(self, tmp_path, workspace_env, db_path):
+    @pytest.mark.asyncio
+    async def test_message_ordering_by_timestamp(self, tmp_path, workspace_env, db_path):
         """Messages should be ordered by timestamp."""
         factory = DbFactory(db_path)
 
@@ -367,7 +374,7 @@ class TestGoldenMarkdownRendering:
 
         # Render
         formatter = ConversationFormatter(workspace_env["archive_root"])
-        formatted = formatter.format(conv_id)
+        formatted = await formatter.format(conv_id)
 
         # Find positions of messages in rendered text
         first_pos = formatted.markdown_text.find("First message")
@@ -384,7 +391,8 @@ class TestGoldenMarkdownRendering:
 class TestGoldenFileStructure:
     """Test file structure and naming conventions."""
 
-    def test_markdown_renderer_output_path(self, tmp_path, workspace_env, db_path):
+    @pytest.mark.asyncio
+    async def test_markdown_renderer_output_path(self, tmp_path, workspace_env, db_path):
         """MarkdownRenderer should create correct file structure."""
         factory = DbFactory(db_path)
 
@@ -401,14 +409,15 @@ class TestGoldenFileStructure:
 
         # Render using MarkdownRenderer
         renderer = MarkdownRenderer(workspace_env["archive_root"])
-        output_path = renderer.render(conv_id, tmp_path)
+        output_path = await renderer.render(conv_id, tmp_path)
 
         # Verify structure
         assert output_path.exists(), "Output file should exist"
         assert output_path.name == "conversation.md", "File should be named conversation.md"
         assert "chatgpt" in str(output_path.parent), "Parent directory should contain provider name"
 
-    def test_multiple_conversations_isolated(self, tmp_path, workspace_env, db_path):
+    @pytest.mark.asyncio
+    async def test_multiple_conversations_isolated(self, tmp_path, workspace_env, db_path):
         """Multiple conversations should be isolated in separate directories."""
         factory = DbFactory(db_path)
 
@@ -432,8 +441,8 @@ class TestGoldenFileStructure:
 
         # Render both
         renderer = MarkdownRenderer(workspace_env["archive_root"])
-        path1 = renderer.render(conv1_id, tmp_path)
-        path2 = renderer.render(conv2_id, tmp_path)
+        path1 = await renderer.render(conv1_id, tmp_path)
+        path2 = await renderer.render(conv2_id, tmp_path)
 
         # Verify isolation
         assert path1.parent != path2.parent, "Conversations should have separate directories"
@@ -443,7 +452,8 @@ class TestGoldenFileStructure:
 class TestGoldenEdgeCases:
     """Test edge cases in rendering."""
 
-    def test_very_long_text_not_truncated(self, tmp_path, workspace_env, db_path):
+    @pytest.mark.asyncio
+    async def test_very_long_text_not_truncated(self, tmp_path, workspace_env, db_path):
         """Very long messages should not be truncated."""
         factory = DbFactory(db_path)
 
@@ -461,7 +471,7 @@ class TestGoldenEdgeCases:
 
         # Render
         formatter = ConversationFormatter(workspace_env["archive_root"])
-        formatted = formatter.format(conv_id)
+        formatted = await formatter.format(conv_id)
 
         # Verify full text preserved (check length to avoid pytest truncation in error display)
         expected_min_len = len(long_text)
@@ -474,7 +484,8 @@ class TestGoldenEdgeCases:
         occurrences = formatted.markdown_text.count("This is a very long message.")
         assert occurrences >= 999, f"Text appears truncated, found {occurrences}/1000 occurrences"
 
-    def test_special_markdown_chars_not_double_escaped(self, tmp_path, workspace_env, db_path):
+    @pytest.mark.asyncio
+    async def test_special_markdown_chars_not_double_escaped(self, tmp_path, workspace_env, db_path):
         """Markdown special characters should be preserved as-is (not escaped)."""
         factory = DbFactory(db_path)
 
@@ -493,7 +504,7 @@ class TestGoldenEdgeCases:
 
         # Render
         formatter = ConversationFormatter(workspace_env["archive_root"])
-        formatted = formatter.format(conv_id)
+        formatted = await formatter.format(conv_id)
 
         # Special chars should be preserved (not escaped)
         assert "**bold**" in formatted.markdown_text
@@ -505,7 +516,8 @@ class TestGoldenEdgeCases:
         # Golden file comparison
         assert_golden("markdown-chars", formatted.markdown_text)
 
-    def test_messages_with_timestamps_rendered(self, tmp_path, workspace_env, db_path):
+    @pytest.mark.asyncio
+    async def test_messages_with_timestamps_rendered(self, tmp_path, workspace_env, db_path):
         """Messages with timestamps should render timestamp line."""
         factory = DbFactory(db_path)
 
@@ -522,7 +534,7 @@ class TestGoldenEdgeCases:
 
         # Render
         formatter = ConversationFormatter(workspace_env["archive_root"])
-        formatted = formatter.format(conv_id)
+        formatted = await formatter.format(conv_id)
 
         # Should have _Timestamp:_ line
         assert "_Timestamp: 2024-01-01T12:00:00Z_" in formatted.markdown_text

@@ -123,7 +123,7 @@ async def test_full_workflow_per_provider(provider, synthetic_source, temp_confi
     from polylogue.rendering.core import ConversationFormatter
 
     formatter = ConversationFormatter(archive_root, db_path=db_path)
-    formatted = formatter.format(str(conv.id))
+    formatted = await formatter.format(str(conv.id))
     markdown = formatted.markdown_text
     assert len(markdown) > 0
     assert any(m.text in markdown for m in conv.messages if m.text), "No message text found in markdown"
@@ -169,7 +169,7 @@ async def test_render_formats(format, temp_config_and_repo, chatgpt_sample_sourc
     from polylogue.rendering.core import ConversationFormatter
 
     formatter = ConversationFormatter(archive_root, db_path=db_path)
-    formatted = formatter.format(str(convs[0].id))
+    formatted = await formatter.format(str(convs[0].id))
 
     if format == "markdown":
         output = formatted.markdown_text

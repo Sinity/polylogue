@@ -367,7 +367,7 @@ async def test_render_conversation_markdown_has_structure(workspace_env, storage
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("c-md", output_root)
+    html_path = await renderer.render("c-md", output_root)
     md_path = html_path.parent / "conversation.md"
 
     markdown = md_path.read_text(encoding="utf-8")
@@ -393,7 +393,7 @@ async def test_render_conversation_markdown_includes_provider(workspace_env, sto
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("c-prov", output_root)
+    html_path = await renderer.render("c-prov", output_root)
     md_path = html_path.parent / "conversation.md"
 
     markdown = md_path.read_text(encoding="utf-8")
@@ -418,7 +418,7 @@ async def test_render_conversation_markdown_messages_separated(workspace_env, st
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("c-sep", output_root)
+    html_path = await renderer.render("c-sep", output_root)
     md_path = html_path.parent / "conversation.md"
 
     markdown = md_path.read_text(encoding="utf-8")
@@ -442,7 +442,7 @@ async def test_render_conversation_markdown_with_timestamp(workspace_env, storag
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("c-ts", output_root)
+    html_path = await renderer.render("c-ts", output_root)
     md_path = html_path.parent / "conversation.md"
 
     markdown = md_path.read_text(encoding="utf-8")
@@ -471,7 +471,7 @@ async def test_render_conversation_html_valid(workspace_env, storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("c-html", output_root)
+    html_path = await renderer.render("c-html", output_root)
 
     html = html_path.read_text(encoding="utf-8")
 
@@ -495,7 +495,7 @@ async def test_render_conversation_html_escapes_content(workspace_env, storage_r
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("c-esc", output_root)
+    html_path = await renderer.render("c-esc", output_root)
 
     html = html_path.read_text(encoding="utf-8")
 
@@ -520,7 +520,7 @@ async def test_render_conversation_html_includes_content(workspace_env, storage_
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("c-con", output_root)
+    html_path = await renderer.render("c-con", output_root)
 
     html = html_path.read_text(encoding="utf-8")
 
@@ -545,7 +545,7 @@ async def test_render_conversation_with_message_attachments(workspace_env, stora
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("c-att-msg", output_root)
+    html_path = await renderer.render("c-att-msg", output_root)
     md_path = html_path.parent / "conversation.md"
 
     markdown = md_path.read_text(encoding="utf-8")
@@ -571,7 +571,7 @@ async def test_render_conversation_with_orphan_attachments(workspace_env, storag
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("c-orphan", output_root)
+    html_path = await renderer.render("c-orphan", output_root)
     md_path = html_path.parent / "conversation.md"
 
     markdown = md_path.read_text(encoding="utf-8")
@@ -598,7 +598,7 @@ async def test_render_conversation_writes_markdown_file(workspace_env, storage_r
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("c-file", output_root)
+    html_path = await renderer.render("c-file", output_root)
     md_path = html_path.parent / "conversation.md"
 
     assert md_path.exists()
@@ -619,7 +619,7 @@ async def test_render_conversation_writes_html_file(workspace_env, storage_repos
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("c-html-file", output_root)
+    html_path = await renderer.render("c-html-file", output_root)
 
     assert html_path.exists()
     assert html_path.suffix == ".html"

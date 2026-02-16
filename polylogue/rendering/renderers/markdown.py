@@ -28,7 +28,7 @@ class MarkdownRenderer:
         """
         return "markdown"
 
-    def render(self, conversation_id: str, output_path: Path) -> Path:
+    async def render(self, conversation_id: str, output_path: Path) -> Path:
         """Render a conversation to Markdown format.
 
         Args:
@@ -43,7 +43,7 @@ class MarkdownRenderer:
             IOError: If output path is invalid or write fails
         """
         # Use shared formatter to get markdown
-        formatted = self.formatter.format(conversation_id)
+        formatted = await self.formatter.format(conversation_id)
 
         # Determine output path
         render_root_path = render_root(output_path, formatted.provider, conversation_id)

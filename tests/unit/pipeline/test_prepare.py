@@ -40,7 +40,7 @@ async def test_render_writes_markdown(workspace_env, storage_repository):
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("conv:hash", output_root)
+    html_path = await renderer.render("conv:hash", output_root)
     md_path = html_path.parent / "conversation.md"
 
     assert md_path.exists()
@@ -59,7 +59,7 @@ async def test_render_escapes_html(workspace_env, storage_repository):
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("conv-html", output_root)
+    html_path = await renderer.render("conv-html", output_root)
     html_text = html_path.read_text(encoding="utf-8")
 
     assert "<script>" not in html_text
@@ -82,7 +82,7 @@ async def test_render_sanitizes_paths(workspace_env, storage_repository):
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("../escape", output_root)
+    html_path = await renderer.render("../escape", output_root)
     md_path = html_path.parent / "conversation.md"
 
     assert is_within_root(md_path, output_root)
@@ -99,7 +99,7 @@ async def test_render_includes_orphan_attachments(workspace_env, storage_reposit
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
-    html_path = renderer.render("conv:hash", output_root)
+    html_path = await renderer.render("conv:hash", output_root)
     md_path = html_path.parent / "conversation.md"
     markdown = md_path.read_text(encoding="utf-8")
 
