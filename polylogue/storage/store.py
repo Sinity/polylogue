@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
+import sqlite3
 from typing import Any
 
 from pydantic import BaseModel, field_validator
 
+from polylogue.errors import DatabaseError
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.security import sanitize_path as _sanitize_path_helper
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId
@@ -193,6 +196,79 @@ def _make_ref_id(attachment_id: AttachmentId, conversation_id: ConversationId, m
 
 
 
+def _parse_json(raw: str | None, *, field: str = "", record_id: str = "") -> Any:
+    """Parse a JSON string with diagnostic context on failure."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise DatabaseError(
+            f"Corrupt JSON in {field} for {record_id}: {exc} (value starts: {raw[:80]!r})"
+        ) from exc
+
+
+def _row_get(row: sqlite3.Row, key: str, default: Any = None) -> Any:
+    """Get a column value, returning default if the column doesn't exist.
+
+    Handles schema version differences where optional columns may be absent.
+    """
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return default
+
+
+def _row_to_conversation(row: sqlite3.Row) -> ConversationRecord:
+    """Map a SQLite row to a ConversationRecord."""
+    return ConversationRecord(
+        conversation_id=row["conversation_id"],
+        provider_name=row["provider_name"],
+        provider_conversation_id=row["provider_conversation_id"],
+        title=row["title"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        content_hash=row["content_hash"],
+        provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["conversation_id"]),
+        metadata=_parse_json(row["metadata"], field="metadata", record_id=row["conversation_id"]),
+        version=row["version"],
+        parent_conversation_id=_row_get(row, "parent_conversation_id"),
+        branch_type=_row_get(row, "branch_type"),
+        raw_id=_row_get(row, "raw_id"),
+    )
+
+
+def _row_to_message(row: sqlite3.Row) -> MessageRecord:
+    """Map a SQLite row to a MessageRecord."""
+    return MessageRecord(
+        message_id=row["message_id"],
+        conversation_id=row["conversation_id"],
+        provider_message_id=row["provider_message_id"],
+        role=row["role"],
+        text=row["text"],
+        timestamp=row["timestamp"],
+        content_hash=row["content_hash"],
+        provider_meta=_parse_json(row["provider_meta"], field="provider_meta", record_id=row["message_id"]),
+        version=row["version"],
+        parent_message_id=_row_get(row, "parent_message_id"),
+        branch_index=_row_get(row, "branch_index", 0) or 0,
+    )
+
+
+def _row_to_raw_conversation(row: sqlite3.Row) -> RawConversationRecord:
+    """Map a SQLite row to a RawConversationRecord."""
+    return RawConversationRecord(
+        raw_id=row["raw_id"],
+        provider_name=row["provider_name"],
+        source_name=row["source_name"],
+        source_path=row["source_path"],
+        source_index=row["source_index"],
+        raw_content=row["raw_content"],
+        acquired_at=row["acquired_at"],
+        file_mtime=row["file_mtime"],
+    )
+
+
 __all__ = [
     "ConversationRecord",
     "MessageRecord",
@@ -202,4 +278,9 @@ __all__ = [
     "MAX_ATTACHMENT_SIZE",
     "_json_or_none",
     "_make_ref_id",
+    "_parse_json",
+    "_row_get",
+    "_row_to_conversation",
+    "_row_to_message",
+    "_row_to_raw_conversation",
 ]

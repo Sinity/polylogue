@@ -33,7 +33,7 @@ from polylogue.sources.parsers.base import (
     attachment_from_meta,
     extract_messages_from_list,
 )
-from polylogue.storage.backends.sqlite import open_connection
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import PlanResult, RunResult
 from tests.infra.helpers import (
     ChatGPTExportBuilder,
@@ -1203,7 +1203,7 @@ def test_store_records_commits_within_lock(tmp_path: Path):
 	# This is tricky to test directly, but we can verify the code structure
 
 	# For now, just verify the function works and commits
-	from polylogue.storage.backends.sqlite import open_connection
+	from polylogue.storage.backends.connection import open_connection
 
 	with open_connection(db_path) as conn:
 		record = make_conversation("test:1", title="Test", content_hash="abc123")
@@ -1219,7 +1219,7 @@ def test_store_records_commits_within_lock(tmp_path: Path):
 
 def test_concurrent_store_records_no_deadlock(workspace_env):
 	"""Verify concurrent store_records calls don't deadlock."""
-	from polylogue.storage.backends.sqlite import open_connection
+	from polylogue.storage.backends.connection import open_connection
 	from tests.infra.helpers import make_conversation, make_message, store_records
 
 	# Initialize the database using workspace_env fixture (sets up proper env vars)

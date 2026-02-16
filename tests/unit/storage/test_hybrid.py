@@ -366,7 +366,7 @@ class TestHybridSearchProviderRRF:
         ]
 
         # Mock the database lookup
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
             mock_context.execute.return_value.fetchall.return_value = [
@@ -448,7 +448,7 @@ class TestProviderFilteringIntegration:
         ]
 
         # Mock database to return conversation IDs with provider info
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
 
@@ -509,7 +509,7 @@ class TestProviderFilteringIntegration:
         ]
         hybrid_provider.vector_provider.query.return_value = []
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
 
@@ -535,7 +535,7 @@ class TestProviderFilteringIntegration:
         ]
         hybrid_provider.vector_provider.query.return_value = []
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
 
@@ -646,7 +646,7 @@ class TestSearchProviderSourceFiltering:
             vector_provider=mock_vec,
         )
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_conn:
             mock_context = MagicMock()
             mock_conn.return_value.__enter__.return_value = mock_context
 

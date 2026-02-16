@@ -31,7 +31,7 @@ from polylogue.storage.backends.schema import (
     _migrate_v9_to_v10,
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.sqlite import connection_context
+from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.store import ConversationRecord
 
 

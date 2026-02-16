@@ -21,7 +21,7 @@ from tenacity import (
 )
 
 from polylogue.lib.log import get_logger
-from polylogue.storage.backends.sqlite import DatabaseError
+from polylogue.errors import DatabaseError
 from polylogue.storage.store import MessageRecord
 
 if TYPE_CHECKING:
@@ -84,7 +84,7 @@ class SqliteVecProvider:
         Raises:
             SqliteVecError: If sqlite-vec extension cannot be loaded
         """
-        from polylogue.storage.backends.sqlite import default_db_path
+        from polylogue.storage.backends.connection import default_db_path
 
         self.db_path = db_path or default_db_path()
         self.voyage_key = voyage_key

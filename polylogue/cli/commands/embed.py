@@ -111,7 +111,7 @@ def embed_command(
 
 def _show_embedding_stats(env: AppEnv) -> None:
     """Display embedding statistics."""
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
 
     with open_connection(None) as conn:
         # Total conversations
@@ -197,7 +197,7 @@ def _embed_batch(
     from rich.console import Console as RichConsole
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
 
     backend = repo.backend
 

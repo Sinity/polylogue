@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterable, Sequence
 
-from .backends.sqlite import connection_context, open_connection
+from .backends.connection import connection_context, open_connection
 
 
 def ensure_index(conn: sqlite3.Connection) -> None:

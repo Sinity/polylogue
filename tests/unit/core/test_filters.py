@@ -28,7 +28,7 @@ from polylogue.schemas.validator import (
     validate_provider_export,
 )
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.sqlite import open_connection
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.index import rebuild_index
 from tests.infra.helpers import ConversationBuilder

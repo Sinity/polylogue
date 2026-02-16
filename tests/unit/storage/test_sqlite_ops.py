@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.sqlite import open_connection
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,

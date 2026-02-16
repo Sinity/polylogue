@@ -27,7 +27,7 @@ from polylogue.sources import iter_source_conversations
 import pytest
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.sqlite import open_connection
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.helpers import ConversationBuilder, db_setup
 
@@ -54,7 +54,7 @@ class TestClaudeCodeSidechain:
             .branch_type("sidechain")  # Set by parser when isSidechain detected
             .add_message("m1", role="user", text="Hello")
             .add_message("m2", role="assistant", text="Hi", provider_meta={"isSidechain": True})
-            .async_build()
+            .build()
         )
 
         assert conv.branch_type == "sidechain"
@@ -73,7 +73,7 @@ class TestClaudeCodeSidechain:
             .title("Normal Test")
             .add_message("m1", role="user", text="Hello")
             .add_message("m2", role="assistant", text="Hi")
-            .async_build()
+            .build()
         )
 
         assert conv.branch_type is None
@@ -97,7 +97,7 @@ class TestChatGPTBranching:
             .add_message("m1", role="user", text="Question", branch_index=0)
             .add_message("m2", role="assistant", text="Answer 1", parent_message_id="m1", branch_index=0)
             .add_message("m3", role="assistant", text="Answer 2 (edited)", parent_message_id="m1", branch_index=1)
-            .async_build()
+            .build()
         )
 
         messages = conv.messages
@@ -127,7 +127,7 @@ class TestChatGPTBranching:
             .add_message("m2", role="assistant", text="A1", branch_index=0)
             .add_message("m3", role="assistant", text="A1-alt", branch_index=1)
             .add_message("m4", role="user", text="Q2", branch_index=0)
-            .async_build()
+            .build()
         )
 
         mainline = conv.mainline_messages()
@@ -149,7 +149,7 @@ class TestCodexContinuation:
             .provider("codex")
             .title("Parent Session")
             .add_message("m1", role="user", text="Start")
-            .async_build()
+            .build()
         )
 
         # Create child session with parent reference
@@ -160,7 +160,7 @@ class TestCodexContinuation:
             .parent_conversation(str(parent.id))
             .branch_type("continuation")
             .add_message("m2", role="user", text="Continue")
-            .async_build()
+            .build()
         )
 
         assert child.parent_id == parent.id
@@ -180,7 +180,7 @@ class TestTreeTraversal:
             ConversationBuilder(db_path, "parent")
             .provider("codex")
             .add_message("m1", role="user", text="Start")
-            .async_build()
+            .build()
         )
 
         child = await (
@@ -189,7 +189,7 @@ class TestTreeTraversal:
             .parent_conversation(str(parent.id))
             .branch_type("continuation")
             .add_message("m2", role="user", text="Continue")
-            .async_build()
+            .build()
         )
 
         _backend = SQLiteBackend(db_path=db_path)
@@ -207,7 +207,7 @@ class TestTreeTraversal:
             ConversationBuilder(db_path, "parent")
             .provider("codex")
             .add_message("m1", role="user", text="Start")
-            .async_build()
+            .build()
         )
 
         child1 = await (
@@ -216,7 +216,7 @@ class TestTreeTraversal:
             .parent_conversation(str(parent.id))
             .branch_type("continuation")
             .add_message("m2", role="user", text="Continue 1")
-            .async_build()
+            .build()
         )
 
         child2 = await (
@@ -225,7 +225,7 @@ class TestTreeTraversal:
             .parent_conversation(str(parent.id))
             .branch_type("sidechain")
             .add_message("m3", role="user", text="Branch")
-            .async_build()
+            .build()
         )
 
         _backend = SQLiteBackend(db_path=db_path)
@@ -245,7 +245,7 @@ class TestTreeTraversal:
             ConversationBuilder(db_path, "root")
             .provider("codex")
             .add_message("m1", role="user", text="Root")
-            .async_build()
+            .build()
         )
 
         middle = await (
@@ -254,7 +254,7 @@ class TestTreeTraversal:
             .parent_conversation(str(root.id))
             .branch_type("continuation")
             .add_message("m2", role="user", text="Middle")
-            .async_build()
+            .build()
         )
 
         leaf = await (
@@ -263,7 +263,7 @@ class TestTreeTraversal:
             .parent_conversation(str(middle.id))
             .branch_type("continuation")
             .add_message("m3", role="user", text="Leaf")
-            .async_build()
+            .build()
         )
 
         _backend = SQLiteBackend(db_path=db_path)
@@ -287,7 +287,7 @@ class TestTreeTraversal:
             ConversationBuilder(db_path, "root")
             .provider("codex")
             .add_message("m1", role="user", text="Root")
-            .async_build()
+            .build()
         )
 
         child1 = await (
@@ -296,7 +296,7 @@ class TestTreeTraversal:
             .parent_conversation(str(root.id))
             .branch_type("continuation")
             .add_message("m2", role="user", text="Child 1")
-            .async_build()
+            .build()
         )
 
         child2 = await (
@@ -305,7 +305,7 @@ class TestTreeTraversal:
             .parent_conversation(str(root.id))
             .branch_type("sidechain")
             .add_message("m3", role="user", text="Child 2")
-            .async_build()
+            .build()
         )
 
         grandchild = await (
@@ -314,7 +314,7 @@ class TestTreeTraversal:
             .parent_conversation(str(child1.id))
             .branch_type("continuation")
             .add_message("m4", role="user", text="Grandchild")
-            .async_build()
+            .build()
         )
 
         _backend = SQLiteBackend(db_path=db_path)
@@ -343,7 +343,7 @@ class TestBranchingFilters:
             ConversationBuilder(db_path, "root")
             .provider("codex")
             .add_message("m1", role="user", text="Root")
-            .async_build()
+            .build()
         )
 
         cont = await (
@@ -352,7 +352,7 @@ class TestBranchingFilters:
             .parent_conversation(str(root.id))
             .branch_type("continuation")
             .add_message("m2", role="user", text="Continue")
-            .async_build()
+            .build()
         )
 
         _backend = SQLiteBackend(db_path=db_path)
@@ -372,7 +372,7 @@ class TestBranchingFilters:
             ConversationBuilder(db_path, "normal")
             .provider("claude-code")
             .add_message("m1", role="user", text="Normal")
-            .async_build()
+            .build()
         )
 
         # Sidechain conversation
@@ -381,7 +381,7 @@ class TestBranchingFilters:
             .provider("claude-code")
             .branch_type("sidechain")
             .add_message("m2", role="user", text="Side", provider_meta={"isSidechain": True})
-            .async_build()
+            .build()
         )
 
         _backend = SQLiteBackend(db_path=db_path)
@@ -400,7 +400,7 @@ class TestBranchingFilters:
             ConversationBuilder(db_path, "root")
             .provider("codex")
             .add_message("m1", role="user", text="Root")
-            .async_build()
+            .build()
         )
 
         await (
@@ -409,7 +409,7 @@ class TestBranchingFilters:
             .parent_conversation(str(root.id))
             .branch_type("continuation")
             .add_message("m2", role="user", text="Child")
-            .async_build()
+            .build()
         )
 
         _backend = SQLiteBackend(db_path=db_path)
@@ -430,7 +430,7 @@ class TestBranchingFilters:
             .provider("chatgpt")
             .add_message("m1", role="user", text="Q", branch_index=0)
             .add_message("m2", role="assistant", text="A", branch_index=0)
-            .async_build()
+            .build()
         )
 
         # Conversation with branches
@@ -440,7 +440,7 @@ class TestBranchingFilters:
             .add_message("m3", role="user", text="Q", branch_index=0)
             .add_message("m4", role="assistant", text="A1", branch_index=0)
             .add_message("m5", role="assistant", text="A2", branch_index=1)
-            .async_build()
+            .build()
         )
 
         _backend = SQLiteBackend(db_path=db_path)
