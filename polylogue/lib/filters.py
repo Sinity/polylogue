@@ -37,7 +37,7 @@ logger = get_logger(__name__)
 if TYPE_CHECKING:
     from polylogue.lib.models import Conversation, ConversationSummary
     from polylogue.protocols import VectorProvider
-    from polylogue.storage.async_repository import AsyncConversationRepository
+    from polylogue.storage.repository import ConversationRepository
 
 # Sort field options
 SortField = Literal["date", "tokens", "messages", "words", "longest", "random"]
@@ -57,13 +57,13 @@ class ConversationFilter:
 
     def __init__(
         self,
-        repository: AsyncConversationRepository,
+        repository: ConversationRepository,
         vector_provider: VectorProvider | None = None,
     ) -> None:
         """Initialize filter with repository.
 
         Args:
-            repository: AsyncConversationRepository for executing queries
+            repository: ConversationRepository for executing queries
             vector_provider: Optional VectorProvider for semantic search
         """
         self._repo = repository

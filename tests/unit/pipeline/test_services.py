@@ -8,10 +8,11 @@ Consolidated from:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import threading
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -20,7 +21,7 @@ from polylogue.pipeline.services import IndexService
 from polylogue.pipeline.services.acquisition import AcquireResult, AcquisitionService
 from polylogue.pipeline.services.parsing import ParseResult, ParsingService
 from polylogue.sources.parsers.base import RawConversationData
-from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 
 # ============================================================================
@@ -37,19 +38,18 @@ class TestPipelineIndexService:
         service = IndexService(config)
         assert service.config is config
 
-    def test_update_index_empty_list(self, tmp_path: Path, workspace_env):
+    async def test_update_index_empty_list(self, tmp_path: Path, workspace_env):
         """IndexService should handle empty conversation list."""
-        from polylogue.storage.backends.sqlite import connection_context
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
-        with connection_context(None) as conn:
-            service = IndexService(config, conn)
-            assert service.update_index([]) is True
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        service = IndexService(config, backend=backend)
+        assert await service.update_index([]) is True
 
-    def test_get_index_status_when_no_index(self, tmp_path: Path):
+    async def test_get_index_status_when_no_index(self, tmp_path: Path):
         """IndexService should return status when index doesn't exist."""
         config = Config(sources=[], archive_root=tmp_path / "archive", render_root=tmp_path / "render")
         service = IndexService(config)
-        status = service.get_index_status()
+        status = await service.get_index_status()
         assert "exists" in status and "count" in status
 
 
@@ -85,9 +85,9 @@ class TestAcquisitionServiceAcquireSources:
         service = AcquisitionService(backend=backend)
         assert service.backend is backend
 
-    def test_acquire_empty_sources(self, backend: SQLiteBackend):
+    async def test_acquire_empty_sources(self, backend: SQLiteBackend):
         """Empty sources list returns empty result."""
-        result = AcquisitionService(backend=backend).acquire_sources([])
+        result = await AcquisitionService(backend=backend).acquire_sources([])
         assert all(result.counts[k] == 0 for k in ["acquired", "skipped", "errors"]) and result.raw_ids == []
 
     @pytest.mark.parametrize(
@@ -99,7 +99,7 @@ class TestAcquisitionServiceAcquireSources:
         ],
     )
     @patch("polylogue.pipeline.services.acquisition.iter_source_conversations_with_raw")
-    def test_acquire_conversations(
+    async def test_acquire_conversations(
         self,
         mock_iter,
         backend: SQLiteBackend,
@@ -139,14 +139,14 @@ class TestAcquisitionServiceAcquireSources:
 
         service = AcquisitionService(backend=backend)
         source = Source(name="test-source", path=Path("/tmp/inbox"))
-        result = service.acquire_sources([source])
+        result = await service.acquire_sources([source])
 
         assert result.counts["acquired"] == expected_acquired
         assert result.counts["skipped"] == expected_skipped
         assert len(result.raw_ids) == expected_acquired
 
         if expected_acquired > 0:
-            stored = backend.get_raw_conversation(result.raw_ids[0])
+            stored = await backend.get_raw_conversation(result.raw_ids[0])
             assert stored is not None
             assert stored.raw_content == (raw_content if num_convos != 3 else b'{"id": "conv-0"}')
             assert stored.provider_name == "chatgpt"
@@ -156,7 +156,7 @@ class TestAcquisitionServiceAcquireSources:
         [("chatgpt", "test-source", "chatgpt"), (None, "my-inbox", "my-inbox")],
     )
     @patch("polylogue.pipeline.services.acquisition.iter_source_conversations_with_raw")
-    def test_acquire_provider_fallback(
+    async def test_acquire_provider_fallback(
         self,
         mock_iter,
         backend: SQLiteBackend,
@@ -174,13 +174,13 @@ class TestAcquisitionServiceAcquireSources:
         mock_iter.return_value = iter([(raw_data, MagicMock())])
         service = AcquisitionService(backend=backend)
         source = Source(name=source_name, path=Path("/tmp/inbox"))
-        result = service.acquire_sources([source])
-        stored = backend.get_raw_conversation(result.raw_ids[0])
+        result = await service.acquire_sources([source])
+        stored = await backend.get_raw_conversation(result.raw_ids[0])
         assert stored is not None
         assert stored.provider_name == expected_provider
 
     @patch("polylogue.pipeline.services.acquisition.iter_source_conversations_with_raw")
-    def test_progress_callback_called(self, mock_iter, backend: SQLiteBackend):
+    async def test_progress_callback_called(self, mock_iter, backend: SQLiteBackend):
         """Progress callback is invoked for each conversation."""
         raw_data = RawConversationData(
             raw_bytes=b'{"id": "test"}',
@@ -191,12 +191,12 @@ class TestAcquisitionServiceAcquireSources:
         callback = MagicMock()
         service = AcquisitionService(backend=backend)
         source = Source(name="test-source", path=Path("/tmp/inbox"))
-        service.acquire_sources([source], progress_callback=callback)
+        await service.acquire_sources([source], progress_callback=callback)
         callback.assert_called_with(1, desc="Acquiring")
 
     @pytest.mark.parametrize("error_scenario", ["iteration_error", "none_raw_data"])
     @patch("polylogue.pipeline.services.acquisition.iter_source_conversations_with_raw")
-    def test_acquire_handles_errors(self, mock_iter, backend: SQLiteBackend, error_scenario: str):
+    async def test_acquire_handles_errors(self, mock_iter, backend: SQLiteBackend, error_scenario: str):
         """Errors during source iteration are counted."""
         if error_scenario == "iteration_error":
             mock_iter.side_effect = ValueError("File not found")
@@ -204,7 +204,7 @@ class TestAcquisitionServiceAcquireSources:
             mock_iter.return_value = iter([(None, MagicMock())])
         service = AcquisitionService(backend=backend)
         source = Source(name="test-source", path=Path("/tmp/inbox"))
-        result = service.acquire_sources([source])
+        result = await service.acquire_sources([source])
         assert result.counts["errors"] == 1
         assert result.counts["acquired"] == 0
 
@@ -219,26 +219,26 @@ class TestAcquisitionServiceIntegration:
                 "content": {"content_type": "text", "parts": [msg]}, "create_time": time+50},
                 "parent": "root", "children": []}}}
 
-    def test_acquire_real_chatgpt_file(self, tmp_path: Path):
+    async def test_acquire_real_chatgpt_file(self, tmp_path: Path):
         """Acquire from a real ChatGPT conversations.json file."""
         inbox = tmp_path / "inbox"
         inbox.mkdir()
         (inbox / "conversations.json").write_text(json.dumps([self._make_conv("conv-1", "Test Chat", 1700000000, "Hello")]))
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-        result = AcquisitionService(backend=backend).acquire_sources([Source(name="chatgpt-inbox", path=inbox)])
+        result = await AcquisitionService(backend=backend).acquire_sources([Source(name="chatgpt-inbox", path=inbox)])
         assert result.counts["acquired"] == 1 and result.counts["errors"] == 0 and len(result.raw_ids) == 1
-        stored = backend.get_raw_conversation(result.raw_ids[0])
+        stored = await backend.get_raw_conversation(result.raw_ids[0])
         data = json.loads(stored.raw_content)
         assert stored.provider_name == "chatgpt" and data["id"] == "conv-1" and data["title"] == "Test Chat"
 
-    def test_acquire_multiple_json_files(self, tmp_path: Path):
+    async def test_acquire_multiple_json_files(self, tmp_path: Path):
         """Acquire from multiple JSON files in a directory."""
         inbox = tmp_path / "inbox"
         inbox.mkdir()
         convs = [self._make_conv("conv-1", "Chat 1", 1700000000, "Hello"),
                  self._make_conv("conv-2", "Chat 2", 1700000200, "World")]
         (inbox / "conversations.json").write_text(json.dumps(convs))
-        result = AcquisitionService(backend=SQLiteBackend(db_path=tmp_path / "test.db")).acquire_sources([Source(name="chatgpt-export", path=inbox)])
+        result = await AcquisitionService(backend=SQLiteBackend(db_path=tmp_path / "test.db")).acquire_sources([Source(name="chatgpt-export", path=inbox)])
         assert result.counts["acquired"] == 2 and len(result.raw_ids) == 2 and len(set(result.raw_ids)) == 2
 
 
@@ -273,18 +273,18 @@ class TestParseResultMerge:
         ("conv-456", {"conversations": 1, "messages": 5, "attachments": 0, "skipped_conversations": 0, "skipped_messages": 0, "skipped_attachments": 0}, False, 1, 5, 0, 0, True),
         ("conv-skipped", {"conversations": 0, "messages": 0, "attachments": 0, "skipped_conversations": 1, "skipped_messages": 5, "skipped_attachments": 0}, False, 0, 0, 0, 5, False),
     ])
-    def test_merge_result_scenarios(self, conv_id: str, result_counts: dict, content_changed: bool, exp_c: int, exp_m: int, exp_a: int, exp_s: int, in_p: bool):
+    async def test_merge_result_scenarios(self, conv_id: str, result_counts: dict, content_changed: bool, exp_c: int, exp_m: int, exp_a: int, exp_s: int, in_p: bool):
         """Parametrized merge scenarios."""
         result = ParseResult()
-        result.merge_result(conversation_id=conv_id, result_counts=result_counts, content_changed=content_changed)
+        await result.merge_result(conversation_id=conv_id, result_counts=result_counts, content_changed=content_changed)
         assert result.counts["conversations"] == exp_c and result.counts["messages"] == exp_m
         assert result.counts["attachments"] == exp_a and result.counts["skipped_messages"] == exp_s
         assert (conv_id in result.processed_ids) == in_p
 
-    def test_merge_multiple_conversations(self):
+    async def test_merge_multiple_conversations(self):
         """Multiple merges accumulate correctly."""
         result = ParseResult()
-        result.merge_result(
+        await result.merge_result(
             "conv1",
             {
                 "conversations": 1,
@@ -296,7 +296,7 @@ class TestParseResultMerge:
             },
             content_changed=True,
         )
-        result.merge_result(
+        await result.merge_result(
             "conv2",
             {
                 "conversations": 1,
@@ -313,36 +313,28 @@ class TestParseResultMerge:
         assert result.counts["attachments"] == 1
         assert result.counts["skipped_messages"] == 2
 
-    def test_merge_thread_safe(self):
+    async def test_merge_thread_safe(self):
         """Concurrent merges don't cause race conditions."""
         result = ParseResult()
-        errors: list[Exception] = []
 
-        def merge_batch(start_id: int) -> None:
-            try:
-                for i in range(100):
-                    result.merge_result(
-                        f"conv-{start_id}-{i}",
-                        {
-                            "conversations": 1,
-                            "messages": 2,
-                            "attachments": 1,
-                            "skipped_conversations": 0,
-                            "skipped_messages": 0,
-                            "skipped_attachments": 0,
-                        },
-                        content_changed=True,
-                    )
-            except Exception as e:
-                errors.append(e)
+        async def merge_batch(start_id: int) -> None:
+            for i in range(100):
+                await result.merge_result(
+                    f"conv-{start_id}-{i}",
+                    {
+                        "conversations": 1,
+                        "messages": 2,
+                        "attachments": 1,
+                        "skipped_conversations": 0,
+                        "skipped_messages": 0,
+                        "skipped_attachments": 0,
+                    },
+                    content_changed=True,
+                )
 
-        threads = [threading.Thread(target=merge_batch, args=(i,)) for i in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        tasks = [merge_batch(i) for i in range(5)]
+        await asyncio.gather(*tasks)
 
-        assert not errors
         assert result.counts["conversations"] == 500
         assert result.counts["messages"] == 1000
         assert result.counts["attachments"] == 500
@@ -391,12 +383,23 @@ class TestParsingServiceParseSources:
     These tests mock the stage boundaries to verify orchestration logic.
     """
 
-    def test_ingest_empty_sources_returns_empty_result(self):
+    async def test_ingest_empty_sources_returns_empty_result(self):
         """Empty sources list returns empty ParseResult (no acquisition needed)."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
         mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
+
+        # Mock the backend._get_connection to return an async context manager
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_backend._get_connection = MagicMock(return_value=mock_cm)
 
         service = ParsingService(
             repository=mock_repo,
@@ -409,20 +412,31 @@ class TestParsingServiceParseSources:
         ) as mock_acquire_cls:
             mock_acquire_service = MagicMock()
             mock_acquire_cls.return_value = mock_acquire_service
-            mock_acquire_service.acquire_sources.return_value = AcquireResult()
+            mock_acquire_service.acquire_sources = AsyncMock(return_value=AcquireResult())
 
-            result = service.parse_sources([])
+            result = await service.parse_sources([])
 
         assert result.counts["conversations"] == 0
         assert result.counts["messages"] == 0
         assert len(result.processed_ids) == 0
 
-    def test_ingest_calls_acquire_then_parse(self):
+    async def test_ingest_calls_acquire_then_parse(self):
         """parse_sources calls acquire stage, then parse stage with returned raw_ids."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
         mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
+
+        # Mock the backend._get_connection to return an async context manager
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_backend._get_connection = MagicMock(return_value=mock_cm)
 
         service = ParsingService(
             repository=mock_repo,
@@ -439,17 +453,17 @@ class TestParsingServiceParseSources:
             acquire_result = AcquireResult()
             acquire_result.raw_ids = ["raw-1", "raw-2"]
             acquire_result.counts["acquired"] = 2
-            mock_acquire_service.acquire_sources.return_value = acquire_result
+            mock_acquire_service.acquire_sources = AsyncMock(return_value=acquire_result)
 
             mock_parse_result = ParseResult()
             mock_parse_result.counts["conversations"] = 2
             mock_parse_result.counts["messages"] = 5
             mock_parse_result.processed_ids = {"conv-1", "conv-2"}
             with patch.object(
-                service, "parse_from_raw", return_value=mock_parse_result
+                service, "parse_from_raw", new_callable=AsyncMock, return_value=mock_parse_result
             ) as mock_parse:
                 source = Source(name="test-source", path=Path("/tmp/inbox"))
-                result = service.parse_sources([source])
+                result = await service.parse_sources([source])
 
                 mock_acquire_service.acquire_sources.assert_called_once()
                 mock_parse.assert_called_once_with(
@@ -461,12 +475,23 @@ class TestParsingServiceParseSources:
         assert result.counts["messages"] == 5
         assert result.processed_ids == {"conv-1", "conv-2"}
 
-    def test_ingest_skips_parse_when_nothing_acquired(self):
+    async def test_ingest_skips_parse_when_nothing_acquired(self):
         """If acquisition returns no raw_ids, parse stage is skipped."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
         mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
+
+        # Mock the backend._get_connection to return an async context manager
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_backend._get_connection = MagicMock(return_value=mock_cm)
 
         service = ParsingService(
             repository=mock_repo,
@@ -482,22 +507,33 @@ class TestParsingServiceParseSources:
 
             acquire_result = AcquireResult()
             acquire_result.counts["skipped"] = 5
-            mock_acquire_service.acquire_sources.return_value = acquire_result
+            mock_acquire_service.acquire_sources = AsyncMock(return_value=acquire_result)
 
-            with patch.object(service, "parse_from_raw") as mock_parse:
+            with patch.object(service, "parse_from_raw", new_callable=AsyncMock) as mock_parse:
                 source = Source(name="test-source", path=Path("/tmp/inbox"))
-                result = service.parse_sources([source])
+                result = await service.parse_sources([source])
 
                 mock_parse.assert_not_called()
 
         assert result.counts["conversations"] == 0
 
-    def test_progress_callback_passed_to_both_stages(self):
+    async def test_progress_callback_passed_to_both_stages(self):
         """Progress callback is forwarded to both acquire and parse stages."""
         mock_repo = MagicMock()
         mock_backend = MagicMock()
         mock_repo._backend = mock_backend
         mock_config = MagicMock(spec=Config)
+
+        # Mock the backend._get_connection to return an async context manager
+        mock_conn = AsyncMock()
+        mock_cursor = AsyncMock()
+        mock_cursor.fetchall = AsyncMock(return_value=[])
+        mock_conn.execute = AsyncMock(return_value=mock_cursor)
+
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_cm.__aexit__ = AsyncMock(return_value=False)
+        mock_backend._get_connection = MagicMock(return_value=mock_cm)
 
         service = ParsingService(
             repository=mock_repo,
@@ -515,14 +551,14 @@ class TestParsingServiceParseSources:
 
             acquire_result = AcquireResult()
             acquire_result.raw_ids = ["raw-1"]
-            mock_acquire_service.acquire_sources.return_value = acquire_result
+            mock_acquire_service.acquire_sources = AsyncMock(return_value=acquire_result)
 
             mock_parse_result = ParseResult()
             with patch.object(
-                service, "parse_from_raw", return_value=mock_parse_result
+                service, "parse_from_raw", new_callable=AsyncMock, return_value=mock_parse_result
             ) as mock_parse:
                 source = Source(name="test-source", path=Path("/tmp/inbox"))
-                service.parse_sources([source], progress_callback=callback)
+                await service.parse_sources([source], progress_callback=callback)
 
                 mock_acquire_service.acquire_sources.assert_called_once_with(
                     [source],
@@ -534,7 +570,7 @@ class TestParsingServiceParseSources:
                     progress_callback=callback,
                 )
 
-    def test_backend_not_initialized_raises(self):
+    async def test_backend_not_initialized_raises(self):
         """RuntimeError raised if repository backend is None."""
         mock_repo = MagicMock()
         mock_repo._backend = None
@@ -549,7 +585,7 @@ class TestParsingServiceParseSources:
         source = Source(name="test-source", path=Path("/tmp/inbox"))
 
         with pytest.raises(RuntimeError, match="backend is not initialized"):
-            service.parse_sources([source])
+            await service.parse_sources([source])
 
 
 # ============================================================================
@@ -567,30 +603,32 @@ class TestParsingServiceIntegration:
                 "content": {"content_type": "text", "parts": [msg]}, "create_time": 1700000050},
                 "parent": "root", "children": []}}}
 
-    def test_ingest_with_real_database(self, cli_workspace, tmp_path):
+    async def test_ingest_with_real_database(self, cli_workspace, tmp_path):
         """Full ingestion flow with real database."""
         inbox = cli_workspace["inbox_dir"]
         (inbox / "conversations.json").write_text(json.dumps([self._conv_json("test-conv-1", "Test Conversation", "Hello, world!")]))
         backend = SQLiteBackend(db_path=cli_workspace["db_path"])
         config = Config(archive_root=cli_workspace["archive_root"], render_root=cli_workspace["render_root"],
                        sources=[Source(name="test-inbox", path=inbox)])
-        result = ParsingService(repository=ConversationRepository(backend=backend),
+        result = await ParsingService(repository=ConversationRepository(backend=backend),
                                  archive_root=cli_workspace["archive_root"], config=config).parse_sources(config.sources)
         assert result.counts["conversations"] >= 1 and len(result.processed_ids) >= 1
 
-    def test_parse_from_raw_parses_stored_conversations(self, cli_workspace, tmp_path):
-        """Full acquire → parse flow using database-driven testing."""
+    async def test_parse_from_raw_parses_stored_conversations(self, cli_workspace, tmp_path):
+        """Full acquire -> parse flow using database-driven testing."""
         inbox = cli_workspace["inbox_dir"]
         (inbox / "conversations.json").write_text(json.dumps([self._conv_json("test-conv-raw", "Test Raw Conversation", "Hello from raw!")]))
         backend = SQLiteBackend(db_path=cli_workspace["db_path"])
         config = Config(archive_root=cli_workspace["archive_root"], render_root=cli_workspace["render_root"],
                        sources=[Source(name="test-inbox", path=inbox)])
-        raw_ids = AcquisitionService(backend=backend).acquire_sources(config.sources).raw_ids
+        acquire_result = await AcquisitionService(backend=backend).acquire_sources(config.sources)
+        raw_ids = acquire_result.raw_ids
         assert len(raw_ids) == 1
-        parse_result = ParsingService(repository=ConversationRepository(backend=backend),
+        parse_result = await ParsingService(repository=ConversationRepository(backend=backend),
                                        archive_root=cli_workspace["archive_root"], config=config).parse_from_raw(raw_ids=raw_ids)
         assert parse_result.counts["conversations"] >= 1 and len(parse_result.processed_ids) >= 1
-        with backend._get_connection() as conn:
-            row = conn.execute("SELECT raw_id FROM conversations WHERE conversation_id = ?",
-                             (list(parse_result.processed_ids)[0],)).fetchone()
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute("SELECT raw_id FROM conversations WHERE conversation_id = ?",
+                             (list(parse_result.processed_ids)[0],))
+            row = await cursor.fetchone()
         assert row is not None and row["raw_id"] == raw_ids[0]

@@ -10,7 +10,7 @@ from polylogue.protocols import OutputRenderer
 
 logger = get_logger(__name__)
 
-__all__ = ["AsyncRenderService", "RenderResult"]
+__all__ = ["RenderService", "RenderResult"]
 
 
 class RenderResult:
@@ -39,7 +39,7 @@ class RenderResult:
         )
 
 
-class AsyncRenderService:
+class RenderService:
     """Service for rendering conversations to Markdown and HTML (async version)."""
 
     def __init__(

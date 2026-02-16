@@ -85,13 +85,13 @@ class TestProviderMetrics:
 class TestComputeProviderComparison:
     """Test compute_provider_comparison function."""
 
-    def test_empty_database(self, workspace_env):
+    async def test_empty_database(self, workspace_env):
         """Empty database returns empty list."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
-        result = compute_provider_comparison(db_path=db_path)
+        result = await compute_provider_comparison(db_path=db_path)
         assert result == []
 
-    def test_single_provider(self, workspace_env, storage_repository):
+    async def test_single_provider(self, workspace_env, storage_repository):
         """Single provider aggregation."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -100,9 +100,9 @@ class TestComputeProviderComparison:
             make_message("msg-1", "conv-1", text="Hello world test"),
             make_message("msg-2", "conv-1", role="assistant", text="Response with more words for testing average calculation"),
         ]
-        storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = compute_provider_comparison(db_path=db_path)
+        result = await compute_provider_comparison(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].provider_name == "claude"
@@ -111,7 +111,7 @@ class TestComputeProviderComparison:
         assert result[0].user_message_count == 1
         assert result[0].assistant_message_count == 1
 
-    def test_multiple_providers_sorted(self, workspace_env, storage_repository):
+    async def test_multiple_providers_sorted(self, workspace_env, storage_repository):
         """Multiple providers sorted by conversation count descending."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -119,15 +119,15 @@ class TestComputeProviderComparison:
         for i in range(2):
             conv = make_conversation(f"claude-{i}", provider_name="claude", title=f"Claude {i}", provider_meta={"source": "inbox"})
             msgs = [make_message(f"cmsg-{i}", f"claude-{i}", text="Hello")]
-            storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+            await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
         # Create 3 chatgpt conversations
         for i in range(3):
             conv = make_conversation(f"chatgpt-{i}", provider_name="chatgpt", title=f"ChatGPT {i}", provider_meta={"source": "inbox"})
             msgs = [make_message(f"gmsg-{i}", f"chatgpt-{i}", text="Hi")]
-            storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+            await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = compute_provider_comparison(db_path=db_path)
+        result = await compute_provider_comparison(db_path=db_path)
 
         assert len(result) == 2
         # ChatGPT has more conversations, should be first
@@ -136,7 +136,7 @@ class TestComputeProviderComparison:
         assert result[1].provider_name == "claude"
         assert result[1].conversation_count == 2
 
-    def test_user_assistant_segregation(self, workspace_env, storage_repository):
+    async def test_user_assistant_segregation(self, workspace_env, storage_repository):
         """User and assistant messages are counted separately."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -147,16 +147,16 @@ class TestComputeProviderComparison:
             make_message("rmsg-3", "conv-roles", text="User two"),
             make_message("rmsg-4", "conv-roles", role="assistant", text="Assistant two three four"),
         ]
-        storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = compute_provider_comparison(db_path=db_path)
+        result = await compute_provider_comparison(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].user_message_count == 2
         assert result[0].assistant_message_count == 2
         assert result[0].message_count == 4
 
-    def test_avg_messages_per_conversation(self, workspace_env, storage_repository):
+    async def test_avg_messages_per_conversation(self, workspace_env, storage_repository):
         """Average messages per conversation is computed correctly."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -166,7 +166,7 @@ class TestComputeProviderComparison:
             make_message("avg-msg-1a", "avg-1", text="Hi"),
             make_message("avg-msg-1b", "avg-1", role="assistant", text="Hello"),
         ]
-        storage_repository.save_conversation(conversation=conv1, messages=msgs1, attachments=[])
+        await storage_repository.save_conversation(conversation=conv1, messages=msgs1, attachments=[])
 
         # Conv 2: 4 messages
         conv2 = make_conversation("avg-2", title="Avg 2", provider_meta={"source": "inbox"})
@@ -176,15 +176,15 @@ class TestComputeProviderComparison:
             make_message("avg-msg-2c", "avg-2", text="Q2"),
             make_message("avg-msg-2d", "avg-2", role="assistant", text="A2"),
         ]
-        storage_repository.save_conversation(conversation=conv2, messages=msgs2, attachments=[])
+        await storage_repository.save_conversation(conversation=conv2, messages=msgs2, attachments=[])
 
-        result = compute_provider_comparison(db_path=db_path)
+        result = await compute_provider_comparison(db_path=db_path)
 
         assert len(result) == 1
         # Total 6 messages across 2 conversations = 3.0 average
         assert result[0].avg_messages_per_conversation == 3.0
 
-    def test_tool_use_detection(self, workspace_env, storage_repository):
+    async def test_tool_use_detection(self, workspace_env, storage_repository):
         """Tool use is detected from content_blocks."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -193,16 +193,16 @@ class TestComputeProviderComparison:
             make_message("tool-msg-1", "tool-conv", role="assistant", text="Let me search for that",
                         provider_meta={"content_blocks": [{"type": "tool_use", "name": "search", "id": "toolu_123"}]}),
         ]
-        storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = compute_provider_comparison(db_path=db_path)
+        result = await compute_provider_comparison(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].tool_use_count == 1
         assert result[0].total_conversations_with_tools == 1
         assert result[0].tool_use_percentage == 100.0
 
-    def test_thinking_detection(self, workspace_env, storage_repository):
+    async def test_thinking_detection(self, workspace_env, storage_repository):
         """Thinking is detected from content_blocks."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -211,16 +211,16 @@ class TestComputeProviderComparison:
             make_message("think-msg-1", "think-conv", role="assistant", text="Let me think about this",
                         provider_meta={"content_blocks": [{"type": "thinking", "thinking": "Reasoning..."}]}),
         ]
-        storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = compute_provider_comparison(db_path=db_path)
+        result = await compute_provider_comparison(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].thinking_count == 1
         assert result[0].total_conversations_with_thinking == 1
         assert result[0].thinking_percentage == 100.0
 
-    def test_conversations_with_tools_set_dedup(self, workspace_env, storage_repository):
+    async def test_conversations_with_tools_set_dedup(self, workspace_env, storage_repository):
         """Multiple tool uses in same conversation counted once."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
@@ -231,25 +231,25 @@ class TestComputeProviderComparison:
             make_message("mt-msg-2", "multi-tool", role="assistant", text="Tool 2",
                         provider_meta={"content_blocks": [{"type": "tool_use", "name": "b"}]}),
         ]
-        storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = compute_provider_comparison(db_path=db_path)
+        result = await compute_provider_comparison(db_path=db_path)
 
         assert len(result) == 1
         assert result[0].tool_use_count == 2  # Two tool use messages
         assert result[0].total_conversations_with_tools == 1  # But one conversation
         assert result[0].tool_use_percentage == 100.0
 
-    def test_division_by_zero_protection(self, workspace_env, storage_repository):
+    async def test_division_by_zero_protection(self, workspace_env, storage_repository):
         """Metrics handle zero counts gracefully."""
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 
         # Conversation with system-only messages (no user/assistant)
         conv = make_conversation("zero-div", title="Zero Division", provider_meta={"source": "inbox"})
         msgs = [make_message("zero-msg-1", "zero-div", role="system", text="System message")]
-        storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
-        result = compute_provider_comparison(db_path=db_path)
+        result = await compute_provider_comparison(db_path=db_path)
 
         assert len(result) == 1
         # Should not raise division by zero

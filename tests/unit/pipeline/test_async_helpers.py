@@ -1,7 +1,7 @@
 """Tests for async pipeline helper modules.
 
 Covers:
-- async_prepare.py: async_prepare_records, async_save_bundle
+- async_prepare.py: prepare_records, async_save_bundle
 - async_index.py: async_ensure_index, async_rebuild_index, async_update_index_for_conversations, async_index_status
 """
 
@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import pytest
 
-from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.store import ConversationRecord, MessageRecord
 
@@ -33,7 +33,7 @@ class TestAsyncEnsureIndex:
         from polylogue.storage.async_index import async_ensure_index, async_index_status
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            backend = AsyncSQLiteBackend(db_path=Path(tmpdir) / "test.db")
+            backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             # Initialize schema
             await backend.list_conversations()
 
@@ -49,7 +49,7 @@ class TestAsyncEnsureIndex:
         from polylogue.storage.async_index import async_ensure_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            backend = AsyncSQLiteBackend(db_path=Path(tmpdir) / "test.db")
+            backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             await backend.list_conversations()
 
             # Call twice - should not raise
@@ -68,7 +68,7 @@ class TestAsyncRebuildIndex:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
-            backend = AsyncSQLiteBackend(db_path=db_path)
+            backend = SQLiteBackend(db_path=db_path)
 
             now = datetime.now(timezone.utc).isoformat()
 
@@ -111,7 +111,7 @@ class TestAsyncRebuildIndex:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
-            backend = AsyncSQLiteBackend(db_path=db_path)
+            backend = SQLiteBackend(db_path=db_path)
 
             now = datetime.now(timezone.utc).isoformat()
 
@@ -166,7 +166,7 @@ class TestAsyncUpdateIndex:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
-            backend = AsyncSQLiteBackend(db_path=db_path)
+            backend = SQLiteBackend(db_path=db_path)
 
             now = datetime.now(timezone.utc).isoformat()
 
@@ -211,7 +211,7 @@ class TestAsyncUpdateIndex:
         from polylogue.storage.async_index import async_update_index_for_conversations
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            backend = AsyncSQLiteBackend(db_path=Path(tmpdir) / "test.db")
+            backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             await backend.list_conversations()
 
             # Should not raise
@@ -228,7 +228,7 @@ class TestAsyncIndexStatus:
         from polylogue.storage.async_index import async_index_status
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            backend = AsyncSQLiteBackend(db_path=Path(tmpdir) / "test.db")
+            backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             # Schema init auto-creates FTS table
             await backend.list_conversations()
 
@@ -244,19 +244,19 @@ class TestAsyncIndexStatus:
 
 
 class TestAsyncPrepareRecords:
-    """Tests for async_prepare_records."""
+    """Tests for prepare_records."""
 
     @pytest.mark.asyncio
     async def test_new_conversation(self):
         """Creates new records for unseen conversation."""
-        from polylogue.pipeline.async_prepare import async_prepare_records
+        from polylogue.pipeline.prepare import prepare_records
         from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
-        from polylogue.storage.async_repository import AsyncConversationRepository
+        from polylogue.storage.repository import ConversationRepository
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
-            backend = AsyncSQLiteBackend(db_path=db_path)
-            repo = AsyncConversationRepository(backend=backend)
+            backend = SQLiteBackend(db_path=db_path)
+            repo = ConversationRepository(backend=backend)
 
             convo = ParsedConversation(
                 provider_name="chatgpt",
@@ -281,7 +281,7 @@ class TestAsyncPrepareRecords:
                 attachments=[],
             )
 
-            cid, counts, changed = await async_prepare_records(
+            cid, counts, changed = await prepare_records(
                 convo,
                 "test-source",
                 archive_root=Path(tmpdir),
@@ -298,14 +298,14 @@ class TestAsyncPrepareRecords:
     @pytest.mark.asyncio
     async def test_existing_unchanged(self):
         """Skips when content hash matches existing."""
-        from polylogue.pipeline.async_prepare import async_prepare_records
+        from polylogue.pipeline.prepare import prepare_records
         from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
-        from polylogue.storage.async_repository import AsyncConversationRepository
+        from polylogue.storage.repository import ConversationRepository
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
-            backend = AsyncSQLiteBackend(db_path=db_path)
-            repo = AsyncConversationRepository(backend=backend)
+            backend = SQLiteBackend(db_path=db_path)
+            repo = ConversationRepository(backend=backend)
 
             convo = ParsedConversation(
                 provider_name="chatgpt",
@@ -325,12 +325,12 @@ class TestAsyncPrepareRecords:
             )
 
             # First save
-            cid1, counts1, _ = await async_prepare_records(
+            cid1, counts1, _ = await prepare_records(
                 convo, "src", archive_root=Path(tmpdir), backend=backend, repository=repo,
             )
 
             # Second save — same content
-            cid2, counts2, changed = await async_prepare_records(
+            cid2, counts2, changed = await prepare_records(
                 convo, "src", archive_root=Path(tmpdir), backend=backend, repository=repo,
             )
 
@@ -343,14 +343,14 @@ class TestAsyncPrepareRecords:
     @pytest.mark.asyncio
     async def test_existing_changed(self):
         """Detects content change via hash mismatch."""
-        from polylogue.pipeline.async_prepare import async_prepare_records
+        from polylogue.pipeline.prepare import prepare_records
         from polylogue.sources.parsers.base import ParsedConversation, ParsedMessage
-        from polylogue.storage.async_repository import AsyncConversationRepository
+        from polylogue.storage.repository import ConversationRepository
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
-            backend = AsyncSQLiteBackend(db_path=db_path)
-            repo = AsyncConversationRepository(backend=backend)
+            backend = SQLiteBackend(db_path=db_path)
+            repo = ConversationRepository(backend=backend)
 
             convo_v1 = ParsedConversation(
                 provider_name="chatgpt",
@@ -370,7 +370,7 @@ class TestAsyncPrepareRecords:
             )
 
             # First save
-            await async_prepare_records(
+            await prepare_records(
                 convo_v1, "src", archive_root=Path(tmpdir), backend=backend, repository=repo,
             )
 
@@ -398,7 +398,7 @@ class TestAsyncPrepareRecords:
                 attachments=[],
             )
 
-            cid, counts, changed = await async_prepare_records(
+            cid, counts, changed = await prepare_records(
                 convo_v2, "src", archive_root=Path(tmpdir), backend=backend, repository=repo,
             )
 

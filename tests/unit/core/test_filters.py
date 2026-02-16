@@ -27,9 +27,9 @@ from polylogue.schemas.validator import (
     ValidationResult,
     validate_provider_export,
 )
-from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.sqlite import open_connection
-from polylogue.storage.async_repository import AsyncConversationRepository
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.index import rebuild_index
 from tests.infra.helpers import ConversationBuilder
 
@@ -191,8 +191,8 @@ def filter_db(tmp_path):
 @pytest.fixture
 def filter_repo(filter_db):
     """Create repository for filter tests."""
-    backend = AsyncSQLiteBackend(db_path=filter_db)
-    return AsyncConversationRepository(backend=backend)
+    backend = SQLiteBackend(db_path=filter_db)
+    return ConversationRepository(backend=backend)
 
 
 class TestConversationFilterChaining:
@@ -405,8 +405,8 @@ class TestFiltersDateTimeHandling:
          .provider("claude")
          .created_at(now.isoformat())
          .save())
-        backend = AsyncSQLiteBackend(db_path)
-        return AsyncConversationRepository(backend)
+        backend = SQLiteBackend(db_path)
+        return ConversationRepository(backend)
 
     def test_since_with_datetime_object(self, filter_repo):
         """Test .since() with datetime object instead of string."""
@@ -461,8 +461,8 @@ class TestFiltersSimilarAndBranches:
          .add_message("m3", role="assistant", text="resp2", branch_index=1)
          .save())
 
-        backend = AsyncSQLiteBackend(db_path)
-        return AsyncConversationRepository(backend)
+        backend = SQLiteBackend(db_path)
+        return ConversationRepository(backend)
 
     def test_similar_text(self, filter_repo):
         """Test .similar() stores text for vector search."""
@@ -506,8 +506,8 @@ class TestFiltersApplyFiltersLogic:
          .add_message("m2", text="data " * 15)
          .save())
 
-        backend = AsyncSQLiteBackend(db_path)
-        return AsyncConversationRepository(backend)
+        backend = SQLiteBackend(db_path)
+        return ConversationRepository(backend)
 
     @pytest.mark.asyncio
     async def test_excluded_providers_filter(self, filter_repo_populated):
@@ -540,8 +540,8 @@ class TestFiltersIDPrefixResolution:
          .provider("claude")
          .save())
 
-        backend = AsyncSQLiteBackend(db_path)
-        return AsyncConversationRepository(backend)
+        backend = SQLiteBackend(db_path)
+        return ConversationRepository(backend)
 
     @pytest.mark.asyncio
     async def test_id_prefix_exact_match_fast_path(self, filter_repo_with_id):
@@ -581,8 +581,8 @@ class TestFiltersListSummariesPaths:
          .add_message("m1", text="Message")
          .save())
 
-        backend = AsyncSQLiteBackend(db_path)
-        return AsyncConversationRepository(backend)
+        backend = SQLiteBackend(db_path)
+        return ConversationRepository(backend)
 
     @pytest.mark.asyncio
     async def test_list_summaries_with_provider_filter(self, filter_repo_summaries):
@@ -640,8 +640,8 @@ class TestFiltersPick:
              .title(f"Conversation {i}")
              .save())
 
-        backend = AsyncSQLiteBackend(db_path)
-        return AsyncConversationRepository(backend)
+        backend = SQLiteBackend(db_path)
+        return ConversationRepository(backend)
 
     @pytest.mark.asyncio
     async def test_pick_no_results(self, filter_repo_pick):
@@ -710,8 +710,8 @@ class TestFiltersNegativeFTSLogic:
          .add_message("m1", text="working perfectly")
          .save())
 
-        backend = AsyncSQLiteBackend(db_path)
-        return AsyncConversationRepository(backend)
+        backend = SQLiteBackend(db_path)
+        return ConversationRepository(backend)
 
     @pytest.mark.asyncio
     async def test_negative_fts_excludes_conversations(self, filter_repo_fts):

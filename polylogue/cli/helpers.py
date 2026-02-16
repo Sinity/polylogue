@@ -12,7 +12,7 @@ from polylogue.cli.types import AppEnv
 from polylogue.config import Config, get_config
 from polylogue.health import cached_health_summary, get_health
 from polylogue.lib.theme import provider_color
-from polylogue.pipeline.async_runner import async_latest_run
+from polylogue.pipeline.runner import latest_run
 
 
 def fail(command: str, message: str) -> NoReturn:
@@ -101,7 +101,7 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
     config = load_effective_config(env)
     import asyncio
 
-    last_run_data = asyncio.run(async_latest_run())
+    last_run_data = asyncio.run(latest_run())
     last_line = "Last run: none"
     if last_run_data:
         last_line = f"Last run: {last_run_data.run_id} ({last_run_data.timestamp})"
@@ -143,7 +143,7 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
         try:
             from polylogue.cli.analytics import compute_provider_comparison
 
-            metrics = compute_provider_comparison()
+            metrics = asyncio.run(compute_provider_comparison())
             if metrics:
                 ui.console.print()
                 total_convs = sum(m.conversation_count for m in metrics)

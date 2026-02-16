@@ -34,7 +34,7 @@ eval $(polylogue demo --seed --env-only)
 polylogue demo --seed -p chatgpt,claude -n 10
 ```
 
-The seeded environment uses `async_run_sources` — the same pipeline as `polylogue run` — so the demo exercises the full ingest → parse → render → index flow.
+The seeded environment uses `run_sources` — the same pipeline as `polylogue run` — so the demo exercises the full ingest → parse → render → index flow.
 
 ### `--corpus` Mode
 

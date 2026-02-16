@@ -160,7 +160,7 @@ def _do_seed(
     import asyncio
 
     from polylogue.config import Config, Source
-    from polylogue.pipeline.async_runner import async_run_sources
+    from polylogue.pipeline.runner import run_sources
     from polylogue.schemas.synthetic import SyntheticCorpus
 
     out = output_dir or Path(tempfile.mkdtemp(prefix="polylogue-demo-"))
@@ -203,7 +203,7 @@ def _do_seed(
         sources=sources,
     )
 
-    result = asyncio.run(async_run_sources(
+    result = asyncio.run(run_sources(
         config=config,
         stage="all",
         plan=None,

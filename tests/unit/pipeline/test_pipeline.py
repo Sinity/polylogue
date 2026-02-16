@@ -256,16 +256,23 @@ def test_conversation_hash_timestamps_affect_hash():
 
 
 @pytest.fixture
-def test_repository(test_db):
-    """Provide a repository pointing to the test database."""
-    from polylogue.storage.backends.sqlite import SQLiteBackend
-    from polylogue.storage.repository import ConversationRepository
+async def async_backend(test_db):
+    """Provide an async SQLite backend for the test database."""
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     backend = SQLiteBackend(db_path=test_db)
-    return ConversationRepository(backend=backend)
+    yield backend
+    await backend.close()
 
 
-def test_prepare_records_new_conversation(test_conn, test_repository, tmp_path):
-    """prepare_records() marks new conversation for insertion."""
+@pytest.fixture
+async def test_repository(async_backend):
+    """Provide a repository pointing to the test database."""
+    from polylogue.storage.repository import ConversationRepository
+    return ConversationRepository(backend=async_backend)
+
+
+async def test_prepare_records_new_conversation(async_backend, test_repository, tmp_path):
+    """await prepare_records() marks new conversation for insertion."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="new-conv-1",
@@ -283,11 +290,11 @@ def test_prepare_records_new_conversation(test_conn, test_repository, tmp_path):
         attachments=[],
     )
 
-    cid, counts, changed = prepare_records(
+    cid, counts, changed = await prepare_records(
         convo,
         "test-source",
         archive_root=tmp_path / "archive",
-        conn=test_conn,
+        backend=async_backend,
         repository=test_repository,
     )
 
@@ -299,8 +306,8 @@ def test_prepare_records_new_conversation(test_conn, test_repository, tmp_path):
     assert cid == "test:new-conv-1"
 
 
-def test_prepare_records_unchanged_conversation_skips(test_conn, test_repository, tmp_path):
-    """prepare_records() skips conversation with unchanged content_hash."""
+async def test_prepare_records_unchanged_conversation_skips(async_backend, test_repository, tmp_path):
+    """await prepare_records() skips conversation with unchanged content_hash."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -322,22 +329,22 @@ def test_prepare_records_unchanged_conversation_skips(test_conn, test_repository
     archive_root.mkdir()
 
     # First ingest
-    cid1, counts1, changed1 = prepare_records(
+    cid1, counts1, changed1 = await prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
-        conn=test_conn,
+        backend=async_backend,
         repository=test_repository,
     )
 
     assert counts1["conversations"] == 1
 
     # Re-ingest same conversation (same content)
-    cid2, counts2, changed2 = prepare_records(
+    cid2, counts2, changed2 = await prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
-        conn=test_conn,
+        backend=async_backend,
         repository=test_repository,
     )
 
@@ -348,8 +355,8 @@ def test_prepare_records_unchanged_conversation_skips(test_conn, test_repository
     assert changed2 is False
 
 
-def test_prepare_records_detects_changed_content(test_conn, test_repository, tmp_path):
-    """prepare_records() marks conversation as changed when content differs."""
+async def test_prepare_records_detects_changed_content(async_backend, test_repository, tmp_path):
+    """await prepare_records() marks conversation as changed when content differs."""
     convo_v1 = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -371,11 +378,11 @@ def test_prepare_records_detects_changed_content(test_conn, test_repository, tmp
     archive_root.mkdir()
 
     # First ingest
-    cid1, _, _ = prepare_records(
+    cid1, _, _ = await prepare_records(
         convo_v1,
         "test-source",
         archive_root=archive_root,
-        conn=test_conn,
+        backend=async_backend,
         repository=test_repository,
     )
 
@@ -398,11 +405,11 @@ def test_prepare_records_detects_changed_content(test_conn, test_repository, tmp
     )
 
     # Re-ingest with different content
-    cid2, _, changed = prepare_records(
+    cid2, _, changed = await prepare_records(
         convo_v2,
         "test-source",
         archive_root=archive_root,
-        conn=test_conn,
+        backend=async_backend,
         repository=test_repository,
     )
 
@@ -411,8 +418,8 @@ def test_prepare_records_detects_changed_content(test_conn, test_repository, tmp
     assert changed is True
 
 
-def test_prepare_records_creates_message_records(test_conn, test_repository, tmp_path):
-    """prepare_records() creates message records with proper IDs."""
+async def test_prepare_records_creates_message_records(async_backend, test_repository, tmp_path):
+    """await prepare_records() creates message records with proper IDs."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -439,26 +446,28 @@ def test_prepare_records_creates_message_records(test_conn, test_repository, tmp
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    cid, counts, _ = prepare_records(
+    cid, counts, _ = await prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
-        conn=test_conn,
+        backend=async_backend,
         repository=test_repository,
     )
 
     assert counts["conversations"] == 1
     assert counts["messages"] == 2
     # Verify messages are in DB
-    rows = test_conn.execute(
-        "SELECT message_id, role FROM messages WHERE conversation_id = ?",
-        (cid,),
-    ).fetchall()
+    async with async_backend._get_connection() as conn:
+        cursor = await conn.execute(
+            "SELECT message_id, role FROM messages WHERE conversation_id = ?",
+            (cid,),
+        )
+        rows = await cursor.fetchall()
     assert len(rows) == 2
 
 
-def test_prepare_records_handles_empty_provider_message_ids(test_conn, test_repository, tmp_path):
-    """prepare_records() generates IDs for messages with empty provider_message_id."""
+async def test_prepare_records_handles_empty_provider_message_ids(async_backend, test_repository, tmp_path):
+    """await prepare_records() generates IDs for messages with empty provider_message_id."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -485,35 +494,39 @@ def test_prepare_records_handles_empty_provider_message_ids(test_conn, test_repo
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    cid, counts, _ = prepare_records(
+    cid, counts, _ = await prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
-        conn=test_conn,
+        backend=async_backend,
         repository=test_repository,
     )
 
     assert counts["messages"] == 2
     # Both messages should be created (one with fallback, one with explicit ID)
-    rows = test_conn.execute(
-        "SELECT message_id FROM messages WHERE conversation_id = ? ORDER BY rowid",
-        (cid,),
-    ).fetchall()
+    async with async_backend._get_connection() as conn:
+        cursor = await conn.execute(
+            "SELECT message_id FROM messages WHERE conversation_id = ? ORDER BY rowid",
+            (cid,),
+        )
+        rows = await cursor.fetchall()
     assert len(rows) == 2
     # First one should have a fallback ID (contains provider_message_id as 'msg-1')
     # Second one should contain the explicit ID
-    provider_ids = [
-        test_conn.execute(
-            "SELECT provider_message_id FROM messages WHERE message_id = ?", (row["message_id"],)
-        ).fetchone()["provider_message_id"]
-        for row in rows
-    ]
+    provider_ids = []
+    async with async_backend._get_connection() as conn:
+        for row in rows:
+            cursor = await conn.execute(
+                "SELECT provider_message_id FROM messages WHERE message_id = ?", (row["message_id"],)
+            )
+            result = await cursor.fetchone()
+            provider_ids.append(result["provider_message_id"])
     assert "msg-1" in provider_ids  # Fallback
     assert "msg-explicit" in provider_ids
 
 
-def test_prepare_records_stores_source_metadata(test_conn, test_repository, tmp_path):
-    """prepare_records() stores source name in provider_meta."""
+async def test_prepare_records_stores_source_metadata(async_backend, test_repository, tmp_path):
+    """await prepare_records() stores source name in provider_meta."""
     convo = ParsedConversation(
         provider_name="chatgpt",
         provider_conversation_id="ext-1",
@@ -534,19 +547,21 @@ def test_prepare_records_stores_source_metadata(test_conn, test_repository, tmp_
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    cid, _, _ = prepare_records(
+    cid, _, _ = await prepare_records(
         convo,
         "my-export",
         archive_root=archive_root,
-        conn=test_conn,
+        backend=async_backend,
         repository=test_repository,
     )
 
     # Verify source is recorded
-    row = test_conn.execute(
-        "SELECT provider_meta FROM conversations WHERE conversation_id = ?",
-        (cid,),
-    ).fetchone()
+    async with async_backend._get_connection() as conn:
+        cursor = await conn.execute(
+            "SELECT provider_meta FROM conversations WHERE conversation_id = ?",
+            (cid,),
+        )
+        row = await cursor.fetchone()
     assert row is not None
     import json
 
@@ -554,8 +569,8 @@ def test_prepare_records_stores_source_metadata(test_conn, test_repository, tmp_
     assert meta.get("source") == "my-export"
 
 
-def test_prepare_records_multiple_messages_get_unique_hashes(test_conn, test_repository, tmp_path):
-    """prepare_records() creates unique content hashes for each message."""
+async def test_prepare_records_multiple_messages_get_unique_hashes(async_backend, test_repository, tmp_path):
+    """await prepare_records() creates unique content hashes for each message."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -582,25 +597,27 @@ def test_prepare_records_multiple_messages_get_unique_hashes(test_conn, test_rep
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    cid, _, _ = prepare_records(
+    cid, _, _ = await prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
-        conn=test_conn,
+        backend=async_backend,
         repository=test_repository,
     )
 
     # Verify each message has a unique content hash
-    rows = test_conn.execute(
-        "SELECT content_hash FROM messages WHERE conversation_id = ? ORDER BY provider_message_id",
-        (cid,),
-    ).fetchall()
+    async with async_backend._get_connection() as conn:
+        cursor = await conn.execute(
+            "SELECT content_hash FROM messages WHERE conversation_id = ? ORDER BY provider_message_id",
+            (cid,),
+        )
+        rows = await cursor.fetchall()
     assert len(rows) == 2
     assert rows[0]["content_hash"] != rows[1]["content_hash"]
 
 
-def test_prepare_records_with_attachments(test_conn, test_repository, tmp_path):
-    """prepare_records() creates attachment records."""
+async def test_prepare_records_with_attachments(async_backend, test_repository, tmp_path):
+    """await prepare_records() creates attachment records."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -629,28 +646,30 @@ def test_prepare_records_with_attachments(test_conn, test_repository, tmp_path):
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    cid, counts, _ = prepare_records(
+    cid, counts, _ = await prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
-        conn=test_conn,
+        backend=async_backend,
         repository=test_repository,
     )
 
     assert counts["attachments"] == 1
     # Verify attachment ref in DB (attachments use attachment_refs table)
-    att_refs = test_conn.execute(
-        "SELECT ar.*, a.mime_type FROM attachment_refs ar "
-        "JOIN attachments a ON ar.attachment_id = a.attachment_id "
-        "WHERE ar.conversation_id = ?",
-        (cid,),
-    ).fetchall()
+    async with async_backend._get_connection() as conn:
+        cursor = await conn.execute(
+            "SELECT ar.*, a.mime_type FROM attachment_refs ar "
+            "JOIN attachments a ON ar.attachment_id = a.attachment_id "
+            "WHERE ar.conversation_id = ?",
+            (cid,),
+        )
+        att_refs = await cursor.fetchall()
     assert len(att_refs) == 1
     assert att_refs[0]["mime_type"] == "application/pdf"
 
 
-def test_prepare_records_returns_correct_tuple_structure(test_conn, test_repository, tmp_path):
-    """prepare_records() returns (conversation_id, counts_dict, changed_bool)."""
+async def test_prepare_records_returns_correct_tuple_structure(async_backend, test_repository, tmp_path):
+    """await prepare_records() returns (conversation_id, counts_dict, changed_bool)."""
     convo = ParsedConversation(
         provider_name="test",
         provider_conversation_id="conv-1",
@@ -671,11 +690,11 @@ def test_prepare_records_returns_correct_tuple_structure(test_conn, test_reposit
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
 
-    result = prepare_records(
+    result = await prepare_records(
         convo,
         "test-source",
         archive_root=archive_root,
-        conn=test_conn,
+        backend=async_backend,
         repository=test_repository,
     )
 

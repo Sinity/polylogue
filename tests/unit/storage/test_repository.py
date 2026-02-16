@@ -85,10 +85,10 @@ class TestLazyVsEagerLoading:
         ("get", "nonexistent", False, False),
         ("get_eager", "nonexistent", False, False),
     ])
-    def test_get_methods(self, repo, method, conv_id, should_exist, should_load_messages):
+    async def test_get_methods(self, repo, method, conv_id, should_exist, should_load_messages):
         """get() and get_eager() return Conversation or None, loading messages."""
         get_method = getattr(repo, method)
-        conv = get_method(conv_id)
+        conv = await get_method(conv_id)
         if should_exist:
             assert conv is not None
             assert str(conv.id) == conv_id
@@ -99,9 +99,9 @@ class TestLazyVsEagerLoading:
         else:
             assert conv is None
 
-    def test_get_summary_no_messages(self, repo):
+    async def test_get_summary_no_messages(self, repo):
         """get_summary() returns summary without loading messages."""
-        summary = repo.get_summary("conv-1")
+        summary = await repo.get_summary("conv-1")
         assert summary is not None
         assert summary.id == "conv-1"
         assert summary.title == "First Conversation"
@@ -119,9 +119,9 @@ class TestResolveIdAndView:
         ("conv-1", True),  # Full ID match
         ("nonexistent-id", False),  # Nonexistent
     ])
-    def test_resolve_id(self, repo, conv_id, should_resolve):
+    async def test_resolve_id(self, repo, conv_id, should_resolve):
         """resolve_id() should resolve IDs and return None for nonexistent."""
-        resolved = repo.resolve_id(conv_id)
+        resolved = await repo.resolve_id(conv_id)
         if should_resolve:
             assert resolved is not None
             assert str(resolved) == conv_id
@@ -132,9 +132,9 @@ class TestResolveIdAndView:
         ("conv-1", True),
         ("nonexistent-id-xyz", False),
     ])
-    def test_view(self, repo, conv_id, should_exist):
+    async def test_view(self, repo, conv_id, should_exist):
         """view() should return conversation for full ID or None for nonexistent."""
-        conv = repo.view(conv_id)
+        conv = await repo.view(conv_id)
         if should_exist:
             assert conv is not None
             assert str(conv.id) == conv_id
@@ -158,24 +158,24 @@ class TestRepositoryTreeTraversal:
         ("get_root", "conv-1", lambda r: str(r.id) == "conv-1"),
         ("get_root", "conv-3", lambda r: str(r.id) == "conv-1"),
     ])
-    def test_tree_methods(self, repo, method, conv_id, expected_check):
+    async def test_tree_methods(self, repo, method, conv_id, expected_check):
         """Tree traversal methods return expected relationships."""
         method_fn = getattr(repo, method)
-        result = method_fn(conv_id)
+        result = await method_fn(conv_id)
         assert expected_check(result)
 
-    def test_get_root_nonexistent_raises(self, repo):
+    async def test_get_root_nonexistent_raises(self, repo):
         """get_root() should raise ValueError for nonexistent conversation."""
         with pytest.raises(ValueError, match="not found"):
-            repo.get_root("nonexistent")
+            await repo.get_root("nonexistent")
 
     @pytest.mark.parametrize("start_conv_id,expected_ids", [
         ("conv-3", {"conv-1", "conv-3"}),   # From child
         ("conv-1", {"conv-1", "conv-3"}),   # From root, includes children
     ])
-    def test_get_session_tree(self, repo, start_conv_id, expected_ids):
+    async def test_get_session_tree(self, repo, start_conv_id, expected_ids):
         """get_session_tree() should return root and all descendants."""
-        tree = repo.get_session_tree(start_conv_id)
+        tree = await repo.get_session_tree(start_conv_id)
         tree_ids = {str(c.id) for c in tree}
         assert tree_ids == expected_ids
 
@@ -192,29 +192,29 @@ class TestSaveConversation:
         ("new-conv", False, 0),
         ("conv-att", True, 1),
     ])
-    def test_save_conversation(self, repo, conv_id, has_attachments, expected_att_count):
+    async def test_save_conversation(self, repo, conv_id, has_attachments, expected_att_count):
         """save_conversation() inserts conversations, messages, and attachments."""
         conv = make_conversation(conv_id, title="Test Save")
         msg = make_message(f"m-{conv_id}", conv_id, text="Test message")
         atts = [make_attachment("att-1", conv_id, msg.message_id)] if has_attachments else []
 
-        counts = repo.save_conversation(conversation=conv, messages=[msg], attachments=atts)
+        counts = await repo.save_conversation(conversation=conv, messages=[msg], attachments=atts)
         assert counts["conversations"] == 1
         assert counts["messages"] == 1
         assert counts["attachments"] == expected_att_count
 
-        retrieved = repo.get(conv_id)
+        retrieved = await repo.get(conv_id)
         assert retrieved is not None
 
-    def test_save_duplicate_conversation_skipped(self, repo):
+    async def test_save_duplicate_conversation_skipped(self, repo):
         """Saving same content_hash again should skip."""
         conv = make_conversation("dup-conv", content_hash="dup-hash")
         msg = make_message("dup-msg", "dup-conv", content_hash="msg-hash")
 
-        counts1 = repo.save_conversation(conversation=conv, messages=[msg], attachments=[])
+        counts1 = await repo.save_conversation(conversation=conv, messages=[msg], attachments=[])
         assert counts1["conversations"] == 1
 
-        counts2 = repo.save_conversation(conversation=conv, messages=[msg], attachments=[])
+        counts2 = await repo.save_conversation(conversation=conv, messages=[msg], attachments=[])
         assert counts2["skipped_conversations"] == 1
         assert counts2["skipped_messages"] == 1
 
@@ -231,48 +231,48 @@ class TestMetadataCRUD:
         ("update", "status", "reviewed", lambda m: m.get("status") == "reviewed"),
         ("set", None, {"key1": "val1", "key2": "val2"}, lambda m: m.get("key1") == "val1" and m.get("key2") == "val2"),
     ])
-    def test_metadata_operations(self, repo, operation, key, value, check_fn):
+    async def test_metadata_operations(self, repo, operation, key, value, check_fn):
         """update_metadata() and set_metadata() should work."""
         if operation == "update":
-            repo.update_metadata("conv-1", key, value)
+            await repo.update_metadata("conv-1", key, value)
         elif operation == "set":
-            repo.set_metadata("conv-1", value)
+            await repo.set_metadata("conv-1", value)
 
-        meta = repo.get_metadata("conv-1")
+        meta = await repo.get_metadata("conv-1")
         assert check_fn(meta)
 
-    def test_delete_and_manage_tags(self, repo):
+    async def test_delete_and_manage_tags(self, repo):
         """delete_metadata(), add_tag(), remove_tag(), list_tags() work together."""
         # Delete metadata
-        repo.update_metadata("conv-1", "temp", "value")
-        repo.delete_metadata("conv-1", "temp")
-        meta = repo.get_metadata("conv-1")
+        await repo.update_metadata("conv-1", "temp", "value")
+        await repo.delete_metadata("conv-1", "temp")
+        meta = await repo.get_metadata("conv-1")
         assert "temp" not in meta
 
         # Manage tags
-        repo.add_tag("conv-1", "test-tag")
-        tags = repo.list_tags()
+        await repo.add_tag("conv-1", "test-tag")
+        tags = await repo.list_tags()
         assert "test-tag" in tags
 
         # Filter by provider
-        repo.add_tag("conv-1", "claude-tag")
-        tags_claude = repo.list_tags(provider="claude")
+        await repo.add_tag("conv-1", "claude-tag")
+        tags_claude = await repo.list_tags(provider="claude")
         assert "claude-tag" in tags_claude
 
-        repo.remove_tag("conv-1", "test-tag")
+        await repo.remove_tag("conv-1", "test-tag")
 
     @pytest.mark.parametrize("conv_id,should_exist", [
         ("conv-2", True),
         ("nonexistent", False),
     ])
-    def test_delete_conversation(self, repo, conv_id, should_exist):
+    async def test_delete_conversation(self, repo, conv_id, should_exist):
         """delete_conversation() should remove conversation or return False."""
         if should_exist:
-            result = repo.delete_conversation(conv_id)
+            result = await repo.delete_conversation(conv_id)
             assert result is True
-            assert repo.get(conv_id) is None
+            assert await repo.get(conv_id) is None
         else:
-            result = repo.delete_conversation(conv_id)
+            result = await repo.delete_conversation(conv_id)
             assert result is False
 
 
@@ -290,14 +290,14 @@ class TestCountAndList:
         ("chatgpt", None, 1),
         (None, ["claude", "chatgpt"], 3),
     ])
-    def test_count(self, repo, provider, providers, expected_count):
+    async def test_count(self, repo, provider, providers, expected_count):
         """count() returns conversations, optionally filtered by provider."""
         if provider:
-            count = repo.count(provider=provider)
+            count = await repo.count(provider=provider)
         elif providers:
-            count = repo.count(providers=providers)
+            count = await repo.count(providers=providers)
         else:
-            count = repo.count()
+            count = await repo.count()
         assert count == expected_count
 
     @pytest.mark.parametrize("limit,provider,expected_count", [
@@ -305,25 +305,25 @@ class TestCountAndList:
         (2, None, 2),
         (None, "claude", 2),
     ])
-    def test_list_summaries_with_filters(self, repo, limit, provider, expected_count):
+    async def test_list_summaries_with_filters(self, repo, limit, provider, expected_count):
         """list_summaries() respects limit and provider filters."""
         kwargs = {}
         if limit is not None:
             kwargs["limit"] = limit
         if provider:
             kwargs["provider"] = provider
-        summaries = repo.list_summaries(**kwargs)
+        summaries = await repo.list_summaries(**kwargs)
         assert len(summaries) == expected_count
 
-    def test_list_operations(self, repo):
+    async def test_list_operations(self, repo):
         """list() filters by title and returns lazy Conversation objects."""
         # Title filter
-        convs_filtered = repo.list(title_contains="First")
+        convs_filtered = await repo.list(title_contains="First")
         assert len(convs_filtered) == 1
         assert "First" in convs_filtered[0].display_title
 
         # All conversations
-        convs_all = repo.list()
+        convs_all = await repo.list()
         assert len(convs_all) == 3
         assert all(hasattr(c, "id") for c in convs_all)
 
@@ -343,17 +343,17 @@ class TestSearch:
         ("zzzznonexistentzzzz", False, False),  # No match
         ("zzzznonexistentzzzz", False, True),   # No match summaries
     ])
-    def test_search(self, repo, query, should_find, search_summaries):
+    async def test_search(self, repo, query, should_find, search_summaries):
         """search() and search_summaries() should find or return empty."""
         if search_summaries:
-            results = repo.search_summaries(query)
+            results = await repo.search_summaries(query)
             if should_find:
                 assert len(results) >= 1
                 assert hasattr(results[0], "title")
             else:
                 assert results == []
         else:
-            results = repo.search(query)
+            results = await repo.search(query)
             if should_find:
                 assert len(results) >= 1
             else:
@@ -373,13 +373,13 @@ class TestIterMessages:
         ("conv-1", 1, 1),
         ("nonexistent", None, 0),
     ])
-    def test_iter_messages_and_stats(self, repo, conv_id, limit, expected_count):
+    async def test_iter_messages_and_stats(self, repo, conv_id, limit, expected_count):
         """iter_messages() and get_conversation_stats() work with limits and nonexistent."""
         kwargs = {} if limit is None else {"limit": limit}
-        messages = list(repo.iter_messages(conv_id, **kwargs))
+        messages = [msg async for msg in repo.iter_messages(conv_id, **kwargs)]
         assert len(messages) == expected_count
 
-        stats = repo.get_conversation_stats(conv_id)
+        stats = await repo.get_conversation_stats(conv_id)
         if conv_id == "conv-1":
             assert stats is not None
             assert stats["total_messages"] == 2
@@ -397,12 +397,12 @@ class TestFilterFactory:
 
     @pytest.fixture
     def async_repo(self, repo_db):
-        """Create AsyncConversationRepository for filter tests."""
-        from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
-        from polylogue.storage.async_repository import AsyncConversationRepository
+        """Create ConversationRepository for filter tests."""
+        from polylogue.storage.backends.async_sqlite import SQLiteBackend
+        from polylogue.storage.repository import ConversationRepository
 
-        backend = AsyncSQLiteBackend(db_path=repo_db)
-        return AsyncConversationRepository(backend=backend)
+        backend = SQLiteBackend(db_path=repo_db)
+        return ConversationRepository(backend=backend)
 
     def test_filter_returns_filter_object(self, async_repo):
         """filter() should return ConversationFilter."""
@@ -410,14 +410,12 @@ class TestFilterFactory:
         f = async_repo.filter()
         assert isinstance(f, ConversationFilter)
 
-    @pytest.mark.asyncio
     async def test_filter_chains_work(self, async_repo):
         """filter() chains should work."""
         result = await async_repo.filter().provider("claude").limit(1).list()
         assert len(result) == 1
         assert result[0].provider == "claude"
 
-    @pytest.mark.asyncio
     async def test_filter_count(self, async_repo):
         """filter() should allow count() chain."""
         count = await async_repo.filter().provider("chatgpt").count()
@@ -537,9 +535,9 @@ class TestGetSummaryNotFound:
         ("nonexistent-conv", False, None),
         ("conv-1", True, "Root Conversation"),
     ])
-    def test_get_summary(self, repo_with_conversations, conv_id, should_exist, expected_title):
+    async def test_get_summary(self, repo_with_conversations, conv_id, should_exist, expected_title):
         """get_summary() returns ConversationSummary for existing or None."""
-        summary = repo_with_conversations.get_summary(conv_id)
+        summary = await repo_with_conversations.get_summary(conv_id)
         if should_exist:
             assert summary is not None
             assert str(summary.id) == conv_id
@@ -550,9 +548,9 @@ class TestGetSummaryNotFound:
             # Also verify that message data isn't loaded for nonexistent
             assert not hasattr(summary or {}, "messages") or not summary.messages
 
-    def test_get_summary_does_not_load_messages(self, repo_with_conversations):
+    async def test_get_summary_does_not_load_messages(self, repo_with_conversations):
         """get_summary() doesn't load message data."""
-        summary = repo_with_conversations.get_summary("conv-1")
+        summary = await repo_with_conversations.get_summary("conv-1")
         assert summary is not None
         assert not hasattr(summary, "messages") or summary.messages is None
 
@@ -564,36 +562,36 @@ class TestGetRootEdgeCases:
         ("conv-1", "conv-1"),  # Root returns itself
         ("conv-2", "conv-1"),  # Child walks up to parent
     ])
-    def test_get_root(self, repo_with_conversations, conv_id, expected_root):
+    async def test_get_root(self, repo_with_conversations, conv_id, expected_root):
         """get_root() returns root or walks up the tree."""
-        root = repo_with_conversations.get_root(conv_id)
+        root = await repo_with_conversations.get_root(conv_id)
         assert str(root.id) == expected_root
 
-    def test_get_root_raises_for_nonexistent_conversation(self, repo_empty):
+    async def test_get_root_raises_for_nonexistent_conversation(self, repo_empty):
         """get_root() raises ValueError when conversation doesn't exist."""
         with pytest.raises(ValueError, match="not found"):
-            repo_empty.get_root("nonexistent-conv")
+            await repo_empty.get_root("nonexistent-conv")
 
 
 class TestSearchSimilar:
     """Test search_similar() full vector similarity flow."""
 
-    def test_search_similar_raises_without_vector_provider(self, repo_with_conversations):
+    async def test_search_similar_raises_without_vector_provider(self, repo_with_conversations):
         """search_similar() raises ValueError if no vector provider supplied."""
         with pytest.raises(ValueError, match="Semantic search requires a vector provider"):
-            repo_with_conversations.search_similar("test query", vector_provider=None)
+            await repo_with_conversations.search_similar("test query", vector_provider=None)
 
-    def test_search_similar_returns_empty_list_when_no_results(self, repo_with_conversations):
+    async def test_search_similar_returns_empty_list_when_no_results(self, repo_with_conversations):
         """search_similar() returns empty list when provider has no results."""
         mock_provider = MockVectorProvider(results=[])
-        results = repo_with_conversations.search_similar(
+        results = await repo_with_conversations.search_similar(
             "test query",
             limit=10,
             vector_provider=mock_provider,
         )
         assert results == []
 
-    def test_search_similar_ranks_by_highest_score(self, repo_with_conversations):
+    async def test_search_similar_ranks_by_highest_score(self, repo_with_conversations):
         """search_similar() ranks conversations by highest message score."""
         # Set up results: multiple messages from same conversation
         mock_provider = MockVectorProvider(
@@ -603,7 +601,7 @@ class TestSearchSimilar:
                 ("m5", 0.85),  # From conv-3
             ]
         )
-        results = repo_with_conversations.search_similar(
+        results = await repo_with_conversations.search_similar(
             "AI question",
             limit=10,
             vector_provider=mock_provider,
@@ -614,24 +612,24 @@ class TestSearchSimilar:
         assert "conv-1" in result_ids
         assert "conv-3" in result_ids
 
-    def test_search_similar_limits_results(self, repo_with_conversations):
+    async def test_search_similar_limits_results(self, repo_with_conversations):
         """search_similar() limits results to specified count."""
         # Create provider with many results
         results_data = [(f"m{i}", 1.0 - i * 0.01) for i in range(1, 31)]
         mock_provider = MockVectorProvider(results=results_data)
-        results = repo_with_conversations.search_similar(
+        results = await repo_with_conversations.search_similar(
             "test",
             limit=5,
             vector_provider=mock_provider,
         )
         assert len(results) <= 5
 
-    def test_search_similar_queries_3x_limit(self, repo_with_conversations):
+    async def test_search_similar_queries_3x_limit(self, repo_with_conversations):
         """search_similar() queries vector provider with 3x limit for ranking."""
         mock_provider = MockVectorProvider(
             results=[("m1", 0.9), ("m2", 0.85), ("m3", 0.8)] * 3
         )
-        repo_with_conversations.search_similar(
+        await repo_with_conversations.search_similar(
             "test",
             limit=5,
             vector_provider=mock_provider,
@@ -643,7 +641,7 @@ class TestSearchSimilar:
 class TestRecordRun:
     """Test record_run() pipeline audit entry."""
 
-    def test_record_run_saves_run_record(self, repo_empty):
+    async def test_record_run_saves_run_record(self, repo_empty):
         """record_run() saves RunRecord to backend."""
         now = datetime.now(timezone.utc).isoformat()
         run = RunRecord(
@@ -652,9 +650,9 @@ class TestRecordRun:
             counts={"conversations": 5, "messages": 100},
         )
         # Should not raise
-        repo_empty.record_run(run)
+        await repo_empty.record_run(run)
 
-    def test_record_run_with_counts_and_drift(self, repo_empty):
+    async def test_record_run_with_counts_and_drift(self, repo_empty):
         """record_run() handles counts and drift metadata."""
         now = datetime.now(timezone.utc).isoformat()
         run = RunRecord(
@@ -663,29 +661,25 @@ class TestRecordRun:
             counts={"conversations": 0, "messages": 0},
             drift={"skipped": 5},
         )
-        repo_empty.record_run(run)
+        await repo_empty.record_run(run)
 
-    def test_record_run_is_thread_safe(self, repo_empty):
-        """record_run() uses write lock for thread safety."""
-        import threading
+    async def test_record_run_is_concurrent_safe(self, repo_empty):
+        """record_run() uses write lock for concurrency safety."""
+        import asyncio
 
         results = []
 
-        def save_run(run_id):
+        async def save_run(run_id):
             now = datetime.now(timezone.utc).isoformat()
             run = RunRecord(
                 run_id=run_id,
                 timestamp=now,
                 counts={"conversations": 1, "messages": 10},
             )
-            repo_empty.record_run(run)
+            await repo_empty.record_run(run)
             results.append(run_id)
 
-        threads = [threading.Thread(target=save_run, args=(f"run-{i}",)) for i in range(5)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        await asyncio.gather(*(save_run(f"run-{i}") for i in range(5)))
 
         assert len(results) == 5
 
@@ -697,7 +691,7 @@ class TestEmbedConversation:
         ("conv-1", True, 2),
         ("conv-empty", False, 0),
     ])
-    def test_embed_conversation_counts_messages(self, repo_with_conversations, conv_id, has_messages, expected_count):
+    async def test_embed_conversation_counts_messages(self, repo_with_conversations, conv_id, has_messages, expected_count):
         """embed_conversation() uses provider and returns correct message count."""
         if not has_messages:
             (ConversationBuilder(repo_with_conversations.backend._db_path, "conv-empty")
@@ -706,13 +700,13 @@ class TestEmbedConversation:
              .save())
 
         mock_provider = MockVectorProvider()
-        count = repo_with_conversations.embed_conversation(conv_id, vector_provider=mock_provider)
+        count = await repo_with_conversations.embed_conversation(conv_id, vector_provider=mock_provider)
         assert count == expected_count
         if has_messages:
             assert conv_id in mock_provider._upserted
             assert len(mock_provider._upserted[conv_id]) == expected_count
 
-    def test_embed_conversation_provider_creation(self, repo_with_conversations):
+    async def test_embed_conversation_provider_creation(self, repo_with_conversations):
         """embed_conversation() handles provider creation and errors."""
         # Test with no provider and fallback available
         mock_provider = MockVectorProvider()
@@ -720,7 +714,7 @@ class TestEmbedConversation:
             "polylogue.storage.search_providers.create_vector_provider",
             return_value=mock_provider,
         ):
-            count = repo_with_conversations.embed_conversation("conv-1", vector_provider=None)
+            count = await repo_with_conversations.embed_conversation("conv-1", vector_provider=None)
             assert count == 2
 
         # Test without provider and no fallback
@@ -730,7 +724,7 @@ class TestEmbedConversation:
                 return_value=None,
             ):
                 with pytest.raises(ValueError, match="No vector provider available"):
-                    repo_with_conversations.embed_conversation("conv-1", vector_provider=None)
+                    await repo_with_conversations.embed_conversation("conv-1", vector_provider=None)
 
 
 class TestSimilaritySearch:
@@ -742,10 +736,10 @@ class TestSimilaritySearch:
         ([("m1", 0.95), ("m_orphaned", 0.90)], False, ["m1"]),
         ([], True, []),
     ])
-    def test_similarity_search_tuple_format_and_mapping(self, repo_with_conversations, results_data, should_exist, expected_msg_ids):
+    async def test_similarity_search_tuple_format_and_mapping(self, repo_with_conversations, results_data, should_exist, expected_msg_ids):
         """similarity_search() returns tuples, maps IDs, preserves scores, filters orphaned."""
         mock_provider = MockVectorProvider(results=results_data)
-        results = repo_with_conversations.similarity_search("test query", vector_provider=mock_provider)
+        results = await repo_with_conversations.similarity_search("test query", vector_provider=mock_provider)
 
         # Verify tuple format and basic structure
         for conv_id, msg_id, distance in results:
@@ -766,14 +760,14 @@ class TestSimilaritySearch:
         if "m5" in result_dict:
             assert result_dict["m5"] == "conv-3"
 
-    def test_similarity_search_error_handling(self, repo_with_conversations):
+    async def test_similarity_search_error_handling(self, repo_with_conversations):
         """similarity_search() raises without provider."""
         with patch(
             "polylogue.storage.search_providers.create_vector_provider",
             return_value=None,
         ):
             with pytest.raises(ValueError, match="No vector provider configured"):
-                repo_with_conversations.similarity_search("test query", vector_provider=None)
+                await repo_with_conversations.similarity_search("test query", vector_provider=None)
 
 
 class TestGetArchiveStats:
@@ -783,10 +777,10 @@ class TestGetArchiveStats:
         ("repo_with_conversations", 4, 6, 3),
         ("repo_empty", 0, 0, 0),
     ])
-    def test_get_archive_stats_counts_and_types(self, request, fixture, expected_convs, expected_msgs, expected_provider_count):
+    async def test_get_archive_stats_counts_and_types(self, request, fixture, expected_convs, expected_msgs, expected_provider_count):
         """get_archive_stats() returns ArchiveStats with correct counts and provider breakdown."""
         repo = request.getfixturevalue(fixture)
-        stats = repo.get_archive_stats()
+        stats = await repo.get_archive_stats()
 
         assert isinstance(stats, ArchiveStats)
         assert stats.total_conversations == expected_convs
@@ -799,9 +793,9 @@ class TestGetArchiveStats:
             assert stats.providers.get("chatgpt") == 1
             assert stats.providers.get("gemini") == 1
 
-    def test_get_archive_stats_embeddings_and_metrics(self, repo_with_conversations):
+    async def test_get_archive_stats_embeddings_and_metrics(self, repo_with_conversations):
         """get_archive_stats() computes embedding coverage, avg messages, and DB size."""
-        stats = repo_with_conversations.get_archive_stats()
+        stats = await repo_with_conversations.get_archive_stats()
 
         # Embedding coverage (no embeddings initially)
         assert stats.embedded_conversations == 0
@@ -871,11 +865,11 @@ class TestRecordsToConversation:
 class TestIntegrationVectorWorkflows:
     """Test vector search workflows across multiple methods."""
 
-    def test_embed_then_search_workflow(self, repo_with_conversations):
+    async def test_embed_then_search_workflow(self, repo_with_conversations):
         """Full workflow: embed conversations, then search by similarity."""
         # Step 1: Embed a conversation
         mock_provider = MockVectorProvider()
-        embed_count = repo_with_conversations.embed_conversation(
+        embed_count = await repo_with_conversations.embed_conversation(
             "conv-1",
             vector_provider=mock_provider,
         )
@@ -885,14 +879,14 @@ class TestIntegrationVectorWorkflows:
         mock_provider._results = [("m1", 0.95), ("m2", 0.87)]
 
         # Step 3: Perform similarity search
-        results = repo_with_conversations.similarity_search(
+        results = await repo_with_conversations.similarity_search(
             "embedded search",
             vector_provider=mock_provider,
         )
         assert len(results) == 2
         assert all(len(r) == 3 for r in results)  # 3-tuple validation
 
-    def test_search_similar_with_multiple_conversations(self, repo_with_conversations):
+    async def test_search_similar_with_multiple_conversations(self, repo_with_conversations):
         """search_similar() aggregates results across conversations."""
         # Set up results spanning multiple conversations
         mock_provider = MockVectorProvider(
@@ -903,7 +897,7 @@ class TestIntegrationVectorWorkflows:
                 ("m5", 0.80),  # conv-3
             ]
         )
-        results = repo_with_conversations.search_similar(
+        results = await repo_with_conversations.search_similar(
             "test",
             limit=3,
             vector_provider=mock_provider,
@@ -911,16 +905,16 @@ class TestIntegrationVectorWorkflows:
         # Should return max 3 conversations
         assert len(results) <= 3
 
-    def test_stats_after_embedding_operations(self, repo_with_conversations):
+    async def test_stats_after_embedding_operations(self, repo_with_conversations):
         """get_archive_stats() reflects state after embedding operations."""
         # Get initial stats
-        stats_before = repo_with_conversations.get_archive_stats()
+        stats_before = await repo_with_conversations.get_archive_stats()
         assert stats_before.total_conversations == 4
 
         # Perform embedding (doesn't change conversation count, just records state)
         mock_provider = MockVectorProvider()
-        repo_with_conversations.embed_conversation("conv-1", vector_provider=mock_provider)
+        await repo_with_conversations.embed_conversation("conv-1", vector_provider=mock_provider)
 
         # Stats should still show same conversation count
-        stats_after = repo_with_conversations.get_archive_stats()
+        stats_after = await repo_with_conversations.get_archive_stats()
         assert stats_after.total_conversations == stats_before.total_conversations

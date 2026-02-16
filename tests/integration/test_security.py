@@ -138,9 +138,9 @@ def test_attachment_path_very_long():
 def test_attachment_path_unicode():
     """Unicode paths are handled correctly."""
     unicode_paths = [
-        "файл.txt",  # Cyrillic
-        "文件.txt",   # Chinese
-        "🎉.txt",     # Emoji
+        "\u0444\u0430\u0439\u043b.txt",  # Cyrillic
+        "\u6587\u4ef6.txt",   # Chinese
+        "\U0001f389.txt",     # Emoji
     ]
 
     for path in unicode_paths:
@@ -570,89 +570,89 @@ def test_control_characters_stripped(text_with_control: str):
 
 
 @pytest.fixture
-def temp_repo(tmp_path):
+async def temp_repo(tmp_path):
     """Create temporary repository for testing."""
     db_path = tmp_path / "test.db"
     backend = SQLiteBackend(db_path=str(db_path))
     return ConversationRepository(backend=backend)
 
 
-def test_conversation_id_sql_injection_select(temp_repo):
+async def test_conversation_id_sql_injection_select(temp_repo):
     """Parameterized queries prevent SELECT injection."""
     malicious_id = "' OR '1'='1"
 
     # Try to inject via conversation ID
     # Should not return all conversations
-    conv = temp_repo.view(malicious_id)
+    conv = await temp_repo.view(malicious_id)
 
     # Should return None (not found), not all conversations
     assert conv is None
 
 
-def test_conversation_id_sql_injection_drop_table(temp_repo):
+async def test_conversation_id_sql_injection_drop_table(temp_repo):
     """DROP TABLE injection is prevented."""
     malicious_id = "'; DROP TABLE conversations--"
 
     # Try to inject
-    conv = temp_repo.view(malicious_id)
+    conv = await temp_repo.view(malicious_id)
 
     # Should not crash or drop table
     assert conv is None
 
     # Verify table still exists
     # (if it was dropped, next operation would fail)
-    all_convs = temp_repo.list()
+    all_convs = await temp_repo.list()
     assert isinstance(all_convs, list)
 
 
-def test_conversation_id_sql_injection_union(temp_repo):
+async def test_conversation_id_sql_injection_union(temp_repo):
     """UNION SELECT injection is prevented."""
     malicious_id = "1 UNION SELECT * FROM sqlite_master--"
 
-    conv = temp_repo.view(malicious_id)
+    conv = await temp_repo.view(malicious_id)
 
     # Should return None, not schema info
     assert conv is None
 
 
-def test_message_id_sql_injection(temp_repo):
+async def test_message_id_sql_injection(temp_repo):
     """Message ID queries use parameterized statements."""
 
     # Try to query with malicious ID
     # Should not return messages - just list without searching
-    results = temp_repo.list()
+    results = await temp_repo.list()
 
     # Should return a list without executing the injection
     assert isinstance(results, list)
 
 
-def test_provider_name_sql_injection(temp_repo):
+async def test_provider_name_sql_injection(temp_repo):
     """Provider name filter uses parameterized queries."""
 
     # Try to filter by malicious provider - but it won't match the pattern validation
     # So it would be rejected before reaching SQL
     # Let's test with a provider name that matches the pattern but would be used in SQL
-    results = temp_repo.list(provider="doesnotexist")
+    results = await temp_repo.list(provider="doesnotexist")
 
     # Should return empty (no such provider), not all conversations
     assert len(results) == 0
 
 
-def test_conversation_title_sql_injection(temp_repo):
+async def test_conversation_title_sql_injection(temp_repo):
     """Search in titles is parameterized."""
 
     # Simple list without search index won't find anything
-    results = temp_repo.list()
+    results = await temp_repo.list()
 
     # Should return safely without executing DELETE
     assert isinstance(results, list)
 
     # Verify data still exists
-    all_convs = temp_repo.list()
+    all_convs = await temp_repo.list()
     assert isinstance(all_convs, list)
 
 
-def test_multiple_injection_attempts_in_sequence(temp_repo):
+async def test_multiple_injection_attempts_in_sequence(temp_repo):
     """Sequential injection attempts don't accumulate."""
     injection_attempts = [
         "' OR '1'='1",
@@ -662,15 +662,15 @@ def test_multiple_injection_attempts_in_sequence(temp_repo):
     ]
 
     for malicious_id in injection_attempts:
-        conv = temp_repo.view(malicious_id)
+        conv = await temp_repo.view(malicious_id)
         assert conv is None
 
     # Repository should still be functional
-    all_convs = temp_repo.list()
+    all_convs = await temp_repo.list()
     assert isinstance(all_convs, list)
 
 
-def test_stored_xss_in_conversation_content(temp_repo):
+async def test_stored_xss_in_conversation_content(temp_repo):
     """XSS payloads in content don't execute on retrieval.
 
     Note: This tests storage safety. Rendering safety is separate.
@@ -684,11 +684,11 @@ def test_stored_xss_in_conversation_content(temp_repo):
     msg_record = make_message("msg-xss", "xss-test", text=xss_payload)
 
     # Store records
-    backend.save_conversation(conv_record)
-    backend.save_messages([msg_record])
+    await backend.save_conversation_record(conv_record)
+    await backend.save_messages([msg_record])
 
     # Retrieve
-    retrieved = temp_repo.view("xss-test")
+    retrieved = await temp_repo.view("xss-test")
 
     # Content should be stored as-is (not executed)
     assert retrieved is not None
@@ -702,7 +702,7 @@ def test_stored_xss_in_conversation_content(temp_repo):
 # These extend that coverage
 
 
-def test_fts5_or_operator_injection(temp_repo):
+def test_fts5_or_operator_injection():
     """FTS5 OR operator is escaped properly."""
     # Try to search for everything with OR in the middle
     malicious_query = "test OR anything"
@@ -715,7 +715,7 @@ def test_fts5_or_operator_injection(temp_repo):
     assert escaped == "test OR anything"
 
 
-def test_fts5_and_operator_injection(temp_repo):
+def test_fts5_and_operator_injection():
     """FTS5 AND operator is escaped properly."""
     malicious_query = "test AND something"
 
@@ -726,7 +726,7 @@ def test_fts5_and_operator_injection(temp_repo):
     assert escaped == "test AND something"
 
 
-def test_fts5_not_operator_injection(temp_repo):
+def test_fts5_not_operator_injection():
     """FTS5 NOT operator is escaped properly."""
     malicious_query = "test NOT anything"
 
@@ -737,7 +737,7 @@ def test_fts5_not_operator_injection(temp_repo):
     assert escaped == "test NOT anything"
 
 
-def test_fts5_near_operator_injection(temp_repo):
+def test_fts5_near_operator_injection():
     """FTS5 NEAR operator is escaped."""
     malicious_query = "word1 NEAR word2"
 
@@ -748,7 +748,7 @@ def test_fts5_near_operator_injection(temp_repo):
     assert escaped == "word1 NEAR word2"
 
 
-def test_fts5_wildcard_injection(temp_repo):
+def test_fts5_wildcard_injection():
     """FTS5 wildcards (* and ?) are handled safely."""
     # Test individual wildcard cases
     # * is a special character, so quoted
@@ -764,7 +764,7 @@ def test_fts5_wildcard_injection(temp_repo):
     assert escape_fts5_query("?") == '?'
 
 
-def test_fts5_quote_injection(temp_repo):
+def test_fts5_quote_injection():
     """FTS5 quotes are escaped."""
     malicious_query = 'test"something"'
 
@@ -779,55 +779,55 @@ def test_fts5_quote_injection(temp_repo):
 # =============================================================================
 
 
-def test_empty_string_parameters_handled(temp_repo):
+async def test_empty_string_parameters_handled(temp_repo):
     """Empty string parameters don't cause errors."""
     # Empty conversation ID
-    conv = temp_repo.view("")
+    conv = await temp_repo.view("")
     assert conv is None
 
     # Empty provider filter - list handles it gracefully
-    results = temp_repo.list(provider="")
+    results = await temp_repo.list(provider="")
     assert isinstance(results, list)
 
 
-def test_none_parameters_handled(temp_repo):
+async def test_none_parameters_handled(temp_repo):
     """None parameters are handled gracefully."""
     # None conversation ID - should raise TypeError
     try:
-        conv = temp_repo.view(None)  # type: ignore
+        conv = await temp_repo.view(None)  # type: ignore
         assert conv is None
     except (TypeError, ValueError):
         # Acceptable to reject None
         pass
 
 
-def test_very_long_string_parameters(temp_repo):
+async def test_very_long_string_parameters(temp_repo):
     """Very long strings don't cause crashes."""
     long_id = "a" * 10000
 
-    conv = temp_repo.view(long_id)
+    conv = await temp_repo.view(long_id)
     assert conv is None
 
     # Very long provider name
-    results = temp_repo.list(provider="x" * 1000)
+    results = await temp_repo.list(provider="x" * 1000)
     assert isinstance(results, list)
 
 
-def test_unicode_in_parameters(temp_repo):
+async def test_unicode_in_parameters(temp_repo):
     """Unicode in parameters is handled correctly."""
     unicode_strings = [
-        "文件",          # Chinese
-        "файл",          # Cyrillic
-        "🎉🎊",         # Emoji
-        "café",          # Accents
+        "\u6587\u4ef6",          # Chinese
+        "\u0444\u0430\u0439\u043b",          # Cyrillic
+        "\U0001f389\U0001f38a",         # Emoji
+        "caf\u00e9",          # Accents
     ]
 
     for s in unicode_strings:
-        conv = temp_repo.view(s)
+        conv = await temp_repo.view(s)
         assert conv is None or isinstance(conv, object)
 
 
-def test_special_sql_characters_in_text(temp_repo):
+def test_special_sql_characters_in_text():
     """Special SQL characters in regular text are properly quoted."""
     # Characters that should trigger quoting (contain FTS5-problematic chars)
     quoted_cases = [
@@ -843,7 +843,7 @@ def test_special_sql_characters_in_text(temp_repo):
             f"Expected quoted output for {text!r}, got {escaped!r}"
         )
 
-    # Underscores are safe — passes through unquoted
+    # Underscores are safe -- passes through unquoted
     assert escape_fts5_query("underscore_wildcard") == "underscore_wildcard"
 
 
@@ -944,7 +944,7 @@ def test_fts5_operators_escaped_property(operator: str):
 
     # Single FTS5 operator should be quoted
     assert isinstance(escaped, str)
-    # If it's a pure operator, it should be quoted to be treated literally
+    # If it's a pure operator, it should be quoted to prevent interpretation
     if operator in ("AND", "OR", "NOT"):
         # These should be quoted to prevent interpretation
         assert escaped.startswith('"') or len(escaped) == 0
@@ -963,16 +963,16 @@ def test_control_chars_in_queries_handled(text_with_control: str):
 
 @given(sql_injection_strategy())
 @settings(max_examples=50, deadline=None, suppress_health_check=[HealthCheck.function_scoped_fixture])
-def test_repository_survives_injection_property(temp_repo, injection_payload: str):
+async def test_repository_survives_injection_property(temp_repo, injection_payload: str):
     """Property: Repository operations survive injection attempts.
 
     Note: Uses function-scoped fixture intentionally - repository state
     doesn't affect injection test validity.
     """
     # View should not crash or return incorrect data
-    conv = temp_repo.view(injection_payload)
+    conv = await temp_repo.view(injection_payload)
     assert conv is None or hasattr(conv, "id")
 
     # List should not crash
-    result = temp_repo.list(provider=injection_payload[:50])  # Truncate long payloads
+    result = await temp_repo.list(provider=injection_payload[:50])  # Truncate long payloads
     assert isinstance(result, list)

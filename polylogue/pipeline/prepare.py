@@ -17,22 +17,22 @@ from polylogue.pipeline.ids import (
 from polylogue.pipeline.ids import (
     message_id as make_message_id,
 )
-from polylogue.sources.source import RecordBundle, SaveResult
+from polylogue.sources.source import RecordBundle, SaveResult, save_bundle
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, ExistingConversation, MessageRecord
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
 if TYPE_CHECKING:
-    from polylogue.storage.async_repository import AsyncConversationRepository
-    from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 
-async def async_prepare_records(
+async def prepare_records(
     convo,
     source_name: str,
     *,
     archive_root: Path,
-    backend: AsyncSQLiteBackend | None = None,
-    repository: AsyncConversationRepository | None = None,
+    backend: SQLiteBackend | None = None,
+    repository: ConversationRepository | None = None,
     raw_id: str | None = None,
 ) -> tuple[str, dict[str, int], bool]:
     """Async version of prepare_records for converting ParsedConversation to records.
@@ -41,8 +41,8 @@ async def async_prepare_records(
         convo: ParsedConversation to prepare
         source_name: Name of the source
         archive_root: Root directory for archived conversations
-        backend: AsyncSQLiteBackend for database lookups
-        repository: AsyncConversationRepository for saving
+        backend: SQLiteBackend for database lookups
+        repository: ConversationRepository for saving
         raw_id: Optional raw conversation ID
 
     Returns:
@@ -50,11 +50,11 @@ async def async_prepare_records(
     """
     # Create default repository if none provided
     if repository is None:
-        from polylogue.storage.async_repository import AsyncConversationRepository
-        from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+        from polylogue.storage.repository import ConversationRepository
+        from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
-        backend = AsyncSQLiteBackend()
-        repository = AsyncConversationRepository(backend=backend)
+        backend = SQLiteBackend()
+        repository = ConversationRepository(backend=backend)
 
     content_hash = conversation_content_hash(convo)
 
@@ -184,7 +184,7 @@ async def async_prepare_records(
             )
         )
 
-    result = await async_save_bundle(
+    result = await save_bundle(
         RecordBundle(
             conversation=conversation_record,
             messages=messages,
@@ -206,28 +206,6 @@ async def async_prepare_records(
     )
 
 
-async def async_save_bundle(
-    bundle: RecordBundle,
-    repository: AsyncConversationRepository,
-) -> SaveResult:
-    """Async version of save_bundle for persisting records to repository.
-
-    Args:
-        bundle: Bundle containing conversation, messages, and attachments
-        repository: AsyncConversationRepository to save records to
-
-    Returns:
-        SaveResult with counts of imported/skipped items
-    """
-    counts = await repository.save_conversation(
-        conversation=bundle.conversation,
-        messages=bundle.messages,
-        attachments=bundle.attachments,
-    )
-    return SaveResult(**counts)
-
-
 __all__ = [
-    "async_prepare_records",
-    "async_save_bundle",
+    "prepare_records",
 ]

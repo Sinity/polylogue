@@ -1,4 +1,4 @@
-"""Tests for polylogue.pipeline.async_runner module.
+"""Tests for polylogue.pipeline.runner module.
 
 Migrated from sync runner.py tests to exercise async_runner equivalents.
 """
@@ -14,12 +14,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.pipeline.async_runner import (
+from polylogue.pipeline.runner import (
     _all_conversation_ids,
     _select_sources,
     _write_run_json,
-    async_latest_run,
-    async_run_sources,
+    latest_run,
+    run_sources,
     plan_sources,
 )
 from polylogue.storage.backends.sqlite import open_connection
@@ -31,7 +31,7 @@ class TestRenderFailureTracking:
     """Tests for tracking render failures in async pipeline.
 
     Uses workspace_env fixture so XDG_DATA_HOME points to a temp dir,
-    ensuring async_run_sources() → get_async_backend() → create backend
+    ensuring run_sources() → get_backend() → create backend
     all converge on the same database.
     """
 
@@ -56,11 +56,11 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.async_runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
+            with patch("polylogue.pipeline.runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
                 mock_ids.return_value = ["test:success-conv", "test:fail-conv"]
 
                 result = asyncio.run(
-                    async_run_sources(
+                    run_sources(
                         config=config,
                         stage="render",
                         source_names=None,
@@ -99,11 +99,11 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.async_runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
+            with patch("polylogue.pipeline.runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
                 mock_ids.return_value = ["test:first", "test:second", "test:third"]
 
                 asyncio.run(
-                    async_run_sources(
+                    run_sources(
                         config=config,
                         stage="render",
                     )
@@ -133,11 +133,11 @@ class TestRenderFailureTracking:
 
             mock_render.side_effect = render_side_effect
 
-            with patch("polylogue.pipeline.async_runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
+            with patch("polylogue.pipeline.runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
                 mock_ids.return_value = ["test:success", "test:fail1", "test:fail2"]
 
                 result = asyncio.run(
-                    async_run_sources(
+                    run_sources(
                         config=config,
                         stage="render",
                     )
@@ -291,9 +291,9 @@ class TestAllConversationIds:
                 conv = make_conversation(f"conv-{i}", title=f"Conversation {i}")
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        from polylogue.services import get_async_backend
+        from polylogue.services import get_backend
 
-        backend = get_async_backend()
+        backend = get_backend()
         ids = asyncio.run(_all_conversation_ids(backend))
 
         assert len(ids) == 3
@@ -310,9 +310,9 @@ class TestAllConversationIds:
                 conv = make_conversation(conv_id, provider_name=provider, title=f"Conv {conv_id}")
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        from polylogue.services import get_async_backend
+        from polylogue.services import get_backend
 
-        backend = get_async_backend()
+        backend = get_backend()
         ids = asyncio.run(_all_conversation_ids(backend, source_names=["chatgpt"]))
 
         assert len(ids) == 2
@@ -329,9 +329,9 @@ class TestAllConversationIds:
                 conv = make_conversation(conv_id, provider_name="chatgpt", title=f"Conv {conv_id}", provider_meta={"source": source})
                 store_records(conversation=conv, messages=[], attachments=[], conn=conn)
 
-        from polylogue.services import get_async_backend
+        from polylogue.services import get_backend
 
-        backend = get_async_backend()
+        backend = get_backend()
         ids = asyncio.run(_all_conversation_ids(backend, source_names=["export-a"]))
 
         assert len(ids) == 2
@@ -355,9 +355,9 @@ class TestAllConversationIds:
             conv_empty = make_conversation("empty-meta-1", title="Empty Meta", provider_meta={})
             store_records(conversation=conv_empty, messages=[], attachments=[], conn=conn)
 
-        from polylogue.services import get_async_backend
+        from polylogue.services import get_backend
 
-        backend = get_async_backend()
+        backend = get_backend()
         # Should not raise and filter correctly
         ids = asyncio.run(_all_conversation_ids(backend, source_names=["my-source"]))
         assert "valid-1" in ids
@@ -419,7 +419,7 @@ class TestWriteRunJson:
 
 
 class TestLatestRun:
-    """Tests for async_latest_run function."""
+    """Tests for latest_run function."""
 
     def test_no_runs_returns_none(self, workspace_env):
         """Empty table returns None."""
@@ -430,7 +430,7 @@ class TestLatestRun:
         with open_connection(db_path):
             pass
 
-        result = asyncio.run(async_latest_run())
+        result = asyncio.run(latest_run())
 
         assert result is None
 
@@ -460,7 +460,7 @@ class TestLatestRun:
                 )
             conn.commit()
 
-        result = asyncio.run(async_latest_run())
+        result = asyncio.run(latest_run())
 
         assert result is not None
         assert result.run_id == "run-1"  # timestamp 3000 is latest
@@ -486,7 +486,7 @@ class TestLatestRun:
             )
             conn.commit()
 
-        result = asyncio.run(async_latest_run())
+        result = asyncio.run(latest_run())
 
         assert result is not None
         assert result.plan_snapshot == plan
@@ -497,7 +497,7 @@ class TestLatestRun:
 
 
 class TestRunSourcesIntegration:
-    """Integration tests for async_run_sources function."""
+    """Integration tests for run_sources function."""
 
     def test_parse_stage_only(self, workspace_env, tmp_path: Path):
         """Only parsing runs when stage='parse'."""
@@ -534,7 +534,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = asyncio.run(async_run_sources(config=config, stage="parse"))
+        result = asyncio.run(run_sources(config=config, stage="parse"))
 
         assert result.counts["conversations"] >= 1
         # Render count should be 0 (only parse ran)
@@ -548,10 +548,10 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        with patch("polylogue.pipeline.async_runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
+        with patch("polylogue.pipeline.runner._all_conversation_ids", new_callable=AsyncMock) as mock_ids:
             mock_ids.return_value = []  # No conversations to render
 
-            result = asyncio.run(async_run_sources(config=config, stage="render"))
+            result = asyncio.run(run_sources(config=config, stage="render"))
 
             # Ingest counts should be 0
             assert result.counts["conversations"] == 0
@@ -565,7 +565,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = asyncio.run(async_run_sources(config=config, stage="index"))
+        result = asyncio.run(run_sources(config=config, stage="index"))
 
         # Should have indexed flag set
         assert result.indexed in (True, False)  # Either works for empty DB
@@ -605,7 +605,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = asyncio.run(async_run_sources(config=config, stage="all"))
+        result = asyncio.run(run_sources(config=config, stage="all"))
 
         # All stages should have run
         assert result.counts["conversations"] >= 1
@@ -628,7 +628,7 @@ class TestRunSourcesIntegration:
             cursors={},
         )
 
-        result = asyncio.run(async_run_sources(config=config, stage="parse", plan=plan))
+        result = asyncio.run(run_sources(config=config, stage="parse", plan=plan))
 
         # With 0 actual, drift should show removed items
         assert "new" in result.drift
@@ -669,7 +669,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = asyncio.run(async_run_sources(config=config, stage="parse", plan=None))
+        result = asyncio.run(run_sources(config=config, stage="parse", plan=None))
 
         # All should be counted as new
         assert result.drift["new"]["conversations"] == result.counts["conversations"]
@@ -682,7 +682,7 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        result = asyncio.run(async_run_sources(config=config, stage="parse"))
+        result = asyncio.run(run_sources(config=config, stage="parse"))
 
         runs_dir = workspace_env["archive_root"] / "runs"
         assert runs_dir.exists()
@@ -703,10 +703,10 @@ class TestRunSourcesIntegration:
             render_root=workspace_env["archive_root"] / "render",
         )
 
-        with patch("polylogue.pipeline.services.async_indexing.AsyncIndexService.rebuild_index", new_callable=AsyncMock) as mock_rebuild:
+        with patch("polylogue.pipeline.services.indexing.IndexService.rebuild_index", new_callable=AsyncMock) as mock_rebuild:
             mock_rebuild.side_effect = Exception("Index rebuild failed")
 
-            result = asyncio.run(async_run_sources(config=config, stage="index"))
+            result = asyncio.run(run_sources(config=config, stage="index"))
 
             assert result.indexed is False
             assert result.index_error is not None

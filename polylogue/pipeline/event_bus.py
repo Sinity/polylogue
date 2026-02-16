@@ -238,34 +238,6 @@ class EventBus:
 
 
 # ---------------------------------------------------------------------------
-# Adapter: bridge legacy SyncEventHandler to EventBus
-# ---------------------------------------------------------------------------
-
-
-def bridge_sync_handler(bus: EventBus, legacy_handler: Any) -> None:
-    """Subscribe a legacy ``SyncEventHandler`` to the event bus.
-
-    Adapts the old ``on_sync(SyncEvent)`` protocol to the new
-    ``SyncCompleted`` event type.
-
-    Args:
-        bus: The event bus to subscribe to.
-        legacy_handler: Object with an ``on_sync(event)`` method.
-    """
-    from polylogue.pipeline.events import SyncEvent
-
-    def _adapter(event: SyncCompleted) -> None:
-        # Build a legacy SyncEvent from the new SyncCompleted event
-        legacy_event = SyncEvent(
-            new_conversations=event.new_conversations,
-            run_result=event.counts,  # type: ignore[arg-type]
-        )
-        legacy_handler.on_sync(legacy_event)
-
-    bus.subscribe(SyncCompleted, _adapter)
-
-
-# ---------------------------------------------------------------------------
 # Convenience: global default bus
 # ---------------------------------------------------------------------------
 
@@ -298,7 +270,6 @@ __all__ = [
     "SyncCompleted",
     "EventBus",
     "EventHandler",
-    "bridge_sync_handler",
     "get_event_bus",
     "reset_event_bus",
 ]

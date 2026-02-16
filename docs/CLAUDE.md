@@ -34,7 +34,7 @@ with Polylogue() as archive:
     results = archive.filter().contains("python").provider("claude").list()
 
 # Async (full parity)
-async with AsyncPolylogue() as archive:
+async with Polylogue() as archive:
     stats = await archive.stats()  # Returns ArchiveStats
     convs = await archive.get_conversations(["id1", "id2"])
     results = await archive.search("error handling")
@@ -47,11 +47,11 @@ async with AsyncPolylogue() as archive:
 
 | Aspect | Implementation | Behavior |
 |--------|----------------|----------|
-| **Storage** | `SQLiteBackend` + `AsyncSQLiteBackend` | Thread-local (sync), aiosqlite (async) |
+| **Storage** | `SQLiteBackend` + `SQLiteBackend` | Thread-local (sync), aiosqlite (async) |
 | **Search** | `SearchProvider` protocol | FTS5 (local), sqlite-vec (vector), LRU cache |
 | **Rendering** | Markdown/HTML renderers | Via `--format` flag |
 | **Services** | `polylogue.services` module | Singleton factories for backend + repository |
-| **Pipeline** | `async_run_sources` (async-first) | Acquire → Parse → Render → Index |
+| **Pipeline** | `run_sources` (async-first) | Acquire → Parse → Render → Index |
 | **Thread safety** | `_WRITE_LOCK` + thread-local (sync), `asyncio.Lock` (async) | Write serialization |
 | **Deduplication** | SHA-256 + NFC normalization | Same content → same hash → skip |
 
@@ -84,7 +84,7 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 | `lib/projections.py` | Fluent API: `conv.project().substantive().min_words(50).execute()` |
 | `lib/filters.py` | Conversation filter chain: `p.filter().provider("claude").list()` |
 | `facade.py` | `Polylogue` — sync library API |
-| `async_facade.py` | `AsyncPolylogue` — async library API (full parity) |
+| `async_facade.py` | `Polylogue` — async library API (full parity) |
 | `services.py` | Singleton factories: `get_backend()`, `get_repository()` |
 | `protocols.py` | SearchProvider, VectorProvider (storage protocol deleted) |
 | `types.py` | NewType IDs: ConversationId, MessageId, AttachmentId |
@@ -113,10 +113,10 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 |------|---------|
 | `pipeline/async_runner.py` | Orchestrates acquire → parse → render → index (async-first) |
 | `pipeline/async_prepare.py` | Async record preparation and dedup |
-| `pipeline/services/async_acquisition.py` | AsyncAcquisitionService (raw data storage) |
-| `pipeline/services/async_parsing.py` | AsyncParsingService (raw → typed records) |
-| `pipeline/services/async_indexing.py` | AsyncIndexService (FTS5 management) |
-| `pipeline/services/async_rendering.py` | AsyncRenderService (concurrent render) |
+| `pipeline/services/async_acquisition.py` | AcquisitionService (raw data storage) |
+| `pipeline/services/async_parsing.py` | ParsingService (raw → typed records) |
+| `pipeline/services/async_indexing.py` | IndexService (FTS5 management) |
+| `pipeline/services/async_rendering.py` | RenderService (concurrent render) |
 | `pipeline/services/indexing.py` | IndexService (sync, used by facade) |
 | `pipeline/services/rendering.py` | RenderService (sync fallback) |
 

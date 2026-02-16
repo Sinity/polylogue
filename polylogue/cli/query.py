@@ -25,7 +25,6 @@ LOGGER = get_logger(__name__)
 if TYPE_CHECKING:
     from polylogue.cli.types import AppEnv
     from polylogue.lib.models import Conversation, ConversationSummary, Message
-    from polylogue.storage.async_repository import AsyncConversationRepository
     from polylogue.storage.repository import ConversationRepository
 
 
@@ -91,7 +90,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     """
     from polylogue.cli.helpers import fail, load_effective_config
     from polylogue.config import ConfigError
-    from polylogue.services import get_async_repository, get_repository
+    from polylogue.services import get_repository
     from polylogue.storage.search_providers import create_vector_provider
 
     # Load config
@@ -100,9 +99,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     except ConfigError as exc:
         fail("query", str(exc))
 
-    # Build repositories: async for filter chain, sync for streaming + modifiers
-    async_repo = get_async_repository()
-    sync_repo = get_repository()
+    repo = get_repository()
 
     # Get vector provider (may be None if not configured)
     vector_provider = None
@@ -113,10 +110,10 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     except Exception as exc:
         LOGGER.warning("Vector search setup failed: %s", exc)
 
-    # Create filter chain with async repository
+    # Create filter chain
     from polylogue.lib.filters import ConversationFilter
 
-    filter_chain = ConversationFilter(async_repo, vector_provider=vector_provider)
+    filter_chain = ConversationFilter(repo, vector_provider=vector_provider)
 
     # Apply --id (exact conversation ID or prefix match)
     if params.get("conv_id"):
@@ -225,7 +222,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         summary_results = await filter_chain.list_summaries()
         if not summary_results:
             _no_results(env, params)
-        _output_summary_list(env, summary_results, params, sync_repo)
+        await _output_summary_list(env, summary_results, params, repo)
         return
 
     # Streaming path
@@ -233,7 +230,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         # Use the filter chain to resolve the conversation ID, so that filters
         # (--provider, --since, --tag, etc.) are respected even in streaming mode.
         if params.get("conv_id"):
-            resolved = await async_repo.resolve_id(params["conv_id"])
+            resolved = await repo.resolve_id(params["conv_id"])
             if not resolved:
                 click.echo(f"No conversation found matching: {params['conv_id']}", err=True)
                 raise SystemExit(2)
@@ -253,7 +250,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         else:
             # Try to resolve first query term as ID
             if query_terms:
-                resolved = await async_repo.resolve_id(query_terms[0])
+                resolved = await repo.resolve_id(query_terms[0])
                 if not resolved:
                     click.echo(f"No conversation found matching: {query_terms[0]}", err=True)
                     click.echo("Hint: use --list to browse conversations, or --latest for most recent", err=True)
@@ -275,9 +272,9 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
         if stream_format not in ("plaintext", "markdown", "json-lines"):
             stream_format = "plaintext"
 
-        stream_conversation(
+        await stream_conversation(
             env,
-            sync_repo,
+            repo,
             full_id,
             output_format=stream_format,
             dialogue_only=params.get("dialogue_only", False),
@@ -289,14 +286,14 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     # Handle modifiers (write operations)
     if params.get("set_meta") or params.get("add_tag"):
-        _apply_modifiers(env, results, params)
+        await _apply_modifiers(env, results, params)
         return
 
     if params.get("delete_matched"):
         if not _describe_filters(params):
             click.echo("Error: --delete requires at least one filter to prevent accidental deletion of the entire archive.", err=True)
             raise SystemExit(1)
-        _delete_conversations(env, results, params)
+        await _delete_conversations(env, results, params)
         return
 
     # Apply transforms
@@ -328,7 +325,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     _output_results(env, results, params)
 
 
-def _apply_modifiers(
+async def _apply_modifiers(
     env: AppEnv,
     results: list[Conversation],
     params: dict[str, Any],
@@ -384,12 +381,12 @@ def _apply_modifiers(
         if params.get("set_meta"):
             for kv in params["set_meta"]:
                 key, value = kv[0], kv[1]
-                repo.update_metadata(str(conv.id), key, value)
+                await repo.update_metadata(str(conv.id), key, value)
                 meta_set += 1
 
         if params.get("add_tag"):
             for tag in params["add_tag"]:
-                repo.add_tag(str(conv.id), tag)
+                await repo.add_tag(str(conv.id), tag)
                 tags_added += 1
 
     # Report results
@@ -403,7 +400,7 @@ def _apply_modifiers(
         click.echo(report)
 
 
-def _delete_conversations(
+async def _delete_conversations(
     env: AppEnv,
     results: list[Conversation],
     params: dict[str, Any],
@@ -475,7 +472,7 @@ def _delete_conversations(
 
     deleted_count = 0
     for conv in results:
-        if repo.delete_conversation(str(conv.id)):
+        if await repo.delete_conversation(str(conv.id)):
             deleted_count += 1
 
     click.echo(f"Deleted {deleted_count} conversation(s)")
@@ -678,7 +675,7 @@ def _format_list(
         return "\n".join(lines)
 
 
-def _output_summary_list(
+async def _output_summary_list(
     env: AppEnv,
     summaries: list[ConversationSummary],
     params: dict[str, Any],
@@ -695,7 +692,7 @@ def _output_summary_list(
     msg_counts: dict[str, int] = {}
     if repo:
         ids = [str(s.id) for s in summaries]
-        msg_counts = repo.backend.get_message_counts_batch(ids)
+        msg_counts = await repo.backend.get_message_counts_batch(ids)
 
     fields = params.get("fields")
     selected: set[str] | None = None
@@ -895,7 +892,7 @@ def _render_conversation_rich(env: AppEnv, conv: Conversation) -> None:
 # =============================================================================
 
 
-def stream_conversation(
+async def stream_conversation(
     env: AppEnv,
     repo: ConversationRepository,
     conversation_id: str,
@@ -922,13 +919,13 @@ def stream_conversation(
         Number of messages streamed
     """
     # Get conversation metadata for header
-    conv_record = repo.backend.get_conversation(conversation_id)
+    conv_record = await repo.backend.get_conversation(conversation_id)
     if not conv_record:
         click.echo(f"Conversation not found: {conversation_id}", err=True)
         raise SystemExit(1)
 
     # Get stats for progress indication
-    stats = repo.get_conversation_stats(conversation_id)
+    stats = await repo.get_conversation_stats(conversation_id)
 
     # Print header based on format
     if output_format == "markdown":
@@ -955,7 +952,7 @@ def stream_conversation(
 
     # Stream messages
     count = 0
-    for msg in repo.iter_messages(
+    async for msg in repo.iter_messages(
         conversation_id,
         dialogue_only=dialogue_only,
         limit=message_limit,

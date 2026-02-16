@@ -26,7 +26,7 @@ from tests.infra.helpers import DbFactory, make_attachment, make_conversation, m
 # ============================================================================
 
 
-def test_repository_get_conversation(test_db):
+async def test_repository_get_conversation(test_db):
     """ConversationRepository.get() returns Conversation with messages loaded."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -44,7 +44,7 @@ def test_repository_get_conversation(test_db):
     )
 
     # Get the conversation
-    conv = repo.get("c1")
+    conv = await repo.get("c1")
 
     assert conv is not None
     assert conv.id == "c1"
@@ -61,17 +61,17 @@ def test_repository_get_conversation(test_db):
     assert conv.messages[1].text == "I'm doing well, thanks for asking!"
 
 
-def test_repository_get_nonexistent_returns_none(test_db):
+async def test_repository_get_nonexistent_returns_none(test_db):
     """ConversationRepository.get() returns None for nonexistent ID."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
 
-    result = repo.get("nonexistent-id")
+    result = await repo.get("nonexistent-id")
 
     assert result is None
 
 
-def test_repository_get_with_provider_meta(test_db):
+async def test_repository_get_with_provider_meta(test_db):
     """Repository correctly deserializes provider_meta JSON."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -83,7 +83,7 @@ def test_repository_get_with_provider_meta(test_db):
         messages=[{"id": "m1", "role": "user", "text": "test"}],
     )
 
-    conv = repo.get("c-meta")
+    conv = await repo.get("c-meta")
 
     assert conv is not None
     # Conversation should be retrievable even with null provider_meta
@@ -95,7 +95,7 @@ def test_repository_get_with_provider_meta(test_db):
 # ============================================================================
 
 
-def test_repository_list_conversations(test_db):
+async def test_repository_list_conversations(test_db):
     """ConversationRepository.list() returns all conversations."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -107,14 +107,14 @@ def test_repository_list_conversations(test_db):
     factory.create_conversation(id="c3", provider="codex", title="Conv 3", messages=[])
 
     # List all
-    result = repo.list()
+    result = await repo.list()
 
     assert len(result) == 3
     ids = {c.id for c in result}
     assert ids == {"c1", "c2", "c3"}
 
 
-def test_repository_list_with_limit(test_db):
+async def test_repository_list_with_limit(test_db):
     """ConversationRepository.list() respects limit parameter."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -124,12 +124,12 @@ def test_repository_list_with_limit(test_db):
     for i in range(5):
         factory.create_conversation(id=f"c{i}", provider="test", messages=[])
 
-    result = repo.list(limit=3)
+    result = await repo.list(limit=3)
 
     assert len(result) == 3
 
 
-def test_repository_list_with_offset(test_db):
+async def test_repository_list_with_offset(test_db):
     """ConversationRepository.list() respects offset parameter."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -140,11 +140,11 @@ def test_repository_list_with_offset(test_db):
         factory.create_conversation(id=f"c{i}", provider="test", title=f"Conv {i}", messages=[])
 
     # Get first 2
-    first_batch = repo.list(limit=2, offset=0)
+    first_batch = await repo.list(limit=2, offset=0)
     assert len(first_batch) == 2
 
     # Get second 2
-    second_batch = repo.list(limit=2, offset=2)
+    second_batch = await repo.list(limit=2, offset=2)
     assert len(second_batch) == 2
 
     # Batches should be different
@@ -153,12 +153,12 @@ def test_repository_list_with_offset(test_db):
     assert first_ids != second_ids
 
 
-def test_repository_list_empty_returns_empty(test_db):
+async def test_repository_list_empty_returns_empty(test_db):
     """ConversationRepository.list() returns empty list when no conversations."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
 
-    result = repo.list()
+    result = await repo.list()
 
     assert result == []
 
@@ -168,7 +168,7 @@ def test_repository_list_empty_returns_empty(test_db):
 # ============================================================================
 
 
-def test_repository_list_by_provider(test_db):
+async def test_repository_list_by_provider(test_db):
     """ConversationRepository.list(provider=...) filters by provider."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -180,14 +180,14 @@ def test_repository_list_by_provider(test_db):
     factory.create_conversation(id="c3", provider="claude", messages=[])
 
     # Filter by chatgpt
-    result = repo.list(provider="chatgpt")
+    result = await repo.list(provider="chatgpt")
 
     assert len(result) == 2
     for conv in result:
         assert conv.provider == "chatgpt"
 
 
-def test_repository_list_by_provider_excludes_others(test_db):
+async def test_repository_list_by_provider_excludes_others(test_db):
     """ConversationRepository.list(provider=...) excludes other providers."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -197,14 +197,14 @@ def test_repository_list_by_provider_excludes_others(test_db):
     factory.create_conversation(id="c2", provider="claude", messages=[])
     factory.create_conversation(id="c3", provider="codex", messages=[])
 
-    result = repo.list(provider="claude")
+    result = await repo.list(provider="claude")
 
     assert len(result) == 1
     assert result[0].provider == "claude"
     assert result[0].id == "c2"
 
 
-def test_repository_list_by_provider_returns_empty_when_no_match(test_db):
+async def test_repository_list_by_provider_returns_empty_when_no_match(test_db):
     """ConversationRepository.list(provider=...) returns empty for no matches."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -212,7 +212,7 @@ def test_repository_list_by_provider_returns_empty_when_no_match(test_db):
 
     factory.create_conversation(id="c1", provider="chatgpt", messages=[])
 
-    result = repo.list(provider="nonexistent-provider")
+    result = await repo.list(provider="nonexistent-provider")
 
     assert result == []
 
@@ -222,7 +222,7 @@ def test_repository_list_by_provider_returns_empty_when_no_match(test_db):
 # ============================================================================
 
 
-def test_repository_search_returns_matching_conversations(test_db, workspace_env):
+async def test_repository_search_returns_matching_conversations(test_db, workspace_env):
     """ConversationRepository.search() returns conversations matching query."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -243,13 +243,13 @@ def test_repository_search_returns_matching_conversations(test_db, workspace_env
         rebuild_index(conn)
 
     # Search for Python
-    result = repo.search("Python")
+    result = await repo.search("Python")
 
     assert len(result) >= 1
     assert any(c.id == "c1" for c in result)
 
 
-def test_repository_search_raises_when_index_not_built(test_db, db_without_fts):
+async def test_repository_search_raises_when_index_not_built(test_db, db_without_fts):
     """ConversationRepository.search() raises DatabaseError when FTS table doesn't exist."""
     backend = SQLiteBackend(db_path=db_without_fts)
     repo = ConversationRepository(backend=backend)
@@ -263,7 +263,7 @@ def test_repository_search_raises_when_index_not_built(test_db, db_without_fts):
     # Search without index should raise DatabaseError
     # Use type name check to handle module reload class identity issues
     with pytest.raises(Exception) as exc_info:
-        repo.search("Python")
+        await repo.search("Python")
     assert exc_info.type.__name__ == "DatabaseError"
     assert "Search index not built" in str(exc_info.value)
 
@@ -273,7 +273,7 @@ def test_repository_search_raises_when_index_not_built(test_db, db_without_fts):
 # ============================================================================
 
 
-def test_repository_resolve_id_exact_match(test_db):
+async def test_repository_resolve_id_exact_match(test_db):
     """ConversationRepository.resolve_id() returns full ID for exact match."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -281,12 +281,12 @@ def test_repository_resolve_id_exact_match(test_db):
 
     factory.create_conversation(id="conv:abc123:full", provider="test", messages=[])
 
-    result = repo.resolve_id("conv:abc123:full")
+    result = await repo.resolve_id("conv:abc123:full")
 
     assert result == "conv:abc123:full"
 
 
-def test_repository_resolve_id_prefix_match(test_db):
+async def test_repository_resolve_id_prefix_match(test_db):
     """ConversationRepository.resolve_id() returns full ID for unique prefix."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -294,12 +294,12 @@ def test_repository_resolve_id_prefix_match(test_db):
 
     factory.create_conversation(id="conv:abc123:full", provider="test", messages=[])
 
-    result = repo.resolve_id("conv:abc")
+    result = await repo.resolve_id("conv:abc")
 
     assert result == "conv:abc123:full"
 
 
-def test_repository_resolve_id_ambiguous_returns_none(test_db):
+async def test_repository_resolve_id_ambiguous_returns_none(test_db):
     """ConversationRepository.resolve_id() returns None for ambiguous prefix."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -308,7 +308,7 @@ def test_repository_resolve_id_ambiguous_returns_none(test_db):
     factory.create_conversation(id="conv:abc:1", provider="test", messages=[])
     factory.create_conversation(id="conv:abc:2", provider="test", messages=[])
 
-    result = repo.resolve_id("conv:abc")
+    result = await repo.resolve_id("conv:abc")
 
     assert result is None
 
@@ -318,7 +318,7 @@ def test_repository_resolve_id_ambiguous_returns_none(test_db):
 # ============================================================================
 
 
-def test_repository_view_with_prefix(test_db):
+async def test_repository_view_with_prefix(test_db):
     """ConversationRepository.view() resolves prefix and returns Conversation."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -329,18 +329,18 @@ def test_repository_view_with_prefix(test_db):
     )
 
     # Access by prefix
-    conv = repo.view("claude:conv")
+    conv = await repo.view("claude:conv")
 
     assert conv is not None
     assert conv.id == "claude:conv123abc"
 
 
-def test_repository_view_returns_none_for_nonexistent(test_db):
+async def test_repository_view_returns_none_for_nonexistent(test_db):
     """ConversationRepository.view() returns None for nonexistent ID."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
 
-    result = repo.view("nonexistent")
+    result = await repo.view("nonexistent")
 
     assert result is None
 
@@ -350,7 +350,7 @@ def test_repository_view_returns_none_for_nonexistent(test_db):
 # ============================================================================
 
 
-def test_render_conversation_markdown_has_structure(workspace_env, storage_repository):
+async def test_render_conversation_markdown_has_structure(workspace_env, storage_repository):
     """render_conversation() produces valid markdown with title and role headers."""
     archive_root = workspace_env["archive_root"]
 
@@ -362,7 +362,7 @@ def test_render_conversation_markdown_has_structure(workspace_env, storage_repos
         ],
         attachments=[],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -379,7 +379,7 @@ def test_render_conversation_markdown_has_structure(workspace_env, storage_repos
     assert "Hi there, user!" in markdown
 
 
-def test_render_conversation_markdown_includes_provider(workspace_env, storage_repository):
+async def test_render_conversation_markdown_includes_provider(workspace_env, storage_repository):
     """render_conversation() markdown includes provider information."""
     archive_root = workspace_env["archive_root"]
 
@@ -388,7 +388,7 @@ def test_render_conversation_markdown_includes_provider(workspace_env, storage_r
         messages=[],
         attachments=[],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -401,7 +401,7 @@ def test_render_conversation_markdown_includes_provider(workspace_env, storage_r
     assert "Conversation ID: c-prov" in markdown
 
 
-def test_render_conversation_markdown_messages_separated(workspace_env, storage_repository):
+async def test_render_conversation_markdown_messages_separated(workspace_env, storage_repository):
     """render_conversation() separates messages with blank lines."""
     archive_root = workspace_env["archive_root"]
 
@@ -413,7 +413,7 @@ def test_render_conversation_markdown_messages_separated(workspace_env, storage_
         ],
         attachments=[],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -428,7 +428,7 @@ def test_render_conversation_markdown_messages_separated(workspace_env, storage_
     assert len([line for line in lines if line.startswith("## ")]) == 2
 
 
-def test_render_conversation_markdown_with_timestamp(workspace_env, storage_repository):
+async def test_render_conversation_markdown_with_timestamp(workspace_env, storage_repository):
     """render_conversation() includes timestamps when present."""
     archive_root = workspace_env["archive_root"]
 
@@ -437,7 +437,7 @@ def test_render_conversation_markdown_with_timestamp(workspace_env, storage_repo
         messages=[make_message("m1", "c-ts", text="Hello", timestamp="2024-01-15T10:30:00")],
         attachments=[],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -454,7 +454,7 @@ def test_render_conversation_markdown_with_timestamp(workspace_env, storage_repo
 # ============================================================================
 
 
-def test_render_conversation_html_valid(workspace_env, storage_repository):
+async def test_render_conversation_html_valid(workspace_env, storage_repository):
     """render_conversation() produces valid HTML with proper structure."""
     archive_root = workspace_env["archive_root"]
 
@@ -466,7 +466,7 @@ def test_render_conversation_html_valid(workspace_env, storage_repository):
         ],
         attachments=[],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -481,7 +481,7 @@ def test_render_conversation_html_valid(workspace_env, storage_repository):
     assert "HTML Test" in html  # Title may be formatted differently
 
 
-def test_render_conversation_html_escapes_content(workspace_env, storage_repository):
+async def test_render_conversation_html_escapes_content(workspace_env, storage_repository):
     """render_conversation() escapes HTML special characters."""
     archive_root = workspace_env["archive_root"]
 
@@ -490,7 +490,7 @@ def test_render_conversation_html_escapes_content(workspace_env, storage_reposit
         messages=[make_message("m1", "c-esc", text="<img src=x onerror='alert(1)'>")],
         attachments=[],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -506,7 +506,7 @@ def test_render_conversation_html_escapes_content(workspace_env, storage_reposit
     assert "&lt;img" in html
 
 
-def test_render_conversation_html_includes_content(workspace_env, storage_repository):
+async def test_render_conversation_html_includes_content(workspace_env, storage_repository):
     """render_conversation() HTML includes conversation content."""
     archive_root = workspace_env["archive_root"]
 
@@ -515,7 +515,7 @@ def test_render_conversation_html_includes_content(workspace_env, storage_reposi
         messages=[make_message("m1", "c-con", text="Important content here")],
         attachments=[],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -531,7 +531,7 @@ def test_render_conversation_html_includes_content(workspace_env, storage_reposi
 # ============================================================================
 
 
-def test_render_conversation_with_message_attachments(workspace_env, storage_repository):
+async def test_render_conversation_with_message_attachments(workspace_env, storage_repository):
     """render_conversation() includes attachments associated with messages."""
     archive_root = workspace_env["archive_root"]
 
@@ -540,7 +540,7 @@ def test_render_conversation_with_message_attachments(workspace_env, storage_rep
         messages=[make_message("m1", "c-att-msg", text="Check this file")],
         attachments=[make_attachment("att-1", "c-att-msg", "m1", mime_type="application/pdf", provider_meta={"name": "document.pdf"})],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -553,7 +553,7 @@ def test_render_conversation_with_message_attachments(workspace_env, storage_rep
     assert "Attachment:" in markdown or "attachment" in markdown.lower()
 
 
-def test_render_conversation_with_orphan_attachments(workspace_env, storage_repository):
+async def test_render_conversation_with_orphan_attachments(workspace_env, storage_repository):
     """render_conversation() includes attachments not linked to messages."""
     archive_root = workspace_env["archive_root"]
 
@@ -566,7 +566,7 @@ def test_render_conversation_with_orphan_attachments(workspace_env, storage_repo
         ],
     )
 
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -584,7 +584,7 @@ def test_render_conversation_with_orphan_attachments(workspace_env, storage_repo
 # ============================================================================
 
 
-def test_render_conversation_writes_markdown_file(workspace_env, storage_repository):
+async def test_render_conversation_writes_markdown_file(workspace_env, storage_repository):
     """render_conversation() writes markdown file to expected location."""
     archive_root = workspace_env["archive_root"]
 
@@ -593,7 +593,7 @@ def test_render_conversation_writes_markdown_file(workspace_env, storage_reposit
         messages=[],
         attachments=[],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -605,7 +605,7 @@ def test_render_conversation_writes_markdown_file(workspace_env, storage_reposit
     assert md_path.name == "conversation.md"
 
 
-def test_render_conversation_writes_html_file(workspace_env, storage_repository):
+async def test_render_conversation_writes_html_file(workspace_env, storage_repository):
     """render_conversation() writes HTML file to expected location."""
     archive_root = workspace_env["archive_root"]
 
@@ -614,7 +614,7 @@ def test_render_conversation_writes_html_file(workspace_env, storage_repository)
         messages=[],
         attachments=[],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
 
     renderer = HTMLRenderer(archive_root)
     output_root = archive_root / "render"
@@ -630,7 +630,7 @@ def test_render_conversation_writes_html_file(workspace_env, storage_repository)
 # ============================================================================
 
 
-def test_repository_conversation_supports_projections(test_db):
+async def test_repository_conversation_supports_projections(test_db):
     """Conversations from repository support semantic projections."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -646,7 +646,7 @@ def test_repository_conversation_supports_projections(test_db):
         ],
     )
 
-    conv = repo.get("c-proj")
+    conv = await repo.get("c-proj")
 
     # Should support projection methods
     assert hasattr(conv, "substantive_only")
@@ -659,7 +659,7 @@ def test_repository_conversation_supports_projections(test_db):
     assert all(m.is_user for m in user_conv.messages)
 
 
-def test_repository_conversation_supports_iteration(test_db):
+async def test_repository_conversation_supports_iteration(test_db):
     """Conversations from repository support iteration methods."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -674,7 +674,7 @@ def test_repository_conversation_supports_iteration(test_db):
         ],
     )
 
-    conv = repo.get("c-iter")
+    conv = await repo.get("c-iter")
 
     # Should support iter_pairs - note: iter_pairs() only yields pairs from substantive messages
     pairs = list(conv.iter_pairs())
@@ -683,7 +683,7 @@ def test_repository_conversation_supports_iteration(test_db):
     assert pairs[0].assistant.text == "Answer! This is also a long enough message to be substantive."
 
 
-def test_repository_conversation_supports_statistics(test_db):
+async def test_repository_conversation_supports_statistics(test_db):
     """Conversations from repository support statistics methods."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -698,7 +698,7 @@ def test_repository_conversation_supports_statistics(test_db):
         ],
     )
 
-    conv = repo.get("c-stats")
+    conv = await repo.get("c-stats")
 
     assert conv.message_count == 2
     assert conv.user_message_count == 1
@@ -719,12 +719,12 @@ def repository_with_backend(sqlite_backend: SQLiteBackend) -> ConversationReposi
     return ConversationRepository(backend=sqlite_backend)
 
 
-def test_repository_save_via_backend(repository_with_backend: ConversationRepository) -> None:
+async def test_repository_save_via_backend(repository_with_backend: ConversationRepository) -> None:
     """Test saving conversation via backend abstraction."""
     conv = make_conversation("conv1", title="Test Conversation")
     msg = make_message("msg1", "conv1", text="Hello")
 
-    counts = repository_with_backend.save_conversation(
+    counts = await repository_with_backend.save_conversation(
         conversation=conv,
         messages=[msg],
         attachments=[],
@@ -736,13 +736,13 @@ def test_repository_save_via_backend(repository_with_backend: ConversationReposi
     assert counts["skipped_messages"] == 0
 
 
-def test_repository_deduplication_via_backend(repository_with_backend: ConversationRepository) -> None:
+async def test_repository_deduplication_via_backend(repository_with_backend: ConversationRepository) -> None:
     """Test that duplicate conversations are skipped when using backend."""
     conv = make_conversation("conv1", title="Test", created_at="2024-01-01T00:00:00Z", updated_at="2024-01-01T00:00:00Z", content_hash="samehash")
     msg = make_message("msg1", "conv1", text="Hello")
 
     # First save
-    counts1 = repository_with_backend.save_conversation(
+    counts1 = await repository_with_backend.save_conversation(
         conversation=conv,
         messages=[msg],
         attachments=[],
@@ -751,7 +751,7 @@ def test_repository_deduplication_via_backend(repository_with_backend: Conversat
     assert counts1["messages"] == 1
 
     # Second save with same hash (should skip)
-    counts2 = repository_with_backend.save_conversation(
+    counts2 = await repository_with_backend.save_conversation(
         conversation=conv,
         messages=[msg],
         attachments=[],
@@ -762,13 +762,13 @@ def test_repository_deduplication_via_backend(repository_with_backend: Conversat
     assert counts2["skipped_messages"] == 1
 
 
-def test_repository_with_attachments_via_backend(repository_with_backend: ConversationRepository) -> None:
+async def test_repository_with_attachments_via_backend(repository_with_backend: ConversationRepository) -> None:
     """Test saving conversation with attachments via backend."""
     conv = make_conversation("conv1", title="Test")
     msg = make_message("msg1", "conv1", text="Hello")
     att = make_attachment("att1", "conv1", "msg1", mime_type="image/png", size_bytes=1024)
 
-    counts = repository_with_backend.save_conversation(
+    counts = await repository_with_backend.save_conversation(
         conversation=conv,
         messages=[msg],
         attachments=[att],

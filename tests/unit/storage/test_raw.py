@@ -30,7 +30,7 @@ class TestRawConversationStorage:
         db_path = tmp_path / "test.db"
         return SQLiteBackend(db_path=db_path)
 
-    def test_save_raw_conversation_new(self, backend: SQLiteBackend) -> None:
+    async def test_save_raw_conversation_new(self, backend: SQLiteBackend) -> None:
         """Saving a new raw conversation returns True."""
         from datetime import datetime, timezone
 
@@ -46,11 +46,11 @@ class TestRawConversationStorage:
             file_mtime=None,
         )
 
-        result = backend.save_raw_conversation(record)
+        result = await backend.save_raw_conversation(record)
 
         assert result is True
 
-    def test_save_raw_conversation_duplicate(self, backend: SQLiteBackend) -> None:
+    async def test_save_raw_conversation_duplicate(self, backend: SQLiteBackend) -> None:
         """Saving a duplicate raw_id returns False (INSERT OR IGNORE)."""
         from datetime import datetime, timezone
 
@@ -66,12 +66,12 @@ class TestRawConversationStorage:
         )
 
         # First save succeeds
-        assert backend.save_raw_conversation(record) is True
+        assert await backend.save_raw_conversation(record) is True
 
         # Second save is ignored (same raw_id)
-        assert backend.save_raw_conversation(record) is False
+        assert await backend.save_raw_conversation(record) is False
 
-    def test_get_raw_conversation(self, backend: SQLiteBackend) -> None:
+    async def test_get_raw_conversation(self, backend: SQLiteBackend) -> None:
         """Retrieve a saved raw conversation by ID."""
         from polylogue.storage.store import RawConversationRecord
 
@@ -85,8 +85,8 @@ class TestRawConversationStorage:
             file_mtime="2026-01-15T08:30:00+00:00",
         )
 
-        backend.save_raw_conversation(original)
-        retrieved = backend.get_raw_conversation("xyz789")
+        await backend.save_raw_conversation(original)
+        retrieved = await backend.get_raw_conversation("xyz789")
 
         assert retrieved is not None
         assert retrieved.raw_id == original.raw_id
@@ -97,13 +97,13 @@ class TestRawConversationStorage:
         assert retrieved.acquired_at == original.acquired_at
         assert retrieved.file_mtime == original.file_mtime
 
-    def test_get_raw_conversation_not_found(self, backend: SQLiteBackend) -> None:
+    async def test_get_raw_conversation_not_found(self, backend: SQLiteBackend) -> None:
         """Retrieving non-existent raw conversation returns None."""
-        result = backend.get_raw_conversation("nonexistent")
+        result = await backend.get_raw_conversation("nonexistent")
 
         assert result is None
 
-    def test_iter_raw_conversations(self, backend: SQLiteBackend) -> None:
+    async def test_iter_raw_conversations(self, backend: SQLiteBackend) -> None:
         """Iterate over all raw conversations."""
         from datetime import datetime, timezone
 
@@ -121,12 +121,12 @@ class TestRawConversationStorage:
         ]
 
         for r in records:
-            backend.save_raw_conversation(r)
+            await backend.save_raw_conversation(r)
 
-        all_records = list(backend.iter_raw_conversations())
+        all_records = [r async for r in backend.iter_raw_conversations()]
         assert len(all_records) == 5
 
-    def test_iter_raw_conversations_by_provider(self, backend: SQLiteBackend) -> None:
+    async def test_iter_raw_conversations_by_provider(self, backend: SQLiteBackend) -> None:
         """Filter iteration by provider name."""
         from datetime import datetime, timezone
 
@@ -144,22 +144,22 @@ class TestRawConversationStorage:
         ]
 
         for r in records:
-            backend.save_raw_conversation(r)
+            await backend.save_raw_conversation(r)
 
-        chatgpt_records = list(backend.iter_raw_conversations(provider="chatgpt"))
+        chatgpt_records = [r async for r in backend.iter_raw_conversations(provider="chatgpt")]
         assert len(chatgpt_records) == 3
 
-        claude_records = list(backend.iter_raw_conversations(provider="claude"))
+        claude_records = [r async for r in backend.iter_raw_conversations(provider="claude")]
         assert len(claude_records) == 3
 
-    def test_iter_raw_conversations_with_limit(self, backend: SQLiteBackend) -> None:
+    async def test_iter_raw_conversations_with_limit(self, backend: SQLiteBackend) -> None:
         """Limit the number of records returned."""
         from datetime import datetime, timezone
 
         from polylogue.storage.store import RawConversationRecord
 
         for i in range(10):
-            backend.save_raw_conversation(
+            await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"raw-{i}",
                     provider_name="test",
@@ -169,10 +169,10 @@ class TestRawConversationStorage:
                 )
             )
 
-        limited = list(backend.iter_raw_conversations(limit=3))
+        limited = [r async for r in backend.iter_raw_conversations(limit=3)]
         assert len(limited) == 3
 
-    def test_conversation_links_to_raw(self, backend: SQLiteBackend) -> None:
+    async def test_conversation_links_to_raw(self, backend: SQLiteBackend) -> None:
         """Conversations can link to their raw source via raw_id.
 
         The link goes: conversations.raw_id → raw_conversations.raw_id
@@ -190,7 +190,7 @@ class TestRawConversationStorage:
             raw_content=b'{"id": "test-conv"}',
             acquired_at=datetime.now(timezone.utc).isoformat(),
         )
-        backend.save_raw_conversation(raw_record)
+        await backend.save_raw_conversation(raw_record)
 
         # Then store parsed conversation with link to raw
         conv = ConversationRecord(
@@ -200,19 +200,20 @@ class TestRawConversationStorage:
             content_hash="hash123",
             raw_id="raw-abc123",  # Link to raw source
         )
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
         # Verify the link exists in database
-        with backend._get_connection() as conn:
-            row = conn.execute(
+        async with backend._get_connection() as conn:
+            row = await conn.execute(
                 "SELECT raw_id FROM conversations WHERE conversation_id = ?",
                 ("conv-link-test",),
-            ).fetchone()
+            )
+            row = await row.fetchone()
 
         assert row is not None
         assert row["raw_id"] == "raw-abc123"
 
-    def test_conversation_without_raw_id(self, backend: SQLiteBackend) -> None:
+    async def test_conversation_without_raw_id(self, backend: SQLiteBackend) -> None:
         """Conversations can be saved without raw_id (e.g., direct file ingest)."""
         from polylogue.storage.store import ConversationRecord
 
@@ -223,30 +224,31 @@ class TestRawConversationStorage:
             content_hash="hash456",
             # raw_id is None (default)
         )
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
         # Verify it saved correctly
-        with backend._get_connection() as conn:
-            row = conn.execute(
+        async with backend._get_connection() as conn:
+            row = await conn.execute(
                 "SELECT raw_id FROM conversations WHERE conversation_id = ?",
                 ("conv-no-raw",),
-            ).fetchone()
+            )
+            row = await row.fetchone()
 
         assert row is not None
         assert row["raw_id"] is None
 
-    def test_get_raw_conversation_count(self, backend: SQLiteBackend) -> None:
+    async def test_get_raw_conversation_count(self, backend: SQLiteBackend) -> None:
         """Count raw conversations."""
         from datetime import datetime, timezone
 
         from polylogue.storage.store import RawConversationRecord
 
         # Initially empty
-        assert backend.get_raw_conversation_count() == 0
+        assert await backend.get_raw_conversation_count() == 0
 
         # Add some records
         for i in range(5):
-            backend.save_raw_conversation(
+            await backend.save_raw_conversation(
                 RawConversationRecord(
                     raw_id=f"count-{i}",
                     provider_name="chatgpt" if i < 3 else "claude",
@@ -257,12 +259,12 @@ class TestRawConversationStorage:
             )
 
         # Total count
-        assert backend.get_raw_conversation_count() == 5
+        assert await backend.get_raw_conversation_count() == 5
 
         # Filtered count
-        assert backend.get_raw_conversation_count(provider="chatgpt") == 3
-        assert backend.get_raw_conversation_count(provider="claude") == 2
-        assert backend.get_raw_conversation_count(provider="codex") == 0
+        assert await backend.get_raw_conversation_count(provider="chatgpt") == 3
+        assert await backend.get_raw_conversation_count(provider="claude") == 2
+        assert await backend.get_raw_conversation_count(provider="codex") == 0
 
 
 class TestRawConversationRecordValidation:

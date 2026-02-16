@@ -18,9 +18,9 @@ import pytest
 
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import ConversationSummary
-from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.sqlite import open_connection
-from polylogue.storage.async_repository import AsyncConversationRepository
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.index import rebuild_index
 from tests.infra.helpers import ConversationBuilder
 
@@ -144,15 +144,15 @@ def filter_db_advanced(tmp_path):
 @pytest.fixture
 def filter_repo_advanced(filter_db_advanced):
     """Create repository for advanced filter tests."""
-    backend = AsyncSQLiteBackend(db_path=filter_db_advanced)
-    return AsyncConversationRepository(backend=backend)
+    backend = SQLiteBackend(db_path=filter_db_advanced)
+    return ConversationRepository(backend=backend)
 
 
 @pytest.fixture
 def filter_repo_empty(filter_db_empty):
     """Create repository for empty database tests."""
-    backend = AsyncSQLiteBackend(db_path=filter_db_empty)
-    return AsyncConversationRepository(backend=backend)
+    backend = SQLiteBackend(db_path=filter_db_empty)
+    return ConversationRepository(backend=backend)
 
 
 # ============================================================================
@@ -772,8 +772,8 @@ class TestConversationFilterBranchingMethods:
     @pytest.fixture
     def filter_repo_branches(self, filter_db_with_branches):
         """Create repository for branch tests."""
-        backend = AsyncSQLiteBackend(db_path=filter_db_with_branches)
-        return AsyncConversationRepository(backend=backend)
+        backend = SQLiteBackend(db_path=filter_db_with_branches)
+        return ConversationRepository(backend=backend)
 
     @pytest.mark.asyncio
     async def test_is_root_filters_correctly(self, filter_repo_branches):

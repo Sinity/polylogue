@@ -1,6 +1,6 @@
 """Async high-level library facade for Polylogue.
 
-This module provides the `AsyncPolylogue` class for async/await operations.
+This module provides the `Polylogue` class for async/await operations.
 Enables concurrent queries and parallel batch operations.
 
 Performance gains:
@@ -9,7 +9,7 @@ Performance gains:
 - Non-blocking I/O: Doesn't block event loop during database operations
 
 Example:
-    async with AsyncPolylogue() as archive:
+    async with Polylogue() as archive:
         # Concurrent queries
         stats, recent, claude = await asyncio.gather(
             archive.stats(),
@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from polylogue.config import Config, Source
-from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
@@ -77,7 +77,7 @@ class ArchiveStats:
         )
 
 
-class AsyncPolylogue:
+class Polylogue:
     """Async high-level facade for Polylogue library.
 
     Provides async/await API for concurrent operations with full parity
@@ -89,11 +89,11 @@ class AsyncPolylogue:
 
     Example:
         # Context manager (recommended)
-        async with AsyncPolylogue() as archive:
+        async with Polylogue() as archive:
             convs = await archive.filter().list()
 
         # Manual lifecycle
-        archive = AsyncPolylogue()
+        archive = Polylogue()
         try:
             convs = await archive.filter().list()
         finally:
@@ -127,9 +127,9 @@ class AsyncPolylogue:
 
         # Create async backend
         self._db_path = db_path
-        self._backend = AsyncSQLiteBackend(db_path=db_path)
+        self._backend = SQLiteBackend(db_path=db_path)
 
-    async def __aenter__(self) -> AsyncPolylogue:
+    async def __aenter__(self) -> Polylogue:
         """Enter async context manager."""
         return self
 
@@ -297,11 +297,11 @@ class AsyncPolylogue:
             result = await archive.parse_file("chatgpt_export.json")
             print(f"Imported {result.counts['conversations']} conversations")
         """
-        from polylogue.pipeline.services.async_parsing import AsyncParsingService
-        from polylogue.storage.async_repository import AsyncConversationRepository
+        from polylogue.pipeline.services.parsing import ParsingService
+        from polylogue.storage.repository import ConversationRepository
 
-        repository = AsyncConversationRepository(backend=self._backend)
-        parsing_service = AsyncParsingService(
+        repository = ConversationRepository(backend=self._backend)
+        parsing_service = ParsingService(
             repository=repository,
             archive_root=self._config.archive_root,
             config=self._config,
@@ -336,11 +336,11 @@ class AsyncPolylogue:
         Example:
             result = await archive.parse_sources()
         """
-        from polylogue.pipeline.services.async_parsing import AsyncParsingService
-        from polylogue.storage.async_repository import AsyncConversationRepository
+        from polylogue.pipeline.services.parsing import ParsingService
+        from polylogue.storage.repository import ConversationRepository
 
-        repository = AsyncConversationRepository(backend=self._backend)
-        parsing_service = AsyncParsingService(
+        repository = ConversationRepository(backend=self._backend)
+        parsing_service = ParsingService(
             repository=repository,
             archive_root=self._config.archive_root,
             config=self._config,
@@ -364,9 +364,9 @@ class AsyncPolylogue:
         Example:
             success = await archive.rebuild_index()
         """
-        from polylogue.pipeline.services.async_indexing import AsyncIndexService
+        from polylogue.pipeline.services.indexing import IndexService
 
-        index_service = AsyncIndexService(config=self._config, backend=self._backend)
+        index_service = IndexService(config=self._config, backend=self._backend)
         return await index_service.rebuild_index()
 
     def filter(self) -> ConversationFilter:
@@ -381,9 +381,9 @@ class AsyncPolylogue:
             convs = await archive.filter().provider("claude").contains("error").limit(10).list()
         """
         from polylogue.lib.filters import ConversationFilter
-        from polylogue.storage.async_repository import AsyncConversationRepository
+        from polylogue.storage.repository import ConversationRepository
 
-        repository = AsyncConversationRepository(backend=self._backend)
+        repository = ConversationRepository(backend=self._backend)
 
         vector_provider = None
         try:
@@ -450,4 +450,4 @@ class AsyncPolylogue:
 
     def __repr__(self) -> str:
         """Return string representation."""
-        return f"AsyncPolylogue(archive_root={self._config.archive_root!r})"
+        return f"Polylogue(archive_root={self._config.archive_root!r})"

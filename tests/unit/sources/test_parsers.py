@@ -18,6 +18,7 @@ from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 # Claude imports
 # Codex imports
 # Drive imports (for parse_chunked_prompt)
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import RawConversationRecord
@@ -54,7 +55,7 @@ class TestParseRawRecordJsonl:
 			drive_client_factory=None,
 		)
 
-	def test_parse_raw_record_single_json(
+	async def test_parse_raw_record_single_json(
 		self, parsing_service: ParsingService
 	) -> None:
 		"""Single JSON document (ChatGPT format) parses correctly."""
@@ -97,7 +98,7 @@ class TestParseRawRecordJsonl:
 		)
 
 		# Should parse without error and return a conversation
-		parsed = parsing_service._parse_raw_record(raw_record)
+		parsed = await parsing_service._parse_raw_record(raw_record)
 
 		assert len(parsed) > 0
 		assert parsed[0].provider_name == "chatgpt"
@@ -105,7 +106,7 @@ class TestParseRawRecordJsonl:
 		# ChatGPT parser extracts messages from the mapping
 		assert len(parsed[0].messages) == 2
 
-	def test_parse_raw_record_jsonl(self, parsing_service: ParsingService) -> None:
+	async def test_parse_raw_record_jsonl(self, parsing_service: ParsingService) -> None:
 		"""Multi-line JSONL (claude-code format) parses correctly and produces messages."""
 		# Claude Code format: JSONL with messages as separate lines
 		raw_content = b"""{"parentUuid":null,"isSidechain":false,"cwd":"/","sessionId":"test-session-1","version":"1.0.30","type":"user","message":{"role":"user","content":"Hello world"},"uuid":"msg-1","timestamp":"2025-06-20T11:34:16.232Z"}
@@ -122,7 +123,7 @@ class TestParseRawRecordJsonl:
 		)
 
 		# Should parse without error and return a conversation
-		parsed = parsing_service._parse_raw_record(raw_record)
+		parsed = await parsing_service._parse_raw_record(raw_record)
 
 		assert len(parsed) > 0
 		assert parsed[0].provider_name == "claude-code"
@@ -135,7 +136,7 @@ class TestParseRawRecordJsonl:
 		# Second message should be assistant
 		assert parsed[0].messages[1].role == "assistant"
 
-	def test_parse_raw_record_jsonl_with_invalid_lines(
+	async def test_parse_raw_record_jsonl_with_invalid_lines(
 		self, parsing_service: ParsingService
 	) -> None:
 		"""JSONL with some invalid lines skips them gracefully."""
@@ -157,7 +158,7 @@ This is not JSON at all, should be skipped
 		)
 
 		# Should parse without error, skipping invalid lines
-		parsed = parsing_service._parse_raw_record(raw_record)
+		parsed = await parsing_service._parse_raw_record(raw_record)
 
 		assert len(parsed) > 0
 		# Should have extracted the 3 valid lines (invalid ones skipped)
@@ -166,7 +167,7 @@ This is not JSON at all, should be skipped
 		# Should have at least 2-3 messages from the valid lines
 		assert len(parsed[0].messages) >= 2
 
-	def test_orphan_raw_records_reparsed(
+	async def test_orphan_raw_records_reparsed(
 		self, backend: SQLiteBackend, repository: ConversationRepository, tmp_path: Path
 	) -> None:
 		"""Raw records without conversations are detected and re-parsed.
@@ -202,45 +203,45 @@ This is not JSON at all, should be skipped
 		)
 
 		# Save the raw record
-		backend.save_raw_conversation(raw_record)
+		await backend.save_raw_conversation(raw_record)
 
 		# Verify it's stored
-		stored_raw = backend.get_raw_conversation("orphaned-raw-001")
+		stored_raw = await backend.get_raw_conversation("orphaned-raw-001")
 		assert stored_raw is not None
 		assert stored_raw.provider_name == "claude-code"
 
 		# Query for orphaned raw records (without conversations)
 		# This is the pattern from parse_sources()
-		conn = backend._get_connection()
-		orphaned_rows = conn.execute(
+		with open_connection(backend._db_path) as conn:
+			orphaned_rows = conn.execute(
+				"""
+				SELECT r.raw_id
+				FROM raw_conversations r
+				LEFT JOIN conversations c ON r.raw_id = c.raw_id
+				WHERE c.conversation_id IS NULL
 			"""
-			SELECT r.raw_id
-			FROM raw_conversations r
-			LEFT JOIN conversations c ON r.raw_id = c.raw_id
-			WHERE c.conversation_id IS NULL
-		"""
-		).fetchall()
+			).fetchall()
 
 		# Should find the orphaned record
 		orphaned_ids = [row["raw_id"] for row in orphaned_rows]
 		assert "orphaned-raw-001" in orphaned_ids
 
 		# Now parse it using parse_from_raw with the orphaned ID
-		result = parsing_service.parse_from_raw(raw_ids=["orphaned-raw-001"])
+		result = await parsing_service.parse_from_raw(raw_ids=["orphaned-raw-001"])
 
 		# Should successfully parse and create a conversation
 		assert result.counts["conversations"] > 0 or result.counts["messages"] > 0
 		# Verify the conversation was created with raw_id link
 		# Query directly for conversations with raw_id
-		conn = backend._get_connection()
-		linked_convos = conn.execute(
-			"""
-			SELECT conversation_id, raw_id
-			FROM conversations
-			WHERE raw_id = ?
-		""",
-			("orphaned-raw-001",),
-		).fetchall()
+		with open_connection(backend._db_path) as conn:
+			linked_convos = conn.execute(
+				"""
+				SELECT conversation_id, raw_id
+				FROM conversations
+				WHERE raw_id = ?
+			""",
+				("orphaned-raw-001",),
+			).fetchall()
 		assert (
 			len(linked_convos) > 0
 		), "Orphaned raw record should be linked to created conversation"

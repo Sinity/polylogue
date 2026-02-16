@@ -1,10 +1,9 @@
 """Storage layer for Polylogue - database, indexing, and search.
 
-Async exports (AsyncConversationRepository, AsyncSQLiteBackend) are available
-via direct import from their submodules to avoid circular import issues::
+Primary imports::
 
-    from polylogue.storage.async_repository import AsyncConversationRepository
-    from polylogue.storage.backends import AsyncSQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.backends import SQLiteBackend
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 """Async storage repository for conversation persistence.
 
 Provides async/await interface for storing and retrieving conversations.
-Wraps AsyncSQLiteBackend for parallel operations.
+Wraps SQLiteBackend for parallel operations.
 
 All methods are async and use eager loading (Conversation.from_records)
 instead of lazy loading, since async I/O already enables efficient parallel
@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
 from polylogue.lib.models import Conversation, ConversationSummary, Message
-from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, MessageRecord, RunRecord
 from polylogue.types import ConversationId
 
@@ -31,10 +31,10 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-class AsyncConversationRepository:
+class ConversationRepository:
     """Async repository for conversation storage operations.
 
-    Wraps AsyncSQLiteBackend to provide high-level async storage interface with
+    Wraps SQLiteBackend to provide high-level async storage interface with
     full feature parity to sync ConversationRepository.
 
     All methods are async. Eager loading (Conversation.from_records) is used
@@ -45,7 +45,7 @@ class AsyncConversationRepository:
     in the backend layer, combined with asyncio.Lock() serialization.
 
     Example:
-        async with AsyncConversationRepository() as repo:
+        async with ConversationRepository() as repo:
             conv = await repo.get("claude:abc123")
             convs = await repo.list(limit=10)
             await repo.save_conversation(conv_rec, msgs, atts)
@@ -53,24 +53,24 @@ class AsyncConversationRepository:
 
     def __init__(
         self,
-        backend: AsyncSQLiteBackend | None = None,
+        backend: SQLiteBackend | None = None,
         db_path: Path | None = None,
     ) -> None:
         """Initialize async storage repository.
 
         Args:
-            backend: Optional AsyncSQLiteBackend instance. If provided, db_path is ignored.
+            backend: Optional SQLiteBackend instance. If provided, db_path is ignored.
             db_path: Optional path to database file. Used if backend is None.
         """
         if backend is not None:
             self._backend = backend
         else:
-            self._backend = AsyncSQLiteBackend(db_path=db_path)
+            self._backend = SQLiteBackend(db_path=db_path)
 
         # Store db_path for compatibility with sync repository (used by message mapping)
         self._db_path = getattr(self._backend, "_db_path", None)
 
-    async def __aenter__(self) -> AsyncConversationRepository:
+    async def __aenter__(self) -> ConversationRepository:
         """Enter async context manager."""
         return self
 
@@ -79,7 +79,7 @@ class AsyncConversationRepository:
         await self.close()
 
     @property
-    def backend(self) -> AsyncSQLiteBackend:
+    def backend(self) -> SQLiteBackend:
         """Access the underlying async storage backend."""
         return self._backend
 
@@ -952,4 +952,16 @@ class AsyncConversationRepository:
         )
 
 
-__all__ = ["AsyncConversationRepository"]
+def _records_to_conversation(
+    conversation: ConversationRecord,
+    messages: list[MessageRecord],
+    attachments: list[AttachmentRecord],
+) -> Conversation:
+    """Convert records to a Conversation model.
+
+    Used by facades and internal migration tools.
+    """
+    return Conversation.from_records(conversation, messages, attachments)
+
+
+__all__ = ["ConversationRepository", "_records_to_conversation"]

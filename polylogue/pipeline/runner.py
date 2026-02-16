@@ -104,7 +104,7 @@ async def _all_conversation_ids(backend: Any, source_names: Sequence[str] | None
     """Fetch all conversation IDs from database, optionally filtered by source names.
 
     Args:
-        backend: AsyncSQLiteBackend instance
+        backend: SQLiteBackend instance
         source_names: Optional list of source names to filter by
 
     Returns:
@@ -168,7 +168,7 @@ def _write_run_json(archive_root: Path, payload: dict[str, object]) -> Path:
     return run_path
 
 
-async def async_run_sources(
+async def run_sources(
     *,
     config: Config,
     stage: str = "all",
@@ -197,12 +197,12 @@ async def async_run_sources(
     Returns:
         RunResult with counts, drift, indexing status, and metadata
     """
-    from polylogue.services import get_async_backend, get_async_repository
+    from polylogue.services import get_backend, get_repository
 
     start = time.perf_counter()
 
-    backend = get_async_backend()
-    repository = get_async_repository()
+    backend = get_backend()
+    repository = get_repository()
 
     # Track counts for reporting
     counts = {
@@ -224,9 +224,9 @@ async def async_run_sources(
 
     # Acquire stage (raw storage only)
     if stage == "acquire":
-        from polylogue.pipeline.services.async_acquisition import AsyncAcquisitionService
+        from polylogue.pipeline.services.acquisition import AcquisitionService
 
-        acquire_service = AsyncAcquisitionService(backend=backend)
+        acquire_service = AcquisitionService(backend=backend)
         sources = _select_sources(config, source_names)
         acquire_result = await acquire_service.acquire_sources(
             sources,
@@ -237,9 +237,9 @@ async def async_run_sources(
 
     # Parse stage (acquire + parse, replaces old "ingest")
     elif stage in {"parse", "all"}:
-        from polylogue.pipeline.services.async_parsing import AsyncParsingService
+        from polylogue.pipeline.services.parsing import ParsingService
 
-        parsing_service = AsyncParsingService(
+        parsing_service = ParsingService(
             repository=repository,
             archive_root=config.archive_root,
             config=config,
@@ -276,7 +276,7 @@ async def async_run_sources(
 
     # Rendering stage
     if stage in {"render", "all"}:
-        from polylogue.pipeline.services.async_rendering import AsyncRenderService
+        from polylogue.pipeline.services.rendering import RenderService
         from polylogue.rendering.renderers import create_renderer
 
         ids = (
@@ -286,7 +286,7 @@ async def async_run_sources(
         )
         if ids:
             renderer = create_renderer(format=render_format, config=config)
-            render_service = AsyncRenderService(
+            render_service = RenderService(
                 renderer=renderer,
                 render_root=config.archive_root / "render",
             )
@@ -300,9 +300,9 @@ async def async_run_sources(
     indexed = False
     index_error: str | None = None
 
-    from polylogue.pipeline.services.async_indexing import AsyncIndexService
+    from polylogue.pipeline.services.indexing import IndexService
 
-    index_service = AsyncIndexService(config=config, backend=backend)
+    index_service = IndexService(config=config, backend=backend)
 
     try:
         if stage == "index":
@@ -388,19 +388,19 @@ async def async_run_sources(
     )
 
 
-async def async_latest_run(backend: Any | None = None) -> RunRecord | None:
+async def latest_run(backend: Any | None = None) -> RunRecord | None:
     """Fetch the most recent run record from the database asynchronously.
 
     Args:
-        backend: Optional AsyncSQLiteBackend. If None, uses get_async_backend()
+        backend: Optional SQLiteBackend. If None, uses get_backend()
 
     Returns:
         RunRecord if a run exists, None otherwise
     """
     if backend is None:
-        from polylogue.services import get_async_backend
+        from polylogue.services import get_backend
 
-        backend = get_async_backend()
+        backend = get_backend()
 
     async with backend._get_connection() as conn:
         cursor = await conn.execute(
@@ -450,6 +450,6 @@ async def async_latest_run(backend: Any | None = None) -> RunRecord | None:
 
 __all__ = [
     "plan_sources",
-    "async_run_sources",
-    "async_latest_run",
+    "run_sources",
+    "latest_run",
 ]

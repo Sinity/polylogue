@@ -42,7 +42,7 @@ class ProviderMetrics:
         return (self.total_conversations_with_thinking / self.conversation_count) * 100
 
 
-def compute_provider_comparison(db_path: Path | None = None) -> list[ProviderMetrics]:
+async def compute_provider_comparison(db_path: Path | None = None) -> list[ProviderMetrics]:
     """Compute comparison metrics across all providers.
 
     Args:
@@ -52,11 +52,11 @@ def compute_provider_comparison(db_path: Path | None = None) -> list[ProviderMet
         List of ProviderMetrics ordered by conversation count (descending)
 
     Examples:
-        >>> metrics = compute_provider_comparison()
+        >>> metrics = await compute_provider_comparison()
         >>> for m in metrics:
         ...     print(f"{m.provider_name}: {m.conversation_count} conversations")
     """
-    from polylogue.storage.backends.sqlite import SQLiteBackend
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
     backend = SQLiteBackend(db_path=db_path)
     repo = ConversationRepository(backend=backend)
@@ -81,7 +81,7 @@ def compute_provider_comparison(db_path: Path | None = None) -> list[ProviderMet
     offset = 0
     batch_size = 1000
     while True:
-        batch = repo.list(limit=batch_size, offset=offset)
+        batch = await repo.list(limit=batch_size, offset=offset)
         if not batch:
             break
 

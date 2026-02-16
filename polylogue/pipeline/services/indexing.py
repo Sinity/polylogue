@@ -14,20 +14,20 @@ from polylogue.storage.async_index import (
 
 if TYPE_CHECKING:
     from polylogue.config import Config
-    from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 logger = get_logger(__name__)
 
-__all__ = ["AsyncIndexService"]
+__all__ = ["IndexService"]
 
 
-class AsyncIndexService:
+class IndexService:
     """Service for managing full-text and vector search indices (async version)."""
 
     def __init__(
         self,
         config: Config,
-        backend: AsyncSQLiteBackend | None = None,
+        backend: SQLiteBackend | None = None,
     ):
         """Initialize the async indexing service.
 

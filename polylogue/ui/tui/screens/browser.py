@@ -40,14 +40,14 @@ class Browser(Container):
                 yield MarkdownWidget(id="markdown-viewer")
 
     def on_mount(self) -> None:
-        self.run_worker(self._fetch_tree(), thread=True)
+        self.run_worker(self._fetch_tree())
 
     async def _fetch_tree(self) -> None:
-        """Fetch tree data in a thread, then update DOM on the main thread."""
+        """Fetch tree data asynchronously, then update DOM."""
         try:
             repo = self._get_repo()
 
-            stats = repo.get_archive_stats()
+            stats = await repo.get_archive_stats()
             providers = sorted(stats.providers.keys()) if stats.providers else []
 
             if not providers:
@@ -56,15 +56,15 @@ class Browser(Container):
             # Collect tree data: list of (provider_label, [(title, conv_id), ...])
             tree_data: list[tuple[str, list[tuple[str, str]]]] = []
             for provider in providers:
-                summaries = repo.list_summaries(limit=50, provider=provider)
+                summaries = await repo.list_summaries(limit=50, provider=provider)
                 leaves = [(s.title or s.id, s.id) for s in summaries]
                 tree_data.append((provider.capitalize(), leaves))
 
         except Exception as e:
-            self.app.call_from_thread(self.notify, f"Failed to load browser: {e}", severity="error")
+            self.notify(f"Failed to load browser: {e}", severity="error")
             return
 
-        self.app.call_from_thread(self._apply_tree, tree_data)
+        self._apply_tree(tree_data)
 
     def _apply_tree(self, tree_data: list[tuple[str, list[tuple[str, str]]]]) -> None:
         """Apply fetched tree data to DOM (runs on main thread)."""
@@ -80,13 +80,13 @@ class Browser(Container):
         """Handle tree node selection."""
         if not message.node.allow_expand and message.node.data:
             conv_id = str(message.node.data)
-            self.load_conversation(conv_id)
+            await self.load_conversation(conv_id)
 
-    def load_conversation(self, conversation_id: str) -> None:
+    async def load_conversation(self, conversation_id: str) -> None:
         """Load and display conversation content."""
         repo = self._get_repo()
 
-        conv = repo.get_eager(conversation_id)
+        conv = await repo.get_eager(conversation_id)
         if not conv:
             self.query_one("#markdown-viewer", MarkdownWidget).update(f"Error: Could not load {conversation_id}")
             return

@@ -1,17 +1,17 @@
 """Async full-text search index management for SQLite.
 
 Provides async/await API for FTS5 index creation, rebuilding, and status checking.
-All operations use the AsyncSQLiteBackend for non-blocking database access.
+All operations use the SQLiteBackend for non-blocking database access.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 
-from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 
-async def async_ensure_index(backend: AsyncSQLiteBackend) -> None:
+async def async_ensure_index(backend: SQLiteBackend) -> None:
     """Create FTS5 index table if it doesn't exist.
 
     Args:
@@ -29,7 +29,7 @@ async def async_ensure_index(backend: AsyncSQLiteBackend) -> None:
         )
 
 
-async def async_rebuild_index(backend: AsyncSQLiteBackend) -> None:
+async def async_rebuild_index(backend: SQLiteBackend) -> None:
     """Rebuild the entire FTS5 search index from scratch.
 
     Args:
@@ -50,7 +50,7 @@ async def async_rebuild_index(backend: AsyncSQLiteBackend) -> None:
 
 
 async def async_update_index_for_conversations(
-    conversation_ids: Sequence[str], backend: AsyncSQLiteBackend
+    conversation_ids: Sequence[str], backend: SQLiteBackend
 ) -> None:
     """Update FTS5 search index for specific conversations.
 
@@ -104,7 +104,7 @@ def _chunked(items: Sequence[str], *, size: int) -> Iterable[Sequence[str]]:
         yield items[idx : idx + size]
 
 
-async def async_index_status(backend: AsyncSQLiteBackend) -> dict[str, object]:
+async def async_index_status(backend: SQLiteBackend) -> dict[str, object]:
     """Get FTS5 index status information.
 
     Args:

@@ -196,7 +196,7 @@ polylogue/
 ├── storage/                  # Storage Layer
 │   ├── backends/            # Backend implementations
 │   │   ├── sqlite.py       # SQLiteBackend (only backend, schema v5)
-│   │   └── async_sqlite.py # AsyncSQLiteBackend
+│   │   └── async_sqlite.py # SQLiteBackend
 │   ├── search_providers/    # Search implementations
 │   │   ├── fts5.py         # FTS5Provider
 │   │   ├── sqlite_vec.py   # sqlite-vec vector search
@@ -246,7 +246,7 @@ polylogue/
 ├── config.py                 # Configuration (Config, IndexConfig, DriveConfig)
 ├── services.py               # Singleton factories: get_backend(), get_repository()
 ├── facade.py                 # Polylogue — top-level library API
-├── async_facade.py           # AsyncPolylogue — async library API
+├── async_facade.py           # Polylogue — async library API
 ├── paths.py                  # XDG path resolution
 ├── protocols.py              # SearchProvider protocol
 ├── types.py                  # NewType definitions (ConversationId, MessageId, etc.)
