@@ -22,7 +22,7 @@ from polylogue.pipeline.runner import (
     run_sources,
     plan_sources,
 )
-from polylogue.storage.backends.sqlite import open_connection
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.store import PlanResult
 from tests.infra.helpers import make_conversation, store_records
 

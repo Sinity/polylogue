@@ -33,7 +33,7 @@ except ImportError:
 # Default database path - use same location as main storage backend
 import contextlib
 
-from polylogue.storage.backends.sqlite import default_db_path
+from polylogue.storage.backends.connection import default_db_path
 
 # UUID pattern for detecting dynamic keys
 UUID_PATTERN = re.compile(

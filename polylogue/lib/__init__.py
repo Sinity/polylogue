@@ -12,7 +12,7 @@ The key abstractions are:
 Example usage:
 
     from polylogue.lib import ConversationRepository, Conversation
-    from polylogue.storage.backends.sqlite import create_default_backend
+    from polylogue.storage.backends.connection import create_default_backend
 
     # Create repository with backend
     repo = ConversationRepository(backend=create_default_backend())
@@ -37,22 +37,18 @@ Example usage:
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Attachment, Conversation, DialoguePair, Message
+from polylogue.lib.projections import ConversationProjection
 from polylogue.lib.roles import Role
+from polylogue.lib.stats import ArchiveStats
 
 
 def __getattr__(name: str) -> object:
+    # Lazy import to break circular dependency:
+    # async_sqlite → polylogue.lib → storage.repository → async_sqlite
     if name == "ConversationRepository":
         from polylogue.storage.repository import ConversationRepository
 
         return ConversationRepository
-    if name == "ConversationProjection":
-        from polylogue.lib.projections import ConversationProjection
-
-        return ConversationProjection
-    if name == "ArchiveStats":
-        from polylogue.lib.stats import ArchiveStats
-
-        return ArchiveStats
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

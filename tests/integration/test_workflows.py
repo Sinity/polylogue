@@ -47,10 +47,10 @@ async def temp_config_and_repo(tmp_path):
     )
 
     # Create backend and repositories
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
 
     with open_connection(db_path) as conn:
-        from polylogue.storage.backends.sqlite import _ensure_schema
+        from polylogue.storage.backends.schema import _ensure_schema
 
         _ensure_schema(conn)
 
@@ -94,7 +94,7 @@ async def test_full_workflow_per_provider(provider, synthetic_source, temp_confi
     result = await service.parse_sources([source])
 
     # Build FTS index for search tests (INDEX stage of pipeline)
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.index import update_index_for_conversations
 
     with open_connection(db_path) as conn:
@@ -532,7 +532,7 @@ async def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_
     await service.parse_sources([chatgpt_sample_source])
 
     # Build search index
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.index import rebuild_index
 
     with open_connection(db_path) as conn:
@@ -604,7 +604,7 @@ async def test_search_with_special_characters(temp_config_and_repo):
         await service.parse_sources([Source(name="test", path=path)])
 
         # Build search index
-        from polylogue.storage.backends.sqlite import open_connection
+        from polylogue.storage.backends.connection import open_connection
         from polylogue.storage.index import rebuild_index
 
         with open_connection(db_path) as conn:

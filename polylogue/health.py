@@ -13,7 +13,7 @@ from typing import Any, cast
 from .config import Config
 from .lib.log import get_logger
 from .sources.drive_client import default_credentials_path, default_token_path
-from .storage.backends.sqlite import connection_context, open_connection
+from .storage.backends.connection import connection_context, open_connection
 from .storage.index import index_status
 
 LOGGER = get_logger(__name__)
@@ -711,7 +711,7 @@ def repair_wal_checkpoint(config: Config, dry_run: bool = False) -> RepairResult
         if dry_run:
             # All PRAGMA wal_checkpoint modes actually perform a checkpoint.
             # For true dry-run, inspect the WAL file on disk instead.
-            from polylogue.storage.backends.sqlite import default_db_path
+            from polylogue.storage.backends.connection import default_db_path
 
             db_path = default_db_path()
             wal_path = Path(str(db_path) + "-wal")

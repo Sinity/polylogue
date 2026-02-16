@@ -124,7 +124,6 @@ def connection_context(db_path: Path | str | sqlite3.Connection | None = None) -
     yield _get_cached_connection(path)
 
 
-# Alias for backward compatibility
 open_connection = connection_context
 
 
@@ -153,6 +152,72 @@ def create_default_backend() -> object:
     return SQLiteBackend(db_path=None)
 
 
+def _iso_to_epoch(iso_str: str) -> float:
+    """Convert an ISO date string to epoch seconds for SQL comparison."""
+    from datetime import datetime
+
+    try:
+        return datetime.fromisoformat(iso_str).timestamp()
+    except (ValueError, TypeError):
+        try:
+            return float(iso_str)
+        except (ValueError, TypeError):
+            return 0.0
+
+
+def _build_conversation_filters(
+    *,
+    source: str | None = None,
+    provider: str | None = None,
+    providers: list[str] | None = None,
+    parent_id: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    title_contains: str | None = None,
+) -> tuple[str, list[str | int | float]]:
+    """Build WHERE clause and params for conversation queries."""
+    where_clauses: list[str] = []
+    params: list[str | int | float] = []
+
+    if source is not None:
+        where_clauses.append("source_name = ?")
+        params.append(source)
+    if provider is not None:
+        where_clauses.append("provider_name = ?")
+        params.append(provider)
+    if providers:
+        placeholders = ",".join("?" for _ in providers)
+        where_clauses.append(
+            f"(provider_name IN ({placeholders}) OR source_name IN ({placeholders}))"
+        )
+        params.extend(providers)
+        params.extend(providers)
+    if parent_id is not None:
+        where_clauses.append("parent_conversation_id = ?")
+        params.append(parent_id)
+    if since is not None:
+        where_clauses.append(
+            "((updated_at GLOB '[0-9]*' AND CAST(updated_at AS REAL) >= ?)"
+            " OR (updated_at NOT GLOB '[0-9]*' AND updated_at >= ?))"
+        )
+        params.append(_iso_to_epoch(since))
+        params.append(since)
+    if until is not None:
+        where_clauses.append(
+            "((updated_at GLOB '[0-9]*' AND CAST(updated_at AS REAL) <= ?)"
+            " OR (updated_at NOT GLOB '[0-9]*' AND updated_at <= ?))"
+        )
+        params.append(_iso_to_epoch(until))
+        params.append(until)
+    if title_contains is not None:
+        escaped = title_contains.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        where_clauses.append("title LIKE ? ESCAPE '\\'")
+        params.append(f"%{escaped}%")
+
+    where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+    return where_sql, params
+
+
 __all__ = [
     "connection_context",
     "open_connection",
@@ -161,4 +226,6 @@ __all__ = [
     "_clear_connection_cache",
     "default_db_path",
     "create_default_backend",
+    "_iso_to_epoch",
+    "_build_conversation_filters",
 ]

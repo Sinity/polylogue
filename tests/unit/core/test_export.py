@@ -9,7 +9,7 @@ import json
 from unittest.mock import patch
 
 from polylogue.export import export_jsonl
-from polylogue.storage.backends.sqlite import connection_context, open_connection
+from polylogue.storage.backends.connection import connection_context, open_connection
 
 
 class TestExportJsonl:

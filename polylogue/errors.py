@@ -20,3 +20,7 @@ from __future__ import annotations
 
 class PolylogueError(Exception):
     """Base class for all Polylogue errors."""
+
+
+class DatabaseError(PolylogueError):
+    """Base class for database errors."""

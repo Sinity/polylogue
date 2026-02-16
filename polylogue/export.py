@@ -5,7 +5,7 @@ from collections import defaultdict
 from contextlib import suppress
 from pathlib import Path
 
-from .storage.backends.sqlite import open_connection
+from .storage.backends.connection import open_connection
 
 # Columns stored as JSON TEXT that need parsing to avoid double-encoding
 _JSON_COLUMNS = frozenset({"provider_meta", "metadata", "ref_meta"})
