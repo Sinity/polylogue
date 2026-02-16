@@ -127,7 +127,7 @@ class TestIndexServiceErrors:
         service = IndexService(config=config, backend=MagicMock())
 
         with patch(
-            "polylogue.pipeline.services.indexing.async_update_index_for_conversations",
+            "polylogue.pipeline.services.indexing.update_index_for_conversations",
             side_effect=Exception("db locked"),
         ):
             result = await service.update_index(["conv1", "conv2"])
@@ -143,7 +143,7 @@ class TestIndexServiceErrors:
         service = IndexService(config=config, backend=MagicMock())
 
         with patch(
-            "polylogue.pipeline.services.indexing.async_rebuild_index",
+            "polylogue.pipeline.services.indexing.rebuild_index",
             side_effect=Exception("disk full"),
         ):
             result = await service.rebuild_index()
@@ -160,7 +160,7 @@ class TestIndexServiceErrors:
         service = IndexService(config=config, backend=mock_backend)
 
         with patch(
-            "polylogue.pipeline.services.indexing.async_ensure_index",
+            "polylogue.pipeline.services.indexing.ensure_index",
             side_effect=Exception("corruption"),
         ):
             result = await service.ensure_index_exists()
@@ -176,7 +176,7 @@ class TestIndexServiceErrors:
         service = IndexService(config=config, backend=MagicMock())
 
         with patch(
-            "polylogue.pipeline.services.indexing.async_index_status",
+            "polylogue.pipeline.services.indexing.index_status",
             side_effect=Exception("no such table"),
         ):
             result = await service.get_index_status()
@@ -192,7 +192,7 @@ class TestIndexServiceErrors:
         mock_backend = MagicMock()
         service = IndexService(config=config, backend=mock_backend)
 
-        with patch("polylogue.pipeline.services.indexing.async_ensure_index") as mock_ensure:
+        with patch("polylogue.pipeline.services.indexing.ensure_index") as mock_ensure:
             mock_ensure.return_value = AsyncMock()
             result = await service.update_index([])
             assert result is True

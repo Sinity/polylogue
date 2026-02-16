@@ -2,7 +2,7 @@
 
 Covers:
 - async_prepare.py: prepare_records, async_save_bundle
-- async_index.py: async_ensure_index, async_rebuild_index, async_update_index_for_conversations, async_index_status
+- async_index.py: ensure_index, rebuild_index, update_index_for_conversations, index_status
 """
 
 from __future__ import annotations
@@ -25,46 +25,46 @@ from polylogue.storage.store import ConversationRecord, MessageRecord
 
 
 class TestAsyncEnsureIndex:
-    """Tests for async_ensure_index."""
+    """Tests for ensure_index."""
 
     @pytest.mark.asyncio
     async def test_creates_fts_table(self):
         """FTS table is created when it doesn't exist."""
-        from polylogue.storage.async_index import async_ensure_index, async_index_status
+        from polylogue.storage.async_index import ensure_index, index_status
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             # Initialize schema
             await backend.list_conversations()
 
-            await async_ensure_index(backend)
+            await ensure_index(backend)
 
-            status = await async_index_status(backend)
+            status = await index_status(backend)
             assert status["exists"] is True
             await backend.close()
 
     @pytest.mark.asyncio
     async def test_idempotent(self):
         """Calling ensure_index multiple times is safe."""
-        from polylogue.storage.async_index import async_ensure_index
+        from polylogue.storage.async_index import ensure_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             await backend.list_conversations()
 
             # Call twice - should not raise
-            await async_ensure_index(backend)
-            await async_ensure_index(backend)
+            await ensure_index(backend)
+            await ensure_index(backend)
             await backend.close()
 
 
 class TestAsyncRebuildIndex:
-    """Tests for async_rebuild_index."""
+    """Tests for rebuild_index."""
 
     @pytest.mark.asyncio
     async def test_populates_from_messages(self):
         """Rebuild populates FTS from messages table."""
-        from polylogue.storage.async_index import async_index_status, async_rebuild_index
+        from polylogue.storage.async_index import index_status, rebuild_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
@@ -96,10 +96,10 @@ class TestAsyncRebuildIndex:
             await backend.save_conversation(conv, messages, [])
 
             # Rebuild index
-            await async_rebuild_index(backend)
+            await rebuild_index(backend)
 
             # Verify index has entries
-            status = await async_index_status(backend)
+            status = await index_status(backend)
             assert status["exists"] is True
             assert status["count"] == 5
             await backend.close()
@@ -107,7 +107,7 @@ class TestAsyncRebuildIndex:
     @pytest.mark.asyncio
     async def test_rebuild_clears_stale_entries(self):
         """Rebuild removes entries for deleted messages."""
-        from polylogue.storage.async_index import async_index_status, async_rebuild_index
+        from polylogue.storage.async_index import index_status, rebuild_index
 
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = Path(tmpdir) / "test.db"
@@ -139,29 +139,29 @@ class TestAsyncRebuildIndex:
             await backend.save_conversation(conv, messages, [])
 
             # Build index
-            await async_rebuild_index(backend)
-            status1 = await async_index_status(backend)
+            await rebuild_index(backend)
+            status1 = await index_status(backend)
             assert status1["count"] == 3
 
             # Delete conversation
             await backend.delete_conversation("test:stale")
 
             # Rebuild should clear stale entries
-            await async_rebuild_index(backend)
-            status2 = await async_index_status(backend)
+            await rebuild_index(backend)
+            status2 = await index_status(backend)
             assert status2["count"] == 0
             await backend.close()
 
 
 class TestAsyncUpdateIndex:
-    """Tests for async_update_index_for_conversations."""
+    """Tests for update_index_for_conversations."""
 
     @pytest.mark.asyncio
     async def test_incremental_update(self):
         """Updates index for specific conversations correctly."""
         from polylogue.storage.async_index import (
-            async_index_status,
-            async_update_index_for_conversations,
+            index_status,
+            update_index_for_conversations,
         )
 
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -194,45 +194,45 @@ class TestAsyncUpdateIndex:
                 await backend.save_conversation(conv, messages, [])
 
             # Schema init auto-indexes; verify both are indexed
-            status = await async_index_status(backend)
+            status = await index_status(backend)
             assert status["count"] == 2
 
             # Delete conv a messages from FTS, then re-index just conv a
             # This should preserve count (idempotent re-index)
-            await async_update_index_for_conversations(["test:a"], backend)
+            await update_index_for_conversations(["test:a"], backend)
 
-            status = await async_index_status(backend)
+            status = await index_status(backend)
             assert status["count"] == 2  # Both still indexed
             await backend.close()
 
     @pytest.mark.asyncio
     async def test_update_empty_list(self):
         """Empty conversation list is a no-op."""
-        from polylogue.storage.async_index import async_update_index_for_conversations
+        from polylogue.storage.async_index import update_index_for_conversations
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             await backend.list_conversations()
 
             # Should not raise
-            await async_update_index_for_conversations([], backend)
+            await update_index_for_conversations([], backend)
             await backend.close()
 
 
 class TestAsyncIndexStatus:
-    """Tests for async_index_status."""
+    """Tests for index_status."""
 
     @pytest.mark.asyncio
     async def test_reports_exists_and_count(self):
         """Returns correct exists flag and count."""
-        from polylogue.storage.async_index import async_index_status
+        from polylogue.storage.async_index import index_status
 
         with tempfile.TemporaryDirectory() as tmpdir:
             backend = SQLiteBackend(db_path=Path(tmpdir) / "test.db")
             # Schema init auto-creates FTS table
             await backend.list_conversations()
 
-            status = await async_index_status(backend)
+            status = await index_status(backend)
             assert status["exists"] is True
             assert status["count"] == 0  # No messages yet
             await backend.close()
