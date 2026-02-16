@@ -15,7 +15,7 @@ def search_workspace(cli_workspace, monkeypatch):
     """CLI workspace with searchable conversations."""
     # Set up environment
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(cli_workspace["config_path"]))
-    monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_root"]))
+    monkeypatch.setenv("XDG_STATE_HOME", str(cli_workspace["state_dir"]))
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(cli_workspace["archive_root"]))
     monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
 

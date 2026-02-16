@@ -54,7 +54,7 @@ class Role(str, Enum):
         return cls.UNKNOWN
 
 
-# Role mapping for compatibility with existing code
+# Canonical role mapping used by normalize_role()
 ROLE_MAP = {
     "user": "user",
     "human": "user",

@@ -312,7 +312,7 @@ class HTMLRenderer:
         render_root_path = render_root(output_path, formatted.provider, conversation_id)
         render_root_path.mkdir(parents=True, exist_ok=True)
 
-        # Save markdown file (for backward compatibility)
+        # Save markdown file (used by CLI search and query)
         md_path = render_root_path / "conversation.md"
         md_path.write_text(formatted.markdown_text, encoding="utf-8")
 

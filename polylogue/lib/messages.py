@@ -81,7 +81,7 @@ class MessageCollection(Sized):
         # Explicit materialization when needed
         all_messages = conv.messages.to_list()
 
-        # Indexing materializes the list on first access (for backward compatibility)
+        # Indexing materializes the list on first access
         first_msg = conv.messages[0]  # Materializes if lazy
 
     Performance characteristics:
@@ -194,8 +194,7 @@ class MessageCollection(Sized):
         WARNING: This materializes the entire collection on first access.
         For iteration, use `for msg in collection` instead.
 
-        This is provided for backward compatibility with tests that use
-        `conv.messages[0]` style access.
+        Supports standard Python sequence indexing and slicing.
         """
         # Materialize if lazy
         if self._messages is None:

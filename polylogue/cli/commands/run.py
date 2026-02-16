@@ -145,40 +145,6 @@ def _display_result(
         click.echo(hint_line, err=True)
 
 
-def _notify_new_conversations(count: int) -> None:
-    """Send desktop notification for new conversations.
-
-    Thin wrapper around :class:`~polylogue.pipeline.events.NotificationHandler`
-    kept for backward compatibility with existing callers and tests.
-    """
-    from polylogue.pipeline.events import NotificationHandler, SyncEvent
-
-    handler = NotificationHandler()
-    handler.on_sync(SyncEvent(new_conversations=count, run_result=None))  # type: ignore[arg-type]
-
-
-def _exec_on_new(exec_cmd: str, count: int) -> None:
-    """Execute command when new conversations are synced.
-
-    Thin wrapper around :class:`~polylogue.pipeline.events.ExecHandler`.
-    """
-    from polylogue.pipeline.events import ExecHandler, SyncEvent
-
-    handler = ExecHandler(exec_cmd)
-    handler.on_sync(SyncEvent(new_conversations=count, run_result=None))  # type: ignore[arg-type]
-
-
-def _webhook_on_new(webhook_url: str, count: int) -> None:
-    """Call webhook URL when new conversations are synced.
-
-    Thin wrapper around :class:`~polylogue.pipeline.events.WebhookHandler`.
-    """
-    from polylogue.pipeline.events import SyncEvent, WebhookHandler
-
-    handler = WebhookHandler(webhook_url)
-    handler.on_sync(SyncEvent(new_conversations=count, run_result=None))  # type: ignore[arg-type]
-
-
 @click.command("run")
 @click.option("--preview", is_flag=True, help="Preview work without writing")
 @click.option(

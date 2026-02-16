@@ -490,8 +490,8 @@ class Conversation(BaseModel):
     Both modes support the same API: iteration, len(), and indexing.
     Indexing in lazy mode will materialize the full list on first access.
 
-    For backward compatibility, you can also pass a list of Message objects
-    directly, which will be auto-wrapped in an eager MessageCollection.
+    You can also pass a list of Message objects directly — Pydantic coercion
+    will auto-wrap them in an eager MessageCollection.
     """
 
     id: ConversationId

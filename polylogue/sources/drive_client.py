@@ -255,8 +255,8 @@ class DriveClient:
                 # Token data corrupt or invalid
                 creds = None
 
-        # Fall back to legacy file path for backward compatibility
-        # Migration to token store happens in _persist_token after validation
+        # Fall back to file-based token if token store is empty
+        # (first run after fresh install, or token store cleared)
         if creds is None and token_path.exists():
             try:
                 creds = credentials_cls.from_authorized_user_file(str(token_path), SCOPES)
@@ -341,8 +341,7 @@ class DriveClient:
         # Save to token store (keyring or file)
         self._token_store.save("drive_token", creds.to_json())
 
-        # Also save to legacy file path for backward compatibility
-        # This ensures tools that read the file directly still work
+        # Also save to file path as a fallback credential source
         token_path.parent.mkdir(parents=True, exist_ok=True)
         token_path.write_text(creds.to_json(), encoding="utf-8")
         token_path.chmod(0o600)

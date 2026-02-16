@@ -194,10 +194,6 @@ def test_roundtrip_comprehensive(original, desc):
         assert result == original
 
 
-def test_json_decode_error_is_value_error():
-    """JSONDecodeError should be ValueError for compatibility."""
-    assert core_json.JSONDecodeError is ValueError
-
 
 # =============================================================================
 # JSON EDGE CASES - PARAMETRIZED

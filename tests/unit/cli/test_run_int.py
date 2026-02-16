@@ -13,12 +13,15 @@ from click.testing import CliRunner
 
 from polylogue.cli.commands.run import (
     _display_result,
-    _exec_on_new,
-    _notify_new_conversations,
     _run_sync_once,
-    _webhook_on_new,
     run_command,
     sources_command,
+)
+from polylogue.pipeline.events import (
+    ExecHandler,
+    NotificationHandler,
+    SyncEvent,
+    WebhookHandler,
 )
 from polylogue.config import Source, get_config
 from polylogue.pipeline.enrichment import (
@@ -498,51 +501,48 @@ class TestRunCommandWatch:
 
 
 class TestWatchModeCallbacks:
-    """Test watch mode event callbacks."""
+    """Test watch mode event handler callbacks."""
 
-    @pytest.mark.parametrize(
-        "callback_type,callback_func,count",
-        [
-            ("notify", _notify_new_conversations, 5),
-            ("exec", _exec_on_new, 3),
-            ("webhook", _webhook_on_new, 2),
-        ],
-    )
-    def test_watch_callbacks_execute_with_count(self, callback_type, callback_func, count):
-        """Watch callbacks execute with conversation count."""
-        if callback_type == "notify":
-            with patch("subprocess.run") as mock_run:
-                callback_func(count)
-                mock_run.assert_called_once()
-                call_args = mock_run.call_args[0][0]
-                assert "notify-send" in call_args
-                assert str(count) in str(call_args)
-        elif callback_type == "exec":
-            with patch("subprocess.run") as mock_run:
-                callback_func("echo $POLYLOGUE_NEW_COUNT", count)
-                mock_run.assert_called_once()
-                call_kwargs = mock_run.call_args[1]
-                assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == str(count)
-                # shell=False is the secure default (no shell kwarg passed)
-                assert call_kwargs.get("shell") is not True
-        elif callback_type == "webhook":
-            # Mock SSRF validation (DNS unavailable in sandbox)
-            fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
-            with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
-                with patch("urllib.request.urlopen") as mock_urlopen:
-                    callback_func("http://example.com/webhook", count)
-                    mock_urlopen.assert_called_once()
-                    call_args = mock_urlopen.call_args[0][0]
-                    assert call_args.get_full_url() == "http://example.com/webhook"
-                    assert call_args.get_method() == "POST"
+    def test_notify_callback_executes_with_count(self):
+        """NotificationHandler calls notify-send with conversation count."""
+        with patch("subprocess.run") as mock_run:
+            handler = NotificationHandler()
+            handler.on_sync(SyncEvent(new_conversations=5, run_result=None))  # type: ignore[arg-type]
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args[0][0]
+            assert "notify-send" in call_args
+            assert "5" in str(call_args)
+
+    def test_exec_callback_executes_with_count(self):
+        """ExecHandler runs command with correct environment."""
+        with patch("subprocess.run") as mock_run:
+            handler = ExecHandler("echo $POLYLOGUE_NEW_COUNT")
+            handler.on_sync(SyncEvent(new_conversations=3, run_result=None))  # type: ignore[arg-type]
+            mock_run.assert_called_once()
+            call_kwargs = mock_run.call_args[1]
+            assert call_kwargs["env"]["POLYLOGUE_NEW_COUNT"] == "3"
+            assert call_kwargs.get("shell") is not True
+
+    def test_webhook_callback_executes_with_count(self):
+        """WebhookHandler sends POST with conversation count."""
+        fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
+        with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
+            with patch("urllib.request.urlopen") as mock_urlopen:
+                handler = WebhookHandler("http://example.com/webhook")
+                handler.on_sync(SyncEvent(new_conversations=2, run_result=None))  # type: ignore[arg-type]
+                mock_urlopen.assert_called_once()
+                call_args = mock_urlopen.call_args[0][0]
+                assert call_args.get_full_url() == "http://example.com/webhook"
+                assert call_args.get_method() == "POST"
 
     def test_webhook_on_new_payload_format(self):
-        """_webhook_on_new includes correct JSON payload."""
+        """WebhookHandler includes correct JSON payload."""
         fake_addrinfo = [(2, 1, 6, "", ("93.184.216.34", 80))]
         with patch("polylogue.pipeline.events.socket.getaddrinfo", return_value=fake_addrinfo):
             with patch("urllib.request.urlopen"):
                 with patch("urllib.request.Request") as mock_request:
-                    _webhook_on_new("http://example.com/webhook", 7)
+                    handler = WebhookHandler("http://example.com/webhook")
+                    handler.on_sync(SyncEvent(new_conversations=7, run_result=None))  # type: ignore[arg-type]
                     call_kwargs = mock_request.call_args[1]
                     payload = json.loads(call_kwargs["data"].decode())
                     assert payload["event"] == "sync"
