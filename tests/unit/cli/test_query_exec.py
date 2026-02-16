@@ -140,6 +140,20 @@ def _make_params(**overrides) -> dict:
     return defaults
 
 
+def _make_mock_repo(
+    *,
+    update_metadata: AsyncMock | None = None,
+    add_tag: AsyncMock | None = None,
+    delete_conversation: AsyncMock | None = None,
+) -> MagicMock:
+    """Create a mock ConversationRepository with common async methods."""
+    repo = MagicMock()
+    repo.update_metadata = update_metadata or AsyncMock()
+    repo.add_tag = add_tag or AsyncMock()
+    repo.delete_conversation = delete_conversation or AsyncMock()
+    return repo
+
+
 # =============================================================================
 # Parametrization Data Tables (Module-level Constants)
 # =============================================================================
@@ -706,6 +720,7 @@ class TestApplyModifiers:
         """No results prints message and returns."""
         env = _make_env()
         params = _make_params(set_meta=[("key", "val")])
+        mock_get_repo.return_value = _make_mock_repo()
 
         await self._fn(env, [], params)
 
@@ -720,6 +735,7 @@ class TestApplyModifiers:
         env = _make_env()
         convs = [_make_conv(), _make_conv()]
         params = _make_params(set_meta=[("key", "value")], dry_run=True)
+        mock_get_repo.return_value = _make_mock_repo()
 
         stdout = io.StringIO()
         with redirect_stdout(stdout):
@@ -748,9 +764,7 @@ class TestApplyModifiers:
         convs = [_make_conv(id=f"conv-{i}") for i in range(conv_count)]
         params = _make_params(set_meta=[("key", "value")], force=force)
 
-        mock_repo = MagicMock()
-        mock_repo.update_metadata = AsyncMock()
-        mock_get_repo.return_value = mock_repo
+        mock_get_repo.return_value = _make_mock_repo()
 
         await self._fn(env, convs, params)
 
@@ -766,14 +780,12 @@ class TestApplyModifiers:
         convs = [_make_conv("c1"), _make_conv("c2")]
         params = _make_params(set_meta=[("key1", "val1"), ("key2", "val2")], force=True)
 
-        mock_repo = MagicMock()
-        mock_repo.update_metadata = AsyncMock()
-        mock_get_repo.return_value = mock_repo
+        mock_get_repo.return_value = _make_mock_repo()
 
         await self._fn(env, convs, params)
 
         # Verify metadata was set for each conv
-        assert mock_repo.update_metadata.call_count == 4  # 2 convs * 2 metadata fields
+        assert mock_get_repo.return_value.update_metadata.call_count == 4  # 2 convs * 2 metadata fields
 
     @patch("polylogue.services.get_repository")
     @patch("click.echo")
@@ -783,13 +795,11 @@ class TestApplyModifiers:
         convs = [_make_conv("c1")]
         params = _make_params(add_tag=["tag1", "tag2"], force=True)
 
-        mock_repo = MagicMock()
-        mock_repo.add_tag = AsyncMock()
-        mock_get_repo.return_value = mock_repo
+        mock_get_repo.return_value = _make_mock_repo()
 
         await self._fn(env, convs, params)
 
-        assert mock_repo.add_tag.call_count == 2  # 1 conv * 2 tags
+        assert mock_get_repo.return_value.add_tag.call_count == 2  # 1 conv * 2 tags
 
     @patch("polylogue.services.get_repository")
     @patch("click.echo")
@@ -799,9 +809,7 @@ class TestApplyModifiers:
         convs = [_make_conv()]
         params = _make_params(set_meta=[("k", "v")], force=True)
 
-        mock_repo = MagicMock()
-        mock_repo.update_metadata = AsyncMock()
-        mock_get_repo.return_value = mock_repo
+        mock_get_repo.return_value = _make_mock_repo()
 
         await self._fn(env, convs, params)
 
@@ -826,6 +834,7 @@ class TestDeleteConversations:
         """No results prints message."""
         env = _make_env()
         params = _make_params(delete_matched=True)
+        mock_get_repo.return_value = _make_mock_repo()
 
         await self._fn(env, [], params)
 
@@ -837,6 +846,7 @@ class TestDeleteConversations:
         env = _make_env()
         convs = [_make_conv("c1", provider="claude"), _make_conv("c2", provider="chatgpt")]
         params = _make_params(delete_matched=True, dry_run=True)
+        mock_get_repo.return_value = _make_mock_repo()
 
         await self._fn(env, convs, params)
 
@@ -862,9 +872,9 @@ class TestDeleteConversations:
             env.ui.confirm.return_value = False
 
         # When force=True (no confirmation), execution reaches repo.delete_conversation
-        mock_repo = MagicMock()
-        mock_repo.delete_conversation = AsyncMock(return_value=True)
-        mock_get_repo.return_value = mock_repo
+        mock_get_repo.return_value = _make_mock_repo(
+            delete_conversation=AsyncMock(return_value=True)
+        )
 
         await self._fn(env, convs, params)
 
@@ -882,13 +892,13 @@ class TestDeleteConversations:
         convs = [_make_conv("c1"), _make_conv("c2")]
         params = _make_params(delete_matched=True)
 
-        mock_repo = MagicMock()
-        mock_get_repo.return_value = mock_repo
-        mock_repo.delete_conversation = AsyncMock(side_effect=[True, True])
+        mock_get_repo.return_value = _make_mock_repo(
+            delete_conversation=AsyncMock(side_effect=[True, True])
+        )
 
         await self._fn(env, convs, params)
 
-        assert mock_repo.delete_conversation.call_count == 2
+        assert mock_get_repo.return_value.delete_conversation.call_count == 2
 
 
 # =============================================================================
