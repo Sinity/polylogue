@@ -472,3 +472,67 @@ class TestStatsTool:
             assert data["total_conversations"] == total_conversations
             assert data["total_messages"] == total_messages
             assert data["db_size_mb"] == expected_mb
+
+
+class TestMCPToolValidation:
+    """Test MCP tool parameter validation."""
+
+    @pytest.mark.asyncio
+    async def test_search_with_empty_query(self):
+        """Search tool handles empty query gracefully."""
+        from polylogue.mcp.server import _build_server
+
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.search.return_value = []
+            mock_get_repo.return_value = mock_repo
+
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[])
+
+                server = _build_server()
+                result = await server._tool_manager._tools["search"].fn(query="", limit=10)
+
+                # Should return valid JSON result (empty list or error)
+                assert result is not None
+                parsed = json.loads(result)
+                assert isinstance(parsed, (list, dict))
+
+    @pytest.mark.asyncio
+    async def test_list_with_invalid_limit(self):
+        """List tool handles invalid limit gracefully."""
+        from polylogue.mcp.server import _build_server
+
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.list.return_value = []
+            mock_get_repo.return_value = mock_repo
+
+            with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
+                MockFilter.return_value = make_mock_filter(results=[])
+
+                server = _build_server()
+                # Negative limit should be clamped or handled
+                result = await server._tool_manager._tools["list_conversations"].fn(limit=-1)
+
+                assert result is not None
+                parsed = json.loads(result)
+                assert isinstance(parsed, list)
+
+    @pytest.mark.asyncio
+    async def test_get_with_nonexistent_id(self):
+        """Get tool handles nonexistent conversation ID gracefully."""
+        from polylogue.mcp.server import _build_server
+
+        with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
+            mock_repo = MagicMock()
+            mock_repo.view.return_value = None
+            mock_get_repo.return_value = mock_repo
+
+            server = _build_server()
+            result = server._tool_manager._tools["get_conversation"].fn(id="nonexistent-id-xyz")
+
+            assert result is not None
+            parsed = json.loads(result)
+            # Should return error dict or empty
+            assert isinstance(parsed, dict)

@@ -570,6 +570,96 @@ class TestDeleteOperations:
         await backend.close()
 
 
+class TestPruneAttachments:
+    """Test attachment pruning edge cases."""
+
+    async def test_prune_does_not_remove_shared_attachments(self, tmp_path: Path) -> None:
+        """Attachments referenced by multiple conversations are NOT pruned."""
+        backend = SQLiteBackend(db_path=tmp_path / "prune.db")
+
+        # Two conversations sharing the same attachment ID
+        conv1 = make_conversation("conv-1", title="First")
+        msg1 = make_message("msg-1", "conv-1", text="Hello")
+        att = make_attachment("shared-att", "conv-1", "msg-1", mime_type="image/png", size_bytes=100)
+
+        await backend.save_conversation_record(conv1)
+        await backend.save_messages([msg1])
+        await backend.save_attachments([att])
+
+        conv2 = make_conversation("conv-2", title="Second")
+        msg2 = make_message("msg-2", "conv-2", text="World")
+        att2 = make_attachment("shared-att", "conv-2", "msg-2", mime_type="image/png", size_bytes=100)
+
+        await backend.save_conversation_record(conv2)
+        await backend.save_messages([msg2])
+        await backend.save_attachments([att2])
+
+        # Prune conv-1 without the attachment
+        await backend.prune_attachments("conv-1", set())
+
+        # Attachment should still exist in conv-2
+        conv2_atts = await backend.get_attachments("conv-2")
+        assert len(conv2_atts) == 1
+        assert conv2_atts[0].attachment_id == "shared-att"
+
+        # Check in database that attachment still exists
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'shared-att'")
+            row = await cursor.fetchone()
+            assert row[0] == 1
+        await backend.close()
+
+    async def test_prune_removes_sole_attachment(self, tmp_path: Path) -> None:
+        """Attachments with only one reference are pruned."""
+        backend = SQLiteBackend(db_path=tmp_path / "prune2.db")
+
+        conv = make_conversation("conv-sole", title="Sole")
+        msg = make_message("msg-1", "conv-sole", text="Hello")
+        att = make_attachment("sole-att", "conv-sole", "msg-1", mime_type="text/plain", size_bytes=50)
+
+        await backend.save_conversation_record(conv)
+        await backend.save_messages([msg])
+        await backend.save_attachments([att])
+
+        # Prune without keeping the attachment
+        await backend.prune_attachments("conv-sole", set())
+
+        # Attachment should be removed
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'sole-att'")
+            row = await cursor.fetchone()
+            assert row[0] == 0
+        await backend.close()
+
+    async def test_prune_empty_keep_set_removes_all(self, tmp_path: Path) -> None:
+        """Pruning with empty keep set removes all attachments for conversation."""
+        backend = SQLiteBackend(db_path=tmp_path / "prune3.db")
+
+        conv = make_conversation("conv-empty", title="Empty Keep")
+        msg = make_message("msg-1", "conv-empty", text="Hello")
+        attachments = [
+            make_attachment("att1", "conv-empty", "msg-1"),
+            make_attachment("att2", "conv-empty", "msg-1"),
+            make_attachment("att3", "conv-empty", "msg-1"),
+        ]
+
+        await backend.save_conversation_record(conv)
+        await backend.save_messages([msg])
+        await backend.save_attachments(attachments)
+
+        # Verify attachments were saved
+        before = await backend.get_attachments("conv-empty")
+        assert len(before) == 3
+
+        # Prune with empty keep set
+        await backend.prune_attachments("conv-empty", set())
+
+        # All attachments should be gone
+        after = await backend.get_attachments("conv-empty")
+        assert len(after) == 0
+        await backend.close()
+
+
 # =============================================================================
 # BACKEND COMPARISON TESTS (from test_backend_core.py)
 # =============================================================================
@@ -738,6 +828,127 @@ class TestBackendComparison:
         print(f"Reasoning traces extracted: {reasoning_found}")
 
         assert tool_calls_found > 0 or reasoning_found >= 0, "New extraction should find viewports"
+
+
+class TestTransactionAtomicity:
+    """Test that transaction management is atomic — partial failures roll back all changes."""
+
+    @pytest.mark.asyncio
+    async def test_message_failure_rolls_back_conversation(self, tmp_path: Path) -> None:
+        """If message saving fails within a transaction, conversation is rolled back."""
+        backend = SQLiteBackend(db_path=tmp_path / "atomic1.db")
+
+        conv = make_conversation("conv-atomic-1", title="Atomic Test 1")
+        msg = make_message("msg-1", "conv-atomic-1", text="Hello")
+
+        # Start explicit transaction
+        await backend.begin()
+        await backend.save_conversation_record(conv)
+
+        # Simulate failure by trying to save a message with bad data
+        # (this would normally fail in a real scenario; we manually raise)
+        try:
+            await backend.save_messages([msg])
+            # Now simulate a failure after messages but before commit
+            raise RuntimeError("Simulated failure after message save")
+        except RuntimeError:
+            await backend.rollback()
+
+        # Verify nothing persisted
+        retrieved = await backend.get_conversation("conv-atomic-1")
+        assert retrieved is None
+
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_attachment_failure_rolls_back_all(self, tmp_path: Path) -> None:
+        """If attachment saving fails, conversation and messages are NOT persisted."""
+        backend = SQLiteBackend(db_path=tmp_path / "atomic2.db")
+
+        conv = make_conversation("conv-atomic-2", title="Atomic Test 2")
+        msg = make_message("msg-1", "conv-atomic-2", text="Hello")
+        att = make_attachment("att-bad", "conv-atomic-2", "msg-1", mime_type="image/png", size_bytes=100)
+
+        await backend.begin()
+        await backend.save_conversation_record(conv)
+        await backend.save_messages([msg])
+
+        # Simulate attachment save failure
+        try:
+            await backend.save_attachments([att])
+            # Simulate a failure during transaction
+            raise RuntimeError("Simulated attachment failure")
+        except RuntimeError:
+            await backend.rollback()
+
+        # Verify nothing persisted
+        retrieved = await backend.get_conversation("conv-atomic-2")
+        assert retrieved is None
+
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_nothing_persisted_after_rollback(self, tmp_path: Path) -> None:
+        """After a rolled-back transaction, database state is completely clean."""
+        backend = SQLiteBackend(db_path=tmp_path / "atomic3.db")
+
+        conv = make_conversation("conv-clean", title="Clean Check")
+        msg = make_message("msg-1", "conv-clean", text="Hello")
+        att = make_attachment("att-1", "conv-clean", "msg-1", mime_type="text/plain", size_bytes=50)
+
+        await backend.begin()
+        try:
+            await backend.save_conversation_record(conv)
+            await backend.save_messages([msg])
+            await backend.save_attachments([att])
+            raise RuntimeError("Boom")
+        except RuntimeError:
+            await backend.rollback()
+
+        # Verify all tables are empty
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM conversations")
+            row = await cursor.fetchone()
+            assert row[0] == 0
+
+            cursor = await conn.execute("SELECT COUNT(*) FROM messages")
+            row = await cursor.fetchone()
+            assert row[0] == 0
+
+            cursor = await conn.execute("SELECT COUNT(*) FROM attachments")
+            row = await cursor.fetchone()
+            assert row[0] == 0
+
+        await backend.close()
+
+    @pytest.mark.asyncio
+    async def test_successful_transaction_persists(self, tmp_path: Path) -> None:
+        """A successful transaction persists all data."""
+        backend = SQLiteBackend(db_path=tmp_path / "atomic4.db")
+
+        conv = make_conversation("conv-success", title="Success Test")
+        msg = make_message("msg-1", "conv-success", text="Hello")
+        att = make_attachment("att-1", "conv-success", "msg-1", mime_type="text/plain", size_bytes=50)
+
+        async with backend.transaction():
+            await backend.save_conversation_record(conv)
+            await backend.save_messages([msg])
+            await backend.save_attachments([att])
+
+        # Verify all data persisted
+        retrieved_conv = await backend.get_conversation("conv-success")
+        assert retrieved_conv is not None
+        assert retrieved_conv.title == "Success Test"
+
+        retrieved_msgs = await backend.get_messages("conv-success")
+        assert len(retrieved_msgs) == 1
+        assert retrieved_msgs[0].message_id == "msg-1"
+
+        retrieved_atts = await backend.get_attachments("conv-success")
+        assert len(retrieved_atts) == 1
+        assert retrieved_atts[0].attachment_id == "att-1"
+
+        await backend.close()
 
 
 class TestAPICompatibility:
