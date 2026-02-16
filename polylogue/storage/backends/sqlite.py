@@ -200,17 +200,7 @@ class DatabaseError(PolylogueError):
 
 
 
-def __getattr__(name: str) -> object:
-    """Lazy re-export of SQLiteBackend from async_sqlite to break circular import."""
-    if name == "SQLiteBackend":
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
-
-        return SQLiteBackend
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 __all__ = [
-    "SQLiteBackend",
     "DatabaseError",
     "default_db_path",
     "connection_context",

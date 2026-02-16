@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 # test_db and test_conn fixtures are in conftest.py
 

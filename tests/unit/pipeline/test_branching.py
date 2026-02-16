@@ -41,19 +41,20 @@ def _make_test_repository(db_path: Path) -> ConversationRepository:
 class TestClaudeCodeSidechain:
     """Test Claude Code sidechain detection."""
 
-    def test_sidechain_detected_from_branch_type(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_sidechain_detected_from_branch_type(self, workspace_env: Path) -> None:
         """Conversations with branch_type='sidechain' should have is_sidechain=True."""
         db_path = db_setup(workspace_env)
 
         # Create a sidechain conversation (as would be detected during import)
-        conv = (
+        conv = await (
             ConversationBuilder(db_path, "sidechain-test")
             .provider("claude-code")
             .title("Sidechain Test")
             .branch_type("sidechain")  # Set by parser when isSidechain detected
             .add_message("m1", role="user", text="Hello")
             .add_message("m2", role="assistant", text="Hi", provider_meta={"isSidechain": True})
-            .build()
+            .async_build()
         )
 
         assert conv.branch_type == "sidechain"
@@ -61,17 +62,18 @@ class TestClaudeCodeSidechain:
         assert conv.is_continuation is False
         assert conv.is_root is True  # No parent
 
-    def test_non_sidechain_has_no_branch_type(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_non_sidechain_has_no_branch_type(self, workspace_env: Path) -> None:
         """Normal conversations should have no branch_type."""
         db_path = db_setup(workspace_env)
 
-        conv = (
+        conv = await (
             ConversationBuilder(db_path, "normal-test")
             .provider("claude-code")
             .title("Normal Test")
             .add_message("m1", role="user", text="Hello")
             .add_message("m2", role="assistant", text="Hi")
-            .build()
+            .async_build()
         )
 
         assert conv.branch_type is None
@@ -82,19 +84,20 @@ class TestClaudeCodeSidechain:
 class TestChatGPTBranching:
     """Test ChatGPT message branching (edit branches)."""
 
-    def test_branch_index_extracted(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_branch_index_extracted(self, workspace_env: Path) -> None:
         """Messages should have correct branch_index based on position in parent's children."""
         db_path = db_setup(workspace_env)
 
         # Create conversation with branching messages
-        conv = (
+        conv = await (
             ConversationBuilder(db_path, "branch-test")
             .provider("chatgpt")
             .title("Branch Test")
             .add_message("m1", role="user", text="Question", branch_index=0)
             .add_message("m2", role="assistant", text="Answer 1", parent_message_id="m1", branch_index=0)
             .add_message("m3", role="assistant", text="Answer 2 (edited)", parent_message_id="m1", branch_index=1)
-            .build()
+            .async_build()
         )
 
         messages = conv.messages
@@ -111,11 +114,12 @@ class TestChatGPTBranching:
         assert m3.branch_index == 1
         assert m3.is_branch is True  # branch
 
-    def test_mainline_messages_filters_branches(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_mainline_messages_filters_branches(self, workspace_env: Path) -> None:
         """mainline_messages() should return only branch_index=0 messages."""
         db_path = db_setup(workspace_env)
 
-        conv = (
+        conv = await (
             ConversationBuilder(db_path, "mainline-test")
             .provider("chatgpt")
             .title("Mainline Test")
@@ -123,7 +127,7 @@ class TestChatGPTBranching:
             .add_message("m2", role="assistant", text="A1", branch_index=0)
             .add_message("m3", role="assistant", text="A1-alt", branch_index=1)
             .add_message("m4", role="user", text="Q2", branch_index=0)
-            .build()
+            .async_build()
         )
 
         mainline = conv.mainline_messages()
@@ -134,28 +138,29 @@ class TestChatGPTBranching:
 class TestCodexContinuation:
     """Test Codex session continuation detection."""
 
-    def test_continuation_with_parent_session(self, workspace_env: Path) -> None:
+    @pytest.mark.asyncio
+    async def test_continuation_with_parent_session(self, workspace_env: Path) -> None:
         """Child sessions should have parent_id and branch_type='continuation'."""
         db_path = db_setup(workspace_env)
 
         # Create parent session
-        parent = (
+        parent = await (
             ConversationBuilder(db_path, "parent-session")
             .provider("codex")
             .title("Parent Session")
             .add_message("m1", role="user", text="Start")
-            .build()
+            .async_build()
         )
 
         # Create child session with parent reference
-        child = (
+        child = await (
             ConversationBuilder(db_path, "child-session")
             .provider("codex")
             .title("Child Session")
             .parent_conversation(str(parent.id))
             .branch_type("continuation")
             .add_message("m2", role="user", text="Continue")
-            .build()
+            .async_build()
         )
 
         assert child.parent_id == parent.id

@@ -778,7 +778,7 @@ class SiteBuilder:
         Uses lightweight summaries to avoid loading message content into memory.
         For a 4800+ conversation archive this reduces memory from ~9GB to ~100MB.
         """
-        from polylogue.storage.backends.sqlite import SQLiteBackend
+        from polylogue.storage.backends.async_sqlite import SQLiteBackend
         from polylogue.storage.repository import ConversationRepository
 
         backend = SQLiteBackend()
@@ -851,7 +851,7 @@ class SiteBuilder:
         Returns:
             Number of conversation pages generated
         """
-        from polylogue.storage.backends.sqlite import SQLiteBackend
+        from polylogue.storage.backends.async_sqlite import SQLiteBackend
         from polylogue.storage.repository import ConversationRepository
 
         backend = SQLiteBackend()

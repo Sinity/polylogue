@@ -19,7 +19,7 @@ from polylogue.sources.parsers.chatgpt import parse as chatgpt_parse
 # Codex imports
 # Drive imports (for parse_chunked_prompt)
 from polylogue.storage.backends.connection import open_connection
-from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.store import RawConversationRecord
 

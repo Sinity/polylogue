@@ -148,7 +148,7 @@ def create_default_backend() -> object:
         SQLiteBackend connected to the default database location
     """
     # Late import to avoid circular dependency
-    from polylogue.storage.backends.sqlite import SQLiteBackend
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
     return SQLiteBackend(db_path=None)
 

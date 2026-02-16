@@ -21,7 +21,7 @@ import pytest
 from polylogue.config import Config, Source
 from polylogue.pipeline.runner import run_sources
 from polylogue.pipeline.services.parsing import ParsingService
-from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 
 # =============================================================================

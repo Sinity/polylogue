@@ -26,7 +26,7 @@ from polylogue.lib.messages import MessageCollection
 from polylogue.lib.models import Conversation, Message
 from polylogue.lib.timestamps import format_timestamp, parse_timestamp
 from polylogue.services import get_backend, get_repository, get_service_config, reset
-from polylogue.storage.backends.sqlite import SQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
 from polylogue.types import AttachmentId, ContentHash, ConversationId, MessageId, Provider
 
@@ -906,7 +906,7 @@ def test_display_date_comprehensive(scenario, desc):
 class TestServices:
     def test_get_backend_returns_sqlite(self, workspace_env):
         # Must import after workspace_env reloads the module
-        from polylogue.storage.backends.sqlite import SQLiteBackend as _SQLiteBackend
+        from polylogue.storage.backends.async_sqlite import SQLiteBackend as _SQLiteBackend
 
         backend = get_backend()
         assert isinstance(backend, _SQLiteBackend)

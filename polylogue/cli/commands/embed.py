@@ -70,7 +70,7 @@ def embed_command(
     """
     import os
 
-    from polylogue.storage.backends.sqlite import SQLiteBackend
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.search_providers import create_vector_provider
 

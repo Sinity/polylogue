@@ -156,7 +156,7 @@ class TestSiteBuilderBuild:
 
         # Mock the ConversationRepository - patch where they're imported (inside _build_index)
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -192,7 +192,7 @@ class TestSiteBuilderBuild:
         assert not output_dir.exists()
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -217,7 +217,7 @@ class TestSiteBuilderBuild:
         output_dir = tmp_path / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -245,7 +245,7 @@ class TestSiteBuilderBuild:
         output_dir = tmp_path / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -278,7 +278,7 @@ class TestSiteBuilderBuild:
         output_dir = tmp_path / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -305,7 +305,7 @@ class TestSiteBuilderBuild:
         output_dir = tmp_path / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -348,7 +348,7 @@ class TestConversationIndex:
         output_dir = tmp_path / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -385,7 +385,7 @@ class TestConversationIndex:
         output_dir = tmp_path / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -413,7 +413,7 @@ class TestConversationIndex:
         output_dir = tmp_path / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -449,7 +449,7 @@ class TestConversationIndex:
         )
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -475,7 +475,7 @@ class TestConversationIndex:
         output_dir = tmp_path / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -513,7 +513,7 @@ class TestSiteCommand:
         output_dir = workspace_env["archive_root"] / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -553,7 +553,7 @@ class TestSiteCommand:
         output_dir = workspace_env["archive_root"] / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -605,7 +605,7 @@ class TestSiteCommand:
         output_dir = workspace_env["archive_root"] / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -640,7 +640,7 @@ class TestSiteCommand:
         output_dir = workspace_env["archive_root"] / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -675,7 +675,7 @@ class TestSiteCommand:
         output_dir = workspace_env["archive_root"] / "site"
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class:
             mock_backend_class.side_effect = RuntimeError("Database error")
 
@@ -711,7 +711,7 @@ class TestSiteCommand:
         )
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -763,7 +763,7 @@ class TestSiteBuilderIntegration:
         )
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:
@@ -804,7 +804,7 @@ class TestSiteBuilderIntegration:
         )
 
         with patch(
-            "polylogue.storage.backends.sqlite.SQLiteBackend"
+            "polylogue.storage.backends.async_sqlite.SQLiteBackend"
         ) as mock_backend_class, patch(
             "polylogue.storage.repository.ConversationRepository"
         ) as mock_repo_class:

@@ -14,7 +14,8 @@ import pytest
 
 from polylogue.rendering.renderers import HTMLRenderer
 from polylogue.sources import RecordBundle, save_bundle
-from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
+from polylogue.storage.backends.sqlite import open_connection
 from polylogue.storage.repository import ConversationRepository
 from tests.infra.helpers import DbFactory, make_attachment, make_conversation, make_message
 

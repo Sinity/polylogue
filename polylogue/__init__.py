@@ -31,21 +31,14 @@ from polylogue.errors import PolylogueError
 from polylogue.facade import ArchiveStats, Polylogue
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, Message
+from polylogue.storage.repository import ConversationRepository
 from polylogue.storage.search import SearchResult
-
-
-def __getattr__(name: str) -> object:
-    if name == "ConversationRepository":
-        from polylogue.storage.repository import ConversationRepository
-
-        return ConversationRepository
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
 
 __all__ = [
     "ArchiveStats",
     "Conversation",
     "ConversationFilter",
+    "ConversationRepository",
     "Message",
     "Polylogue",
     "PolylogueError",

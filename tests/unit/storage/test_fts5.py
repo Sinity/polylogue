@@ -611,7 +611,7 @@ class TestFTS5Provider:
 
     async def test_ensure_index_creates_fts_table(self, workspace_env, fts_provider):
         """Ensure index creates FTS5 virtual table."""
-        from polylogue.storage.backends.sqlite import SQLiteBackend
+        from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
         db_path = workspace_env["data_root"] / "polylogue" / "polylogue.db"
 

@@ -25,9 +25,9 @@ from polylogue.sources.parsers.base import normalize_role as old_normalize_role
 from polylogue.sources.parsers.claude import (
     extract_text_from_segments as old_extract_segments,
 )
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.sqlite import (
     SCHEMA_VERSION,
-    SQLiteBackend,
     _ensure_schema,
     _json_or_none,
     _run_migrations,

@@ -29,7 +29,7 @@ def tags_command(
         polylogue tags --json           # Machine-readable output
         polylogue tags -n 10            # Top 10 tags
     """
-    from polylogue.storage.backends.sqlite import SQLiteBackend
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
 
     backend = SQLiteBackend()
