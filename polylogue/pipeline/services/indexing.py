@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
 from polylogue.storage.async_index import (
-    async_ensure_index,
-    async_index_status,
-    async_rebuild_index,
-    async_update_index_for_conversations,
+    ensure_index,
+    index_status,
+    rebuild_index,
+    update_index_for_conversations,
 )
 
 if TYPE_CHECKING:
@@ -50,7 +50,7 @@ class IndexService:
         if not conversation_ids:
             if self.backend is not None:
                 try:
-                    await async_ensure_index(self.backend)
+                    await ensure_index(self.backend)
                 except Exception as exc:
                     logger.error("Failed to ensure index", error=str(exc), exc_info=True)
                     return False
@@ -61,7 +61,7 @@ class IndexService:
             return False
 
         try:
-            await async_update_index_for_conversations(conversation_ids, self.backend)
+            await update_index_for_conversations(conversation_ids, self.backend)
             return True
         except Exception as exc:
             logger.error("Failed to update index", error=str(exc), exc_info=True)
@@ -78,7 +78,7 @@ class IndexService:
             return False
 
         try:
-            await async_rebuild_index(self.backend)
+            await rebuild_index(self.backend)
             return True
         except Exception as exc:
             logger.error("Failed to rebuild index", error=str(exc), exc_info=True)
@@ -92,7 +92,7 @@ class IndexService:
         """
         try:
             if self.backend is not None:
-                await async_ensure_index(self.backend)
+                await ensure_index(self.backend)
             return True
         except Exception as exc:
             logger.error("Failed to ensure index exists", error=str(exc), exc_info=True)
@@ -109,7 +109,7 @@ class IndexService:
             return {"exists": False, "count": 0}
 
         try:
-            return await async_index_status(self.backend)
+            return await index_status(self.backend)
         except Exception as exc:
             logger.error("Failed to get index status", error=str(exc), exc_info=True)
             return {"exists": False, "count": 0}
