@@ -21,7 +21,7 @@ _VEC0_DDL = """
 """
 
 
-# Core DDL shared between sync and async backends (single source of truth).
+# Core DDL applied by SQLiteBackend during schema initialization.
 SCHEMA_DDL = """
         CREATE TABLE IF NOT EXISTS raw_conversations (
             raw_id TEXT PRIMARY KEY,
