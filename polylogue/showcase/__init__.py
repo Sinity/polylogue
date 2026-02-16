@@ -2,4 +2,6 @@
 
 from __future__ import annotations
 
+from polylogue.showcase.runner import ShowcaseRunner
+
 __all__ = ["ShowcaseRunner"]
