@@ -59,7 +59,7 @@ class Search(Container):
         table.clear()
 
         try:
-            summaries = repo.search_summaries(query, limit=50)
+            summaries = await repo.search_summaries(query, limit=50)
         except sqlite3.OperationalError as exc:
             if "no such table" in str(exc):
                 table.add_row("—", "—", "Search index not built. Run: polylogue run", "")
@@ -82,13 +82,13 @@ class Search(Container):
             return
 
         conv_id = str(message.row_key.value)
-        self.load_conversation(conv_id)
+        await self.load_conversation(conv_id)
 
-    def load_conversation(self, conversation_id: str) -> None:
+    async def load_conversation(self, conversation_id: str) -> None:
         """Load and display conversation content (duplicate logic from Browser)."""
         repo = self._get_repo()
 
-        conv = repo.get_eager(conversation_id)
+        conv = await repo.get_eager(conversation_id)
         if not conv:
             self.query_one("#search-viewer", MarkdownWidget).update(f"Error: Could not load {conversation_id}")
             return

@@ -25,8 +25,8 @@ def _clear_polylogue_env(monkeypatch):
 
     # Also clear async singletons (without awaiting close — test isolation
     # is more important than graceful connection shutdown here)
-    services._async_backend = None
-    services._async_repository = None
+    services._backend = None
+    services._repository = None
 
     # Close any cached SQLite connections to prevent WAL sidecar corruption
     # when tests create/move/delete temp database files.
@@ -400,7 +400,7 @@ def test_conn(test_db):
 
 
 @pytest.fixture
-def sqlite_backend(tmp_path):
+async def sqlite_backend(tmp_path):
     """Create a SQLite backend for testing.
 
     Replaces duplicate fixtures in: test_backend_sqlite.py, test_repository_backend.py
@@ -411,7 +411,7 @@ def sqlite_backend(tmp_path):
     db_path = tmp_path / "test.db"
     backend = SQLiteBackend(db_path=db_path)
     yield backend
-    backend.close()
+    await backend.close()
 
 
 @pytest.fixture
@@ -475,6 +475,7 @@ def seeded_db(tmp_path_factory):
     Returns:
         Path to the seeded database file
     """
+    import asyncio
     import hashlib
     from datetime import datetime, timezone
 
@@ -482,7 +483,8 @@ def seeded_db(tmp_path_factory):
     from polylogue.pipeline.prepare import prepare_records
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.sources import iter_source_conversations
-    from polylogue.storage.backends.sqlite import SQLiteBackend, open_connection
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.backends.sqlite import open_connection
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.store import RawConversationRecord
 
@@ -505,40 +507,38 @@ def seeded_db(tmp_path_factory):
     corpus_dir = tmp_dir / "corpus"
     corpus_dir.mkdir()
 
-    for provider in SyntheticCorpus.available_providers():
-        corpus = SyntheticCorpus.for_provider(provider)
-        raw_items = corpus.generate(count=3, messages_per_conversation=range(4, 12), seed=42)
-        provider_dir = corpus_dir / provider
-        provider_dir.mkdir()
+    async def _seed() -> None:
+        for provider in SyntheticCorpus.available_providers():
+            corpus = SyntheticCorpus.for_provider(provider)
+            raw_items = corpus.generate(count=3, messages_per_conversation=range(4, 12), seed=42)
+            provider_dir = corpus_dir / provider
+            provider_dir.mkdir()
 
-        for idx, raw_bytes in enumerate(raw_items):
-            ext = ext_map.get(provider, ".json")
-            file_path = provider_dir / f"synthetic-{idx:02d}{ext}"
-            file_path.write_bytes(raw_bytes)
+            for idx, raw_bytes in enumerate(raw_items):
+                ext = ext_map.get(provider, ".json")
+                file_path = provider_dir / f"synthetic-{idx:02d}{ext}"
+                file_path.write_bytes(raw_bytes)
 
-            # Step 1: Store as raw conversation (acquire stage)
-            try:
-                raw_id = hashlib.sha256(raw_bytes).hexdigest()
-                record = RawConversationRecord(
-                    raw_id=raw_id,
-                    provider_name=provider,
-                    source_name=provider,
-                    source_path=str(file_path),
-                    raw_content=raw_bytes,
-                    acquired_at=datetime.now(timezone.utc).isoformat(),
-                )
-                backend.save_raw_conversation(record)
-            except Exception as e:
-                import warnings
-                warnings.warn(f"Failed to store raw {provider}/{idx}: {e}", stacklevel=2)
+                # Step 1: Store as raw conversation (acquire stage)
+                try:
+                    raw_id = hashlib.sha256(raw_bytes).hexdigest()
+                    record = RawConversationRecord(
+                        raw_id=raw_id,
+                        provider_name=provider,
+                        source_name=provider,
+                        source_path=str(file_path),
+                        raw_content=raw_bytes,
+                        acquired_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    await backend.save_raw_conversation(record)
+                except Exception as e:
+                    import warnings
+                    warnings.warn(f"Failed to store raw {provider}/{idx}: {e}", stacklevel=2)
 
-    backend._get_connection().commit()
+        # Step 2: Parse and ingest (parse stage)
+        archive_root = tmp_dir / "archive"
+        archive_root.mkdir()
 
-    # Step 2: Parse and ingest (parse stage)
-    archive_root = tmp_dir / "archive"
-    archive_root.mkdir()
-
-    with open_connection(db_path) as conn:
         for provider_dir in sorted(corpus_dir.iterdir()):
             provider = provider_dir.name
             for file_path in sorted(provider_dir.iterdir()):
@@ -546,17 +546,21 @@ def seeded_db(tmp_path_factory):
                     source = Source(name=provider, path=file_path)
                     raw_id = hashlib.sha256(file_path.read_bytes()).hexdigest()
                     for convo in iter_source_conversations(source):
-                        prepare_records(
+                        await prepare_records(
                             convo,
                             source_name=provider,
                             archive_root=archive_root,
-                            conn=conn,
+                            backend=backend,
                             repository=repository,
                             raw_id=raw_id,
                         )
                 except Exception as e:
                     import warnings
                     warnings.warn(f"Failed to ingest {file_path.name}: {e}", stacklevel=2)
+
+        await backend.close()
+
+    asyncio.run(_seed())
 
     return db_path
 
@@ -567,7 +571,7 @@ def seeded_repository(seeded_db):
 
     Use this when tests need a ConversationRepository with real provider data.
     """
-    from polylogue.storage.backends.sqlite import SQLiteBackend
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
     from polylogue.storage.repository import ConversationRepository
 
     backend = SQLiteBackend(db_path=seeded_db)

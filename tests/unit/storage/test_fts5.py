@@ -43,7 +43,7 @@ SEARCH_BASIC_CASES = [
 
 
 @pytest.mark.parametrize("num_convs,search_term,expected_count,description", SEARCH_BASIC_CASES)
-def test_search_basic_results(workspace_env, storage_repository, num_convs, search_term, expected_count, description):
+async def test_search_basic_results(workspace_env, storage_repository, num_convs, search_term, expected_count, description):
     """search_messages() returns correct number of results."""
     # Create conversations
     for i in range(num_convs):
@@ -56,7 +56,7 @@ def test_search_basic_results(workspace_env, storage_repository, num_convs, sear
 
         conv = make_conversation(f"conv{i}", title=f"Conv {i}")
         msg = make_message(f"msg{i}", f"conv{i}", text=text)
-        save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+        await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
 
     rebuild_index()
 
@@ -64,12 +64,12 @@ def test_search_basic_results(workspace_env, storage_repository, num_convs, sear
     assert len(results.hits) == expected_count, f"Failed for {description}"
 
 
-def test_search_respects_limit(workspace_env, storage_repository):
+async def test_search_respects_limit(workspace_env, storage_repository):
     """search_messages() respects limit parameter."""
     for i in range(10):
         conv = make_conversation(f"conv{i}", title=f"Conv {i}")
         msg = make_message(f"msg{i}", f"conv{i}", text="search limit")
-        save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+        await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
 
     rebuild_index()
 
@@ -77,12 +77,12 @@ def test_search_respects_limit(workspace_env, storage_repository):
     assert len(results.hits) == 3
 
 
-def test_search_includes_snippet(workspace_env, storage_repository):
+async def test_search_includes_snippet(workspace_env, storage_repository):
     """search_messages() includes text snippet in results."""
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="The quick brown fox jumps over the lazy dog")
 
-    save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("quick", archive_root=workspace_env["archive_root"], limit=10)
@@ -93,14 +93,14 @@ def test_search_includes_snippet(workspace_env, storage_repository):
     assert isinstance(results.hits[0].snippet, str)
 
 
-def test_search_includes_conversation_metadata(workspace_env, storage_repository):
+async def test_search_includes_conversation_metadata(workspace_env, storage_repository):
     """search_messages() includes conversation metadata in results."""
     conv = make_conversation(
         "conv1", provider_name="claude", title="My Conversation", provider_meta={"source": "my-source"}
     )
     msg = make_message("msg1", "conv1", text="search query", timestamp="2024-01-01T10:30:00Z")
 
-    save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("search", archive_root=workspace_env["archive_root"], limit=10)
@@ -130,12 +130,12 @@ SEARCH_WITH_SPECIAL_TEXT_CASES = [
 
 
 @pytest.mark.parametrize("text,search_term,description", SEARCH_WITH_SPECIAL_TEXT_CASES)
-def test_search_with_special_text(workspace_env, storage_repository, text, search_term, description):
+async def test_search_with_special_text(workspace_env, storage_repository, text, search_term, description):
     """search_messages() handles special text patterns."""
     conv = make_conversation("conv1", title=f"Test {description}")
     msg = make_message("msg1", "conv1", text=text)
 
-    save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages(search_term, archive_root=workspace_env["archive_root"], limit=10)
@@ -166,12 +166,12 @@ def test_rebuild_index_with_empty_database(test_conn):
     assert count == 0
 
 
-def test_search_returns_searchresult_object(workspace_env, storage_repository):
+async def test_search_returns_searchresult_object(workspace_env, storage_repository):
     """search_messages() returns SearchResult with hits list."""
     conv = make_conversation("conv1")
     msg = make_message("msg1", "conv1", text="search result")
 
-    save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
+    await save_bundle(RecordBundle(conversation=conv, messages=[msg], attachments=[]), repository=storage_repository)
     rebuild_index()
 
     results = search_messages("search", archive_root=workspace_env["archive_root"], limit=10)
@@ -295,7 +295,7 @@ def test_batch_index_10k_messages(test_conn):
     assert elapsed < 5.0, f"Batch indexing 10k messages took too long: {elapsed:.2f}s"
 
 
-def test_batch_index_search_returns_correct_provider(workspace_env, storage_repository):
+async def test_batch_index_search_returns_correct_provider(workspace_env, storage_repository):
     """Verify batch indexing allows retrieving correct provider_name via search."""
     # Create conversations with different providers
     conv1 = make_conversation("conv1", provider_name="claude", title="Claude Conv")
@@ -304,8 +304,8 @@ def test_batch_index_search_returns_correct_provider(workspace_env, storage_repo
     messages1 = [make_message(f"msg1-{i}", "conv1", text=f"claude text {i}") for i in range(5)]
     messages2 = [make_message(f"msg2-{i}", "conv2", text=f"chatgpt text {i}") for i in range(5)]
 
-    save_bundle(RecordBundle(conversation=conv1, messages=messages1, attachments=[]), repository=storage_repository)
-    save_bundle(RecordBundle(conversation=conv2, messages=messages2, attachments=[]), repository=storage_repository)
+    await save_bundle(RecordBundle(conversation=conv1, messages=messages1, attachments=[]), repository=storage_repository)
+    await save_bundle(RecordBundle(conversation=conv2, messages=messages2, attachments=[]), repository=storage_repository)
 
     rebuild_index()
 
@@ -564,7 +564,7 @@ class TestCreateVectorProvider:
                     provider = create_vector_provider()
                     assert provider is None
 
-    def test_config_priority_and_explicit_override(self, monkeypatch, tmp_path):
+    async def test_config_priority_and_explicit_override(self, monkeypatch, tmp_path):
         """Config voyage_api_key takes priority; explicit args override both config and env."""
         monkeypatch.setenv("VOYAGE_API_KEY", "env-voyage-key")
 
@@ -596,20 +596,20 @@ class TestFTS5Provider:
         return FTS5Provider(db_path=db_path)
 
     @pytest.fixture
-    def populated_fts(self, workspace_env, storage_repository, fts_provider):
+    async def populated_fts(self, workspace_env, storage_repository, fts_provider):
         """FTS provider with indexed test data."""
         conv = make_conversation("fts-conv-1", provider_name="claude", title="FTS Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
         msgs = [
             make_message("fts-msg-1", "fts-conv-1", text="How do I implement quicksort in Python?", timestamp="1000"),
             make_message("fts-msg-2", "fts-conv-1", role="assistant", text="Quicksort is a divide-and-conquer algorithm for sorting", timestamp="1001"),
         ]
-        storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
         # Index the messages
         fts_provider.index(msgs)
         return fts_provider
 
-    def test_ensure_index_creates_fts_table(self, workspace_env, fts_provider):
+    async def test_ensure_index_creates_fts_table(self, workspace_env, fts_provider):
         """Ensure index creates FTS5 virtual table."""
         from polylogue.storage.backends.sqlite import SQLiteBackend
 
@@ -627,9 +627,9 @@ class TestFTS5Provider:
         conv = make_conversation("ensure-conv", title="Ensure Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
         # First save the conversation so provider_name lookup works
         backend = SQLiteBackend(db_path=db_path)
-        backend.begin()
-        backend.save_conversation(conv)
-        backend.commit()
+        await backend.begin()
+        await backend.save_conversation_record(conv)
+        await backend.commit()
 
         msgs = [make_message("ens-msg", "ensure-conv", timestamp="1000")]
 
@@ -640,11 +640,11 @@ class TestFTS5Provider:
             assert row is not None
             assert row["name"] == "messages_fts"
 
-    def test_ensure_index_idempotent(self, workspace_env, fts_provider, storage_repository):
+    async def test_ensure_index_idempotent(self, workspace_env, fts_provider, storage_repository):
         """Calling index multiple times is safe (idempotent)."""
         conv = make_conversation("idem-conv", title="Idempotent Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
         msgs = [make_message("idem-msg", "idem-conv", text="Idempotent message", timestamp="1000")]
-        storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
 
         # Index twice - should not error or duplicate
         fts_provider.index(msgs)
@@ -655,11 +655,11 @@ class TestFTS5Provider:
         assert len(results) == 1
         assert results[0] == "idem-msg"
 
-    def test_index_deletes_old_entries(self, workspace_env, fts_provider, storage_repository):
+    async def test_index_deletes_old_entries(self, workspace_env, fts_provider, storage_repository):
         """Incremental indexing removes old entries before inserting."""
         conv = make_conversation("incr-conv", title="Incremental Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
         msgs_v1 = [make_message("incr-msg-1", "incr-conv", text="Original content about apples", timestamp="1000")]
-        storage_repository.save_conversation(conversation=conv, messages=msgs_v1, attachments=[])
+        await storage_repository.save_conversation(conversation=conv, messages=msgs_v1, attachments=[])
         fts_provider.index(msgs_v1)
 
         # Should find "apples"
@@ -678,14 +678,14 @@ class TestFTS5Provider:
         results = fts_provider.search("oranges")
         assert len(results) == 1
 
-    def test_index_skips_empty_text(self, workspace_env, fts_provider, storage_repository):
+    async def test_index_skips_empty_text(self, workspace_env, fts_provider, storage_repository):
         """Messages with empty text are not indexed."""
         conv = make_conversation("skip-conv", title="Skip Test", created_at="1000", updated_at="1000", provider_meta={"source": "inbox"})
         msgs = [
             make_message("skip-msg-1", "skip-conv", text="", timestamp="1000"),  # Empty text
             make_message("skip-msg-2", "skip-conv", role="assistant", text="This has content", timestamp="1001"),
         ]
-        storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
+        await storage_repository.save_conversation(conversation=conv, messages=msgs, attachments=[])
         fts_provider.index(msgs)
 
         # Search should only find the non-empty message
@@ -739,7 +739,7 @@ def test_chunked(input_list, chunk_size, expected_output, description):
 class TestSearchProviderInit:
     """Tests for search provider factory."""
 
-    def test_create_fts5_provider(self, cli_workspace):
+    async def test_create_fts5_provider(self, cli_workspace):
         """FTS5 provider should be returned for 'fts5' type and unknown types fallback to FTS5."""
         from polylogue.storage.search_providers import create_search_provider
 
@@ -752,9 +752,9 @@ class TestSearchProviderInit:
         assert fallback_provider is not None
 
 
-def _seed_conversation(storage_repository):
+async def _seed_conversation(storage_repository):
     """Helper to seed a test conversation."""
-    save_bundle(
+    await save_bundle(
         RecordBundle(
             conversation=make_conversation("conv:hash", provider_name="codex", title="Demo"),
             messages=[make_message("msg:hash", "conv:hash", text="hello world")],
@@ -764,9 +764,9 @@ def _seed_conversation(storage_repository):
     )
 
 
-def test_search_after_index(workspace_env, storage_repository):
+async def test_search_after_index(workspace_env, storage_repository):
     """Test searching after building the index."""
-    _seed_conversation(storage_repository)
+    await _seed_conversation(storage_repository)
     rebuild_index()
     results = search_messages("hello", archive_root=workspace_env["archive_root"], limit=5)
     assert results.hits
@@ -820,7 +820,7 @@ def test_search_invalid_query_reports_error(monkeypatch, workspace_env):
     assert "Invalid search query" in str(exc_info.value)
 
 
-def test_search_prefers_legacy_render_when_present(workspace_env, storage_repository):
+async def test_search_prefers_legacy_render_when_present(workspace_env, storage_repository):
     """Test that search returns legacy render paths when they exist."""
     archive_root = workspace_env["archive_root"]
     provider_name = "legacy-provider"
@@ -830,7 +830,7 @@ def test_search_prefers_legacy_render_when_present(workspace_env, storage_reposi
         messages=[make_message("msg:legacy", conversation_id, text="hello legacy")],
         attachments=[],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     # Create a legacy-style render path
@@ -856,7 +856,7 @@ SEARCH_SINCE_VALID_CASES = [
 
 
 @pytest.mark.parametrize("conv_id,old_ts,new_ts,search_term,since_date,expected_msg_id,description", SEARCH_SINCE_VALID_CASES)
-def test_search_since_filters(workspace_env, storage_repository, conv_id, old_ts, new_ts, search_term, since_date, expected_msg_id, description):
+async def test_search_since_filters(workspace_env, storage_repository, conv_id, old_ts, new_ts, search_term, since_date, expected_msg_id, description):
     """--since filters messages by timestamp (ISO and numeric formats)."""
     archive_root = workspace_env["archive_root"]
     bundle = RecordBundle(
@@ -867,7 +867,7 @@ def test_search_since_filters(workspace_env, storage_repository, conv_id, old_ts
         ],
         attachments=[],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     results = search_messages(search_term, archive_root=archive_root, since=since_date, limit=10)
@@ -875,7 +875,7 @@ def test_search_since_filters(workspace_env, storage_repository, conv_id, old_ts
     assert results.hits[0].message_id == f"{conv_id}:new"
 
 
-def test_search_since_handles_mixed_timestamp_formats(workspace_env, storage_repository):
+async def test_search_since_handles_mixed_timestamp_formats(workspace_env, storage_repository):
     """--since works with mix of ISO and numeric timestamps in same DB."""
     archive_root = workspace_env["archive_root"]
 
@@ -902,9 +902,9 @@ def test_search_since_handles_mixed_timestamp_formats(workspace_env, storage_rep
         attachments=[],
     )
 
-    save_bundle(bundle_iso, repository=storage_repository)
-    save_bundle(bundle_num, repository=storage_repository)
-    save_bundle(bundle_old, repository=storage_repository)
+    await save_bundle(bundle_iso, repository=storage_repository)
+    await save_bundle(bundle_num, repository=storage_repository)
+    await save_bundle(bundle_old, repository=storage_repository)
     rebuild_index()
 
     results = search_messages(
@@ -927,10 +927,10 @@ SEARCH_SINCE_ERROR_CASES = [
 
 
 @pytest.mark.parametrize("invalid_date,expected_error", SEARCH_SINCE_ERROR_CASES)
-def test_search_since_invalid_date_raises_error(workspace_env, storage_repository, invalid_date, expected_error):
+async def test_search_since_invalid_date_raises_error(workspace_env, storage_repository, invalid_date, expected_error):
     """Invalid --since format raises ValueError with helpful message."""
     archive_root = workspace_env["archive_root"]
-    _seed_conversation(storage_repository)
+    await _seed_conversation(storage_repository)
     rebuild_index()
 
     with pytest.raises(ValueError, match=expected_error):
@@ -942,7 +942,7 @@ def test_search_since_invalid_date_raises_error(workspace_env, storage_repositor
         )
 
 
-def test_search_since_boundary_condition(workspace_env, storage_repository):
+async def test_search_since_boundary_condition(workspace_env, storage_repository):
     """Messages at or after --since timestamp are included, earlier ones excluded."""
     archive_root = workspace_env["archive_root"]
     bundle = RecordBundle(
@@ -957,7 +957,7 @@ def test_search_since_boundary_condition(workspace_env, storage_repository):
         ],
         attachments=[],
     )
-    save_bundle(bundle, repository=storage_repository)
+    await save_bundle(bundle, repository=storage_repository)
     rebuild_index()
 
     results = search_messages(
