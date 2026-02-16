@@ -141,7 +141,7 @@ class TestShowEmbeddingStats:
             MagicMock(fetchone=MagicMock(return_value=qr)) for qr in query_results
         ]
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -171,7 +171,7 @@ class TestShowEmbeddingStats:
 
         mock_conn.execute.side_effect = side_effect
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
             mock_open.return_value.__exit__ = MagicMock(return_value=False)
 
@@ -255,7 +255,7 @@ class TestEmbedBatch:
 
         convs = [{"conversation_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
             mock_conn.execute.return_value.fetchall.return_value = convs
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
@@ -271,7 +271,7 @@ class TestEmbedBatch:
         """_embed_batch with rebuild=True queries all conversations."""
         mock_vec_provider = MagicMock()
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
             mock_conn.execute.return_value.fetchall.return_value = []
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)
@@ -292,7 +292,7 @@ class TestEmbedBatch:
             [{"message_id": "m3"}],  # Third conv succeeds
         ]
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
             mock_conn.execute.return_value.fetchall.return_value = [
                 {"conversation_id": "conv-1", "title": "Test 1"},
@@ -651,7 +651,7 @@ class TestEmbedBatchRichMode:
 
         convs = [{"conversation_id": f"conv-{i}", "title": f"Test {i}"} for i in range(1, num_convs + 1)]
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_conn = MagicMock()
             mock_conn.execute.return_value.fetchall.return_value = convs
             mock_open.return_value.__enter__ = MagicMock(return_value=mock_conn)

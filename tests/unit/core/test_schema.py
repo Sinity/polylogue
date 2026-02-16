@@ -526,7 +526,7 @@ class TestGetSampleCountFromDb:
 
     def test_empty_db_returns_zero(self, tmp_path):
         """Database with no messages returns 0."""
-        from polylogue.storage.backends.sqlite import open_connection
+        from polylogue.storage.backends.connection import open_connection
 
         db_path = tmp_path / "empty.db"
         with open_connection(db_path):
@@ -536,7 +536,7 @@ class TestGetSampleCountFromDb:
 
     def test_matching_provider_returns_count(self, tmp_path):
         """Database with matching provider messages returns count."""
-        from polylogue.storage.backends.sqlite import open_connection
+        from polylogue.storage.backends.connection import open_connection
 
         db_path = tmp_path / "test.db"
         with open_connection(db_path) as conn:
@@ -561,7 +561,7 @@ class TestGetSampleCountFromDb:
 
     def test_wrong_provider_returns_zero(self, tmp_path):
         """Database with no matching provider returns 0."""
-        from polylogue.storage.backends.sqlite import open_connection
+        from polylogue.storage.backends.connection import open_connection
 
         db_path = tmp_path / "test.db"
         with open_connection(db_path) as conn:

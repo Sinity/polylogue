@@ -22,13 +22,7 @@ import aiosqlite
 import polylogue.paths as _paths
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.log import get_logger
-from polylogue.storage.backends.sqlite import (
-    _build_conversation_filters,
-    _parse_json,
-    _row_to_conversation,
-    _row_to_message,
-    _row_to_raw_conversation,
-)
+from polylogue.storage.backends.connection import _build_conversation_filters
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
@@ -37,6 +31,10 @@ from polylogue.storage.store import (
     RunRecord,
     _json_or_none,
     _make_ref_id,
+    _parse_json,
+    _row_to_conversation,
+    _row_to_message,
+    _row_to_raw_conversation,
 )
 from polylogue.types import ConversationId
 
@@ -149,13 +147,13 @@ class SQLiteBackend:
         """
         import sqlite3
 
-        from polylogue.storage.backends.sqlite import (
+        from polylogue.storage.backends.schema import (
             _VEC0_DDL,
             SCHEMA_DDL,
             SCHEMA_VERSION,
-            _load_sqlite_vec,
         )
-        from polylogue.storage.backends.sqlite import (
+        from polylogue.storage.backends.connection import _load_sqlite_vec
+        from polylogue.storage.backends.schema import (
             _ensure_schema as _sync_ensure_schema,
         )
 
@@ -196,7 +194,7 @@ class SQLiteBackend:
 
             await asyncio.to_thread(_run_sync_migration)
         elif current_version > SCHEMA_VERSION:
-            from polylogue.storage.backends.sqlite import DatabaseError
+            from polylogue.errors import DatabaseError
 
             raise DatabaseError(
                 f"Unsupported DB schema version {current_version} (expected {SCHEMA_VERSION})"
@@ -245,12 +243,12 @@ class SQLiteBackend:
     async def commit(self) -> None:
         """Commit the current transaction or release savepoint."""
         if self._transaction_depth <= 0:
-            from polylogue.storage.backends.sqlite import DatabaseError
+            from polylogue.errors import DatabaseError
 
             raise DatabaseError("No active transaction to commit")
 
         if self._txn_conn is None:
-            from polylogue.storage.backends.sqlite import DatabaseError
+            from polylogue.errors import DatabaseError
 
             raise DatabaseError("No transaction connection")
 
@@ -266,12 +264,12 @@ class SQLiteBackend:
     async def rollback(self) -> None:
         """Rollback to the last begin() or savepoint."""
         if self._transaction_depth <= 0:
-            from polylogue.storage.backends.sqlite import DatabaseError
+            from polylogue.errors import DatabaseError
 
             raise DatabaseError("No active transaction to rollback")
 
         if self._txn_conn is None:
-            from polylogue.storage.backends.sqlite import DatabaseError
+            from polylogue.errors import DatabaseError
 
             raise DatabaseError("No transaction connection")
 
@@ -855,7 +853,7 @@ class SQLiteBackend:
             exists = await cursor.fetchone()
 
             if not exists:
-                from polylogue.storage.backends.sqlite import DatabaseError
+                from polylogue.errors import DatabaseError
 
                 raise DatabaseError("Search index not built. Run indexing first or use a different backend.")
 

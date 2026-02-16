@@ -16,7 +16,7 @@ import pytest
 
 from polylogue.config import Config, IndexConfig
 from polylogue.sources import RecordBundle, save_bundle
-from polylogue.storage.backends.sqlite import open_connection
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import ensure_index, rebuild_index, update_index_for_conversations
 from polylogue.storage.search import escape_fts5_query, search_messages
 from polylogue.storage.search_providers import create_vector_provider

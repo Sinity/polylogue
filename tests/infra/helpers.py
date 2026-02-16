@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from polylogue.storage.backends.sqlite import connection_context, open_connection
+from polylogue.storage.backends.connection import connection_context, open_connection
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
@@ -487,11 +487,8 @@ class ConversationBuilder:
             )
         return self.conv
 
-    async def async_build(self):
-        """Save to database and return a full Conversation domain object (async).
-
-        Use this from async test functions instead of ``build()``.
-        """
+    async def build(self):
+        """Save to database and return a full Conversation domain object."""
         from polylogue.storage.backends.async_sqlite import SQLiteBackend
         from polylogue.storage.repository import ConversationRepository
 

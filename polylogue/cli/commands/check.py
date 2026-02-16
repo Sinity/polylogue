@@ -104,7 +104,7 @@ def _run_vacuum(env: AppEnv) -> None:
     env.ui.console.print("")
     env.ui.console.print("Running VACUUM to reclaim space...")
     try:
-        from polylogue.storage.backends.sqlite import default_db_path, open_connection
+        from polylogue.storage.backends.connection import default_db_path, open_connection
 
         db_path = default_db_path()
         with open_connection(db_path) as conn:

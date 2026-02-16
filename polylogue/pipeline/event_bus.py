@@ -1,9 +1,7 @@
 """Structured event bus for the pipeline lifecycle.
 
 Provides typed event classes for each pipeline stage and a central
-``EventBus`` for subscription and dispatch.  The existing
-``SyncEventHandler`` protocol in ``events.py`` is preserved as a
-backward-compatible adapter.
+``EventBus`` for subscription and dispatch.
 
 Event hierarchy (all frozen dataclasses):
 

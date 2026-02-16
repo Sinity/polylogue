@@ -8,7 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.sqlite import (
+from polylogue.storage.backends.connection import (
     default_db_path,
     open_connection,
 )
@@ -326,20 +326,17 @@ def test_store_records_without_connection_creates_own(test_db, tmp_path, monkeyp
     data_home.mkdir()
     monkeypatch.setenv("XDG_DATA_HOME", str(data_home))
 
-    # Reload paths and sqlite modules to pick up new XDG_DATA_HOME
-    import polylogue.paths
-    import polylogue.storage.backends.sqlite
-
-    importlib.reload(polylogue.paths)
-    importlib.reload(polylogue.storage.backends.sqlite)
-
-    # Now import default_db_path AFTER reload
-
-    # Close cached connections before moving the DB file — otherwise
-    # WAL sidecar files (.db-wal, .db-shm) won't be checkpointed and
-    # the moved file will fail with "disk I/O error".
+    # Close cached connections BEFORE reloading — reload re-creates
+    # the module-level threading.local, orphaning old connections.
     from polylogue.storage.backends.connection import _clear_connection_cache
     _clear_connection_cache()
+
+    # Reload paths and connection modules to pick up new XDG_DATA_HOME
+    import polylogue.paths
+    import polylogue.storage.backends.connection
+
+    importlib.reload(polylogue.paths)
+    importlib.reload(polylogue.storage.backends.connection)
 
     default_path = default_db_path()
     default_path.parent.mkdir(parents=True, exist_ok=True)

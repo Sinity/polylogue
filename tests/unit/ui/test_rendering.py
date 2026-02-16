@@ -23,7 +23,7 @@ from polylogue.rendering.renderers import (
     create_renderer,
     list_formats,
 )
-from polylogue.storage.backends.sqlite import open_connection
+from polylogue.storage.backends.connection import open_connection
 from tests.infra.helpers import (
     ConversationBuilder,
     assert_contains_all,

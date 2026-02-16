@@ -609,7 +609,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     Raises:
         DatabaseError: If schema version is unsupported or migration fails
     """
-    from polylogue.storage.backends.sqlite import DatabaseError
+    from polylogue.errors import DatabaseError
 
     row = conn.execute("PRAGMA user_version").fetchone()
     current_version = row[0] if row else 0

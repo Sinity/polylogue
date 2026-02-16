@@ -90,7 +90,7 @@ def workspace_env(tmp_path, monkeypatch):
 @pytest.fixture
 def db_without_fts(tmp_path):
     """Database with schema but WITHOUT the FTS table (simulates fresh install)."""
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
 
     db_path = tmp_path / "no_fts.db"
     with open_connection(db_path) as conn:
@@ -115,7 +115,7 @@ def storage_repository(workspace_env):
     Depends on workspace_env to ensure XDG_DATA_HOME is set before
     creating the default backend.
     """
-    from polylogue.storage.backends.sqlite import create_default_backend
+    from polylogue.storage.backends.connection import create_default_backend
     from polylogue.storage.repository import ConversationRepository
 
     backend = create_default_backend()
@@ -173,7 +173,8 @@ def cli_workspace(tmp_path, monkeypatch):
 
     # No importlib.reload() needed — paths.py uses lazy evaluation (functions, not constants).
     # Just reset the service singletons so they pick up fresh env vars.
-    from polylogue.storage.backends.sqlite import _ensure_schema, connection_context
+    from polylogue.storage.backends.connection import connection_context
+    from polylogue.storage.backends.schema import _ensure_schema
 
     with connection_context(db_path) as conn:
         _ensure_schema(conn)
@@ -379,7 +380,7 @@ def test_db(tmp_path):
     Replaces duplicate fixtures in: test_store.py, test_pipeline.py, test_lib.py,
     test_repository_render.py, test_search_index.py
     """
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
 
     db_path = tmp_path / "test.db"
     with open_connection(db_path):
@@ -393,7 +394,7 @@ def test_conn(test_db):
 
     Replaces duplicate fixtures in: test_store.py, test_pipeline.py, test_search_index.py
     """
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
 
     with open_connection(test_db) as conn:
         yield conn
@@ -484,7 +485,7 @@ def seeded_db(tmp_path_factory):
     from polylogue.schemas.synthetic import SyntheticCorpus
     from polylogue.sources import iter_source_conversations
     from polylogue.storage.backends.async_sqlite import SQLiteBackend
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.repository import ConversationRepository
     from polylogue.storage.store import RawConversationRecord
 

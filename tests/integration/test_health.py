@@ -681,7 +681,7 @@ class TestRepairOrphanedMessages:
         """repair_orphaned_messages should return 0 when no orphans exist."""
         from polylogue.config import get_config
         from polylogue.health import repair_orphaned_messages
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         # Setup: create a valid conversation and message
         config = get_config()
@@ -703,7 +703,7 @@ class TestRepairOrphanedMessages:
         """repair_orphaned_messages should find and delete orphaned messages."""
         from polylogue.config import get_config
         from polylogue.health import repair_orphaned_messages
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -729,7 +729,7 @@ class TestRepairOrphanedMessages:
         """repair_orphaned_messages with dry_run=True should count but not delete."""
         from polylogue.config import get_config
         from polylogue.health import repair_orphaned_messages
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -753,7 +753,7 @@ class TestRepairOrphanedMessages:
         """Running repair twice should find 0 on second run."""
         from polylogue.config import get_config
         from polylogue.health import repair_orphaned_messages
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -777,7 +777,7 @@ class TestRepairEmptyConversations:
         """repair_empty_conversations should return 0 when no empty convos exist."""
         from polylogue.config import get_config
         from polylogue.health import repair_empty_conversations
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -798,7 +798,7 @@ class TestRepairEmptyConversations:
         """repair_empty_conversations should find and delete empty conversations."""
         from polylogue.config import get_config
         from polylogue.health import repair_empty_conversations
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -824,7 +824,7 @@ class TestRepairEmptyConversations:
         """repair_empty_conversations with dry_run=True should count but not delete."""
         from polylogue.config import get_config
         from polylogue.health import repair_empty_conversations
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -847,7 +847,7 @@ class TestRepairEmptyConversations:
         """Running repair twice should find 0 on second run."""
         from polylogue.config import get_config
         from polylogue.health import repair_empty_conversations
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -870,7 +870,7 @@ class TestRepairDanglingFts:
         """repair_dangling_fts should return 0 when FTS is in sync."""
         from polylogue.config import get_config
         from polylogue.health import repair_dangling_fts
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -891,7 +891,7 @@ class TestRepairDanglingFts:
         """repair_dangling_fts should find and delete FTS entries without messages."""
         from polylogue.config import get_config
         from polylogue.health import repair_dangling_fts
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -925,7 +925,7 @@ class TestRepairDanglingFts:
         """repair_dangling_fts should insert missing FTS entries for messages."""
         from polylogue.config import get_config
         from polylogue.health import repair_dangling_fts
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -959,7 +959,7 @@ class TestRepairDanglingFts:
         """repair_dangling_fts with dry_run=True should count but not modify."""
         from polylogue.config import get_config
         from polylogue.health import repair_dangling_fts
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -992,7 +992,7 @@ class TestRepairOrphanedAttachments:
         """repair_orphaned_attachments should return 0 when all attachments are referenced."""
         from polylogue.config import get_config
         from polylogue.health import repair_orphaned_attachments
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -1021,7 +1021,7 @@ class TestRepairOrphanedAttachments:
         """repair_orphaned_attachments should detect orphaned attachment refs in dry-run."""
         from polylogue.config import get_config
         from polylogue.health import repair_orphaned_attachments
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -1055,7 +1055,7 @@ class TestRepairOrphanedAttachments:
         """repair_orphaned_attachments should delete unreferenced attachments."""
         from polylogue.config import get_config
         from polylogue.health import repair_orphaned_attachments
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -1077,7 +1077,7 @@ class TestRepairOrphanedAttachments:
         """repair_orphaned_attachments with dry_run=True should count but not delete."""
         from polylogue.config import get_config
         from polylogue.health import repair_orphaned_attachments
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -1106,7 +1106,7 @@ class TestRepairUnknownRoles:
         """repair_unknown_roles should return 0 when no unknown roles in claude-code."""
         from polylogue.config import get_config
         from polylogue.health import repair_unknown_roles
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -1128,7 +1128,7 @@ class TestRepairUnknownRoles:
         """repair_unknown_roles should map message types to appropriate roles."""
         from polylogue.config import get_config
         from polylogue.health import repair_unknown_roles
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         msg_id = f"cc-msg-{message_type}"
@@ -1154,7 +1154,7 @@ class TestRepairUnknownRoles:
         """repair_unknown_roles with dry_run=True should count but not modify."""
         from polylogue.config import get_config
         from polylogue.health import repair_unknown_roles
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -1178,7 +1178,7 @@ class TestRepairUnknownRoles:
         """repair_unknown_roles should only affect claude-code conversations."""
         from polylogue.config import get_config
         from polylogue.health import repair_unknown_roles
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
         with connection_context(None) as conn:
@@ -1271,7 +1271,7 @@ class TestRunAllRepairs:
         """run_all_repairs with dry_run=True should have 'Would:' in details."""
         from polylogue.config import get_config
         from polylogue.health import run_all_repairs
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
 
@@ -1291,7 +1291,7 @@ class TestRunAllRepairs:
         """run_all_repairs twice should find 0 issues on second run."""
         from polylogue.config import get_config
         from polylogue.health import run_all_repairs
-        from polylogue.storage.backends.sqlite import connection_context
+        from polylogue.storage.backends.connection import connection_context
 
         config = get_config()
 

@@ -19,7 +19,7 @@ import pytest
 from polylogue.lib.models import Conversation
 from polylogue.lib.stats import ArchiveStats
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
-from polylogue.storage.backends.sqlite import open_connection
+from polylogue.storage.backends.connection import open_connection
 from polylogue.storage.index import rebuild_index
 from polylogue.storage.repository import ConversationRepository, _records_to_conversation
 from polylogue.storage.store import (

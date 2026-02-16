@@ -819,7 +819,7 @@ class TestRunEmbedCommand:
             mock_result_4,
         ]
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_open.return_value = mock_conn
             # Ensure API key is not set
             with patch.dict(
@@ -849,7 +849,7 @@ class TestRunEmbedCommand:
         ]
         mock_conn.execute.side_effect = results
 
-        with patch("polylogue.storage.backends.sqlite.open_connection") as mock_open:
+        with patch("polylogue.storage.backends.connection.open_connection") as mock_open:
             mock_open.return_value = mock_conn
             with patch.dict(
                 "os.environ",

@@ -165,7 +165,7 @@ class HybridSearchProvider:
         Returns:
             List of conversation IDs, ordered by best-matching message score.
         """
-        from polylogue.storage.backends.sqlite import open_connection
+        from polylogue.storage.backends.connection import open_connection
 
         # Get message-level results (scored for ranking)
         message_results = self.search_scored(query, limit=limit * 3)

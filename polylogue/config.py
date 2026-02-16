@@ -32,7 +32,6 @@ class ConfigError(PolylogueError):
 class Config:
     """Application configuration with hardcoded paths.
 
-    This class exists for backward compatibility with code that expects a Config object.
     All values are derived from polylogue.paths - there is no config file.
     """
 
@@ -63,7 +62,6 @@ def get_config() -> Config:
     )
 
 
-# Re-export from paths for backward compatibility
 __all__ = [
     "Config",
     "ConfigError",

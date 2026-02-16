@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.storage.backends.sqlite import connection_context, open_connection
+from polylogue.storage.backends.connection import connection_context, open_connection
 from polylogue.storage.store import MessageRecord
 
 

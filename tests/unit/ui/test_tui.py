@@ -209,7 +209,7 @@ async def test_search_flow(storage_repository, conversation_builder):
     conversation_builder("c1").add_message("m1", text="UniqueSearchTerm123").save()
 
     # Rebuild FTS index so search works
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.index import rebuild_index
 
     with open_connection(storage_repository._backend._db_path) as conn:
@@ -242,7 +242,7 @@ async def test_search_no_results(storage_repository, conversation_builder):
     conversation_builder("c1").add_message("m1", text="Hello").save()
 
     # Rebuild FTS index
-    from polylogue.storage.backends.sqlite import open_connection
+    from polylogue.storage.backends.connection import open_connection
     from polylogue.storage.index import rebuild_index
 
     with open_connection(storage_repository._backend._db_path) as conn:

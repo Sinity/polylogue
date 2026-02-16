@@ -12,7 +12,9 @@ from pathlib import Path
 from polylogue.lib.log import get_logger
 from polylogue.render_paths import render_root
 
-from .backends.sqlite import DatabaseError, open_connection
+from polylogue.errors import DatabaseError
+
+from .backends.connection import open_connection
 from .search_cache import SearchCacheKey
 
 logger = get_logger(__name__)

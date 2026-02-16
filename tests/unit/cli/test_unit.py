@@ -49,7 +49,7 @@ from polylogue.health import (
     repair_orphaned_messages,
     run_all_repairs,
 )
-from polylogue.storage.backends.sqlite import create_default_backend
+from polylogue.storage.backends.connection import create_default_backend
 from polylogue.storage.repository import ConversationRepository
 
 # ============================================================================
@@ -598,8 +598,8 @@ class TestCheckCommandUnit:
             patch("polylogue.cli.commands.check.load_effective_config"),
             patch("polylogue.cli.commands.check.get_health", return_value=sample_health_report),
             patch("polylogue.cli.commands.check.run_all_repairs", return_value=repair_results),
-            patch("polylogue.storage.backends.sqlite.open_connection") as mock_conn,
-            patch("polylogue.storage.backends.sqlite.default_db_path", return_value=Path("/tmp/test.db")),
+            patch("polylogue.storage.backends.connection.open_connection") as mock_conn,
+            patch("polylogue.storage.backends.connection.default_db_path", return_value=Path("/tmp/test.db")),
         ):
             mock_connection = MagicMock()
             mock_conn.return_value.__enter__ = MagicMock(return_value=mock_connection)
@@ -619,7 +619,7 @@ class TestRepairFunctions:
     def test_repair_orphaned_messages(self, workspace_env):
         """repair_orphaned_messages deletes orphaned messages."""
         from polylogue.config import Config
-        from polylogue.storage.backends.sqlite import open_connection
+        from polylogue.storage.backends.connection import open_connection
         from tests.infra.helpers import db_setup
 
         db_path = db_setup(workspace_env)
@@ -648,7 +648,7 @@ class TestRepairFunctions:
     def test_repair_empty_conversations(self, workspace_env):
         """repair_empty_conversations deletes empty conversations."""
         from polylogue.config import Config
-        from polylogue.storage.backends.sqlite import open_connection
+        from polylogue.storage.backends.connection import open_connection
         from tests.infra.helpers import db_setup
 
         db_path = db_setup(workspace_env)
@@ -677,7 +677,7 @@ class TestRepairFunctions:
     def test_repair_dangling_fts_no_table(self, workspace_env):
         """repair_dangling_fts handles missing FTS table gracefully."""
         from polylogue.config import Config
-        from polylogue.storage.backends.sqlite import open_connection
+        from polylogue.storage.backends.connection import open_connection
         from tests.infra.helpers import db_setup
 
         db_path = db_setup(workspace_env)
@@ -696,7 +696,7 @@ class TestRepairFunctions:
     def test_repair_orphaned_attachments(self, workspace_env):
         """repair_orphaned_attachments cleans up orphaned attachments."""
         from polylogue.config import Config
-        from polylogue.storage.backends.sqlite import open_connection
+        from polylogue.storage.backends.connection import open_connection
         from tests.infra.helpers import db_setup
 
         db_path = db_setup(workspace_env)
