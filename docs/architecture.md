@@ -195,16 +195,16 @@ polylogue/
 │
 ├── storage/                  # Storage Layer
 │   ├── backends/            # Backend implementations
-│   │   ├── sqlite.py       # SQLiteBackend (only backend, schema v5)
-│   │   └── async_sqlite.py # SQLiteBackend
+│   │   ├── sqlite.py       # Sync utilities, row mappers, connection helpers
+│   │   └── async_sqlite.py # SQLiteBackend (async-first, aiosqlite)
 │   ├── search_providers/    # Search implementations
 │   │   ├── fts5.py         # FTS5Provider
 │   │   ├── sqlite_vec.py   # sqlite-vec vector search
 │   │   └── hybrid.py       # HybridProvider (FTS5 + vector)
 │   ├── store.py             # Record types, _WRITE_LOCK
-│   ├── repository.py        # ConversationRepository (write coordination)
-│   ├── async_repository.py  # Async facade
-│   ├── index.py             # FTS5 indexing
+│   ├── repository.py        # ConversationRepository (async-first write coordination)
+│   ├── index.py             # FTS5 indexing (sync)
+│   ├── async_index.py       # FTS5 indexing (async)
 │   └── search.py            # Search utilities, FTS5 escaping
 │
 ├── schemas/                  # Schema Layer
@@ -245,8 +245,7 @@ polylogue/
 │
 ├── config.py                 # Configuration (Config, IndexConfig, DriveConfig)
 ├── services.py               # Singleton factories: get_backend(), get_repository()
-├── facade.py                 # Polylogue — top-level library API
-├── async_facade.py           # Polylogue — async library API
+├── facade.py                 # Polylogue — async-first library API
 ├── paths.py                  # XDG path resolution
 ├── protocols.py              # SearchProvider protocol
 ├── types.py                  # NewType definitions (ConversationId, MessageId, etc.)
