@@ -26,18 +26,18 @@ conv = ConversationFilter(repo).id("abc123").first()
 ## Filter Chain API
 
 ```python
-# Chainable, lazy evaluation
-results = (ConversationFilter(repo)
+# Chainable, lazy evaluation (terminals are async)
+results = await (ConversationFilter(repo)
     .contains("error")
     .contains("python")             # AND
     .provider("claude", "chatgpt")  # OR
     .since("2025-01-01")
     .has("thinking")
     .limit(10)
-    .list())                        # Terminal: list(), first(), count(), delete()
+    .list())                        # Terminal: await list(), first(), count(), delete()
 
 # Exclusion filters
-results = (ConversationFilter(repo)
+results = await (ConversationFilter(repo)
     .contains("error")
     .no_contains("warning")
     .no_provider("gemini")
@@ -45,7 +45,7 @@ results = (ConversationFilter(repo)
     .list())
 
 # Lightweight summaries (no message loading)
-summaries = (ConversationFilter(repo)
+summaries = await (ConversationFilter(repo)
     .provider("claude")
     .since("2025-01-01")
     .list_summaries())              # Returns ConversationSummary (no messages)
@@ -58,20 +58,20 @@ else:
     results = f.list()              # Loads full conversations
 
 # Custom predicates
-results = (ConversationFilter(repo)
+results = await (ConversationFilter(repo)
     .where(lambda c: len(c.messages) > 50)
     .list())
 
 # Sorting and sampling
-results = (ConversationFilter(repo)
+results = await (ConversationFilter(repo)
     .sort("tokens")
     .reverse()
     .sample(10)
     .list())
 
 # Conversation structure filters
-roots = ConversationFilter(repo).is_root().list()
-continuations = ConversationFilter(repo).is_continuation().list()
+roots = await ConversationFilter(repo).is_root().list()
+continuations = await ConversationFilter(repo).is_continuation().list()
 ```
 
 ## Available Filter Methods
@@ -155,8 +155,8 @@ async def main():
         # Parse files
         result = await archive.parse_file("chatgpt_export.json")
 
-        # Fluent filter (sync, works with async facade)
-        convs = archive.filter().provider("claude").contains("error").limit(10).list()
+        # Fluent filter (terminals are async)
+        convs = await archive.filter().provider("claude").contains("error").limit(10).list()
 
         # Rebuild search index
         await archive.rebuild_index()
