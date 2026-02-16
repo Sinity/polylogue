@@ -818,3 +818,90 @@ class TestConversationFilterBranchingMethods:
         result = await ConversationFilter(filter_repo_branches).is_root(False).list()
         # Should not include root conversations
         assert all(c.parent_id is not None for c in result if not c.is_root)
+
+
+# ============================================================================
+# Tests for delete() cascade behavior
+# ============================================================================
+
+
+class TestDeleteCascade:
+    """Test that ConversationFilter.delete() cascades correctly."""
+
+    @pytest.fixture
+    async def populated_db(self, tmp_path):
+        """Create database with a conversation, messages, attachments, FTS entries."""
+        db_path = tmp_path / "cascade.db"
+        backend = SQLiteBackend(db_path=db_path)
+        repo = ConversationRepository(backend=backend)
+
+        # Build a conversation with messages and attachments
+        conv = (
+            ConversationBuilder(db_path, "cascade-conv")
+            .provider("claude")
+            .title("Cascade Test")
+            .add_message("m1", role="user", text="Hello world")
+            .add_message("m2", role="assistant", text="Hi there")
+            .add_attachment("att1", message_id="m1", mime_type="image/png", size_bytes=1024)
+        )
+        conv.save()
+
+        # Build FTS index
+        with open_connection(db_path) as conn:
+            rebuild_index(conn)
+
+        return db_path, backend, repo
+
+    @pytest.mark.asyncio
+    async def test_delete_cascades_to_messages(self, populated_db):
+        """delete() removes associated messages."""
+        db_path, backend, repo = populated_db
+        f = ConversationFilter(repo).id("cascade-conv")
+        deleted = await f.delete()
+        assert deleted == 1
+
+        # Verify messages are gone
+        with open_connection(db_path) as conn:
+            msgs = conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = 'cascade-conv'").fetchone()[0]
+            assert msgs == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_cascades_to_attachment_refs(self, populated_db):
+        """delete() removes attachment_refs for the conversation."""
+        db_path, backend, repo = populated_db
+        f = ConversationFilter(repo).id("cascade-conv")
+        await f.delete()
+
+        with open_connection(db_path) as conn:
+            refs = conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE conversation_id = 'cascade-conv'").fetchone()[0]
+            assert refs == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_removes_fts_entries(self, populated_db):
+        """delete() removes FTS index entries for deleted conversations."""
+        db_path, backend, repo = populated_db
+
+        # Verify FTS entries exist first
+        with open_connection(db_path) as conn:
+            before = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = 'cascade-conv'").fetchone()[0]
+            assert before > 0
+
+        f = ConversationFilter(repo).id("cascade-conv")
+        await f.delete()
+
+        with open_connection(db_path) as conn:
+            after = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = 'cascade-conv'").fetchone()[0]
+            assert after == 0
+
+    @pytest.mark.asyncio
+    async def test_delete_prunes_orphaned_attachments(self, populated_db):
+        """delete() prunes attachments with ref_count reaching 0."""
+        db_path, backend, repo = populated_db
+
+        f = ConversationFilter(repo).id("cascade-conv")
+        await f.delete()
+
+        with open_connection(db_path) as conn:
+            # Attachment should be pruned (ref_count was 1, now 0)
+            att = conn.execute("SELECT COUNT(*) FROM attachments WHERE attachment_id = 'att1'").fetchone()[0]
+            assert att == 0
