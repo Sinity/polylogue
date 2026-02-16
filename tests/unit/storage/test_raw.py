@@ -266,6 +266,33 @@ class TestRawConversationStorage:
         assert await backend.get_raw_conversation_count(provider="claude") == 2
         assert await backend.get_raw_conversation_count(provider="codex") == 0
 
+    async def test_iter_raw_conversations_without_limit_returns_all(self, backend: SQLiteBackend) -> None:
+        """Iterating without limit returns all records."""
+        from datetime import datetime, timezone
+
+        from polylogue.storage.store import RawConversationRecord
+
+        # Save 7 records
+        for i in range(7):
+            record = RawConversationRecord(
+                raw_id=f"raw-all-{i}",
+                provider_name="test",
+                source_path=f"/tmp/test-{i}.json",
+                source_index=i,
+                raw_content=f'{{"idx": {i}}}'.encode(),
+                acquired_at=datetime.now(timezone.utc).isoformat(),
+                file_mtime=None,
+            )
+            await backend.save_raw_conversation(record)
+
+        # Iterate without limit
+        results = []
+        async for raw in backend.iter_raw_conversations():
+            results.append(raw)
+
+        assert len(results) == 7
+        assert {r.raw_id for r in results} == {f"raw-all-{i}" for i in range(7)}
+
 
 class TestRawConversationRecordValidation:
     """Tests for RawConversationRecord Pydantic validation."""
