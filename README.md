@@ -101,15 +101,15 @@ Generate a synthetic archive with realistic conversations from all providers. Ex
 </td>
 <td width="50%">
 
-### Async Library API
+### Library API
 
 ```python
-async with AsyncPolylogue() as archive:
+async with Polylogue() as archive:
     stats = await archive.stats()
     convs = await archive.filter().provider("claude").list()
 ```
 
-Full async/await support with concurrent queries and parallel batch operations.
+Async-first API with concurrent queries and parallel batch operations.
 
 </td>
 </tr>
