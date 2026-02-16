@@ -402,10 +402,7 @@ def test_conn(test_db):
 
 @pytest.fixture
 async def sqlite_backend(tmp_path):
-    """Create a SQLite backend for testing.
-
-    Replaces duplicate fixtures in: test_backend_sqlite.py, test_repository_backend.py
-    """
+    """Create a SQLite backend for testing."""
 
     from polylogue.storage.backends import SQLiteBackend
 

@@ -1,6 +1,6 @@
 # Polylogue Architecture
 
-**Version**: Post-refactoring (2026-01-23)
+**Version**: Post-refactoring (2026-02-16)
 **Status**: Production-ready layered architecture (Priorities 1-4 complete)
 
 This document describes Polylogue's architecture after the comprehensive refactoring completed in January 2026. The codebase follows a **layered architecture** with clear separation of concerns, **protocol-based abstraction**, and **dependency injection** throughout.
@@ -195,8 +195,10 @@ polylogue/
 │
 ├── storage/                  # Storage Layer
 │   ├── backends/            # Backend implementations
-│   │   ├── sqlite.py       # Sync utilities, row mappers, connection helpers
-│   │   └── async_sqlite.py # SQLiteBackend (async-first, aiosqlite)
+│   │   ├── __init__.py     # Factory (create_backend)
+│   │   ├── async_sqlite.py # SQLiteBackend (async-first, aiosqlite)
+│   │   ├── connection.py   # Sync utilities, connection pool, open_connection
+│   │   └── schema.py       # DDL, migrations
 │   ├── search_providers/    # Search implementations
 │   │   ├── fts5.py         # FTS5Provider
 │   │   ├── sqlite_vec.py   # sqlite-vec vector search

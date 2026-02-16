@@ -14,13 +14,12 @@ Polylogue uses a staged pipeline that ingests provider exports, stores them in S
   - `chatgpt.py` — ChatGPT UUID graph traversal (`mapping` field)
   - `claude.py` — Claude AI (JSONL `chat_messages`) and Claude Code (JSON with `parentUuid`/`sessionId`)
   - `codex.py` — OpenAI Codex CLI sessions
-  - `drive.py` — Gemini `chunkedPrompt.chunks`
   - `base.py` — Common structures (`ParsedConversation`, `ParsedMessage`, `ParsedAttachment`, `normalize_role`)
-- `polylogue/sources/drive.py` downloads Drive payloads via the OAuth-authenticated `DriveClient`.
+- `polylogue/sources/drive.py` downloads Drive payloads via the OAuth-authenticated `DriveClient` and parses Gemini `chunkedPrompt.chunks`.
 
 ## Storage
 
-- `polylogue/pipeline/ingest.py` prepares bundles with NFC-normalized content hashing for idempotent storage.
+- `polylogue/pipeline/prepare.py` prepares bundles with NFC-normalized content hashing for idempotent storage.
 - `polylogue/storage/store.py` writes conversations/messages/attachments into SQLite under `_WRITE_LOCK`.
 - `polylogue/storage/repository.py` coordinates writes via `ConversationRepository`.
 - Conversations are deduplicated based on content hash (SHA-256).
@@ -33,7 +32,7 @@ Polylogue uses a staged pipeline that ingests provider exports, stores them in S
 ## Indexing
 
 - `polylogue/storage/index.py` builds the SQLite FTS5 index for full-text search.
-- `polylogue/storage/search_providers/qdrant.py` handles optional vector indexing via Qdrant.
+- `polylogue/storage/search_providers/sqlite_vec.py` handles optional vector indexing via sqlite-vec.
 
 ## Pipeline Orchestration
 

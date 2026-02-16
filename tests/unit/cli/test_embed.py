@@ -1,13 +1,9 @@
-"""Tests for embed and run commands with comprehensive coverage.
+"""Tests for embed and run commands.
 
-This file covers previously uncovered areas in:
-- polylogue/cli/commands/embed.py (44% coverage, 69 uncovered lines)
-- polylogue/cli/commands/run.py (56% coverage, 75 uncovered lines)
-
-Test patterns:
-- Internal functions tested directly (easier to mock)
-- Click commands tested via CliRunner
-- Context managers and database operations mocked
+Covers:
+- polylogue/cli/commands/embed.py
+- polylogue/cli/commands/run.py
+- Event handlers (NotificationHandler, ExecHandler, WebhookHandler)
 """
 
 from __future__ import annotations
