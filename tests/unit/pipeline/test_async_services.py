@@ -175,7 +175,7 @@ class TestRenderService:
     @pytest.mark.asyncio
     async def test_render_success(self):
         """Renders conversations, increments count."""
-        renderer = MagicMock()
+        renderer = AsyncMock()
         renderer.render.return_value = None  # Success
         service = RenderService(renderer=renderer, render_root=Path("/tmp/render"))
 
@@ -188,9 +188,9 @@ class TestRenderService:
     @pytest.mark.asyncio
     async def test_render_failure_tracked(self):
         """Render errors collected in failures list."""
-        renderer = MagicMock()
+        renderer = AsyncMock()
 
-        def render_side_effect(conv_id, root):
+        async def render_side_effect(conv_id, root):
             if conv_id == "conv-bad":
                 raise ValueError("render exploded")
 
@@ -211,7 +211,7 @@ class TestRenderService:
         current_concurrent = 0
         lock = asyncio.Lock()
 
-        renderer = MagicMock()
+        renderer = AsyncMock()
 
         async def tracked_render(conv_id, root):
             nonlocal max_concurrent, current_concurrent
@@ -222,13 +222,12 @@ class TestRenderService:
             async with lock:
                 current_concurrent -= 1
 
-        # Patch asyncio.to_thread to use our tracked function
-        with patch("polylogue.pipeline.services.rendering.asyncio.to_thread", side_effect=tracked_render):
-            service = RenderService(renderer=renderer, render_root=Path("/tmp/render"))
-            await service.render_conversations(
-                [f"conv-{i}" for i in range(10)],
-                max_workers=2,
-            )
+        renderer.render.side_effect = tracked_render
+        service = RenderService(renderer=renderer, render_root=Path("/tmp/render"))
+        await service.render_conversations(
+            [f"conv-{i}" for i in range(10)],
+            max_workers=2,
+        )
 
         assert max_concurrent <= 2
 
