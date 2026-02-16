@@ -487,26 +487,6 @@ class ConversationBuilder:
             )
         return self.conv
 
-    def build(self):
-        """Save to database and return a full Conversation domain object.
-
-        Uses asyncio.run() internally — only call from sync (non-async) context.
-        For async tests, use ``await builder.async_build()`` instead.
-        """
-        import asyncio
-
-        from polylogue.storage.backends.async_sqlite import SQLiteBackend
-        from polylogue.storage.repository import ConversationRepository
-
-        self.save()
-        backend = SQLiteBackend(db_path=self.db_path)
-        repo = ConversationRepository(backend=backend)
-
-        async def _get():
-            return await repo.get(self.conv.conversation_id)
-
-        return asyncio.run(_get())
-
     async def async_build(self):
         """Save to database and return a full Conversation domain object (async).
 

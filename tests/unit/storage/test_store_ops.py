@@ -7,8 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pytest
 from pydantic import ValidationError
 
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.sqlite import (
-    SQLiteBackend,
     default_db_path,
     open_connection,
 )
