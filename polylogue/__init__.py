@@ -3,27 +3,24 @@
 This library provides tools for parsing, storing, and querying AI conversation
 exports from ChatGPT, Claude, Codex, Gemini, and other AI assistants.
 
-Example:
+Example::
+
     from polylogue import Polylogue
 
-    # Initialize
-    archive = Polylogue(archive_root="~/.polylogue")
+    async with Polylogue() as archive:
+        # Statistics
+        stats = await archive.stats()
+        print(f"{stats.conversation_count} conversations")
 
-    # Parse files
-    result = archive.parse_file("chatgpt_export.json")
-    print(f"Imported {result.counts['conversations']} conversations")
+        # Query conversations
+        convs = await archive.filter().provider("claude").since("2024-01-01").list()
+        for conv in convs:
+            print(f"{conv.display_title}: {conv.message_count} messages")
 
-    # Query conversations
-    conv = archive.get_conversation("claude:abc")
-    if conv:
-        for pair in conv.substantive_only().iter_pairs():
-            print(f"Q: {pair.user.text[:50]}")
-            print(f"A: {pair.assistant.text[:50]}")
-
-    # Search
-    results = archive.search("python error handling")
-    for hit in results.hits:
-        print(f"{hit.title}: {hit.snippet}")
+        # Search
+        results = await archive.search("python error handling")
+        for conv in results:
+            print(conv.display_title)
 """
 
 # High-level API
