@@ -1,8 +1,7 @@
-"""Parse preparation logic."""
+"""Async parse preparation logic."""
 
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -18,46 +17,62 @@ from polylogue.pipeline.ids import (
 from polylogue.pipeline.ids import (
     message_id as make_message_id,
 )
-from polylogue.sources import ParsedConversation, RecordBundle, save_bundle
+from polylogue.sources.source import RecordBundle, SaveResult
 from polylogue.storage.store import AttachmentRecord, ConversationRecord, ExistingConversation, MessageRecord
 from polylogue.types import AttachmentId, ConversationId, MessageId
 
 if TYPE_CHECKING:
-    from polylogue.storage.repository import ConversationRepository
+    from polylogue.storage.async_repository import AsyncConversationRepository
+    from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
 
 
-def prepare_records(
-    convo: ParsedConversation,
+async def async_prepare_records(
+    convo,
     source_name: str,
     *,
     archive_root: Path,
-    conn: sqlite3.Connection | None = None,
-    repository: ConversationRepository | None = None,
+    backend: AsyncSQLiteBackend | None = None,
+    repository: AsyncConversationRepository | None = None,
     raw_id: str | None = None,
 ) -> tuple[str, dict[str, int], bool]:
+    """Async version of prepare_records for converting ParsedConversation to records.
+
+    Args:
+        convo: ParsedConversation to prepare
+        source_name: Name of the source
+        archive_root: Root directory for archived conversations
+        backend: AsyncSQLiteBackend for database lookups
+        repository: AsyncConversationRepository for saving
+        raw_id: Optional raw conversation ID
+
+    Returns:
+        Tuple of (conversation_id, result_counts, content_changed)
+    """
     # Create default repository if none provided
     if repository is None:
-        from polylogue.storage.backends.sqlite import create_default_backend
-        from polylogue.storage.repository import ConversationRepository
+        from polylogue.storage.async_repository import AsyncConversationRepository
+        from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
 
-        backend = create_default_backend()
-        repository = ConversationRepository(backend=backend)
+        backend = AsyncSQLiteBackend()
+        repository = AsyncConversationRepository(backend=backend)
 
     content_hash = conversation_content_hash(convo)
 
-    # Use the passed connection for lookups
+    # Use the passed backend for lookups
     existing = None
-    if conn:
-        row = conn.execute(
-            """
-            SELECT conversation_id, content_hash
-            FROM conversations
-            WHERE provider_name = ? AND provider_conversation_id = ?
-            ORDER BY updated_at DESC, rowid DESC
-            LIMIT 1
-            """,
-            (convo.provider_name, convo.provider_conversation_id),
-        ).fetchone()
+    if backend:
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT conversation_id, content_hash
+                FROM conversations
+                WHERE provider_name = ? AND provider_conversation_id = ?
+                ORDER BY updated_at DESC, rowid DESC
+                LIMIT 1
+                """,
+                (convo.provider_name, convo.provider_conversation_id),
+            )
+            row = await cursor.fetchone()
         if row:
             existing = ExistingConversation(conversation_id=row["conversation_id"], content_hash=row["content_hash"])
 
@@ -95,17 +110,19 @@ def prepare_records(
     messages: list[MessageRecord] = []
     message_ids: dict[str, MessageId] = {}
 
-    # Retrieve existing message ID mapping using the same connection
+    # Retrieve existing message ID mapping using the same backend
     existing_message_ids: dict[str, MessageId] = {}
-    if conn:
-        rows = conn.execute(
-            """
-            SELECT provider_message_id, message_id
-            FROM messages
-            WHERE conversation_id = ? AND provider_message_id IS NOT NULL
-            """,
-            (cid,),
-        ).fetchall()
+    if backend:
+        async with backend._get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT provider_message_id, message_id
+                FROM messages
+                WHERE conversation_id = ? AND provider_message_id IS NOT NULL
+                """,
+                (cid,),
+            )
+            rows = await cursor.fetchall()
         existing_message_ids = {
             str(row["provider_message_id"]): MessageId(row["message_id"]) for row in rows if row["provider_message_id"]
         }
@@ -167,7 +184,7 @@ def prepare_records(
             )
         )
 
-    result = save_bundle(
+    result = await async_save_bundle(
         RecordBundle(
             conversation=conversation_record,
             messages=messages,
@@ -187,3 +204,30 @@ def prepare_records(
         },
         changed,
     )
+
+
+async def async_save_bundle(
+    bundle: RecordBundle,
+    repository: AsyncConversationRepository,
+) -> SaveResult:
+    """Async version of save_bundle for persisting records to repository.
+
+    Args:
+        bundle: Bundle containing conversation, messages, and attachments
+        repository: AsyncConversationRepository to save records to
+
+    Returns:
+        SaveResult with counts of imported/skipped items
+    """
+    counts = await repository.save_conversation(
+        conversation=bundle.conversation,
+        messages=bundle.messages,
+        attachments=bundle.attachments,
+    )
+    return SaveResult(**counts)
+
+
+__all__ = [
+    "async_prepare_records",
+    "async_save_bundle",
+]

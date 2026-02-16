@@ -25,7 +25,7 @@ from polylogue.pipeline.enrichment import (
     enrich_content_blocks,
     enrich_message_metadata,
 )
-from polylogue.pipeline.async_runner import async_latest_run, async_run_sources, plan_sources
+from polylogue.pipeline.runner import latest_run, run_sources, plan_sources
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
@@ -46,7 +46,7 @@ from tests.infra.helpers import (
     "with_plan",
     [True, False],
 )
-def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
+async def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
     """plan_sources and run_sources work together or independently."""
     inbox = tmp_path / "inbox"
     source_file = (
@@ -63,9 +63,9 @@ def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
     if with_plan:
         plan = plan_sources(config)
         assert plan.counts["conversations"] == 1
-        result = asyncio.run(async_run_sources(config=config, stage="all", plan=plan))
+        result = await run_sources(config=config, stage="all", plan=plan)
     else:
-        result = asyncio.run(async_run_sources(config=config, stage="all"))
+        result = await run_sources(config=config, stage="all")
 
     assert result.counts["conversations"] == 1
     run_dir = config.archive_root / "runs"
@@ -79,7 +79,7 @@ def test_plan_and_run_sources(workspace_env, tmp_path, with_plan):
         ("single_source_chatgpt", "render", 0, True),
     ],
 )
-def test_run_sources_filtered_by_stage(workspace_env, tmp_path, setup_type, stage, expected_conv_count, check_render):
+async def test_run_sources_filtered_by_stage(workspace_env, tmp_path, setup_type, stage, expected_conv_count, check_render):
     """run_sources filters by stage and source correctly."""
     if setup_type == "multi_source_filter":
         inbox = (
@@ -93,14 +93,14 @@ def test_run_sources_filtered_by_stage(workspace_env, tmp_path, setup_type, stag
             Source(name="source-a", path=inbox / "a.json"),
             Source(name="source-b", path=inbox / "b.json"),
         ]
-        result = asyncio.run(async_run_sources(config=config, stage=stage, source_names=["source-a"]))
+        result = await run_sources(config=config, stage=stage, source_names=["source-a"])
     else:  # single_source_chatgpt
         inbox = tmp_path / "inbox"
         source_file = ChatGPTExportBuilder("conv-chatgpt").add_node("user", "hello").write_to(inbox / "conversation.json")
         config = get_config()
         config.sources = [Source(name="inbox", path=source_file)]
-        asyncio.run(async_run_sources(config=config, stage="parse", source_names=["inbox"]))
-        result = asyncio.run(async_run_sources(config=config, stage=stage, source_names=["inbox"]))
+        await run_sources(config=config, stage="parse", source_names=["inbox"])
+        result = await run_sources(config=config, stage=stage, source_names=["inbox"])
 
     assert result.counts["conversations"] == expected_conv_count
     if check_render:
@@ -115,7 +115,7 @@ def test_run_sources_filtered_by_stage(workspace_env, tmp_path, setup_type, stag
         ("title_changes", True, False, True, True),
     ],
 )
-def test_run_rerenders_based_on_changes(workspace_env, tmp_path, scenario, title_change, content_change, expect_mtime_diff, check_title):
+async def test_run_rerenders_based_on_changes(workspace_env, tmp_path, scenario, title_change, content_change, expect_mtime_diff, check_title):
     """run rerenders when content or title changes."""
     inbox = tmp_path / "inbox"
     source_file = inbox / "conversation.json"
@@ -128,7 +128,7 @@ def test_run_rerenders_based_on_changes(workspace_env, tmp_path, scenario, title
     config = get_config()
     config.sources = [Source(name="inbox", path=source_file)]
 
-    asyncio.run(async_run_sources(config=config, stage="all"))
+    await run_sources(config=config, stage="all")
     convo_path = next(config.render_root.rglob("conversation.md"))
     first_mtime = convo_path.stat().st_mtime
     original = convo_path.read_text(encoding="utf-8") if check_title else ""
@@ -143,7 +143,7 @@ def test_run_rerenders_based_on_changes(workspace_env, tmp_path, scenario, title
     if expect_mtime_diff:
         time.sleep(0.01)
 
-    asyncio.run(async_run_sources(config=config, stage="all"))
+    await run_sources(config=config, stage="all")
     second_mtime = convo_path.stat().st_mtime
 
     if expect_mtime_diff:
@@ -161,7 +161,7 @@ def test_run_rerenders_based_on_changes(workspace_env, tmp_path, scenario, title
     "test_type",
     ["index_filters"],
 )
-def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch, test_type):
+async def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch, test_type):
     """run_sources filters index by source."""
     inbox = (
         InboxBuilder(tmp_path / "inbox")
@@ -176,7 +176,7 @@ def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch
         Source(name="source-b", path=inbox / "b.json"),
     ]
 
-    asyncio.run(async_run_sources(config=config, stage="parse"))
+    await run_sources(config=config, stage="parse")
 
     id_by_source = {}
     with open_connection(None) as conn:
@@ -188,20 +188,20 @@ def test_run_index_filters_selected_sources(workspace_env, tmp_path, monkeypatch
             id_by_source[name] = row["conversation_id"]
 
     update_calls = []
-    from polylogue.pipeline.services.async_indexing import AsyncIndexService
+    from polylogue.pipeline.services.indexing import IndexService
 
     async def fake_update_method(self, ids):
         update_calls.append(list(ids))
         return True
 
-    monkeypatch.setattr(AsyncIndexService, "update_index", fake_update_method)
-    asyncio.run(async_run_sources(config=config, stage="index", source_names=["source-b"]))
+    monkeypatch.setattr(IndexService, "update_index", fake_update_method)
+    await run_sources(config=config, stage="index", source_names=["source-b"])
     assert update_calls == [[id_by_source["source-b"]]]
 
 
 
 
-def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypatch):
+async def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypatch):
     """run_sources writes unique timestamped report files."""
     inbox = tmp_path / "inbox"
     source_file = GenericConversationBuilder("conv1").add_user("hello").write_to(inbox / "conversation.json")
@@ -209,35 +209,35 @@ def test_run_writes_unique_report_files(workspace_env, tmp_path, monkeypatch):
     config = get_config()
     config.sources = [Source(name="inbox", path=source_file)]
 
-    import polylogue.pipeline.async_runner as runner_mod
+    import polylogue.pipeline.runner as runner_mod
 
     fixed_time = 1_700_000_000
     monkeypatch.setattr(runner_mod.time, "time", lambda: fixed_time)
     monkeypatch.setattr(runner_mod.time, "perf_counter", lambda: 0.0)
 
-    asyncio.run(async_run_sources(config=config, stage="all"))
-    asyncio.run(async_run_sources(config=config, stage="all"))
+    await run_sources(config=config, stage="all")
+    await run_sources(config=config, stage="all")
 
     run_dir = config.archive_root / "runs"
     runs = list(run_dir.glob(f"run-{fixed_time}-*.json"))
     assert len(runs) == 2
 
 
-# async_latest_run() tests
+# latest_run() tests
 
 
 @pytest.mark.parametrize(
     "setup_type",
     ["parsed_json", "null_columns"],
 )
-def test_latest_run_parsing(workspace_env, tmp_path, setup_type):
-    """async_latest_run() parses JSON and handles NULL columns."""
+async def test_latest_run_parsing(workspace_env, tmp_path, setup_type):
+    """await latest_run() parses JSON and handles NULL columns."""
     if setup_type == "parsed_json":
         inbox = tmp_path / "inbox"
         (GenericConversationBuilder("conv-latest-run").add_user("test").write_to(inbox / "conversation.json"))
         config = get_config()
         config.sources = [Source(name="inbox", path=inbox)]
-        asyncio.run(async_run_sources(config=config, stage="all"))
+        await run_sources(config=config, stage="all")
     else:  # null_columns
         with open_connection(None) as conn:
             conn.execute(
@@ -249,7 +249,7 @@ def test_latest_run_parsing(workspace_env, tmp_path, setup_type):
             )
             conn.commit()
 
-    result = asyncio.run(async_latest_run())
+    result = await latest_run()
     assert result is not None
 
     if setup_type == "parsed_json":
@@ -372,7 +372,7 @@ class TestRunSyncOncePlainProgress:
         """_run_sync_once handles plain and rich mode progress."""
         env = request.getfixturevalue(env_fixture)
 
-        with patch("polylogue.cli.commands.run.async_run_sources", new_callable=AsyncMock) as mock_run:
+        with patch("polylogue.cli.commands.run.run_sources", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = mock_run_result
             mock_config = MagicMock()
 
@@ -585,18 +585,21 @@ class TestParsingService:
     """Test ParsingService parsing and batching."""
 
     @pytest.mark.parametrize("backend_initialized,provider", [(False, None), (True, "claude")])
-    def test_parse_from_raw(self, mock_backend, backend_initialized, provider):
+    async def test_parse_from_raw(self, mock_backend, backend_initialized, provider):
         """parse_from_raw validates backend and filters by provider."""
         repo = MagicMock()
         repo._backend = mock_backend if backend_initialized else None
         service = ParsingService(repository=repo, archive_root=Path("/tmp"), config=MagicMock())
         if not backend_initialized:
             with pytest.raises(RuntimeError, match="backend is not initialized"):
-                service.parse_from_raw(raw_ids=["raw-1"])
+                await service.parse_from_raw(raw_ids=["raw-1"])
         else:
-            mock_backend.iter_raw_conversations.return_value = [MagicMock(raw_id=f"raw-{i}", provider_name=p) for i, p in enumerate(["claude", "chatgpt"])]
-            with patch.object(service, "_process_raw_batch"):
-                service.parse_from_raw(provider=provider)
+            async def async_iter():
+                for i, p in enumerate(["claude", "chatgpt"]):
+                    yield MagicMock(raw_id=f"raw-{i}", provider_name=p)
+            mock_backend.iter_raw_conversations.return_value = async_iter()
+            with patch.object(service, "_process_raw_batch", new_callable=AsyncMock):
+                await service.parse_from_raw(provider=provider)
                 assert mock_backend.iter_raw_conversations.call_args[1]["provider"] == provider
 
     @pytest.mark.parametrize(
@@ -607,7 +610,7 @@ class TestParsingService:
             ("string", '{"id": "conv-789"}', "gemini", False),
         ],
     )
-    def test_parse_raw_record_content_types(self, mock_backend, format_type, content, provider, is_bytes):
+    async def test_parse_raw_record_content_types(self, mock_backend, format_type, content, provider, is_bytes):
         """_parse_raw_record handles JSONL, JSON, and string content."""
         repo = MagicMock()
         repo._backend = mock_backend
@@ -618,7 +621,7 @@ class TestParsingService:
         raw_record.raw_id = "raw-123"
         with patch("polylogue.pipeline.services.parsing._parse_json_payload") as mock_parse:
             mock_parse.return_value = [] if format_type == "string" else [ParsedConversation(provider_name=provider, provider_conversation_id=f"conv-{format_type}", messages=[])]
-            service._parse_raw_record(raw_record)
+            await service._parse_raw_record(raw_record)
             mock_parse.assert_called_once()
 
 
