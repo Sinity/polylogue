@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Config, Source
-from polylogue.pipeline.async_runner import async_run_sources
+from polylogue.pipeline.runner import run_sources
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.storage.backends.sqlite import SQLiteBackend
 from polylogue.storage.repository import ConversationRepository
@@ -30,7 +30,7 @@ from polylogue.storage.repository import ConversationRepository
 
 
 @pytest.fixture
-def temp_config_and_repo(tmp_path):
+async def temp_config_and_repo(tmp_path):
     """Create temporary config and storage repositories for testing."""
     archive_root = tmp_path / "archive"
     archive_root.mkdir(parents=True, exist_ok=True)
@@ -79,7 +79,7 @@ def gemini_sample_source(synthetic_source):
 
 
 @pytest.mark.parametrize("provider", ["chatgpt", "claude-ai", "claude-code", "codex", "gemini"])
-def test_full_workflow_per_provider(provider, synthetic_source, temp_config_and_repo):
+async def test_full_workflow_per_provider(provider, synthetic_source, temp_config_and_repo):
     """Import → Store → Query → Render for each provider."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -91,7 +91,7 @@ def test_full_workflow_per_provider(provider, synthetic_source, temp_config_and_
         archive_root=archive_root,
         config=config,
     )
-    result = service.parse_sources([source])
+    result = await service.parse_sources([source])
 
     # Build FTS index for search tests (INDEX stage of pipeline)
     from polylogue.storage.backends.sqlite import open_connection
@@ -107,7 +107,7 @@ def test_full_workflow_per_provider(provider, synthetic_source, temp_config_and_
     # 2. STORE: Query back from database
     from polylogue.storage.search import search_messages
 
-    convs = conv_repo.list()
+    convs = await conv_repo.list()
     provider_names = {"claude-ai": "claude"}  # provider name mapping in parser
     expected_provider = provider_names.get(provider, provider)
     convs = [c for c in convs if c.provider == expected_provider]
@@ -148,7 +148,7 @@ def test_full_workflow_per_provider(provider, synthetic_source, temp_config_and_
 
 
 @pytest.mark.parametrize("format", ["markdown", "html"])
-def test_render_formats(format, temp_config_and_repo, chatgpt_sample_source):
+async def test_render_formats(format, temp_config_and_repo, chatgpt_sample_source):
     """Verify each output format works end-to-end."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -158,10 +158,10 @@ def test_render_formats(format, temp_config_and_repo, chatgpt_sample_source):
         archive_root=archive_root,
         config=config,
     )
-    service.parse_sources([chatgpt_sample_source])
+    await service.parse_sources([chatgpt_sample_source])
 
     # Get conversation
-    convs = conv_repo.list()
+    convs = await conv_repo.list()
     convs = [c for c in convs if c.provider == "chatgpt"]
     assert len(convs) > 0
 
@@ -189,7 +189,7 @@ def test_render_formats(format, temp_config_and_repo, chatgpt_sample_source):
 # =============================================================================
 
 
-def test_incremental_sync_no_duplicates(temp_config_and_repo, chatgpt_sample_source):
+async def test_incremental_sync_no_duplicates(temp_config_and_repo, chatgpt_sample_source):
     """Syncing same source twice doesn't create duplicates."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -200,22 +200,22 @@ def test_incremental_sync_no_duplicates(temp_config_and_repo, chatgpt_sample_sou
     )
 
     # First sync
-    result1 = service.parse_sources([chatgpt_sample_source])
+    result1 = await service.parse_sources([chatgpt_sample_source])
     count1 = result1.counts["conversations"]
 
     # Second sync (should deduplicate)
-    result2 = service.parse_sources([chatgpt_sample_source])
+    result2 = await service.parse_sources([chatgpt_sample_source])
     count2 = result2.counts["conversations"]
 
     # Second sync should add 0 conversations
     assert count2 == 0, f"Expected 0 new convs, got {count2}"
 
     # Total count should match first sync
-    all_convs = conv_repo.list()
+    all_convs = await conv_repo.list()
     assert len(all_convs) == count1
 
 
-def test_incremental_sync_with_updates(temp_config_and_repo):
+async def test_incremental_sync_with_updates(temp_config_and_repo):
     """Modified conversations are updated, not duplicated."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -256,7 +256,7 @@ def test_incremental_sync_with_updates(temp_config_and_repo):
             archive_root=archive_root,
             config=config,
         )
-        service.parse_sources([source_v1])
+        await service.parse_sources([source_v1])
 
         # Modify conversation
         with open(source_path_v1, "w") as f:
@@ -266,10 +266,10 @@ def test_incremental_sync_with_updates(temp_config_and_repo):
             json.dump(conv_v2, f)
 
         # Second sync
-        service.parse_sources([source_v1])
+        await service.parse_sources([source_v1])
 
         # Should still have 1 conversation
-        all_convs = conv_repo.list()
+        all_convs = await conv_repo.list()
         assert len(all_convs) == 1
 
         # Should have updated content
@@ -281,7 +281,7 @@ def test_incremental_sync_with_updates(temp_config_and_repo):
         source_path_v1.unlink()
 
 
-def test_sync_handles_deleted_conversations(temp_config_and_repo):
+async def test_sync_handles_deleted_conversations(temp_config_and_repo):
     """Conversations removed from source are NOT deleted from archive.
 
     This is expected behavior - archive is append-only.
@@ -330,16 +330,16 @@ def test_sync_handles_deleted_conversations(temp_config_and_repo):
             archive_root=archive_root,
             config=config,
         )
-        service.parse_sources([Source(name="s1", path=path1), Source(name="s2", path=path2)])
+        await service.parse_sources([Source(name="s1", path=path1), Source(name="s2", path=path2)])
 
         # Should have 2 conversations
-        assert len(conv_repo.list()) == 2
+        assert len(await conv_repo.list()) == 2
 
         # Remove second source, sync again
-        service.parse_sources([Source(name="s1", path=path1)])
+        await service.parse_sources([Source(name="s1", path=path1)])
 
         # Should STILL have 2 conversations (archive is append-only)
-        assert len(conv_repo.list()) == 2
+        assert len(await conv_repo.list()) == 2
 
     finally:
         path1.unlink()
@@ -351,7 +351,7 @@ def test_sync_handles_deleted_conversations(temp_config_and_repo):
 # =============================================================================
 
 
-def test_multi_source_concurrent_sync(temp_config_and_repo, chatgpt_sample_source, gemini_sample_source):
+async def test_multi_source_concurrent_sync(temp_config_and_repo, chatgpt_sample_source, gemini_sample_source):
     """Multiple sources can sync concurrently."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -363,10 +363,10 @@ def test_multi_source_concurrent_sync(temp_config_and_repo, chatgpt_sample_sourc
         archive_root=archive_root,
         config=config,
     )
-    service.parse_sources(sources)
+    await service.parse_sources(sources)
 
     # Should have conversations from both
-    all_convs = conv_repo.list()
+    all_convs = await conv_repo.list()
     assert len(all_convs) >= 2
 
     # Each provider should be present
@@ -374,7 +374,7 @@ def test_multi_source_concurrent_sync(temp_config_and_repo, chatgpt_sample_sourc
     assert len(providers) >= 2
 
 
-def test_multi_source_isolated_namespaces(temp_config_and_repo):
+async def test_multi_source_isolated_namespaces(temp_config_and_repo):
     """Each source can have different conversations."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -419,7 +419,7 @@ def test_multi_source_isolated_namespaces(temp_config_and_repo):
             archive_root=archive_root,
             config=config,
         )
-        service.parse_sources(
+        await service.parse_sources(
             [
                 Source(name="source1", path=path1),
                 Source(name="source2", path=path2),
@@ -427,7 +427,7 @@ def test_multi_source_isolated_namespaces(temp_config_and_repo):
         )
 
         # Should have 2 conversations from different sources
-        all_convs = conv_repo.list()
+        all_convs = await conv_repo.list()
         assert len(all_convs) == 2
 
         titles = {c.title for c in all_convs}
@@ -444,7 +444,7 @@ def test_multi_source_isolated_namespaces(temp_config_and_repo):
 # =============================================================================
 
 
-def test_sync_with_malformed_file_skips_gracefully(temp_config_and_repo):
+async def test_sync_with_malformed_file_skips_gracefully(temp_config_and_repo):
     """Malformed files are skipped, don't crash entire sync."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -462,7 +462,7 @@ def test_sync_with_malformed_file_skips_gracefully(temp_config_and_repo):
         )
 
         # Should not crash
-        result = service.parse_sources([source])
+        result = await service.parse_sources([source])
 
         # Should report 0 conversations
         assert result.counts["conversations"] == 0
@@ -471,7 +471,7 @@ def test_sync_with_malformed_file_skips_gracefully(temp_config_and_repo):
         bad_path.unlink()
 
 
-def test_sync_with_missing_file_reports_error(temp_config_and_repo):
+async def test_sync_with_missing_file_reports_error(temp_config_and_repo):
     """Missing source files are reported, don't crash."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -483,13 +483,13 @@ def test_sync_with_missing_file_reports_error(temp_config_and_repo):
     )
 
     # Should not crash
-    result = service.parse_sources([source])
+    result = await service.parse_sources([source])
 
     # Should report 0 conversations
     assert result.counts["conversations"] == 0
 
 
-def test_sync_partial_success_with_mixed_sources(temp_config_and_repo, chatgpt_sample_source):
+async def test_sync_partial_success_with_mixed_sources(temp_config_and_repo, chatgpt_sample_source):
     """If some sources fail, successful ones still sync."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -504,13 +504,13 @@ def test_sync_partial_success_with_mixed_sources(temp_config_and_repo, chatgpt_s
         archive_root=archive_root,
         config=config,
     )
-    result = service.parse_sources(sources)
+    result = await service.parse_sources(sources)
 
     # Good source should succeed
     assert result.counts["conversations"] > 0
 
     # Should have conversations from good source
-    convs = conv_repo.list()
+    convs = await conv_repo.list()
     convs = [c for c in convs if c.provider == "chatgpt"]
     assert len(convs) > 0
 
@@ -520,7 +520,7 @@ def test_sync_partial_success_with_mixed_sources(temp_config_and_repo, chatgpt_s
 # =============================================================================
 
 
-def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_source):
+async def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_source):
     """Search returns correct conversations for basic queries."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -529,7 +529,7 @@ def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_source
         archive_root=archive_root,
         config=config,
     )
-    service.parse_sources([chatgpt_sample_source])
+    await service.parse_sources([chatgpt_sample_source])
 
     # Build search index
     from polylogue.storage.backends.sqlite import open_connection
@@ -539,7 +539,7 @@ def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_source
         rebuild_index(conn)
 
     # Get all conversations
-    all_convs = conv_repo.list()
+    all_convs = await conv_repo.list()
     assert len(all_convs) > 0
 
     # Find a message with enough words for a meaningful search query
@@ -565,7 +565,7 @@ def test_search_accuracy_basic_terms(temp_config_and_repo, chatgpt_sample_source
     assert target_conv.id in result_ids, f"Failed to find conversation with '{search_term}'"
 
 
-def test_search_with_special_characters(temp_config_and_repo):
+async def test_search_with_special_characters(temp_config_and_repo):
     """Search handles special FTS5 characters correctly."""
     config, storage_repo, conv_repo, archive_root, db_path = temp_config_and_repo
 
@@ -601,7 +601,7 @@ def test_search_with_special_characters(temp_config_and_repo):
             archive_root=archive_root,
             config=config,
         )
-        service.parse_sources([Source(name="test", path=path)])
+        await service.parse_sources([Source(name="test", path=path)])
 
         # Build search index
         from polylogue.storage.backends.sqlite import open_connection
@@ -637,30 +637,30 @@ def test_search_with_special_characters(temp_config_and_repo):
 # =============================================================================
 
 
-def test_pipeline_runner_e2e(workspace_env, chatgpt_sample_source):
-    """async_run_sources orchestrates full workflow."""
+async def test_pipeline_runner_e2e(workspace_env, chatgpt_sample_source):
+    """run_sources orchestrates full workflow."""
     from polylogue.config import get_config
 
     config = get_config()
     config.sources = [chatgpt_sample_source]
 
-    # Use async_run_sources function
-    result = asyncio.run(async_run_sources(config=config, source_names=[chatgpt_sample_source.name]))
+    # Use run_sources function
+    result = await run_sources(config=config, source_names=[chatgpt_sample_source.name])
 
     # Verify data was processed
     assert result is not None
     assert result.counts["conversations"] > 0
 
 
-def test_pipeline_runner_with_preview_mode(workspace_env, chatgpt_sample_source):
-    """async_run_sources with stage control."""
+async def test_pipeline_runner_with_preview_mode(workspace_env, chatgpt_sample_source):
+    """run_sources with stage control."""
     from polylogue.config import get_config
 
     config = get_config()
     config.sources = [chatgpt_sample_source]
 
     # Run parse stage
-    result = asyncio.run(async_run_sources(config=config, stage="parse", source_names=[chatgpt_sample_source.name]))
+    result = await run_sources(config=config, stage="parse", source_names=[chatgpt_sample_source.name])
 
     # Should report results
     assert result is not None

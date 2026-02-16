@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 from polylogue.assets import asset_path
 from polylogue.storage.backends.sqlite import open_connection
-from polylogue.storage.backends.async_sqlite import AsyncSQLiteBackend
+from polylogue.storage.backends.async_sqlite import SQLiteBackend
 
 
 @dataclass
@@ -52,7 +52,7 @@ class ConversationFormatter:
         # Or convert to HTML in HTMLRenderer
     """
 
-    def __init__(self, archive_root: Path, db_path: Path | None = None, backend: AsyncSQLiteBackend | None = None):
+    def __init__(self, archive_root: Path, db_path: Path | None = None, backend: SQLiteBackend | None = None):
         """Initialize the formatter.
 
         Args:
@@ -161,7 +161,7 @@ class ConversationFormatter:
             ValueError: If conversation not found
         """
         # Use provided backend or create one
-        backend = self.backend or AsyncSQLiteBackend(db_path=self.db_path)
+        backend = self.backend or SQLiteBackend(db_path=self.db_path)
 
         # Query database
         async with backend._get_connection() as conn:
@@ -383,4 +383,4 @@ def format_conversation_markdown(conv: Conversation) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-__all__ = ["ConversationFormatter", "FormattedConversation", "format_conversation_markdown", "async_format"]
+__all__ = ["ConversationFormatter", "FormattedConversation", "format_conversation_markdown"]

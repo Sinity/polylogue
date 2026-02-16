@@ -215,8 +215,8 @@ class ShowcaseRunner:
             # Reset singletons so they pick up new env vars
             from polylogue import services
             services.reset()
-            services._async_backend = None
-            services._async_repository = None
+            services._backend = None
+            services._repository = None
 
             # Build config with fixture sources
             from polylogue.config import Config
@@ -234,8 +234,8 @@ class ShowcaseRunner:
             )
 
             # Run the async pipeline
-            from polylogue.pipeline.async_runner import async_run_sources
-            asyncio.run(async_run_sources(
+            from polylogue.pipeline.runner import run_sources
+            asyncio.run(run_sources(
                 config=config,
                 stage="all",
                 plan=None,
@@ -274,8 +274,8 @@ class ShowcaseRunner:
 
         # Reset singletons between exercises to ensure clean state
         services.reset()
-        services._async_backend = None
-        services._async_repository = None
+        services._backend = None
+        services._repository = None
 
         # Build env vars for CliRunner
         env = dict(self._env_vars) if self._env_vars else {}

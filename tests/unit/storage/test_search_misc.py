@@ -472,21 +472,21 @@ class TestWriteAsset:
 class TestRawConversationEdgeCases:
     """Tests for raw conversation storage and edge cases."""
 
-    def test_raw_conversation_with_all_fields(self, tmp_path):
+    async def test_raw_conversation_with_all_fields(self, tmp_path):
         """Raw conversation records can be saved with all optional fields."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
         # First, create a raw_conversations record
-        conn = backend._get_connection()
-        conn.execute(
-            """
-            INSERT INTO raw_conversations
-            (raw_id, provider_name, source_path, raw_content, acquired_at)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            ("raw-123", "claude", "/path/to/file.jsonl", b"content", "2024-01-01T00:00:00Z"),
-        )
-        conn.commit()
+        with connection_context(tmp_path / "test.db") as conn:
+            conn.execute(
+                """
+                INSERT INTO raw_conversations
+                (raw_id, provider_name, source_path, raw_content, acquired_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                ("raw-123", "claude", "/path/to/file.jsonl", b"content", "2024-01-01T00:00:00Z"),
+            )
+            conn.commit()
 
         # Create conversation linked to raw data
         conv = ConversationRecord(
@@ -501,16 +501,16 @@ class TestRawConversationEdgeCases:
             parent_conversation_id=None,
             branch_type=None,
         )
-        backend.save_conversation(conv)
+        await backend.save_conversation_record(conv)
 
         # Retrieve and verify
-        retrieved = backend.get_conversation("conv-with-raw")
+        retrieved = await backend.get_conversation("conv-with-raw")
         assert retrieved is not None
         assert retrieved.raw_id == "raw-123"
 
-        backend.close()
+        await backend.close()
 
-    def test_list_conversations_with_branch_type(self, tmp_path):
+    async def test_list_conversations_with_branch_type(self, tmp_path):
         """List conversations by parent respects branch_type field."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
@@ -523,7 +523,7 @@ class TestRawConversationEdgeCases:
             created_at="2024-01-01T00:00:00Z",
             updated_at="2024-01-01T00:00:00Z",
         )
-        backend.save_conversation(parent)
+        await backend.save_conversation_record(parent)
 
         # Create child with branch_type
         child = ConversationRecord(
@@ -537,14 +537,14 @@ class TestRawConversationEdgeCases:
             parent_conversation_id="parent",
             branch_type="sidechain",
         )
-        backend.save_conversation(child)
+        await backend.save_conversation_record(child)
 
         # Query and verify branch_type is preserved
-        children = backend.list_conversations_by_parent("parent")
+        children = await backend.list_conversations_by_parent("parent")
         assert len(children) == 1
         assert children[0].branch_type == "sidechain"
 
-        backend.close()
+        await backend.close()
 
 
 class TestConcurrentAssetWrite:

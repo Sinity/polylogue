@@ -596,7 +596,7 @@ def test_semantic_models():
     assert conv.user_message_count == 1
 
 
-def test_repository(test_db):
+async def test_repository(test_db):
     """Test ConversationRepository basic operations."""
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
@@ -609,19 +609,19 @@ def test_repository(test_db):
     )
 
     # Test get
-    conv = repo.get("c1")
+    conv = await repo.get("c1")
     assert conv is not None
     assert conv.id == "c1"
     assert len(conv.messages) == 1
     assert conv.messages[0].text == "hello world"
 
     # Test list
-    lst = repo.list()
+    lst = await repo.list()
     assert len(lst) == 1
     assert lst[0].id == "c1"
 
 
-def test_repository_get_includes_attachment_conversation_id(test_db):
+async def test_repository_get_includes_attachment_conversation_id(test_db):
     """ConversationRepository.get_eager() returns attachments with conversation_id field."""
     from tests.infra.helpers import DbFactory
 
@@ -648,7 +648,7 @@ def test_repository_get_includes_attachment_conversation_id(test_db):
 
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    conv = repo.get_eager("c-with-att")
+    conv = await repo.get_eager("c-with-att")
 
     assert conv is not None
     assert len(conv.messages) == 1
@@ -659,7 +659,7 @@ def test_repository_get_includes_attachment_conversation_id(test_db):
     assert att.mime_type == "image/png"
 
 
-def test_repository_get_with_multiple_attachments(test_db):
+async def test_repository_get_with_multiple_attachments(test_db):
     """get_eager() correctly groups multiple attachments per message."""
     from tests.infra.helpers import DbFactory
 
@@ -690,7 +690,7 @@ def test_repository_get_with_multiple_attachments(test_db):
 
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    conv = repo.get_eager("c-multi-att")
+    conv = await repo.get_eager("c-multi-att")
 
     assert conv is not None
     assert len(conv.messages) == 2
@@ -705,7 +705,7 @@ def test_repository_get_with_multiple_attachments(test_db):
     assert m2.attachments[0].id == "att3"
 
 
-def test_repository_get_attachment_metadata_decoded(test_db):
+async def test_repository_get_attachment_metadata_decoded(test_db):
     """Attachment provider_meta JSON is properly decoded."""
     from tests.infra.helpers import DbFactory
 
@@ -732,7 +732,7 @@ def test_repository_get_attachment_metadata_decoded(test_db):
 
     backend = SQLiteBackend(db_path=test_db)
     repo = ConversationRepository(backend=backend)
-    conv = repo.get_eager("c-att-meta")
+    conv = await repo.get_eager("c-att-meta")
 
     assert conv is not None
     assert len(conv.messages) == 1

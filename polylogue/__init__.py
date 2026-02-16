@@ -27,15 +27,11 @@ Example:
 """
 
 # High-level API
-# Core types for library users
-from polylogue.async_facade import ArchiveStats, AsyncPolylogue
 from polylogue.errors import PolylogueError
+from polylogue.facade import ArchiveStats, Polylogue
 from polylogue.lib.filters import ConversationFilter
 from polylogue.lib.models import Conversation, Message
 from polylogue.storage.search import SearchResult
-
-# Temporary alias: Polylogue -> AsyncPolylogue until Phase 5 rename
-Polylogue = AsyncPolylogue
 
 
 def __getattr__(name: str) -> object:
@@ -48,7 +44,6 @@ def __getattr__(name: str) -> object:
 
 __all__ = [
     "ArchiveStats",
-    "AsyncPolylogue",
     "Conversation",
     "ConversationFilter",
     "Message",

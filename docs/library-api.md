@@ -117,11 +117,11 @@ continuations = ConversationFilter(repo).is_continuation().list()
 
 ```python
 import asyncio
-from polylogue.pipeline.async_runner import async_run_sources
+from polylogue.pipeline.runner import run_sources
 from polylogue.services import get_service_config
 
 config = get_service_config()
-result = asyncio.run(async_run_sources(config=config, stage="all"))
+result = asyncio.run(run_sources(config=config, stage="all"))
 ```
 
 ## Async API
@@ -130,10 +130,10 @@ Polylogue provides a full async/await facade with concurrent operations:
 
 ```python
 import asyncio
-from polylogue import AsyncPolylogue
+from polylogue import Polylogue
 
 async def main():
-    async with AsyncPolylogue() as archive:
+    async with Polylogue() as archive:
         # Concurrent queries
         stats, recent, claude = await asyncio.gather(
             archive.stats(),

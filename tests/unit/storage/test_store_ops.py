@@ -552,95 +552,98 @@ def test_provider_name_rejects_invalid(name, desc):
 # =============================================================================
 
 
-def test_backend_transaction_rollback(sqlite_backend: SQLiteBackend) -> None:
+async def test_backend_transaction_rollback(sqlite_backend: SQLiteBackend) -> None:
     """Test transaction rollback."""
     conv = make_conversation("conv1", title="Test")
 
-    sqlite_backend.begin()
-    sqlite_backend.save_conversation(conv)
-    sqlite_backend.rollback()
+    await sqlite_backend.begin()
+    await sqlite_backend.save_conversation_record(conv)
+    await sqlite_backend.rollback()
 
-    retrieved = sqlite_backend.get_conversation("conv1")
+    retrieved = await sqlite_backend.get_conversation("conv1")
     assert retrieved is None
 
 
-def test_backend_transaction_context_manager(sqlite_backend: SQLiteBackend) -> None:
+async def test_backend_transaction_context_manager(sqlite_backend: SQLiteBackend) -> None:
     """Test using the transaction context manager."""
     conv = make_conversation("conv1", title="Test")
 
-    with sqlite_backend.transaction():
-        sqlite_backend.save_conversation(conv)
+    async with sqlite_backend.transaction():
+        await sqlite_backend.save_conversation_record(conv)
 
-    retrieved = sqlite_backend.get_conversation("conv1")
+    retrieved = await sqlite_backend.get_conversation("conv1")
     assert retrieved is not None
     assert retrieved.conversation_id == "conv1"
 
 
-def test_backend_transaction_context_manager_exception(sqlite_backend: SQLiteBackend) -> None:
+async def test_backend_transaction_context_manager_exception(sqlite_backend: SQLiteBackend) -> None:
     """Test transaction context manager rolls back on exception."""
     conv = make_conversation("conv1", title="Test")
 
-    with pytest.raises(ValueError), sqlite_backend.transaction():
-        sqlite_backend.save_conversation(conv)
-        raise ValueError("Test error")
+    with pytest.raises(ValueError):
+        async with sqlite_backend.transaction():
+            await sqlite_backend.save_conversation_record(conv)
+            raise ValueError("Test error")
 
-    retrieved = sqlite_backend.get_conversation("conv1")
+    retrieved = await sqlite_backend.get_conversation("conv1")
     assert retrieved is None
 
 
-def test_backend_delete_conversation(sqlite_backend: SQLiteBackend) -> None:
+async def test_backend_delete_conversation(sqlite_backend: SQLiteBackend) -> None:
     """Test deleting a conversation and all related records."""
     conv = make_conversation("conv1", title="Test")
     msg1 = make_message("msg1", "conv1", text="Hello")
     msg2 = make_message("msg2", "conv1", role="assistant", text="Hi there")
     att = make_attachment("att1", "conv1", "msg1", mime_type="image/png", size_bytes=1024)
 
-    sqlite_backend.begin()
-    sqlite_backend.save_conversation(conv)
-    sqlite_backend.save_messages([msg1, msg2])
-    sqlite_backend.save_attachments([att])
-    sqlite_backend.commit()
+    await sqlite_backend.begin()
+    await sqlite_backend.save_conversation_record(conv)
+    await sqlite_backend.save_messages([msg1, msg2])
+    await sqlite_backend.save_attachments([att])
+    await sqlite_backend.commit()
 
-    assert sqlite_backend.get_conversation("conv1") is not None
-    assert len(sqlite_backend.get_messages("conv1")) == 2
-    assert len(sqlite_backend.get_attachments("conv1")) == 1
+    assert await sqlite_backend.get_conversation("conv1") is not None
+    assert len(await sqlite_backend.get_messages("conv1")) == 2
+    assert len(await sqlite_backend.get_attachments("conv1")) == 1
 
-    result = sqlite_backend.delete_conversation("conv1")
+    result = await sqlite_backend.delete_conversation("conv1")
     assert result is True
 
-    assert sqlite_backend.get_conversation("conv1") is None
-    assert len(sqlite_backend.get_messages("conv1")) == 0
-    assert len(sqlite_backend.get_attachments("conv1")) == 0
+    assert await sqlite_backend.get_conversation("conv1") is None
+    assert len(await sqlite_backend.get_messages("conv1")) == 0
+    assert len(await sqlite_backend.get_attachments("conv1")) == 0
 
 
-def test_backend_delete_conversation_not_found(sqlite_backend: SQLiteBackend) -> None:
+async def test_backend_delete_conversation_not_found(sqlite_backend: SQLiteBackend) -> None:
     """Test deleting a non-existent conversation returns False."""
-    result = sqlite_backend.delete_conversation("nonexistent")
+    result = await sqlite_backend.delete_conversation("nonexistent")
     assert result is False
 
 
-def test_backend_delete_conversation_cleans_fts(sqlite_backend: SQLiteBackend) -> None:
+async def test_backend_delete_conversation_cleans_fts(sqlite_backend: SQLiteBackend) -> None:
     """Test that deleting a conversation also cleans up FTS entries."""
     from polylogue.storage.index import ensure_index, update_index_for_conversations
 
     conv = make_conversation("conv1", title="Test")
     msg = make_message("msg1", "conv1", text="searchable content here")
 
-    sqlite_backend.begin()
-    sqlite_backend.save_conversation(conv)
-    sqlite_backend.save_messages([msg])
-    sqlite_backend.commit()
+    await sqlite_backend.begin()
+    await sqlite_backend.save_conversation_record(conv)
+    await sqlite_backend.save_messages([msg])
+    await sqlite_backend.commit()
 
-    conn = sqlite_backend._get_connection()
-    ensure_index(conn)
-    update_index_for_conversations(["conv1"], conn)
-    conn.commit()
+    with open_connection(sqlite_backend._db_path) as conn:
+        ensure_index(conn)
+        update_index_for_conversations(["conv1"], conn)
+        conn.commit()
 
-    fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
-    assert fts_count > 0
+        fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
+        assert fts_count > 0
 
-    result = sqlite_backend.delete_conversation("conv1")
+    result = await sqlite_backend.delete_conversation("conv1")
     assert result is True
 
-    fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
-    assert fts_count == 0
+    with open_connection(sqlite_backend._db_path) as conn:
+        fts_count = conn.execute("SELECT COUNT(*) FROM messages_fts WHERE conversation_id = ?", ("conv1",)).fetchone()[0]
+        assert fts_count == 0
+    await sqlite_backend.close()

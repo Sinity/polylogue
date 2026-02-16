@@ -51,7 +51,7 @@ def default_db_path() -> Path:
     return _paths.data_home() / "polylogue.db"
 
 
-class AsyncSQLiteBackend:
+class SQLiteBackend:
     """Async SQLite storage backend implementation.
 
     This backend provides async/await API for database operations, enabling
@@ -68,7 +68,7 @@ class AsyncSQLiteBackend:
         - Nested transactions use SAVEPOINTs
 
     Example:
-        backend = AsyncSQLiteBackend()
+        backend = SQLiteBackend()
 
         # Concurrent reads
         conv1, conv2 = await asyncio.gather(
@@ -495,7 +495,8 @@ class AsyncSQLiteBackend:
                     record.raw_id,
                 ),
             )
-            await conn.commit()
+            if self._transaction_depth == 0:
+                await conn.commit()
 
     async def save_conversation(
         self,
@@ -616,7 +617,8 @@ class AsyncSQLiteBackend:
                 for r in records
             ]
             await conn.executemany(query, data)
-            await conn.commit()
+            if self._transaction_depth == 0:
+                await conn.commit()
 
     async def get_attachments(self, conversation_id: str) -> list[AttachmentRecord]:
         """Get all attachments for a conversation.
@@ -702,6 +704,8 @@ class AsyncSQLiteBackend:
                     """,
                     (aid, aid),
                 )
+            if self._transaction_depth == 0:
+                await conn.commit()
 
     async def prune_attachments(
         self, conversation_id: str, keep_attachment_ids: set[str]
@@ -751,10 +755,7 @@ class AsyncSQLiteBackend:
                     (conversation_id,),
                 )
 
-            # Clean up orphaned attachments (ref_count <= 0)
-            await conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
-
-            # Update ref counts using the same async connection
+            # Update ref counts first, then clean up orphans
             for aid in attachment_ids_to_check:
                 await conn.execute(
                     """
@@ -765,7 +766,11 @@ class AsyncSQLiteBackend:
                     (aid, aid),
                 )
 
-            await conn.commit()
+            # Clean up orphaned attachments (ref_count <= 0)
+            await conn.execute("DELETE FROM attachments WHERE ref_count <= 0")
+
+            if self._transaction_depth == 0:
+                await conn.commit()
 
     async def list_conversations_by_parent(self, parent_id: str) -> list[ConversationRecord]:
         """List all conversations that have the given conversation as parent.
@@ -1047,7 +1052,8 @@ class AsyncSQLiteBackend:
                 "UPDATE conversations SET metadata = ? WHERE conversation_id = ?",
                 (json_dumps(metadata), conversation_id),
             )
-            await conn.commit()
+            if self._transaction_depth == 0:
+                await conn.commit()
 
     async def delete_conversation(self, conversation_id: str) -> bool:
         """Delete conversation and all related records.
@@ -1102,7 +1108,8 @@ class AsyncSQLiteBackend:
                     affected_attachments,
                 )
 
-            await conn.commit()
+            if self._transaction_depth == 0:
+                await conn.commit()
             return True
 
     async def iter_messages(
@@ -1273,7 +1280,8 @@ class AsyncSQLiteBackend:
                     record.duration_ms,
                 ),
             )
-            await conn.commit()
+            if self._transaction_depth == 0:
+                await conn.commit()
 
     # --- Raw Conversation Storage ---
 
@@ -1313,7 +1321,8 @@ class AsyncSQLiteBackend:
                     record.file_mtime,
                 ),
             )
-            await conn.commit()
+            if self._transaction_depth == 0:
+                await conn.commit()
             return bool(cursor.rowcount > 0)
 
     async def get_raw_conversation(self, raw_id: str) -> RawConversationRecord | None:
@@ -1352,6 +1361,7 @@ class AsyncSQLiteBackend:
             RawConversationRecord objects
         """
         offset = 0
+        yielded = 0
 
         while True:
             async with self._get_connection() as conn:
@@ -1377,7 +1387,8 @@ class AsyncSQLiteBackend:
 
             for row in rows:
                 yield _row_to_raw_conversation(row)
-                if limit is not None and offset >= limit:
+                yielded += 1
+                if limit is not None and yielded >= limit:
                     return
 
             offset += len(rows)
@@ -1407,6 +1418,6 @@ class AsyncSQLiteBackend:
 
 
 __all__ = [
-    "AsyncSQLiteBackend",
+    "SQLiteBackend",
     "default_db_path",
 ]
