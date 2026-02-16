@@ -152,13 +152,13 @@ def _display_result(
     type=click.Choice(["acquire", "parse", "render", "index", "generate-schemas", "all"]),
     default="all",
     show_default=True,
-    help="Pipeline stage: acquire (store raw), parse (raw→conversations), render, index, or all",
+    help="Pipeline stage: acquire (store raw), parse (extract conversations), render (output), index (search), generate-schemas, or all",
 )
 @click.option(
     "--source",
     "sources",
     multiple=True,
-    help="Limit to source name (repeatable, or 'last'). Use `polylogue sources` to list.",
+    help="Limit to source name (repeatable). 'last' = previously synced source. List with: polylogue sources",
 )
 @click.option(
     "--format",

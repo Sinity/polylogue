@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     "--model",
     type=click.Choice(["voyage-4", "voyage-4-large", "voyage-4-lite"]),
     default="voyage-4",
-    help="Voyage AI model to use (default: voyage-4)",
+    help="Voyage AI model: voyage-4 (default), voyage-4-large, voyage-4-lite",
 )
 @click.option(
     "--rebuild", "-r",
@@ -78,7 +78,7 @@ def embed_command(
     voyage_key = os.environ.get("POLYLOGUE_VOYAGE_API_KEY") or os.environ.get("VOYAGE_API_KEY")
     if not voyage_key and not stats:
         click.echo("Error: VOYAGE_API_KEY environment variable not set", err=True)
-        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key", err=True)
+        click.echo("Set it with: export VOYAGE_API_KEY=your-api-key  (or POLYLOGUE_VOYAGE_API_KEY)", err=True)
         raise click.Abort()
 
     # Stats only mode
@@ -90,7 +90,7 @@ def embed_command(
     vec_provider = create_vector_provider(voyage_api_key=voyage_key)
     if vec_provider is None:
         click.echo("Error: sqlite-vec not available", err=True)
-        click.echo("Install with: pip install sqlite-vec", err=True)
+        click.echo("sqlite-vec is not available (ensure it is in your Nix flake or virtualenv)", err=True)
         raise click.Abort()
 
     # Set model if different from default

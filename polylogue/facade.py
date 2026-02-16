@@ -78,10 +78,10 @@ class ArchiveStats:
 
 
 class Polylogue:
-    """Async high-level facade for Polylogue library.
+    """High-level async facade for the Polylogue library.
 
-    Provides async/await API for concurrent operations with full parity
-    to the sync ``Polylogue`` facade.
+    Provides an async/await API for querying, filtering, and managing
+    a conversation archive.
 
     Args:
         archive_root: Path to the archive directory

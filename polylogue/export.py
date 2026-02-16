@@ -22,6 +22,19 @@ def _row_to_dict(row: object) -> dict[str, object]:
 
 
 def export_jsonl(*, archive_root: Path, output_path: Path | None = None) -> Path:
+    """Export all conversations to newline-delimited JSON.
+
+    Each line is a JSON object with keys ``conversation``, ``messages``,
+    and ``attachments``, suitable for bulk processing or backup.
+
+    Args:
+        archive_root: Root directory of the Polylogue archive.
+        output_path: Destination file. Defaults to
+            ``archive_root/exports/conversations.jsonl``.
+
+    Returns:
+        Path to the created JSONL file.
+    """
     target = output_path or (archive_root / "exports" / "conversations.jsonl")
     target.parent.mkdir(parents=True, exist_ok=True)
     with open_connection(None) as conn, target.open("w", encoding="utf-8") as handle:
