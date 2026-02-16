@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 from polylogue.lib.log import get_logger
@@ -71,17 +70,15 @@ class RenderService:
         Returns:
             RenderResult with success count and failures
         """
+        import asyncio
+
         result = RenderResult()
         semaphore = asyncio.Semaphore(max_workers)
 
         async def _render_one(convo_id: str) -> None:
             async with semaphore:
                 try:
-                    await asyncio.to_thread(
-                        self.renderer.render,
-                        convo_id,
-                        self.render_root,
-                    )
+                    await self.renderer.render(convo_id, self.render_root)
                     result.record_success()
                 except Exception as exc:
                     logger.warning("Failed to render conversation %s: %s", convo_id, exc)

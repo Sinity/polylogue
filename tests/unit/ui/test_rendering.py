@@ -95,12 +95,13 @@ class TestMarkdownRenderer:
         renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         assert renderer.supports_format() == "markdown"
 
-    def test_render_basic_conversation(self, workspace_env, sample_conversation_id):
+    @pytest.mark.asyncio
+    async def test_render_basic_conversation(self, workspace_env, sample_conversation_id):
         """Test rendering a basic conversation to Markdown."""
         renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
 
-        result_path = renderer.render(sample_conversation_id, output_path)
+        result_path = await renderer.render(sample_conversation_id, output_path)
 
         assert result_path.exists()
         assert result_path.suffix == ".md"
@@ -118,12 +119,13 @@ class TestMarkdownRenderer:
         assert "Of course! How can I help you today?" in content
         assert "I need help with Python testing" in content
 
-    def test_render_with_json_formatting(self, workspace_env, sample_conversation_with_json):
+    @pytest.mark.asyncio
+    async def test_render_with_json_formatting(self, workspace_env, sample_conversation_with_json):
         """Test that JSON content is formatted in code blocks."""
         renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
 
-        result_path = renderer.render(sample_conversation_with_json, output_path)
+        result_path = await renderer.render(sample_conversation_with_json, output_path)
         content = result_path.read_text()
 
         # Should wrap JSON in code block
@@ -131,22 +133,24 @@ class TestMarkdownRenderer:
         assert '"query": "Python testing"' in content
         assert '"results"' in content
 
-    def test_render_nonexistent_conversation(self, workspace_env):
+    @pytest.mark.asyncio
+    async def test_render_nonexistent_conversation(self, workspace_env):
         """Test that rendering nonexistent conversation raises error."""
         renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
 
         with pytest.raises(ValueError, match="Conversation not found"):
-            renderer.render("nonexistent-id", output_path)
+            await renderer.render("nonexistent-id", output_path)
 
-    def test_render_creates_output_directory(self, workspace_env, sample_conversation_id):
+    @pytest.mark.asyncio
+    async def test_render_creates_output_directory(self, workspace_env, sample_conversation_id):
         """Test that render creates output directory if it doesn't exist."""
         renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "custom" / "nested" / "render"
 
         assert not output_path.exists()
 
-        result_path = renderer.render(sample_conversation_id, output_path)
+        result_path = await renderer.render(sample_conversation_id, output_path)
 
         assert result_path.exists()
         assert result_path.parent.exists()
@@ -160,12 +164,13 @@ class TestHTMLRenderer:
         renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
         assert renderer.supports_format() == "html"
 
-    def test_render_basic_conversation(self, workspace_env, sample_conversation_id):
+    @pytest.mark.asyncio
+    async def test_render_basic_conversation(self, workspace_env, sample_conversation_id):
         """Test rendering a basic conversation to HTML."""
         renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
 
-        result_path = renderer.render(sample_conversation_id, output_path)
+        result_path = await renderer.render(sample_conversation_id, output_path)
 
         assert result_path.exists()
         assert result_path.suffix == ".html"
@@ -185,20 +190,22 @@ class TestHTMLRenderer:
         assert "test-provider" in content
         assert "Hello, can you help me?" in content
 
-    def test_render_nonexistent_conversation(self, workspace_env):
+    @pytest.mark.asyncio
+    async def test_render_nonexistent_conversation(self, workspace_env):
         """Test that rendering nonexistent conversation raises error."""
         renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
 
         with pytest.raises(ValueError, match="Conversation not found"):
-            renderer.render("nonexistent-id", output_path)
+            await renderer.render("nonexistent-id", output_path)
 
-    def test_render_with_json_content(self, workspace_env, sample_conversation_with_json):
+    @pytest.mark.asyncio
+    async def test_render_with_json_content(self, workspace_env, sample_conversation_with_json):
         """Test rendering conversation with JSON content."""
         renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
         output_path = workspace_env["archive_root"] / "render"
 
-        result_path = renderer.render(sample_conversation_with_json, output_path)
+        result_path = await renderer.render(sample_conversation_with_json, output_path)
         content = result_path.read_text()
 
         # JSON content is rendered as text (not auto-detected as code block)
@@ -280,15 +287,16 @@ class TestRendererFactory:
 class TestRendererIntegration:
     """Integration tests for renderers."""
 
-    def test_both_renderers_produce_output(self, workspace_env, sample_conversation_id):
+    @pytest.mark.asyncio
+    async def test_both_renderers_produce_output(self, workspace_env, sample_conversation_id):
         """Test that both renderers produce valid output for the same conversation."""
         md_renderer = MarkdownRenderer(archive_root=workspace_env["archive_root"])
         html_renderer = HTMLRenderer(archive_root=workspace_env["archive_root"])
 
         output_path = workspace_env["archive_root"] / "render"
 
-        md_path = md_renderer.render(sample_conversation_id, output_path)
-        html_path = html_renderer.render(sample_conversation_id, output_path)
+        md_path = await md_renderer.render(sample_conversation_id, output_path)
+        html_path = await html_renderer.render(sample_conversation_id, output_path)
 
         # Both should exist
         assert md_path.exists()
@@ -398,7 +406,8 @@ FORMAT_CASES = [
 
 
 @pytest.mark.parametrize("label,conv_id,desc", FORMAT_CASES)
-def test_formatter_format_comprehensive(workspace_env, label, conv_id, desc):
+@pytest.mark.asyncio
+async def test_formatter_format_comprehensive(workspace_env, label, conv_id, desc):
     """Comprehensive format method test.
 
     Replaces 3 individual tests from TestConversationFormatterFormat.
@@ -409,7 +418,7 @@ def test_formatter_format_comprehensive(workspace_env, label, conv_id, desc):
     if label == "missing conversation":
         # Don't create conversation
         with pytest.raises(ValueError, match="Conversation not found"):
-            formatter.format(conv_id)
+            await formatter.format(conv_id)
 
     elif label == "basic conversation":
         # Create conversation with message
@@ -417,7 +426,7 @@ def test_formatter_format_comprehensive(workspace_env, label, conv_id, desc):
          .add_message("m1", role="user", text="Hello!")
          .save())
 
-        result = formatter.format(conv_id)
+        result = await formatter.format(conv_id)
 
         assert isinstance(result, FormattedConversation)
         assert result.title == "Test Conversation"
@@ -432,7 +441,7 @@ def test_formatter_format_comprehensive(workspace_env, label, conv_id, desc):
          .title(None)
          .save())
 
-        result = formatter.format(conv_id)
+        result = await formatter.format(conv_id)
 
         assert result.title == conv_id
         assert f"# {conv_id}" in result.markdown_text
@@ -463,7 +472,8 @@ MESSAGE_ORDERING_CASES = [
 
 
 @pytest.mark.parametrize("label,conv_id,message_data,desc", MESSAGE_ORDERING_CASES)
-def test_message_ordering_comprehensive(workspace_env, label, conv_id, message_data, desc):
+@pytest.mark.asyncio
+async def test_message_ordering_comprehensive(workspace_env, label, conv_id, message_data, desc):
     """Comprehensive message ordering test.
 
     Replaces 3 individual tests from TestMessageOrdering.
@@ -478,7 +488,7 @@ def test_message_ordering_comprehensive(workspace_env, label, conv_id, message_d
     builder.save()
 
     formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
-    result = formatter.format(conv_id)
+    result = await formatter.format(conv_id)
 
     if label == "timestamp order":
         # Messages should appear in chronological order
@@ -509,7 +519,8 @@ JSON_WRAPPING_CASES = [
 
 
 @pytest.mark.parametrize("text,wrapped,desc", JSON_WRAPPING_CASES)
-def test_json_text_wrapping_comprehensive(workspace_env, text, wrapped, desc):
+@pytest.mark.asyncio
+async def test_json_text_wrapping_comprehensive(workspace_env, text, wrapped, desc):
     """Comprehensive JSON text wrapping test.
 
     Replaces 5 individual tests from TestJSONTextWrapping.
@@ -524,7 +535,7 @@ def test_json_text_wrapping_comprehensive(workspace_env, text, wrapped, desc):
      .save())
 
     formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
-    result = formatter.format(conv_id)
+    result = await formatter.format(conv_id)
 
     if wrapped:
         # Should have JSON code block
@@ -562,7 +573,8 @@ TIMESTAMP_RENDERING_CASES = [
 
 
 @pytest.mark.parametrize("timestamp,rendered,desc", TIMESTAMP_RENDERING_CASES)
-def test_timestamp_rendering_comprehensive(workspace_env, timestamp, rendered, desc):
+@pytest.mark.asyncio
+async def test_timestamp_rendering_comprehensive(workspace_env, timestamp, rendered, desc):
     """Comprehensive timestamp rendering test.
 
     Replaces 2 individual tests from TestTimestampRendering.
@@ -577,7 +589,7 @@ def test_timestamp_rendering_comprehensive(workspace_env, timestamp, rendered, d
      .save())
 
     formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
-    result = formatter.format(conv_id)
+    result = await formatter.format(conv_id)
 
     if rendered:
         # Should show timestamp line
@@ -613,7 +625,8 @@ ATTACHMENT_CASES = [
 
 
 @pytest.mark.parametrize("label,meta,expected,desc", ATTACHMENT_CASES)
-def test_attachment_handling_comprehensive(workspace_env, label, meta, expected, desc):
+@pytest.mark.asyncio
+async def test_attachment_handling_comprehensive(workspace_env, label, meta, expected, desc):
     """Comprehensive attachment handling test.
 
     Replaces 8 individual tests from TestAttachmentHandling.
@@ -655,7 +668,7 @@ def test_attachment_handling_comprehensive(workspace_env, label, meta, expected,
     builder.save()
 
     formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
-    result = formatter.format(conv_id)
+    result = await formatter.format(conv_id)
 
     # Verify expected string(s) in output
     if isinstance(expected, list):
@@ -670,7 +683,8 @@ def test_attachment_handling_comprehensive(workspace_env, label, meta, expected,
 # =============================================================================
 
 
-def test_orphaned_attachments_section(workspace_env):
+@pytest.mark.asyncio
+async def test_orphaned_attachments_section(workspace_env):
     """Attachments without message_id grouped in ## attachments section."""
     db_path = db_setup(workspace_env)
     conv_id = "orphan-att-conv"
@@ -689,7 +703,7 @@ def test_orphaned_attachments_section(workspace_env):
      .save())
 
     formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
-    result = formatter.format(conv_id)
+    result = await formatter.format(conv_id)
 
     assert "## attachments" in result.markdown_text
     assert "OrphanFile.png" in result.markdown_text
@@ -707,7 +721,8 @@ METADATA_CASES = [
 
 
 @pytest.mark.parametrize("label,data,desc", METADATA_CASES)
-def test_metadata_comprehensive(workspace_env, label, data, desc):
+@pytest.mark.asyncio
+async def test_metadata_comprehensive(workspace_env, label, data, desc):
     """Comprehensive metadata test.
 
     Replaces 2 individual tests from TestMetadata.
@@ -734,7 +749,7 @@ def test_metadata_comprehensive(workspace_env, label, data, desc):
         builder.save()
 
         formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
-        result = formatter.format(conv_id)
+        result = await formatter.format(conv_id)
 
         assert result.metadata["message_count"] == data["messages"], f"Failed {desc}"
         assert result.metadata["attachment_count"] == data["attachments"], f"Failed {desc}"
@@ -748,7 +763,7 @@ def test_metadata_comprehensive(workspace_env, label, data, desc):
          .save())
 
         formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
-        result = formatter.format(conv_id)
+        result = await formatter.format(conv_id)
 
         assert result.metadata["created_at"] == data["created"], f"Failed {desc}"
         assert result.metadata["updated_at"] == data["updated"], f"Failed {desc}"
@@ -776,7 +791,8 @@ MARKDOWN_STRUCTURE_CASES = [
 
 
 @pytest.mark.parametrize("label,messages_data,desc", MARKDOWN_STRUCTURE_CASES)
-def test_markdown_structure_comprehensive(workspace_env, label, messages_data, desc):
+@pytest.mark.asyncio
+async def test_markdown_structure_comprehensive(workspace_env, label, messages_data, desc):
     """Comprehensive markdown structure test.
 
     Replaces 4 individual tests from TestMarkdownStructure.
@@ -801,7 +817,7 @@ def test_markdown_structure_comprehensive(workspace_env, label, messages_data, d
     builder.save()
 
     formatter = ConversationFormatter(workspace_env["archive_root"], db_path=db_path)
-    result = formatter.format(conv_id)
+    result = await formatter.format(conv_id)
 
     if label == "header":
         # Check header structure
