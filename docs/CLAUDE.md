@@ -77,7 +77,7 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 |------|---------|
 | `lib/models.py` | Message/Conversation with `is_thinking`, `is_tool_use`, `is_substantive` |
 | `lib/projections.py` | Fluent API: `conv.project().substantive().min_words(50).execute()` |
-| `lib/filters.py` | Conversation filter chain: `p.filter().provider("claude").list()` |
+| `lib/filters.py` | Conversation filter chain: `await p.filter().provider("claude").list()` |
 | `facade.py` | `Polylogue` — async-first library API |
 | `services.py` | Singleton factories: `get_backend()`, `get_repository()` |
 | `protocols.py` | SearchProvider, VectorProvider (storage protocol deleted) |
@@ -127,8 +127,9 @@ Hash (NFC) → Store (under lock) → Render (parallel) → Index
 
 ```python
 from polylogue import Polylogue
-p = Polylogue()
-convs = p.filter().provider("claude").since("2024-01-01").contains("error").limit(10).list()
+
+async with Polylogue() as p:
+    convs = await p.filter().provider("claude").since("2024-01-01").contains("error").limit(10).list()
 ```
 
 **Filters** (chainable):
