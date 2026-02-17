@@ -453,3 +453,6 @@ class Polylogue:
     def __repr__(self) -> str:
         """Return string representation."""
         return f"Polylogue(archive_root={self._config.archive_root!r})"
+
+
+__all__ = ["ArchiveStats", "Polylogue"]

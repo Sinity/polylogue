@@ -22,7 +22,7 @@ from typing import Any
 
 from polylogue.lib.log import get_logger
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 
 
 # =============================================================================

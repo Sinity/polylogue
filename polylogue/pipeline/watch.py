@@ -17,7 +17,7 @@ from polylogue.sources import DriveError
 if TYPE_CHECKING:
     from polylogue.storage.store import RunResult
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 
 
 class WatchRunner:
@@ -68,12 +68,12 @@ class WatchRunner:
                     if self._on_error:
                         self._on_error(exc)
                     else:
-                        LOGGER.warning("Sync error: %s", exc)
+                        logger.warning("Sync error: %s", exc)
                 except Exception as exc:
                     if self._on_error:
                         self._on_error(exc)
                     else:
-                        LOGGER.error("Unexpected error during sync: %s", exc)
+                        logger.error("Unexpected error during sync: %s", exc)
                 time.sleep(self._interval)
         except KeyboardInterrupt:
             pass

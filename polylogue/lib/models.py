@@ -790,3 +790,13 @@ class Conversation(BaseModel):
         """
         from polylogue.lib.projections import ConversationProjection
         return ConversationProjection(self)
+
+
+__all__ = [
+    "Attachment",
+    "Conversation",
+    "ConversationSummary",
+    "DialoguePair",
+    "Message",
+    "ToolInvocation",
+]

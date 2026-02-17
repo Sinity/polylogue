@@ -7,7 +7,7 @@ import sqlite3
 from polylogue.lib.log import get_logger
 from polylogue.storage.store import _make_ref_id
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 SCHEMA_VERSION = 11
 
 
@@ -493,7 +493,7 @@ def _migrate_v9_to_v10(conn: sqlite3.Connection) -> None:
         conn.execute("SELECT vec_version()")
         vec_available = True
     except sqlite3.OperationalError:
-        LOGGER.info("sqlite-vec not available, skipping vec0 table creation")
+        logger.info("sqlite-vec not available, skipping vec0 table creation")
 
     if vec_available:
         conn.execute(_VEC0_DDL)
@@ -582,15 +582,15 @@ def _run_migrations(conn: sqlite3.Connection, current_version: int, target_versi
         if migration_func is None:
             continue
 
-        LOGGER.info("Running migration v%d -> v%d", version, version + 1)
+        logger.info("Running migration v%d -> v%d", version, version + 1)
 
         try:
             migration_func(conn)
             conn.execute(f"PRAGMA user_version = {version + 1}")
             conn.commit()  # Commit each step successfully
-            LOGGER.info("Migration v%d -> v%d completed", version, version + 1)
+            logger.info("Migration v%d -> v%d completed", version, version + 1)
         except Exception as exc:
-            LOGGER.error("Migration v%d -> v%d failed: %s", version, version + 1, exc)
+            logger.error("Migration v%d -> v%d failed: %s", version, version + 1, exc)
             conn.rollback()  # Rollback changes from the failed step
             raise RuntimeError(
                 f"Migration from v{version} to v{version + 1} failed. Database remains at v{version}. Error: {exc}"
@@ -662,7 +662,7 @@ def _ensure_vec0_table(conn: sqlite3.Connection) -> None:
     if not exists:
         conn.execute(_VEC0_DDL)
         conn.commit()
-        LOGGER.info("Created missing message_embeddings vec0 table")
+        logger.info("Created missing message_embeddings vec0 table")
 
 
 __all__ = [

@@ -16,7 +16,7 @@ from .sources.drive_client import default_credentials_path, default_token_path
 from .storage.backends.connection import connection_context, open_connection
 from .storage.index import index_status
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 HEALTH_TTL_SECONDS = 600
 
 
@@ -84,7 +84,7 @@ def _load_cached(archive_root: Path) -> dict[str, Any] | None:
         if isinstance(payload, dict):
             return payload
     except Exception as exc:
-        LOGGER.warning("Failed to load health cache: %s", exc)
+        logger.warning("Failed to load health cache: %s", exc)
     return None
 
 
@@ -95,7 +95,7 @@ def _write_cache(archive_root: Path, report: HealthReport | dict[str, Any]) -> N
         data = report.to_dict() if isinstance(report, HealthReport) else report
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except Exception as exc:
-        LOGGER.warning("Failed to write health cache: %s", exc)
+        logger.warning("Failed to write health cache: %s", exc)
 
 
 def run_health(config: Config, *, deep: bool = False) -> HealthReport:

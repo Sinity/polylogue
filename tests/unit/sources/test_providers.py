@@ -263,7 +263,7 @@ class TestIterJsonStream:
         """Multiple JSON errors should be summarized (line 241-247)."""
         content = b'{"a": 1}\n{bad}\n{bad}\n{bad}\n{bad}\n{"b": 2}\n'
         handle = BytesIO(content)
-        with patch("polylogue.sources.source.LOGGER") as mock_logger:
+        with patch("polylogue.sources.source.logger") as mock_logger:
             results = list(_iter_json_stream(handle, "test.jsonl"))
             assert len(results) == 2
             assert mock_logger.warning.call_count >= 1
