@@ -38,7 +38,7 @@ from polylogue.storage.store import (
 )
 from polylogue.types import ConversationId
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 
 
 def default_db_path() -> Path:
