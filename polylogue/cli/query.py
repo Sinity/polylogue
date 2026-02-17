@@ -130,7 +130,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
 
     # Apply --exclude-text
     for term in params.get("exclude_text", ()):
-        filter_chain = filter_chain.no_contains(term)
+        filter_chain = filter_chain.exclude_text(term)
 
     # Apply --provider (comma-separated)
     if params.get("provider"):
@@ -140,7 +140,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     # Apply --exclude-provider (comma-separated)
     if params.get("exclude_provider"):
         excluded = [p.strip() for p in params["exclude_provider"].split(",")]
-        filter_chain = filter_chain.no_provider(*excluded)
+        filter_chain = filter_chain.exclude_provider(*excluded)
 
     # Apply --tag (comma-separated)
     if params.get("tag"):
@@ -150,7 +150,7 @@ async def _async_execute_query(env: AppEnv, params: dict[str, Any]) -> None:
     # Apply --exclude-tag (comma-separated)
     if params.get("exclude_tag"):
         excluded = [t.strip() for t in params["exclude_tag"].split(",")]
-        filter_chain = filter_chain.no_tag(*excluded)
+        filter_chain = filter_chain.exclude_tag(*excluded)
 
     # Apply --title
     if params.get("title"):

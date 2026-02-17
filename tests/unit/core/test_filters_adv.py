@@ -314,13 +314,13 @@ class TestConversationFilterCombinedNegative:
     """Tests for combining multiple negative filters."""
 
     @pytest.mark.asyncio
-    async def test_no_provider_and_no_tag(self, filter_repo_advanced):
-        """Combine no_provider() and no_tag()."""
+    async def test_exclude_provider_and_exclude_tag(self, filter_repo_advanced):
+        """Combine exclude_provider() and exclude_tag()."""
         # Exclude claude and exclude "quantum" tag
         result = await (
             ConversationFilter(filter_repo_advanced)
-            .no_provider("claude")
-            .no_tag("quantum")
+            .exclude_provider("claude")
+            .exclude_tag("quantum")
             .list()
         )
         # Should return only non-claude, non-quantum conversations
@@ -329,12 +329,12 @@ class TestConversationFilterCombinedNegative:
             assert "quantum" not in conv.tags
 
     @pytest.mark.asyncio
-    async def test_no_tag_and_no_contains(self, filter_repo_advanced):
-        """Combine no_tag() and no_contains()."""
+    async def test_exclude_tag_and_exclude_text(self, filter_repo_advanced):
+        """Combine exclude_tag() and exclude_text()."""
         result = await (
             ConversationFilter(filter_repo_advanced)
-            .no_tag("simple")
-            .no_contains("example")
+            .exclude_tag("simple")
+            .exclude_text("example")
             .list()
         )
         # Should exclude conversations with "simple" tag or containing "example"
@@ -346,11 +346,11 @@ class TestConversationFilterCombinedNegative:
                     assert "example" not in msg.text.lower()
 
     @pytest.mark.asyncio
-    async def test_no_provider_and_has_not_combined(self, filter_repo_advanced):
-        """Combine no_provider() with has() filter."""
+    async def test_exclude_provider_and_has_not_combined(self, filter_repo_advanced):
+        """Combine exclude_provider() with has() filter."""
         result = await (
             ConversationFilter(filter_repo_advanced)
-            .no_provider("claude")
+            .exclude_provider("claude")
             .has("attachments")
             .list()
         )
@@ -360,11 +360,11 @@ class TestConversationFilterCombinedNegative:
             assert any(m.attachments for m in conv.messages)
 
     @pytest.mark.asyncio
-    async def test_multiple_no_providers(self, filter_repo_advanced):
+    async def test_multiple_exclude_providers(self, filter_repo_advanced):
         """Exclude multiple providers."""
         result = await (
             ConversationFilter(filter_repo_advanced)
-            .no_provider("claude", "chatgpt")
+            .exclude_provider("claude", "chatgpt")
             .list()
         )
         # Should only return codex (if any)
@@ -381,12 +381,12 @@ class TestConversationFilterCombinedPosNeg:
     """Tests for combining positive and negative filters."""
 
     @pytest.mark.asyncio
-    async def test_provider_with_no_tag(self, filter_repo_advanced):
+    async def test_provider_with_exclude_tag(self, filter_repo_advanced):
         """Include provider but exclude tag."""
         result = await (
             ConversationFilter(filter_repo_advanced)
             .provider("claude")
-            .no_tag("simple")
+            .exclude_tag("simple")
             .list()
         )
         # Should be claude but not simple
@@ -395,12 +395,12 @@ class TestConversationFilterCombinedPosNeg:
             assert "simple" not in conv.tags
 
     @pytest.mark.asyncio
-    async def test_contains_with_no_contains(self, filter_repo_advanced):
+    async def test_contains_with_exclude_text(self, filter_repo_advanced):
         """Include text match but exclude another text."""
         result = await (
             ConversationFilter(filter_repo_advanced)
             .contains("data")
-            .no_contains("error")
+            .exclude_text("error")
             .list()
         )
         # All should contain "data" but not "error"
@@ -408,12 +408,12 @@ class TestConversationFilterCombinedPosNeg:
         assert isinstance(result, list)
 
     @pytest.mark.asyncio
-    async def test_tag_with_no_provider(self, filter_repo_advanced):
+    async def test_tag_with_exclude_provider(self, filter_repo_advanced):
         """Include tag but exclude provider."""
         result = await (
             ConversationFilter(filter_repo_advanced)
             .tag("analysis")
-            .no_provider("claude")
+            .exclude_provider("claude")
             .list()
         )
         # Should have analysis tag but not be from claude
@@ -422,12 +422,12 @@ class TestConversationFilterCombinedPosNeg:
             assert conv.provider != "claude"
 
     @pytest.mark.asyncio
-    async def test_has_thinking_with_no_provider_claude(self, filter_repo_advanced):
+    async def test_has_thinking_with_exclude_provider_claude(self, filter_repo_advanced):
         """Include thinking but exclude claude (contradictory if thinking only in claude)."""
         result = await (
             ConversationFilter(filter_repo_advanced)
             .has("thinking")
-            .no_provider("claude")
+            .exclude_provider("claude")
             .list()
         )
         # May be empty if thinking only in claude, but should not crash
@@ -547,7 +547,7 @@ class TestConversationFilterListSummaries:
     @pytest.mark.parametrize("filter_fn,filter_name,expected_value", [
         (lambda f: f.provider("claude"), "provider", "claude"),
         (lambda f: f.tag("quantum"), "tag", "quantum"),
-        (lambda f: f.no_tag("simple"), "no_tag", "simple"),
+        (lambda f: f.exclude_tag("simple"), "exclude_tag", "simple"),
         (lambda f: f.title("Complex"), "title", "Complex"),
     ])
     @pytest.mark.asyncio
@@ -559,7 +559,7 @@ class TestConversationFilterListSummaries:
             assert all(s.provider == expected_value for s in result)
         elif filter_name == "tag":
             assert all(expected_value in s.tags for s in result)
-        elif filter_name == "no_tag":
+        elif filter_name == "exclude_tag":
             assert all(expected_value not in s.tags for s in result)
         elif filter_name == "title":
             assert all(expected_value in s.display_title for s in result)
@@ -591,7 +591,7 @@ class TestConversationFilterListSummaries:
 
     @pytest.mark.parametrize("invalid_filter_fn,error_match", [
         (lambda f: f.has("thinking"), "Cannot use list_summaries"),
-        (lambda f: f.no_contains("error"), "Cannot use list_summaries"),
+        (lambda f: f.exclude_text("error"), "Cannot use list_summaries"),
         (lambda f: f.where(lambda c: True), "Cannot use list_summaries"),
         (lambda f: f.sort("words"), "Cannot use list_summaries"),
         (lambda f: f.sort("tokens"), "Cannot use list_summaries"),
