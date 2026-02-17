@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import TYPE_CHECKING
 
 from polylogue.lib.log import get_logger
@@ -51,7 +52,7 @@ class IndexService:
             if self.backend is not None:
                 try:
                     await ensure_index(self.backend)
-                except Exception as exc:
+                except sqlite3.DatabaseError as exc:
                     logger.error("Failed to ensure index", error=str(exc), exc_info=True)
                     return False
             return True
@@ -63,7 +64,7 @@ class IndexService:
         try:
             await update_index_for_conversations(conversation_ids, self.backend)
             return True
-        except Exception as exc:
+        except sqlite3.DatabaseError as exc:
             logger.error("Failed to update index", error=str(exc), exc_info=True)
             return False
 
@@ -80,7 +81,7 @@ class IndexService:
         try:
             await rebuild_index(self.backend)
             return True
-        except Exception as exc:
+        except sqlite3.DatabaseError as exc:
             logger.error("Failed to rebuild index", error=str(exc), exc_info=True)
             return False
 
@@ -94,7 +95,7 @@ class IndexService:
             if self.backend is not None:
                 await ensure_index(self.backend)
             return True
-        except Exception as exc:
+        except sqlite3.DatabaseError as exc:
             logger.error("Failed to ensure index exists", error=str(exc), exc_info=True)
             return False
 
@@ -110,6 +111,6 @@ class IndexService:
 
         try:
             return await index_status(self.backend)
-        except Exception as exc:
+        except sqlite3.DatabaseError as exc:
             logger.error("Failed to get index status", error=str(exc), exc_info=True)
             return {"exists": False, "count": 0}

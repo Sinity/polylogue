@@ -9,6 +9,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -162,10 +163,10 @@ class TestShowEmbeddingStats:
                 result.fetchone.return_value = (100,)
             # embedding_status query fails
             elif "embedding_status" in args[0] or "message_embeddings" in args[0]:
-                raise Exception("table does not exist")
+                raise sqlite3.OperationalError("table does not exist")
             # pending query fails
             else:
-                raise Exception("unknown query")
+                raise sqlite3.OperationalError("unknown query")
             return result
 
         mock_conn.execute.side_effect = side_effect

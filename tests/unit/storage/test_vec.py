@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -710,7 +711,7 @@ class TestGetEmbeddingStats:
         """Should gracefully handle missing tables."""
         mock_provider._get_connection = MagicMock()
         mock_conn = MagicMock()
-        mock_conn.execute = MagicMock(side_effect=Exception("Table not found"))
+        mock_conn.execute = MagicMock(side_effect=sqlite3.OperationalError("Table not found"))
         mock_provider._get_connection.return_value = mock_conn
 
         stats = mock_provider.get_embedding_stats()

@@ -267,7 +267,7 @@ class ParsingService:
                 source_name = raw_record.source_name or raw_record.source_path
                 for convo in parsed_convos:
                     items_to_process.append((convo, source_name, raw_record.raw_id))
-            except Exception as exc:
+            except (json.JSONDecodeError, ValueError, TypeError) as exc:
                 logger.error(
                     "Failed to parse raw conversation",
                     raw_id=raw_record.raw_id,

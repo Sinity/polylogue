@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import sqlite3
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -102,7 +103,7 @@ class AcquisitionService:
                             result.raw_ids.append(raw_id)
                         else:
                             result.counts["skipped"] += 1
-                    except Exception as exc:
+                    except sqlite3.DatabaseError as exc:
                         logger.error(
                             "Failed to store raw conversation",
                             source=source.name,
