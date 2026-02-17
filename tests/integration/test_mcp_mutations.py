@@ -384,13 +384,13 @@ class TestGetConversationSummaryTool:
 class TestGetSessionTreeTool:
     """Tests for get_session_tree tool."""
 
-    def test_session_tree_returns_list(self, sample_conversation):
+    def test_session_tree_returns_list(self, simple_conversation):
         """get_session_tree returns list of conversations."""
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.get_session_tree.return_value = [sample_conversation]
+            mock_repo.get_session_tree.return_value = [simple_conversation]
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
