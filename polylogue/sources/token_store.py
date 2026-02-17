@@ -13,7 +13,7 @@ from typing import Protocol
 
 from polylogue.lib.log import get_logger
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 
 
 class TokenStore(Protocol):
@@ -93,7 +93,7 @@ class KeyringTokenStore:
                 if data is not None:
                     return data
             except Exception as exc:
-                LOGGER.debug("Keyring load failed for %s, falling back to file: %s", key, exc)
+                logger.debug("Keyring load failed for %s, falling back to file: %s", key, exc)
         return self._fallback.load(key)
 
     def save(self, key: str, data: str) -> None:
@@ -102,7 +102,7 @@ class KeyringTokenStore:
                 self._keyring.set_password(self._SERVICE_NAME, key, data)  # type: ignore[attr-defined]
                 return
             except Exception as exc:
-                LOGGER.debug("Keyring save failed for %s, falling back to file: %s", key, exc)
+                logger.debug("Keyring save failed for %s, falling back to file: %s", key, exc)
         self._fallback.save(key, data)
 
     def delete(self, key: str) -> None:
@@ -120,7 +120,7 @@ def create_token_store(directory: Path) -> TokenStore:
     file_store = FileTokenStore(directory)
     keyring_store = KeyringTokenStore(fallback=file_store)
     if keyring_store._keyring is not None:
-        LOGGER.debug("Using keyring token storage")
+        logger.debug("Using keyring token storage")
         return keyring_store
-    LOGGER.debug("Using file-based token storage (keyring not available)")
+    logger.debug("Using file-based token storage (keyring not available)")
     return file_store

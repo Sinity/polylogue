@@ -20,7 +20,7 @@ from polylogue.lib.log import get_logger
 if TYPE_CHECKING:
     from polylogue.storage.store import RunResult
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 
 # Pattern for detecting shell metacharacters that could enable command injection.
 # Note: bare ``$VAR`` is harmless with ``shell=False`` (passed literally), but
@@ -58,7 +58,7 @@ class CompositeSyncHandler:
             try:
                 handler.on_sync(event)
             except Exception:
-                LOGGER.exception("Sync handler %s failed", type(handler).__name__)
+                logger.exception("Sync handler %s failed", type(handler).__name__)
 
 
 class NotificationHandler:
@@ -148,9 +148,9 @@ class WebhookHandler:
             )
             urllib.request.urlopen(req, timeout=10)  # noqa: S310
         except ValueError as exc:
-            LOGGER.warning("Webhook blocked for %s: %s", self._url, exc)
+            logger.warning("Webhook blocked for %s: %s", self._url, exc)
         except Exception as exc:
-            LOGGER.warning("Webhook failed for %s: %s", self._url, exc)
+            logger.warning("Webhook failed for %s: %s", self._url, exc)
 
 
 def _validate_exec_command(command: str) -> list[str]:

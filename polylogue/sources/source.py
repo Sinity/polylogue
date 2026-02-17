@@ -36,9 +36,8 @@ from .parsers.claude import (
 
 if TYPE_CHECKING:
     from ..storage.repository import ConversationRepository
-    from ..storage.repository import ConversationRepository
 
-LOGGER = get_logger(__name__)
+logger = get_logger(__name__)
 
 
 class RecordBundle(BaseModel):
@@ -105,7 +104,7 @@ def _decode_json_bytes(blob: bytes) -> str | None:
         decoded = blob.decode("utf-8", errors="ignore").replace("\x00", "")
         return decoded if decoded else None
     except (AttributeError, UnicodeDecodeError):
-        LOGGER.debug("Failed to coerce JSON bytes after fallbacks.")
+        logger.debug("Failed to coerce JSON bytes after fallbacks.")
         return None
 
 
@@ -169,7 +168,7 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str, _depth: i
         List of ParsedConversation objects extracted from the payload
     """
     if _depth > _MAX_PARSE_DEPTH:
-        LOGGER.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
+        logger.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
         return []
     if provider == "chatgpt":
         return [chatgpt.parse(payload, fallback_id)]
@@ -232,7 +231,7 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str, _depth: i
 
 def parse_drive_payload(provider: str, payload: Any, fallback_id: str, _depth: int = 0) -> list[ParsedConversation]:
     if _depth > _MAX_PARSE_DEPTH:
-        LOGGER.warning("Recursion depth exceeded parsing drive payload %s", fallback_id)
+        logger.warning("Recursion depth exceeded parsing drive payload %s", fallback_id)
         return []
     if isinstance(payload, list):
         # Check if it looks like a list of conversations or a list of messages
@@ -262,7 +261,7 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
             if isinstance(raw, bytes):
                 decoded = _decode_json_bytes(raw)
                 if not decoded:
-                    LOGGER.warning("Skipping undecodable line from %s", path_name)
+                    logger.warning("Skipping undecodable line from %s", path_name)
                     continue
             else:
                 decoded = raw
@@ -272,18 +271,17 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
                 # Log first few errors, then summarize
                 error_count += 1
                 if error_count <= 3:
-                    LOGGER.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
+                    logger.warning("Skipping invalid JSON line in %s: %s", path_name, exc)
                 elif error_count == 4:
-                    LOGGER.warning("Skipping further invalid JSON lines in %s...", path_name)
+                    logger.warning("Skipping further invalid JSON lines in %s...", path_name)
                 continue
         if error_count > 3:
-            LOGGER.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
+            logger.warning("Skipped %d invalid JSON lines in %s", error_count, path_name)
         return
 
     if unpack_lists:
         # Strategy 1: Try streaming root list
         try:
-            # LOGGER.info("Strategy 1: ijson items(item) for %s", path_name)
             found_any = False
             for item in ijson.items(handle, "item"):
                 found_any = True
@@ -294,14 +292,13 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
             if found_any:
                 return  # Already yielded items — don't retry to avoid duplicates
         except Exception as exc:
-            LOGGER.debug("Strategy 1 (ijson items) failed for %s: %s", path_name, exc)
+            logger.debug("Strategy 1 (ijson items) failed for %s: %s", path_name, exc)
             if found_any:
                 return  # Already yielded items — don't retry to avoid duplicates
 
         handle.seek(0)
         # Strategy 2: Try streaming conversations list
         try:
-            # LOGGER.info("Strategy 2: ijson items(conversations.item) for %s", path_name)
             found_any = False
             for item in ijson.items(handle, "conversations.item"):
                 found_any = True
@@ -312,7 +309,7 @@ def _iter_json_stream(handle: BinaryIO | IO[bytes], path_name: str, unpack_lists
             if found_any:
                 return  # Already yielded items — don't retry to avoid duplicates
         except Exception as exc:
-            LOGGER.debug("Strategy 2 (ijson conversations.item) failed for %s: %s", path_name, exc)
+            logger.debug("Strategy 2 (ijson conversations.item) failed for %s: %s", path_name, exc)
             if found_any:
                 return  # Already yielded items — don't retry to avoid duplicates
 
@@ -511,7 +508,7 @@ class _ConversationEmitter:
                     yield (raw_data, self._maybe_enrich(conv, provider))
                 source_index += 1
             except Exception:
-                LOGGER.exception("Error processing payload from %s", stream_name)
+                logger.exception("Error processing payload from %s", stream_name)
                 raise
 
     def _make_raw(
@@ -584,7 +581,7 @@ class _ZipEntryValidator:
             if info.compress_size > 0:
                 ratio = info.file_size / info.compress_size
                 if ratio > MAX_COMPRESSION_RATIO:
-                    LOGGER.warning(
+                    logger.warning(
                         "Skipping suspicious file %s in %s: compression ratio %.1f exceeds limit",
                         name,
                         self._zip_path,
@@ -599,7 +596,7 @@ class _ZipEntryValidator:
 
             # ZIP bomb protection: uncompressed size
             if info.file_size > MAX_UNCOMPRESSED_SIZE:
-                LOGGER.warning(
+                logger.warning(
                     "Skipping oversized file %s in %s: %d bytes exceeds limit",
                     name,
                     self._zip_path,
@@ -752,20 +749,20 @@ def iter_source_conversations_with_raw(
                         yield from emitter.emit(handle, path.name)
         except FileNotFoundError as exc:
             failed_count += 1
-            LOGGER.warning("File disappeared during processing (TOCTOU race): %s", path)
+            logger.warning("File disappeared during processing (TOCTOU race): %s", path)
             _record_cursor_failure(cursor_state, str(path), f"File not found (may have been deleted): {exc}")
         except (json.JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
             failed_count += 1
-            LOGGER.warning("Failed to parse %s: %s", path, exc)
+            logger.warning("Failed to parse %s: %s", path, exc)
             _record_cursor_failure(cursor_state, str(path), str(exc))
         except Exception as exc:
             failed_count += 1
-            LOGGER.error("Unexpected error processing %s: %s", path, exc)
+            logger.error("Unexpected error processing %s: %s", path, exc)
             _record_cursor_failure(cursor_state, str(path), str(exc))
 
     # Emit a prominent summary if any files were skipped
     if failed_count > 0:
-        LOGGER.warning(
+        logger.warning(
             "Skipped %d of %d files from source %r due to parse/read errors. "
             "Run with --verbose for details.",
             failed_count,
