@@ -29,11 +29,9 @@ import random
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
-# Schema directory (in-package baseline schemas)
-SCHEMA_DIR = Path(__file__).parent / "providers"
+from polylogue.schemas.registry import SCHEMA_DIR
 
 
 # =============================================================================

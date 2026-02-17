@@ -24,8 +24,8 @@ from typing import Any
 
 from polylogue.paths import data_home
 
-# In-package baseline schemas
-BASELINE_DIR = Path(__file__).parent / "providers"
+# In-package baseline schemas (canonical definition — imported by validator, synthetic)
+SCHEMA_DIR = Path(__file__).parent / "providers"
 
 
 @dataclass
@@ -132,7 +132,7 @@ class SchemaRegistry:
         providers: set[str] = set()
 
         # Baseline providers
-        for p in BASELINE_DIR.glob("*.schema.json.gz"):
+        for p in SCHEMA_DIR.glob("*.schema.json.gz"):
             providers.add(p.name.replace(".schema.json.gz", ""))
 
         # Versioned providers
@@ -230,7 +230,7 @@ class SchemaRegistry:
     # --- Internal helpers ---
 
     def _baseline_path(self, provider: str) -> Path:
-        return BASELINE_DIR / f"{provider}.schema.json.gz"
+        return SCHEMA_DIR / f"{provider}.schema.json.gz"
 
     def _load_baseline(self, provider: str) -> dict[str, Any] | None:
         path = self._baseline_path(provider)

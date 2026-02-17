@@ -18,7 +18,6 @@ from __future__ import annotations
 import gzip
 import json
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 try:
@@ -29,9 +28,7 @@ except ImportError:
     Draft202012Validator = None
     ValidationError = Exception
 
-
-# Schema directory relative to this file
-SCHEMA_DIR = Path(__file__).parent.parent / "schemas" / "providers"
+from polylogue.schemas.registry import SCHEMA_DIR
 
 
 @dataclass
