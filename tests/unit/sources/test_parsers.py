@@ -478,4 +478,3 @@ def test_consolidation_statistics():
 	print(f"Coverage multiplier: {parametrized_tests / (len(SYNTHETIC_PROVIDERS) or 1):.1f}x")
 	print(f"{'='*60}\n")
 
-	assert True  # Always pass, this is just for reporting
