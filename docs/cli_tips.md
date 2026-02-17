@@ -4,7 +4,7 @@ Polylogue switches to plain mode automatically when stdout/stderr are not TTYs. 
 
 ## Drive auth
 
-- Provide an OAuth client JSON at `~/.config/polylogue/credentials.json` or set `POLYLOGUE_CREDENTIAL_PATH`.
+- Provide an OAuth client JSON at `~/.config/polylogue/polylogue-credentials.json` or set `POLYLOGUE_CREDENTIAL_PATH`.
 - Tokens are stored at `~/.config/polylogue/token.json` (or `POLYLOGUE_TOKEN_PATH`).
 - Drive auth requires `--interactive` for the browser authorization code.
 - Run `polylogue auth` to initiate the OAuth flow.
