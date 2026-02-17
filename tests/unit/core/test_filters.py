@@ -40,7 +40,7 @@ from tests.infra.helpers import ConversationBuilder
 PROVIDER_FILTER_CASES = [
     ("claude", 2, "Filter by single provider"),
     (("claude", "chatgpt"), 3, "Filter by multiple providers"),
-    ("chatgpt", 1, "Exclude specific provider (no_provider)"),
+    ("chatgpt", 1, "Exclude specific provider (exclude_provider)"),
 ]
 
 SORT_OPERATION_CASES = [
@@ -224,11 +224,11 @@ class TestConversationFilterMethods:
     FILTER_METHOD_CASES = [
         ("provider_single", lambda f: f.provider("claude"), 2, "claude", "Filter by single provider"),
         ("provider_multi", lambda f: f.provider("claude", "chatgpt"), 3, "multi", "Filter by multiple providers"),
-        ("no_provider", lambda f: f.no_provider("claude"), 1, "not_claude", "Exclude specific provider"),
+        ("exclude_provider", lambda f: f.exclude_provider("claude"), 1, "not_claude", "Exclude specific provider"),
         ("tag_python", lambda f: f.tag("python"), None, None, "Filter by tag (or empty)"),
-        ("no_tag", lambda f: f.no_tag("nonexistent-tag"), 3, None, "Exclude nonexistent tag"),
+        ("exclude_tag", lambda f: f.exclude_tag("nonexistent-tag"), 3, None, "Exclude nonexistent tag"),
         ("contains", lambda f: f.contains("Python"), None, None, "Filter contains text"),
-        ("no_contains", lambda f: f.no_contains("database"), None, None, "Exclude text"),
+        ("exclude_text", lambda f: f.exclude_text("database"), None, None, "Exclude text"),
         ("limit_1", lambda f: f.limit(1), 1, None, "Limit to 1 result"),
         ("limit_0", lambda f: f.limit(0), 0, None, "Limit of zero"),
         ("title_Python", lambda f: f.title("Python"), 1, "title", "Filter by title"),
@@ -513,7 +513,7 @@ class TestFiltersApplyFiltersLogic:
     async def test_excluded_providers_filter(self, filter_repo_populated):
         """Test filtering out specific providers."""
         results = await (ConversationFilter(filter_repo_populated)
-                   .no_provider("chatgpt")
+                   .exclude_provider("chatgpt")
                    .list())
         assert all(c.provider != "chatgpt" for c in results)
 
@@ -715,9 +715,9 @@ class TestFiltersNegativeFTSLogic:
 
     @pytest.mark.asyncio
     async def test_negative_fts_excludes_conversations(self, filter_repo_fts):
-        """Test no_contains() excludes conversations with term."""
+        """Test exclude_text() excludes conversations with term."""
         results = await (ConversationFilter(filter_repo_fts)
-                   .no_contains("error")
+                   .exclude_text("error")
                    .list())
         assert not any("error" in c.display_title or any("error" in (m.text or "").lower() for m in c.messages) for c in results)
 

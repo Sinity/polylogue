@@ -135,9 +135,9 @@ async with Polylogue() as p:
 **Filters** (chainable):
 | Method | Purpose |
 |--------|---------|
-| `provider(*names)` / `no_provider()` | Include/exclude providers |
-| `tag(*tags)` / `no_tag()` | Include/exclude tags |
-| `contains(text)` / `no_contains()` | FTS search include/exclude |
+| `provider(*names)` / `exclude_provider()` | Include/exclude providers |
+| `tag(*tags)` / `exclude_tag()` | Include/exclude tags |
+| `contains(text)` / `exclude_text()` | FTS search include/exclude |
 | `has(*types)` | Content types: `thinking`, `tools`, `attachments`, `summary` |
 | `since(date)` / `until(date)` | Date range |
 | `title(pattern)` / `id(prefix)` | Title contains, ID prefix |
