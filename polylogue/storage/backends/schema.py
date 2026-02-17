@@ -666,23 +666,6 @@ def _ensure_vec0_table(conn: sqlite3.Connection) -> None:
 
 
 __all__ = [
-    "SCHEMA_VERSION",
     "SCHEMA_DDL",
-    "_VEC0_DDL",
-    "_apply_schema",
-    "_MIGRATIONS",
-    "_run_migrations",
-    "_ensure_schema",
-    "_ensure_vec0_table",
-    # Individual migration functions (for tests)
-    "_migrate_v1_to_v2",
-    "_migrate_v2_to_v3",
-    "_migrate_v3_to_v4",
-    "_migrate_v4_to_v5",
-    "_migrate_v5_to_v6",
-    "_migrate_v6_to_v7",
-    "_migrate_v7_to_v8",
-    "_migrate_v8_to_v9",
-    "_migrate_v9_to_v10",
-    "_migrate_v10_to_v11",
+    "SCHEMA_VERSION",
 ]

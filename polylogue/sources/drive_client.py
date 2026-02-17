@@ -543,12 +543,11 @@ class DriveClient:
 
 
 __all__ = [
-    "DriveClient",
-    "DriveFile",
-    "DriveError",
     "DriveAuthError",
+    "DriveClient",
+    "DriveError",
+    "DriveFile",
     "DriveNotFoundError",
     "default_credentials_path",
     "default_token_path",
-    "_parse_modified_time",
 ]

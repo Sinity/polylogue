@@ -224,13 +224,9 @@ def _build_conversation_filters(
 
 
 __all__ = [
+    "DB_TIMEOUT",
     "connection_context",
-    "open_connection",
-    "_load_sqlite_vec",
-    "_get_cached_connection",
-    "_clear_connection_cache",
-    "default_db_path",
     "create_default_backend",
-    "_iso_to_epoch",
-    "_build_conversation_filters",
+    "default_db_path",
+    "open_connection",
 ]

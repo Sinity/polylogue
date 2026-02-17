@@ -964,4 +964,4 @@ def _records_to_conversation(
     return Conversation.from_records(conversation, messages, attachments)
 
 
-__all__ = ["ConversationRepository", "_records_to_conversation"]
+__all__ = ["ConversationRepository"]
