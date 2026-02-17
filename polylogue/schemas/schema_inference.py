@@ -6,12 +6,13 @@ This module infers JSON schemas from real data samples, which can be used for:
 3. Property-based test generation via hypothesis-jsonschema
 
 Can be used as:
-- Module: `from polylogue.schemas.generator import generate_provider_schema`
+- Module: `from polylogue.schemas.schema_inference import generate_provider_schema`
 - CLI: `polylogue schema generate --provider chatgpt`
 """
 
 from __future__ import annotations
 
+import contextlib
 import gzip
 import json
 import math
@@ -29,9 +30,6 @@ try:
 except ImportError:
     GENSON_AVAILABLE = False
 
-
-# Default database path - use same location as main storage backend
-import contextlib
 
 from polylogue.storage.backends.connection import default_db_path
 
@@ -362,10 +360,6 @@ def _collect_field_stats(
     # Reference detection: for each string field, check if its values
     # are mostly keys in some dict field
     for path, stats in all_stats.items():
-        if not stats.observed_values or not stats.is_enum_like:
-            # Only check low-cardinality fields (high-cardinality might be refs too)
-            # Actually, check ALL string fields against dict key sets
-            pass
         if stats.observed_values:
             observed = set(stats.observed_values.keys())
             if len(observed) > _ENUM_MAX_CARDINALITY:
