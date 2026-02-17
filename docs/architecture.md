@@ -259,4 +259,284 @@ polylogue/
 
 ---
 
-*For current architecture details, see [CLAUDE.md](../CLAUDE.md).*
+## Layer Architecture
+
+Each layer has a defined responsibility and communicates only with adjacent layers.
+
+### CLI Layer (`cli/`)
+
+Entry point for all user interaction. Uses Click with a custom `QueryFirstGroup` that treats positional arguments as implicit search queries. Commands are thin wrappers that translate CLI flags into domain operations.
+
+- **click_app.py**: Custom Click group that routes bare `polylogue "search terms"` to query mode
+- **query.py**: Translates filter flags (`--provider`, `--since`, `--has`) into `ConversationFilter` chains
+- **commands/**: Each subcommand (`run`, `check`, `dashboard`, `mcp`, `auth`, `reset`) is a self-contained module
+
+### Pipeline Layer (`pipeline/`)
+
+Orchestrates the full ingestion lifecycle. The `runner.py` module coordinates the four pipeline services in sequence, with event-bus notifications at each stage.
+
+- **runner.py**: `run_sources()` is the top-level async entry point
+- **services/**: Stateless service classes (acquisition, parsing, rendering, indexing) injected with repositories
+- **event_bus.py**: Decoupled progress reporting (the TUI subscribes to pipeline events)
+
+### Ingestion Layer (`sources/`)
+
+Source discovery and provider-specific parsing. Each provider parser converts raw wire format into `ParsedConversation`/`ParsedMessage` intermediates.
+
+- **source.py**: `detect_provider()` probes file content via `looks_like()` functions — no filename heuristics
+- **parsers/**: One module per provider, all producing the same `ParsedConversation` type
+- **drive.py** / **drive_client.py**: Google Drive OAuth + API for Gemini conversations
+
+### Storage Layer (`storage/`)
+
+Database operations, search, and write coordination. The `SQLiteBackend` is async-first (aiosqlite) with sync connection helpers for thread-pool operations.
+
+- **repository.py**: `ConversationRepository` — the single write coordination point
+- **store.py**: Record types and row mappers, `_WRITE_LOCK` for write serialization
+- **search_providers/**: Protocol implementations for FTS5, sqlite-vec, and hybrid search
+
+### Rendering Layer (`rendering/`)
+
+Generates output files from domain models. Renderers are stateless functions that accept a `Conversation` and produce files.
+
+- **core.py**: `RenderService` orchestrates parallel rendering via `ThreadPoolExecutor`
+- **renderers/**: Markdown and HTML renderers, each producing `render_root/<format>/<provider>/<id>.<ext>`
+
+### Domain Layer (`lib/`)
+
+Pure business logic with no I/O dependencies. Contains the core data models, filter chains, projections, and hashing.
+
+- **models.py**: `Conversation`, `Message`, `Attachment` with semantic classification (`is_thinking`, `is_tool_use`, `is_substantive`)
+- **filters.py**: `ConversationFilter` — chainable, lazy builder with async terminals (`.list()`, `.first()`, `.count()`)
+- **projections.py**: `ConversationProjection` — message-level filtering within a single conversation
+
+### Core Layer
+
+Shared utilities with no domain knowledge: NFC-normalized SHA-256 hashing (`lib/hashing.py`), orjson helpers (`lib/json.py`), timestamp parsing (`lib/dates.py`), and structured logging (`lib/log.py`).
+
+---
+
+## Key Abstractions
+
+### Protocols (`protocols.py`)
+
+```python
+@runtime_checkable
+class SearchProvider(Protocol):
+    async def search(self, query: str, *, limit: int = 20) -> list[SearchResult]: ...
+    async def rebuild_index(self) -> None: ...
+
+@runtime_checkable
+class VectorProvider(Protocol):
+    async def find_similar(self, text: str, *, limit: int = 10) -> list[SearchResult]: ...
+    async def embed_conversations(self, conversations: list[Conversation]) -> int: ...
+```
+
+Implementations: `FTS5Provider`, `SqliteVecProvider`, `HybridProvider` (combines both).
+
+### Domain Models (`lib/models.py`)
+
+`Conversation` is the primary aggregate: it holds `messages: list[Message]`, `metadata: dict`, and computed properties like `display_title`, `total_cost_usd`, `word_count`, and `token_count`.
+
+`Message` carries semantic classification via content blocks:
+- `is_thinking` — reasoning traces (Claude, ChatGPT, Gemini)
+- `is_tool_use` — tool invocations and results
+- `is_substantive` — real dialogue (not noise, not thinking)
+- `is_noise` — tool use, context dumps, or system prompts
+
+### Filter Chain (`lib/filters.py`)
+
+Lazy builder pattern — no database queries until a terminal method is called:
+
+```python
+# Building the filter is synchronous and cheap
+chain = ConversationFilter(repo).provider("claude").since("2024-01-01").contains("error")
+
+# Terminal triggers the actual query
+results = await chain.list()       # Full conversations
+count = await chain.count()        # SQL-optimized count
+summaries = await chain.list_summaries()  # Lightweight (no messages)
+```
+
+### Projections (`lib/projections.py`)
+
+Message-level filtering within a conversation:
+
+```python
+# Get only substantive messages with 50+ words
+msgs = conv.project().substantive().min_words(50).execute()
+```
+
+---
+
+## Data Flow
+
+### Pipeline Stages
+
+The import pipeline is orchestrated by `pipeline/runner.py`:
+
+```
+Source files → detect_provider() → Parse → Hash (NFC) → Store (under lock) → Render (parallel) → Index
+```
+
+#### 1. Acquisition
+
+Source discovery scans configured paths for files matching supported formats. Local sources live under `inbox/` (default: `~/.local/share/polylogue/inbox/`). Drive sources are downloaded from Google Drive via OAuth. Each file is read with encoding fallback (UTF-8 → UTF-8-sig → UTF-16 → UTF-32).
+
+#### 2. Parsing
+
+`sources/source.py:detect_provider()` probes file content to determine the provider. Provider-specific parsers in `sources/parsers/` convert raw JSON/JSONL into `ParsedConversation` intermediates:
+
+- **ChatGPT**: UUID graph traversal of the `mapping` field
+- **Claude AI**: JSONL with `chat_messages` arrays
+- **Claude Code**: JSON arrays with `parentUuid`/`sessionId` markers, structured content blocks
+- **Codex**: Session-based JSONL exports (envelope, direct, and legacy formats)
+- **Gemini**: `chunkedPrompt.chunks` from Drive API payloads
+
+#### 3. Storage
+
+`pipeline/prepare.py` prepares ingest bundles with NFC-normalized content hashing (SHA-256) for idempotent storage. `storage/store.py` writes conversations, messages, and attachments into SQLite under `_WRITE_LOCK`. `storage/repository.py` coordinates writes via `ConversationRepository`. Conversations are deduplicated by content hash — re-importing unchanged data is a no-op.
+
+#### 4. Rendering
+
+`rendering/core.py` orchestrates parallel rendering via `ThreadPoolExecutor(max_workers=4)`. Markdown and HTML renderers write output into `render_root/<format>/<provider>/<conversation_id>.<ext>`.
+
+#### 5. Indexing
+
+`storage/index.py` builds the SQLite FTS5 index for full-text search. `storage/search_providers/sqlite_vec.py` handles optional vector indexing via sqlite-vec with Voyage AI embeddings.
+
+### Content Hashing
+
+```python
+# lib/hashing.py — NFC normalization prevents duplicates from equivalent Unicode
+normalized = unicodedata.normalize("NFC", text)
+hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+```
+
+**Conversation hash** (`pipeline/ids.py`): deterministic JSON serialization with sorted keys and compact separators. Hash includes: title, timestamps, messages (id/role/text/timestamp), attachments (id/mime_type). Hash excludes: `provider_meta`, `metadata` (user-editable fields).
+
+---
+
+## Extension Points
+
+### Search Providers
+
+Search uses protocol-based extensibility. Any class implementing `SearchProvider` can be used:
+
+```python
+class SearchProvider(Protocol):
+    async def search(self, query: str, *, limit: int = 20) -> list[SearchResult]: ...
+    async def rebuild_index(self) -> None: ...
+```
+
+Current implementations:
+- **FTS5Provider**: SQLite FTS5 full-text search with smartcase and query escaping
+- **SqliteVecProvider**: sqlite-vec vector search with Voyage AI embeddings
+- **HybridProvider**: Combines FTS5 and vector results with score normalization
+
+### Rendering
+
+Renderers are stateless functions. Adding a new output format means implementing a renderer module in `rendering/renderers/` and registering it. The CLI `--format` flag maps directly to renderer selection.
+
+### Provider Parsers
+
+Adding a new provider requires:
+1. A Pydantic model in `sources/providers/` for the raw wire format
+2. A parser in `sources/parsers/` producing `ParsedConversation`
+3. A `looks_like()` function in the parser for auto-detection
+
+---
+
+## Dependencies
+
+| Dependency | Purpose |
+|------------|---------|
+| **aiosqlite** | Async SQLite access (wraps sqlite3) |
+| **Click** | CLI framework with custom group for query-first design |
+| **orjson** | Fast JSON serialization/deserialization |
+| **Rich** | Terminal output formatting (tables, panels, progress) |
+| **Textual** | TUI framework for the interactive dashboard |
+| **Pydantic** | Validation models for provider wire formats |
+| **dateparser** | Natural language date parsing (`"last week"`, `"2 days ago"`) |
+| **structlog** | Structured logging |
+| **sqlite-vec** | Vector similarity search (self-contained, no external services) |
+| **httpx** | HTTP client for Google Drive API |
+| **mcp** | Model Context Protocol server SDK |
+
+All dependencies are pure Python or self-contained native extensions. No external services required for core functionality (vector search + Drive are opt-in).
+
+---
+
+## Thread Safety Model
+
+Polylogue uses **bounded parallelism** with explicit locking to balance throughput and safety:
+
+```
+✅ Parallel: prepare_ingest() — pure hashing/parsing, no shared state
+✅ Parallel: rendering — ThreadPoolExecutor(max_workers=4)
+✅ Bounded: ingestion futures — max 16 in-flight, FIRST_COMPLETED wait
+✅ Pattern: with _WRITE_LOCK: save() — atomic writes
+
+❌ NEVER: Direct sqlite3 ops — always use ConversationRepository
+❌ NEVER: Hold _WRITE_LOCK during I/O — only during commit
+❌ NEVER: Mutate shared state without locks
+```
+
+### Connection Management
+
+- **Async path**: `SQLiteBackend` uses aiosqlite — one connection per backend instance, serialized by asyncio's event loop
+- **Sync path**: `connection_context()` provides thread-local connections via `threading.local()`, each thread gets its own SQLite connection
+- **Write serialization**: All writes go through `_WRITE_LOCK` in `store.py`, ensuring atomic commits
+
+### Parallel Boundaries
+
+| Operation | Parallelism | Safety |
+|-----------|-------------|--------|
+| Content hashing | Fully parallel | Pure functions, no shared state |
+| Provider parsing | Fully parallel | Stateless parsers |
+| Database writes | Serialized | `_WRITE_LOCK` |
+| File rendering | Thread pool (4) | Independent output files |
+| FTS indexing | Serialized | Single writer |
+| In-flight futures | Bounded (16) | `FIRST_COMPLETED` wait prevents memory exhaustion |
+
+---
+
+## Testing Architecture
+
+### Test Organization
+
+Tests live under `tests/` with clear separation:
+
+```
+tests/
+├── unit/          # Fast, isolated tests (mocked dependencies)
+├── integration/   # Full-stack tests (real SQLite, real pipeline)
+├── conftest.py    # Shared fixtures
+└── fixtures/      # Static test data files
+```
+
+### Key Fixtures
+
+| Fixture | Scope | Purpose |
+|---------|-------|---------|
+| `seeded_db` | session | Pre-populated database for integration tests |
+| `synthetic_source` | function | Temporary source directory with generated files |
+| `raw_synthetic_samples` | session | Raw conversation data for unit tests |
+| `repository` | function | Fresh `ConversationRepository` with in-memory backend |
+
+All fixtures use the same `SyntheticCorpus` infrastructure as `polylogue demo`, ensuring the demo exercises identical code paths to the test suite.
+
+### Test Markers
+
+| Marker | Purpose |
+|--------|---------|
+| `@pytest.mark.slow` | Long-running tests (Drive integration, large corpus) |
+| `@pytest.mark.integration` | Full-stack tests requiring database |
+
+### Coverage
+
+The test suite enforces ≥90% coverage. As of this writing, 4200+ tests with 1 skip (SQLiteBackend partial-ID limitation).
+
+---
+
+**See also:** [Internals Reference](internals.md) · [Library API](library-api.md) · [Data Model](data-model.md)
