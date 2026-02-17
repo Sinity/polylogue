@@ -19,7 +19,6 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from polylogue.lib.log import get_logger
-from polylogue.services import get_repository as _get_async_repo
 from polylogue.services import get_repository as _get_repo
 from polylogue.services import get_service_config as _get_config
 
@@ -31,6 +30,34 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _MAX_LIMIT = 10000
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_fenced_code(text: str, language: str = "") -> list[dict[str, str]]:
+    """Extract fenced code blocks from markdown text.
+
+    Parses triple-backtick fenced blocks, extracting the language tag and code.
+    Optionally filters to a specific language.
+
+    Returns:
+        List of dicts with 'language' and 'code' keys.
+    """
+    if "```" not in text:
+        return []
+    blocks = text.split("```")
+    results = []
+    for i in range(1, len(blocks), 2):
+        block = blocks[i]
+        lines = block.split("\n", 1)
+        block_lang = lines[0].strip() if lines else ""
+        code = lines[1] if len(lines) > 1 else block
+        if not language or block_lang == language:
+            results.append({"language": block_lang, "code": code[:300]})
+    return results
+
 
 # ---------------------------------------------------------------------------
 # Serialization helpers
@@ -146,7 +173,7 @@ def _build_server() -> FastMCP:
         async def _run() -> str:
             from polylogue.lib.filters import ConversationFilter
 
-            repo = _get_async_repo()
+            repo = _get_repo()
             clamped = _clamp_limit(limit)
 
             filter_chain = ConversationFilter(repo).contains(query).limit(clamped)
@@ -181,7 +208,7 @@ def _build_server() -> FastMCP:
         async def _run() -> str:
             from polylogue.lib.filters import ConversationFilter
 
-            repo = _get_async_repo()
+            repo = _get_repo()
             clamped = _clamp_limit(limit)
 
             filter_chain = ConversationFilter(repo).limit(clamped)
@@ -535,7 +562,7 @@ def _build_server() -> FastMCP:
         """List of all conversations in the archive (up to 1000)."""
         from polylogue.lib.filters import ConversationFilter
 
-        repo = _get_async_repo()
+        repo = _get_repo()
         convs = await ConversationFilter(repo).limit(1000).list()
         return json.dumps([_conversation_to_dict(c) for c in convs], indent=2)
 
@@ -590,7 +617,7 @@ def _build_server() -> FastMCP:
         """
         from polylogue.lib.filters import ConversationFilter
 
-        repo = _get_async_repo()
+        repo = _get_repo()
         filter_chain = ConversationFilter(repo).contains("error")
         if provider:
             filter_chain = filter_chain.provider(provider)
@@ -635,7 +662,7 @@ Error contexts:
         """Summarize key insights from the past week's conversations."""
         from polylogue.lib.filters import ConversationFilter
 
-        repo = _get_async_repo()
+        repo = _get_repo()
         week_ago = (datetime.now(tz=timezone.utc) - timedelta(days=7)).isoformat()
         convs = await ConversationFilter(repo).since(week_ago).limit(100).list()
 
@@ -670,28 +697,17 @@ Focus on actionable insights and patterns, not exhaustive summaries.
         """
         from polylogue.lib.filters import ConversationFilter
 
-        repo = _get_async_repo()
+        repo = _get_repo()
         convs = await ConversationFilter(repo).limit(50).list()
 
         code_snippets: list[dict[str, str]] = []
         for conv in convs:
             for msg in conv.messages:
-                if not msg.text or "```" not in msg.text:
+                if not msg.text:
                     continue
-                blocks = msg.text.split("```")
-                for i in range(1, len(blocks), 2):
-                    block = blocks[i]
-                    lines = block.split("\n", 1)
-                    block_lang = lines[0].strip() if lines else ""
-                    code = lines[1] if len(lines) > 1 else block
-                    if not language or block_lang == language:
-                        code_snippets.append(
-                            {
-                                "language": block_lang,
-                                "code": code[:300],
-                                "conversation": str(conv.id)[:20],
-                            }
-                        )
+                for block in _extract_fenced_code(msg.text, language):
+                    block["conversation"] = str(conv.id)[:20]
+                    code_snippets.append(block)
                 if len(code_snippets) >= 15:
                     break
 
@@ -764,7 +780,7 @@ Conversation 2:
         """
         from polylogue.lib.filters import ConversationFilter
 
-        repo = _get_async_repo()
+        repo = _get_repo()
         clamped = _clamp_limit(limit)
         filter_chain = ConversationFilter(repo).limit(clamped)
         if provider:
