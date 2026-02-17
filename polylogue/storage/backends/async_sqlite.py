@@ -22,7 +22,7 @@ import aiosqlite
 import polylogue.paths as _paths
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.log import get_logger
-from polylogue.storage.backends.connection import _build_conversation_filters
+from polylogue.storage.backends.connection import DB_TIMEOUT, _build_conversation_filters
 from polylogue.storage.store import (
     AttachmentRecord,
     ConversationRecord,
@@ -108,10 +108,10 @@ class SQLiteBackend:
         async with self._schema_lock:
             if self._schema_ensured:
                 return
-            async with aiosqlite.connect(self._db_path, timeout=30) as init_conn:
+            async with aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT) as init_conn:
                 init_conn.row_factory = aiosqlite.Row
                 await init_conn.execute("PRAGMA journal_mode=WAL")
-                await init_conn.execute("PRAGMA busy_timeout = 30000")
+                await init_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
                 await self._ensure_schema(init_conn)
             self._schema_ensured = True
 
@@ -130,11 +130,11 @@ class SQLiteBackend:
             yield self._txn_conn
             return
 
-        async with aiosqlite.connect(self._db_path, timeout=30) as conn:
+        async with aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT) as conn:
             conn.row_factory = aiosqlite.Row
             await conn.execute("PRAGMA foreign_keys = ON")
             await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("PRAGMA busy_timeout = 30000")
+            await conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
             yield conn
 
     async def _ensure_schema(self, conn: aiosqlite.Connection) -> None:
@@ -181,12 +181,12 @@ class SQLiteBackend:
             # Migrations are synchronous, run once, and involve DDL changes
             # that are best handled by the battle-tested sync path
             def _run_sync_migration() -> None:
-                sync_conn = sqlite3.connect(self._db_path, timeout=30)
+                sync_conn = sqlite3.connect(self._db_path, timeout=DB_TIMEOUT)
                 sync_conn.row_factory = sqlite3.Row
                 try:
                     sync_conn.execute("PRAGMA foreign_keys = ON")
                     sync_conn.execute("PRAGMA journal_mode=WAL")
-                    sync_conn.execute("PRAGMA busy_timeout = 30000")
+                    sync_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
                     _load_sqlite_vec(sync_conn)
                     _sync_ensure_schema(sync_conn)
                 finally:
@@ -210,11 +210,11 @@ class SQLiteBackend:
         async with self._write_lock:
             # Create persistent connection for explicit transaction if needed
             if self._txn_conn is None:
-                self._txn_conn = await aiosqlite.connect(self._db_path, timeout=30)
+                self._txn_conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
                 self._txn_conn.row_factory = aiosqlite.Row
                 await self._txn_conn.execute("PRAGMA foreign_keys = ON")
                 await self._txn_conn.execute("PRAGMA journal_mode=WAL")
-                await self._txn_conn.execute("PRAGMA busy_timeout = 30000")
+                await self._txn_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
 
             await self.begin()
             try:
@@ -228,11 +228,11 @@ class SQLiteBackend:
         """Begin a transaction or nested savepoint."""
         await self._ensure_schema_once()
         if self._txn_conn is None:
-            self._txn_conn = await aiosqlite.connect(self._db_path, timeout=30)
+            self._txn_conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
             self._txn_conn.row_factory = aiosqlite.Row
             await self._txn_conn.execute("PRAGMA foreign_keys = ON")
             await self._txn_conn.execute("PRAGMA journal_mode=WAL")
-            await self._txn_conn.execute("PRAGMA busy_timeout = 30000")
+            await self._txn_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
 
         if self._transaction_depth == 0:
             await self._txn_conn.execute("BEGIN IMMEDIATE")
@@ -916,11 +916,11 @@ class SQLiteBackend:
         """
         async with self._write_lock:
             if self._txn_conn is None:
-                self._txn_conn = await aiosqlite.connect(self._db_path, timeout=30)
+                self._txn_conn = await aiosqlite.connect(self._db_path, timeout=DB_TIMEOUT)
                 self._txn_conn.row_factory = aiosqlite.Row
                 await self._txn_conn.execute("PRAGMA foreign_keys = ON")
                 await self._txn_conn.execute("PRAGMA journal_mode=WAL")
-                await self._txn_conn.execute("PRAGMA busy_timeout = 30000")
+                await self._txn_conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
 
             try:
                 await self._txn_conn.execute("BEGIN IMMEDIATE")
