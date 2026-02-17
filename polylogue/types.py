@@ -26,7 +26,7 @@ class Provider(str, Enum):
         """Normalize provider string to enum, defaulting to UNKNOWN."""
         if not value:
             return cls.UNKNOWN
-        normalized = value.lower().strip()
+        normalized = value.lower().strip().replace("_", "-")
         # Handle aliases
         if normalized in ("gpt", "openai"):
             return cls.CHATGPT
