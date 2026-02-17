@@ -801,7 +801,7 @@ class SiteBuilder:
             if summary.created_at:
                 try:
                     created_at_str = summary.created_at.strftime("%Y-%m-%d")
-                except Exception as exc:
+                except (AttributeError, ValueError) as exc:
                     logger.debug("Timestamp format error for %s: %s", sid, exc)
                     created_at_str = str(summary.created_at)[:10]
 
@@ -809,7 +809,7 @@ class SiteBuilder:
             if summary.updated_at:
                 try:
                     updated_at_str = summary.updated_at.strftime("%Y-%m-%d %H:%M")
-                except Exception as exc:
+                except (AttributeError, ValueError) as exc:
                     logger.debug("Timestamp format error for %s: %s", sid, exc)
                     updated_at_str = str(summary.updated_at)
 
