@@ -19,6 +19,11 @@ from polylogue.storage.backends.schema import _ensure_schema
 
 logger = get_logger(__name__)
 
+# Default SQLite connection timeout in seconds.  Used for both sync and async
+# connections across the storage layer to prevent indefinite blocking when the
+# database is locked by another writer.
+DB_TIMEOUT = 30
+
 
 def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
     """Attempt to load sqlite-vec extension.
@@ -70,11 +75,11 @@ def _get_cached_connection(path: Path) -> sqlite3.Connection:
         return cache[key]
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30)
+    conn = sqlite3.connect(path, timeout=DB_TIMEOUT)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout = 30000")
+    conn.execute(f"PRAGMA busy_timeout = {DB_TIMEOUT * 1000}")
     _load_sqlite_vec(conn)
     _ensure_schema(conn)
 

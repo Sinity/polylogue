@@ -22,6 +22,7 @@ from tenacity import (
 
 from polylogue.lib.log import get_logger
 from polylogue.errors import DatabaseError
+from polylogue.storage.backends.connection import DB_TIMEOUT
 from polylogue.storage.store import MessageRecord
 
 if TYPE_CHECKING:
@@ -97,7 +98,7 @@ class SqliteVecProvider:
         """Get connection with sqlite-vec extension loaded if available."""
         import sqlite3
 
-        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn = sqlite3.connect(self.db_path, timeout=DB_TIMEOUT)
         conn.row_factory = sqlite3.Row
 
         # Try to load sqlite-vec (requires enable_load_extension authorization)
