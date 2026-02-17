@@ -35,6 +35,7 @@ except ImportError:
 
 from polylogue.lib.roles import normalize_role
 from polylogue.lib.timestamps import parse_timestamp
+from polylogue.types import Provider
 from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
@@ -321,15 +322,16 @@ def extract_harmonized_message(provider: str, raw: dict[str, Any]) -> Harmonized
     Returns:
         HarmonizedMessage with core fields and viewport extractions
     """
-    if provider in ("claude-code", "claude_code"):
+    p = Provider.from_string(provider)
+    if p == Provider.CLAUDE_CODE:
         return _extract_claude_code(raw)
-    elif provider in ("claude", "claude-ai"):
+    elif p == Provider.CLAUDE:
         return _extract_claude_ai(raw)
-    elif provider == "chatgpt":
+    elif p == Provider.CHATGPT:
         return _extract_chatgpt(raw)
-    elif provider == "gemini":
+    elif p == Provider.GEMINI:
         return _extract_gemini(raw)
-    elif provider == "codex":
+    elif p == Provider.CODEX:
         return _extract_codex(raw)
     else:
         raise ValueError(f"Unknown provider: {provider}")

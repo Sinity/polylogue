@@ -85,7 +85,7 @@ def site_command(
     try:
         result = builder.build()
         click.echo(
-            f"Site generated: "
+            "Site generated: "
             f"{result['conversations']} conversations, "
             f"{result['index_pages']} index pages"
         )
@@ -93,12 +93,12 @@ def site_command(
 
         if search and search_provider == "pagefind":
             click.echo(
-                f"\nTo enable search, run:\n"
+                "\nTo enable search, run:\n"
                 f"  npx pagefind --site {output_path}"
             )
 
         click.echo(
-            f"\nTo preview locally:\n"
+            "\nTo preview locally:\n"
             f"  python -m http.server -d {output_path}"
         )
 

@@ -234,12 +234,12 @@ def _embed_batch(
     embedded_count = 0
     error_count = 0
 
-    def _embed_one(conv_id: str, title: str | None) -> bool:
+    def _embed_one(conversation_id: str) -> bool:
         """Embed a single conversation. Returns True on success."""
-        messages = backend.get_messages(conv_id)
+        messages = backend.get_messages(conversation_id)
 
         if messages:
-            vec_provider.upsert(conv_id, messages)  # type: ignore
+            vec_provider.upsert(conversation_id, messages)  # type: ignore
             return True
         return False
 
@@ -259,7 +259,7 @@ def _embed_batch(
             for conv_id, title in conv_ids:
                 progress.update(task, description=f"Embedding {title or conv_id[:12]}...")
                 try:
-                    if _embed_one(conv_id, title):
+                    if _embed_one(conv_id):
                         embedded_count += 1
                 except Exception as exc:
                     error_count += 1
@@ -270,7 +270,7 @@ def _embed_batch(
             label = title or conv_id[:12]
             click.echo(f"  [{i}/{len(conv_ids)}] {label}...", nl=False)
             try:
-                if _embed_one(conv_id, title):
+                if _embed_one(conv_id):
                     embedded_count += 1
                     click.echo(" ok")
                 else:

@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from polylogue.config import Source
 from polylogue.lib.json import dumps as json_dumps
 from polylogue.lib.log import get_logger
+from polylogue.types import Provider
 
 from ..storage.store import AttachmentRecord, ConversationRecord, MessageRecord
 from .parsers import chatgpt, claude, codex, drive
@@ -170,22 +171,22 @@ def _parse_json_payload(provider: str, payload: Any, fallback_id: str, _depth: i
     if _depth > _MAX_PARSE_DEPTH:
         logger.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
         return []
-    if provider == "chatgpt":
+    if provider == Provider.CHATGPT:
         return [chatgpt.parse(payload, fallback_id)]
-    if provider == "claude":
+    if provider == Provider.CLAUDE:
         return [claude.parse_ai(payload, fallback_id)]
-    if provider == "claude-code":
+    if provider == Provider.CLAUDE_CODE:
         if isinstance(payload, list):
             return [claude.parse_code(payload, fallback_id)]
         # If payload is a dict with messages, extract them
         if isinstance(payload, dict) and isinstance(payload.get("messages"), list):
             return [claude.parse_code(payload["messages"], fallback_id)]
-    if provider == "codex":
+    if provider == Provider.CODEX:
         if isinstance(payload, list):
             return [codex.parse(payload, fallback_id)]
         if isinstance(payload, dict) and ("prompt" in payload or "completion" in payload):
                 return [codex.parse([payload], fallback_id)]
-    if (provider == "gemini" or provider == "drive") and isinstance(payload, list):
+    if provider in (Provider.GEMINI, Provider.DRIVE) and isinstance(payload, list):
         # Check if items are conversation dicts (have 'chunks' key) or raw chunks
         if payload and isinstance(payload[0], dict) and "chunks" in payload[0]:
             # List of conversation dicts from grouped JSONL - parse each one
@@ -537,7 +538,7 @@ class _ConversationEmitter:
         """Apply Claude Code session index enrichment if applicable."""
         p = provider or self._ctx.provider_hint
         idx = self._ctx.session_index
-        if p == "claude-code" and conv.provider_conversation_id in idx:
+        if p == Provider.CLAUDE_CODE and conv.provider_conversation_id in idx:
             return enrich_conversation_from_index(conv, idx[conv.provider_conversation_id])
         return conv
 
