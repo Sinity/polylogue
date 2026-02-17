@@ -294,7 +294,7 @@ polylogue demo --seed --env-only         # Shell-friendly (eval $(...))
 polylogue demo --corpus -p chatgpt -n 5  # Raw fixture files
 ```
 
-Uses `SyntheticCorpus` from `polylogue.sources.synthetic`. Shared with test fixtures (`seeded_db`, `synthetic_source`, `raw_synthetic_samples`). See [docs/demo.md](demo.md).
+Uses `SyntheticCorpus` from `polylogue.schemas.synthetic`. Shared with test fixtures (`seeded_db`, `synthetic_source`, `raw_synthetic_samples`). See [docs/demo.md](demo.md).
 
 ---
 
