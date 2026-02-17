@@ -230,6 +230,19 @@ class ClaudeCodeRecord(BaseModel):
             return "tool"
         return "unknown"
 
+    @staticmethod
+    def _text_from_blocks(content: list[Any]) -> str:
+        """Extract text from a list of content block dicts.
+
+        Only extracts ``type: "text"`` blocks.  Thinking/reasoning traces are
+        intentionally excluded — they are surfaced via Message.extract_thinking().
+        """
+        return "\n".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+
     @property
     def text_content(self) -> str:
         """Extract plain text content.
@@ -241,37 +254,16 @@ class ClaudeCodeRecord(BaseModel):
         if not self.message:
             # Fall back to top-level content field (system records)
             top_content = getattr(self, "content", None)
-            if isinstance(top_content, str):
-                return top_content
-            return ""
+            return top_content if isinstance(top_content, str) else ""
 
-        if isinstance(self.message, dict):
-            content = self.message.get("content", "")
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                texts = []
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "text":
-                            texts.append(block.get("text", ""))
-                        elif block.get("type") == "thinking":
-                            texts.append(f"[Thinking: {block.get('thinking', '')[:100]}...]")
-                return "\n".join(texts)
-            return ""
+        # Extract content from dict or typed message
+        msg = self.message
+        content = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", None)
 
-        # Typed message content
-        if hasattr(self.message, "content"):
-            content = self.message.content
-            if isinstance(content, str):
-                return content
-            if isinstance(content, list):
-                texts = []
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        texts.append(block.get("text", ""))
-                return "\n".join(texts)
-
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return self._text_from_blocks(content)
         return ""
 
     @property
