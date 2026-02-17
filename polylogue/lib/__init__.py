@@ -18,7 +18,7 @@ Example usage:
     repo = ConversationRepository(backend=create_default_backend())
 
     # Get a conversation with projection support
-    conv = repo.get("claude:abc123")
+    conv = await repo.get("claude:abc123")
     if conv:
         # Use semantic projections
         for pair in conv.iter_pairs():
