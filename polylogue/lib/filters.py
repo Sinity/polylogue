@@ -94,7 +94,7 @@ class ConversationFilter:
         self._fts_terms.append(text)
         return self
 
-    def no_contains(self, text: str) -> ConversationFilter:
+    def exclude_text(self, text: str) -> ConversationFilter:
         """Exclude conversations containing text."""
         self._negative_fts_terms.append(text)
         return self
@@ -104,7 +104,7 @@ class ConversationFilter:
         self._providers.extend(names)
         return self
 
-    def no_provider(self, *names: str) -> ConversationFilter:
+    def exclude_provider(self, *names: str) -> ConversationFilter:
         """Exclude conversations from specific providers."""
         self._excluded_providers.extend(names)
         return self
@@ -114,7 +114,7 @@ class ConversationFilter:
         self._tags.extend(tags)
         return self
 
-    def no_tag(self, *tags: str) -> ConversationFilter:
+    def exclude_tag(self, *tags: str) -> ConversationFilter:
         """Exclude conversations with specific tags."""
         self._excluded_tags.extend(tags)
         return self

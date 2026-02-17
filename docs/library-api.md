@@ -39,9 +39,9 @@ results = await (ConversationFilter(repo)
 # Exclusion filters
 results = await (ConversationFilter(repo)
     .contains("error")
-    .no_contains("warning")
-    .no_provider("gemini")
-    .no_tag("archived")
+    .exclude_text("warning")
+    .exclude_provider("gemini")
+    .exclude_tag("archived")
     .list())
 
 # Lightweight summaries (no message loading)
@@ -79,11 +79,11 @@ continuations = await ConversationFilter(repo).is_continuation().list()
 | Method | Description |
 |--------|-------------|
 | `.contains(text)` | FTS term (chainable = AND) |
-| `.no_contains(text)` | Exclude FTS term |
+| `.exclude_text(text)` | Exclude FTS term |
 | `.provider(*names)` | Include providers |
-| `.no_provider(*names)` | Exclude providers |
+| `.exclude_provider(*names)` | Exclude providers |
 | `.tag(*tags)` | Include tags |
-| `.no_tag(*tags)` | Exclude tags |
+| `.exclude_tag(*tags)` | Exclude tags |
 | `.has(*types)` | Content types: `thinking`, `tools`, `summary`, `attachments` |
 | `.title(pattern)` | Title contains pattern |
 | `.id(prefix)` | ID prefix match |
