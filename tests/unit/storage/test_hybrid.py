@@ -8,7 +8,6 @@ Extracted from monolithic test_search_index.py.
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -21,11 +20,7 @@ from polylogue.storage.search_providers.hybrid import (
     reciprocal_rank_fusion,
 )
 from polylogue.storage.store import ConversationRecord, MessageRecord
-
-
-def make_hash(s: str) -> str:
-    """Create a 16-char content hash."""
-    return hashlib.sha256(s.encode()).hexdigest()[:16]
+from tests.infra.helpers import make_hash
 
 
 class TestHybridSearchProvider:

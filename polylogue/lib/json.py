@@ -8,10 +8,6 @@ from typing import Any
 
 import orjson
 
-from polylogue.lib.log import get_logger
-
-logger = get_logger(__name__)
-
 
 def _default_encoder(user_default: Callable[[Any], Any] | None = None) -> Callable[[Any], Any]:
     """Create a JSON encoder that handles Decimal values."""

@@ -33,12 +33,7 @@ from polylogue.storage.backends.schema import (
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
 from polylogue.storage.backends.connection import connection_context
 from polylogue.storage.store import ConversationRecord
-
-
-def make_hash(s: str) -> str:
-    """Create a 16-char content hash."""
-    import hashlib
-    return hashlib.sha256(s.encode()).hexdigest()[:16]
+from tests.infra.helpers import make_hash
 
 
 # Schema constants for migration tests

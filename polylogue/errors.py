@@ -4,15 +4,15 @@ All project exceptions inherit from PolylogueError, enabling:
 - ``except PolylogueError`` at top-level boundaries (CLI, MCP server)
 - Fine-grained catches deeper in the stack (``except DriveAuthError``)
 
-Hierarchy:
-    PolylogueError
-    ├── ConfigError
-    ├── DriveError
+Hierarchy (subclasses defined in their respective modules):
+    PolylogueError                          # this module
+    ├── ConfigError                         # config.py
+    ├── DriveError                          # sources/drive_client.py
     │   ├── DriveAuthError
     │   └── DriveNotFoundError
-    ├── DatabaseError
-    │   └── SqliteVecError
-    └── UIError
+    ├── DatabaseError                       # this module
+    │   └── SqliteVecError                  # storage/search_providers/sqlite_vec.py
+    └── UIError                             # ui/facade.py
 """
 
 from __future__ import annotations

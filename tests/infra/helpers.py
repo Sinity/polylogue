@@ -11,6 +11,7 @@ Created during aggressive test consolidation to eliminate repeated patterns.
 
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -501,6 +502,11 @@ class ConversationBuilder:
 # =============================================================================
 # QUICK BUILDERS (For simple cases)
 # =============================================================================
+
+
+def make_hash(s: str) -> str:
+    """Create a 16-char content hash for test data."""
+    return hashlib.sha256(s.encode()).hexdigest()[:16]
 
 
 def make_conversation(

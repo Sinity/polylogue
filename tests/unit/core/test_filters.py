@@ -987,7 +987,6 @@ class TestValidatorDetectDrift:
         }
         validator = SchemaValidator(schema, strict=True)
         validator.validate({"name": "test", "extra": "value"})
-        assert True
 
     def test_validate_nested_object_drift(self):
         """Test nested object drift detection."""
