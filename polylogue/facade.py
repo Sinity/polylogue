@@ -437,8 +437,8 @@ class Polylogue:
                 row = await cursor.fetchone()
                 if row and row["last"]:
                     last_sync = row["last"]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("failed to query last sync timestamp", error=str(exc))
 
         return ArchiveStats(
             conversation_count=len(conversations),
