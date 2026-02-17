@@ -191,8 +191,6 @@ class TestSaveGetMessages:
         """Test that save_messages([]) is a no-op."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         await backend.save_messages([])  # Should not raise
-        # No messages to retrieve, but no error either
-        assert True
 
     async def test_get_messages_ordering_by_timestamp(self, tmp_path):
         """Test that messages are returned ordered by timestamp."""

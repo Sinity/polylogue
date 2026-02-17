@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 from collections import Counter
@@ -30,6 +29,7 @@ from tests.infra.helpers import (
     make_attachment,
     make_conversation,
     make_message,
+    make_hash,
 )
 
 
@@ -134,10 +134,6 @@ class TestConversationOperations:
         """LIKE % wildcard should be escaped in title search."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        def make_hash(s: str) -> str:
-            """Create a 16-char content hash."""
-            return hashlib.sha256(s.encode()).hexdigest()[:16]
-
         # Create conversations with titles containing % and x
         conv1 = ConversationRecord(
             conversation_id="conv-1",
@@ -170,10 +166,6 @@ class TestConversationOperations:
         """LIKE _ wildcard should be escaped in title search."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
 
-        def make_hash(s: str) -> str:
-            """Create a 16-char content hash."""
-            return hashlib.sha256(s.encode()).hexdigest()[:16]
-
         # Create conversations
         conv1 = ConversationRecord(
             conversation_id="conv-1",
@@ -205,10 +197,6 @@ class TestConversationOperations:
     async def test_title_contains_escapes_backslash(self, tmp_path: Path) -> None:
         """Backslashes should be escaped in title search."""
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
-
-        def make_hash(s: str) -> str:
-            """Create a 16-char content hash."""
-            return hashlib.sha256(s.encode()).hexdigest()[:16]
 
         # Create a conversation with backslash
         conv = ConversationRecord(
