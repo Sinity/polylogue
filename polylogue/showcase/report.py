@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from polylogue.showcase.exercises import GROUPS
 from polylogue.showcase.runner import ShowcaseResult
