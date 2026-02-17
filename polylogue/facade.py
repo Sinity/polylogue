@@ -1,4 +1,4 @@
-"""Async high-level library facade for Polylogue.
+"""High-level async library facade for Polylogue.
 
 This module provides the `Polylogue` class for async/await operations.
 Enables concurrent queries and parallel batch operations.
@@ -29,8 +29,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import structlog
+
 from polylogue.config import Config, Source
 from polylogue.storage.backends.async_sqlite import SQLiteBackend
+
+logger = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from polylogue.lib.filters import ConversationFilter
@@ -190,8 +194,6 @@ class Polylogue:
             ids = ["id1", "id2", "id3", "id4", "id5"]
             convs = await archive.get_conversations(ids)
         """
-        import logging
-
         # Fetch all conversations concurrently
         tasks = [self.get_conversation(cid) for cid in conversation_ids]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -200,7 +202,7 @@ class Polylogue:
         conversations = []
         for result in results:
             if isinstance(result, Exception):
-                logging.warning(f"Failed to fetch conversation: {result}")
+                logger.warning("failed to fetch conversation", error=str(result))
             elif result is not None:
                 conversations.append(result)
 
