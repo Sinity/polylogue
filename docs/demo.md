@@ -52,16 +52,45 @@ polylogue demo --corpus
 polylogue demo --corpus -p chatgpt -n 5 -o /tmp/corpus
 ```
 
+### Showcase Mode
+
+Exercises the entire CLI surface area — 58 exercises across 7 groups (structural, sources, pipeline, query-read, query-write, subcommands, advanced) — and generates verification reports.
+
+```bash
+polylogue demo --showcase                     # Full validation
+polylogue demo --showcase --live              # Read-only against real data
+polylogue demo --showcase --json              # Machine-readable report
+polylogue demo --showcase --verbose           # Print each exercise output
+```
+
+**What it does:**
+
+1. Seeds a temporary workspace with synthetic data (unless `--live`)
+2. Runs every query mode, output format, filter combination, and mutation operation
+3. Produces three reports:
+   - `showcase-summary.txt` — pass/fail counts and timing
+   - `showcase-report.json` — machine-readable results per exercise
+   - `showcase-cookbook.md` — markdown cookbook of all commands with captured output
+
+**`--live` mode** skips seeding and runs read-only exercises against your real archive. Write operations (tag mutations, deletes) are excluded to protect real data.
+
+See [CLI Reference](cli-reference.md#demo) for the full flag reference.
+
 ## Options
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--seed` | | | Create full demo environment |
 | `--corpus` | | | Generate raw fixture files |
+| `--showcase` | | | Exercise all CLI commands and generate reports |
 | `--provider` | `-p` | all | Providers to include (repeatable) |
 | `--count` | `-n` | 3 | Conversations per provider |
 | `--output-dir` | `-o` | auto | Output directory |
 | `--env-only` | | | Print export statements only |
+| `--live` | | | Run showcase against real data (read-only) |
+| `--fail-fast` | | | Stop showcase on first failure |
+| `--json` | | | Output showcase results as JSON |
+| `--verbose` | | | Print each exercise output |
 
 ## How It Works
 

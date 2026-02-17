@@ -1,6 +1,8 @@
-# Polylogue
+# Internals Reference
 
-> Update when adding features or changing behaviors. See `~/.claude/CLAUDE.md` for philosophy.
+> Dense implementation reference for developers working on the codebase.
+> For architecture overview, see [architecture.md](architecture.md).
+> For user-facing API docs, see [library-api.md](library-api.md).
 
 **Mission**: Local-first AI chat archive (ChatGPT, Claude, Codex, Gemini → SQLite + FTS5 + sqlite-vec)
 
@@ -34,26 +36,6 @@ async with Polylogue() as archive:
     results = await archive.search("error handling")
     filtered = await archive.filter().contains("python").provider("claude").list()
     await archive.rebuild_index()
-```
-
----
-
-## Core Architecture
-
-| Aspect | Implementation | Behavior |
-|--------|----------------|----------|
-| **Storage** | `SQLiteBackend` (async-first) | aiosqlite with sync connection helpers |
-| **Search** | `SearchProvider` protocol | FTS5 (local), sqlite-vec (vector), LRU cache |
-| **Rendering** | Markdown/HTML renderers | Via `--format` flag |
-| **Services** | `polylogue.services` module | Singleton factories for backend + repository |
-| **Pipeline** | `run_sources` (async-first) | Acquire → Parse → Render → Index |
-| **Thread safety** | `_WRITE_LOCK` + thread-local (sync), `asyncio.Lock` (async) | Write serialization |
-| **Deduplication** | SHA-256 + NFC normalization | Same content → same hash → skip |
-
-**Data Flow**:
-```
-JSON/ZIP/Drive → detect_provider() → Parse + extract content_blocks →
-Hash (NFC) → Store (under lock) → Render (parallel) → Index
 ```
 
 ---
@@ -358,8 +340,4 @@ Vector search uses sqlite-vec (self-contained, no external services).
 | "Thinking not detected" | Missing content_blocks — check parser in `sources/parsers/` |
 | "Config not reflected" | Env vars override — check `polylogue run --preview` |
 
----
 
-## Pinned Notes
-
-Session notes are ephemeral and not persisted.

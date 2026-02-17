@@ -461,14 +461,15 @@ The showcase seeds a workspace, runs every query mode, output format, filter com
 
 | Document | Description |
 |----------|-------------|
-| [CLI Reference](docs/cli-reference.md) | Complete command reference — query syntax, filters, output formats, all flags |
-| [Library API](docs/library-api.md) | Python API — filter chains, projections, terminal methods, async patterns |
-| [Data Model](docs/data-model.md) | Conversation / Message / Attachment schemas, content blocks, semantic classification |
-| [Configuration](docs/configuration.md) | XDG paths, environment variables, Drive setup, backup strategies |
-| [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server for Claude Desktop and Claude Code |
-| [Architecture](docs/architecture.md) | System design, pipeline stages, thread safety, storage internals |
-| [Demo & Synthetic Data](docs/demo.md) | Demo command, synthetic corpus generation, test fixtures |
-| [CLI Tips](docs/cli_tips.md) | Power-user workflows, shell integration, automation recipes |
+| [CLI Reference](docs/cli-reference.md) | Complete command reference with tips and examples |
+| [Library API](docs/library-api.md) | Python API — filter chains, projections, async patterns |
+| [Data Model](docs/data-model.md) | Conversation / Message / Attachment schemas |
+| [Configuration](docs/configuration.md) | XDG paths, environment variables, observability |
+| [Architecture](docs/architecture.md) | System design, layers, data flow, thread safety |
+| [MCP Integration](docs/mcp-integration.md) | Model Context Protocol server for Claude Desktop/Code |
+| [Demo & Showcase](docs/demo.md) | Demo command, synthetic data, surface-area validation |
+| [Providers](docs/providers/) | Provider formats, detection, session integration |
+| [Internals](docs/internals.md) | Developer reference — invariants, schemas, debugging |
 
 ## Development
 
@@ -489,7 +490,7 @@ ruff check polylogue/ tests/
 mypy polylogue/
 ```
 
-See [CLAUDE.md](CLAUDE.md) for development guidelines and [demos/](demos/) for screencast generation.
+See [CLAUDE.md](CLAUDE.md) for development guidelines, [docs/internals.md](docs/internals.md) for implementation details, and [demos/](demos/) for screencast generation.
 
 ## License
 

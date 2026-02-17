@@ -89,7 +89,7 @@ Polylogue's generic JSONL parser can ingest Claude Code sessions:
 polylogue run --source claude-code
 ```
 
-Current limitations (from `docs/providers/claude-code.md`):
+Current limitations (from [claude-code.md](claude-code.md)):
 - Full tool pairing and workspace metadata are not implemented yet
 - Tool use/result segments are serialized as JSON text
 
