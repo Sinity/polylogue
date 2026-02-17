@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+
 from polylogue.config import Config
 from polylogue.pipeline.services.indexing import IndexService
 from tests.infra.helpers import make_conversation, make_message
@@ -128,7 +130,7 @@ class TestIndexServiceErrors:
 
         with patch(
             "polylogue.pipeline.services.indexing.update_index_for_conversations",
-            side_effect=Exception("db locked"),
+            side_effect=sqlite3.DatabaseError("db locked"),
         ):
             result = await service.update_index(["conv1", "conv2"])
             assert result is False
@@ -144,7 +146,7 @@ class TestIndexServiceErrors:
 
         with patch(
             "polylogue.pipeline.services.indexing.rebuild_index",
-            side_effect=Exception("disk full"),
+            side_effect=sqlite3.DatabaseError("disk full"),
         ):
             result = await service.rebuild_index()
             assert result is False
@@ -161,7 +163,7 @@ class TestIndexServiceErrors:
 
         with patch(
             "polylogue.pipeline.services.indexing.ensure_index",
-            side_effect=Exception("corruption"),
+            side_effect=sqlite3.DatabaseError("corruption"),
         ):
             result = await service.ensure_index_exists()
             assert result is False
@@ -177,7 +179,7 @@ class TestIndexServiceErrors:
 
         with patch(
             "polylogue.pipeline.services.indexing.index_status",
-            side_effect=Exception("no such table"),
+            side_effect=sqlite3.DatabaseError("no such table"),
         ):
             result = await service.get_index_status()
             assert result == {"exists": False, "count": 0}
