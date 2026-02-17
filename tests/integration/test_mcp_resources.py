@@ -125,17 +125,17 @@ class TestConversationsResource:
     """Tests for polylogue://conversations resource."""
 
     @pytest.mark.asyncio
-    async def test_conversations_resource_returns_list(self, sample_conversation):
+    async def test_conversations_resource_returns_list(self, simple_conversation):
         """Conversations resource returns all conversations."""
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.list.return_value = [sample_conversation]
+            mock_repo.list.return_value = [simple_conversation]
             mock_get_repo.return_value = mock_repo
 
             with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                MockFilter.return_value = make_mock_filter(results=[sample_conversation])
+                MockFilter.return_value = make_mock_filter(results=[simple_conversation])
 
                 server = _build_server()
                 result = await server._resource_manager._resources["polylogue://conversations"].fn()
@@ -147,13 +147,13 @@ class TestConversationsResource:
 class TestConversationResource:
     """Tests for polylogue://conversation/{id} resource."""
 
-    def test_single_conversation_resource(self, sample_conversation):
+    def test_single_conversation_resource(self, simple_conversation):
         """Single conversation resource returns full conversation."""
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.get.return_value = sample_conversation
+            mock_repo.get.return_value = simple_conversation
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()
@@ -188,20 +188,20 @@ class TestAnalyzeErrorsPrompt:
     """Tests for analyze_errors prompt."""
 
     @pytest.mark.asyncio
-    async def test_analyze_errors_with_conversations(self, sample_conversation):
+    async def test_analyze_errors_with_conversations(self, simple_conversation):
         """analyze_errors generates prompt from error conversations."""
         from polylogue.mcp.server import _build_server
 
         # Modify sample to have error message
-        sample_conversation.messages[0].text = "Got an error while running"
+        simple_conversation.messages[0].text = "Got an error while running"
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.list.return_value = [sample_conversation]
+            mock_repo.list.return_value = [simple_conversation]
             mock_get_repo.return_value = mock_repo
 
             with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                MockFilter.return_value = make_mock_filter(results=[sample_conversation])
+                MockFilter.return_value = make_mock_filter(results=[simple_conversation])
 
                 server = _build_server()
                 result = await server._prompt_manager._prompts["analyze_errors"].fn()
@@ -377,11 +377,11 @@ class TestExtractCodePrompt:
 class TestConversationSerialization:
     """Tests for conversation serialization helpers."""
 
-    def test_conversation_to_dict(self, sample_conversation):
+    def test_conversation_to_dict(self, simple_conversation):
         """_conversation_to_dict serializes conversation metadata."""
         from polylogue.mcp.server import _conversation_to_dict
 
-        result = _conversation_to_dict(sample_conversation)
+        result = _conversation_to_dict(simple_conversation)
 
         assert result["id"] == "test:conv-123"
         assert result["provider"] == "chatgpt"
@@ -389,11 +389,11 @@ class TestConversationSerialization:
         assert "created_at" in result
         assert "updated_at" in result
 
-    def test_conversation_to_full_dict(self, sample_conversation):
+    def test_conversation_to_full_dict(self, simple_conversation):
         """_conversation_to_full_dict includes messages."""
         from polylogue.mcp.server import _conversation_to_full_dict
 
-        result = _conversation_to_full_dict(sample_conversation)
+        result = _conversation_to_full_dict(simple_conversation)
 
         assert "messages" in result
         assert len(result["messages"]) == 2

@@ -234,17 +234,17 @@ class TestSearchTool:
     """Tests for search tool execution."""
 
     @pytest.mark.asyncio
-    async def test_search_with_valid_query(self, sample_conversation):
+    async def test_search_with_valid_query(self, simple_conversation):
         """Search returns matching conversations."""
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.search.return_value = [sample_conversation]
+            mock_repo.search.return_value = [simple_conversation]
             mock_get_repo.return_value = mock_repo
 
             with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                MockFilter.return_value = make_mock_filter(results=[sample_conversation])
+                MockFilter.return_value = make_mock_filter(results=[simple_conversation])
 
                 server = _build_server()
                 # Get the tool function from the server
@@ -304,17 +304,17 @@ class TestListTool:
     """Tests for list_conversations tool execution."""
 
     @pytest.mark.asyncio
-    async def test_list_returns_conversations(self, sample_conversation):
+    async def test_list_returns_conversations(self, simple_conversation):
         """List returns recent conversations."""
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.list.return_value = [sample_conversation]
+            mock_repo.list.return_value = [simple_conversation]
             mock_get_repo.return_value = mock_repo
 
             with patch("polylogue.lib.filters.ConversationFilter") as MockFilter:
-                MockFilter.return_value = make_mock_filter(results=[sample_conversation])
+                MockFilter.return_value = make_mock_filter(results=[simple_conversation])
 
                 server = _build_server()
                 result = await server._tool_manager._tools["list_conversations"].fn(limit=10)
@@ -369,13 +369,13 @@ class TestListTool:
 class TestGetTool:
     """Tests for get_conversation tool execution."""
 
-    def test_get_returns_conversation(self, sample_conversation):
+    def test_get_returns_conversation(self, simple_conversation):
         """Get returns full conversation with messages."""
         from polylogue.mcp.server import _build_server
 
         with patch("polylogue.mcp.server._get_repo") as mock_get_repo:
             mock_repo = MagicMock()
-            mock_repo.view.return_value = sample_conversation
+            mock_repo.view.return_value = simple_conversation
             mock_get_repo.return_value = mock_repo
 
             server = _build_server()

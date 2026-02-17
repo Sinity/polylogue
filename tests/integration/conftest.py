@@ -47,8 +47,8 @@ def make_mock_filter(results=None, **method_overrides):
 
 
 @pytest.fixture
-def sample_conversation():
-    """Create a sample conversation for testing."""
+def simple_conversation():
+    """Create a simple conversation for testing."""
     return Conversation(
         id="test:conv-123",
         provider="chatgpt",
