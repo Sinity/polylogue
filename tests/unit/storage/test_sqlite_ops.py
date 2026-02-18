@@ -774,4 +774,229 @@ async def test_prune_multiple_attachments_correctly(workspace_env, storage_repos
         assert remaining_ids == ["att-0", "att-1"], f"Expected att-0 and att-1, got {remaining_ids}"
 
 
+# ============================================================================
+# Test: get_messages_batch
+# ============================================================================
+
+
+class TestGetMessagesBatch:
+    """Tests for batch message retrieval."""
+
+    async def test_basic_grouping(self, tmp_path):
+        """Messages are correctly grouped by conversation_id."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        # Create 3 conversations with varying message counts
+        for i in range(3):
+            cid = f"conv-{i}"
+            await backend.save_conversation_record(ConversationRecord(
+                conversation_id=cid,
+                provider_name="test",
+                provider_conversation_id=f"prov-{cid}",
+                title=f"Conv {i}",
+                created_at="2025-01-01T00:00:00Z",
+                updated_at="2025-01-01T00:00:00Z",
+                content_hash=f"hash-{cid}",
+                version=1,
+            ))
+            msgs = [
+                MessageRecord(
+                    message_id=f"{cid}-m{j}",
+                    conversation_id=cid,
+                    role="user" if j % 2 == 0 else "assistant",
+                    text=f"Message {j} of conv {i}",
+                    timestamp=f"2025-01-01T00:0{j}:00Z",
+                    content_hash=f"hash-{cid}-m{j}",
+                    version=1,
+                )
+                for j in range(i + 1)  # conv-0: 1 msg, conv-1: 2 msgs, conv-2: 3 msgs
+            ]
+            await backend.save_messages(msgs)
+
+        result = await backend.get_messages_batch(["conv-0", "conv-1", "conv-2"])
+        assert len(result["conv-0"]) == 1
+        assert len(result["conv-1"]) == 2
+        assert len(result["conv-2"]) == 3
+        # Verify messages belong to correct conversations
+        for cid, msgs in result.items():
+            for msg in msgs:
+                assert msg.conversation_id == cid
+
+    async def test_empty_input(self, tmp_path):
+        """Empty input returns empty dict."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        result = await backend.get_messages_batch([])
+        assert result == {}
+
+    async def test_missing_ids_produce_empty_lists(self, tmp_path):
+        """Missing conversation IDs get empty lists in result."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        result = await backend.get_messages_batch(["nonexistent-1", "nonexistent-2"])
+        assert result["nonexistent-1"] == []
+        assert result["nonexistent-2"] == []
+
+    async def test_message_ordering_within_conversation(self, tmp_path):
+        """Messages within each conversation are ordered by timestamp."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        cid = "conv-order"
+        await backend.save_conversation_record(ConversationRecord(
+            conversation_id=cid,
+            provider_name="test",
+            provider_conversation_id="prov-order",
+            title="Order Test",
+            created_at="2025-01-01T00:00:00Z",
+            updated_at="2025-01-01T00:00:00Z",
+            content_hash="hash-order",
+            version=1,
+        ))
+        # Insert in reverse timestamp order
+        msgs = [
+            MessageRecord(
+                message_id=f"m{i}",
+                conversation_id=cid,
+                role="user",
+                text=f"Message {i}",
+                timestamp=f"2025-01-01T00:0{i}:00Z",
+                content_hash=f"hash-m{i}",
+                version=1,
+            )
+            for i in [3, 1, 2, 0]  # deliberate disorder
+        ]
+        await backend.save_messages(msgs)
+
+        result = await backend.get_messages_batch([cid])
+        timestamps = [m.timestamp for m in result[cid]]
+        assert timestamps == sorted(timestamps), "Messages should be ordered by timestamp"
+
+    async def test_mixed_present_and_missing(self, tmp_path):
+        """Batch with mix of present and missing IDs works correctly."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        cid = "conv-exists"
+        await backend.save_conversation_record(ConversationRecord(
+            conversation_id=cid,
+            provider_name="test",
+            provider_conversation_id="prov-exists",
+            title="Exists",
+            created_at="2025-01-01T00:00:00Z",
+            updated_at="2025-01-01T00:00:00Z",
+            content_hash="hash-exists",
+            version=1,
+        ))
+        await backend.save_messages([MessageRecord(
+            message_id="m1",
+            conversation_id=cid,
+            role="user",
+            text="Hello",
+            timestamp="2025-01-01T00:00:00Z",
+            content_hash="hash-m1",
+            version=1,
+        )])
+
+        result = await backend.get_messages_batch(["missing-1", cid, "missing-2"])
+        assert len(result[cid]) == 1
+        assert result["missing-1"] == []
+        assert result["missing-2"] == []
+
+
+# ============================================================================
+# Test: get_attachments_batch
+# ============================================================================
+
+
+class TestGetAttachmentsBatch:
+    """Tests for batch attachment retrieval."""
+
+    async def test_basic_grouping(self, tmp_path):
+        """Attachments are correctly grouped by conversation_id."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        # Create 2 conversations with messages and attachments
+        for i in range(2):
+            cid = f"conv-{i}"
+            await backend.save_conversation_record(ConversationRecord(
+                conversation_id=cid,
+                provider_name="test",
+                provider_conversation_id=f"prov-{cid}",
+                title=f"Conv {i}",
+                created_at="2025-01-01T00:00:00Z",
+                updated_at="2025-01-01T00:00:00Z",
+                content_hash=f"hash-{cid}",
+                version=1,
+            ))
+            await backend.save_messages([MessageRecord(
+                message_id=f"{cid}-m1",
+                conversation_id=cid,
+                role="user",
+                text="msg with attachment",
+                timestamp="2025-01-01T00:00:00Z",
+                content_hash=f"hash-{cid}-m1",
+                version=1,
+            )])
+            # Add i+1 attachments
+            attachments = [
+                AttachmentRecord(
+                    attachment_id=f"att-{cid}-{j}",
+                    conversation_id=cid,
+                    message_id=f"{cid}-m1",
+                    mime_type="image/png",
+                    size_bytes=1024,
+                )
+                for j in range(i + 1)
+            ]
+            await backend.save_attachments(attachments)
+
+        result = await backend.get_attachments_batch(["conv-0", "conv-1"])
+        assert len(result["conv-0"]) == 1
+        assert len(result["conv-1"]) == 2
+
+    async def test_empty_input(self, tmp_path):
+        """Empty input returns empty dict."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        result = await backend.get_attachments_batch([])
+        assert result == {}
+
+    async def test_missing_ids_produce_empty_lists(self, tmp_path):
+        """Missing conversation IDs get empty lists."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        result = await backend.get_attachments_batch(["no-such-conv"])
+        assert result["no-such-conv"] == []
+
+    async def test_attachment_fields_preserved(self, tmp_path):
+        """Attachment metadata fields are correctly populated."""
+        backend = SQLiteBackend(db_path=tmp_path / "test.db")
+        cid = "conv-fields"
+        await backend.save_conversation_record(ConversationRecord(
+            conversation_id=cid,
+            provider_name="test",
+            provider_conversation_id="prov-fields",
+            title="Fields Test",
+            created_at="2025-01-01T00:00:00Z",
+            updated_at="2025-01-01T00:00:00Z",
+            content_hash="hash-fields",
+            version=1,
+        ))
+        await backend.save_messages([MessageRecord(
+            message_id="m1",
+            conversation_id=cid,
+            role="user",
+            text="msg",
+            timestamp="2025-01-01T00:00:00Z",
+            content_hash="hash-m1",
+            version=1,
+        )])
+        await backend.save_attachments([AttachmentRecord(
+            attachment_id="att-test",
+            conversation_id=cid,
+            message_id="m1",
+            mime_type="application/pdf",
+            size_bytes=2048,
+            path="/tmp/test.pdf",
+        )])
+
+        result = await backend.get_attachments_batch([cid])
+        att = result[cid][0]
+        assert att.attachment_id == "att-test"
+        assert att.mime_type == "application/pdf"
+        assert att.size_bytes == 2048
+        assert att.message_id == "m1"
+
+
 # --- merged from test_raw_conversations.py ---
