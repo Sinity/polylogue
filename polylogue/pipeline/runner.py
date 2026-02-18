@@ -285,12 +285,16 @@ async def run_sources(
             else list(processed_ids)
         )
         if ids:
+            if progress_callback is not None:
+                progress_callback(0, desc=f"Rendering: 0/{len(ids)}")
             renderer = create_renderer(format=render_format, config=config)
             render_service = RenderService(
                 renderer=renderer,
                 render_root=config.archive_root / "render",
             )
-            render_result = await render_service.render_conversations(ids)
+            render_result = await render_service.render_conversations(
+                ids, progress_callback=progress_callback,
+            )
             counts["rendered"] = render_result.rendered_count
             render_failures = render_result.failures
             if render_failures:
@@ -306,6 +310,8 @@ async def run_sources(
 
     try:
         if stage == "index":
+            if progress_callback is not None:
+                progress_callback(0, desc="Indexing")
             if source_names:
                 ids = await _all_conversation_ids(backend, source_names)
                 if ids:
@@ -317,8 +323,12 @@ async def run_sources(
         elif stage == "all":
             idx = await index_service.get_index_status()
             if not idx["exists"]:
+                if progress_callback is not None:
+                    progress_callback(0, desc="Indexing (rebuild)")
                 indexed = await index_service.rebuild_index()
             elif processed_ids:
+                if progress_callback is not None:
+                    progress_callback(0, desc=f"Indexing: {len(processed_ids)} conversations")
                 indexed = await index_service.update_index(list(processed_ids))
     except Exception as exc:
         logger.error("Indexing failed", error=str(exc))
