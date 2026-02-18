@@ -558,6 +558,31 @@ class SQLiteBackend:
             rows = await cursor.fetchall()
             return [_row_to_message(row) for row in rows]
 
+    async def get_messages_batch(self, conversation_ids: list[str]) -> dict[str, list[MessageRecord]]:
+        """Get messages for multiple conversations in a single query.
+
+        Returns a dict mapping conversation_id → list of MessageRecords.
+        Missing conversations produce empty lists.
+        """
+        if not conversation_ids:
+            return {}
+
+        result: dict[str, list[MessageRecord]] = {cid: [] for cid in conversation_ids}
+        async with self._get_connection() as conn:
+            placeholders = ",".join("?" for _ in conversation_ids)
+            cursor = await conn.execute(
+                f"SELECT * FROM messages WHERE conversation_id IN ({placeholders}) ORDER BY timestamp",
+                conversation_ids,
+            )
+            rows = await cursor.fetchall()
+
+        for row in rows:
+            cid = row["conversation_id"]
+            if cid in result:
+                result[cid].append(_row_to_message(row))
+
+        return result
+
     async def save_messages(self, records: list[MessageRecord]) -> None:
         """Persist multiple message records using bulk insert.
 
@@ -650,6 +675,52 @@ class SQLiteBackend:
             )
             for row in rows
         ]
+
+    async def get_attachments_batch(
+        self, conversation_ids: list[str]
+    ) -> dict[str, list[AttachmentRecord]]:
+        """Get attachments for multiple conversations in a single query.
+
+        Returns a dict mapping conversation_id → list of AttachmentRecords.
+        Missing conversations produce empty lists.
+        """
+        if not conversation_ids:
+            return {}
+
+        result: dict[str, list[AttachmentRecord]] = {cid: [] for cid in conversation_ids}
+        async with self._get_connection() as conn:
+            placeholders = ",".join("?" for _ in conversation_ids)
+            cursor = await conn.execute(
+                f"""
+                SELECT a.*, r.message_id, r.conversation_id
+                FROM attachments a
+                JOIN attachment_refs r ON a.attachment_id = r.attachment_id
+                WHERE r.conversation_id IN ({placeholders})
+                """,
+                conversation_ids,
+            )
+            rows = await cursor.fetchall()
+
+        for row in rows:
+            cid = row["conversation_id"]
+            if cid in result:
+                result[cid].append(
+                    AttachmentRecord(
+                        attachment_id=row["attachment_id"],
+                        conversation_id=ConversationId(cid),
+                        message_id=row["message_id"],
+                        mime_type=row["mime_type"],
+                        size_bytes=row["size_bytes"],
+                        path=row["path"],
+                        provider_meta=_parse_json(
+                            row["provider_meta"],
+                            field="provider_meta",
+                            record_id=row["attachment_id"],
+                        ),
+                    )
+                )
+
+        return result
 
     async def save_attachments(self, records: list[AttachmentRecord]) -> None:
         """Persist attachment records with reference counting using bulk operations.

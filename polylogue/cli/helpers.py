@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import NoReturn
 
 from polylogue.cli.formatting import format_sources_summary
+from polylogue.lib.log import get_logger
+
+logger = get_logger(__name__)
 from polylogue.cli.types import AppEnv
 from polylogue.config import Config, get_config
 from polylogue.health import cached_health_summary, get_health
@@ -193,10 +196,8 @@ def print_summary(env: AppEnv, *, verbose: bool = False) -> None:
                             )
                         ui.console.print()
 
-        except Exception as exc:
-            # Fallback if analytics fails
-            if verbose:
-                ui.console.print(f"[yellow]Analytics computation failed: {exc}[/yellow]")
+        except Exception:
+            logger.debug("Analytics computation failed", exc_info=True)
 
 
 def latest_render_path(render_root: Path) -> Path | None:

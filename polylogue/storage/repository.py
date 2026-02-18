@@ -424,8 +424,9 @@ class ConversationRepository:
     async def _get_many(self, conversation_ids: builtins.list[str]) -> builtins.list[Conversation]:
         """Bulk fetch conversations with eager-loaded messages and attachments.
 
-        Uses asyncio.gather() to fetch messages and attachments in parallel
-        for all conversations.
+        Uses batch queries to fetch all messages and attachments in 2 queries
+        instead of 2*N individual queries, avoiding connection storms on large
+        databases.
 
         Args:
             conversation_ids: List of conversation IDs to fetch
@@ -443,24 +444,18 @@ class ConversationRepository:
 
         # Build dict for order preservation
         by_id = {rec.conversation_id: rec for rec in records}
+        present_ids = [cid for cid in conversation_ids if cid in by_id]
 
-        # Fetch all messages and attachments in parallel
-        fetch_tasks = [
-            (cid, asyncio.gather(
-                self._backend.get_messages(cid),
-                self._backend.get_attachments(cid),
-            ))
-            for cid in conversation_ids
-            if cid in by_id
+        # Batch-fetch all messages and attachments (2 queries total)
+        msgs_by_id, atts_by_id = await asyncio.gather(
+            self._backend.get_messages_batch(present_ids),
+            self._backend.get_attachments_batch(present_ids),
+        )
+
+        return [
+            Conversation.from_records(by_id[cid], msgs_by_id.get(cid, []), atts_by_id.get(cid, []))
+            for cid in present_ids
         ]
-
-        results: builtins.list[Conversation] = []
-        for cid, gather_task in fetch_tasks:
-            msg_records, att_records = await gather_task
-            conv_record = by_id[cid]
-            results.append(Conversation.from_records(conv_record, msg_records, att_records))
-
-        return results
 
     async def get_conversation_stats(self, conversation_id: str) -> dict[str, int] | None:
         """Get message counts without loading messages.
