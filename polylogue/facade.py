@@ -180,9 +180,10 @@ class Polylogue:
         return _records_to_conversation(conv_record, msg_records, [])
 
     async def get_conversations(self, conversation_ids: list[str]) -> list[Conversation]:
-        """Get multiple conversations by ID in parallel.
+        """Get multiple conversations by ID using batch queries.
 
-        This is 5-10x faster than sequential get_conversation() calls.
+        Uses 2 queries (conversations + messages) instead of 2*N individual
+        queries, avoiding connection storms on large databases.
 
         Args:
             conversation_ids: List of conversation IDs
@@ -194,19 +195,23 @@ class Polylogue:
             ids = ["id1", "id2", "id3", "id4", "id5"]
             convs = await archive.get_conversations(ids)
         """
-        # Fetch all conversations concurrently
-        tasks = [self.get_conversation(cid) for cid in conversation_ids]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        if not conversation_ids:
+            return []
 
-        # Filter out None and exceptions
-        conversations = []
-        for result in results:
-            if isinstance(result, Exception):
-                logger.warning("failed to fetch conversation", error=str(result))
-            elif result is not None:
-                conversations.append(result)
+        from polylogue.storage.repository import _records_to_conversation
 
-        return conversations
+        records = await self._backend.get_conversations_batch(conversation_ids)
+        if not records:
+            return []
+
+        by_id = {rec.conversation_id: rec for rec in records}
+        present_ids = [cid for cid in conversation_ids if cid in by_id]
+        msgs_by_id = await self._backend.get_messages_batch(present_ids)
+
+        return [
+            _records_to_conversation(by_id[cid], msgs_by_id.get(cid, []), [])
+            for cid in present_ids
+        ]
 
     async def list_conversations(
         self,
@@ -214,6 +219,8 @@ class Polylogue:
         limit: int | None = None,
     ) -> list[Conversation]:
         """List conversations with optional filtering.
+
+        Uses batch queries to avoid N+1 connection storms.
 
         Args:
             provider: Filter by provider name
@@ -229,17 +236,18 @@ class Polylogue:
             provider=provider,
             limit=limit,
         )
+        if not conv_records:
+            return []
 
         from polylogue.storage.repository import _records_to_conversation
-        from polylogue.storage.store import ConversationRecord
 
-        async def _fetch_with_messages(conv_record: ConversationRecord) -> Conversation:
-            msg_records = await self._backend.get_messages(conv_record.conversation_id)
-            return _records_to_conversation(conv_record, msg_records, [])
+        ids = [cr.conversation_id for cr in conv_records]
+        msgs_by_id = await self._backend.get_messages_batch(ids)
 
-        tasks = [_fetch_with_messages(cr) for cr in conv_records]
-        results = await asyncio.gather(*tasks)
-        return list(results)
+        return [
+            _records_to_conversation(cr, msgs_by_id.get(cr.conversation_id, []), [])
+            for cr in conv_records
+        ]
 
     async def search(
         self,
