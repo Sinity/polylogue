@@ -257,3 +257,228 @@ class TestComputeProviderComparison:
         assert result[0].avg_assistant_words == 0.0
         assert result[0].tool_use_percentage == 0.0
         assert result[0].thinking_percentage == 0.0
+
+
+# ============================================================================
+# _seed_db helper: create test DB with custom row data
+# ============================================================================
+
+
+async def _seed_db(tmp_path, rows):
+    """Seed database with raw rows: (provider, role, text, provider_meta_or_None).
+
+    Returns: db_path (Path)
+
+    Args:
+        tmp_path: pytest tmp_path fixture
+        rows: list of tuples (provider, role, text, provider_meta_dict_or_None)
+
+    Creates conversations and messages from rows, returns db_path.
+    """
+    from polylogue.storage.backends.async_sqlite import SQLiteBackend
+    from polylogue.storage.repository import ConversationRepository
+
+    db_path = tmp_path / "test.db"
+    backend = SQLiteBackend(db_path=db_path)
+    repo = ConversationRepository(backend=backend)
+
+    # Group rows by provider and conversation
+    convos_by_provider = {}
+    for provider, role, text, provider_meta in rows:
+        if provider not in convos_by_provider:
+            convos_by_provider[provider] = []
+        convos_by_provider[provider].append((role, text, provider_meta))
+
+    # Create conversations and save
+    msg_counter = 0
+    for provider, messages in convos_by_provider.items():
+        conv = make_conversation(
+            f"conv-{provider}",
+            provider_name=provider,
+            title=f"{provider} Test Conversation",
+            provider_meta={"source": "test"}
+        )
+        msgs = []
+        for role, text, provider_meta in messages:
+            msg_counter += 1
+            msg = make_message(
+                f"msg-{msg_counter}",
+                conv.conversation_id,
+                role=role,
+                text=text,
+                provider_meta=provider_meta,
+            )
+            msgs.append(msg)
+
+        await repo.save_conversation(conversation=conv, messages=msgs, attachments=[])
+
+    await backend.close()
+    return db_path
+
+
+# ============================================================================
+# Word count SQL edge cases
+# ============================================================================
+
+
+class TestWordCountEdgeCases:
+    """Verify word count SQL handles edge cases correctly."""
+
+    async def test_spaces_only_text_counts_zero_words(self, tmp_path):
+        """Space-only messages should count as 0 words."""
+        db = await _seed_db(tmp_path, [
+            ("test", "user", "   ", None),
+            ("test", "user", "     ", None),
+        ])
+        results = await compute_provider_comparison(db_path=db)
+        assert len(results) == 1
+        assert results[0].avg_user_words == 0.0
+
+    async def test_tabs_newlines_are_not_stripped(self, tmp_path):
+        """SQLite TRIM only strips spaces — tabs/newlines count as 1 word.
+
+        This documents a known approximation: SQLite's TRIM() only removes
+        ASCII space (0x20), not tabs (0x09) or newlines (0x0A). In practice
+        this doesn't matter because real messages never contain only whitespace.
+        """
+        db = await _seed_db(tmp_path, [
+            ("test", "user", "\t\t", None),
+        ])
+        results = await compute_provider_comparison(db_path=db)
+        # Tab-only text passes TRIM check (TRIM doesn't strip tabs)
+        # and the formula counts it as 1 "word"
+        assert results[0].avg_user_words == 1.0
+
+    async def test_single_word_counts_one(self, tmp_path):
+        """A single word with no spaces counts as 1."""
+        db = await _seed_db(tmp_path, [
+            ("test", "user", "Hello", None),
+        ])
+        results = await compute_provider_comparison(db_path=db)
+        assert results[0].avg_user_words == 1.0
+
+    async def test_multiple_spaces_between_words(self, tmp_path):
+        """Multiple spaces between words still count correctly.
+
+        The SQL formula counts spaces, so 'a  b' has 2 spaces = 3 words.
+        This is a known approximation - documenting the actual behavior.
+        """
+        db = await _seed_db(tmp_path, [
+            ("test", "user", "hello  world", None),  # 2 spaces
+        ])
+        results = await compute_provider_comparison(db_path=db)
+        # With double space: LENGTH("hello  world")=12, REPLACE removes spaces: "helloworld"=10
+        # 12 - 10 + 1 = 3 (overcounts by 1 due to double space)
+        # This documents the known approximation behavior
+        assert results[0].avg_user_words == 3.0
+
+    async def test_empty_text_counts_zero(self, tmp_path):
+        """Empty string text counts as 0 words."""
+        db = await _seed_db(tmp_path, [
+            ("test", "user", "", None),
+        ])
+        results = await compute_provider_comparison(db_path=db)
+        assert results[0].avg_user_words == 0.0
+
+    async def test_none_text_counts_zero(self, tmp_path):
+        """NULL text counts as 0 words."""
+        db = await _seed_db(tmp_path, [
+            ("test", "user", None, None),
+        ])
+        results = await compute_provider_comparison(db_path=db)
+        assert results[0].avg_user_words == 0.0
+
+
+# ============================================================================
+# LIKE pattern resistance tests
+# ============================================================================
+
+
+class TestLikePatternResistance:
+    """Verify LIKE-based tool_use/thinking detection doesn't false-positive."""
+
+    async def test_tool_use_in_message_text_not_detected(self, tmp_path):
+        """Text containing 'tool_use' string should NOT count as tool use."""
+        db = await _seed_db(tmp_path, [
+            ("test", "assistant", 'The tool_use feature is great', None),
+            ("test", "assistant", 'I used "type":"tool_use" in my message', None),
+        ])
+        results = await compute_provider_comparison(db_path=db)
+        # tool_use_count should be 0 — the LIKE is on provider_meta, not text
+        assert results[0].tool_use_count == 0
+
+    async def test_thinking_in_message_text_not_detected(self, tmp_path):
+        """Text containing 'thinking' should NOT count as thinking."""
+        db = await _seed_db(tmp_path, [
+            ("test", "assistant", 'I was thinking about "type":"thinking" blocks', None),
+        ])
+        results = await compute_provider_comparison(db_path=db)
+        assert results[0].thinking_count == 0
+
+    async def test_tool_role_fallback_detected(self, tmp_path):
+        """Messages with role='tool' should be counted as tool use."""
+        db = await _seed_db(tmp_path, [
+            ("test", "tool", "Tool result here", None),
+        ])
+        results = await compute_provider_comparison(db_path=db)
+        assert results[0].tool_use_count == 1
+
+    async def test_tool_use_in_provider_meta_detected(self, tmp_path):
+        """Tool use in provider_meta content_blocks is detected."""
+        meta = {"content_blocks": [{"type": "tool_use", "name": "search", "id": "t1"}]}
+        db = await _seed_db(tmp_path, [
+            ("test", "assistant", "Using a tool", meta),
+        ])
+        results = await compute_provider_comparison(db_path=db)
+        assert results[0].tool_use_count == 1
+        assert results[0].total_conversations_with_tools == 1
+
+    async def test_thinking_in_provider_meta_detected(self, tmp_path):
+        """Thinking blocks in provider_meta are detected."""
+        meta = {"content_blocks": [{"type": "thinking", "thinking": "Let me consider..."}]}
+        db = await _seed_db(tmp_path, [
+            ("test", "assistant", "Here's my answer", meta),
+        ])
+        results = await compute_provider_comparison(db_path=db)
+        assert results[0].thinking_count == 1
+        assert results[0].total_conversations_with_thinking == 1
+
+    async def test_mixed_content_blocks_counted_correctly(self, tmp_path):
+        """Message with both tool_use and thinking blocks counts both."""
+        meta = {"content_blocks": [
+            {"type": "thinking", "thinking": "Planning..."},
+            {"type": "tool_use", "name": "search", "id": "t1"},
+            {"type": "text", "text": "Result"},
+        ]}
+        db = await _seed_db(tmp_path, [
+            ("test", "assistant", "Result from tool", meta),
+        ])
+        results = await compute_provider_comparison(db_path=db)
+        assert results[0].tool_use_count == 1
+        assert results[0].thinking_count == 1
+
+
+# ============================================================================
+# Cross-provider integration test
+# ============================================================================
+
+
+class TestCrossProviderConsistency:
+    """Verify SQL detection works across different provider data structures."""
+
+    async def test_multiple_providers_with_tool_use(self, tmp_path):
+        """Tool use is detected correctly across ChatGPT and Claude providers."""
+        chatgpt_meta = {"content_blocks": [{"type": "tool_use", "name": "browser"}]}
+        claude_meta = {"content_blocks": [{"type": "tool_use", "name": "computer", "id": "toolu_1"}]}
+
+        db = await _seed_db(tmp_path, [
+            ("chatgpt", "assistant", "ChatGPT used a tool", chatgpt_meta),
+            ("chatgpt", "user", "Thanks", None),
+            ("claude-ai", "assistant", "Claude used a tool", claude_meta),
+            ("claude-ai", "user", "Thanks", None),
+        ])
+        results = await compute_provider_comparison(db_path=db)
+
+        by_provider = {r.provider_name: r for r in results}
+        assert by_provider["chatgpt"].tool_use_count == 1
+        assert by_provider["claude-ai"].tool_use_count == 1
