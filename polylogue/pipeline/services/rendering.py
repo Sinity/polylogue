@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from polylogue.lib.log import get_logger
 from polylogue.protocols import OutputRenderer
@@ -60,12 +61,14 @@ class RenderService:
         conversation_ids: list[str],
         *,
         max_workers: int = 4,
+        progress_callback: Any | None = None,
     ) -> RenderResult:
         """Render multiple conversations concurrently.
 
         Args:
             conversation_ids: List of conversation IDs to render
             max_workers: Maximum number of concurrent tasks
+            progress_callback: Optional callback(amount, desc=...) for progress updates
 
         Returns:
             RenderResult with success count and failures
@@ -74,6 +77,7 @@ class RenderService:
 
         result = RenderResult()
         semaphore = asyncio.Semaphore(max_workers)
+        total = len(conversation_ids)
 
         async def _render_one(convo_id: str) -> None:
             async with semaphore:
@@ -83,6 +87,9 @@ class RenderService:
                 except Exception as exc:
                     logger.warning("Failed to render conversation %s: %s", convo_id, exc)
                     result.record_failure(convo_id, str(exc))
+                if progress_callback is not None:
+                    done = result.rendered_count + len(result.failures)
+                    progress_callback(1, desc=f"Rendering: {done}/{total}")
 
         await asyncio.gather(
             *(_render_one(cid) for cid in conversation_ids),
