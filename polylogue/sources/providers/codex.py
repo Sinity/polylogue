@@ -22,6 +22,7 @@ from polylogue.lib.viewports import (
     ContentBlock,
     ContentType,
     MessageMeta,
+    ReasoningTrace,
 )
 
 
@@ -122,6 +123,14 @@ class CodexRecord(BaseModel):
         return "unknown"
 
     @property
+    def role_normalized(self) -> str:
+        """Normalize effective_role to standard viewport values."""
+        try:
+            return normalize_role(self.effective_role)
+        except ValueError:
+            return "unknown"
+
+    @property
     def effective_content(self) -> list[dict[str, Any]]:
         """Get content blocks from any format."""
         if self.format_type == "envelope" and self.payload:
@@ -201,3 +210,7 @@ class CodexRecord(BaseModel):
                 ))
 
         return blocks
+
+    def extract_reasoning_traces(self) -> list[ReasoningTrace]:
+        """Extract reasoning traces (Codex does not expose reasoning; returns empty list)."""
+        return []

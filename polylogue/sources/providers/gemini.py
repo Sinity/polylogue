@@ -133,6 +133,11 @@ class GeminiMessage(BaseModel):
             return "unknown"
 
     @property
+    def parsed_timestamp(self):
+        """Gemini messages carry no per-message timestamp; returns None (viewport interface)."""
+        return None
+
+    @property
     def text_content(self) -> str:
         """Get full text content."""
         if self.text:

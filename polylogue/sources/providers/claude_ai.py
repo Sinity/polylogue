@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from polylogue.lib.roles import normalize_role
 from polylogue.lib.timestamps import parse_timestamp
-from polylogue.lib.viewports import ContentBlock, ContentType, MessageMeta
+from polylogue.lib.viewports import ContentBlock, ContentType, MessageMeta, ReasoningTrace
 
 
 class ClaudeAIChatMessage(BaseModel):
@@ -41,6 +41,11 @@ class ClaudeAIChatMessage(BaseModel):
 
     files: list[dict[str, Any]] = Field(default_factory=list)
     """Associated files."""
+
+    @property
+    def text_content(self) -> str:
+        """Extract plain text content (viewport interface)."""""
+        return self.text
 
     @property
     def role_normalized(self) -> str:
@@ -71,6 +76,14 @@ class ClaudeAIChatMessage(BaseModel):
             text=self.text,
             raw={"text": self.text, "sender": self.sender},
         )]
+
+    def extract_content_blocks(self) -> list[ContentBlock]:
+        """Extract harmonized content blocks (viewport interface alias for to_content_blocks)."""
+        return self.to_content_blocks()
+
+    def extract_reasoning_traces(self) -> list[ReasoningTrace]:
+        """Extract reasoning traces (Claude AI web does not expose reasoning; returns empty list)."""
+        return []
 
 
 class ClaudeAIConversation(BaseModel):

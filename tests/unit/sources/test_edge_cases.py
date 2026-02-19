@@ -17,7 +17,6 @@ from polylogue.sources.providers.chatgpt import (
     ChatGPTMessage,
     ChatGPTNode,
 )
-from polylogue.sources.providers.claude_code import ClaudeCodeRecord
 from polylogue.sources.providers.codex import CodexContentBlock, CodexRecord
 
 # =============================================================================
@@ -304,8 +303,12 @@ class TestChatGPTTimestamps:
 # =============================================================================
 
 
-class TestCodexFormatDetection:
-    """Tests for CodexRecord.format_type detection."""
+class TestCodexRecord:
+    """Tests for CodexRecord covering format detection, role normalization,
+    effective content, timestamp parsing, text content, and content block
+    extraction."""
+
+    # --- format detection ---
 
     @pytest.mark.parametrize("record_kwargs,expected_format", [
         # envelope_format: Record with payload detected as envelope
@@ -324,9 +327,7 @@ class TestCodexFormatDetection:
         rec = CodexRecord(**record_kwargs)
         assert rec.format_type == expected_format
 
-
-class TestCodexIsMessage:
-    """Tests for CodexRecord.is_message."""
+    # --- is_message ---
 
     @pytest.mark.parametrize("record_kwargs,expected_is_message", [
         # envelope_response_item: Envelope response_item is a message
@@ -347,9 +348,7 @@ class TestCodexIsMessage:
         rec = CodexRecord(**record_kwargs)
         assert rec.is_message is expected_is_message
 
-
-class TestCodexEffectiveContent:
-    """Tests for CodexRecord.effective_content."""
+    # --- effective_content ---
 
     def test_envelope_content(self):
         """Content from envelope payload."""
@@ -389,9 +388,7 @@ class TestCodexEffectiveContent:
         rec = CodexRecord(type="session_meta", payload={})
         assert rec.effective_content == []
 
-
-class TestCodexTimestampParsing:
-    """Tests for CodexRecord.parsed_timestamp."""
+    # --- timestamp parsing ---
 
     @pytest.mark.parametrize("timestamp,expected_year", [
         # iso_format: Standard ISO format
@@ -419,9 +416,7 @@ class TestCodexTimestampParsing:
         rec = CodexRecord(timestamp=timestamp) if timestamp is not None else CodexRecord()
         assert rec.parsed_timestamp is None
 
-
-class TestCodexTextContent:
-    """Tests for CodexRecord.text_content."""
+    # --- text_content ---
 
     @pytest.mark.parametrize("payload_content,expected_text", [
         # output_text: Extracts output_text field
@@ -446,14 +441,12 @@ class TestCodexTextContent:
         assert "line1" in rec.text_content
         assert "line2" in rec.text_content
 
-    def test_empty_content(self):
+    def test_empty_content_text(self):
         """No content returns empty string."""
         rec = CodexRecord()
         assert rec.text_content == ""
 
-
-class TestCodexContentBlockExtraction:
-    """Tests for CodexRecord.extract_content_blocks()."""
+    # --- content block extraction ---
 
     @pytest.mark.parametrize("payload_content,expected_type,expected_language", [
         # text_block: output_text becomes TEXT content block
@@ -480,9 +473,7 @@ class TestCodexContentBlockExtraction:
         assert len(blocks) == 1
         assert blocks[0].type == ContentType.TEXT
 
-
-class TestCodexRoleNormalization:
-    """Tests for CodexRecord role normalization."""
+    # --- role normalization ---
 
     @pytest.mark.parametrize("record_kwargs,expected_effective_role", [
         # envelope_role: Role from envelope payload
@@ -510,233 +501,3 @@ class TestCodexRoleNormalization:
         assert meta.role == "system"
 
 
-# =============================================================================
-# Claude Code Provider Tests
-# =============================================================================
-
-
-class TestClaudeCodeExtractReasoningTraces:
-    """Tests for ClaudeCodeRecord.extract_reasoning_traces()."""
-
-    @pytest.mark.parametrize("message_content,should_have_trace", [
-        # thinking_block_extracted: Thinking content block is extracted
-        (
-            [
-                {"type": "thinking", "thinking": "Let me analyze this..."},
-                {"type": "text", "text": "Here's my answer"},
-            ],
-            True,
-        ),
-        # no_thinking_blocks: Record without thinking blocks returns empty
-        (
-            [{"type": "text", "text": "Just text"}],
-            False,
-        ),
-    ])
-    def test_reasoning_trace_extraction(self, message_content, should_have_trace):
-        """Test extraction of reasoning traces from various message formats."""
-        rec = ClaudeCodeRecord(
-            type="assistant",
-            message={"content": message_content},
-        )
-        traces = rec.extract_reasoning_traces()
-        if should_have_trace:
-            assert len(traces) >= 1
-            assert any("analyze" in t.text.lower() for t in traces)
-        else:
-            assert traces == []
-
-    def test_no_message(self):
-        """System record with no message returns empty."""
-        rec = ClaudeCodeRecord(type="system")
-        traces = rec.extract_reasoning_traces()
-        assert traces == []
-
-
-class TestClaudeCodeExtractToolCalls:
-    """Tests for ClaudeCodeRecord.extract_tool_calls()."""
-
-    @pytest.mark.parametrize("message_content,should_have_calls", [
-        # tool_use_extracted: tool_use content block is extracted
-        (
-            [
-                {"type": "tool_use", "id": "tu1", "name": "Read", "input": {"path": "/etc/hosts"}},
-            ],
-            True,
-        ),
-        # no_tool_calls: Record without tool blocks returns empty
-        (
-            [{"type": "text", "text": "No tools"}],
-            False,
-        ),
-    ])
-    def test_tool_call_extraction(self, message_content, should_have_calls):
-        """Test extraction of tool calls from various message formats."""
-        rec = ClaudeCodeRecord(
-            type="assistant",
-            message={"content": message_content},
-        )
-        calls = rec.extract_tool_calls()
-        if should_have_calls:
-            assert len(calls) >= 1
-        else:
-            assert calls == []
-
-    def test_no_message_returns_empty(self):
-        """System record with no message returns empty list."""
-        rec = ClaudeCodeRecord(type="system")
-        calls = rec.extract_tool_calls()
-        assert calls == []
-
-
-class TestClaudeCodeTextContent:
-    """Tests for ClaudeCodeRecord.text_content edge cases."""
-
-    @pytest.mark.parametrize("record_kwargs,expected_contains", [
-        # dict_message_with_list_content: List content blocks
-        (
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {"type": "text", "text": "Hello world"},
-                        {"type": "thinking", "thinking": "deep thoughts"},
-                    ]
-                },
-            },
-            "Hello world",
-        ),
-        # dict_message_with_string_content: Plain string content
-        (
-            {
-                "type": "user",
-                "message": {"content": "Plain user input"},
-            },
-            "Plain user input",
-        ),
-        # message_with_multiple_text_blocks: Multiple text blocks
-        (
-            {
-                "type": "assistant",
-                "message": {
-                    "content": [
-                        {"type": "text", "text": "First"},
-                        {"type": "text", "text": "Second"},
-                    ]
-                },
-            },
-            None,  # Check both via separate assertion
-        ),
-    ])
-    def test_text_content_scenarios(self, record_kwargs, expected_contains):
-        """Test text_content extraction from various record formats."""
-        rec = ClaudeCodeRecord(**record_kwargs)
-        text = rec.text_content
-        if expected_contains:
-            assert expected_contains in text
-        elif record_kwargs["type"] == "assistant" and "First" in str(record_kwargs.get("message", {})):
-            # For multiple text blocks, check both
-            assert "First" in text
-            assert "Second" in text
-
-    def test_system_record_top_level_content(self):
-        """System record extracts text from top-level content field (Pydantic extra)."""
-        rec = ClaudeCodeRecord(
-            type="summary",
-            content="Compacted conversation context",
-        )
-        # Top-level content field is stored as Pydantic extra
-        assert "Compacted" in rec.text_content or rec.text_content == ""
-
-    def test_no_message_no_content(self):
-        """Record with no message and no content returns empty."""
-        rec = ClaudeCodeRecord(type="system")
-        assert rec.text_content == ""
-
-
-# NOTE: TestClaudeCodeRoleNormalization was consolidated into
-# tests/unit/sources/test_models.py::TestClaudeCodeRecordRole using
-# canonical tables from tests/infra/tables.py.
-
-
-class TestClaudeCodeContentBlocksRaw:
-    """Tests for ClaudeCodeRecord.content_blocks_raw."""
-
-    @pytest.mark.parametrize("record_kwargs,expected_count", [
-        # dict_message_list_content: List content returns blocks
-        (
-            {
-                "type": "assistant",
-                "message": {"content": [{"type": "text", "text": "hi"}]},
-            },
-            1,
-        ),
-        # dict_message_string_content: String content returns empty (not a list)
-        (
-            {
-                "type": "user",
-                "message": {"content": "string"},
-            },
-            0,
-        ),
-        # dict_message_no_content: Message without content key returns empty
-        (
-            {
-                "type": "user",
-                "message": {"role": "user"},
-            },
-            0,
-        ),
-    ])
-    def test_content_blocks_raw(self, record_kwargs, expected_count):
-        """Test content_blocks_raw for various message formats."""
-        rec = ClaudeCodeRecord(**record_kwargs)
-        assert len(rec.content_blocks_raw) == expected_count
-
-    def test_no_message(self):
-        """No message returns empty."""
-        rec = ClaudeCodeRecord(type="system")
-        assert rec.content_blocks_raw == []
-
-
-# NOTE: TestClaudeCodeIsContextCompaction, TestClaudeCodeIsToolProgress,
-# TestClaudeCodeIsActualMessage, and TestClaudeCodeParsedTimestamp were
-# consolidated into tests/unit/sources/test_models.py using canonical
-# tables from tests/infra/tables.py.
-
-
-class TestClaudeCodeToMeta:
-    """Tests for ClaudeCodeRecord.to_meta() conversion."""
-
-    def test_basic_conversion(self):
-        """Convert record to MessageMeta."""
-        rec = ClaudeCodeRecord(
-            type="user",
-            uuid="msg-123",
-            timestamp="2024-06-15T10:30:00Z",
-        )
-        meta = rec.to_meta()
-        assert meta.id == "msg-123"
-        assert meta.role == "user"
-        assert meta.provider == "claude-code"
-
-    def test_with_cost_info(self):
-        """Cost information included."""
-        rec = ClaudeCodeRecord(
-            type="assistant",
-            uuid="msg-456",
-            costUSD=0.05,
-        )
-        meta = rec.to_meta()
-        assert meta.cost is not None
-        assert meta.cost.total_usd == 0.05
-
-    def test_with_duration(self):
-        """Duration information included."""
-        rec = ClaudeCodeRecord(
-            type="assistant",
-            uuid="msg-789",
-            durationMs=1500,
-        )
-        meta = rec.to_meta()
-        assert meta.duration_ms == 1500
